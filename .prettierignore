@@ -5,3 +5,8 @@ cdk.out/
 templates/
 pnpm-lock.yaml
 PLAN.md
+# synced from templates/agent-os by scripts/sync-agent-os.mjs — formatting is
+# owned by the sources (the addendum under .claude/ is hand-maintained but
+# composed verbatim into CLAUDE.md, so it must not be reformatted either)
+CLAUDE.md
+.claude/
