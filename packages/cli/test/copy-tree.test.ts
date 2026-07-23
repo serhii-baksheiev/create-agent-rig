@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -70,6 +70,18 @@ describe('copyTree', () => {
       },
     });
     expect(await readFile(path.join(dest, 'img.png'))).toEqual(binary);
+  });
+
+  it('preserves the executable bit through the content transform', async () => {
+    const src = await makeSrc({ 'run.sh': '#!/bin/sh\necho TOKEN' });
+    await chmod(path.join(src, 'run.sh'), 0o755);
+    const dest = path.join(work, 'dest');
+    await copyTree(src, dest, {
+      transformContent: (content) => content.replace('TOKEN', 'ok'),
+    });
+    const mode = (await stat(path.join(dest, 'run.sh'))).mode & 0o777;
+    expect(mode & 0o111, `mode was 0o${mode.toString(8)}`).not.toBe(0);
+    expect(await readFile(path.join(dest, 'run.sh'), 'utf8')).toContain('echo ok');
   });
 
   it('applies the name transform to files and directories', async () => {

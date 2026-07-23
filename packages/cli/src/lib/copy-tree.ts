@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /** Entry names never copied out of a template (local artifacts, never payload). */
@@ -10,6 +10,9 @@ export const DEFAULT_IGNORE = [
   'cdk.out',
   '.turbo',
   '.DS_Store',
+  // packaging metadata of the template itself, meaningless in a generated project
+  '.npmignore',
+  'var',
 ];
 
 export interface CopyTreeOptions {
@@ -71,13 +74,17 @@ async function copyFileEntry(
   options: ResolvedOptions,
 ): Promise<void> {
   if (!options.transformContent) {
-    await copyFile(srcPath, destPath);
+    await copyFile(srcPath, destPath); // copyFile preserves the mode by itself
     return;
   }
   const buffer = await readFile(srcPath);
   if (isBinary(buffer)) {
     await writeFile(destPath, buffer);
-    return;
+  } else {
+    await writeFile(destPath, options.transformContent(buffer.toString('utf8'), relPath));
   }
-  await writeFile(destPath, options.transformContent(buffer.toString('utf8'), relPath));
+  // writeFile does NOT preserve permissions — restore them (chmod ignores umask),
+  // otherwise executable template files (scripts, hooks) arrive non-executable.
+  const { mode } = await stat(srcPath);
+  await chmod(destPath, mode & 0o777);
 }

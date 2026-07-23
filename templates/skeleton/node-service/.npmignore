@@ -1,0 +1,9 @@
+# Keeps in-place run artifacts of this template out of the published tarball.
+# (The template's gitignore is stored un-dotted, so npm no longer reads it
+# here — and without an ignore file at this level npm packs even node_modules.)
+node_modules/
+dist/
+coverage/
+var/
+*.tsbuildinfo
+.DS_Store

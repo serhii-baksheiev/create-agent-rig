@@ -5,3 +5,4 @@ cdk.out/
 *.tsbuildinfo
 *.tgz
 .DS_Store
+var/

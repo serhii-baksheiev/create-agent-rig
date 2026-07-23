@@ -42,3 +42,21 @@ tool's own repo runs under them. Recorded as encountered:
   the composed files during setup — the mechanism earns its keep.
 - `block-no-verify` and the pre-commit gate compose fine with the repo's own
   `.husky` hook path.
+
+## Phase 8 — distribution audit (measured, not assumed)
+
+- `npm pack` **strips `.gitignore` at every depth** → templates now store it as
+  `gitignore` and the CLI maps it back on generation (the CRA trick).
+- Nested `pnpm-lock.yaml`, `.claude/`, `.github/` **survive** packing — no
+  rename needed for those (only the root lockfile is stripped).
+- **Renaming the template's `.gitignore` removed npm's only reason to skip the
+  template's `node_modules`** — 15 742 files silently entered the tarball until
+  the pack-path e2e caught it. Each template now carries an `.npmignore`
+  (with `node_modules/` explicitly) whose job is packing hygiene only; the CLI
+  never copies `.npmignore` into generated projects.
+- `writeFile` after content substitution dropped file modes; `copy-tree` now
+  restores the source mode (`chmod`, immune to umask). Covered by a unit test.
+- **Owner action still open (8.4):** claiming the npm name needs a registry
+  publish from the owner's account. Note a discrepancy: the next-block plan
+  says `create-agent-rig`, but PLAN.md §2 locked `create-agent-factory` —
+  decide which name to claim before publishing.
