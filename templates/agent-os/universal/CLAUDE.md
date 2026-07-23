@@ -42,9 +42,14 @@ them all; they are one rulebook.
 
 - **TDD, without exception.** The failing test comes first — use the
   `test-writer` agent for it. See `.claude/rules/workflow.md`.
+- **One task, one branch — and merge via PR.** Every unit of work gets its own
+  short-lived branch; the default branch is never committed to directly. Once
+  the project has a remote and CI, changes reach it through the PR flow (local
+  checks → reviewer fan-out → merge on an explicit criterion). See
+  `.claude/rules/workflow.md` ("Branches and commits", "PR flow").
 - **Gates.** `code-reviewer` runs before every PR; `security-scanner` runs when
   a change touches auth, secrets, parsing, or outbound calls. Blocking findings
-  are resolved, not argued with.
+  are resolved, not argued with. The `pr-ship` skill drives the gate.
 - **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
   the core the moment it lands; `guard-web-boundary` keeps the frontend off the
   backend; `block-no-verify` refuses pre-commit bypasses; `gate-stop-dod`

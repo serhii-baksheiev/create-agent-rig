@@ -42,9 +42,14 @@ them all; they are one rulebook.
 
 - **TDD, without exception.** The failing test comes first — use the
   `test-writer` agent for it. See `.claude/rules/workflow.md`.
+- **One task, one branch — and merge via PR.** Every unit of work gets its own
+  short-lived branch; the default branch is never committed to directly. Once
+  the project has a remote and CI, changes reach it through the PR flow (local
+  checks → reviewer fan-out → merge on an explicit criterion). See
+  `.claude/rules/workflow.md` ("Branches and commits", "PR flow").
 - **Gates.** `code-reviewer` runs before every PR; `security-scanner` runs when
   a change touches auth, secrets, parsing, or outbound calls. Blocking findings
-  are resolved, not argued with.
+  are resolved, not argued with. The `pr-ship` skill drives the gate.
 - **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
   the core the moment it lands; `guard-web-boundary` keeps the frontend off the
   backend; `block-no-verify` refuses pre-commit bypasses; `gate-stop-dod`
@@ -106,6 +111,11 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
 5. **Never edit `CLAUDE.md` or synced `.claude/` files directly** — edit
    `templates/agent-os/` (or this addendum) and run the sync script; the drift
    test fails otherwise.
+6. **This repo has a remote and CI, so it follows its own PR flow** (see the
+   synced `.claude/rules/workflow.md`): one task per short-lived branch, never
+   commit to `master` directly, merge through a PR once CI is green. The
+   pre-0.2.0 history was authored straight on `master`; that was a dogfooding
+   gap — it stops here.
 
 ## Foot-guns
 
