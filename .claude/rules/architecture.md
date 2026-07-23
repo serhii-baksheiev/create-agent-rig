@@ -19,16 +19,22 @@ Dependency direction is one-way: `services → (core, db, shared)`, `db → (cor
 Every operation travels the same route, with no shortcuts:
 
 ```
-payload (schema-validated) → handler → usecase → domain function / model
+payload → handler → usecase → model
 ```
 
-- **Handlers** translate transport into typed input and back. Nothing else.
+- **Handlers** translate transport into schema-validated, typed input and back.
+  Nothing else.
 - **The usecase layer is mandatory.** Every business operation has exactly one
   usecase function. Handlers never call models or SDKs directly — even for a
   "trivial" read. The uniformity is the point: it is what makes the codebase
   predictable for both humans and agents.
 - **Usecases receive their dependencies** (models, publishers, clock, id
-  generation) as arguments. That is what keeps the core pure and the tests fast.
+  generation) as arguments, and invoke the core's pure domain functions
+  themselves. That is what keeps the core pure and the tests fast.
+- A dedicated *service* layer between usecase and model is **deliberately
+  absent** from the minimal skeleton: today a usecase is one domain function
+  plus one model call. Introduce a service only when a usecase outgrows that —
+  and then state it in this file, so the chain stays written down in one place.
 
 ## The core is pure — and the rule is mechanical
 

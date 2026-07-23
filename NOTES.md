@@ -60,3 +60,13 @@ tool's own repo runs under them. Recorded as encountered:
   publish from the owner's account. Note a discrepancy: the next-block plan
   says `create-agent-rig`, but PLAN.md §2 locked `create-agent-factory` —
   decide which name to claim before publishing.
+
+## Phase 10 — the layer-chain decision
+
+Dropping the separate _service_ layer (PLAN.md §5.1 says
+`… usecase → service → model`) is ruled a **deliberate simplification**, not a
+slip: in the minimal skeleton every usecase is one pure domain function plus
+one model call, and a pass-through service would be ceremony. The canonical
+chain everywhere is `payload → handler → usecase → model`;
+`architecture.md` now says explicitly when a service layer earns its place.
+`test/template/consistency.test.ts` fails on any restatement that differs.
