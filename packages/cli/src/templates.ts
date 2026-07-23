@@ -15,3 +15,7 @@ export function templatesRoot(): string {
 export function skeletonDir(skeleton: string): string {
   return path.join(templatesRoot(), 'skeleton', skeleton);
 }
+
+export function agentOsDir(layer: string): string {
+  return path.join(templatesRoot(), 'agent-os', layer);
+}

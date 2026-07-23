@@ -4,7 +4,7 @@ import { copyTree } from '../lib/copy-tree.js';
 import { substituteContent, substituteFileName } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { DEFAULT_TARGET, TARGETS } from '../lib/targets.js';
-import { skeletonDir } from '../templates.js';
+import { agentOsDir, skeletonDir } from '../templates.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class CreateError extends Error {}
@@ -45,11 +45,16 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
     region: target.defaultRegion,
   };
 
+  const transforms = {
+    transformContent: (content: string) => substituteContent(content, ctx),
+    transformName: (name: string) => substituteFileName(name, ctx),
+  };
+
   await mkdir(projectDir, { recursive: true });
-  await copyTree(skeletonDir(target.skeletonDir), projectDir, {
-    transformContent: (content) => substituteContent(content, ctx),
-    transformName: (name) => substituteFileName(name, ctx),
-  });
+  // Layer 2: the code skeleton for the target…
+  await copyTree(skeletonDir(target.skeletonDir), projectDir, transforms);
+  // …then layer 1 on top: the agent operating system (CLAUDE.md + .claude/).
+  await copyTree(agentOsDir('universal'), projectDir, transforms);
 
   return { projectDir, projectName };
 }

@@ -12,6 +12,12 @@ export default defineConfig({
       },
       {
         test: {
+          name: 'template',
+          include: ['test/template/**/*.test.ts'],
+        },
+      },
+      {
+        test: {
           name: 'e2e',
           include: ['test/e2e/**/*.test.ts'],
           testTimeout: 300_000,

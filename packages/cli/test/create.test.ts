@@ -53,4 +53,30 @@ describe('createProject', () => {
     await expect(createProject('My App!', { cwd: work })).rejects.toThrow(CreateError);
     await expect(createProject('My App!', { cwd: work })).rejects.toThrow(/name/i);
   });
+
+  it('overlays the agent operating system onto the generated project', async () => {
+    const { projectDir } = await createProject('my-app', { cwd: work });
+
+    const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).toContain('my-app');
+    expect(claudeMd).not.toContain('__PROJECT_NAME__');
+
+    const settings = JSON.parse(
+      await readFile(path.join(projectDir, '.claude', 'settings.json'), 'utf8'),
+    );
+    expect(settings.hooks?.PreToolUse?.length).toBeGreaterThan(0);
+
+    for (const rule of ['architecture.md', 'workflow.md', 'autonomy.md']) {
+      await expect(
+        readFile(path.join(projectDir, '.claude', 'rules', rule), 'utf8'),
+      ).resolves.toBeTruthy();
+    }
+    for (const agent of ['test-writer.md', 'code-reviewer.md', 'security-scanner.md']) {
+      const body = await readFile(path.join(projectDir, '.claude', 'agents', agent), 'utf8');
+      expect(body).toMatch(/^---\nname: /); // agent frontmatter
+    }
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'hooks', 'guard-core-purity.mjs'), 'utf8'),
+    ).resolves.toBeTruthy();
+  });
 });
