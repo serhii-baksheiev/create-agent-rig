@@ -1,0 +1,83 @@
+import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
+/** Entry names never copied out of a template (local artifacts, never payload). */
+export const DEFAULT_IGNORE = [
+  '.git',
+  'node_modules',
+  'dist',
+  'coverage',
+  'cdk.out',
+  '.turbo',
+  '.DS_Store',
+];
+
+export interface CopyTreeOptions {
+  /** Entry names to skip at any depth. Defaults to {@link DEFAULT_IGNORE}. */
+  ignore?: readonly string[];
+  /** Applied to the content of every text file. Binary files are copied untouched. */
+  transformContent?: (content: string, relPath: string) => string;
+  /** Applied to every file and directory name. */
+  transformName?: (name: string) => string;
+}
+
+/** A file is treated as binary if its first bytes contain a NUL byte. */
+function isBinary(buffer: Buffer): boolean {
+  return buffer.subarray(0, 8192).includes(0);
+}
+
+export async function copyTree(
+  srcDir: string,
+  destDir: string,
+  options: CopyTreeOptions = {},
+): Promise<void> {
+  const ignore = new Set(options.ignore ?? DEFAULT_IGNORE);
+  await mkdir(destDir, { recursive: true });
+  await copyDir(srcDir, destDir, '', { ...options, ignore });
+}
+
+interface ResolvedOptions extends Omit<CopyTreeOptions, 'ignore'> {
+  ignore: Set<string>;
+}
+
+async function copyDir(
+  srcDir: string,
+  destDir: string,
+  relDir: string,
+  options: ResolvedOptions,
+): Promise<void> {
+  const entries = await readdir(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (options.ignore.has(entry.name)) continue;
+    const srcPath = path.join(srcDir, entry.name);
+    const destName = options.transformName ? options.transformName(entry.name) : entry.name;
+    const destPath = path.join(destDir, destName);
+    const relPath = path.join(relDir, entry.name);
+    if (entry.isDirectory()) {
+      await mkdir(destPath, { recursive: true });
+      await copyDir(srcPath, destPath, relPath, options);
+    } else if (entry.isFile()) {
+      await copyFileEntry(srcPath, destPath, relPath, options);
+    }
+    // Symlinks and other special entries are intentionally not copied:
+    // templates are plain trees.
+  }
+}
+
+async function copyFileEntry(
+  srcPath: string,
+  destPath: string,
+  relPath: string,
+  options: ResolvedOptions,
+): Promise<void> {
+  if (!options.transformContent) {
+    await copyFile(srcPath, destPath);
+    return;
+  }
+  const buffer = await readFile(srcPath);
+  if (isBinary(buffer)) {
+    await writeFile(destPath, buffer);
+    return;
+  }
+  await writeFile(destPath, options.transformContent(buffer.toString('utf8'), relPath));
+}
