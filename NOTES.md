@@ -183,6 +183,44 @@ check with zero adjustments.
 - **Owner rule change absorbed:** commits/PRs carry NO AI attribution
   (universal CLAUDE.md top rule, synced into this repo's rulebook).
 
+## Enforcement hooks + reach brief (post-0.1.0)
+
+- **Two new hooks close stated rules mechanically.** `gate-stop-dod` (Stop
+  event, exit 2 = prevent stop): the Definition of Done becomes a gate, but
+  only when the tree is dirty, only from a per-stack `dod-checks.json`
+  (universal ships the mechanism, node-ts ships `lint/typecheck/test`), and
+  **never twice in a row** (`stop_hook_active`) — the anti-loop trap the brief
+  flagged. Fails open on any error, so a crashed gate can't wedge a session.
+  `inject-rules` (SessionStart): re-emits `autonomy.md` to stdout — one of the
+  few events whose stdout reaches context — so the tiers/stop-rules survive
+  compaction and resumes. Injected content is stateless (test asserts no
+  dates/SHAs), since mid-session injections are replayed, not re-run.
+- **Overclaim corrected (Part 2):** the purity guard is `PreToolUse`, so it is
+  preventive on the normal path — but architecture.md/README now state the
+  claim exactly (best-effort pre-write text scan; Edit sees the fragment not
+  the whole file; review+tests back it) rather than inflating it. A tool that
+  sells enforcement can't overstate its own.
+- **Third axis — process vs architecture (§3):** `universal/layers.json`
+  classifies every universal file exactly once (test-enforced completeness).
+  Process = travels to any repo; architecture = assumes the generated shape.
+  This is the prerequisite that makes `init` safe.
+- **`agent-rig init` (§4):** installs ONLY the process layer into an existing
+  repo — never the architecture rules (they'd reference a `packages/core`
+  that isn't there). Refuses to clobber CLAUDE.md, never overwrites a file it
+  didn't write, `--dry-run` plans without writing, `--force` for CLAUDE.md.
+  The author's own existing repos can now use the tool — reach grows, template
+  surface doesn't. (Plugin/marketplace transport noted, not built — evaluate
+  when there's demand.)
+- **Loop driver (§5):** the `loop` skill + a two-queue `PLAN.md` convention
+  (Agent queue / Operator queue / Journal) ship in universal. The load-bearing
+  stop condition — **queue empty → end, do not invent work** — is stated and
+  tested. The autonomy tiers finally have something that runs the agent alone.
+  Note: `PLAN.md` is a process-layer file, so `init` brings it too; sync skips
+  it for THIS repo (owner-authored plan of record).
+- Rejected per Part 4 (recorded so not re-litigated): prompt/agent hook
+  handlers, TTS, meta-agent, append-only lessons loops, twelve-skill packs,
+  wholesale `permissions.deny`. `agent-os` must be able to LOSE rules.
+
 ## Phase 11 — first-use field notes (data, not opinions)
 
 Session: generated a `node-service` project and did real work in it under its

@@ -1,0 +1,21 @@
+{
+  "process": [
+    ".claude/rules/workflow.md",
+    ".claude/rules/autonomy.md",
+    ".claude/agents/test-writer.md",
+    ".claude/agents/code-reviewer.md",
+    ".claude/agents/security-scanner.md",
+    ".claude/hooks/block-no-verify.mjs",
+    ".claude/hooks/gate-stop-dod.mjs",
+    ".claude/hooks/inject-rules.mjs",
+    ".claude/skills/pr-ship/SKILL.md",
+    ".claude/skills/loop/SKILL.md",
+    "PLAN.md"
+  ],
+  "architecture": [
+    ".claude/rules/architecture.md",
+    ".claude/hooks/guard-core-purity.mjs",
+    ".claude/hooks/guard-web-boundary.mjs"
+  ],
+  "meta": [".claude/settings.json", "CLAUDE.md"]
+}

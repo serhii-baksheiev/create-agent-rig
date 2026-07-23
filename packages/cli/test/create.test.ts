@@ -151,6 +151,15 @@ describe('createProject', () => {
     ).resolves.toBeTruthy();
   });
 
+  it('ships the work-queue convention (PLAN.md with both queues)', async () => {
+    const { projectDir } = await createProject('queued', { cwd: work, git: false });
+    const plan = await readFile(path.join(projectDir, 'PLAN.md'), 'utf8');
+    expect(plan).toContain('## Agent queue');
+    expect(plan).toContain('## Operator queue');
+    expect(plan).toContain('queued');
+    expect(plan).not.toContain('__PROJECT_NAME__');
+  });
+
   it('initialises git with a pristine-template baseline commit', async () => {
     const { projectDir } = await createProject('gitted', { cwd: work });
     const { execFile } = await import('node:child_process');

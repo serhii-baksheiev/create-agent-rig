@@ -67,6 +67,13 @@ This is not a convention you are trusted to follow; the
 you, the answer is to move the impure part out — never to look for a way around
 the hook.
 
+Precision about the claim, so it is never overstated: the guard is a
+**best-effort text scan of each edit fragment before it lands** — an `Edit`
+shows the hook its new text, not the whole resulting file. It stops the normal
+path cold; a determined evasion is caught by the layers behind it (review and
+tests), not by the hook. A rulebook that sells enforcement must describe its
+enforcement exactly.
+
 ## Storage has exactly one owner
 
 `packages/db/` is the only place that touches the storage SDK/driver. Every

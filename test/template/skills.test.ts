@@ -44,6 +44,32 @@ describe('post-deploy-verify skill (stack/aws-cdk)', () => {
   });
 });
 
+describe('loop skill (universal) — the driver the autonomy tiers were waiting for', () => {
+  it('exists, selects from the queue, and REFUSES to invent work', async () => {
+    const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+    const fm = frontmatterOf(content);
+    expect(fm['name']).toBe('loop');
+    expect(content).toMatch(/Agent queue/);
+    expect(content).toMatch(/Operator queue/);
+    // the load-bearing stop condition: queue empty → end, do not improvise
+    expect(content).toMatch(/queue.*empty/i);
+    expect(content).toMatch(/do not invent work/i);
+    expect(content).toMatch(/journal/i);
+  });
+});
+
+describe('PLAN.md queue convention (universal)', () => {
+  it('ships both queues so work has a stated origin', async () => {
+    const plan = await readFile(
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'PLAN.md'),
+      'utf8',
+    );
+    expect(plan).toContain('## Agent queue');
+    expect(plan).toContain('## Operator queue');
+    expect(plan).toMatch(/__PROJECT_NAME__/);
+  });
+});
+
 describe('pr-ship skill (universal)', () => {
   it('exists in universal and states the gate + verdict', async () => {
     const content = await readFile(skillPath('universal', '.claude', 'skills', 'pr-ship'), 'utf8');

@@ -45,9 +45,14 @@ them all; they are one rulebook.
 - **Gates.** `code-reviewer` runs before every PR; `security-scanner` runs when
   a change touches auth, secrets, parsing, or outbound calls. Blocking findings
   are resolved, not argued with.
-- **Enforcement is mechanical.** `guard-core-purity` refuses impure edits to
-  the core; `block-no-verify` refuses pre-commit bypasses. If a hook blocks
-  you, fix the cause; never route around a hook.
+- **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
+  the core the moment it lands; `guard-web-boundary` keeps the frontend off the
+  backend; `block-no-verify` refuses pre-commit bypasses; `gate-stop-dod`
+  refuses to end the session while a Definition-of-Done check fails. If a hook
+  blocks you, fix the cause; never route around a hook.
+- **Work comes from the queue.** The Agent queue in `PLAN.md` is where
+  autonomous work is picked up (the `loop` skill drives it); an empty queue
+  ends the session — it is never a cue to invent work.
 
 ## Foot-guns
 

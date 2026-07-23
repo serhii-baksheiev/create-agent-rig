@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -10,17 +12,18 @@ const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.cla
 interface HookResult {
   code: number;
   stderr: string;
+  stdout: string;
 }
 
-/** Feed a synthetic PreToolUse payload to a hook script, exactly as Claude Code does. */
-function runHook(script: string, payload: object): Promise<HookResult> {
+/** Feed a synthetic hook payload to a hook script, exactly as Claude Code does. */
+function runHookFull(script: string, payload: object): Promise<HookResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [path.join(hooksDir, script)],
-      (error, _stdout, stderr) => {
+      (error, stdout, stderr) => {
         const code = error ? ((error as { code?: number }).code ?? 1) : 0;
-        resolve({ code, stderr });
+        resolve({ code, stderr, stdout });
       },
     );
     if (!child.stdin) return reject(new Error('no stdin'));
@@ -28,6 +31,8 @@ function runHook(script: string, payload: object): Promise<HookResult> {
     child.stdin.end();
   });
 }
+
+const runHook = runHookFull;
 
 const write = (filePath: string, content: string) => ({
   hook_event_name: 'PreToolUse',
@@ -200,6 +205,137 @@ describe('block-no-verify hook', () => {
   });
 });
 
+describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () => {
+  // The hook runs from a project dir: copy it + a checks config into a tmp
+  // git repo, exactly as it would live in a generated project.
+  const { mkdtemp, mkdir: mkdirP, copyFile, writeFile: writeF, rm: rmP } = fsp;
+  let projectDir: string;
+
+  async function setUpProject(options: {
+    checks?: unknown;
+    dirty?: boolean;
+    rawConfig?: string;
+  }): Promise<void> {
+    projectDir = await mkdtemp(path.join(tmpdir(), 'dod-gate-'));
+    const hookDir = path.join(projectDir, '.claude', 'hooks');
+    await mkdirP(hookDir, { recursive: true });
+    await copyFile(
+      path.join(hooksDir, 'gate-stop-dod.mjs'),
+      path.join(hookDir, 'gate-stop-dod.mjs'),
+    );
+    if (options.rawConfig !== undefined) {
+      await writeF(path.join(hookDir, 'dod-checks.json'), options.rawConfig);
+    } else if (options.checks !== undefined) {
+      await writeF(path.join(hookDir, 'dod-checks.json'), JSON.stringify(options.checks));
+    }
+    const git = (...args: string[]) =>
+      new Promise<void>((resolve, reject) => {
+        execFile('git', args, { cwd: projectDir }, (error) => (error ? reject(error) : resolve()));
+      });
+    await git('init', '--quiet');
+    await writeF(path.join(projectDir, 'work.txt'), 'x');
+    if (!options.dirty) {
+      await git('add', '-A');
+      await git(
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit',
+        '--quiet',
+        '--no-verify',
+        '-m',
+        'clean',
+      );
+    }
+  }
+
+  function runStopHook(payload: object): Promise<HookResult> {
+    return new Promise((resolve, reject) => {
+      const child = execFile(
+        process.execPath,
+        [path.join(projectDir, '.claude', 'hooks', 'gate-stop-dod.mjs')],
+        { cwd: projectDir },
+        (error, stdout, stderr) => {
+          const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+          resolve({ code, stderr, stdout });
+        },
+      );
+      if (!child.stdin) return reject(new Error('no stdin'));
+      child.stdin.write(JSON.stringify(payload));
+      child.stdin.end();
+    });
+  }
+
+  const stop = (active = false) => ({ hook_event_name: 'Stop', stop_hook_active: active });
+
+  afterEach(async () => {
+    if (projectDir) await rmP(projectDir, { recursive: true, force: true });
+  });
+
+  it('refuses the stop while a named DoD check fails', async () => {
+    await setUpProject({
+      checks: ['node -e "process.exit(0)"', 'node -e "process.exit(1)"'],
+      dirty: true,
+    });
+    const result = await runStopHook(stop());
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('process.exit(1)');
+    expect(result.stderr).toMatch(/diagnosis/i); // pairs with the N-strike rule
+  });
+
+  it('lets a passing suite stop', async () => {
+    await setUpProject({ checks: ['node -e "process.exit(0)"'], dirty: true });
+    expect((await runStopHook(stop())).code).toBe(0);
+  });
+
+  it('never blocks twice in a row (stop_hook_active) — the anti-loop rule', async () => {
+    await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: true });
+    expect((await runStopHook(stop(true))).code).toBe(0);
+  });
+
+  it('a clean tree stops instantly — nothing changed, nothing to gate', async () => {
+    await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: false });
+    expect((await runStopHook(stop())).code).toBe(0);
+  });
+
+  it('fails open: no config, or a corrupt one, must not make the session unquittable', async () => {
+    await setUpProject({ dirty: true });
+    expect((await runStopHook(stop())).code).toBe(0);
+    await setUpProject({ rawConfig: '{not json', dirty: true });
+    expect((await runStopHook(stop())).code).toBe(0);
+  });
+});
+
+describe('inject-rules hook (rules survive compaction and resumes)', () => {
+  it('injects the autonomy rules into context on SessionStart', async () => {
+    for (const source of ['startup', 'resume', 'compact']) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.code, source).toBe(0);
+      expect(result.stdout, source).toContain('Tier 0');
+      expect(result.stdout, source).toContain('Stop rules');
+    }
+  });
+
+  it('injected content is stateless — no timestamps, no commit SHAs', async () => {
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+    expect(result.stdout).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(result.stdout).not.toMatch(/\b[0-9a-f]{40}\b/);
+  });
+
+  it('stays silent on unrelated events', async () => {
+    const result = await runHookFull('inject-rules.mjs', { hook_event_name: 'Notification' });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+});
+
 describe('hook wiring (settings.json)', () => {
   it('registers both hooks under PreToolUse with existing scripts', async () => {
     const settingsPath = path.join(
@@ -217,5 +353,23 @@ describe('hook wiring (settings.json)', () => {
     expect(commands.some((c) => c.includes('guard-core-purity.mjs'))).toBe(true);
     expect(commands.some((c) => c.includes('guard-web-boundary.mjs'))).toBe(true);
     expect(commands.some((c) => c.includes('block-no-verify.mjs'))).toBe(true);
+  });
+
+  it('registers the DoD stop gate and the rules injector', async () => {
+    const settingsPath = path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'settings.json',
+    );
+    const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const commandsOf = (event: string) =>
+      (settings.hooks[event] ?? []).flatMap((h) => h.hooks.map((x) => x.command));
+    expect(commandsOf('Stop').some((c) => c.includes('gate-stop-dod.mjs'))).toBe(true);
+    expect(commandsOf('SessionStart').some((c) => c.includes('inject-rules.mjs'))).toBe(true);
   });
 });

@@ -69,6 +69,29 @@ describe('agent-os/stack layers exist for composition', () => {
   });
 });
 
+// hooks-and-reach brief §3: the third axis. Process rules travel to existing
+// repos (init); architecture rules assume the generated shape and stay home.
+// The manifest must classify EVERY universal file exactly once — an
+// unclassified file is a silent drift, a doubly-classified one is a conflict.
+describe('the process/architecture manifest (universal/layers.json)', () => {
+  it('classifies every universal file exactly once', async () => {
+    const { listTree } = await import('../../packages/cli/src/lib/copy-tree.js');
+    const manifest = JSON.parse(
+      await readFile(path.join(universalDir, 'layers.json'), 'utf8'),
+    ) as Record<string, string[]>;
+    const classified = Object.values(manifest).flat();
+    const actual = (await listTree(universalDir)).filter((f) => f !== 'layers.json');
+
+    expect(classified.sort()).toEqual(actual.sort());
+    expect(new Set(classified).size).toBe(classified.length); // no double claims
+    // the split itself: process must not reference generated-shape structures
+    expect(manifest['process']).toContain('.claude/rules/workflow.md');
+    expect(manifest['process']).toContain('.claude/rules/autonomy.md');
+    expect(manifest['architecture']).toContain('.claude/rules/architecture.md');
+    expect(manifest['architecture']).toContain('.claude/hooks/guard-core-purity.mjs');
+  });
+});
+
 // Phase 9: layers must claim disjoint paths — an overlap would be silently
 // resolved by copy order, which is exactly the failure mode we refuse.
 describe('layer ownership per target', () => {

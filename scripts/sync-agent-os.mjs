@@ -27,6 +27,8 @@ function compose() {
         else if (entry.isFile()) {
           const rel = path.relative(baseDir, abs);
           if (rel === 'CLAUDE.md') continue; // handled separately below
+          if (rel === 'layers.json') continue; // init-manifest, not project content
+          if (rel === 'PLAN.md') continue; // this repo has its own owner-authored plan
           out.set(rel, substitute(readFileSync(abs, 'utf8')));
         }
       }
@@ -41,6 +43,13 @@ function compose() {
   out.set(
     'CLAUDE.md',
     substitute(readFileSync(path.join(universal, 'CLAUDE.md'), 'utf8')) + '\n---\n\n' + addendum,
+  );
+
+  // Repo-specific override: this repo's `pnpm test` is the full e2e (minutes).
+  // The DoD stop gate needs the cheap, deterministic loop instead.
+  out.set(
+    '.claude/hooks/dod-checks.json',
+    JSON.stringify(['pnpm lint', 'pnpm typecheck', 'pnpm test:unit']) + '\n',
   );
   return out;
 }

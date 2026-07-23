@@ -17,6 +17,8 @@ export const DEFAULT_IGNORE = [
   '.next',
   'out',
   'next-env.d.ts',
+  // the init-manifest of the universal layer — tooling metadata, not payload
+  'layers.json',
 ];
 
 export interface CopyTreeOptions {

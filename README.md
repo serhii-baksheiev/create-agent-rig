@@ -10,7 +10,9 @@ npx create-agent-rig my-app
 ## What you get
 
 **A system of boundaries, each held by tooling.** An agent (or a human using
-one) cannot talk its way past them:
+one) cannot talk its way past them — each guard is a pre-write scan that stops
+the normal path cold (review and tests back it; the claim is stated exactly,
+never inflated):
 
 - **`guard-core-purity`** — refuses any edit that puts I/O, clock, randomness,
   or environment access into the pure domain core;
