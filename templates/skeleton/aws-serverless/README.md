@@ -36,19 +36,40 @@ pnpm check       # all of the above
 
 ## Deploy it
 
+### Dev — automated, on push (OIDC, no static keys)
+
+`.github/workflows/deploy.yml` runs a **dev** deploy on every push to the
+default branch. It ships with **no credentials**, so on a fresh repo it skips
+cleanly with a message — never a red X. To enable it, you *add a secret*, you
+do not edit the workflow:
+
+1. In AWS, create an IAM role your repo can assume via GitHub's OIDC provider
+   (`token.actions.githubusercontent.com`) — a short-lived federated role, no
+   long-lived access keys anywhere.
+2. Add its ARN as the repository secret **`AWS_DEPLOY_ROLE_ARN`** (and,
+   optionally, repo variables `AWS_REGION` and `API_URL`).
+
+The workflow then assumes the role, builds the web bundle, and runs
+`cdk deploy AppStack WebStack`. The web bundle is served from S3 + CloudFront
+(the `WebUrl` output).
+
+### Local / manual
+
 ```sh
 # needs AWS credentials; region comes from your profile (generator default: __REGION__)
 cd infra
 npx cdk bootstrap   # first time per account/region
-npx cdk deploy AppStack
-
-# the web bundle: build against the deployed API, then sync to the web stack
-cd ..
-NEXT_PUBLIC_API_URL=<ApiUrl output> pnpm build:web
-cd infra && npx cdk deploy WebStack
+npx cdk deploy AppStack WebStack
 aws s3 sync ../apps/web/out "s3://<WebBucketName output>"
-# the site is at the WebUrl output
 ```
+
+### Production — a human step, on purpose
+
+There is **no production deploy in this repo**, by design: the agent operating
+system's Never tier forbids an agent from triggering a production deploy, so
+shipping an automated prod path would contradict the rules on day one.
+Promote to production yourself — a separate account/role, a reviewed change,
+your own approval — reusing the dev workflow's OIDC pattern.
 
 ## Verify runtime health (CI-green ≠ runtime-healthy)
 

@@ -7,3 +7,4 @@ var/
 .next/
 out/
 next-env.d.ts
+dist/
