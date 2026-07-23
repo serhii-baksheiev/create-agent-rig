@@ -132,6 +132,14 @@ tool's own repo runs under them. Recorded as encountered:
   never runs the image optimizer.
 - The lockfile-free weekly run exists now (`template-freshness.yml`) — with
   Next in the templates it is the primary early-warning channel, per §6.
+- **The un-dotted-gitignore trap has a git edition too:** the web-brief commit
+  leaked ~250 files of `.next/`/`out/` into history, because the templates'
+  `gitignore` files (stored un-dotted for npm's sake) are inert as _git_
+  ignores in this repo — only the root `.gitignore` guards the subtree, and it
+  did not know about Next artifacts. Caught by the owner reviewing commit
+  size. Any new template artifact type now needs THREE ignores: the
+  template's `gitignore` (for generated projects), its `.npmignore` (for the
+  tarball), and the root `.gitignore` (for this repo).
 - Excluded by design (§2): auth, UI kit, state manager, i18n/analytics,
   jsdom/component tests.
 
