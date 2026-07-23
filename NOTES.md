@@ -61,6 +61,47 @@ tool's own repo runs under them. Recorded as encountered:
   says `create-agent-rig`, but PLAN.md §2 locked `create-agent-factory` —
   decide which name to claim before publishing.
 
+## Phase 11 — first-use field notes (data, not opinions)
+
+Session: generated a `node-service` project and did real work in it under its
+own rulebook — `GET /notes/:id` end to end (usecase + handler + route +
+integration tests), strict TDD, 52 → 56 tests green. Recorded per the four
+questions of the next-block plan:
+
+**Edited immediately after generation:** nothing. `install → check` was green
+as generated; no placeholder, config or name needed touching.
+
+**Rules that got in the way:**
+
+- "usecase mandatory even for a trivial read" — `getNoteUsecase` is a one-line
+  pass-through. Real friction, but _stated_ friction: architecture.md
+  explicitly claims the uniformity is worth this ceremony. No change proposed.
+- No hook interfered (the work never touched `packages/core`).
+
+**What was missing:**
+
+- A second route turns `server.ts` into a growing if-chain with a hand-rolled
+  path-param regex. Fine at 2 routes; at 3+ a minimal router will be wanted.
+  → _candidate_, needs a second real project to confirm.
+- The handler boilerplate (json(), try/catch, AppError mapping) is duplicated
+  between the two handlers (~20 lines). → _candidate_ for a tiny local helper
+  in `services/api`; not shared/, it is transport-specific.
+- The other way around: `JsonFileNoteStore.get` already existed — the model
+  layer was ahead of the skeleton's minimal surface, which is what made the
+  read feature cheap. Keep shipping models slightly "ahead".
+
+**🔴 Did `universal` need edits for this project?** No. The seam held again.
+
+## Phase 12 — the verdict on the data
+
+The phase-11 list contains **zero** items that clear the plan's own bar for
+action: no level-3 option was wanted (nothing needed detaching), no third
+target shape appeared, no rule correction was justified. The two "missing"
+entries are single-observation candidates (N=1) — acting on them now is
+exactly the trap §6 guards against. **Decision: no changes in phase 12**;
+the router and handler-helper candidates wait for a second real project to
+confirm or kill them. Every future change in this area must cite a line above.
+
 ## Phase 10 — the layer-chain decision
 
 Dropping the separate _service_ layer (PLAN.md §5.1 says
