@@ -36,6 +36,11 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
 5. **Never edit `CLAUDE.md` or synced `.claude/` files directly** — edit
    `templates/agent-os/` (or this addendum) and run the sync script; the drift
    test fails otherwise.
+6. **This repo has a remote and CI, so it follows its own PR flow** (see the
+   synced `.claude/rules/workflow.md`): one task per short-lived branch, never
+   commit to `master` directly, merge through a PR once CI is green. The
+   pre-0.2.0 history was authored straight on `master`; that was a dogfooding
+   gap — it stops here.
 
 ## Foot-guns
 
