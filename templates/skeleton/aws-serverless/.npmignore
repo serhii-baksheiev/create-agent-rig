@@ -5,6 +5,5 @@ node_modules/
 cdk.out/
 dist/
 coverage/
-var/
 *.tsbuildinfo
 .DS_Store

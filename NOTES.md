@@ -57,9 +57,26 @@ tool's own repo runs under them. Recorded as encountered:
 - `writeFile` after content substitution dropped file modes; `copy-tree` now
   restores the source mode (`chmod`, immune to umask). Covered by a unit test.
 - **Owner action still open (8.4):** claiming the npm name needs a registry
-  publish from the owner's account. Note a discrepancy: the next-block plan
-  says `create-agent-rig`, but PLAN.md §2 locked `create-agent-rig` —
-  decide which name to claim before publishing.
+  publish from the owner's account. _(Historical: the original locked name
+  `create-agent-factory` turned out taken on npm; renamed repo-wide to
+  `create-agent-rig` on 2026-07-23 — re-checked free that day. First publish
+  claims it.)_
+
+## Publish brief (2026-07-23) — closing findings
+
+- **npm 10.9 ignores `"private": true` on `npm publish --dry-run`** (measured:
+  it happily printed `+ @create-agent-rig/cli@0.1.0`). The brief's red test
+  as written cannot pass; the real lock is a failing `prepublishOnly` script
+  in `packages/cli`, with `private` kept as belt. Test asserts the BLOCKED
+  refusal.
+- **Cross-target bleed (§9) confirmed and wider than the brief:** `cdk.out`
+  sat in node-service's `gitignore` _and_ its `eslint.config.mjs`; `var/` had
+  leaked the other way into aws-serverless's `.npmignore`. All pruned;
+  `cross-target.test.ts` now asserts foreign markers per target.
+- Pack-path e2e now runs the generated project's full `check` for **both**
+  targets from the tarball (aws-serverless incl. synth was the unverified
+  half). LICENSE + keywords added; `repository` field stays open until the
+  hosting decision (PLAN.md §11).
 
 ## Phase 11 — first-use field notes (data, not opinions)
 

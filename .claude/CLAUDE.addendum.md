@@ -47,3 +47,10 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
   don't ignore it, and let substitution rewrite it.
 - esbuild's postinstall stays **unapproved** in the template workspace
   (`allowBuilds: esbuild: false`) — approving it breaks pnpm's bin shim.
+- **Templates must live inside the published package.** `npm pack --dry-run`
+  is the check, and the pack-path e2e (`test/e2e/pack-install.test.ts`) is the
+  gate — per target. The git path cannot catch pack-path regressions: the two
+  file sets differ exactly where scaffolders break (dotfiles, modes, `files`).
+- Only the repo root publishes. `packages/cli` is locked by `private: true`
+  **and** a failing `prepublishOnly` — npm 10 ignores `private` on
+  `publish --dry-run`, so the script is the real lock.

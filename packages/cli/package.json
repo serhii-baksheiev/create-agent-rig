@@ -3,5 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Generator sources. Built by the root `prepare`/`build` scripts into dist/, which the root package publishes as its bin."
+  "description": "Generator sources. Built by the root `prepare`/`build` scripts into dist/, which the root package publishes as its bin.",
+  "scripts": {
+    "prepublishOnly": "node -e \"console.error('BLOCKED: this inner package is never published — publish the repo root (create-agent-rig).'); process.exit(1)\""
+  }
 }

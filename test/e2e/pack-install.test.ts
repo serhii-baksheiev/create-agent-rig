@@ -84,8 +84,22 @@ describe('npm pack → install → generate (the publish path)', () => {
     }
   });
 
-  it('a generated project from the tarball still passes its own checks (node-service)', async () => {
+  it('the tarball ships the npm landing files', () => {
+    expect(packedPaths).toContain('LICENSE');
+    expect(packedPaths).toContain('README.md');
+  });
+
+  // Brief §6: per target — a single-target gate would bake a blind spot in.
+  // This turns "the files are there" into "the project works", and catches a
+  // broken @app/ scope rewrite (workspace deps resolve only if consistent).
+  it('a generated node-service project from the tarball passes its own checks', async () => {
     const projectDir = path.join(work, 'node-service', 'app');
+    await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await exec('pnpm', ['check'], { cwd: projectDir });
+  });
+
+  it('a generated aws-serverless project from the tarball passes its own checks', async () => {
+    const projectDir = path.join(work, 'aws-serverless', 'app');
     await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
     await exec('pnpm', ['check'], { cwd: projectDir });
   });

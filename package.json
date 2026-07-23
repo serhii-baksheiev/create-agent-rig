@@ -2,6 +2,18 @@
   "name": "create-agent-rig",
   "version": "0.1.0",
   "description": "Scaffold a new project with an agent operating system (rules, gates, hooks) and a runnable code skeleton",
+  "keywords": [
+    "create",
+    "scaffold",
+    "generator",
+    "starter",
+    "template",
+    "agent",
+    "claude-code",
+    "agent-os",
+    "aws-serverless",
+    "node-service"
+  ],
   "license": "MIT",
   "type": "module",
   "bin": {
