@@ -68,3 +68,50 @@ describe('agent-os/stack layers exist for composition', () => {
     }
   });
 });
+
+// Phase 9: layers must claim disjoint paths — an overlap would be silently
+// resolved by copy order, which is exactly the failure mode we refuse.
+describe('layer ownership per target', () => {
+  const layersOf = (target: string, stacks: string[]) => [
+    { name: `skeleton/${target}`, dir: path.join(repoRoot, 'templates', 'skeleton', target) },
+    { name: 'universal', dir: universalDir },
+    ...stacks.map((s) => ({
+      name: `stack/${s}`,
+      dir: path.join(repoRoot, 'templates', 'agent-os', 'stack', s),
+    })),
+  ];
+
+  const MATRIX = [
+    { target: 'aws-serverless', stacks: ['node-ts', 'aws-cdk'] },
+    { target: 'node-service', stacks: ['node-ts'] },
+  ];
+
+  it('no two layers claim the same generated path, in any target', async () => {
+    const { listTree } = await import('../../packages/cli/src/lib/copy-tree.js');
+    const { detectCollisions, ALLOWED_OVERWRITES } =
+      await import('../../packages/cli/src/lib/composition.js');
+    for (const { target, stacks } of MATRIX) {
+      const layers = [];
+      for (const layer of layersOf(target, stacks)) {
+        layers.push({ name: layer.name, files: await listTree(layer.dir) });
+      }
+      expect(detectCollisions(layers, ALLOWED_OVERWRITES), target).toEqual([]);
+    }
+  });
+
+  it('the expected owners hold their signature paths', async () => {
+    const { listTree } = await import('../../packages/cli/src/lib/copy-tree.js');
+    const skeleton = await listTree(path.join(repoRoot, 'templates', 'skeleton', 'node-service'));
+    const universal = await listTree(universalDir);
+    const nodeTs = await listTree(path.join(repoRoot, 'templates', 'agent-os', 'stack', 'node-ts'));
+
+    expect(skeleton).toContain('package.json');
+    expect(skeleton).toContain('README.md');
+    expect(universal).toContain('CLAUDE.md');
+    expect(universal).toContain('.claude/settings.json');
+    expect(nodeTs).toContain('.claude/rules/node-ts.md');
+    // the seam: the skeleton never ships agent-os files, and vice versa
+    expect(skeleton.some((f) => f.startsWith('.claude/'))).toBe(false);
+    expect(universal.some((f) => f.endsWith('package.json'))).toBe(false);
+  });
+});

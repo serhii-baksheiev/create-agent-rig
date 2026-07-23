@@ -1,6 +1,7 @@
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { copyTree } from '../lib/copy-tree.js';
+import { copyTree, listTree } from '../lib/copy-tree.js';
+import { ALLOWED_OVERWRITES, detectCollisions } from '../lib/composition.js';
 import { substituteContent, substituteFileName } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { DEFAULT_TARGET, TARGETS, TARGET_NAMES } from '../lib/targets.js';
@@ -55,14 +56,33 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
     transformName: (name: string) => substituteFileName(name, ctx),
   };
 
+  // Layer 2 (the skeleton) + layer 1 (agent-os: universal + stack overlays).
+  const layers = [
+    { name: `skeleton/${target.skeletonDir}`, dir: skeletonDir(target.skeletonDir) },
+    { name: 'agent-os/universal', dir: agentOsUniversalDir() },
+    ...target.stacks.map((stack) => ({
+      name: `agent-os/stack/${stack}`,
+      dir: agentOsStackDir(stack),
+    })),
+  ];
+
+  // Composition safety: layers must claim disjoint paths. Checked before any
+  // copy — a collision is a template bug and must never be resolved by order.
+  const claimed = [];
+  for (const layer of layers) {
+    claimed.push({ name: layer.name, files: await listTree(layer.dir, transforms) });
+  }
+  const collisions = detectCollisions(claimed, ALLOWED_OVERWRITES);
+  if (collisions.length > 0) {
+    const detail = collisions
+      .map((c) => `  ${c.path} — claimed by ${c.layers.join(' and ')}`)
+      .join('\n');
+    throw new CreateError(`Template layers collide (fix the templates, not the order):\n${detail}`);
+  }
+
   await mkdir(projectDir, { recursive: true });
-  // Layer 2: the code skeleton for the target…
-  await copyTree(skeletonDir(target.skeletonDir), projectDir, transforms);
-  // …then layer 1 on top: the agent operating system, composed as
-  // universal + the target's stack layers (CLAUDE.md + .claude/).
-  await copyTree(agentOsUniversalDir(), projectDir, transforms);
-  for (const stack of target.stacks) {
-    await copyTree(agentOsStackDir(stack), projectDir, transforms);
+  for (const layer of layers) {
+    await copyTree(layer.dir, projectDir, transforms);
   }
 
   return { projectDir, projectName };

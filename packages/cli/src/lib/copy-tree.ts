@@ -39,6 +39,34 @@ export async function copyTree(
   await copyDir(srcDir, destDir, '', { ...options, ignore });
 }
 
+/**
+ * The destination-relative file paths {@link copyTree} would produce — same
+ * ignore list, same name transform, no writes. Used to check layer
+ * composition for collisions before anything is copied.
+ */
+export async function listTree(
+  srcDir: string,
+  options: Pick<CopyTreeOptions, 'ignore' | 'transformName'> = {},
+): Promise<string[]> {
+  const ignore = new Set(options.ignore ?? DEFAULT_IGNORE);
+  const files: string[] = [];
+  const walk = async (dir: string, relDir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (ignore.has(entry.name)) continue;
+      const destName = options.transformName ? options.transformName(entry.name) : entry.name;
+      const relPath = relDir === '' ? destName : `${relDir}/${destName}`;
+      if (entry.isDirectory()) {
+        await walk(path.join(dir, entry.name), relPath);
+      } else if (entry.isFile()) {
+        files.push(relPath);
+      }
+    }
+  };
+  await walk(srcDir, '');
+  return files;
+}
+
 interface ResolvedOptions extends Omit<CopyTreeOptions, 'ignore'> {
   ignore: Set<string>;
 }
