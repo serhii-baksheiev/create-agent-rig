@@ -42,6 +42,21 @@ describe('post-deploy-verify skill (stack/aws-cdk)', () => {
     expect(fm['allowed-tools']).toBeTruthy();
     expect(fm['allowed-tools']).not.toMatch(/Write|Edit/);
   });
+
+  it('is scoped to what the skeleton provisions, and calls a vacuous result "no signal"', async () => {
+    const content = await readFile(
+      skillPath('stack', 'aws-cdk', '.claude', 'skills', 'post-deploy-verify'),
+      'utf8',
+    );
+    // the deploy job's conclusion is the primary, always-available signal
+    expect(content).toMatch(/deploy job.*primary|primary.*signal/i);
+    // freshness cross-check kept; DLQ depth kept
+    expect(content).toMatch(/UPDATE_COMPLETE/);
+    expect(content).toMatch(/DLQ/);
+    // the honesty rule: empty metric = no invocations = "no signal", not a pass
+    expect(content).toMatch(/no signal/i);
+    expect(content).toMatch(/no invocations/i);
+  });
 });
 
 describe('loop skill (universal) — the driver the autonomy tiers were waiting for', () => {

@@ -1,0 +1,29 @@
+name: Build artifact
+
+# node-service ships NO deploy destination — a container registry, a VPS, a
+# PaaS is the project owner's choice, not the starter's. This builds a runnable
+# artifact (dist/) and stops short of delivery: it produces something real,
+# then leaves shipping to you. Production is a HUMAN step (see README).
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:web
+      - run: pnpm build:artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-bundle
+          path: dist/
+      - run: echo "Artifact built (dist/). Deploy destination is your choice — see README (Deploy)."

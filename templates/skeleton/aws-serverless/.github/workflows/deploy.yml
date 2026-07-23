@@ -1,0 +1,57 @@
+name: Deploy (dev)
+
+# DEV deployment only. Production is a HUMAN step (see README) — the Never tier
+# (.claude/rules/autonomy.md) forbids an agent from triggering a production
+# deploy, so no production path exists in this workflow at all.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  # OIDC: assume a short-lived federated role. No long-lived keys in secrets —
+  # a starter multiplies whatever it ships, so it ships zero static credentials.
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Degrade cleanly: with no configured role this SKIPS with a message and
+      # the job stays green — never a red X on a fresh project with no cloud
+      # account. Enabling deployment is "add the AWS_DEPLOY_ROLE_ARN secret",
+      # not "edit this file".
+      - id: guard
+        env:
+          ROLE: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE" ]; then
+            echo "deploy skipped: no credentials configured — see README (Deploy)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.skip != 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: steps.guard.outputs.skip != 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.guard.outputs.skip != 'true'
+        run: pnpm build:web
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.API_URL }}
+
+      - if: steps.guard.outputs.skip != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || '__REGION__' }}
+
+      - if: steps.guard.outputs.skip != 'true'
+        run: pnpm --filter @app/infra exec cdk deploy AppStack WebStack --require-approval never

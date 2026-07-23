@@ -249,6 +249,38 @@ isolation of a unit of work; worktrees are one _implementation_ of it for the
 parallel case, and a single-developer fresh project has no parallelism to
 isolate. Add the rule only when the trigger fires — not before.
 
+## CD brief (0.2.0) — deployment closes the merge→deploy→verify loop
+
+- The chain was `rule → post-deploy-verify skill → nothing` (no deploy).
+  Now both targets deploy, diverging exactly where they must:
+  - **aws-serverless:** a real **dev** deploy workflow — `cdk deploy AppStack
+WebStack` over **OIDC** (`id-token: write` + `configure-aws-credentials`
+    `role-to-assume`), **zero static keys**. A starter multiplies whatever it
+    ships, so it ships no long-lived credentials — that makes the template
+    more correct than the project it was extracted from (§3).
+  - **node-service:** a real `build:artifact` (esbuild bundle → `dist/server.mjs`
+    - copied web `public/`) that **runs and boots** — a template test builds it
+      and hits the live socket — and the workflow uploads `dist/` and ships it
+      nowhere. Destination is the owner's choice, stated, not a `TODO` stub.
+- **Degrades cleanly (§5):** the aws deploy job has a guard step — no
+  `AWS_DEPLOY_ROLE_ARN` secret ⇒ it prints "deploy skipped: no credentials"
+  and the downstream steps skip, job stays green. Enabling is _add a secret_,
+  never _edit the workflow_ (secrets can't gate a job-level `if`, so the guard
+  is a step). node-service needs no secret to build an artifact.
+- **No production path in either target (§4):** the Never tier forbids an agent
+  triggering a prod deploy, so shipping a prod workflow would contradict the
+  rules day one. Production is documented as a human step in both READMEs.
+- **`post-deploy-verify` scoped to what the skeleton provisions (§6):** the
+  deploy job's conclusion is now the primary always-available signal; freshness
+  cross-check + the one DLQ + function errors follow; and a vacuous metric is
+  reported as **"no signal"** (= no invocations), never a pass — an empty
+  result must not become the first meaningless HEALTHY.
+- **Tool repo never deploys (DoD):** template deploy workflows live under
+  `templates/skeleton/*/.github/` (GitHub only runs root workflows), the root
+  workflows run `check` only, and the aws deploy is secret-gated anyway — a
+  fork can't accidentally deploy. Test asserts root workflows carry no
+  `cdk deploy` / `upload-artifact`.
+
 ## Phase 11 — first-use field notes (data, not opinions)
 
 Session: generated a `node-service` project and did real work in it under its

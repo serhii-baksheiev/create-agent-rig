@@ -45,7 +45,27 @@ Open http://localhost:3000/ — the form validates with the same core schema
 the server applies again on POST.
 
 Configuration is environment-first (`PORT`, `DATA_DIR`, `QUEUE_DIR`, `DLQ_DIR`,
-`POLL_INTERVAL_MS`) with working defaults — see each service's `main.ts`.
+`POLL_INTERVAL_MS`, `STATIC_DIR`) with working defaults — see each service's
+`main.ts`.
+
+## Deploy it
+
+This target ships **no deploy destination** — a container registry, a VPS, a
+PaaS is your choice, not the starter's. What it ships is a **build that
+produces a runnable artifact** and stops there:
+
+```sh
+pnpm build:artifact                       # → dist/server.mjs + dist/public/
+STATIC_DIR=dist/public node dist/server.mjs   # run the artifact anywhere Node runs
+```
+
+`.github/workflows/deploy.yml` runs this on every push and uploads `dist/` as a
+build artifact — it produces something real and delivers it nowhere. Point it
+at your host of choice (add a `docker build`, an `scp`, a PaaS deploy step).
+
+**Production is a human step, on purpose.** The agent operating system's Never
+tier forbids an agent from triggering a production deploy, so no automated prod
+path ships here — promoting the artifact to production is your reviewed action.
 
 ## Verify runtime health (CI-green ≠ runtime-healthy)
 
