@@ -221,6 +221,34 @@ check with zero adjustments.
   handlers, TTS, meta-agent, append-only lessons loops, twelve-skill packs,
   wholesale `permissions.deny`. `agent-os` must be able to LOSE rules.
 
+## PR-flow addendum (workflow.md)
+
+- The autonomy tiers already said a human-review change opens a PR, but the
+  template shipped no rule for _driving one to merge_. `workflow.md` now
+  carries: branch discipline (one task/one branch, never the default —
+  applies even before a remote), the gate order (local checks → reviewer
+  fan-out → merge), the fan-out shape (code-reviewer always; security by
+  touched paths; infra review names the stack agent), and the post-merge tail
+  (post-deploy verdict → update PLAN.md).
+- **The merge criterion is stated provider-neutrally** ("confirm the required
+  check completed for THIS commit; a watcher can exit before checks even
+  register") and names **no** command; the concrete `gh api …/check-runs`
+  form lives in `stack/node-ts` (both targets ship it + GitHub Actions).
+  Test enforces both: universal contains no `gh`, node-ts does.
+- **Degrades honestly:** the PR flow section opens with "once the project has
+  a remote and CI" — a day-one generated project has neither, and reads the
+  branch discipline as the whole of it, not a broken instruction.
+- **No flake registry shipped** (a fresh project has no CI history; an empty
+  section invites filling — the stop rules already cover "red check = info").
+
+### Deferred to the agent backlog — worktrees (NOT implemented)
+
+Return trigger: **when unattended `loop` runs start overlapping with
+hand-driven work.** Branch discipline (above) is the transferable core —
+isolation of a unit of work; worktrees are one _implementation_ of it for the
+parallel case, and a single-developer fresh project has no parallelism to
+isolate. Add the rule only when the trigger fires — not before.
+
 ## Phase 11 — first-use field notes (data, not opinions)
 
 Session: generated a `node-service` project and did real work in it under its

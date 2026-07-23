@@ -37,3 +37,21 @@ are; this file says how they are expressed in TypeScript.
   string-match messages.
 - Logs are structured JSON lines through the shared logger — no bare
   `console.log` in service code.
+
+## Confirming the merge criterion (GitHub Actions)
+
+`workflow.md` states the criterion provider-neutrally: confirm the required
+check completed **for this commit**. Here that is concrete — and it matters
+because `gh pr checks --watch` can exit successfully while checks are still
+*unregistered*, reporting a green wall that has not been built yet.
+
+Poll the check runs for the PR's head SHA and require the named check to have
+`conclusion: success`, not merely "not failing":
+
+```sh
+SHA=$(gh pr view --json headRefOid -q .headRefOid)
+gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
+  -q '.check_runs[] | select(.name=="ci") | .conclusion'
+# must print: success   (a result set containing only a scanner is NOT done)
+```
+
