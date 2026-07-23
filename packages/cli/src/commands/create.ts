@@ -3,7 +3,7 @@ import path from 'node:path';
 import { copyTree } from '../lib/copy-tree.js';
 import { substituteContent, substituteFileName } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
-import { DEFAULT_TARGET, TARGETS } from '../lib/targets.js';
+import { DEFAULT_TARGET, TARGETS, TARGET_NAMES } from '../lib/targets.js';
 import { agentOsStackDir, agentOsUniversalDir, skeletonDir } from '../templates.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
@@ -11,6 +11,8 @@ export class CreateError extends Error {}
 
 export interface CreateOptions {
   cwd: string;
+  /** Target name from the registry; defaults to {@link DEFAULT_TARGET}. */
+  target?: string;
 }
 
 export interface CreateResult {
@@ -34,15 +36,18 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
 
   await ensureEmptyOrAbsent(projectDir);
 
-  const target = TARGETS[DEFAULT_TARGET];
+  const targetName = options.target ?? DEFAULT_TARGET;
+  const target = TARGETS[targetName];
   if (!target) {
-    throw new CreateError(`Unknown target "${DEFAULT_TARGET}".`);
+    throw new CreateError(
+      `Unknown target "${targetName}". Known targets: ${TARGET_NAMES.join(', ')}.`,
+    );
   }
 
   const ctx: SubstitutionContext = {
     projectName,
     projectScope: projectName,
-    region: target.defaultRegion,
+    region: target.defaultRegion ?? '',
   };
 
   const transforms = {

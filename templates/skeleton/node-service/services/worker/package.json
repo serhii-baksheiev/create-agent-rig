@@ -1,0 +1,16 @@
+{
+  "name": "@app/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "types": "src/main.ts",
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "@app/shared": "workspace:*",
+    "zod": "^4.4.3"
+  }
+}

@@ -54,6 +54,33 @@ describe('createProject', () => {
     await expect(createProject('My App!', { cwd: work })).rejects.toThrow(/name/i);
   });
 
+  it('generates the node-service target when asked', async () => {
+    const { projectDir } = await createProject('svc', { cwd: work, target: 'node-service' });
+    const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
+    expect(pkg.name).toBe('@svc/root');
+    // same layers, no cloud:
+    for (const p of ['packages/core/src', 'packages/db/src', 'services/worker/src']) {
+      await expect(
+        readFile(path.join(projectDir, p, 'index.ts'), 'utf8').catch(() => 'dir'),
+      ).resolves.toBeTruthy();
+    }
+    await expect(readFile(path.join(projectDir, 'infra', 'cdk.json'), 'utf8')).rejects.toThrow();
+    // agent-os composition: universal + node-ts, and NOT aws-cdk
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'rules', 'node-ts.md'), 'utf8'),
+    ).resolves.toBeTruthy();
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'rules', 'aws-cdk.md'), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('refuses an unknown target, naming the known ones', async () => {
+    await expect(createProject('x', { cwd: work, target: 'heroku' })).rejects.toThrow(CreateError);
+    await expect(createProject('x', { cwd: work, target: 'heroku' })).rejects.toThrow(
+      /aws-serverless.*node-service|node-service.*aws-serverless/s,
+    );
+  });
+
   it('overlays the agent operating system onto the generated project', async () => {
     const { projectDir } = await createProject('my-app', { cwd: work });
 

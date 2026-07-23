@@ -1,0 +1,9 @@
+packages:
+  - packages/*
+  - services/*
+
+# esbuild arrives via tsx. Its postinstall is intentionally NOT approved:
+# skipping it keeps the JS launcher (which resolves the platform binary
+# itself); approving it swaps in a raw binary that pnpm's bin shim can't run.
+allowBuilds:
+  esbuild: false

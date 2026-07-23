@@ -31,6 +31,13 @@ tool's own repo runs under them. Recorded as encountered:
 
 ## Confirmed working
 
+- **Phase 6, the central claim:** `agent-os/universal` applied to the second
+  target (`node-service`) with **zero edits** (`git diff` on the directory is
+  empty across the phase). The stack seam (`node-ts` alone vs
+  `node-ts + aws-cdk`) was enough; the only near-miss was the logger's
+  `message` field colliding with a call-site field name — a template bug, not
+  a rules bug.
+
 - The drift test (`test/template/dogfood.test.ts`) caught intermediate edits to
   the composed files during setup — the mechanism earns its keep.
 - `block-no-verify` and the pre-commit gate compose fine with the repo's own

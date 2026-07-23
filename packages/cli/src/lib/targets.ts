@@ -10,8 +10,8 @@ export interface Target {
    * (directories under `templates/agent-os/stack/`).
    */
   stacks: readonly string[];
-  /** Default region substituted for `__REGION__` (only meaningful for cloud targets). */
-  defaultRegion: string;
+  /** Default region substituted for `__REGION__` (cloud targets only). */
+  defaultRegion?: string;
 }
 
 export const TARGETS: Record<string, Target> = {
@@ -20,7 +20,13 @@ export const TARGETS: Record<string, Target> = {
     stacks: ['node-ts', 'aws-cdk'],
     defaultRegion: 'eu-central-1',
   },
+  'node-service': {
+    skeletonDir: 'node-service',
+    stacks: ['node-ts'],
+  },
 };
+
+export const TARGET_NAMES = Object.keys(TARGETS);
 
 /** Zero options at the personal stage: one implicit target (PLAN.md §6). */
 export const DEFAULT_TARGET = 'aws-serverless';
