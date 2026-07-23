@@ -95,6 +95,10 @@ describe('createProject', () => {
         'utf8',
       ),
     ).rejects.toThrow();
+    // …and so do agents: no CDK, no cdk-diff-reviewer
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
+    ).rejects.toThrow();
   });
 
   it('refuses an unknown target, naming the known ones', async () => {
@@ -135,11 +139,15 @@ describe('createProject', () => {
     await expect(
       readFile(path.join(projectDir, '.claude', 'hooks', 'guard-core-purity.mjs'), 'utf8'),
     ).resolves.toBeTruthy();
-    // the default (aws-serverless) composition gets both skills
+    // the default (aws-serverless) composition gets both skills…
     for (const skill of ['pr-ship', 'post-deploy-verify']) {
       await expect(
         readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
     }
+    // …and the stack-layer CDK diff gate
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
+    ).resolves.toBeTruthy();
   });
 });

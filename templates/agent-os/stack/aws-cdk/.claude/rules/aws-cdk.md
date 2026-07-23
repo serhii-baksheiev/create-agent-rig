@@ -7,6 +7,10 @@ universal rule, that is an invariant conflict — stop and surface it.
 
 - Everything lives in the CDK app under `infra/`. A console change ("click-ops")
   is drift, and drift is a defect — reproduce it in CDK or revert it.
+- **Every change under `infra/` passes the `cdk-diff-reviewer` agent before it
+  is deployed.** The review reads the synthesized diff (what CloudFormation
+  will do), not just the source. Deploying around a BLOCKED verdict is a
+  Never-tier action.
 - `cdk synth` stays region-agnostic and credential-free: synth must work on any
   machine, in CI, with nothing configured.
 - `RemovalPolicy` is always explicit. The skeleton ships DESTROY for easy

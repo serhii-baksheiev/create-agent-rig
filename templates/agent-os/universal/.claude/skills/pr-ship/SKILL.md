@@ -11,8 +11,10 @@ blockers.
 
 ## Steps
 
-1. **The diff first.** Establish what is actually shipping: `git diff` against
-   the default branch (or the PR's diff). Everything below is scoped to it.
+1. **The diff first.** Establish what is actually shipping: fetch, then diff
+   against the **remote** default branch (`origin/<default>`), not a local
+   copy that may be behind — diagnosing from stale local code produces
+   confidently-wrong reviews. Everything below is scoped to this diff.
 2. **The project's own checks.** Run the full check suite the project defines
    (see its README / package scripts). Any failure is an instant HOLD — never
    argue with a red check, never rerun flakiness to green
@@ -29,7 +31,11 @@ blockers.
    honored.
 5. **Named checks only.** The merge criterion is the project's *named* required
    checks, all green. "Some checks passed" is not a criterion; an unnamed
-   green wall hides a red brick.
+   green wall hides a red brick. Two traps here, both observed in the wild:
+   status watchers can exit while checks are **still unregistered** — poll the
+   head SHA's check runs and require each expected check *by name*; and a
+   result list containing only a scanner (no build, no tests) is **not** done,
+   it is a check set that has not arrived yet.
 
 ## Verdict
 

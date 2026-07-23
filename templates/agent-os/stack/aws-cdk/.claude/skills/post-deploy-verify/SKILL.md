@@ -12,10 +12,12 @@ You are read-only: you observe, you never fix. The autonomy rules
 
 ## Steps — evidence for each, in order
 
-1. **Stack freshness.** Confirm the deploy you are judging actually landed:
-   `aws cloudformation describe-stacks --stack-name <stack>` — status is
-   `CREATE_COMPLETE`/`UPDATE_COMPLETE` and `LastUpdatedTime` is *this* deploy,
-   not a previous one. Judging a stale stack is the classic false-HEALTHY.
+1. **Stack freshness.** Confirm the deploy you are judging actually landed.
+   `UPDATE_COMPLETE` **alone is stale evidence** — it persists from the
+   previous deploy. Authoritative is the deploy run's own conclusion plus a
+   freshness check: `LastUpdatedTime` from
+   `aws cloudformation describe-stacks` must postdate the deploy you are
+   verifying. Judging a stale stack is the classic false-HEALTHY.
 2. **Smoke the route.** POST a request through the API (the README's smoke
    command). Expect the documented success response (201 with a body).
 3. **The async path.** Confirm the worker consumed the event this smoke
@@ -36,7 +38,9 @@ Report exactly one, with the evidence lines that justify it:
   failing step and the observed output verbatim. **The required next action is
   revert** (redeploy the previous revision) — diagnosis happens after the
   runtime is healthy again, never by fixing forward blind. Unverifiable ≠
-  healthy: if you cannot see, the verdict is REGRESSION.
+  healthy: if you cannot see, the verdict is REGRESSION. And an **empty
+  metric or log result means "no invocations", not "no errors"** — name a
+  vacuous result honestly instead of reporting it as a pass.
 
 ## Boundaries
 

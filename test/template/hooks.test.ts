@@ -124,6 +124,26 @@ describe('block-no-verify hook', () => {
     expect((await runHook('block-no-verify.mjs', bash('echo --no-verify'))).code).toBe(0);
     expect((await runHook('block-no-verify.mjs', bash('git log -n 3'))).code).toBe(0);
   });
+
+  it('does not block a commit whose message merely MENTIONS the flag (quoted text)', async () => {
+    // agent-os v2 brief §2b: strip quoted segments before matching — a guard
+    // that fires on prose produces false blocks and trains people to fight it.
+    for (const command of [
+      'git commit -m "docs: explain why --no-verify is forbidden"',
+      "git commit -m 'never bypass hooks with --no-verify'",
+      'git commit -m "note" -m "the -n shorthand is banned too"',
+    ]) {
+      expect((await runHook('block-no-verify.mjs', bash(command))).code, command).toBe(0);
+    }
+  });
+
+  it('still blocks the real flag even when quoted text is also present', async () => {
+    const result = await runHook(
+      'block-no-verify.mjs',
+      bash('git commit --no-verify -m "fix: mention --no-verify in docs"'),
+    );
+    expect(result.code).toBe(2);
+  });
 });
 
 describe('hook wiring (settings.json)', () => {

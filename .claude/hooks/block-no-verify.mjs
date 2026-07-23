@@ -14,7 +14,11 @@ function main() {
     return 0;
   }
   if (input.tool_name !== 'Bash') return 0;
-  const command = String(input.tool_input?.command ?? '');
+  const raw = String(input.tool_input?.command ?? '');
+
+  // Strip quoted segments first: a commit message that merely MENTIONS a
+  // forbidden flag is prose, not a bypass. Only unquoted flags count.
+  const command = raw.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
 
   // Examine each git commit/push invocation separately (pipelines, && chains).
   const gitSegment = /\bgit\b[^|&;]*\b(commit|push)\b[^|&;]*/g;

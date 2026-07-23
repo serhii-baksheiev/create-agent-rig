@@ -91,6 +91,18 @@ tool's own repo runs under them. Recorded as encountered:
 - Two rule additions: review-context isolation now carries its _rationale_
   (workflow.md), and session staleness joined the stop-rule family
   (autonomy.md).
+- Brief §2b (extraction map) landed on top: the **`cdk-diff-reviewer` agent**
+  (stack/aws-cdk, Tier A — the infra rules now gate deploys on it; reviews the
+  synthesized diff, BLOCKERS then nits, read-only tools). The operational
+  epistemics were carried where the commands were not: pr-ship gained
+  "poll named checks by head SHA / scanner-only ≠ done" and "diff from
+  origin, not local"; post-deploy-verify gained "UPDATE_COMPLETE alone is
+  stale evidence" and "empty metric = no invocations, not healthy".
+- **The quoted-prose false positive was real:** `block-no-verify` blocked
+  `git commit -m "docs: explain why --no-verify is forbidden"`. The hook now
+  strips quoted segments before matching (red test first), per §2b's guard
+  finding. Tier C (`implementer`, `ro-debug`) and product-domain content
+  stay un-extracted by design.
 - Deferred per brief §5 (all gated on more phase-11 data): `@path` imports,
   `--resume`/session management, planning mode. `worktree-task`, `ro-debug`,
   `graph-recon` skills also wait.
