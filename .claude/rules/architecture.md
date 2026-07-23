@@ -25,6 +25,15 @@ such an edit at the tool layer, exactly like core purity. The payoff is that
 one shared domain function validates on both sides of the wire: client-side
 for instant feedback, server-side for trust.
 
+**The web layer's test contract** (so "TDD, without exception" is read
+correctly here): its tests are the **shared-validation suite** — the same core
+function must accept/reject identically on both sides — plus the production
+build and typecheck. Component-level testing (DOM rendering, interaction
+frameworks) is deliberately out of scope; do **not** introduce a component
+testing apparatus unless real work in this project shows the need. New web
+*logic* still starts with a failing test — put the logic in a plain module
+(like `lib/validate`) and test it directly.
+
 ## The request path is fixed
 
 Every operation travels the same route, with no shortcuts:

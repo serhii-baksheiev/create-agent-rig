@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { copyTree, listTree } from '../lib/copy-tree.js';
 import { ALLOWED_OVERWRITES, detectCollisions } from '../lib/composition.js';
 import { substituteContent, substituteFileName } from '../lib/substitute.js';
@@ -14,6 +16,12 @@ export interface CreateOptions {
   cwd: string;
   /** Target name from the registry; defaults to {@link DEFAULT_TARGET}. */
   target?: string;
+  /**
+   * Initialise git with a baseline commit (default true) so the first change —
+   * human or agent — diffs against a pristine template. Never fatal: a missing
+   * git skips silently.
+   */
+  git?: boolean;
 }
 
 export interface CreateResult {
@@ -85,7 +93,41 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
     await copyTree(layer.dir, projectDir, transforms);
   }
 
+  if (options.git !== false) {
+    await initGitBaseline(projectDir);
+  }
+
   return { projectDir, projectName };
+}
+
+const run = promisify(execFile);
+
+async function initGitBaseline(projectDir: string): Promise<void> {
+  try {
+    await run('git', ['init', '--quiet'], { cwd: projectDir });
+    await run('git', ['add', '-A'], { cwd: projectDir });
+    // Explicit identity: the baseline must commit even where git has no
+    // global user configured (fresh machines, CI). --no-verify here shields
+    // the baseline from the USER'S global hooks only — the generated
+    // project's own gates do not exist yet, so nothing is being bypassed.
+    await run(
+      'git',
+      [
+        '-c',
+        'user.name=create-agent-rig',
+        '-c',
+        'user.email=create-agent-rig@localhost',
+        'commit',
+        '--quiet',
+        '--no-verify',
+        '-m',
+        'Pristine template (create-agent-rig)',
+      ],
+      { cwd: projectDir },
+    );
+  } catch {
+    // git missing or unusable — generation never fails on this.
+  }
 }
 
 async function ensureEmptyOrAbsent(dir: string): Promise<void> {

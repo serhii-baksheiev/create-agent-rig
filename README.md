@@ -1,93 +1,87 @@
 # create-agent-rig
 
-Scaffold a project that ships with an **agent operating system** — not just
-code. One command produces a runnable skeleton _plus_ the governance layer that
-makes agentic development safe: autonomy tiers, mechanically enforced
-invariants, subagent gates, stop rules, and a post-deploy verdict.
+Scaffold a project that ships with an **agent operating system** — rules,
+gates, and hooks that hold the architecture mechanically, not by prose.
 
 ```sh
-npx github:<user>/create-agent-rig my-app          # aws-serverless (default)
-npx github:<user>/create-agent-rig my-svc --target node-service
+npx create-agent-rig my-app
 ```
 
-## Why this exists
+## What you get
 
-A monorepo scaffolder is a commodity. The rare part is the **operating system
-for agents** that comes with it:
+**A system of boundaries, each held by tooling.** An agent (or a human using
+one) cannot talk its way past them:
 
-- **Autonomy tiers** — what an agent merges alone, what waits for review, what
-  needs a human decision first, and what is _never_ allowed
-  (`.claude/rules/autonomy.md`).
-- **Mechanical enforcement, not prompt wishes** — a `PreToolUse` hook refuses
-  impure edits to the domain core at the tool layer, and another refuses
-  `--no-verify`. An agent cannot talk its way past them.
-- **Subagent gates** — `test-writer` (the failing test comes first, and the
-  agent writing it _cannot_ write implementation), `code-reviewer` (blocking
-  checklist before every PR), `security-scanner` (auth/secrets/outbound
-  triggers).
-- **Stop rules by work-state** — three consecutive red runs → stop with a
-  diagnosis; flaky ≠ re-run until green; invariant conflict → surface, don't
-  pick a side.
-- **Post-deploy verdict** — CI-green ≠ runtime-healthy; verify, and on
-  regression revert first, never fix-forward blind.
+- **`guard-core-purity`** — refuses any edit that puts I/O, clock, randomness,
+  or environment access into the pure domain core;
+- **`guard-web-boundary`** — refuses `db`/service imports from the frontend;
+  the web talks to the backend over HTTP only;
+- **`block-no-verify`** — refuses bypassing pre-commit checks (and knows the
+  difference between using the flag and merely mentioning it in a message).
+
+Around the hooks, the operating system: **autonomy tiers** (what an agent does
+alone / after review / never), **stop rules** (three strikes, flaky ≠ retry,
+session staleness), **subagent gates** (`test-writer`, `code-reviewer`,
+`security-scanner`, `cdk-diff-reviewer`), **skills** (`pr-ship` pre-merge
+gate; `post-deploy-verify` with its binary HEALTHY/REGRESSION verdict), and a
+one-page `CLAUDE.md` map a fresh session orients by.
+
+The skeleton around it is real and runnable — pure core shared by server _and_
+browser (one schema validates on both sides of the wire), a mandatory usecase
+layer, a queue with DLQ discipline, tests at every layer.
+
+## Targets
+
+| Target           | One line                                                                                                                                  |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `aws-serverless` | DynamoDB single-table, SQS + DLQ + alarm, three Lambdas behind an HTTP API, static web via S3 + CloudFront, CDK with least-privilege IAM  |
+| `node-service`   | `node:http` server that also serves the web bundle, JSON-file store behind the same model boundary, spool-directory queue, worker process |
+
+Coherent alternatives, not a parameterized abstraction. Flexibility is
+**subtraction**: the generated project is yours — delete what you don't need.
+
+## What it deliberately does not do
+
+No authentication. No design system or UI kit. No state manager. No i18n,
+analytics, or error tracking. No third cloud. No component-testing apparatus.
+
+Each of these is application surface, not an architecture proof — and every
+addition is permanent maintenance in every target. The frontend is plain on
+purpose: scaffolding gets replaced without friction; a finished-looking UI
+gets fought. If you need one of these, add it — the project is yours.
 
 ## The 2-minute demo
 
 ```sh
-./demo.sh
+./demo.sh   # from a clone of this repo
 ```
 
 generate → the generated project's own gates pass → **an attempted core-purity
-violation is refused by the hook, live** → the service starts, a smoke request
-travels every layer, the worker drains the queue, the DLQ stays empty.
-
-## Two layers, physically separate
+violation is refused live by the hook** → the service runs, a smoke request
+travels every layer, the worker drains the queue, the DLQ stays empty:
 
 ```
-templates/agent-os/universal/   stack-neutral rules, agents, hooks (no provider named — enforced by test)
-templates/agent-os/stack/       node-ts, aws-cdk overlays, composed per target
-templates/skeleton/<target>/    a coherent, runnable project per target — never fragments
+== 3/4 an agent tries to put I/O and clock access into the pure core… ==
+BLOCKED — packages/core is a pure module and this change breaks its purity:
+  - imports "node:fs/promises" — the core may import only its own modules and: zod
+  - reads the clock — take a timestamp as an argument
+Move the impure part behind the usecase layer or into an adapter.
+…and the guard-core-purity hook REFUSED the edit at the tool layer (exit 2). ✔
 ```
 
-Targets are **coherent alternatives, not a parameterized abstraction**:
+## Requirements
 
-| Target           | Shape                                                                                                     |
-| ---------------- | --------------------------------------------------------------------------------------------------------- |
-| `aws-serverless` | DynamoDB single-table, SQS + DLQ + alarm, two Lambdas, HTTP API, CDK with least-privilege IAM             |
-| `node-service`   | `node:http` server, JSON-file store behind the same model boundary, spool-directory queue, worker process |
-
-Both prove the same architecture: pure core (hook-enforced), mandatory usecase
-layer, single-owner storage module, queue with DLQ discipline. Flexibility is
-**subtraction**: the generated project is yours — delete what you don't need.
+- Node ≥ 20 (pnpm recommended for the generated workspace)
 
 ## How it stays honest
 
-- Every template is a **real project, tested in place** — its own
-  lint/typecheck/test/synth run in CI on every push.
-- Every e2e run **generates a project cold and runs the generated project's own
-  full check suite** (install → lint → typecheck → test → synth).
-- A grep-test keeps `universal/` free of any provider mention; the second
-  target was added **without editing universal at all**.
-- The hook-blocking behavior itself is under test: a synthetic violating tool
-  call must be refused with exit 2.
-- This repo **dogfoods its own rules**: `CLAUDE.md` and `.claude/` are composed
-  from `templates/agent-os` by `scripts/sync-agent-os.mjs`, and drift fails the
-  suite. Field notes live in `NOTES.md`.
+Every template is a real project tested in place on every push; every e2e run
+generates a project cold and runs the generated project's own full checks
+(install → lint → typecheck → test → build → synth); a grep-test keeps the
+universal rules free of any provider mention; the hook-blocking behavior
+itself is under test; and a weekly lockfile-free run catches upstream breakage
+early. This repo dogfoods its own rulebook — `CLAUDE.md` and `.claude/` are
+composed from the templates, and drift fails the suite.
 
-## Generation model
-
-Tree copy + token substitution — no template engine, so the template never
-stops being a runnable project. Tokens: `__PROJECT_NAME__`,
-`__PROJECT_SCOPE__`, `__REGION__`, plus the _valid_ placeholder scope `@app/`
-rewritten to `@<your-app>/`.
-
-## Development
-
-```sh
-pnpm install
-pnpm test            # build + unit + template + e2e (generates real projects)
-pnpm test:unit       # the fast loop (pre-commit)
-pnpm template:check  # the templates' own in-place checks
-```
-
-The plan of record is `PLAN.md`; its §2 decisions are locked.
+Development: `pnpm test` (full), `pnpm test:unit` (fast loop),
+`pnpm template:check` (templates in place). The plan of record is `PLAN.md`.

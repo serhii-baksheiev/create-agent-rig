@@ -156,6 +156,33 @@ check with zero adjustments.
 - Excluded by design (§2): auth, UI kit, state manager, i18n/analytics,
   jsdom/component tests.
 
+## CLI polish brief (0.1.x scope, landed on 0.2.0)
+
+- **The final screen is now the governance report**, counted from the
+  generated tree (rules/agents/hooks/skills — never hardcoded); calm tone, no
+  fireworks, `pnpm check` as the last word. `--version` added; `--help`
+  already read targets from the registry.
+- **Non-TTY contract changed deliberately:** a non-interactive run without
+  `--target` now fails fast naming the flag (previously: silent default).
+  Interactive runs keep the picker with a default. Every e2e that exercised
+  the implicit default now passes `--target` explicitly — CI scripts should
+  be explicit; that is the tool's own pitch.
+- Colours are three and semantic (accent/dim/red), hand-rolled ANSI — zero
+  new dependencies; disabled off-TTY and under `NO_COLOR`/`--no-color`.
+- `git init` + a "Pristine template" baseline commit (skippable with
+  `--no-git`, never fatal; explicit committer identity so fresh machines
+  work; `--no-verify` on the baseline shields it from the USER'S global
+  hooks — the generated project's own gates do not exist yet).
+- README restructured per §9.1 incl. the "deliberately does not" section and
+  a static demo frame. **Owner action (§9.3):** an asciinema/GIF recording of
+  `demo.sh` beats the static frame — record and link it when hosting exists.
+- Updated web brief §2b landed too: the web layer's **test contract** is now
+  stated in `architecture.md` (shared-validation + build + typecheck;
+  component testing stays out until real need) — so "TDD without exception"
+  cannot be read as demanding a jsdom stack.
+- **Owner rule change absorbed:** commits/PRs carry NO AI attribution
+  (universal CLAUDE.md top rule, synced into this repo's rulebook).
+
 ## Phase 11 — first-use field notes (data, not opinions)
 
 Session: generated a `node-service` project and did real work in it under its

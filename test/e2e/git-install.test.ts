@@ -28,7 +28,14 @@ describe('git install (the `npx github:…` personal-stage distribution path)', 
     await mkdir(appDir);
     await exec(
       'npx',
-      ['--yes', `--package=git+file://${repoRoot}`, 'create-agent-rig', 'git-app'],
+      [
+        '--yes',
+        `--package=git+file://${repoRoot}`,
+        'create-agent-rig',
+        'git-app',
+        '--target',
+        'aws-serverless',
+      ],
       {
         cwd: appDir,
         env: { ...process.env, npm_config_cache: path.join(work, 'npx-cache') },

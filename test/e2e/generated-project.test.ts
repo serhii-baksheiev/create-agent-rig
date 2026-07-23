@@ -19,7 +19,9 @@ describe('generated aws-serverless project passes its own checks', () => {
   beforeAll(async () => {
     work = await mkdtemp(path.join(tmpdir(), 'caf-genproj-'));
     projectDir = path.join(work, 'proof-app');
-    await exec(process.execPath, [cliBin, 'proof-app'], { cwd: work });
+    await exec(process.execPath, [cliBin, 'proof-app', '--target', 'aws-serverless'], {
+      cwd: work,
+    });
     await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
   });
 

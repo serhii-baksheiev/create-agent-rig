@@ -151,6 +151,23 @@ describe('createProject', () => {
     ).resolves.toBeTruthy();
   });
 
+  it('initialises git with a pristine-template baseline commit', async () => {
+    const { projectDir } = await createProject('gitted', { cwd: work });
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+    const { stdout: log } = await exec('git', ['log', '--oneline'], { cwd: projectDir });
+    expect(log.trim().split('\n')).toHaveLength(1);
+    const { stdout: status } = await exec('git', ['status', '--porcelain'], { cwd: projectDir });
+    expect(status.trim()).toBe(''); // everything generated is in the baseline
+  });
+
+  it('skips git when asked, and generation still succeeds', async () => {
+    const { projectDir } = await createProject('ungitted', { cwd: work, git: false });
+    await expect(readFile(path.join(projectDir, '.git', 'HEAD'), 'utf8')).rejects.toThrow();
+    await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).resolves.toBeTruthy();
+  });
+
   it('the scope substitution reaches the frontend (web brief §5)', async () => {
     for (const target of ['aws-serverless', 'node-service']) {
       const { projectDir } = await createProject(`web-${target}`, { cwd: work, target });
