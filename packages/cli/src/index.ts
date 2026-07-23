@@ -4,7 +4,7 @@ import { CreateError, createProject } from './commands/create.js';
 import { promptTarget } from './lib/prompts.js';
 import { DEFAULT_TARGET, TARGET_NAMES } from './lib/targets.js';
 
-const USAGE = `Usage: create-agent-factory <dir> [--target <name>]
+const USAGE = `Usage: create-agent-rig <dir> [--target <name>]
 
 Scaffolds a new project into <dir>: agent operating system (.claude/, CLAUDE.md)
 plus a runnable code skeleton. Refuses to write into a non-empty directory.

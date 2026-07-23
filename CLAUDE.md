@@ -1,4 +1,4 @@
-# create-agent-factory
+# create-agent-rig
 
 This project runs under an agent operating system: the rules below are not
 suggestions — the important ones are enforced by hooks and gates at the tool

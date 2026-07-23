@@ -21,7 +21,7 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
 
   it('the composed CLAUDE.md names this repo and keeps the repo addendum', async () => {
     const claudeMd = await readFile(path.join(repoRoot, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('create-agent-factory');
+    expect(claudeMd).toContain('create-agent-rig');
     expect(claudeMd).toContain('generator repo addendum');
     // The universal-derived part is fully substituted. (The addendum below the
     // marker legitimately *documents* the token names, so it is exempt.)

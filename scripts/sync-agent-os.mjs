@@ -12,7 +12,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const stacks = ['node-ts'].map((s) => path.join(repoRoot, 'templates', 'agent-os', 'stack', s));
 
-const substitute = (content) => content.replaceAll('__PROJECT_NAME__', 'create-agent-factory');
+const substitute = (content) => content.replaceAll('__PROJECT_NAME__', 'create-agent-rig');
 
 /** target path (repo-relative) -> composed content */
 function compose() {

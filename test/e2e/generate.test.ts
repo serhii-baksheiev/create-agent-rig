@@ -36,7 +36,7 @@ async function runCli(args: string[], cwd: string): Promise<RunResult> {
   }
 }
 
-describe('create-agent-factory <dir>', () => {
+describe('create-agent-rig <dir>', () => {
   it('generates a project with substituted tokens', async () => {
     const result = await runCli(['my-app'], work);
     expect(result.stderr).toBe('');
@@ -88,7 +88,7 @@ describe('npm pack tarball (distribution path)', () => {
 
     const appDir = path.join(work, 'from-tarball');
     await mkdir(appDir);
-    await exec('npx', ['--yes', `--package=${tarball}`, 'create-agent-factory', 'tar-app'], {
+    await exec('npx', ['--yes', `--package=${tarball}`, 'create-agent-rig', 'tar-app'], {
       cwd: appDir,
       env: { ...process.env, npm_config_cache: path.join(work, 'npx-cache') },
     });

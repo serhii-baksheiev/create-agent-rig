@@ -1,5 +1,5 @@
 // Runs on `pnpm install` locally AND when npm installs this package from git
-// (`npx github:<user>/create-agent-factory`). It must therefore work with only
+// (`npx github:<user>/create-agent-rig`). It must therefore work with only
 // the root devDependencies present and no pnpm available.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

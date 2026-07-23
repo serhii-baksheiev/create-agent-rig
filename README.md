@@ -1,4 +1,4 @@
-# create-agent-factory
+# create-agent-rig
 
 Scaffold a project that ships with an **agent operating system** — not just
 code. One command produces a runnable skeleton _plus_ the governance layer that
@@ -6,8 +6,8 @@ makes agentic development safe: autonomy tiers, mechanically enforced
 invariants, subagent gates, stop rules, and a post-deploy verdict.
 
 ```sh
-npx github:<user>/create-agent-factory my-app          # aws-serverless (default)
-npx github:<user>/create-agent-factory my-svc --target node-service
+npx github:<user>/create-agent-rig my-app          # aws-serverless (default)
+npx github:<user>/create-agent-rig my-svc --target node-service
 ```
 
 ## Why this exists

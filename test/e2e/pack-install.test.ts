@@ -34,7 +34,7 @@ describe('npm pack → install → generate (the publish path)', () => {
       await mkdir(appDir);
       await exec(
         'npx',
-        ['--yes', `--package=${tarball}`, 'create-agent-factory', 'app', '--target', target],
+        ['--yes', `--package=${tarball}`, 'create-agent-rig', 'app', '--target', target],
         { cwd: appDir, env: { ...process.env, npm_config_cache: path.join(work, 'npx-cache') } },
       );
     }

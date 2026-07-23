@@ -1,4 +1,4 @@
-# PLAN — `create-agent-factory` (project generator: agent-os + skeleton)
+# PLAN — `create-agent-rig` (project generator: agent-os + skeleton)
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 
@@ -30,15 +30,15 @@ A CLI that scaffolds a new project with (a) an **agent operating system** — ru
 | **Primary flexibility mechanism = subtraction** | Deleting what you don't need requires zero design and zero maintenance |
 | **`agent-os/` is authored fresh, as a statement of the approach** | Not copy-pasted out of a private work repository — see §9 |
 | **The tool's own repo runs under its own `agent-os`** | Dogfooding: if the rules are awkward, you find out first |
-| **Package name `create-agent-factory`, unscoped** | npm convention: a `create-*` package is invoked as `npx create-agent-factory my-app` with **no install** (the `create-react-app` pattern). A scoped name (`@scope/create-agent-factory`) breaks the short `npx` form — keep it unscoped |
-| **Distribution: git first, registry later** | `npx github:<user>/create-agent-factory my-app` works with no registry at all — enough for the personal stage. Publishing is only needed once other people use it (phase 7) |
+| **Package name `create-agent-rig`, unscoped** | npm convention: a `create-*` package is invoked as `npx create-agent-rig my-app` with **no install** (the `create-react-app` pattern). A scoped name (`@scope/create-agent-rig`) breaks the short `npx` form — keep it unscoped |
+| **Distribution: git first, registry later** | `npx github:<user>/create-agent-rig my-app` works with no registry at all — enough for the personal stage. Publishing is only needed once other people use it (phase 7) |
 
 ---
 
 ## 3. Repository layout
 
 ```
-create-agent-factory/
+create-agent-rig/
   packages/
     cli/                          — the generator itself (TS, tested)
       src/
@@ -154,9 +154,9 @@ End-to-end generation over a **trivial** tree (a `package.json` plus one file) �
 
 **🔴 An e2e test starts here:** generate into a temp directory → assert structure and substitution. This is the foundation of §8.
 
-**DoD:** `pnpm test` green including e2e; a local tarball install (`npm pack` → `npx <tarball> myapp`) produces the expected tree; `npx github:<user>/create-agent-factory myapp` produces the same tree (the personal-stage distribution path — no registry needed).
+**DoD:** `pnpm test` green including e2e; a local tarball install (`npm pack` → `npx <tarball> myapp`) produces the expected tree; `npx github:<user>/create-agent-rig myapp` produces the same tree (the personal-stage distribution path — no registry needed).
 
-**Note on what "done" means for the user-facing goal:** this phase makes the *mechanism* work, but the output is still a trivial tree. The expected end result — `npx create-agent-factory my-app` producing a real, runnable project — lands at the end of **phase 3**.
+**Note on what "done" means for the user-facing goal:** this phase makes the *mechanism* work, but the output is still a trivial tree. The expected end result — `npx create-agent-rig my-app` producing a real, runnable project — lands at the end of **phase 3**.
 
 ---
 
@@ -279,7 +279,7 @@ In practice: open an empty file and write the rule in your own words rather than
 
 ## 11. Open questions for the owner
 
-- ~~Tool name~~ — **decided: `create-agent-factory`, unscoped** (see §2).
+- ~~Tool name~~ — **decided: `create-agent-rig`, unscoped** (see §2).
 - **Second target** — is `node-service` right, or should it be another shape (a CLI tool? a frontend app?).
 - **Registry** — private / internal / public (affects phase 7, not before).
 - **Repository hosting** — where it lives (affects CI and §9).

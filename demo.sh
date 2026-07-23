@@ -5,7 +5,7 @@
 #   4. the service actually runs: smoke request → 201, event processed, DLQ empty
 #
 # From this repo:            ./demo.sh
-# From a clean machine:      CAF="npx github:<user>/create-agent-factory" ./demo.sh
+# From a clean machine:      CAF="npx github:<user>/create-agent-rig" ./demo.sh
 set -eu
 
 START=$(date +%s)

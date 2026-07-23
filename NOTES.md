@@ -58,7 +58,7 @@ tool's own repo runs under them. Recorded as encountered:
   restores the source mode (`chmod`, immune to umask). Covered by a unit test.
 - **Owner action still open (8.4):** claiming the npm name needs a registry
   publish from the owner's account. Note a discrepancy: the next-block plan
-  says `create-agent-rig`, but PLAN.md §2 locked `create-agent-factory` —
+  says `create-agent-rig`, but PLAN.md §2 locked `create-agent-rig` —
   decide which name to claim before publishing.
 
 ## Phase 11 — first-use field notes (data, not opinions)
