@@ -84,6 +84,17 @@ describe('createProject', () => {
     await expect(
       readFile(path.join(projectDir, '.claude', 'rules', 'aws-cdk.md'), 'utf8'),
     ).rejects.toThrow();
+    // skills follow the same seam: pr-ship is universal, post-deploy-verify is
+    // aws-cdk only — node-service has no deploy step, so it must not get it
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'skills', 'pr-ship', 'SKILL.md'), 'utf8'),
+    ).resolves.toBeTruthy();
+    await expect(
+      readFile(
+        path.join(projectDir, '.claude', 'skills', 'post-deploy-verify', 'SKILL.md'),
+        'utf8',
+      ),
+    ).rejects.toThrow();
   });
 
   it('refuses an unknown target, naming the known ones', async () => {
@@ -124,5 +135,11 @@ describe('createProject', () => {
     await expect(
       readFile(path.join(projectDir, '.claude', 'hooks', 'guard-core-purity.mjs'), 'utf8'),
     ).resolves.toBeTruthy();
+    // the default (aws-serverless) composition gets both skills
+    for (const skill of ['pr-ship', 'post-deploy-verify']) {
+      await expect(
+        readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md'), 'utf8'),
+      ).resolves.toBeTruthy();
+    }
   });
 });

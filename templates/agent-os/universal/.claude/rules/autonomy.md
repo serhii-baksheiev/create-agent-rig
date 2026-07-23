@@ -57,6 +57,12 @@ these lines is the failure mode:
   the rules, not in one PR's history.
 - **Surprise scope.** The fix requires touching a Tier-2 area you did not plan
   to touch → stop, re-tier, propose.
+- **Session staleness.** Files changed since this session last read them
+  (another session, a human, a merge) → the context now describes a codebase
+  that no longer exists. Do not resume and reason over stale tool results:
+  stop, write a short summary of state and intent, and **start fresh** from
+  the summary. Resuming a stale session is how agents edit files that are not
+  there anymore.
 
 ## Post-deploy verification
 

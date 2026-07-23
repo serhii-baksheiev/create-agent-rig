@@ -47,7 +47,9 @@ universal rule, that is an invariant conflict — stop and surface it.
 
 ## Post-deploy verification (target-specific means)
 
-The universal rule says verify runtime health after deploy; here that means:
-smoke the HTTP route (expect 201), confirm the worker consumed the event, and
-confirm the DLQ alarm is quiet. On regression: redeploy the previous revision
+The universal rule says verify runtime health after deploy; here the
+implementation is the **`post-deploy-verify` skill** (`.claude/skills/`): stack
+freshness, smoke the HTTP route (expect 201), confirm the worker consumed the
+event, confirm the DLQ and its alarm are quiet — ending in the binary
+HEALTHY / REGRESSION verdict. On regression: redeploy the previous revision
 first, diagnose second.

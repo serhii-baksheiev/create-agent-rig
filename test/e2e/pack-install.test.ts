@@ -57,6 +57,10 @@ describe('npm pack → install → generate (the publish path)', () => {
       expect(packedPaths).toContain(`templates/skeleton/${target}/.github/workflows/ci.yml`);
     }
     expect(packedPaths).toContain('templates/agent-os/universal/.claude/settings.json');
+    expect(packedPaths).toContain('templates/agent-os/universal/.claude/skills/pr-ship/SKILL.md');
+    expect(packedPaths).toContain(
+      'templates/agent-os/stack/aws-cdk/.claude/skills/post-deploy-verify/SKILL.md',
+    );
     expect(packedPaths.some((p) => /node_modules|cdk\.out|\/var\/|\.tsbuildinfo/.test(p))).toBe(
       false,
     );

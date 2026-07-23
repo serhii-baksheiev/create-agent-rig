@@ -27,9 +27,20 @@ that reproduces the bug.
   branch stays releasable.
 - Commits are small and single-purpose; the message says *why*, not just *what*.
 
+## Review-context isolation
+
+The session that wrote the code is measurably worse at reviewing it: it
+carries its own reasoning in context and will not challenge its own decisions
+the way a cold reader does. That is *why* `code-reviewer` is a separate
+subagent with a fresh context, and why the `pr-ship` gate fans reviewers out
+instead of self-checking. This isolation is load-bearing, not ceremony — do
+not "optimise" it away by reviewing in the authoring session.
+
 ## PR policy
 
 - One concern per PR. If the description needs the word "also", split it.
+- The `pr-ship` skill is the pre-merge gate: full checks, reviewer fan-out,
+  DoD walk, and a SHIP / HOLD verdict with named blockers.
 - The PR description states: intent, what changed, how it was verified, and any
   autonomy-tier judgment calls made (see `autonomy.md`).
 - The `code-reviewer` agent runs before a PR is opened; its blocking findings

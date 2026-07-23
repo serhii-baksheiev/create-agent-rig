@@ -78,6 +78,25 @@ tool's own repo runs under them. Recorded as encountered:
   half). LICENSE + keywords added; `repository` field stays open until the
   hosting decision (PLAN.md §11).
 
+## agent-os v2 (0.2.0) — skills land
+
+- The gap was real: `autonomy.md` stated the post-deploy verdict rule while
+  the generated project had nothing to run. v2 ships exactly two skills —
+  `post-deploy-verify` (stack/aws-cdk: stack freshness → smoke → async path →
+  DLQ/alarm → binary HEALTHY/REGRESSION, `context: fork`, read-only
+  `allowed-tools`) and `pr-ship` (universal: checks → reviewer fan-out → DoD
+  walk → SHIP/HOLD with named blockers). The seam held: skills split
+  universal/stack the same way rules do, and node-service correctly does NOT
+  receive `post-deploy-verify` (no deploy step — asserted by test).
+- Two rule additions: review-context isolation now carries its _rationale_
+  (workflow.md), and session staleness joined the stop-rule family
+  (autonomy.md).
+- Deferred per brief §5 (all gated on more phase-11 data): `@path` imports,
+  `--resume`/session management, planning mode. `worktree-task`, `ro-debug`,
+  `graph-recon` skills also wait.
+- **Owner side task (brief §3):** audit the reference project's own five
+  skills for `context: fork` + `allowed-tools` — outside this repo.
+
 ## Phase 11 — first-use field notes (data, not opinions)
 
 Session: generated a `node-service` project and did real work in it under its
