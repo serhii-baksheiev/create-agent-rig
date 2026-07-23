@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+  - services/*
+  - infra
+
+# esbuild's postinstall is intentionally NOT approved: skipping it keeps the JS
+# launcher in place (which resolves the platform binary itself); approving it
+# swaps in a raw binary that pnpm's node-based bin shim cannot execute.
+allowBuilds:
+  esbuild: false

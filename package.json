@@ -24,7 +24,9 @@
     "typecheck": "tsc -p packages/cli/tsconfig.json && tsc -p tsconfig.json",
     "test": "pnpm build && vitest run",
     "test:unit": "vitest run --project unit --project template",
-    "test:e2e": "pnpm build && vitest run --project e2e"
+    "test:e2e": "pnpm build && vitest run --project e2e",
+    "template:install": "pnpm --dir templates/skeleton/aws-serverless install",
+    "template:check": "pnpm --dir templates/skeleton/aws-serverless run check"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

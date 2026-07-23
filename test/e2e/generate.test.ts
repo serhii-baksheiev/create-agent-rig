@@ -84,6 +84,7 @@ describe('npm pack tarball (distribution path)', () => {
     expect(paths).toContain('packages/cli/dist/index.js');
     expect(paths.some((p) => p.startsWith('templates/skeleton/aws-serverless/'))).toBe(true);
     expect(paths.some((p) => p.includes('node_modules'))).toBe(false);
+    expect(paths.some((p) => p.includes('cdk.out'))).toBe(false);
 
     const appDir = path.join(work, 'from-tarball');
     await mkdir(appDir);

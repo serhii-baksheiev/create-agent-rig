@@ -1,0 +1,18 @@
+{
+  "name": "@app/infra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "synth": "cdk synth --quiet",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.261.0",
+    "constructs": "^10.7.1"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.1132.0"
+  }
+}

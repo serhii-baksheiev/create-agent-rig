@@ -19,3 +19,16 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+
+  # PLAN.md §8 item 1 — mandatory: the template is a valid project and is
+  # exercised in place, so it cannot rot silently.
+  template-aws-serverless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm --dir templates/skeleton/aws-serverless install --frozen-lockfile
+      - run: pnpm --dir templates/skeleton/aws-serverless run check
