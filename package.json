@@ -1,0 +1,40 @@
+{
+  "name": "create-agent-factory",
+  "version": "0.1.0",
+  "description": "Scaffold a new project with an agent operating system (rules, gates, hooks) and a runnable code skeleton",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "create-agent-factory": "packages/cli/dist/index.js"
+  },
+  "files": [
+    "packages/cli/dist",
+    "templates",
+    "scripts/prepare.mjs"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.16.0",
+  "scripts": {
+    "prepare": "node scripts/prepare.mjs",
+    "build": "tsc -p packages/cli/tsconfig.build.json",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "typecheck": "tsc -p packages/cli/tsconfig.json && tsc -p tsconfig.json",
+    "test": "pnpm build && vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:e2e": "pnpm build && vitest run --project e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.6",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
+  }
+}

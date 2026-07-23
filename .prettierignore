@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+cdk.out/
+templates/
+pnpm-lock.yaml
+PLAN.md

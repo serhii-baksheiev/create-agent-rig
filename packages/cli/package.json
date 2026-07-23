@@ -1,0 +1,7 @@
+{
+  "name": "@create-agent-factory/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generator sources. Built by the root `prepare`/`build` scripts into dist/, which the root package publishes as its bin."
+}
