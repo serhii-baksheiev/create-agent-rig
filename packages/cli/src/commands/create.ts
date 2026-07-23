@@ -103,9 +103,14 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
 const run = promisify(execFile);
 
 async function initGitBaseline(projectDir: string): Promise<void> {
+  // Disable git's background maintenance for these one-shot commands: a commit
+  // can otherwise fork an auto-gc / maintenance process that keeps writing to
+  // .git/objects/pack after we return — a non-deterministic tail that races any
+  // caller cleaning up the directory, and pointless work on a one-commit repo.
+  const quiet = ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false'];
   try {
-    await run('git', ['init', '--quiet'], { cwd: projectDir });
-    await run('git', ['add', '-A'], { cwd: projectDir });
+    await run('git', [...quiet, 'init', '--quiet'], { cwd: projectDir });
+    await run('git', [...quiet, 'add', '-A'], { cwd: projectDir });
     // Explicit identity: the baseline must commit even where git has no
     // global user configured (fresh machines, CI). --no-verify here shields
     // the baseline from the USER'S global hooks only — the generated
@@ -113,6 +118,7 @@ async function initGitBaseline(projectDir: string): Promise<void> {
     await run(
       'git',
       [
+        ...quiet,
         '-c',
         'user.name=create-agent-rig',
         '-c',
