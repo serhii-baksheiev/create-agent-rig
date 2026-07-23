@@ -1,0 +1,31 @@
+name: Template freshness
+
+# Web brief §6: with Next in the templates, the lockfile-free run is the
+# primary early-warning mechanism for upstream breakage. Weekly, each template
+# resolves everything fresh (no lockfile) and must still pass its full check.
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  fresh-install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        template: [aws-serverless, node-service]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install with fresh resolution (no lockfile)
+        working-directory: templates/skeleton/${{ matrix.template }}
+        run: |
+          rm pnpm-lock.yaml
+          pnpm install --no-frozen-lockfile
+      - name: Full check on fresh dependencies
+        working-directory: templates/skeleton/${{ matrix.template }}
+        run: pnpm run check

@@ -150,4 +150,25 @@ describe('createProject', () => {
       readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
     ).resolves.toBeTruthy();
   });
+
+  it('the scope substitution reaches the frontend (web brief §5)', async () => {
+    for (const target of ['aws-serverless', 'node-service']) {
+      const { projectDir } = await createProject(`web-${target}`, { cwd: work, target });
+      const webPkg = JSON.parse(
+        await readFile(path.join(projectDir, 'apps', 'web', 'package.json'), 'utf8'),
+      );
+      expect(webPkg.name, target).toBe(`@web-${target}/web`);
+      expect(webPkg.dependencies[`@web-${target}/core`], target).toBe('workspace:*');
+      const nextConfig = await readFile(
+        path.join(projectDir, 'apps', 'web', 'next.config.mjs'),
+        'utf8',
+      );
+      expect(nextConfig, target).toContain(`@web-${target}/core`);
+      expect(nextConfig, target).not.toContain('@app/');
+      // in-place web build artifacts never reach the generated project
+      await expect(
+        readFile(path.join(projectDir, 'apps', 'web', 'next-env.d.ts'), 'utf8'),
+      ).rejects.toThrow();
+    }
+  });
 });

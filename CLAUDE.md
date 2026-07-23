@@ -23,6 +23,8 @@ packages/core/    pure domain logic — schemas + functions; no I/O, no clock,
 packages/shared/  logger, env loading, typed errors — cross-cutting, no domain
 packages/db/      the ONLY module that touches the storage SDK/driver
 services/         entrypoints; every request: payload → handler → usecase → model
+apps/web/         the frontend; imports core + shared ONLY, talks to services
+                  over HTTP (hook-enforced)
 ```
 
 The target-specific details (how to run, deploy, and verify runtime health)

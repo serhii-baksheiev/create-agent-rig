@@ -55,6 +55,9 @@ describe('npm pack → install → generate (the publish path)', () => {
     for (const target of ['aws-serverless', 'node-service']) {
       expect(packedPaths).toContain(`templates/skeleton/${target}/pnpm-lock.yaml`);
       expect(packedPaths).toContain(`templates/skeleton/${target}/.github/workflows/ci.yml`);
+      expect(packedPaths).toContain(`templates/skeleton/${target}/apps/web/package.json`);
+      // in-place web build artifacts stay out of the tarball
+      expect(packedPaths).not.toContain(`templates/skeleton/${target}/apps/web/next-env.d.ts`);
     }
     expect(packedPaths).toContain('templates/agent-os/universal/.claude/settings.json');
     expect(packedPaths).toContain('templates/agent-os/universal/.claude/skills/pr-ship/SKILL.md');

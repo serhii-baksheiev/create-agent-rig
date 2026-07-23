@@ -1,0 +1,19 @@
+{
+  "name": "@app/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3001 --webpack",
+    "build": "next build --webpack"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "next": "^16.2.11",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  }
+}

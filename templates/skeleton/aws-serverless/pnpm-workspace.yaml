@@ -1,10 +1,14 @@
 packages:
   - packages/*
   - services/*
+  - apps/*
   - infra
 
 # esbuild's postinstall is intentionally NOT approved: skipping it keeps the JS
 # launcher in place (which resolves the platform binary itself); approving it
 # swaps in a raw binary that pnpm's node-based bin shim cannot execute.
+# sharp (via next) only matters for the image optimizer, which a static
+# export never runs — its native build stays off.
 allowBuilds:
   esbuild: false
+  sharp: false

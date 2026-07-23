@@ -43,9 +43,9 @@ universal rule, that is an invariant conflict — stop and surface it.
 
 ## Lambda
 
-- Each function has one composition root (`src/main.ts`): environment parsed
-  with `loadEnv(zod)` at boot, clients constructed once, handler exported.
-  Nothing else imports `main.ts`.
+- Each function has exactly one composition root entry file (`src/main.ts`,
+  `src/list-main.ts`, …): environment parsed with `loadEnv(zod)` at boot,
+  clients constructed once, handler exported. Nothing else imports an entry.
 - Functions stay single-purpose — one route or one event source each. Fan-out
   belongs to infrastructure (queues, topics), not to in-process branching.
 

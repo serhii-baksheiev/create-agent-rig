@@ -34,6 +34,7 @@ describe('generated node-service project passes its own checks', () => {
       'packages/db/src',
       'services/api/src',
       'services/worker/src',
+      'apps/web/src',
       '.claude/settings.json',
       'CLAUDE.md',
     ]) {

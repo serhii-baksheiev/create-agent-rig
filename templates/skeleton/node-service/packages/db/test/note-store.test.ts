@@ -59,4 +59,22 @@ describe('JsonFileNoteStore', () => {
     await writeFile(file, '{not json');
     await expect(store.get('n1')).rejects.toMatchObject({ code: 'DATA_CORRUPT' });
   });
+
+  it('lists notes newest-first, and an empty store as []', async () => {
+    const store = new JsonFileNoteStore(file);
+    expect(await store.list()).toEqual([]);
+    await store.put({ ...note, id: 'a', createdAt: '2024-01-01T00:00:00.000Z' });
+    await store.put({ ...note, id: 'b', createdAt: '2024-02-01T00:00:00.000Z' });
+    const listed = await store.list();
+    expect(listed.map((n) => n.id)).toEqual(['b', 'a']);
+  });
+
+  it('refuses to list corrupt entries instead of skipping them silently', async () => {
+    const store = new JsonFileNoteStore(file);
+    await store.put(note);
+    const table = JSON.parse(await readFile(file, 'utf8'));
+    table.bad = { id: 'bad' };
+    await writeFile(file, JSON.stringify(table));
+    await expect(store.list()).rejects.toThrow();
+  });
 });

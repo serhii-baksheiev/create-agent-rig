@@ -47,9 +47,9 @@ describe('queue discipline', () => {
   });
 });
 
-describe('functions and route', () => {
-  it('deploys exactly the api and worker functions', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 2);
+describe('functions and routes', () => {
+  it('deploys exactly the create, list and worker functions — one purpose each', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 3);
   });
 
   it('passes table and queue to the api via environment', () => {
@@ -63,16 +63,27 @@ describe('functions and route', () => {
     });
   });
 
-  it('exposes exactly one route: POST /notes', () => {
+  it('exposes exactly two routes: POST /notes and GET /notes', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'POST /notes',
     });
-    template.resourceCountIs('AWS::ApiGatewayV2::Route', 1);
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: 'GET /notes',
+    });
+    template.resourceCountIs('AWS::ApiGatewayV2::Route', 2);
+  });
+
+  it('allows the browser origin in: CORS is configured', () => {
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: Match.objectLike({
+        AllowMethods: Match.arrayWith(['GET', 'POST']),
+      }),
+    });
   });
 });
 
 describe('least-privilege IAM', () => {
-  it('grants the api writes (no reads, no deletes beyond the write set) and queue send', () => {
+  it('grants writes to the creator, reads to the lister, queue send — nothing broad', () => {
     const policies = template.findResources('AWS::IAM::Policy');
     const statements = Object.values(policies).flatMap(
       (policy) =>
@@ -84,11 +95,10 @@ describe('least-privilege IAM', () => {
     );
 
     expect(actions).toContain('dynamodb:PutItem');
+    expect(actions).toContain('dynamodb:Scan'); // the list function reads
     expect(actions).toContain('sqs:SendMessage');
-    // Least privilege: nothing broad, nothing destructive.
+    // Least privilege: nothing broad.
     expect(actions).not.toContain('dynamodb:*');
-    expect(actions).not.toContain('dynamodb:Scan');
-    expect(actions).not.toContain('dynamodb:GetItem');
     expect(actions.some((a) => a === '*')).toBe(false);
   });
 });

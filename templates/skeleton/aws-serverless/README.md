@@ -11,9 +11,12 @@ and every gate wired. This project is yours: **delete what you don't need.**
 packages/core/     pure domain: zod schemas + createNote()  (no I/O — hook-enforced)
 packages/shared/   logger, loadEnv(zod), typed errors
 packages/db/       NoteModel — the only code touching the DynamoDB SDK
-services/api/      POST /notes: payload → handler → usecase → model + event
+services/api/      POST /notes + GET /notes: payload → handler → usecase → model
 services/worker/   note.created consumer (batchSize 1 → DLQ after 3 strikes)
-infra/             CDK stack: table, queue+DLQ+alarm, two lambdas, HTTP API
+apps/web/          static Next export; validates with the SAME core schema the
+                   server trusts (imports core+shared only — hook-enforced)
+infra/             CDK stacks: table, queue+DLQ+alarm, three lambdas, HTTP API,
+                   and S3+CloudFront for the web bundle
 .claude/           the agent operating system: rules, gates, blocking hooks
 ```
 
@@ -26,6 +29,7 @@ pnpm install
 pnpm test        # every layer, core exhaustively
 pnpm lint
 pnpm typecheck
+pnpm build:web   # static Next export → apps/web/out
 pnpm synth       # CloudFormation synth (no AWS credentials needed)
 pnpm check       # all of the above
 ```
@@ -36,7 +40,14 @@ pnpm check       # all of the above
 # needs AWS credentials; region comes from your profile (generator default: __REGION__)
 cd infra
 npx cdk bootstrap   # first time per account/region
-npx cdk deploy
+npx cdk deploy AppStack
+
+# the web bundle: build against the deployed API, then sync to the web stack
+cd ..
+NEXT_PUBLIC_API_URL=<ApiUrl output> pnpm build:web
+cd infra && npx cdk deploy WebStack
+aws s3 sync ../apps/web/out "s3://<WebBucketName output>"
+# the site is at the WebUrl output
 ```
 
 ## Verify runtime health (CI-green ≠ runtime-healthy)

@@ -30,6 +30,14 @@ export class JsonFileNoteStore {
     return NoteSchema.parse(raw);
   }
 
+  async list(): Promise<Note[]> {
+    const table = await this.load();
+    // Validate every entry — silently skipping corruption would hide data loss.
+    return Object.values(table)
+      .map((raw) => NoteSchema.parse(raw))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
   private async load(): Promise<NoteTable> {
     let content: string;
     try {

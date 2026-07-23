@@ -13,6 +13,10 @@ export const DEFAULT_IGNORE = [
   // packaging metadata of the template itself, meaningless in a generated project
   '.npmignore',
   'var',
+  // frontend build artifacts of in-place template runs
+  '.next',
+  'out',
+  'next-env.d.ts',
 ];
 
 export interface CopyTreeOptions {

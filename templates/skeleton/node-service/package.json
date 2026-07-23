@@ -9,10 +9,11 @@
   "scripts": {
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p apps/web/tsconfig.json",
+    "build:web": "pnpm --filter @app/web build",
     "start:api": "pnpm --filter @app/api start",
     "start:worker": "pnpm --filter @app/worker start",
-    "check": "pnpm lint && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:web"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

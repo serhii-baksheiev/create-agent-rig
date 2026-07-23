@@ -109,6 +109,32 @@ tool's own repo runs under them. Recorded as encountered:
 - **Owner side task (brief §3):** audit the reference project's own five
   skills for `context: fork` + `allowed-tools` — outside this repo.
 
+## Web brief (0.2.0) — the frontend as a boundary proof
+
+- `apps/web` (identical in both targets, static export): one page, plain by
+  design; the load-bearing scene is `src/lib/validate.ts` — the browser
+  validates with the SAME `NewNoteSchema` the server trusts, and the
+  shared-validation test pins web/core/`createNote` to identical verdicts on
+  nine fixtures. `GET /notes` was added to both backends (a third,
+  read-granted lambda in aws; a route + static serving in node-service — no
+  second runtime) because "a list that reads them back" needs a read path.
+- **The second mechanical boundary shipped:** `guard-web-boundary` refuses
+  `@…/db`, `@…/api`, `@…/worker` and relative reaches into `packages/db` /
+  `services` from `apps/web` — under any rewritten scope. Rule stated in
+  `architecture.md`, wired in settings.json, tool-layer tested.
+- **Turbopack (Next 16 default) cannot resolve NodeNext-style `./x.js` → x.ts
+  in `transpilePackages`** — the web build runs `next build --webpack` with
+  `resolve.extensionAlias`. The NodeNext convention of the packages stays.
+- Next rewrites `next-env.d.ts` with a reference into `.next/` — the file is
+  a build artifact here: git-ignored, npm-ignored, copy-tree-ignored (it broke
+  clean-generation typecheck otherwise). Same for `.next/` and `out/`.
+- `sharp` (via next) joins esbuild in `allowBuilds: false` — a static export
+  never runs the image optimizer.
+- The lockfile-free weekly run exists now (`template-freshness.yml`) — with
+  Next in the templates it is the primary early-warning channel, per §6.
+- Excluded by design (§2): auth, UI kit, state manager, i18n/analytics,
+  jsdom/component tests.
+
 ## Phase 11 — first-use field notes (data, not opinions)
 
 Session: generated a `node-service` project and did real work in it under its

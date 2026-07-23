@@ -4,3 +4,6 @@ coverage/
 cdk.out/
 *.tsbuildinfo
 .DS_Store
+.next/
+out/
+next-env.d.ts

@@ -34,6 +34,7 @@ describe('generated aws-serverless project passes its own checks', () => {
       'packages/db/src',
       'services/api/src',
       'services/worker/src',
+      'apps/web/src',
       'infra/lib',
       '.claude/settings.json',
       'CLAUDE.md',
@@ -46,9 +47,11 @@ describe('generated aws-serverless project passes its own checks', () => {
   it('rewrote the placeholder scope everywhere', async () => {
     const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@proof-app/root');
-    const { stdout } = await exec('grep', ['-rl', '@app/', '--include=*', '.'], {
-      cwd: projectDir,
-    }).catch((e) => e as { stdout: string });
+    const { stdout } = await exec(
+      'grep',
+      ['-rl', '@app/', '--exclude-dir=node_modules', '--exclude-dir=.next', '.'],
+      { cwd: projectDir },
+    ).catch((e) => e as { stdout: string });
     expect(stdout ?? '').toBe('');
   });
 

@@ -107,6 +107,60 @@ describe('guard-core-purity hook (the genuinely blocking gate)', () => {
   });
 });
 
+describe('guard-web-boundary hook (web imports core/shared only)', () => {
+  const web = 'apps/web/src/app/page.tsx';
+
+  it('blocks db imports from the web app — under any scope', async () => {
+    for (const spec of ['@app/db', '@my-cool-app/db']) {
+      const result = await runHook(
+        'guard-web-boundary.mjs',
+        write(web, `import { NoteModel } from '${spec}';`),
+      );
+      expect(result.code, spec).toBe(2);
+      expect(result.stderr).toMatch(/web/i);
+    }
+  });
+
+  it('blocks service imports from the web app', async () => {
+    for (const spec of ['@app/api', '@app/worker']) {
+      const result = await runHook(
+        'guard-web-boundary.mjs',
+        write(web, `import { something } from '${spec}';`),
+      );
+      expect(result.code, spec).toBe(2);
+    }
+  });
+
+  it('blocks relative reaches into db and services', async () => {
+    for (const spec of ['../../../packages/db/src/index.js', '../../../services/api/src/main.js']) {
+      const result = await runHook(
+        'guard-web-boundary.mjs',
+        edit(web, `import { x } from '${spec}';`),
+      );
+      expect(result.code, spec).toBe(2);
+    }
+  });
+
+  it('allows core, shared, react and next imports', async () => {
+    const content = [
+      "import { NewNoteSchema } from '@app/core';",
+      "import type { Logger } from '@app/shared';",
+      "import { useState } from 'react';",
+      "import Link from 'next/link';",
+      "import { validateNewNote } from '../lib/validate.js';",
+    ].join('\n');
+    expect((await runHook('guard-web-boundary.mjs', write(web, content))).code).toBe(0);
+  });
+
+  it('does not police files outside apps/web', async () => {
+    const result = await runHook(
+      'guard-web-boundary.mjs',
+      write('services/api/src/main.ts', "import { NoteModel } from '@app/db';"),
+    );
+    expect(result.code).toBe(0);
+  });
+});
+
 describe('block-no-verify hook', () => {
   it('blocks git commit --no-verify', async () => {
     const result = await runHook('block-no-verify.mjs', bash('git commit --no-verify -m "x"'));
@@ -161,6 +215,7 @@ describe('hook wiring (settings.json)', () => {
     };
     const commands = settings.hooks.PreToolUse.flatMap((h) => h.hooks.map((x) => x.command));
     expect(commands.some((c) => c.includes('guard-core-purity.mjs'))).toBe(true);
+    expect(commands.some((c) => c.includes('guard-web-boundary.mjs'))).toBe(true);
     expect(commands.some((c) => c.includes('block-no-verify.mjs'))).toBe(true);
   });
 });

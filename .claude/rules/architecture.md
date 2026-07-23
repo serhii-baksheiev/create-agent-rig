@@ -10,9 +10,20 @@ The layout is the same in every target; only the adapters at the edges change.
 | **shared** | `packages/shared/` | nothing external of note | domain logic |
 | **db** | `packages/db/` | core, shared | HTTP handling, business decisions |
 | **services** | `services/*` | core, db, shared | direct SDK/storage access |
+| **web** | `apps/web/` | core, shared | db, services, any storage or backend SDK |
 
 Dependency direction is one-way: `services → (core, db, shared)`, `db → (core, shared)`,
 `core → nothing`. A dependency pointing the other way is a defect, not a style choice.
+
+## The web boundary is mechanical too
+
+`apps/web` is a consumer of the domain, not the backend: it imports the pure
+core (schemas, domain functions — the same validation the server trusts) and
+shared utilities, and talks to services **over HTTP only**. It never imports
+the storage layer or a service module — the `guard-web-boundary` hook refuses
+such an edit at the tool layer, exactly like core purity. The payoff is that
+one shared domain function validates on both sides of the wire: client-side
+for instant feedback, server-side for trust.
 
 ## The request path is fixed
 

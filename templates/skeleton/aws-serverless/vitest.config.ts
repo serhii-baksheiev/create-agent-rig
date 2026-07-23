@@ -5,6 +5,7 @@ export default defineConfig({
     include: [
       'packages/*/test/**/*.test.ts',
       'services/*/test/**/*.test.ts',
+      'apps/*/test/**/*.test.ts',
       'infra/test/**/*.test.ts',
     ],
     // CDK assertion tests bundle the Lambda entries with esbuild.

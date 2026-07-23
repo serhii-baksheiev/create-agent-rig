@@ -13,8 +13,11 @@ don't need.**
 packages/core/     pure domain: zod schemas + createNote()  (no I/O — hook-enforced)
 packages/shared/   logger, loadEnv(zod), typed errors
 packages/db/       JsonFileNoteStore — the only code touching the data file
-services/api/      POST /notes: payload → handler → usecase → model + event
+services/api/      POST /notes + GET /notes: payload → handler → usecase → model;
+                   also serves the built web bundle (no second runtime)
 services/worker/   spool consumer (3 attempts → var/dlq + ALARM log line)
+apps/web/          static Next export; validates with the SAME core schema the
+                   server trusts (imports core+shared only — hook-enforced)
 .claude/           the agent operating system: rules, gates, blocking hooks
 ```
 
@@ -30,12 +33,16 @@ pnpm typecheck
 pnpm check       # all of the above
 ```
 
-Start the service (two processes):
+Start the service (two processes; build the web bundle first to get the UI):
 
 ```sh
-pnpm start:api      # PORT=3000, data in var/data, queue in var/queue
+pnpm build:web      # static Next export → apps/web/out
+pnpm start:api      # PORT=3000; serves the API and apps/web/out at /
 pnpm start:worker   # polls var/queue, dead-letters into var/dlq
 ```
+
+Open http://localhost:3000/ — the form validates with the same core schema
+the server applies again on POST.
 
 Configuration is environment-first (`PORT`, `DATA_DIR`, `QUEUE_DIR`, `DLQ_DIR`,
 `POLL_INTERVAL_MS`) with working defaults — see each service's `main.ts`.
