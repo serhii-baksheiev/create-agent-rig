@@ -1,12 +1,14 @@
 # PLAN — `create-agent-rig` (project generator: agent-os + skeleton)
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
+>
+> **Status (v0.2.0).** Phases 0–7 are all shipped. Distribution is git-first (`github.com/serhii-baksheiev/create-agent-rig`, CI green). Several briefs landed on top of the original plan — see §7.5. What remains for the owner: the npm registry publish and a recorded demo. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
 ## 1. What this is and who it is for
 
-A CLI that scaffolds a new project with (a) an **agent operating system** — rules, gates, subagents, hooks, DoD — and (b) a **code skeleton** for the chosen target.
+A CLI that scaffolds a new project with (a) an **agent operating system** — rules, gates, subagents, hooks, skills, DoD — and (b) a **code skeleton** for the chosen target.
 
 **Users, by stage:**
 
@@ -14,7 +16,7 @@ A CLI that scaffolds a new project with (a) an **agent operating system** — ru
 2. **Later — 2–3 colleagues.**
 3. **Possibly — an internal showcase at work** (conditional; see §7 Phase 7).
 
-**What is valuable here (and what is not).** A monorepo scaffolder is a commodity — any team builds one in a week. The rare part is the **agent operating system**: autonomy tiers, mechanically enforced invariants, subagent gates, post-deploy verification, stop rules. The showcase (and the portfolio value) rests on that layer; the skeleton is the stand it sits on — the smallest thing that makes the rules visible in action.
+**What is valuable here (and what is not).** A monorepo scaffolder is a commodity — any team builds one in a week. The rare part is the **agent operating system**: autonomy tiers, mechanically enforced invariants (hooks), subagent gates, skills that produce verdicts, post-deploy verification, stop rules. The showcase (and the portfolio value) rests on that layer; the skeleton is the stand it sits on — the smallest thing that makes the rules visible in action.
 
 ---
 
@@ -29,230 +31,180 @@ A CLI that scaffolds a new project with (a) an **agent operating system** — ru
 | **Zero options at the personal stage** | The axes of variation are unknown (N=1). An option without data is maintenance without benefit |
 | **Primary flexibility mechanism = subtraction** | Deleting what you don't need requires zero design and zero maintenance |
 | **`agent-os/` is authored fresh, as a statement of the approach** | Not copy-pasted out of a private work repository — see §9 |
-| **The tool's own repo runs under its own `agent-os`** | Dogfooding: if the rules are awkward, you find out first |
-| **Package name `create-agent-rig`, unscoped** | npm convention: a `create-*` package is invoked as `npx create-agent-rig my-app` with **no install** (the `create-react-app` pattern). A scoped name (`@scope/create-agent-rig`) breaks the short `npx` form — keep it unscoped |
-| **Distribution: git first, registry later** | `npx github:<user>/create-agent-rig my-app` works with no registry at all — enough for the personal stage. Publishing is only needed once other people use it (phase 7) |
+| **The tool's own repo runs under its own `agent-os`** | Dogfooding: if the rules are awkward, you find out first. Since the repo has a remote + CI, it also follows its own PR flow (branch per task, merge via PR) |
+| **Package name `create-agent-rig`, unscoped** | npm convention: a `create-*` package is invoked as `npx create-agent-rig my-app` with **no install** (the `create-react-app` pattern). A scoped name breaks the short `npx` form — keep it unscoped. (`create-agent-factory`, the earlier name, was taken on npm.) |
+| **Distribution: git first, registry later** | `npx github:<user>/create-agent-rig my-app` works with no registry at all — enough for the personal stage. Publishing is only needed once other people use it |
 
 ---
 
-## 3. Repository layout
+## 3. Repository layout (as built)
 
 ```
-create-agent-rig/
-  packages/
-    cli/                          — the generator itself (TS, tested)
-      src/
-        index.ts                  — entry (bin)
-        commands/create.ts
-        lib/
-          copy-tree.ts            — tree copy with ignore filters
-          substitute.ts           — token substitution (contents + file names)
-          targets.ts              — target registry
-          prompts.ts              — interactive mode (phase 6+)
-        templates.ts              — resolve paths into templates/
-      test/
+create-agent-rig/                    — root package: the publishable unit (bin → dist)
+  packages/cli/                      — the generator (TS, tested; private inner package)
+    src/
+      index.ts                       — bin: create <dir> [--target --no-git --no-color --version] | init
+      commands/create.ts             — generate: compose layers, substitute, git baseline
+      commands/init.ts               — install the PROCESS layer into an existing repo
+      lib/
+        copy-tree.ts                 — tree copy + ignore list + mode preservation
+        substitute.ts                — token + @app/ + gitignore→.gitignore substitution
+        targets.ts                   — target registry (aws-serverless, node-service)
+        composition.ts               — layer-collision policy (disjoint paths)
+        prompts.ts                   — interactive target selection (TTY only)
+        colors.ts                    — 3-colour semantic palette (NO_COLOR aware)
+        summary.ts                   — governance final screen, counted from the tree
+      templates.ts                   — resolve paths into templates/
+    test/                            — composition, copy-tree, create, init, prompts, substitute
   templates/
     agent-os/
-      universal/                  — stack-neutral
-        CLAUDE.md
+      universal/                     — stack-neutral (process + architecture)
+        CLAUDE.md                    — the map
+        PLAN.md                      — two-queue work convention (Agent / Operator / Journal)
+        layers.json                  — classifies every universal file: process | architecture | meta
         .claude/
-          agents/                 — test-writer, code-reviewer, security-scanner
-          hooks/                  — mechanism + one genuinely blocking hook
-          rules/
-            architecture.md       — layers, boundaries, mandatory usecase
-            workflow.md           — TDD, branches, PR, DoD
-            autonomy.md           — tiers, stop rules, escalation
+          rules/                     — architecture.md, workflow.md, autonomy.md
+          agents/                    — test-writer, code-reviewer, security-scanner
+          hooks/                     — guard-core-purity, guard-web-boundary, block-no-verify,
+                                       gate-stop-dod (Stop), inject-rules (SessionStart)
+          skills/                    — pr-ship, loop
+          settings.json              — wires the hooks (PreToolUse ×3, Stop, SessionStart)
       stack/
-        node-ts/                  — TS conventions, vitest, style
-        aws-cdk/                  — infra rules, db rules (single-table etc.)
+        node-ts/.claude/             — rules/node-ts.md + hooks/dod-checks.json (DoD gate config)
+        aws-cdk/.claude/             — rules/aws-cdk.md, agents/cdk-diff-reviewer,
+                                       skills/post-deploy-verify
     skeleton/
-      aws-serverless/             — a coherent, working project
-      node-service/               — second target (phase 6)
+      aws-serverless/                — packages/{core,db,shared}, services/{api,worker},
+                                       apps/web, infra/{app-stack,web-stack}, .github/workflows/{ci,deploy}
+      node-service/                  — same layers, no cloud; serves the web bundle;
+                                       scripts/build-artifact.mjs, .github/workflows/{ci,deploy}
   test/
-    e2e/                          — generate into a temp dir + run the generated project's tests
-  CLAUDE.md                       — rules for this repo itself (dogfooding)
+    e2e/                             — generate → install → run the generated project's checks
+    template/                        — hook blocking, composition, consistency, packaging, deploy, …
+  scripts/
+    prepare.mjs                      — build the CLI on install (git/tarball paths)
+    sync-agent-os.mjs                — compose this repo's CLAUDE.md + .claude/ from templates
+  CLAUDE.md, .claude/                — this repo's own agent-os (generated by the sync script)
+  NOTES.md                           — the running log: field notes + per-brief findings
 ```
 
 ---
 
-## 4. Layer 1 — `agent-os/`
+## 4. Layer 1 — `agent-os/` (as built)
 
-**What belongs in `universal/` (stack-neutral):**
+`universal/` is stack-neutral and split on a **second axis** (see `layers.json`):
 
-- **Autonomy tiers** — what the agent merges on its own; what goes to a human; what is a hard "never".
-- **Stop rules by work-state** — N-strike (≥3 consecutive red CI runs → stop with a diagnosis), per-task budget, "flaky ≠ re-run until green", invariant conflict → stop.
-- **Subagent gates** — `test-writer` (writes the failing test before any implementation), `code-reviewer` (blocks the PR on checklist hits), `security-scanner` (triggers on auth / secrets / outbound calls).
-- **Hooks** — the mechanism plus at least one **genuinely blocking** hook (module-boundary violation, or bypassing pre-commit). This is the demonstration that an invariant is enforced by tooling, not by a wish in a prompt.
-- **DoD checklist** and **PR policy**.
-- **Post-deploy verification** — the rule "CI-green ≠ runtime-healthy", with the verdict: regression → revert, never fix-forward blind. *(Stated stack-neutrally: "verify runtime health by whatever means the target provides".)*
+- **process** — travels to any repo: TDD, gates, autonomy tiers, stop rules, DoD, PR flow, the `pr-ship`/`loop` skills, the `gate-stop-dod`/`inject-rules`/`block-no-verify` hooks;
+- **architecture** — assumes the generated shape: core purity, mandatory usecase, import boundaries, the `guard-core-purity`/`guard-web-boundary` hooks, `architecture.md`;
+- **meta** — `CLAUDE.md`, `settings.json`.
 
-**What does NOT belong in `universal/`:** anything naming a concrete provider, SDK, or storage schema → move it to `stack/<name>/`.
+This split is what makes `agent-rig init` (§6) safe — it installs only the process layer into an existing repo.
 
-**Split criterion:** a rule is universal if it can be applied without knowing where the project is hosted.
+**What ships in `universal/`:**
+
+- **Rules** — `autonomy.md` (tiers: self-merge / human-review / never; stop rules incl. N-strike, flaky≠retry, invariant conflict, session-staleness; post-deploy verdict), `workflow.md` (TDD, branch discipline, PR flow, review-context isolation, DoD), `architecture.md` (layers, mandatory usecase, core purity, the web boundary).
+- **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist), `security-scanner` (auth/secrets/parsing/outbound triggers).
+- **Hooks** — five, wired in `settings.json`:
+  - `guard-core-purity` (PreToolUse) — refuses I/O/clock/randomness/env in `packages/core`;
+  - `guard-web-boundary` (PreToolUse) — refuses `db`/service imports from `apps/web`;
+  - `block-no-verify` (PreToolUse) — refuses pre-commit bypass (quote-aware);
+  - `gate-stop-dod` (Stop) — refuses to end the session while a DoD check fails (anti-loop via `stop_hook_active`, fails open);
+  - `inject-rules` (SessionStart) — re-injects `autonomy.md` so the rules survive compaction/resume.
+- **Skills** — `pr-ship` (pre-merge gate → SHIP/HOLD), `loop` (unattended driver over the two-queue `PLAN.md`; "queue empty → end, do not invent work").
+
+**Stack layers:** `node-ts` (TS/vitest conventions, the merge-criterion command, the `dod-checks.json` the Stop gate runs) and `aws-cdk` (IAM/DLQ/single-table rules, the `cdk-diff-reviewer` deploy-gate agent, the `post-deploy-verify` skill).
+
+**Split criterion:** a rule is universal if it can be applied without knowing where the project is hosted; process vs architecture is whether it can be applied without knowing the project's *shape*.
 
 ---
 
-## 5. Layer 2 — `skeleton/<target>/`
+## 5. Layer 2 — `skeleton/<target>/` (as built)
 
 Each target is a **coherent, self-contained, working** project. No code is shared between targets: duplication here is **cheaper** than abstraction.
 
-### 5.1 `aws-serverless` (first target)
+### 5.1 `aws-serverless` (default target)
 
-**🔴 The smallest project that proves the architecture — NOT a clone of an existing product.** Exactly enough that every layer is visible and the gates actually fire:
+The smallest project that proves the architecture — every layer visible, every gate able to fire:
 
-- `packages/core/` — a pure module (zero I/O, no clock, no randomness): one domain function + a zod schema;
-- `packages/db/` — one model; the single place that touches the storage SDK;
+- `packages/core/` — pure: zod schemas + `createNote()` (no I/O; hook-defended);
 - `packages/shared/` — logger, `loadEnv(zod)`, typed errors;
-- `services/api/` — **one** HTTP route through every layer: payload (zod) → handler → usecase → service → model;
-- `services/worker/` — **one** queue consumer + DLQ + alarm;
-- `infra/` — a CDK stack with least-privilege IAM;
-- tests at every layer (the core exhaustively); CI: lint + test + synth.
+- `packages/db/` — `NoteModel`, the single place that touches the DynamoDB SDK;
+- `services/api/` — **two** routes through every layer: `POST /notes` and `GET /notes` (payload → handler → usecase → model);
+- `services/worker/` — one SQS consumer + DLQ + alarm;
+- `apps/web/` — a static Next export that imports the **same** core schema the server trusts (client + server validation through one function);
+- `infra/` — CDK: `AppStack` (table, queue+DLQ+alarm, **three** lambdas, HTTP API with CORS, least-privilege IAM) + `WebStack` (S3 + CloudFront for the static bundle);
+- `.github/workflows/` — `ci.yml` (lint/typecheck/test/build/synth) + `deploy.yml` (**dev** deploy via OIDC, no static keys, skips cleanly with no credentials);
+- tests at every layer (core exhaustively).
 
-**What it demonstrates:** the mandatory usecase layer, core purity (and the hook that defends it), DLQ discipline, TDD.
+**Request path:** `payload → handler → usecase → model`. The separate *service* layer from the early draft was deliberately dropped — in the minimal skeleton a usecase is one domain function plus one model call, and a pass-through service is ceremony. `architecture.md` says when a service layer would earn its place; a consistency test keeps the chain stated identically everywhere.
 
-### 5.2 Substitution mechanism
+**What it demonstrates:** the mandatory usecase layer, core purity (and the hook that defends it), the web import boundary (and its hook), DLQ discipline, least-privilege IAM, OIDC deploy, TDD.
+
+### 5.2 `node-service` (second target)
+
+The same layers with no cloud: a `node:http` server (which also serves the built web bundle — no second runtime), a `JsonFileNoteStore` behind the same model boundary, a spool-directory queue with a retry budget → DLQ dir + ALARM log line, the worker as a process. Its "deploy" is `scripts/build-artifact.mjs` — an esbuild bundle (`dist/`) that runs and boots, shipped nowhere (destination is the owner's choice). agent-os composition: `universal` + `node-ts` (no `aws-cdk`, so no `post-deploy-verify`).
+
+### 5.3 Substitution mechanism
 
 - The template uses a **valid** placeholder scope `@app/` so it runs as-is; the CLI rewrites `@app/` → `@<scope>/`.
-- Tokens: `__PROJECT_NAME__`, `__PROJECT_SCOPE__`, `__REGION__` — keep the token set **small** and documented.
-- Substitution applies to file **contents and file names**.
-- Binary files are copied untouched.
+- Tokens: `__PROJECT_NAME__`, `__PROJECT_SCOPE__`, `__REGION__` — the set is small and documented.
+- Dotfile trick: templates store `gitignore` un-dotted (npm strips `.gitignore` from tarballs); the CLI maps `gitignore` → `.gitignore` on generation.
+- Substitution applies to file **contents and file names**; file **modes** are preserved; binary files are copied untouched.
 
 ---
 
-## 6. Flexibility model (staged, not all at once)
+## 6. Flexibility model (staged)
 
-| Level | Mechanism | When |
+| Level | Mechanism | Status |
 | --- | --- | --- |
-| **1. Subtraction** | The generated project is yours — delete what you don't need | From phase 3 (always the default) |
-| **2. Target selection** | `--target aws-serverless \| node-service` — coherent alternatives | Phase 6 |
-| **3. Optional modules** | `--with-<feature>` inside a target | Phase 7, **data-gated only** |
+| **1. Subtraction** | The generated project is yours — delete what you don't need | Always the default |
+| **2. Target selection** | `--target aws-serverless \| node-service` — coherent alternatives, registry + interactive picker | **Done** |
+| **3. Optional modules** | `--with-<feature>` inside a target | Still gated on Phase 11 data — **not built** |
+| **(reach) `agent-rig init`** | Install the process layer into an *existing* repo (dry-run, never clobbers CLAUDE.md) | **Done** — grows where the tool applies without growing template surface |
 
-🔴 Level 3 is allowed **only** for genuinely detachable capabilities and **only** after real usage shows someone needs the choice. Until then: subtraction.
-
----
-
-## 7. Phases
-
-### Phase 0 — Bootstrap the tool's repository
-
-- pnpm workspace, TS, vitest, eslint + prettier, husky / pre-commit;
-- CI: lint + typecheck + test;
-- its own `CLAUDE.md` (draft — it becomes the source for `agent-os/universal` in phase 2).
-
-**DoD:** green CI on an empty repo; `pnpm test` passes.
+🔴 Level 3 is allowed **only** for genuinely detachable capabilities and **only** after real usage shows someone needs the choice. Until then: subtraction. No `--with-*` option exists yet, by design.
 
 ---
 
-### Phase 1 — Walking skeleton of the CLI
+## 7. Phases — all shipped
 
-End-to-end generation over a **trivial** tree (a `package.json` plus one file) — the generation architecture matters here, not the payload.
+| Phase | What | State |
+| --- | --- | --- |
+| **0** | Bootstrap: pnpm workspace, TS, vitest, eslint/prettier, pre-commit, CI, draft CLAUDE.md | ✅ |
+| **1** | Walking-skeleton CLI: copy-tree, substitute, create, bin; e2e (temp dir + tarball + git install) | ✅ |
+| **2** | `agent-os/universal`: CLAUDE.md map, rules, gate agents, blocking hooks, DoD/PR — authored fresh; the hook demonstrably blocks a violation | ✅ |
+| **3** | `skeleton/aws-serverless`: all layers + tests + CDK + CI; anti-rot (tested in place AND after generation) | ✅ |
+| **4** | universal ↔ stack seam: `node-ts` + `aws-cdk`; CLI composes `.claude/`; universal is provider-free (grep test) | ✅ |
+| **5** | Dogfooding: this repo's CLAUDE.md + .claude/ are composed from `templates/agent-os` by `sync-agent-os.mjs`; drift fails the suite | ✅ |
+| **6** | Second target `node-service`; `--target` + interactive; **universal applied with zero edits** — the seam held | ✅ |
+| **7** | Showcase: `demo.sh` (generate → gates → hook blocks live → run), governance README | ✅ (registry publish + recorded demo remain — §11) |
 
-- `bin` + argument parsing: `create <dir>`;
-- `copy-tree` (ignore list: `node_modules`, `dist`, local artifacts);
-- `substitute` (contents + file names);
-- errors: target directory exists and is non-empty → a clear refusal.
+### 7.5 Beyond the plan (landed in 0.2.0)
 
-**🔴 An e2e test starts here:** generate into a temp directory → assert structure and substitution. This is the foundation of §8.
+Work driven by later briefs, each closing a rule the template already stated (detail in `NOTES.md`):
 
-**DoD:** `pnpm test` green including e2e; a local tarball install (`npm pack` → `npx <tarball> myapp`) produces the expected tree; `npx github:<user>/create-agent-rig myapp` produces the same tree (the personal-stage distribution path — no registry needed).
-
-**Note on what "done" means for the user-facing goal:** this phase makes the *mechanism* work, but the output is still a trivial tree. The expected end result — `npx create-agent-rig my-app` producing a real, runnable project — lands at the end of **phase 3**.
-
----
-
-### Phase 2 — `agent-os/universal`
-
-**The core of the value.** Authored **fresh** as a statement of the approach (§9), not by copying.
-
-- The template's `CLAUDE.md`: the map, an "if you read only four sections" pointer, architecture, autonomy boundaries, foot-guns;
-- `rules/architecture.md`, `rules/workflow.md`, `rules/autonomy.md`;
-- `agents/`: `test-writer`, `code-reviewer`, `security-scanner` — with triggers and scope boundaries;
-- `hooks/`: the mechanism + **one genuinely blocking** hook;
-- DoD checklist + PR policy.
-
-**DoD:**
-
-- the generated project contains a working `.claude/`;
-- 🔴 **the hook demonstrably blocks a violation** (test: an attempted boundary breach is refused at the tool layer);
-- a fresh Claude Code session in the generated project can orient itself without outside explanation.
+- **Distribution hardening** — file-mode preservation, the `gitignore`→`.gitignore` trick, per-template `.npmignore`, a pack-path e2e (both targets), the inner package locked against publication, full manifest (LICENSE, keywords).
+- **agent-os v2** — skills (`pr-ship`, `post-deploy-verify`), the `cdk-diff-reviewer` agent, review-context isolation + session-staleness rules, the quote-aware `block-no-verify` fix.
+- **Web frontend** — `apps/web` (static Next, plain by design) proving core purity as physics; the `guard-web-boundary` hook; `GET /notes`; `WebStack` (S3+CloudFront); the shared-validation test.
+- **CLI polish** — the governance final screen (counted from the tree), `--version`, non-TTY correctness, the colour palette, `git init` baseline, the restructured README.
+- **Enforcement hooks + reach** — `gate-stop-dod` (Stop), `inject-rules` (SessionStart), the process/architecture seam (`layers.json`), `agent-rig init`, the `loop` skill + two-queue `PLAN.md`.
+- **PR flow** — branch discipline + the provider-neutral merge criterion in `workflow.md` (concrete command in `stack/node-ts`).
+- **CD** — dev deploy workflows (aws-serverless: OIDC `cdk deploy`; node-service: artifact build), `post-deploy-verify` scoped to what the skeleton provisions.
 
 ---
 
-### Phase 3 — `skeleton/aws-serverless`
+## 8. Verification strategy (as built)
 
-A minimal but **real** project (§5.1).
+The scaffolder is kept from rotting by:
 
-- All layers + tests + CDK + CI;
-- the generated project's README: how to run it, how to deploy it, where the boundaries are.
+1. **Templates tested in place** — each skeleton is a valid project; CI runs `pnpm check` per target (`template-aws-serverless`, `template-node-service` jobs).
+2. **The generated project tested after generation** — the e2e suite generates cold and runs the generated project's own `check` (install → lint → typecheck → test → build → synth), for **both** targets, and via the **pack path** (tarball install), not only git.
+3. **A per-target matrix** — both targets exercised in CI and e2e.
+4. **A rules-composition check** — `universal` free of any provider mention (grep), `.claude/` assembled without path collisions, the layer-chain stated identically everywhere.
+5. **Hook / gate tests** — every hook's blocking behaviour under test; the DoD stop-gate and rule-injection behaviour; the deploy workflows' OIDC/no-static-keys/degrade-cleanly invariants.
+6. **A weekly lockfile-free run** — `template-freshness.yml` reinstalls each template without a lockfile and runs its checks (the primary early-warning channel now that Next is in the stack).
 
-**🔴 Anti-rot invariant:** the template is exercised by tests **in place** (it is a valid project), and separately after generation.
-
-**DoD:**
-
-- inside the template directory: `pnpm test`, `pnpm lint`, `cdk synth` — all green;
-- after generation: the same, green, in the generated project;
-- the phase-1 e2e is extended: generate → install → run the generated project's tests → `synth`.
-
----
-
-### Phase 4 — Split `agent-os/universal` ↔ `stack/`
-
-The first target exists — draw the seam **before** adding a second one.
-
-- Move AWS/DynamoDB/CDK specifics out of `universal/` into `stack/aws-cdk/`;
-- move TS/vitest conventions into `stack/node-ts/`;
-- the CLI assembles `.claude/` as a **composition**: `universal` + `stack/<selected>`.
-
-**DoD:** `universal/` contains no mention of any provider or SDK; the generated project receives a correct composition of rules; composition tests are green.
-
----
-
-### Phase 5 — Dogfooding + quarantine
-
-- The tool's repository switches to its **own** `agent-os/universal` + `stack/node-ts`;
-- record what turned out to be awkward — this is the first honest data on the quality of the rules.
-
-**DoD:** the tool repo's `CLAUDE.md` is generated from / synced with `templates/agent-os/` rather than living as a separate copy; drift is caught by a test.
-
----
-
-### Phase 6 — Second target (portability proof)
-
-**Recommendation: `node-service`** — a plain Node service (container / local run), no cloud. Reasons: it is the cheapest proof of the seam, and it is likely closer to the next personal projects (tools, daemons) than a second cloud would be.
-
-- `--target <name>`, a target registry, interactive selection when the flag is absent;
-- `skeleton/node-service/`: the same layers without AWS — an HTTP server, in-memory/file storage behind the same "model" boundary, the worker as a process;
-- `agent-os` composition: `universal` + `node-ts` (no `aws-cdk`).
-
-**🔴 This is where the central claim gets tested:** did `universal` apply **without edits**? If it had to be edited, the seam is wrong — fix the seam, don't bend the rule to fit the target.
-
-**DoD:** both targets generate and pass their own tests; `universal` was not modified for the sake of the second target; the per-target e2e matrix is green.
-
----
-
-### Phase 7 — Showcase / portfolio layer *(conditional on audience, not on value)*
-
-- **A 2-minute demo script:** generate → tests green → **an attempted invariant violation is blocked by the hook** → run/deploy. The blocking scene is the strongest one.
-- README with the governance narrative: autonomy tiers, mandatory gates, stop rules, the post-deploy verdict.
-- (optional) publish to an internal or public registry.
-
-**Note:** the audience for this phase is conditional (internal presentation vs. public repo / portfolio), but the artifact serves both. Do not decide the audience now — it does not affect the architecture of phases 0–6.
-
-**DoD:** the demo reproduces from scratch on a clean machine, following the README, within the stated time.
-
----
-
-## 8. Verification strategy (cross-cutting, from phase 1)
-
-The only thing that keeps a scaffolder from rotting:
-
-1. **The template is tested in place** — it is a valid project, its CI runs it;
-2. **The generated project is tested after generation** — `install → test → lint → synth`;
-3. **A per-target matrix** — from phase 6;
-4. **A rules-composition check** — `universal` free of stack specifics (grep), `.claude/` assembled correctly;
-5. **A blocking-hook test** — the violation is refused.
-
-Items 1–2 are **mandatory** in CI: without them the template stops building within a couple of months and you learn about it from a user.
+Test surface: 6 CLI unit files, 10 `test/template/*` files, 6 `test/e2e/*` files (~135 tests). Items 1–2 are mandatory in CI.
 
 ---
 
@@ -269,17 +221,21 @@ In practice: open an empty file and write the rule in your own words rather than
 | Don't | Why |
 | --- | --- |
 | Build a "cloud-agnostic storage/queue" abstraction | Lowest-common-denominator or leaky facade. Portability comes from coherent targets |
-| Add options before phase 6–7 | The axes of variation are unknown; every flag is maintenance without benefit |
+| Add `--with-*` options before Phase 11 data exists | The axes of variation are unknown; every flag is maintenance without benefit in every target |
 | Clone an existing product into the skeleton | The skeleton proves the architecture; it does not reproduce features. A big skeleton is a big maintenance bill |
 | Use a template engine (handlebars/ejs) | It breaks "the template is a working project"; token substitution is enough |
 | Copy `agent-os` from the work repository | See §9 |
-| Make a second **cloud** the second target | Expensive, and it proves the seam no better than `node-service` |
+| Make a second **cloud** the next target | Expensive, and it proves the seam no better than `node-service` |
+| Let `agent-os` only ever grow | It must be able to **lose** rules too — no append-only "lessons" file, no twelve-skill packs. Restraint is the default |
 
 ---
 
-## 11. Open questions for the owner
+## 11. Open questions / owner actions
 
-- ~~Tool name~~ — **decided: `create-agent-rig`, unscoped** (see §2).
-- **Second target** — is `node-service` right, or should it be another shape (a CLI tool? a frontend app?).
-- **Registry** — private / internal / public (affects phase 7, not before).
-- **Repository hosting** — where it lives (affects CI and §9).
+- ~~Tool name~~ — **decided: `create-agent-rig`, unscoped.**
+- ~~Second target~~ — **decided: `node-service`** (plus a static web frontend in both targets).
+- ~~Repository hosting~~ — **decided: `github.com/serhii-baksheiev/create-agent-rig`** (remote + CI live).
+- **npm registry publish** — still an owner action: `npm publish` 0.2.0 with 2FA, then a post-publish smoke (`npx create-agent-rig@latest`). Until then, distribution is git-first.
+- **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
+- **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). The `worktree` rule is likewise parked until unattended `loop` runs overlap hand-driven work.
+- **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.
