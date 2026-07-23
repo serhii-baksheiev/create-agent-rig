@@ -62,6 +62,19 @@ tool's own repo runs under them. Recorded as encountered:
   `create-agent-rig` on 2026-07-23 — re-checked free that day. First publish
   claims it.)_
 
+## Phase 9 — composition safety (landed clean, no findings)
+
+Strict policy shipped in commit `7df42f2`: before anything is copied,
+`createProject` lists every layer (skeleton, universal, stack overlays) and
+**refuses** generation on a path claimed twice; intended overwrites live in an
+explicit `ALLOWED_OVERWRITES` set (empty today), never in copy order. The
+per-target ownership map is asserted by `test/template/composition.test.ts`
+(no collisions in either target; skeleton and agent-os fully disjoint). The
+phase produced no surprises — which is why it originally had no entry here;
+recorded now so the log has no numbering gap. Later briefs leaned on it: the
+skills, the `cdk-diff-reviewer` agent and `apps/web` all passed the collision
+check with zero adjustments.
+
 ## Publish brief (2026-07-23) — closing findings
 
 - **npm 10.9 ignores `"private": true` on `npm publish --dry-run`** (measured:
