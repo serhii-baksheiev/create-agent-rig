@@ -26,7 +26,9 @@ services/         entrypoints; every request: payload → handler → usecase �
 ```
 
 The target-specific details (how to run, deploy, and verify runtime health)
-live in `README.md`.
+live in `README.md`. Alongside the universal rules, `.claude/rules/` carries
+the stack-specific conventions composed in for this project's target — read
+them all; they are one rulebook.
 
 ## How work happens here
 

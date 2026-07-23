@@ -66,7 +66,14 @@ describe('createProject', () => {
     );
     expect(settings.hooks?.PreToolUse?.length).toBeGreaterThan(0);
 
-    for (const rule of ['architecture.md', 'workflow.md', 'autonomy.md']) {
+    // Composition: universal rules + the target's stack rules (PLAN.md phase 4).
+    for (const rule of [
+      'architecture.md',
+      'workflow.md',
+      'autonomy.md',
+      'node-ts.md',
+      'aws-cdk.md',
+    ]) {
       await expect(
         readFile(path.join(projectDir, '.claude', 'rules', rule), 'utf8'),
       ).resolves.toBeTruthy();

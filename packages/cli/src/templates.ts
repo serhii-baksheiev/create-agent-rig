@@ -16,6 +16,10 @@ export function skeletonDir(skeleton: string): string {
   return path.join(templatesRoot(), 'skeleton', skeleton);
 }
 
-export function agentOsDir(layer: string): string {
-  return path.join(templatesRoot(), 'agent-os', layer);
+export function agentOsUniversalDir(): string {
+  return path.join(templatesRoot(), 'agent-os', 'universal');
+}
+
+export function agentOsStackDir(stack: string): string {
+  return path.join(templatesRoot(), 'agent-os', 'stack', stack);
 }

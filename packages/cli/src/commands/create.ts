@@ -4,7 +4,7 @@ import { copyTree } from '../lib/copy-tree.js';
 import { substituteContent, substituteFileName } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { DEFAULT_TARGET, TARGETS } from '../lib/targets.js';
-import { agentOsDir, skeletonDir } from '../templates.js';
+import { agentOsStackDir, agentOsUniversalDir, skeletonDir } from '../templates.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class CreateError extends Error {}
@@ -53,8 +53,12 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
   await mkdir(projectDir, { recursive: true });
   // Layer 2: the code skeleton for the target…
   await copyTree(skeletonDir(target.skeletonDir), projectDir, transforms);
-  // …then layer 1 on top: the agent operating system (CLAUDE.md + .claude/).
-  await copyTree(agentOsDir('universal'), projectDir, transforms);
+  // …then layer 1 on top: the agent operating system, composed as
+  // universal + the target's stack layers (CLAUDE.md + .claude/).
+  await copyTree(agentOsUniversalDir(), projectDir, transforms);
+  for (const stack of target.stacks) {
+    await copyTree(agentOsStackDir(stack), projectDir, transforms);
+  }
 
   return { projectDir, projectName };
 }

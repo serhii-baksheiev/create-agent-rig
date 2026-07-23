@@ -5,6 +5,11 @@
 export interface Target {
   /** Directory name under `templates/skeleton/`. */
   skeletonDir: string;
+  /**
+   * agent-os stack layers composed on top of `universal`, in order
+   * (directories under `templates/agent-os/stack/`).
+   */
+  stacks: readonly string[];
   /** Default region substituted for `__REGION__` (only meaningful for cloud targets). */
   defaultRegion: string;
 }
@@ -12,6 +17,7 @@ export interface Target {
 export const TARGETS: Record<string, Target> = {
   'aws-serverless': {
     skeletonDir: 'aws-serverless',
+    stacks: ['node-ts', 'aws-cdk'],
     defaultRegion: 'eu-central-1',
   },
 };
