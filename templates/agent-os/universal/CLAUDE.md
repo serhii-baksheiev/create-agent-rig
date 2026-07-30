@@ -59,14 +59,48 @@ them all; they are one rulebook.
   filesystem wipe — and carries the kill switch; `gate-stop-dod` refuses to end
   the session while a Definition-of-Done check fails. If a hook blocks you, fix
   the cause; never route around a hook.
+- **Enforcement is a pattern you can apply again.** Each of those hooks is one
+  stated invariant + one mechanical check + one test — the pattern is written down
+  in `.claude/rules/invariants.md`, and the `new-invariant` skill walks you
+  through adding one. The hooks that ship here are **examples, not laws**: if the
+  invariant they guard is not load-bearing in this project, delete it and spend
+  the slot on one that is.
 - **There is a brake, and it is a real file.** `touch
   ~/.claude/__PROJECT_NAME__-loop-STOP` and `guard-bash` denies every merge
   until it is removed. Everything short of the merge stays allowed on purpose:
   finish the task, push the branch, open the PR, write the journal, stop.
   Stopping cleanly never means losing the work.
-- **Work comes from the queue.** The Agent queue in `PLAN.md` is where
-  autonomous work is picked up (the `loop` skill drives it); an empty queue
-  ends the session — it is never a cue to invent work.
+- **Work comes from the queue, through an adapter.** The `loop` skill selects via
+  `.claude/scripts/queue/index.mjs`, which reads whichever queue
+  `.claude/queue.json` names — the Agent queue in `PLAN.md` by default, issues in
+  this repository once it has a remote. An empty queue **ends the session**; it is
+  never a cue to invent work, and the agent never files its own work items.
+
+## The elevated paths of this project
+
+Tier 2 in `.claude/rules/autonomy.md` names *kinds* of change. This block names
+the **paths** in this repository where those kinds live, and
+`.claude/scripts/detect-missed-gate.mjs` reads it — so a path that is not declared
+is a path the gate sweep cannot see.
+
+```elevated-paths
+packages/db/src/
+```
+
+**That one is a seed, not a law — the list is yours to extend.** It is what every
+generated shape has; a real project accumulates more (auth handlers, billing, a
+credentials module, a migration directory). Add a path the same day you add the
+code, because the gap between the two is exactly the window in which a change
+slips through unreviewed.
+
+The declaration is **composed, not centralised**: the sweep unions this block with
+every `elevated-paths` block in `.claude/rules/`, so a stack layer declares the
+paths that only exist in its shape. A gate declared over a directory this project
+does not have would report "clean" while looking nowhere.
+
+Nothing about this list is retroactive. Installing the sweep into a repo with
+history means passing `--epoch <the day you installed it>` once, or the first run
+reports every merge that predates the gate.
 
 ## Foot-guns
 

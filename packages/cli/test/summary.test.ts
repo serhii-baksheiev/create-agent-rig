@@ -24,7 +24,15 @@ describe('governance summary — hooks are named by the invariant they enforce',
       await writeFile(path.join(hooks, file), '');
     }
 
+    // the stack layer drops its DoD config in the same directory
+    await writeFile(path.join(hooks, 'dod-checks.json'), '[]');
+
     const summary = await collectGovernance(dir);
+    // A config file counted as an enforced hook makes the screen overstate the
+    // enforcement — in a tool whose whole claim is enforcement, that is the one
+    // number that may not be inflated.
+    expect(summary.hooks).toHaveLength(5);
+    expect(summary.hooks.join(' ')).not.toMatch(/json/);
     expect(summary.hooks).toContain('core purity');
     expect(summary.hooks).toContain('web boundary');
     expect(summary.hooks).toContain('no verify');

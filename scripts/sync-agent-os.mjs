@@ -14,6 +14,30 @@ const stacks = ['node-ts'].map((s) => path.join(repoRoot, 'templates', 'agent-os
 
 const substitute = (content) => content.replaceAll('__PROJECT_NAME__', 'create-agent-rig');
 
+/**
+ * This repo's own elevated-tier paths — the ones `detect-missed-gate.mjs` sweeps.
+ *
+ * The template seeds the block with the generated skeleton's paths (`infra/`,
+ * `packages/db/src/`), which do not exist here. Left in place they would declare
+ * a gate over nothing, and the sweep would report "clean" while looking nowhere.
+ * So dogfooding replaces the block rather than appending a second one: one list,
+ * one home, and every entry a real directory in this tree.
+ */
+const ELEVATED_PATHS = [
+  '.github/workflows/', // what runs on every push, and what deploys
+  'scripts/', // prepare + the dogfooding sync itself
+  'package.json', // the publish manifest: files, bin, version
+  'templates/agent-os/universal/.claude/hooks/', // the enforcement layer
+  'templates/agent-os/universal/.claude/scripts/', // and the sweeps that watch it
+  'templates/agent-os/universal/.claude/settings.json', // the hook wiring
+];
+
+const withElevatedPaths = (claudeMd) =>
+  claudeMd.replace(
+    /```elevated-paths\n[\s\S]*?```/,
+    `\`\`\`elevated-paths\n${ELEVATED_PATHS.join('\n')}\n\`\`\``,
+  );
+
 /** target path (repo-relative) -> composed content */
 function compose() {
   const out = new Map();
@@ -42,7 +66,9 @@ function compose() {
   const addendum = readFileSync(path.join(repoRoot, '.claude', 'CLAUDE.addendum.md'), 'utf8');
   out.set(
     'CLAUDE.md',
-    substitute(readFileSync(path.join(universal, 'CLAUDE.md'), 'utf8')) + '\n---\n\n' + addendum,
+    withElevatedPaths(substitute(readFileSync(path.join(universal, 'CLAUDE.md'), 'utf8'))) +
+      '\n---\n\n' +
+      addendum,
   );
 
   // Repo-specific override: this repo's `pnpm test` is the full e2e (minutes).

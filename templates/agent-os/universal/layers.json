@@ -2,6 +2,10 @@
   "process": [
     ".claude/rules/workflow.md",
     ".claude/rules/autonomy.md",
+    ".claude/rules/invariants.md",
+    ".claude/skills/new-invariant/SKILL.md",
+    ".claude/skills/new-invariant/guard-invariant.example.mjs",
+    ".claude/skills/new-invariant/guard-invariant.example.test.mjs",
     ".claude/agents/test-writer.md",
     ".claude/agents/code-reviewer.md",
     ".claude/agents/security-scanner.md",
@@ -12,6 +16,15 @@
     ".claude/skills/pr-ship/SKILL.md",
     ".claude/skills/loop/SKILL.md",
     ".claude/skills/worktree-task/SKILL.md",
+    ".claude/scripts/detect-missed-gate.mjs",
+    ".claude/scripts/reconcile-external-prs.mjs",
+    ".claude/scripts/preflight.mjs",
+    ".claude/scripts/queue/core.mjs",
+    ".claude/scripts/queue/plan-md.mjs",
+    ".claude/scripts/queue/github-issues.mjs",
+    ".claude/scripts/queue/jira.mjs",
+    ".claude/scripts/queue/index.mjs",
+    ".claude/queue.json",
     "PLAN.md"
   ],
   "architecture": [
