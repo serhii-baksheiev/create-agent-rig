@@ -22,14 +22,24 @@ const names = async (dir: string, strip: RegExp): Promise<string[]> => {
   }
 };
 
+/**
+ * Hooks whose filename names the *tool* they intercept rather than the
+ * invariant they enforce. Stripping the prefix would print "bash", which tells
+ * the reader nothing — and a screen that sells enforcement may not be vague.
+ */
+const HOOK_LABELS: Readonly<Record<string, string>> = {
+  'guard-bash': 'never tier',
+};
+
 export async function collectGovernance(projectDir: string): Promise<GovernanceSummary> {
   const claude = path.join(projectDir, '.claude');
   return {
     rules: await names(path.join(claude, 'rules'), /\.md$/),
     agents: await names(path.join(claude, 'agents'), /\.md$/),
-    hooks: (await names(path.join(claude, 'hooks'), /\.mjs$/))
+    hooks: (await names(path.join(claude, 'hooks'), /\.mjs$/)).map(
       // guard-core-purity → "core purity": the mechanism, not the filename
-      .map((hook) => hook.replace(/^(guard|block)-/, '').replaceAll('-', ' ')),
+      (hook) => HOOK_LABELS[hook] ?? hook.replace(/^(guard|block)-/, '').replaceAll('-', ' '),
+    ),
     skills: await names(path.join(claude, 'skills'), /$^/),
   };
 }

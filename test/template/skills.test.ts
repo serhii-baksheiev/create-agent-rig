@@ -73,6 +73,37 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
   });
 });
 
+// extraction brief §3 Tier A: the worktree lifecycle carries the mechanism and
+// almost no domain — but the host-specific paths and Windows notes are domain.
+describe('worktree-task skill (universal) — isolation per task, host-agnostic', () => {
+  const read = () => readFile(skillPath('universal', '.claude', 'skills', 'worktree-task'), 'utf8');
+
+  it('exists and states both halves of the lifecycle', async () => {
+    const content = await read();
+    const fm = frontmatterOf(content);
+    expect(fm['name']).toBe('worktree-task');
+    expect(fm['allowed-tools']).toBeTruthy();
+    expect(content).toMatch(/git worktree add/);
+    expect(content).toMatch(/git worktree remove/);
+    expect(content).toMatch(/git worktree prune/);
+  });
+
+  it('names the gotchas that make the cleanup non-obvious', async () => {
+    const content = await read();
+    expect(content).toMatch(/absolute/i); // stale cwd nests worktrees in dead paths
+    expect(content).toMatch(/cd out|cd OUT/i); // remove fails from inside
+    expect(content).toMatch(/another session|other session/i); // concurrent sessions
+  });
+
+  it('carries no host-specific absolute path — the domain that must not travel', async () => {
+    const content = await read();
+    expect(content).not.toMatch(/[A-Z]:\//); // C:/Users/...
+    expect(content).not.toMatch(/\/Users\/[a-z]/i);
+    expect(content).not.toMatch(/\/home\/[a-z]/i);
+    expect(content).not.toMatch(/windows/i);
+  });
+});
+
 describe('PLAN.md queue convention (universal)', () => {
   it('ships both queues so work has a stated origin', async () => {
     const plan = await readFile(
@@ -82,6 +113,22 @@ describe('PLAN.md queue convention (universal)', () => {
     expect(plan).toContain('## Agent queue');
     expect(plan).toContain('## Operator queue');
     expect(plan).toMatch(/__PROJECT_NAME__/);
+  });
+
+  // extraction brief §3 Tier A: the journal template. A journal with no stated
+  // fields decays into a diary — and the fields are what a later reader (or a
+  // sweep) can actually cross-check.
+  it('states the journal entry fields, so an entry can be incomplete on purpose', async () => {
+    const plan = await readFile(
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'PLAN.md'),
+      'utf8',
+    );
+    expect(plan).toContain('## Journal');
+    for (const field of ['done', 'escalated', 'stopped at', 'queue hygiene']) {
+      expect(plan.toLowerCase(), field).toContain(field);
+    }
+    // a field the session cannot observe stays visibly empty, never estimated
+    expect(plan).toMatch(/never estimate|not estimated|visibly empty/i);
   });
 });
 

@@ -12,3 +12,4 @@ var/
 .next/
 next-env.d.ts
 templates/skeleton/*/apps/web/out/
+.claude/worktrees/
