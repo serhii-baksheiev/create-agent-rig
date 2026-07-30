@@ -18,6 +18,12 @@
     ".claude/skills/worktree-task/SKILL.md",
     ".claude/scripts/detect-missed-gate.mjs",
     ".claude/scripts/reconcile-external-prs.mjs",
+    ".claude/scripts/preflight.mjs",
+    ".claude/scripts/queue/core.mjs",
+    ".claude/scripts/queue/plan-md.mjs",
+    ".claude/scripts/queue/github-issues.mjs",
+    ".claude/scripts/queue/index.mjs",
+    ".claude/queue.json",
     "PLAN.md"
   ],
   "architecture": [

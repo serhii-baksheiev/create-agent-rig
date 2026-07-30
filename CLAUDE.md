@@ -70,9 +70,11 @@ them all; they are one rulebook.
   until it is removed. Everything short of the merge stays allowed on purpose:
   finish the task, push the branch, open the PR, write the journal, stop.
   Stopping cleanly never means losing the work.
-- **Work comes from the queue.** The Agent queue in `PLAN.md` is where
-  autonomous work is picked up (the `loop` skill drives it); an empty queue
-  ends the session — it is never a cue to invent work.
+- **Work comes from the queue, through an adapter.** The `loop` skill selects via
+  `.claude/scripts/queue/index.mjs`, which reads whichever queue
+  `.claude/queue.json` names — the Agent queue in `PLAN.md` by default, issues in
+  this repository once it has a remote. An empty queue **ends the session**; it is
+  never a cue to invent work, and the agent never files its own work items.
 
 ## The elevated paths of this project
 
