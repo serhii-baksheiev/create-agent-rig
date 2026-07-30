@@ -14,19 +14,35 @@
 // be a snapshot that nothing updates when the blocker lands; this cannot go stale,
 // because it is re-resolved from the blockers themselves on every selection.
 import { execFileSync } from 'node:child_process';
-import { fingerprintOf, validateProposal } from './core.mjs';
+import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
 
 export const name = 'github-issues';
 
-const BLOCKED_BY = /^\s*(?:blocked by|depends on|blocker)\s*:?\s*#(\d+)\s*$/gim;
+/**
+ * A dependency line, and everything after the keyword on it.
+ *
+ * Two defects fixed here at once. It used to anchor `$` right after the number,
+ * so `Blocked by #7, waiting on design` matched nothing and the dependent read as
+ * unblocked — a silent miss, not a safe failure. And `\s*:?\s*` put two unbounded
+ * quantifiers side by side, which backtracks quadratically: a 64k issue body that
+ * matched the keyword but never reached a `#` cost ~13s, and the queue is re-read
+ * on every task, so anyone able to open an issue could tax every selection.
+ */
+const BLOCKED_BY = /^[ \t]*(?:blocked by|depends on|blocker)[ \t:]*(.*)$/gim;
+const ISSUE_REF = /#(\d+)/g;
 const PRIORITY = /^(?:priority[:-]|p)(\d+)$/i;
 
 const labelNames = (issue) =>
   (issue?.labels ?? []).map((label) => (typeof label === 'string' ? label : (label?.name ?? '')));
 
-/** The blocker ids this issue's body links to. */
-export const blockerIdsOf = (issue) =>
-  [...String(issue?.body ?? '').matchAll(BLOCKED_BY)].map((match) => match[1]);
+/** The blocker ids this issue's body links to — several per line is fine. */
+export const blockerIdsOf = (issue) => {
+  const ids = [];
+  for (const line of String(issue?.body ?? '').matchAll(BLOCKED_BY)) {
+    for (const ref of String(line[1] ?? '').matchAll(ISSUE_REF)) ids.push(ref[1]);
+  }
+  return [...new Set(ids)];
+};
 
 /**
  * Map one issue onto the neutral Ticket shape.
@@ -81,8 +97,21 @@ export const blocksIndex = (issues) => {
   return index;
 };
 
-const gh = (args) =>
-  JSON.parse(execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+/**
+ * Run `gh` and return its raw output.
+ *
+ * The write commands — `issue edit|close|comment|create` — have **no `--json`
+ * flag**; they print plain text (an issue URL, or `✓ Closed issue #12`). Parsing
+ * that as JSON threw *after* the mutation had already been applied, which was the
+ * worst possible shape of failure: `escalate()` posted its diagnosis and then died
+ * before adding the label that keeps the item out of the next selection, so the
+ * loop re-picked the stuck task — the exact thing this adapter documents as
+ * prevented. So JSON parsing now happens only where JSON is actually produced.
+ */
+const ghText = (args) =>
+  execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+const ghJson = (args) => JSON.parse(ghText(args));
 
 const FIELDS = 'number,title,body,state,labels,url,createdAt';
 
@@ -96,7 +125,7 @@ const FIELDS = 'number,title,body,state,labels,url,createdAt';
  */
 export const listEligible = ({ limit = 100, issues = null } = {}) => {
   const raw =
-    issues ?? gh(['issue', 'list', '--state', 'all', '--limit', String(limit), '--json', FIELDS]);
+    issues ?? ghJson(['issue', 'list', '--state', 'all', '--limit', String(limit), '--json', FIELDS]);
   const states = Object.fromEntries(raw.map((issue) => [String(issue.number), issue.state]));
   const blocks = blocksIndex(raw);
   return raw
@@ -111,20 +140,20 @@ export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) =
 
 /** `To Do → In Progress` before the first file is edited, not when the PR opens. */
 export const claim = (ticket) => {
-  gh(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
+  ghText(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
   return { ok: true };
 };
 
 export const close = (ticket, { prUrl = null } = {}) => {
   const note = prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.';
-  gh(['issue', 'comment', ticket.id, '--body', note]);
-  gh(['issue', 'close', ticket.id]);
-  gh(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
+  ghText(['issue', 'comment', ticket.id, '--body', note]);
+  ghText(['issue', 'close', ticket.id]);
+  ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
   return { ok: true };
 };
 
 export const comment = (ticket, body) => {
-  gh(['issue', 'comment', ticket.id, '--body', body]);
+  ghText(['issue', 'comment', ticket.id, '--body', body]);
   return { ok: true };
 };
 
@@ -134,8 +163,8 @@ export const comment = (ticket, body) => {
  * back to a selectable state is how one stuck task gets worked three times.
  */
 export const escalate = (ticket, diagnosis) => {
-  gh(['issue', 'comment', ticket.id, '--body', diagnosis]);
-  gh(['issue', 'edit', ticket.id, '--add-label', 'escalated']);
+  ghText(['issue', 'comment', ticket.id, '--body', diagnosis]);
+  ghText(['issue', 'edit', ticket.id, '--add-label', 'escalated']);
   return { ok: true };
 };
 
@@ -180,20 +209,23 @@ export const proposeTriage = (proposal, { existing = null } = {}) => {
   const item = triageItemFor(proposal);
   const found =
     existing ??
-    gh(['issue', 'list', '--label', 'triage', '--state', 'all', '--limit', '100', '--json', FIELDS]);
-  const duplicate = found.find((issue) => String(issue.body ?? '').includes(item.fingerprint));
+    ghJson(['issue', 'list', '--label', 'triage', '--state', 'all', '--limit', '100', '--json', FIELDS]);
+  const duplicate = duplicateOf(
+    item,
+    found.map((issue) => ({ id: String(issue.number), body: issue.body })),
+  );
 
   if (duplicate) {
-    gh([
+    ghText([
       'issue',
       'comment',
-      String(duplicate.number),
+      duplicate.id,
       '--body',
       `Seen again this session (fingerprint \`${item.fingerprint}\`). Incrementing rather than filing a duplicate.`,
     ]);
     return { ok: true, incremented: String(duplicate.number), item };
   }
 
-  gh(['issue', 'create', '--title', item.title, '--body', item.body, '--label', 'triage']);
+  ghText(['issue', 'create', '--title', item.title, '--body', item.body, '--label', 'triage']);
   return { ok: true, filed: item.title, item };
 };

@@ -276,6 +276,18 @@ export const fingerprintOf = ({ finding, part, change }) =>
     .join(':');
 
 /**
+ * The already-filed proposal carrying this fingerprint, or null.
+ *
+ * Pure and shared by every adapter, so the dedupe DECISION is testable without a
+ * tracker, a credential or a network call — and so the three adapters cannot drift
+ * into three different answers. Candidates are `{ id, body }`.
+ */
+export const duplicateOf = (item, candidates = []) =>
+  (Array.isArray(candidates) ? candidates : []).find((candidate) =>
+    String(candidate?.body ?? '').includes(item.fingerprint),
+  ) ?? null;
+
+/**
  * The four parts a proposal must name. A proposal missing any of them is not
  * ready to file — and the cap of three elsewhere is the mechanism, not a budget:
  * an unbounded improvement list is another diary, and three forces a choice.

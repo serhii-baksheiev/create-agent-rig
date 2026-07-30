@@ -37,8 +37,10 @@ area *is* Tier 2 from that moment: run the gate, record the verdict on the PR,
 and say in the description that the tier changed mid-work.
 
 **Where the elevated paths of this project are written down:** the
-`elevated-paths` block in `CLAUDE.md`. One list, one home — the gate sweep below
-reads that block, so a path missing from it is a path nothing checks.
+`elevated-paths` block in `CLAUDE.md`, plus any such block in `.claude/rules/` —
+the gate sweep reads them all and unions the result, so a stack layer declares the
+paths that exist only in its shape. A path declared in none of them is a path
+nothing checks.
 
 #### The gate is swept from outside, because a run cannot report this on itself
 

@@ -33,12 +33,30 @@ export const resolveAdapter = async (adapterName) => {
   return import(new URL(modulePath, import.meta.url).href);
 };
 
+export const COMMANDS = ['next', 'list', 'hygiene'];
+
+/**
+ * A missing config is the normal state of a fresh project. A config that exists
+ * and does not parse is NOT — it used to fall back to `plan-md` silently, so a
+ * trailing comma in `queue.json` made the loop read a different queue than the one
+ * configured, which is the exact failure this file's header refuses for adapters.
+ */
 export const loadConfig = (configPath) => {
+  let raw;
   try {
-    return JSON.parse(readFileSync(configPath, 'utf8'));
+    raw = readFileSync(configPath, 'utf8');
   } catch {
-    // No config is the normal state of a fresh project, not an error.
     return {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `${configPath} exists but is not valid JSON, so the configured queue cannot be ` +
+        `read: ${String(error?.message ?? error).split('\n')[0]}. Fix the file — ` +
+        'silently reading a different queue is worse than refusing to start.',
+      { cause: error },
+    );
   }
 };
 
@@ -88,10 +106,22 @@ const invokedDirectly = () => {
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-  const config = loadConfig(args.config ?? join(projectRoot, '.claude', 'queue.json'));
 
+  // An unrecognised command used to behave as `next`, discarding its argument —
+  // so `claim 1` silently printed a selection and claimed nothing.
+  if (!COMMANDS.includes(args.command)) {
+    process.stderr.write(
+      `unknown command: ${args.command}. Known commands: ${COMMANDS.join(', ')}. ` +
+        'The write operations (claim, close, comment, escalate, proposeTriage) are ' +
+        "the adapter's own API — import the adapter module rather than this CLI.\n",
+    );
+    process.exit(1);
+  }
+
+  let config;
   let adapter;
   try {
+    config = loadConfig(args.config ?? join(projectRoot, '.claude', 'queue.json'));
     adapter = await resolveAdapter(config.adapter ?? 'plan-md');
   } catch (error) {
     process.stderr.write(`${error.message}\n`);

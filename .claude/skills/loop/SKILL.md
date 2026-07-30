@@ -240,10 +240,23 @@ four things, and a proposal missing any of them is not ready to file:
 3. the change, concretely enough to diff;
 4. how the next run would prove it worked — the observation that would differ.
 
+Filing is the adapter's `proposeTriage`, which the CLI deliberately does **not**
+expose — `index.mjs` is read-only (`next`, `list`, `hygiene`) so that no accidental
+invocation can write to the queue. Call it directly:
+
 ```bash
-# proposals go to triage, never to the Agent queue
-node .claude/scripts/queue/index.mjs next --json     # (the adapter's proposeTriage does the filing)
+node --input-type=module -e '
+  const a = await import("./.claude/scripts/queue/plan-md.mjs");   // or github-issues / jira
+  console.log(await a.proposeTriage({
+    finding: "<the journal line it came from>",
+    part:    "<skill | agent | hook | rule | CLAUDE.md | workflow>",
+    change:  "<concretely enough to diff>",
+    proof:   "<the observation that would differ next run>",
+  }));
+'
 ```
+
+A proposal missing any of the four parts is refused rather than filed half-formed.
 
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on

@@ -151,27 +151,38 @@ describe('classifyPr — a merged PR that skipped the elevated gate', () => {
     }
   });
 
-  it('accepts a reviewer verdict written in the PR body', async () => {
+  // ⚠️ This expectation was REVERSED by the review pass, deliberately.
+  //
+  // It used to assert that a reviewer verdict in the PR body suppresses the
+  // finding. That was demonstrably exploitable: the body is written by the same
+  // actor whose compliance is audited, so `VERDICT: HOLD — code-reviewer listed 3
+  // blockers` and an unticked `- [ ] code-reviewer verdict` both silenced the
+  // sweep, while writing the truth got you flagged. The test encoded a
+  // vulnerability as a requirement; the requirement was wrong, not the test's
+  // right to exist. `review-fixes.test.ts` pins the secure behaviour in full.
+  it('records a body claim as evidence but never lets it suppress the finding', async () => {
     const { classifyPr } = await load('detect-missed-gate.mjs');
     for (const body of [
       'code-reviewer: clean, no blocking findings.',
       '- security-scanner — verdict: pass',
       'cdk-diff-reviewer returned green.',
     ]) {
-      expect(classifyPr(pr({ files: ['infra/x.ts'], body }), opts), body).toBeNull();
+      const finding = classifyPr(pr({ files: ['infra/x.ts'], body }), opts) as Finding;
+      expect(finding?.kind, body).toBe('missed-gate');
+      expect((finding as unknown as { evidence: string }).evidence, body).toBe('body-claim');
     }
   });
 
-  it('refuses a reviewer named only to say it was skipped', async () => {
+  it('reports no evidence at all differently from an unverifiable claim', async () => {
     const { classifyPr } = await load('detect-missed-gate.mjs');
     for (const body of [
       'security-scanner: not applicable here.',
       'code-reviewer skipped — trivial change.',
       'security-scanner did not run (no network).',
     ]) {
-      expect((classifyPr(pr({ files: ['infra/x.ts'], body }), opts) as Finding)?.kind, body).toBe(
-        'missed-gate',
-      );
+      const finding = classifyPr(pr({ files: ['infra/x.ts'], body }), opts) as Finding;
+      expect(finding?.kind, body).toBe('missed-gate');
+      expect((finding as unknown as { evidence: string }).evidence, body).toBe('none');
     }
   });
 

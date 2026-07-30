@@ -29,17 +29,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * The elevated path set is declared ONCE, in a fenced ```elevated-paths``` block
- * in CLAUDE.md, and read from there. The alternative — a list in this file plus
- * a list in the docs — needs a drift check to stay honest, and a drifted
- * detector quietly stops detecting. One home removes the failure mode instead of
- * monitoring it.
- *
- * Every block in the document contributes, so a stack layer or a repo addendum
- * can add its own paths without editing anyone else's block.
- */
-/**
  * Read every layer's declaration and union them.
+ *
+ * The set is never duplicated into this file: a list here plus a list in the docs
+ * needs a drift check to stay honest, and a drifted detector quietly stops
+ * detecting. Reading the declaration removes that failure mode instead of
+ * monitoring it.
  *
  * `CLAUDE.md` carries the project's own paths; each stack layer's rule file
  * carries the ones that only exist in that shape (`infra/` comes from the
@@ -79,13 +74,32 @@ export const readDeclaredPaths = (projectRoot, { readFile = readFileSync, listDi
   return found ? [...new Set(declared)] : null;
 };
 
+/**
+ * Normalise a path so both sides of the comparison agree.
+ *
+ * `./infra/x.ts`, `/infra/x.ts` and `infra//x.ts` all name the same file as
+ * `infra/x.ts`; comparing raw strings meant each of those slipped the gate
+ * silently. Case is deliberately preserved — paths are case-sensitive on the
+ * systems this runs on, and folding case would create false positives.
+ */
+export const normalizePath = (path) =>
+  String(path ?? '')
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\//, '');
+
 export const parseElevatedPaths = (markdown) => {
-  const blocks = [...String(markdown ?? '').matchAll(/```elevated-paths\n([\s\S]*?)```/g)];
+  // `\r?` so a file with CRLF line endings is not invisible: the block used to be
+  // undetectable there, and with another source also declaring, the loss was
+  // silent rather than reported as a blind sweep.
+  const blocks = [...String(markdown ?? '').matchAll(/```elevated-paths\r?\n([\s\S]*?)```/g)];
   if (blocks.length === 0) return null;
   return blocks.flatMap((block) =>
     block[1]
       .split('\n')
-      .map((line) => line.trim())
+      // an inline comment after the path is a comment, not part of the path
+      .map((line) => normalizePath(line.replace(/\s+#.*$/, '').trim()))
       .filter((line) => line && !line.startsWith('#')),
   );
 };
@@ -96,39 +110,64 @@ const isInert = (path) =>
   /(^|\/)(test|tests|__tests__)\//.test(path) ||
   /\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
 
-const pathOf = (file) => (typeof file === 'string' ? file : (file?.path ?? ''));
+/** Coerce whatever the host returned into a path string, never throwing. */
+const pathOf = (file) => {
+  if (typeof file === 'string') return file;
+  const path = file?.path ?? file?.filename ?? '';
+  return typeof path === 'string' ? path : '';
+};
 
-/** The elevated-tier files among `files`; empty means the change was not elevated. */
-export const elevatedPathsIn = (files = [], elevatedPaths = []) =>
-  files
+/**
+ * The elevated-tier files among `files`; empty means the change was not elevated.
+ *
+ * Tolerant of every malformed shape seen in testing (a non-array, an object,
+ * `{path: 42}`) because the alternative was a TypeError that killed the whole
+ * sweep and lost the findings on every other PR — which both this file and the
+ * reconciler explicitly promise not to do.
+ */
+export const elevatedPathsIn = (files = [], elevatedPaths = []) => {
+  if (!Array.isArray(files)) return [];
+  const prefixes = (Array.isArray(elevatedPaths) ? elevatedPaths : []).map(normalizePath);
+  return files
     .map(pathOf)
-    .filter((path) => path && !isInert(path) && elevatedPaths.some((p) => path.startsWith(p)));
+    .map(normalizePath)
+    .filter((path) => path && !isInert(path) && prefixes.some((prefix) => path.startsWith(prefix)));
+};
 
 // A reviewer agent named in the PR body, by convention: the two universal gates
 // plus any project-specific `*-reviewer`.
 const REVIEWERS = /\b(code-reviewer|security-scanner|[a-z][a-z0-9-]*-reviewer)\b/i;
-const VERDICT = /\b(clean|passed|pass|approved|no blocking|green|verdict)\b/i;
-// A reviewer named only to say it did NOT run is not a recorded verdict — it is
-// the confession that the gate was skipped.
-const NEGATED = /\b(not run|not applicable|no[t]? applicable|skipped|did not run|unavailable|n\/a)\b/i;
+const VERDICT = /\b(clean|passed|pass|approved|no blocking|green)\b/i;
 
 /**
- * Did this PR record that the gate ran? Two mechanical proxies: the
- * `human-review` label, or a reviewer verdict written in the body.
+ * 🔴 The body is NOT authority, and this is the security core of the file.
  *
- * Attendance is deliberately NOT the test — "a human was watching" is not
- * recoverable from merged artifacts. The observable half of the same rule is:
- * the gate requires its verdict to be *recorded*, so an unrecorded gate is a
- * finding whether or not anyone was watching. A reviewer who ran the gate and
- * wrote it down is never flagged; one who ran it silently is — correctly,
- * because afterwards nothing distinguishes that merge from a skipped gate.
+ * The PR body is written by whoever opened the PR — including the run whose
+ * compliance is being audited, and including an outside contributor. Testing it
+ * with a keyword scan made the detector strictly *more* permissive the more
+ * damning the body got: `VERDICT: HOLD — code-reviewer listed 3 blockers`
+ * suppressed the finding, an unticked `- [ ] code-reviewer verdict recorded`
+ * checkbox suppressed it, and so did `ignore the code-reviewer, this is urgent`.
+ * Writing the truth got you flagged; writing a lie did not.
+ *
+ * So only the **`human-review` label** suppresses a finding. Applying a label
+ * needs repository triage permission, which a fork contributor does not have and a
+ * run cannot fake. The body is still read — a plausible-looking verdict there is
+ * reported as a weaker, separate observation, never as a pass.
  */
-const gateRecorded = (pr) => {
-  const labels = (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name));
-  if (labels.includes('human-review')) return true;
-  return String(pr.body ?? '')
+const labelsOf = (pr) => {
+  const labels = pr?.labels;
+  if (typeof labels === 'string') return [labels];
+  if (!Array.isArray(labels)) return [];
+  return labels.map((label) => (typeof label === 'string' ? label : (label?.name ?? '')));
+};
+
+export const gateEvidence = (pr) => {
+  if (labelsOf(pr).includes('human-review')) return 'label';
+  const claimsVerdict = String(pr?.body ?? '')
     .split('\n')
-    .some((line) => REVIEWERS.test(line) && VERDICT.test(line) && !NEGATED.test(line));
+    .some((line) => REVIEWERS.test(line) && VERDICT.test(line));
+  return claimsVerdict ? 'body-claim' : 'none';
 };
 
 /**
@@ -177,9 +216,30 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
   if (!pr.mergedAt) return null;
   if (epoch && new Date(pr.mergedAt) < new Date(epoch)) return null;
 
-  const elevatedFiles = elevatedPathsIn(pr.files ?? [], elevatedPaths);
+  // A file list that is absent is NOT an empty one. `files: null` used to read as
+  // "touched nothing elevated" and pass silently — so a schema change, a truncated
+  // response or a hand-exported fixture turned the sweep into a rubber stamp.
+  if (pr.files === undefined || pr.files === null) {
+    return {
+      kind: 'unknown-file-list',
+      pr: pr.number,
+      title: pr.title,
+      url: pr.url,
+      mergedAt: pr.mergedAt,
+      lane: laneOf(pr).lane,
+      elevatedFiles: [],
+      why:
+        'the merged PR carries no file list, so this sweep could not tell whether ' +
+        'it crossed an elevated path. That is an unknown, not a pass — re-fetch it ' +
+        'with `--json files` or check the PR by hand.',
+    };
+  }
+
+  const elevatedFiles = elevatedPathsIn(pr.files, elevatedPaths);
   if (elevatedFiles.length === 0) return null;
-  if (gateRecorded(pr)) return null;
+
+  const evidence = gateEvidence(pr);
+  if (evidence === 'label') return null;
 
   const { lane, queueRef } = laneOf(pr);
   return {
@@ -190,10 +250,16 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
     mergedAt: pr.mergedAt,
     lane,
     queueRef,
+    evidence,
     elevatedFiles,
     why:
-      `merged touching ${elevatedFiles.length} elevated-tier path(s) with ` +
-      'no reviewer verdict recorded on the PR and no human-review label',
+      evidence === 'body-claim'
+        ? `merged touching ${elevatedFiles.length} elevated-tier path(s). The body ` +
+          'claims a reviewer verdict, but the body is written by the author — it is ' +
+          'not verifiable after the fact. Only the human-review label, which needs ' +
+          'repository permission, records the gate. Confirm the gate ran and label it.'
+        : `merged touching ${elevatedFiles.length} elevated-tier path(s) with ` +
+          'no human-review label and no reviewer verdict recorded anywhere',
   };
 };
 
@@ -221,23 +287,68 @@ export const sweep = ({ prs = [], elevatedPaths = [], epoch = null } = {}) => {
     return { findings, sweptPrs: prs.length, epoch };
   }
 
+  // A non-array input is a caller mistake, not forty clean PRs.
+  const rows = Array.isArray(prs) ? prs : [];
+
   let misses = 0;
-  for (const pr of prs) {
-    const finding = classifyPr(pr, { elevatedPaths, epoch });
+  for (const pr of rows) {
+    let finding;
+    try {
+      finding = classifyPr(pr, { elevatedPaths, epoch });
+    } catch {
+      // One unparseable row must not cost the findings on every other row.
+      findings.push({
+        kind: 'unreadable-record',
+        pr: pr?.number ?? null,
+        why: 'this merged PR could not be read, so it was not checked. That is an unknown, not a pass.',
+        actions: ['journal-line'],
+      });
+      continue;
+    }
     if (!finding) continue;
     const actions = [
       finding.lane === 'queue' ? 'comment-on-queue-item' : 'comment-on-pr',
       'journal-line',
     ];
-    if (misses >= 1) actions.push('escalation-issue');
-    misses += 1;
+    if (finding.kind === 'missed-gate') {
+      if (misses >= 1) actions.push('escalation-issue');
+      misses += 1;
+    }
     findings.push({ ...finding, actions });
   }
 
-  return { findings, sweptPrs: prs.length, epoch };
+  return { findings, sweptPrs: rows.length, epoch };
 };
 
 // --- CLI -----------------------------------------------------------------------------
+
+/**
+ * Read an offline fixture, or say plainly why it could not be read.
+ *
+ * A raw SyntaxError stack, or a silent fall-through to the live repo when
+ * `--input` was given without a value, are both worse than a one-line diagnosis:
+ * this tool's whole value is that "could not look" never renders as "clean".
+ */
+const readInput = (file, label) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    process.stderr.write(
+      `${label}: could not read ${file} as JSON — nothing was checked. ` +
+        `${String(error?.message ?? error).split('\n')[0]}\n`,
+    );
+    process.exit(1);
+  }
+  if (!Array.isArray(parsed)) {
+    process.stderr.write(
+      `${label}: ${file} does not contain a JSON array of merged PRs, so nothing ` +
+        'was checked. Expected the shape `gh pr list --json …` produces.\n',
+    );
+    process.exit(1);
+  }
+  return parsed;
+};
 
 const parseArgs = (argv) => {
   const args = { json: false, since: null, epoch: null, input: null };
@@ -342,7 +453,7 @@ if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const prs = args.input
-    ? JSON.parse(readFileSync(args.input, 'utf8'))
+    ? readInput(args.input, 'missed-gate sweep')
     : fetchMergedPrs(args.since ?? daysAgo(7));
   // No declaration anywhere reads as a blind sweep, and `sweep` reports that as
   // its own finding rather than as "no findings".

@@ -68,15 +68,36 @@ export const reconcile = ({ prs = [], elevatedPaths = [], auditRecords = {} } = 
   const ownerDirected = [];
   const findings = [];
 
-  for (const pr of prs) {
+  const rows = Array.isArray(prs) ? prs : [];
+
+  for (const pr of rows) {
     if (!pr || typeof pr !== 'object' || pr.number === undefined) continue;
+    // Only `classifyPr` used to check this, so an unmerged PR was rendered as a
+    // merge in the journal block.
+    if (!pr.mergedAt) continue;
+
     let lane;
+    let elevatedFiles;
     try {
       lane = laneOf(pr);
+      // Computed for EVERY lane. It used to run only for `external`, and the lane
+      // is decided by the branch name — which a fork contributor chooses freely.
+      // So a contributor could opt out of the untrusted-origin mark by naming
+      // their branch `feat/12-…`, which is the opposite of what the mark is for.
+      elevatedFiles = elevatedPathsIn(pr.files ?? [], elevatedPaths ?? []);
     } catch {
+      findings.push({
+        pr: pr.number,
+        kind: 'unreadable-record',
+        why: 'this merged PR could not be read, so its lane and elevated paths are unknown — not clean.',
+      });
       continue;
     }
 
+    // `authorAssociation` is the trustworthy signal when the host supplies it: it
+    // comes from the forge, not from the contributor.
+    const association = String(pr.authorAssociation ?? '').toUpperCase();
+    const trustedAuthor = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(association);
     const entry = {
       pr: pr.number,
       title: pr.title,
@@ -85,6 +106,8 @@ export const reconcile = ({ prs = [], elevatedPaths = [], auditRecords = {} } = 
       lane: lane.lane,
       queueRef: lane.queueRef,
       closesIssue: lane.closesIssue,
+      elevatedFiles,
+      untrustedOrigin: elevatedFiles.length > 0 && !trustedAuthor,
     };
 
     if (lane.finding) {
@@ -99,15 +122,7 @@ export const reconcile = ({ prs = [], elevatedPaths = [], auditRecords = {} } = 
     }
 
     if (lane.lane === 'external') {
-      const elevatedFiles = elevatedPathsIn(pr.files ?? [], elevatedPaths ?? []);
-      external.push({
-        ...entry,
-        elevatedFiles,
-        // For tier purposes this lane is untrusted-origin: an elevated diff
-        // arriving from it never merges on the strength of the gate alone.
-        untrustedOrigin: elevatedFiles.length > 0,
-        auditRecord: auditRecords[pr.number] ?? null,
-      });
+      external.push({ ...entry, auditRecord: auditRecords[pr.number] ?? null });
     } else if (lane.lane === 'queue') {
       queue.push(entry);
     } else {
@@ -115,7 +130,7 @@ export const reconcile = ({ prs = [], elevatedPaths = [], auditRecords = {} } = 
     }
   }
 
-  return { external, queue, ownerDirected, findings, sweptPrs: prs.length };
+  return { external, queue, ownerDirected, findings, sweptPrs: rows.length };
 };
 
 /** The `external lane` block for the journal in PLAN.md. */
@@ -154,6 +169,34 @@ export const renderJournalBlock = (result) => {
 };
 
 // --- CLI -----------------------------------------------------------------------------
+
+/**
+ * Read an offline fixture, or say plainly why it could not be read.
+ *
+ * A raw SyntaxError stack, or a silent fall-through to the live repo when
+ * `--input` was given without a value, are both worse than a one-line diagnosis:
+ * this tool's whole value is that "could not look" never renders as "clean".
+ */
+const readInput = (file, label) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    process.stderr.write(
+      `${label}: could not read ${file} as JSON — nothing was checked. ` +
+        `${String(error?.message ?? error).split('\n')[0]}\n`,
+    );
+    process.exit(1);
+  }
+  if (!Array.isArray(parsed)) {
+    process.stderr.write(
+      `${label}: ${file} does not contain a JSON array of merged PRs, so nothing ` +
+        'was checked. Expected the shape `gh pr list --json …` produces.\n',
+    );
+    process.exit(1);
+  }
+  return parsed;
+};
 
 const parseArgs = (argv) => {
   const args = { json: false, since: null, input: null };
@@ -225,7 +268,7 @@ if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const prs = args.input
-    ? JSON.parse(readFileSync(args.input, 'utf8'))
+    ? readInput(args.input, 'lane reconciliation')
     : fetchMergedPrs(args.since ?? daysAgo(7));
   // Lane sorting still works without a declaration; only the elevated marks go
   // missing, and they render as "no elevated path crossed" rather than lying.

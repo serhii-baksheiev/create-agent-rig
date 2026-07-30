@@ -57,7 +57,13 @@ export const checkDefaultBranchFresh = () => {
     const remote = run('git', ['rev-parse', `origin/${branch}`]);
     return local === remote
       ? { ok: true, detail: `${branch} == origin/${branch}` }
-      : { ok: 'unknown', detail: `local ${branch} differs from origin/${branch} — pull before starting` };
+      : {
+          // `stale`, not `unknown`: the probe RAN and produced a definite answer.
+          // Reporting a known-stale branch as "could not look" collapsed the two
+          // states this file exists to keep apart.
+          ok: 'stale',
+          detail: `local ${branch} differs from origin/${branch} — pull before starting`,
+        };
   } catch (error) {
     return { ok: 'unknown', detail: `could not compare: ${String(error.message ?? error).split('\n')[0]}` };
   }
@@ -83,8 +89,13 @@ export const checkLastDeploy = ({ workflow = 'deploy' } = {}) => {
 };
 
 /**
- * STOP on any hard failure; CAUTION on any unknown; GO only when every scripted
- * item genuinely passed. The four unscripted items are still the reader's.
+ * STOP on any hard failure; CAUTION on anything that is not a clean pass; GO only
+ * when every scripted item genuinely passed. The three unscripted items are still
+ * the reader's.
+ *
+ * `stale` and `unknown` both give CAUTION but are never merged into one word:
+ * "I looked and it is stale" is actionable, "I could not look" is not, and neither
+ * ever becomes a pass.
  */
 export const verdictOf = (checks) => {
   const values = Object.values(checks);
@@ -95,7 +106,8 @@ export const verdictOf = (checks) => {
 
 export const report = (checks, { unchecked = UNCHECKED } = {}) => {
   const verdict = verdictOf(checks);
-  const mark = (ok) => (ok === true ? 'pass' : ok === false ? 'FAIL' : 'unknown');
+  const mark = (ok) =>
+    ok === true ? 'pass' : ok === false ? 'FAIL' : ok === 'stale' ? 'stale' : 'unknown';
   const lines = [
     `**preflight** — verdict: ${verdict}`,
     '',

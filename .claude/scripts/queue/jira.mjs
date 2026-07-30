@@ -17,7 +17,7 @@
 //
 //     { "adapter": "jira", "options": { "project": "ABC" } }
 //     { "adapter": "jira", "options": { "jql": "project = ABC AND ..." } }
-import { fingerprintOf, validateProposal } from './core.mjs';
+import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
 
 export const name = 'jira';
 
@@ -38,6 +38,24 @@ const toIso = (created) => {
   if (!created) return null;
   const parsed = new Date(created);
   return Number.isNaN(parsed.getTime()) ? String(created) : parsed.toISOString();
+};
+
+/**
+ * Flatten an Atlassian-document description down to its text.
+ *
+ * Only the fingerprint line needs to be findable, so a recursive text harvest is
+ * enough — and it tolerates a plain-string description from an older API shape.
+ */
+export const descriptionTextOf = (issue) => {
+  const walk = (node) => {
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) return node.map(walk).join('\n');
+    if (node && typeof node === 'object') {
+      return [node.text ?? '', walk(node.content ?? [])].filter(Boolean).join('\n');
+    }
+    return '';
+  };
+  return walk(issue?.fields?.description ?? '');
 };
 
 /** Map one Jira issue onto the neutral Ticket shape. */
@@ -119,11 +137,17 @@ export const requireCredentials = (env = process.env) => {
         'Set them in your shell or your secret manager — never in a file in this repo.',
     );
   }
-  return {
-    baseUrl: String(env.JIRA_BASE_URL).replace(/\/$/, ''),
-    email: env.JIRA_EMAIL,
-    token: env.JIRA_API_TOKEN,
-  };
+  const baseUrl = String(env.JIRA_BASE_URL).replace(/\/$/, '');
+  // Basic auth carries the token in a trivially reversible header, so the
+  // transport is part of the credential handling: a mis-set or tampered
+  // JIRA_BASE_URL over http would put it on the wire in clear.
+  if (!/^https:\/\//i.test(baseUrl)) {
+    throw new Error(
+      `JIRA_BASE_URL must use https (got ${baseUrl.split(':')[0]}://…). Basic auth ` +
+        'sends the API token on every request; over http it is readable in transit.',
+    );
+  }
+  return { baseUrl, email: env.JIRA_EMAIL, token: env.JIRA_API_TOKEN };
 };
 
 const request = async (route, { method = 'GET', body = null, env = process.env } = {}) => {
@@ -145,7 +169,10 @@ const request = async (route, { method = 'GET', body = null, env = process.env }
   return response.status === 204 ? null : response.json();
 };
 
-const FIELDS = 'summary,status,labels,priority,created,issuelinks';
+// `description` is requested because the triage dedupe matches the fingerprint
+// inside it. Without it the dedupe silently never matched, so every "queue empty"
+// stop filed a fresh issue instead of incrementing the one already there.
+const FIELDS = 'summary,status,labels,priority,created,issuelinks,description';
 
 // --- the adapter contract ------------------------------------------------------
 
@@ -274,10 +301,17 @@ export const proposeTriage = async (
   { project = null, existing = null, env = process.env } = {},
 ) => {
   const item = triageItemFor(proposal);
+  // Compared against the issue's DESCRIPTION, which is where the fingerprint was
+  // written. The previous version mapped candidates through `toTicket` — which
+  // emits no body at all — so the predicate was always false and twenty identical
+  // stops filed twenty issues against the tracker.
   const found =
     existing ??
-    (await search({ jql: `labels = triage ORDER BY created DESC`, env })).issues.map(toTicket);
-  const duplicate = found.find((candidate) => String(candidate.body ?? '').includes(item.fingerprint));
+    (await search({ jql: 'labels = triage ORDER BY created DESC', env })).issues.map((issue) => ({
+      id: issue.key,
+      body: descriptionTextOf(issue),
+    }));
+  const duplicate = duplicateOf(item, found);
 
   if (duplicate) {
     await comment(duplicate, `Seen again (fingerprint ${item.fingerprint}). Incrementing.`, { env });

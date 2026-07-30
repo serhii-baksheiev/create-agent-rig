@@ -16,16 +16,29 @@ import { fingerprintOf, validateProposal } from './core.mjs';
 
 export const name = 'plan-md';
 
-const AGENT_QUEUE = /^##\s+Agent queue\s*$/im;
-const NEXT_HEADING = /^##\s+/m;
+const AGENT_QUEUE = /^##\s+Agent queue\s*$/i;
+const ANY_HEADING = /^##\s+/;
 
-/** The Agent queue section's raw body, or '' when the section is absent. */
-const agentQueueBody = (plan) => {
-  const start = plan.search(AGENT_QUEUE);
-  if (start === -1) return '';
-  const after = plan.slice(start).replace(AGENT_QUEUE, '');
-  const end = after.search(NEXT_HEADING);
-  return end === -1 ? after : after.slice(0, end);
+/**
+ * Locate the Agent queue by LINE RANGE, and say whether it was found at all.
+ *
+ * "No such heading" and "heading present, nothing under it" used to collapse into
+ * the same empty string, so a renamed heading or a bad merge read as a legitimately
+ * empty queue — reported as a successful end of session. They are different
+ * answers and only one of them is good news.
+ */
+export const readQueue = (plan) => {
+  const lines = String(plan ?? '').split('\n');
+  const start = lines.findIndex((line) => AGENT_QUEUE.test(line));
+  if (start === -1) return { found: false, lines, start: -1, end: -1 };
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (ANY_HEADING.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return { found: true, lines, start: start + 1, end };
 };
 
 /**
@@ -40,15 +53,31 @@ const MARKERS = {
   triggerHuman: /\[trigger-human\]/i,
 };
 
-/** Parse the Agent queue into neutral tickets. Order in the file IS the priority. */
+/**
+ * Parse the Agent queue into neutral tickets. Order in the file IS the priority.
+ *
+ * Each ticket records the **physical line** it came from, and that — not its text
+ * — is what identifies it for a later write.
+ */
 export const parsePlan = (plan) => {
-  const body = agentQueueBody(String(plan ?? ''));
-  // Strip HTML comments first: a fresh project ships the example items commented
-  // out, and a loop that picks up the instructions as work is worse than useless.
-  const live = body.replace(/<!--[\s\S]*?-->/g, '');
+  const { found, lines, start, end } = readQueue(plan);
+  if (!found) return [];
 
   const items = [];
-  for (const line of live.split('\n')) {
+  let inComment = false;
+  for (let index = start; index < end; index += 1) {
+    const line = lines[index];
+    // A fresh project ships its example items commented out, and a loop that
+    // picks up the instructions as work is worse than useless.
+    if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      continue;
+    }
+    if (line.includes('<!--')) {
+      if (!line.includes('-->')) inComment = true;
+      continue;
+    }
+
     const match = /^\s*[-*]\s+(.*\S)\s*$/.exec(line);
     if (!match) continue;
     const raw = match[1];
@@ -60,6 +89,7 @@ export const parsePlan = (plan) => {
       id: String(items.length + 1),
       title,
       raw,
+      line: index, // the identity a write uses — never the text
       url: null,
       state: 'open',
       labels: [],
@@ -80,15 +110,21 @@ export const parsePlan = (plan) => {
   return items;
 };
 
-/** Remove a closed item's line: a queue states what is next, not what is done. */
+/**
+ * Remove a closed item's line: a queue states what is next, not what is done.
+ *
+ * Deletes the recorded line index, which is inside the Agent queue by
+ * construction. The previous version searched the whole file for a line
+ * *containing* the item's text and deleted the first hit — so an item whose title
+ * was a prefix of another silently destroyed the wrong entry, and a human's
+ * Operator-queue line could be destroyed instead. Verified: closing item 2 of
+ * ["fix the parser bug in edge cases", "fix the parser"] deleted item 1.
+ */
 export const closeInPlan = (plan, id) => {
-  const tickets = parsePlan(plan);
-    const target = tickets.find((t) => t.id === String(id));
+  const target = parsePlan(plan).find((ticket) => ticket.id === String(id));
   if (!target) return plan;
   const lines = String(plan).split('\n');
-  const index = lines.findIndex((line) => /^\s*[-*]\s+/.test(line) && line.includes(target.raw));
-  if (index === -1) return plan;
-  lines.splice(index, 1);
+  lines.splice(target.line, 1);
   return lines.join('\n');
 };
 
@@ -97,7 +133,25 @@ const readPlan = (options) => readFileSync(planPath(options), 'utf8');
 
 // --- the adapter contract ------------------------------------------------------
 
-export const listEligible = (options = {}) => parsePlan(readPlan(options));
+/**
+ * Throws when the Agent queue section is absent, rather than returning [].
+ *
+ * A renamed heading or a bad merge is a queue that cannot be read — and the CLI
+ * turns that into `queue-unreadable`, not into the `queue-empty` success that a
+ * genuinely empty section produces. Collapsing the two meant a structural bug in
+ * PLAN.md was reported as "a legitimate end of session".
+ */
+export const listEligible = (options = {}) => {
+  const plan = readPlan(options);
+  if (!readQueue(plan).found) {
+    throw new Error(
+      `${planPath(options)} has no "## Agent queue" heading, so the queue cannot be ` +
+        'read. That is a structural problem in the file, not an empty queue — fix ' +
+        'the heading rather than treating this as a finished session.',
+    );
+  }
+  return parsePlan(plan);
+};
 
 /** Vacuously empty here, and honestly so — a flat list cannot express a dependency. */
 export const resolveBlockers = () => [];
@@ -149,7 +203,12 @@ export const triageItemFor = (proposal) => {
   validateProposal(proposal);
   const fingerprint = fingerprintOf(proposal);
   return {
-    title: `proposal: ${proposal.change}`,
+    // The `[triage]` marker is load-bearing, not decoration: plan-md has no
+    // persisted label field, so placement under the Operator queue used to be the
+    // ONLY thing keeping a proposal unselectable. With the marker in the title, a
+    // proposal pasted under the wrong heading is still refused by `selectionOf` —
+    // the same belt and braces the other two adapters get from a real label.
+    title: `proposal: ${proposal.change} [triage]`,
     body: [
       `- **finding** — ${proposal.finding}`,
       `- **part to change** — ${proposal.part}`,
