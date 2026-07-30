@@ -24,7 +24,7 @@
 // the status. A non-zero exit would make a sweep that FOUND something look like
 // a sweep that BROKE.
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -38,6 +38,47 @@ import { dirname, join } from 'node:path';
  * Every block in the document contributes, so a stack layer or a repo addendum
  * can add its own paths without editing anyone else's block.
  */
+/**
+ * Read every layer's declaration and union them.
+ *
+ * `CLAUDE.md` carries the project's own paths; each stack layer's rule file
+ * carries the ones that only exist in that shape (`infra/` comes from the
+ * infrastructure layer, and a project without one must not declare it). Seeding
+ * every path in one place would declare directories that do not exist in half the
+ * targets — and a gate declared over a missing directory reports "clean" while
+ * looking nowhere.
+ */
+export const readDeclaredPaths = (projectRoot, { readFile = readFileSync, listDir = null } = {}) => {
+  const sources = [join(projectRoot, 'CLAUDE.md')];
+  try {
+    const rulesDir = join(projectRoot, '.claude', 'rules');
+    const entries = listDir ? listDir(rulesDir) : readdirSync(rulesDir);
+    for (const entry of entries) {
+      if (entry.endsWith('.md')) sources.push(join(rulesDir, entry));
+    }
+  } catch {
+    // no rules directory — CLAUDE.md alone then
+  }
+
+  const declared = [];
+  let found = false;
+  for (const source of sources) {
+    let parsed;
+    try {
+      parsed = parseElevatedPaths(readFile(source, 'utf8'));
+    } catch {
+      continue; // an unreadable source is not a declaration
+    }
+    if (parsed) {
+      found = true;
+      declared.push(...parsed);
+    }
+  }
+  // null, not [], when nothing declared anything: `sweep` reports that as its own
+  // finding rather than as "no findings".
+  return found ? [...new Set(declared)] : null;
+};
+
 export const parseElevatedPaths = (markdown) => {
   const blocks = [...String(markdown ?? '').matchAll(/```elevated-paths\n([\s\S]*?)```/g)];
   if (blocks.length === 0) return null;
@@ -276,21 +317,36 @@ export const render = (result) => {
   return lines.join('\n');
 };
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
+/**
+ * Was this file invoked directly?
+ *
+ * Compared by REALPATH on both sides: ESM resolves `import.meta.url` through
+ * symlinks while `process.argv[1]` keeps the path as typed, so a project living
+ * under a symlinked directory (a macOS temp dir, a symlinked home, a checkout
+ * behind a link) would fail a naive equality check — and the script would exit 0
+ * having printed nothing, which reads exactly like "no findings".
+ */
+const invokedDirectly = () => {
+  if (!process.argv[1]) return false;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
+};
+
+if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const prs = args.input
     ? JSON.parse(readFileSync(args.input, 'utf8'))
     : fetchMergedPrs(args.since ?? daysAgo(7));
-  let elevatedPaths;
-  try {
-    elevatedPaths = parseElevatedPaths(readFileSync(join(projectRoot, 'CLAUDE.md'), 'utf8'));
-  } catch {
-    // No CLAUDE.md at all reads the same as no declaration: a blind sweep, and
-    // `sweep` reports that as its own finding rather than as "no findings".
-    elevatedPaths = null;
-  }
+  // No declaration anywhere reads as a blind sweep, and `sweep` reports that as
+  // its own finding rather than as "no findings".
+  const elevatedPaths = readDeclaredPaths(projectRoot);
   const result = sweep({ prs, elevatedPaths, epoch: args.epoch });
   process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : render(result));
 }

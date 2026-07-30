@@ -79,20 +79,24 @@ them all; they are one rulebook.
 ## The elevated paths of this project
 
 Tier 2 in `.claude/rules/autonomy.md` names *kinds* of change. This block names
-the **paths** in this repository where those kinds live. It is the one place the
-list exists: `.claude/scripts/detect-missed-gate.mjs` reads it, so a path that is
-not here is a path the gate sweep cannot see.
+the **paths** in this repository where those kinds live, and
+`.claude/scripts/detect-missed-gate.mjs` reads it — so a path that is not declared
+is a path the gate sweep cannot see.
 
 ```elevated-paths
-infra/
 packages/db/src/
 ```
 
-**These two are a seed, not a law — the list is yours to extend.** They are what
-the generated skeleton has; a real project accumulates more (auth handlers,
-billing, a credentials module, a migration directory). Add a path the same day
-you add the code, because the gap between the two is exactly the window in which
-a change slips through unreviewed.
+**That one is a seed, not a law — the list is yours to extend.** It is what every
+generated shape has; a real project accumulates more (auth handlers, billing, a
+credentials module, a migration directory). Add a path the same day you add the
+code, because the gap between the two is exactly the window in which a change
+slips through unreviewed.
+
+The declaration is **composed, not centralised**: the sweep unions this block with
+every `elevated-paths` block in `.claude/rules/`, so a stack layer declares the
+paths that only exist in its shape. A gate declared over a directory this project
+does not have would report "clean" while looking nowhere.
 
 Nothing about this list is retroactive. Installing the sweep into a repo with
 history means passing `--epoch <the day you installed it>` once, or the first run

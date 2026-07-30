@@ -10,7 +10,7 @@
 // defaults to `plan-md`, which is the only adapter that works in a freshly
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { hygieneOf, selectNext, stopConditionOf } from './core.mjs';
@@ -64,8 +64,28 @@ const renderNext = (result, stop) => {
   return `${lines.join('\n')}\n`;
 };
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
+/**
+ * Was this file invoked directly?
+ *
+ * Compared by REALPATH on both sides: ESM resolves `import.meta.url` through
+ * symlinks while `process.argv[1]` keeps the path as typed, so a project living
+ * under a symlinked directory (a macOS temp dir, a symlinked home, a checkout
+ * behind a link) would fail a naive equality check — and the script would exit 0
+ * having printed nothing, which reads exactly like "no findings".
+ */
+const invokedDirectly = () => {
+  if (!process.argv[1]) return false;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
+};
+
+if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const config = loadConfig(args.config ?? join(projectRoot, '.claude', 'queue.json'));

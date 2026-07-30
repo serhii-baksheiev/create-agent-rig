@@ -17,7 +17,7 @@
 // nothing, and "I could not look" recorded as "it is fine" is the failure this
 // checklist exists to prevent.
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -110,8 +110,28 @@ export const report = (checks, { unchecked = UNCHECKED } = {}) => {
   return { verdict, checks, unchecked, rendered: lines.join('\n') };
 };
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
+/**
+ * Was this file invoked directly?
+ *
+ * Compared by REALPATH on both sides: ESM resolves `import.meta.url` through
+ * symlinks while `process.argv[1]` keeps the path as typed, so a project living
+ * under a symlinked directory (a macOS temp dir, a symlinked home, a checkout
+ * behind a link) would fail a naive equality check — and the script would exit 0
+ * having printed nothing, which reads exactly like "no findings".
+ */
+const invokedDirectly = () => {
+  if (!process.argv[1]) return false;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
+};
+
+if (invokedDirectly()) {
   const checks = {
     killSwitch: checkKillSwitch(),
     defaultBranchFresh: checkDefaultBranchFresh(),

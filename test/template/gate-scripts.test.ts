@@ -237,11 +237,47 @@ describe('sweep — escalation grows with the second miss', () => {
 });
 
 describe('detect-missed-gate CLI', () => {
-  it('runs offline from a fixture and exits 0 even when it found something', async () => {
+  /**
+   * Install the scripts into a throwaway project, exactly as generation does, so
+   * the CLI test does not depend on which paths the template happens to seed —
+   * and so it exercises the real "read the declaration from the project" path.
+   */
+  async function installedProject(declaredIn: 'claude-md' | 'rules' = 'claude-md') {
+    const { mkdir, copyFile } = await import('node:fs/promises');
     const dir = await mkdtemp(path.join(tmpdir(), 'sweep-'));
+    await mkdir(path.join(dir, '.claude', 'scripts'), { recursive: true });
+    await mkdir(path.join(dir, '.claude', 'rules'), { recursive: true });
+    for (const script of ['detect-missed-gate.mjs', 'reconcile-external-prs.mjs']) {
+      await copyFile(scriptPath(script), path.join(dir, '.claude', 'scripts', script));
+    }
+    const block = '```elevated-paths\ninfra/\n```\n';
+    await writeFile(path.join(dir, 'CLAUDE.md'), declaredIn === 'claude-md' ? block : '# P\n');
+    if (declaredIn === 'rules') {
+      await writeFile(path.join(dir, '.claude', 'rules', 'stack.md'), block);
+    }
+    return dir;
+  }
+
+  const runInstalled = (dir: string, script: string, args: string[]) =>
+    new Promise<{ code: number; out: string }>((resolve) => {
+      execFile(
+        process.execPath,
+        [path.join(dir, '.claude', 'scripts', script), ...args],
+        { cwd: dir },
+        (error, stdout, stderr) => {
+          resolve({
+            code: error ? ((error as { code?: number }).code ?? 1) : 0,
+            out: stdout + stderr,
+          });
+        },
+      );
+    });
+
+  it('runs offline from a fixture and exits 0 even when it found something', async () => {
+    const dir = await installedProject();
     const input = path.join(dir, 'prs.json');
     await writeFile(input, JSON.stringify([pr({ files: ['infra/a.ts'] })]));
-    const result = await run('detect-missed-gate.mjs', ['--input', input, '--json']);
+    const result = await runInstalled(dir, 'detect-missed-gate.mjs', ['--input', input, '--json']);
     // exit 0 on findings is load-bearing: a sweep that FOUND something must not
     // look like a sweep that BROKE.
     expect(result.code).toBe(0);
@@ -250,12 +286,39 @@ describe('detect-missed-gate CLI', () => {
   });
 
   it('renders a human report naming the elevated files and the next actions', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'sweep-'));
+    const dir = await installedProject();
     const input = path.join(dir, 'prs.json');
     await writeFile(input, JSON.stringify([pr({ files: ['infra/a.ts'] })]));
-    const result = await run('detect-missed-gate.mjs', ['--input', input]);
+    const result = await runInstalled(dir, 'detect-missed-gate.mjs', ['--input', input]);
     expect(result.out).toContain('infra/a.ts');
     expect(result.out).toMatch(/actions:/);
+  });
+
+  it('picks up a declaration contributed by a stack rule file, not only CLAUDE.md', async () => {
+    // This is the composition the acceptance run exposed: a target without
+    // infrastructure must not inherit `infra/`, so the layer that creates it
+    // declares it.
+    const dir = await installedProject('rules');
+    const input = path.join(dir, 'prs.json');
+    await writeFile(input, JSON.stringify([pr({ files: ['infra/a.ts'] })]));
+    const result = await runInstalled(dir, 'detect-missed-gate.mjs', ['--input', input, '--json']);
+    const parsed = JSON.parse(result.out) as { findings: Finding[] };
+    expect(parsed.findings.some((f) => f.kind === 'missed-gate')).toBe(true);
+  });
+
+  it('a project with no declaration anywhere reports a blind sweep, not a clean one', async () => {
+    const { mkdir, copyFile } = await import('node:fs/promises');
+    const dir = await mkdtemp(path.join(tmpdir(), 'sweep-'));
+    await mkdir(path.join(dir, '.claude', 'scripts'), { recursive: true });
+    await copyFile(
+      scriptPath('detect-missed-gate.mjs'),
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+    );
+    const input = path.join(dir, 'prs.json');
+    await writeFile(input, JSON.stringify([pr({ files: ['infra/a.ts'] })]));
+    const result = await runInstalled(dir, 'detect-missed-gate.mjs', ['--input', input, '--json']);
+    const parsed = JSON.parse(result.out) as { findings: Finding[] };
+    expect(parsed.findings.map((f) => f.kind)).toContain('no-elevated-paths-declared');
   });
 });
 
@@ -337,6 +400,67 @@ describe('reconcile-external-prs — the lane the journal never sees', () => {
     const result = await run('reconcile-external-prs.mjs', ['--input', input, '--json']);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.out).external).toHaveLength(1);
+  });
+});
+
+describe('the CLI entrypoint survives a symlinked path', () => {
+  // Found while testing: macOS `tmpdir()` is a symlink (/var → /private/var), and
+  // an `isMain` guard that compares the module's REALPATH against the raw argv
+  // never matches there. The script then exits 0 having printed nothing — which
+  // reads as "no findings", the worst possible failure for a safety sweep. Any
+  // project living under a symlinked path hits this.
+  it.each([
+    'detect-missed-gate.mjs',
+    'reconcile-external-prs.mjs',
+    'preflight.mjs',
+    'queue/index.mjs',
+  ])('%s produces output when invoked through a symlink', async (script) => {
+    const { mkdir, symlink, copyFile, cp } = await import('node:fs/promises');
+    const real = await mkdtemp(path.join(tmpdir(), 'realdir-'));
+    const project = path.join(real, 'project');
+    await mkdir(path.join(project, '.claude', 'scripts'), { recursive: true });
+    await copyFile(
+      scriptPath('detect-missed-gate.mjs'),
+      path.join(project, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+    );
+    await copyFile(
+      scriptPath('reconcile-external-prs.mjs'),
+      path.join(project, '.claude', 'scripts', 'reconcile-external-prs.mjs'),
+    );
+    await copyFile(
+      scriptPath('preflight.mjs'),
+      path.join(project, '.claude', 'scripts', 'preflight.mjs'),
+    );
+    await cp(path.join(scriptsDir, 'queue'), path.join(project, '.claude', 'scripts', 'queue'), {
+      recursive: true,
+    });
+    await writeFile(path.join(project, 'PLAN.md'), '# P\n\n## Agent queue\n\n- do a thing\n');
+    await writeFile(path.join(project, 'prs.json'), '[]');
+
+    const link = path.join(real, 'via-symlink');
+    await symlink(project, link);
+
+    const args =
+      script.startsWith('detect') || script.startsWith('reconcile')
+        ? ['--input', path.join(link, 'prs.json')]
+        : script.startsWith('queue')
+          ? ['next']
+          : [];
+    const result = await new Promise<{ code: number; out: string }>((resolve) => {
+      execFile(
+        process.execPath,
+        [path.join(link, '.claude', 'scripts', script), ...args],
+        { cwd: link },
+        (error, stdout, stderr) => {
+          resolve({
+            code: error ? ((error as { code?: number }).code ?? 1) : 0,
+            out: stdout + stderr,
+          });
+        },
+      );
+    });
+    // The assertion is simply: it ran. Silence here is the bug.
+    expect(result.out.trim(), `${script} printed nothing through a symlink`).not.toBe('');
   });
 });
 

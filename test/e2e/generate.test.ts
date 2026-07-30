@@ -59,7 +59,12 @@ describe('create-agent-rig <dir>', () => {
     const claudeDir = path.join(work, 'gov-app', '.claude');
     const rules = (await readdir(path.join(claudeDir, 'rules'))).length;
     const agents = (await readdir(path.join(claudeDir, 'agents'))).length;
-    const hooks = (await readdir(path.join(claudeDir, 'hooks'))).length;
+    // `.mjs` only: the stack layer also drops dod-checks.json here, and a config
+    // file counted as an enforced hook would inflate the one number this tool
+    // exists to make credible.
+    const hooks = (await readdir(path.join(claudeDir, 'hooks'))).filter((f) =>
+      f.endsWith('.mjs'),
+    ).length;
     const skills = (await readdir(path.join(claudeDir, 'skills'))).length;
 
     // the summary reports what actually landed — never a hardcoded list

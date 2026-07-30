@@ -14,9 +14,12 @@ export interface GovernanceSummary {
   skills: string[];
 }
 
-const names = async (dir: string, strip: RegExp): Promise<string[]> => {
+const names = async (dir: string, strip: RegExp, keep?: RegExp): Promise<string[]> => {
   try {
-    return (await readdir(dir)).map((entry) => entry.replace(strip, '')).sort();
+    return (await readdir(dir))
+      .filter((entry) => !keep || keep.test(entry))
+      .map((entry) => entry.replace(strip, ''))
+      .sort();
   } catch {
     return [];
   }
@@ -36,7 +39,10 @@ export async function collectGovernance(projectDir: string): Promise<GovernanceS
   return {
     rules: await names(path.join(claude, 'rules'), /\.md$/),
     agents: await names(path.join(claude, 'agents'), /\.md$/),
-    hooks: (await names(path.join(claude, 'hooks'), /\.mjs$/)).map(
+    // `.mjs` only: the stack layer also drops config (dod-checks.json) in this
+    // directory, and counting a config file as an enforced hook would make the
+    // screen overstate the one thing this tool actually sells.
+    hooks: (await names(path.join(claude, 'hooks'), /\.mjs$/, /\.mjs$/)).map(
       // guard-core-purity → "core purity": the mechanism, not the filename
       (hook) => HOOK_LABELS[hook] ?? hook.replace(/^(guard|block)-/, '').replaceAll('-', ' '),
     ),
