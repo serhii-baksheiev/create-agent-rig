@@ -15,7 +15,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { hygieneOf, selectNext, stopConditionOf } from './core.mjs';
 
-const ADAPTERS = { 'plan-md': './plan-md.mjs', 'github-issues': './github-issues.mjs' };
+const ADAPTERS = {
+  'plan-md': './plan-md.mjs',
+  'github-issues': './github-issues.mjs',
+  jira: './jira.mjs',
+};
 
 export const resolveAdapter = async (adapterName) => {
   const modulePath = ADAPTERS[adapterName];
@@ -76,7 +80,9 @@ if (isMain) {
 
   let tickets;
   try {
-    tickets = adapter.listEligible(config.options ?? {});
+    // Awaited so an adapter may be async (jira) or plain (plan-md, github-issues)
+    // without the CLI caring which.
+    tickets = await adapter.listEligible(config.options ?? {});
   } catch (error) {
     // Never fall back to memory or to a stale copy for a queue.
     const stop = stopConditionOf({ queueReadable: false });

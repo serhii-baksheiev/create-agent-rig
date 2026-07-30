@@ -22,6 +22,7 @@
     ".claude/scripts/queue/core.mjs",
     ".claude/scripts/queue/plan-md.mjs",
     ".claude/scripts/queue/github-issues.mjs",
+    ".claude/scripts/queue/jira.mjs",
     ".claude/scripts/queue/index.mjs",
     ".claude/queue.json",
     "PLAN.md"

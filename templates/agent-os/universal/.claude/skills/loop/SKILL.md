@@ -32,6 +32,13 @@ node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies
   absent rather than satisfied.
 - **`github-issues`** — the upgrade once the project has a remote. Per-item state,
   a comment thread, and dependencies written as `Blocked by #7` in the body.
+- **`jira`** — for a team that already lives there. Native issue links, so the
+  dependency needs no convention. Credentials come from the environment
+  (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`) and never from a file in the
+  repo; the project or the JQL goes in `.claude/queue.json`.
+
+Adding a fourth is an adapter, not a rewrite: `core.mjs` holds every selection
+decision and each adapter only maps its tracker's records onto the neutral shape.
 
 🔴 **If the queue cannot be read, stop the run and say so.** Never fall back to
 memory, to a stale copy, or to "what I remember was next". A remembered queue is
