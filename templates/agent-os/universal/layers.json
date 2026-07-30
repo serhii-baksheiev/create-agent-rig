@@ -2,6 +2,10 @@
   "process": [
     ".claude/rules/workflow.md",
     ".claude/rules/autonomy.md",
+    ".claude/rules/invariants.md",
+    ".claude/skills/new-invariant/SKILL.md",
+    ".claude/skills/new-invariant/guard-invariant.example.mjs",
+    ".claude/skills/new-invariant/guard-invariant.example.test.mjs",
     ".claude/agents/test-writer.md",
     ".claude/agents/code-reviewer.md",
     ".claude/agents/security-scanner.md",

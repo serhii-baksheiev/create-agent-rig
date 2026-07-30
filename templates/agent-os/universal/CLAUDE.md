@@ -59,6 +59,12 @@ them all; they are one rulebook.
   filesystem wipe — and carries the kill switch; `gate-stop-dod` refuses to end
   the session while a Definition-of-Done check fails. If a hook blocks you, fix
   the cause; never route around a hook.
+- **Enforcement is a pattern you can apply again.** Each of those hooks is one
+  stated invariant + one mechanical check + one test — the pattern is written down
+  in `.claude/rules/invariants.md`, and the `new-invariant` skill walks you
+  through adding one. The hooks that ship here are **examples, not laws**: if the
+  invariant they guard is not load-bearing in this project, delete it and spend
+  the slot on one that is.
 - **There is a brake, and it is a real file.** `touch
   ~/.claude/__PROJECT_NAME__-loop-STOP` and `guard-bash` denies every merge
   until it is removed. Everything short of the merge stays allowed on purpose:
