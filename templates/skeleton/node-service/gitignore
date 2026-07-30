@@ -8,3 +8,4 @@ var/
 out/
 next-env.d.ts
 dist/
+.claude/worktrees/

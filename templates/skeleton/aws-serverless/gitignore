@@ -7,3 +7,4 @@ cdk.out/
 .next/
 out/
 next-env.d.ts
+.claude/worktrees/

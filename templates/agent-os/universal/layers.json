@@ -6,10 +6,12 @@
     ".claude/agents/code-reviewer.md",
     ".claude/agents/security-scanner.md",
     ".claude/hooks/block-no-verify.mjs",
+    ".claude/hooks/guard-bash.mjs",
     ".claude/hooks/gate-stop-dod.mjs",
     ".claude/hooks/inject-rules.mjs",
     ".claude/skills/pr-ship/SKILL.md",
     ".claude/skills/loop/SKILL.md",
+    ".claude/skills/worktree-task/SKILL.md",
     "PLAN.md"
   ],
   "architecture": [

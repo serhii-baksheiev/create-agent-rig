@@ -16,11 +16,16 @@ interface HookResult {
 }
 
 /** Feed a synthetic hook payload to a hook script, exactly as Claude Code does. */
-function runHookFull(script: string, payload: object): Promise<HookResult> {
+function runHookFull(
+  script: string,
+  payload: object,
+  env?: Record<string, string>,
+): Promise<HookResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [path.join(hooksDir, script)],
+      { env: { ...process.env, ...env } },
       (error, stdout, stderr) => {
         const code = error ? ((error as { code?: number }).code ?? 1) : 0;
         resolve({ code, stderr, stdout });
@@ -205,6 +210,116 @@ describe('block-no-verify hook', () => {
   });
 });
 
+// extraction brief §3 Tier A: the Never-tier deny-list is the one guard that is
+// near-universal. It is a SECOND Bash guard on purpose — block-no-verify owns the
+// pre-commit bypass; this one owns the irreversible actions and the kill switch.
+describe('guard-bash hook (the Never tier, made mechanical)', () => {
+  const KILL = 'AGENT_LOOP_STOP';
+  const noKillSwitch = { [KILL]: path.join(tmpdir(), 'definitely-absent-loop-STOP') };
+
+  const run = (command: string, env?: Record<string, string>) =>
+    runHookFull('guard-bash.mjs', bash(command), { ...noKillSwitch, ...env });
+
+  it('blocks a force-push that names a protected branch', async () => {
+    for (const command of [
+      'git push --force origin main',
+      'git push -f origin master',
+      'git push --force-with-lease origin develop',
+      'git push origin +main',
+    ]) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(result.stderr).toMatch(/force/i);
+    }
+  });
+
+  it('blocks pushing straight to a protected branch, and deleting one', async () => {
+    for (const command of [
+      'git push origin main',
+      'git push origin HEAD:master',
+      'git push origin --delete main',
+    ]) {
+      expect((await run(command)).code, command).toBe(2);
+    }
+  });
+
+  it('blocks --all and --mirror pushes, which carry protected refs implicitly', async () => {
+    for (const command of ['git push --all --force origin', 'git push --mirror origin']) {
+      expect((await run(command)).code, command).toBe(2);
+    }
+  });
+
+  it('blocks a production deploy trigger — workflow dispatch or API', async () => {
+    for (const command of [
+      'gh workflow run deploy.yml -f stage=prod',
+      'gh workflow run deploy --ref main -f environment=production',
+      'gh api repos/o/r/actions/workflows/deploy.yml/dispatches -f inputs[stage]=prod',
+    ]) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(result.stderr).toMatch(/prod/i);
+    }
+  });
+
+  it('blocks catastrophic filesystem wipes', async () => {
+    for (const command of [
+      'rm -rf /',
+      'rm -rf /*',
+      'rm -rf ~',
+      'rm -rf "$HOME"',
+      'rm -fr $HOME/',
+    ]) {
+      expect((await run(command)).code, command).toBe(2);
+    }
+  });
+
+  it('allows the ordinary, reversible day-to-day commands', async () => {
+    for (const command of [
+      'git push origin feat/my-branch',
+      'git push --force-with-lease origin feat/my-branch',
+      'git push -u origin HEAD',
+      'gh pr create --fill',
+      'gh workflow run ci.yml',
+      'gh workflow run deploy.yml -f stage=dev',
+      'rm -rf node_modules',
+      'rm -rf ./dist',
+      'pnpm test',
+    ]) {
+      expect((await run(command)).code, command).toBe(0);
+    }
+  });
+
+  it('does not fire on prose: a message that merely mentions a forbidden action', async () => {
+    for (const command of [
+      'git commit -m "docs: explain why force-push to main is banned"',
+      `git commit -m 'never rm -rf / and never deploy prod by hand'`,
+      'gh pr create --title "chore: guard prod deploys"',
+    ]) {
+      expect((await run(command)).code, command).toBe(0);
+    }
+  });
+
+  it('is the kill switch: while the stop flag exists, no merge lands', async () => {
+    const flag = path.join(await fsp.mkdtemp(path.join(tmpdir(), 'kill-')), 'STOP');
+    await fsp.writeFile(flag, '');
+    const result = await run('gh pr merge 12 --squash', { [KILL]: flag });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain(flag);
+    // "stop cleanly" must not mean "lose the work": everything short of the
+    // merge stays allowed while the brake is on.
+    for (const command of ['git push origin feat/x', 'gh pr create --fill']) {
+      expect((await run(command, { [KILL]: flag })).code, command).toBe(0);
+    }
+  });
+
+  it('a malformed payload or a non-Bash tool is none of its business', async () => {
+    expect((await runHookFull('guard-bash.mjs', { tool_name: 'Write' }, noKillSwitch)).code).toBe(
+      0,
+    );
+    expect((await run('')).code).toBe(0);
+  });
+});
+
 describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () => {
   // The hook runs from a project dir: copy it + a checks config into a tmp
   // git repo, exactly as it would live in a generated project.
@@ -353,6 +468,7 @@ describe('hook wiring (settings.json)', () => {
     expect(commands.some((c) => c.includes('guard-core-purity.mjs'))).toBe(true);
     expect(commands.some((c) => c.includes('guard-web-boundary.mjs'))).toBe(true);
     expect(commands.some((c) => c.includes('block-no-verify.mjs'))).toBe(true);
+    expect(commands.some((c) => c.includes('guard-bash.mjs'))).toBe(true);
   });
 
   it('registers the DoD stop gate and the rules injector', async () => {

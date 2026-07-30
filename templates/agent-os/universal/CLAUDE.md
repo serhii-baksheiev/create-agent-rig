@@ -46,15 +46,24 @@ them all; they are one rulebook.
   short-lived branch; the default branch is never committed to directly. Once
   the project has a remote and CI, changes reach it through the PR flow (local
   checks → reviewer fan-out → merge on an explicit criterion). See
-  `.claude/rules/workflow.md` ("Branches and commits", "PR flow").
+  `.claude/rules/workflow.md` ("Branches and commits", "PR flow"). When another
+  session may touch this repo at the same time, the branch lives in its own
+  worktree — the `worktree-task` skill has the lifecycle and the cleanup.
 - **Gates.** `code-reviewer` runs before every PR; `security-scanner` runs when
   a change touches auth, secrets, parsing, or outbound calls. Blocking findings
   are resolved, not argued with. The `pr-ship` skill drives the gate.
 - **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
   the core the moment it lands; `guard-web-boundary` keeps the frontend off the
-  backend; `block-no-verify` refuses pre-commit bypasses; `gate-stop-dod`
-  refuses to end the session while a Definition-of-Done check fails. If a hook
-  blocks you, fix the cause; never route around a hook.
+  backend; `block-no-verify` refuses pre-commit bypasses; `guard-bash` refuses
+  the "Never" tier — force-pushing a shared branch, a production deploy, a
+  filesystem wipe — and carries the kill switch; `gate-stop-dod` refuses to end
+  the session while a Definition-of-Done check fails. If a hook blocks you, fix
+  the cause; never route around a hook.
+- **There is a brake, and it is a real file.** `touch
+  ~/.claude/__PROJECT_NAME__-loop-STOP` and `guard-bash` denies every merge
+  until it is removed. Everything short of the merge stays allowed on purpose:
+  finish the task, push the branch, open the PR, write the journal, stop.
+  Stopping cleanly never means losing the work.
 - **Work comes from the queue.** The Agent queue in `PLAN.md` is where
   autonomous work is picked up (the `loop` skill drives it); an empty queue
   ends the session — it is never a cue to invent work.
