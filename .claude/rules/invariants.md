@@ -88,7 +88,8 @@ So the test is not "is it fast enough on realistic input" but **"can any input
 make it do unbounded work at all"**. In practice:
 
 - no recursion over input, or an explicit total budget rather than a per-step one;
-- no `spread` of an array whose length comes from input;
+- no `spread` of an array whose length is unbounded by input — cap it first,
+  then spread;
 - one forward pass; no rescanning, no loop that re-copies the whole string;
 - when a bound is hit, fail **closed** or keep the input intact — never silently
   drop part of it, which is how one of those bypasses hid whole commands.

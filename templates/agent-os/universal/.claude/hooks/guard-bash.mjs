@@ -74,6 +74,8 @@ const WRAPPERS = new Set([
   'setsid',
   'xargs',
   'exec',
+  'npx',
+  'bunx',
 ]);
 /**
  * Shell keywords that can begin a segment. Without these the word `do` or `then`
@@ -141,6 +143,8 @@ const CATASTROPHIC = new Set([
   '/Users',
   '~/.ssh',
   '$HOME/.ssh',
+  '~/.ssh/*',
+  '$HOME/.ssh/*',
   '/usr/*',
   '/etc/*',
   '/var/*',
@@ -160,6 +164,21 @@ const CATASTROPHIC = new Set([
 ]);
 
 /**
+ * The only directories whose CHILDREN are also catastrophic.
+ *
+ * Deliberately two entries, checked by a prefix test — bounded, no recursion. The
+ * general prefix rule that once lived here blocked `/private/tmp`, `$TMPDIR`,
+ * Homebrew and `/Volumes` (routine cleanup) and had to go; but `~/.ssh` was the
+ * case that motivated it, and nothing in a project routinely deletes a file under
+ * there. So it returns scoped to exactly that.
+ */
+const CATASTROPHIC_SUBTREES = ['~/.ssh', '$HOME/.ssh'];
+
+const isCatastrophic = (target) =>
+  CATASTROPHIC.has(target) ||
+  CATASTROPHIC_SUBTREES.some((root) => target.startsWith(`${root}/`));
+
+/**
  * While the brake is on, the network clients are refused.
  *
  * Pushing to a protected branch is refused with or without the brake, so the only
@@ -177,15 +196,18 @@ const CATASTROPHIC = new Set([
  */
 const NETWORK_CLIENTS = new Set(['gh', 'curl', 'wget', 'http', 'https', 'httpie', 'hub']);
 /** `gh` subcommands that read, or open a PR — the wind-down the brake asks for. */
-const BRAKE_SAFE_GH = new Set(['view', 'list', 'status', 'diff', 'checks', 'create']);
+const BRAKE_SAFE_GH = new Set(['view', 'list', 'status', 'diff', 'checks', 'create', 'help']);
 
 const deniedByBrake = (name, args) => {
   if (!NETWORK_CLIENTS.has(name)) return false;
   if (name !== 'gh' && name !== 'hub') return true;
   const operands = operandsOf(args, GH_FLAGS).map(({ value }) => value);
-  // `gh pr view`, `gh run list`, `gh pr create` — anything else, including
-  // `gh api` by any route, is refused while the brake is on.
-  return !operands.some((operand) => BRAKE_SAFE_GH.has(operand));
+  // Nothing to do is not dangerous: `gh --version`, `gh help`.
+  if (operands.length === 0) return false;
+  // Read by POSITION. `some()` let any operand anywhere satisfy the allowlist,
+  // so `gh pr merge 12 --subject create` passed on the word `create`.
+  const [group, verb] = operands;
+  return !(BRAKE_SAFE_GH.has(verb) || BRAKE_SAFE_GH.has(group));
 };
 
 // ── Tokenising ───────────────────────────────────────────────────────────────
@@ -208,6 +230,7 @@ export const tokenize = (raw) => {
   let quoted = false;
   let started = false;
   let heredocBudget = 32;
+  let pendingHeredoc = null;
 
   const endArg = () => {
     if (started) {
@@ -281,33 +304,23 @@ export const tokenize = (raw) => {
     }
     if (ch === '<' && raw[i + 1] === '<' && raw[i + 2] !== '<' && heredocBudget > 0) {
       // A heredoc body is data, not commands. Recognised HERE, inside the
-      // scanner, because only here is it known that the `<<` is unquoted — a
-      // pre-pass over the raw text could not tell a redirect from `<<` inside a
-      // string, which made it a general hide-anything primitive.
+      // scanner, because only here is it known that the `<<` is unquoted.
       //
-      // Bounded by construction: one forward scan, no rescanning, and if the
-      // terminator never appears the body is KEPT rather than swallowed. Losing
-      // lines is how the pre-pass hid commands.
+      // The marker is only NOTED — the rest of the marker line keeps tokenising,
+      // and the body is skipped when its newline arrives. Jumping straight past
+      // the terminator swallowed `cat <<EOF; rm -rf /` and merged the command
+      // after the terminator into this segment. Both were hide-anything shapes,
+      // which is precisely what moving this inside the tokenizer was meant to end.
       const marker = /^<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(raw.slice(i, i + 64));
       if (marker) {
-        // A TOTAL budget, not a per-step one. Each lookahead scans forward to the
-        // end of the input, so an input full of markers is quadratic — the same
-        // shape as the three bypasses this round removed. Past the budget, `<<`
-        // is just two characters again, which keeps the body visible: erring
-        // toward inspecting more, never toward inspecting less.
+        // A TOTAL budget, not a per-step one: each lookahead scans forward, so an
+        // input full of markers would be quadratic. Past the budget `<<` is two
+        // characters again, which keeps the body visible — erring toward
+        // inspecting more, never less.
         heredocBudget -= 1;
-        const bodyStart = raw.indexOf('\n', i + marker[0].length);
-        let end = bodyStart === -1 ? -1 : raw.indexOf(`\n${marker[2]}\n`, bodyStart);
-        let skip = marker[2].length + 2;
-        if (end === -1 && bodyStart !== -1 && raw.endsWith(`\n${marker[2]}`)) {
-          end = raw.length - marker[2].length - 1; // the terminator ends the input
-          skip = marker[2].length + 1;
-        }
-        if (end !== -1) {
-          endArg();
-          i = end + skip; // skip the body and its terminator
-          continue;
-        }
+        pendingHeredoc = marker[2];
+        i += marker[0].length;
+        continue;
       }
       i += 2;
       continue;
@@ -326,11 +339,21 @@ export const tokenize = (raw) => {
       i += 2;
       continue;
     }
-    // `{`/`}` are NOT boundaries: they are part of a token in brace expansion,
-    // and `{ …; }` grouping is handled by the keyword skip in `commandOf`.
+    // `{`/`}` are NOT boundaries: a brace group is handled by the keyword skip in
+    // `commandOf`, and braces inside a token belong to the token.
     if ('|;&\n()`'.includes(ch)) {
       endSegment();
       i += 1;
+      if (ch === '\n' && pendingHeredoc) {
+        // Skip the body and its terminator LINE, leaving the newline that ends
+        // that line to act as the next boundary. If the terminator never appears
+        // the body is kept and inspected rather than dropped — losing lines is
+        // how the pre-pass hid commands.
+        const end = raw.indexOf(`\n${pendingHeredoc}\n`, i - 1);
+        if (end !== -1) i = end + pendingHeredoc.length + 1;
+        else if (raw.endsWith(`\n${pendingHeredoc}`)) i = raw.length;
+        pendingHeredoc = null;
+      }
       continue;
     }
     if (/\s/.test(ch)) {
@@ -552,7 +575,7 @@ export const normalizeTarget = (token) => {
 function checkRm({ args }, atCatastrophicCwd) {
   for (const { value } of operandsOf(args)) {
     const target = normalizeTarget(value);
-    if (CATASTROPHIC.has(target)) {
+    if (isCatastrophic(target)) {
       return (
         'BLOCKED — this deletes the filesystem root or the whole home directory, ' +
         'which no task in this project requires. If a path really needs removing, ' +
@@ -585,9 +608,8 @@ export const inspect = (raw, brake, depth = 0) => {
   let atCatastrophicCwd = false;
 
   for (const segment of tokenize(raw)) {
-    // The coarse brake, before any per-command rule and independent of every one
-    // of them: while the flag is on, an UNQUOTED mention of a merge is refused
-    // whatever command it belongs to.
+    // The brake, before any per-command rule: while the flag is on, the
+    // network clients are refused whatever they are being asked to do.
     const braked = brake && (() => {
       const { name, args } = commandOf(segment);
       return deniedByBrake(name, args);

@@ -110,6 +110,36 @@ describe('a dangerous command cannot be un-guarded by making the hook crash', ()
     await deny('echo "see << EOF"\ngh pr merge 12', brakeOn);
   });
 
+  it('a heredoc marker hides only its own body, never a command', async () => {
+    // Round 4: the in-tokenizer heredoc reintroduced the hide-anything primitive
+    // in two shapes. Both were DENY before this file gained heredoc handling at
+    // all, so both were regressions caused by the fix.
+    //
+    // Shape A — the rest of the MARKER LINE was skipped with the body.
+    await deny('cat <<EOF; rm -rf /\nbody\nEOF');
+    await deny('cat <<EOF && git push --force origin main\nbody\nEOF');
+    await deny('cat <<EOF | rm -rf /\nbody\nEOF');
+    // Shape B — the newline after the terminator was eaten, so the NEXT command
+    // was absorbed into the heredoc command's segment. This is the repo's own
+    // PR-open flow written as one Bash call, not an adversarial shape.
+    await deny("gh pr create --body-file - <<'EOF'\nbody\nEOF\ngit push --force origin main");
+    await deny('cat <<EOF\nx\nEOF\nrm -rf /');
+    await deny('cat <<EOF\nnote\nEOF\ngh pr merge 12', brakeOn);
+    // …while the body itself is still data
+    await allow("cat > n.md <<'EOF'\nrm -rf / is dangerous\nEOF");
+  });
+
+  it('the ssh key directory is protected as a subtree', async () => {
+    // Lost when CATASTROPHIC_TREES was deleted: its members came back as
+    // explicit `/x/*` entries, but `~/.ssh/*` did not. The deleted comment had
+    // called it "the one place that matters", and the assertion pinning it was
+    // dropped in the same commit — a deletion is only safe if the test survives.
+    await deny('rm -rf ~/.ssh/*');
+    await deny('rm -rf $HOME/.ssh/id_rsa');
+    await deny('rm -rf ~/.ssh/id_ed25519');
+    await allow('rm -rf ~/.ssh-backup-notes');
+  });
+
   it('stays fast and still denies under every hostile shape', async () => {
     const shapes: Array<[string, string]> = [
       ['many slashes', `rm -rf ${'/'.repeat(200_000)}`],
@@ -213,6 +243,20 @@ describe('the brake denies the network clients, not the word "merge"', () => {
     }
   });
 
+  it('reads the allowlist by POSITION, so a stray safe word is not a pass', async () => {
+    // `operands.some(...)` let any operand anywhere satisfy the allowlist.
+    await deny('gh pr merge 12 --subject create', brakeOn);
+    await deny('gh pr merge 12 --repo o/create', brakeOn);
+    await deny('npx gh pr merge 12', brakeOn);
+    await deny('bunx gh pr merge 12', brakeOn);
+  });
+
+  it('does not treat "no operands at all" as dangerous', async () => {
+    // `gh --version` has nothing to allow, and refusing it inverts the rule's
+    // own logic — the allowlist is about what a command DOES.
+    for (const command of ['gh --version', 'gh help', 'gh']) await allow(command, brakeOn);
+  });
+
   it('allows the network clients again once the brake is cleared', async () => {
     for (const command of [
       'gh pr merge 12',
@@ -244,7 +288,28 @@ describe('the rules that three rounds did not break still hold', () => {
     'eval "git push --force origin main"',
     'bash -c git\\ push\\ -f\\ origin\\ main',
     'gh workflow run --repo o/r deploy-prod.yml',
+    'gh workflow run --ref main deploy-prod.yml',
     'gh workflow run deploy.yml -F environment=prod',
+    // Restored: these were dropped when this file was rewritten, with no
+    // behaviour change to justify it. `xargs -n1` and `nice -n 10` are the worst
+    // of them — they are the only cases exercising the per-wrapper `-n` split
+    // that the same commit introduced, so the new map shipped with its
+    // motivating case untested.
+    'sudo -E git push --force origin main',
+    'sudo -- git push --force origin main',
+    'env -u FOO git push --force origin main',
+    'command -p git push --force origin main',
+    'xargs -n1 git push --force origin main',
+    'nice -n 10 git push --force origin main',
+    '! git push --force origin main',
+    'while true; do git push -f origin master; done',
+    'for i in 1; do rm -rf /; done',
+    "eval 'rm -rf /'",
+    "GIT_AUTHOR_NAME='a b' rm -rf /",
+    "git push --force origin $'main'",
+    "rm -rf $'/'",
+    'rm -rf /System',
+    'rm -rf /home/*',
   ])('denies %s', (command) => deny(command));
 
   it.each([
@@ -255,6 +320,7 @@ describe('the rules that three rounds did not break still hold', () => {
     "git commit -F - <<'EOF'\nrm -rf / is blocked\nEOF",
     'gh workflow run --repo org/prod-release-api ci.yml',
     'gh workflow run ci.yml --ref release/prod-hotfix',
+    'gh api repos/o/prod-api/actions/workflows/ci.yml/dispatches -f ref=main',
     'rm -rf node_modules',
     'pnpm test',
   ])('allows %s', (command) => allow(command));
@@ -312,7 +378,16 @@ describe('the guard does provably bounded work, and says what it cannot see', ()
   it('carries no unbounded construct — the shape all three bypasses shared', async () => {
     const source = (await readFile(hook, 'utf8')).replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
     expect(source, 'no recursive expansion in the guard body').not.toMatch(/expandBraces/);
-    expect(source, 'no spread of an input-derived array').not.toMatch(/\.push\([^)]*\.\.\./);
+    // …and the module that actually carried the spread bypass caps before it
+    // spreads. Asserting this on the hook alone would have passed against the
+    // reverted implementation, because the bug never lived here.
+    const shared = (await readFile(path.join(scripts, 'stop-flag.mjs'), 'utf8')).replace(
+      /^\s*(\/\/|\*|\/\*).*$/gm,
+      '',
+    );
+    expect(shared, 'the spread must be preceded by a cap').toMatch(
+      /slice\(0,\s*\d+\)[\s\S]{0,120}\.\.\./,
+    );
   });
 
   it('documents each remaining limit, and each really is one', async () => {
