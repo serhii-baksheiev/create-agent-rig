@@ -67,10 +67,36 @@ costs it all its credibility.
 gets a payload it does not understand, it must allow the edit. A crashed guard
 that blocks everything gets deleted within the hour.
 
-**A guard that fails open must not be slow.** If it can be made to hang, it can
-be made to time out — and a timed-out hook does not block, so every rule in it
-switches off silently. Treat a pathological input that takes seconds as the same
-class of defect as a missed match, because that is what it becomes.
+**A guard that fails open must do provably bounded work — and this is the rule
+that cost the most to learn.**
+
+Fail-open is right: a crashed guard must not make the session unusable. But it
+means **every line of work the guard does is a potential total bypass**. Any
+exception, any timeout, any stack overflow inside it resolves to *allow* — not
+for the rule that broke, for **all** of them.
+
+Three review rounds on one hook produced three separate total bypasses, and all
+three were the same shape: an input made the guard's own code throw, and the
+fail-open catch turned that into permission.
+
+- an unbounded `spread` over an input-derived array → `RangeError` → allow;
+- a recursive expansion whose bound was per-group, not total → stack overflow →
+  allow;
+- a quadratic loop → killed by the hook timeout → allow.
+
+So the test is not "is it fast enough on realistic input" but **"can any input
+make it do unbounded work at all"**. In practice:
+
+- no recursion over input, or an explicit total budget rather than a per-step one;
+- no `spread` of an array whose length comes from input;
+- one forward pass; no rescanning, no loop that re-copies the whole string;
+- when a bound is hit, fail **closed** or keep the input intact — never silently
+  drop part of it, which is how one of those bypasses hid whole commands.
+
+And the corollary that follows from all of it: **prefer deleting a rule to adding
+one.** Each of those three bypasses arrived in a commit whose purpose was to make
+the guard stricter. Subtraction cannot introduce this class of defect; addition
+routinely does.
 
 ## State the limits — and test them
 

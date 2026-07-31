@@ -30,20 +30,25 @@
 // which is what happened the first time — an earlier version of this list was
 // understated in six ways.
 //
-// Not caught, because each needs a shell rather than a parser:
+// Not caught:
 //   - a value that only exists at runtime: `git push --force origin $BRANCH`;
 //   - a user-defined alias, or a wrapper script that shells out:
 //     `./scripts/deploy-prod.sh`;
-//   - a command assembled at runtime: `eval "$(printf ...)"`.
+//   - a command assembled at runtime: `eval "$(printf ...)"`;
+//   - brace expansion: `git push --force origin mai{n..n}` really does push to
+//     `main`, and the guard does not expand it.
+//
+// That last one is here BY CHOICE, and the choice is the point. Expanding braces
+// needs a cross-product, and a bound per group is not a bound on the result: the
+// implementation that did it could be made to overflow the stack, which the
+// fail-open catch below turned into "allow" for every rule at once. A guard that
+// can be disarmed by ten characters is worse than one with a documented gap.
+// See .claude/rules/invariants.md, "A guard that fails open must do provably
+// bounded work".
 //
 // The list is **not exhaustive**. The guard targets DRIFT — the ordinary spelling
 // written without thinking — not an adversary, and circumventing it is itself a
 // Never-tier violation. The layers behind it are review and CI.
-//
-// One rule is deliberately coarse rather than precise: while the kill switch is
-// on, ANY unquoted mention of a merge is refused, whatever command it belongs to.
-// A false block costs nothing there, because the session is already stopped —
-// precision should follow the cost of being wrong.
 //
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason. Fails open on anything it cannot
@@ -75,10 +80,22 @@ const WRAPPERS = new Set([
  * becomes the "command name" and the segment is never inspected — so
  * `for b in a; do git push --force origin main; done` was invisible.
  */
-/** Wrapper options that consume the next argument, so it is not the command. */
-const WRAPPER_VALUE_FLAGS = new Set([
-  '-u', '-g', '-U', '-C', '-r', '-t', '-k', '-n', '-I', '-L', '-P', '-s', '-d', '-a',
-]);
+/**
+ * Wrapper options that consume the next argument — keyed BY WRAPPER, because the
+ * same letter differs between them: `-n` takes a value for `xargs` and `nice`,
+ * but is `--non-interactive` for `sudo`. One flat set ate the real command after
+ * `sudo -n`, so the force-push behind it was never inspected.
+ */
+const WRAPPER_VALUE_FLAGS = {
+  sudo: new Set(['-u', '-g', '-U', '-C', '-r', '-t', '-p', '-h', '-D', '-R']),
+  doas: new Set(['-u', '-C']),
+  env: new Set(['-u', '-S', '--unset', '--chdir']),
+  xargs: new Set(['-n', '-I', '-L', '-P', '-s', '-d', '-a', '-E', '-e']),
+  nice: new Set(['-n', '--adjustment']),
+  ionice: new Set(['-c', '-n']),
+  timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
+  stdbuf: new Set(['-i', '-o', '-e']),
+};
 const KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'fi', 'done', 'in', '!', '{', '}']);
 /** Shells whose `-c` argument is itself a command line, so it must be parsed too. */
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
@@ -124,6 +141,12 @@ const CATASTROPHIC = new Set([
   '/Users',
   '~/.ssh',
   '$HOME/.ssh',
+  '/usr/*',
+  '/etc/*',
+  '/var/*',
+  '/bin/*',
+  '/lib/*',
+  '/opt/*',
   '/home/*',
   '/Users/*',
   '/System',
@@ -131,30 +154,39 @@ const CATASTROPHIC = new Set([
   '/Applications',
   '/private',
   '/Volumes',
+  '/System/*',
+  '/Library/*',
+  '/Applications/*',
 ]);
 
 /**
- * While the brake is on, anything that looks like a merge is refused.
+ * While the brake is on, the network clients are refused.
  *
- * Deliberately COARSE, and that is the design rule worth stating: **match a
- * rule's precision to the cost of a false positive.** A false block here costs
- * nothing — the session is already stopped — so the brake does not need to
- * out-parse a shell, and it must not depend on doing so. Trying to enumerate the
- * routes (`gh pr merge`, `gh api …/merge`, `curl`, `graphql`) is how three of
- * them were missed.
+ * Pushing to a protected branch is refused with or without the brake, so the only
+ * thing the brake has to add is the routes that land a PR — and every one of them
+ * goes through a network client (`gh`, `curl`, `wget`). Denying the clients, with
+ * a short allowlist of read-only and PR-opening subcommands, covers `gh pr merge`,
+ * `gh api …/merge`, the GraphQL mutation and a raw `curl` in one rule, without
+ * matching text at all.
  *
- * Quoted text is exempt, so a commit message or a journal entry that merely
- * mentions merging is untouched.
+ * The previous attempt matched the substring `merge` across every token. It denied
+ * 19 ordinary commands — including `git log --no-merges` and pushing a branch named
+ * `fix/merge-conflict-handling`, which are literally what the brake's own message
+ * tells the agent to do while stopping. A rule that forbids the wind-down it
+ * prescribes is not coarse, it is wrong.
  */
-const MERGE_WORD = /merge/i;
-/** Flags whose value is prose a human wrote, where a mention of merging is not an act. */
-const PROSE_FLAGS = new Set(['-m', '--message', '--body', '--title', '--body-file', '-F', '--file']);
-const mentionsMerge = (segment) =>
-  segment.some((token, index) => {
-    const previous = segment[index - 1]?.value;
-    if (token.quoted && PROSE_FLAGS.has(previous)) return false;
-    return MERGE_WORD.test(token.value);
-  });
+const NETWORK_CLIENTS = new Set(['gh', 'curl', 'wget', 'http', 'https', 'httpie', 'hub']);
+/** `gh` subcommands that read, or open a PR — the wind-down the brake asks for. */
+const BRAKE_SAFE_GH = new Set(['view', 'list', 'status', 'diff', 'checks', 'create']);
+
+const deniedByBrake = (name, args) => {
+  if (!NETWORK_CLIENTS.has(name)) return false;
+  if (name !== 'gh' && name !== 'hub') return true;
+  const operands = operandsOf(args, GH_FLAGS).map(({ value }) => value);
+  // `gh pr view`, `gh run list`, `gh pr create` — anything else, including
+  // `gh api` by any route, is refused while the brake is on.
+  return !operands.some((operand) => BRAKE_SAFE_GH.has(operand));
+};
 
 // ── Tokenising ───────────────────────────────────────────────────────────────
 
@@ -169,56 +201,13 @@ const mentionsMerge = (segment) =>
  * current segment — every one of them introduces a new command whose first word
  * must be examined on its own.
  */
-/**
- * Remove heredoc BODIES before tokenising.
- *
- * A heredoc body is data, not commands — but every newline was a segment
- * boundary, so `git commit -F - <<'EOF' … rm -rf / … EOF` read as an `rm`
- * command and was blocked. The rewrite fixed prose for `-m "…"` and left it open
- * for multi-line bodies, which is exactly how PR descriptions and journal entries
- * are written. Same failure the file's own header calls fatal for a guard.
- */
-export const stripHeredocs = (raw) => {
-  const lines = raw.split('\n');
-  const out = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    out.push(lines[i]);
-    const marker = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(lines[i]);
-    if (!marker) continue;
-    const terminator = marker[2];
-    i += 1;
-    while (i < lines.length && lines[i].trim() !== terminator) i += 1;
-  }
-  return out.join('\n');
-};
-
-/**
- * Expand the brace forms a shell would: `mai{n..n}` really is `main`, and the
- * guard has to see the branch the command actually pushes to. Bounded and
- * literal — anything larger or stranger is left alone rather than guessed at.
- */
-export const expandBraces = (token) => {
-  const match = /\{([^{}]*)\}/.exec(token);
-  if (!match) return [token];
-  const body = match[1];
-  let options = null;
-  if (body.includes(',')) options = body.split(',');
-  else {
-    const range = /^([A-Za-z0-9]+)\.\.([A-Za-z0-9]+)$/.exec(body);
-    if (range && range[1] === range[2]) options = [range[1]];
-  }
-  if (!options || options.length > 16) return [token];
-  return options.flatMap((option) =>
-    expandBraces(token.slice(0, match.index) + option + token.slice(match.index + match[0].length)),
-  );
-};
-
 export const tokenize = (raw) => {
   const segments = [];
   let args = [];
   let value = '';
   let quoted = false;
   let started = false;
+  let heredocBudget = 32;
 
   const endArg = () => {
     if (started) {
@@ -290,6 +279,39 @@ export const tokenize = (raw) => {
       i = end === -1 ? raw.length : end; // an unquoted comment is not arguments
       continue;
     }
+    if (ch === '<' && raw[i + 1] === '<' && raw[i + 2] !== '<' && heredocBudget > 0) {
+      // A heredoc body is data, not commands. Recognised HERE, inside the
+      // scanner, because only here is it known that the `<<` is unquoted — a
+      // pre-pass over the raw text could not tell a redirect from `<<` inside a
+      // string, which made it a general hide-anything primitive.
+      //
+      // Bounded by construction: one forward scan, no rescanning, and if the
+      // terminator never appears the body is KEPT rather than swallowed. Losing
+      // lines is how the pre-pass hid commands.
+      const marker = /^<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(raw.slice(i, i + 64));
+      if (marker) {
+        // A TOTAL budget, not a per-step one. Each lookahead scans forward to the
+        // end of the input, so an input full of markers is quadratic — the same
+        // shape as the three bypasses this round removed. Past the budget, `<<`
+        // is just two characters again, which keeps the body visible: erring
+        // toward inspecting more, never toward inspecting less.
+        heredocBudget -= 1;
+        const bodyStart = raw.indexOf('\n', i + marker[0].length);
+        let end = bodyStart === -1 ? -1 : raw.indexOf(`\n${marker[2]}\n`, bodyStart);
+        let skip = marker[2].length + 2;
+        if (end === -1 && bodyStart !== -1 && raw.endsWith(`\n${marker[2]}`)) {
+          end = raw.length - marker[2].length - 1; // the terminator ends the input
+          skip = marker[2].length + 1;
+        }
+        if (end !== -1) {
+          endArg();
+          i = end + skip; // skip the body and its terminator
+          continue;
+        }
+      }
+      i += 2;
+      continue;
+    }
     if (ch === '$' && raw[i + 1] === '{') {
       // A parameter expansion is part of the token, not a brace group — `${HOME}`
       // must survive tokenising to be normalised into `$HOME` later.
@@ -332,6 +354,7 @@ export const tokenize = (raw) => {
 export const commandOf = (args) => {
   let i = 0;
   let sawWrapper = false;
+  let lastWrapper = null;
   while (i < args.length) {
     const { value } = args[i];
     // An assignment prefix, whether or not it was quoted. Only the UNQUOTED form
@@ -346,6 +369,7 @@ export const commandOf = (args) => {
       continue;
     }
     if (WRAPPERS.has(value.split('/').pop())) {
+      lastWrapper = value.split('/').pop();
       i += 1;
       sawWrapper = true;
       continue;
@@ -354,7 +378,8 @@ export const commandOf = (args) => {
     // bare duration in `timeout 60`) — step over them rather than treating `-u`
     // as the command name and giving up.
     if (sawWrapper && value.startsWith('-')) {
-      i += value !== '--' && WRAPPER_VALUE_FLAGS.has(value) && args[i + 1] ? 2 : 1;
+      const takesValue = WRAPPER_VALUE_FLAGS[lastWrapper]?.has(value) ?? false;
+      i += value !== '--' && takesValue && args[i + 1] ? 2 : 1;
       continue;
     }
     if (sawWrapper && /^\d+(\.\d+)?[smhd]?$/.test(value)) {
@@ -424,11 +449,7 @@ export const refNames = (token) =>
 const namesProtected = (token) => refNames(token).some((name) => PROTECTED_BRANCH.test(name));
 
 function checkGit({ args }) {
-  // Brace forms expand first: `mai{n..n}` is the branch `main` to the shell, so
-  // the guard has to see the ref the push actually targets.
-  const operands = operandsOf(args).flatMap(({ value, quoted }) =>
-    expandBraces(value).map((expanded) => ({ value: expanded, quoted })),
-  );
+  const operands = operandsOf(args);
   if (!operands.some(({ value }) => value === 'push')) return null;
 
   const forced =
@@ -521,7 +542,6 @@ function checkGh({ args }) {
  * worse than no guard at all.
  */
 export const normalizeTarget = (token) => {
-  if (token.length > 4096) return token; // no real path is this long
   const path = token.replace(/\$\{HOME\}/g, '$HOME');
   const leading = path.startsWith('/') ? '/' : '';
   const parts = path.split('/').filter((part) => part !== '' && part !== '.');
@@ -529,38 +549,10 @@ export const normalizeTarget = (token) => {
   return joined === '' ? (leading || path) : joined;
 };
 
-/**
- * Roots whose CHILDREN are also catastrophic. `/etc` was listed and `/etc/*` was
- * not — the same deletion by another spelling.
- *
- * Home is deliberately absent: `$HOME/project/node_modules` and
- * `/Users/me/app/dist` are the most ordinary deletions there are, and blocking
- * them is how a guard gets switched off. Home is protected as a whole (`~`,
- * `~/*`) and in the one place that matters (`~/.ssh`), not by prefix.
- */
-const CATASTROPHIC_TREES = [
-  '/usr',
-  '/etc',
-  '/var',
-  '/bin',
-  '/lib',
-  '/opt',
-  '/System',
-  '/Library',
-  '/Applications',
-  '/private',
-  '/Volumes',
-  '~/.ssh',
-  '$HOME/.ssh',
-];
-
-const isCatastrophic = (target) =>
-  CATASTROPHIC.has(target) || CATASTROPHIC_TREES.some((root) => target.startsWith(`${root}/`));
-
 function checkRm({ args }, atCatastrophicCwd) {
-  for (const { value } of operandsOf(args).flatMap(({ value: v }) => expandBraces(v).map((x) => ({ value: x })))) {
+  for (const { value } of operandsOf(args)) {
     const target = normalizeTarget(value);
-    if (isCatastrophic(target)) {
+    if (CATASTROPHIC.has(target)) {
       return (
         'BLOCKED — this deletes the filesystem root or the whole home directory, ' +
         'which no task in this project requires. If a path really needs removing, ' +
@@ -592,11 +584,15 @@ export const inspect = (raw, brake, depth = 0) => {
   if (depth > 8) return null; // a wrapper chain this deep is not a real command
   let atCatastrophicCwd = false;
 
-  for (const segment of tokenize(stripHeredocs(raw))) {
+  for (const segment of tokenize(raw)) {
     // The coarse brake, before any per-command rule and independent of every one
     // of them: while the flag is on, an UNQUOTED mention of a merge is refused
     // whatever command it belongs to.
-    if (brake && mentionsMerge(segment)) {
+    const braked = brake && (() => {
+      const { name, args } = commandOf(segment);
+      return deniedByBrake(name, args);
+    })();
+    if (braked) {
       return (
         `BLOCKED — the kill switch is set (${brake}), so nothing may land on the ` +
         'default branch. Everything else stays allowed on purpose: finish the ' +

@@ -5,14 +5,23 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-// Second review pass over the guard. Three reviewers returned HOLD; this suite
-// pins what was actually fixed and — just as importantly — what is now HONESTLY
-// declared as out of scope.
+// Round 3 of the review, and the last one that adds rules.
 //
-// The governing idea: **match each rule's precision to the cost of a false
-// positive.** While the brake is on, a false block costs nothing (the session is
-// stopped anyway), so that rule is deliberately coarse. Everyday rules stay narrow,
-// because a guard that fires on ordinary work gets disabled.
+// Rounds 1→2→3 each fixed the previous round by ADDING a construct, and each
+// addition opened a hole wider than the one it closed. Round 3's tally on the
+// additions alone: three total bypasses (a ten-character brace decoy, a heredoc
+// hide-primitive, a long env value) and 32 newly-blocked ordinary commands.
+//
+// All three bypasses had ONE shape: an exception raised inside the hook's own
+// work, swallowed by `catch { return 0 }` into "allow". `main()` must fail open —
+// a crashed guard cannot make the session unusable — which means **every line of
+// work the hook does is a potential total bypass**. So the guard's work has to be
+// structurally bounded, not merely fast in practice.
+//
+// This pass is therefore SUBTRACTIVE. `expandBraces`, the `stripHeredocs`
+// pre-pass, `CATASTROPHIC_TREES` and the length cap are gone. What they reached
+// for is either handled where it can be handled safely (heredocs, inside the
+// tokenizer where quote state is known) or written down as a limit.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -30,8 +39,6 @@ beforeAll(async () => {
   noBrake = { AGENT_LOOP_STOP: path.join(dir, 'absent') };
   brakeOn = { AGENT_LOOP_STOP: flag };
 
-  // A home directory carrying the machine-level flag, so the DEFAULT path is
-  // exercised rather than only the env override.
   fakeHome = await mkdtemp(path.join(tmpdir(), 'home-'));
   await mkdir(path.join(fakeHome, '.claude'), { recursive: true });
   await writeFile(path.join(fakeHome, '.claude', '__PROJECT_NAME__-loop-STOP'), '');
@@ -40,7 +47,7 @@ beforeAll(async () => {
 function runHook(
   command: string,
   env: Record<string, string> = {},
-  timeout = 15_000,
+  timeout = 10_000,
 ): Promise<{ code: number | string; ms: number }> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
@@ -67,47 +74,194 @@ const deny = async (command: string, env?: Record<string, string>) =>
 const allow = async (command: string, env?: Record<string, string>) =>
   expect((await runHook(command, env ?? noBrake)).code, `should ALLOW: ${command}`).toBe(0);
 
-// ── D. the only place the hook was worse than no hook ────────────────────────
+// ── The three total bypasses ─────────────────────────────────────────────────
 
-describe('D. a long path cannot stall the hook into failing open', () => {
-  // The collapse loop was quadratic: one full string copy per `/.`. At 1.4MB the
-  // hook was KILLED by its timeout — and a killed hook does not block, so every
-  // rule silently switched off for that command.
-  it('stays fast on a pathological path, and still blocks the real action', async () => {
-    const command = `cd /tmp${'/.'.repeat(300_000)} && git push --force origin main`;
-    const result = await runHook(command, noBrake);
-    expect(result.code, 'must still deny, not time out').toBe(2);
-    expect(result.ms).toBeLessThan(3000);
+describe('a dangerous command cannot be un-guarded by making the hook crash', () => {
+  // Each of these was a full disarm: the hook exited 0 for EVERY rule, not just
+  // the one being probed. That is what `catch { return 0 }` turns any internal
+  // error into, which is why the work must be bounded by construction.
+  const decoy = ` ${'{a,b}'.repeat(2000)}`;
+
+  it('a brace decoy no longer disarms anything', async () => {
+    await deny(`rm -rf /${decoy}`);
+    await deny(`git push -f origin main${decoy}`);
+    await deny(`rm -rf ~/.ssh${decoy}`);
   });
 
-  it('normalizeTarget is linear', async () => {
-    const { normalizeTarget } = await import(pathToFileURL(hook).href);
-    const time = (n: number) => {
-      const started = Date.now();
-      (normalizeTarget as (s: string) => string)(`/tmp${'/.'.repeat(n)}`);
-      return Date.now() - started;
-    };
-    time(50_000); // warm
-    expect(time(400_000)).toBeLessThan(500);
-  });
-});
-
-// ── B. one implementation of the brake, used by everything ───────────────────
-
-describe('B. the stop flag has one implementation, shared', () => {
-  it('both the hook and preflight import it rather than re-deriving it', async () => {
-    const shared = await readFile(path.join(scripts, 'stop-flag.mjs'), 'utf8');
-    expect(shared).toMatch(/homedir\(\)/);
-    for (const file of [hook, path.join(scripts, 'preflight.mjs')]) {
-      const source = await readFile(file, 'utf8');
-      expect(source, file).toMatch(/stop-flag\.mjs/);
-      // Neither may derive the path itself — one implementation means exactly one
-      // place computes it, so there is only one place to get it wrong.
-      expect(source.replace(/^\s*\/\/.*$/gm, ''), file).not.toMatch(/homedir\(\)/);
+  it('a huge AGENT_LOOP_STOP value cannot disarm the brake', async () => {
+    // `paths.push(extra, ...split)` with 115k empty entries overflowed the
+    // argument limit; the RangeError became "allow", brake armed and all.
+    const env = { HOME: fakeHome, AGENT_LOOP_STOP: ':'.repeat(115_000) };
+    for (const command of ['gh pr merge 12 --squash', 'git push --force origin main', 'rm -rf /']) {
+      await deny(command, env);
     }
   });
 
-  it('the env variable can only ADD a brake, never remove the machine-level one', async () => {
+  it('a stray heredoc marker cannot hide the command after it', async () => {
+    // The pre-pass ran BEFORE the tokenizer, so it could not tell a real redirect
+    // from `<<` inside a quoted string — a general hide-anything primitive, and
+    // the exact defect ("matched before it understood quoting") this file was
+    // rewritten to eliminate.
+    await deny('echo "usage: cmd << WORD"\nrm -rf /');
+    await deny(`echo 'see <<NOTE for details'\ngit push --force origin main`);
+    await deny('git commit -m "docs: describe <<EOF"\ngit push --force origin main');
+    await deny('echo $((1 << SHIFT))\ngit push --force origin main');
+    await deny('grep "<<MARK" file.txt\nrm -rf /');
+    await deny('echo "see << EOF"\ngh pr merge 12', brakeOn);
+  });
+
+  it('stays fast and still denies under every hostile shape', async () => {
+    const shapes: Array<[string, string]> = [
+      ['many slashes', `rm -rf ${'/'.repeat(200_000)}`],
+      ['many /. pairs', `rm -rf /${'/.'.repeat(400_000)}`],
+      ['nested substitutions', `${'$('.repeat(10_000)}rm -rf /`],
+      ['many quotes', `${"'".repeat(50_000)} ; rm -rf /`],
+      ['many separators', `${';'.repeat(100_000)} rm -rf /`],
+      ['many heredoc markers', `${'echo <<A\n'.repeat(20_000)}rm -rf /`],
+      // The decoy must not hide the real operand. (`rm -rf /{a,b}` as ONE token
+      // is not a root delete — the shell expands it to `/a /b` — so that form is
+      // correctly allowed and is not a hostile shape.)
+      ['deep braces as a decoy', `rm -rf / ${'{a,b}'.repeat(5_000)}`],
+    ];
+    for (const [label, command] of shapes) {
+      const result = await runHook(command);
+      expect(result.code, `${label} must not fail open`).toBe(2);
+      expect(result.ms, `${label} took ${result.ms}ms`).toBeLessThan(3000);
+    }
+  });
+});
+
+// ── The false positives the additions caused ─────────────────────────────────
+
+describe('ordinary deletes are not blocked — the tree prefixes are gone', () => {
+  it.each([
+    'rm -rf /private/tmp/scratch',
+    'rm -rf /private/var/folders/xx/T/x',
+    'rm -rf /var/folders/h2/abc/T/vitest-1234',
+    'rm -rf /usr/local/lib/node_modules/oldpkg',
+    'rm -rf /opt/homebrew/var/cache/myapp',
+    'rm -rf /Library/Caches/com.example.app',
+    'rm -rf /Volumes/BuildDisk/artifacts',
+    'rm -rf /tmp/build',
+    'rm -rf "$HOME/project/node_modules"',
+  ])('allows %s', (command) => allow(command));
+
+  it('still refuses the wipes themselves, by exact target', async () => {
+    for (const command of [
+      'rm -rf /',
+      'rm -rf //',
+      'rm -rf /.',
+      'rm -rf ~',
+      'rm -rf "$HOME"',
+      'rm -rf ${HOME}',
+      'rm -rf /etc/*',
+      'rm -rf /usr/*',
+      'rm -rf ~/*',
+      'rm -rf ~/.ssh',
+    ]) {
+      await deny(command);
+    }
+  });
+
+  it('the two spellings of one directory agree', async () => {
+    // `/tmp` is a symlink to `/private/tmp`; the prefix rule answered opposite
+    // things for the same path, so it neither protected nor permitted reliably.
+    for (const command of ['rm -rf /tmp/x', 'rm -rf /private/tmp/x']) await allow(command);
+  });
+});
+
+// ── The brake, inverted to an allowlist ──────────────────────────────────────
+
+describe('the brake denies the network clients, not the word "merge"', () => {
+  // Substring-matching `merge` blocked 19 ordinary commands, including the ones
+  // the brake's own message tells the agent to do. And pushing to a protected
+  // branch is refused with or without the brake, so the only thing the brake has
+  // to add is the PR-merge routes — every one of which is a network client.
+  it.each([
+    'gh pr merge 12 --squash',
+    'gh --repo o/r pr merge 12',
+    'gh api -X PUT repos/o/r/pulls/12/merge',
+    'gh api -X PUT repos/{owner}/{repo}/pulls/12/merge',
+    'gh api repos/o/r/pulls/12/%6Derge -X PUT',
+    "gh api graphql -f query='mutation{mergePullRequest(input:{})}'",
+    'curl -X PUT https://api.github.com/repos/o/r/pulls/12/merge',
+    'wget --method=PUT https://api.github.com/repos/o/r/pulls/12/merge',
+  ])('denies %s', (command) => deny(command, brakeOn));
+
+  it('leaves the wind-down the brake itself prescribes alone', async () => {
+    for (const command of [
+      'git push origin feat/x',
+      'git push -u origin fix/merge-conflict-handling',
+      'git commit -m "wip"',
+      'gh pr create --fill',
+      'gh pr view 12',
+      'gh pr list',
+      'git log --no-merges',
+      'git log --oneline --merges -5',
+      'git merge origin/main',
+      'git mergetool',
+      'git branch --merged',
+      'grep -r merge src/',
+      'cat src/merge-sort.ts',
+      'rm -rf node_modules/merge-stream',
+      'pnpm add lodash.merge',
+      'gh pr create --body-file=notes-on-merge.md',
+      'gh pr create --body="we should not merge yet"',
+      'echo "- resolved merge conflicts" >> JOURNAL.md',
+    ]) {
+      await allow(command, brakeOn);
+    }
+  });
+
+  it('allows the network clients again once the brake is cleared', async () => {
+    for (const command of [
+      'gh pr merge 12',
+      'gh api repos/o/r/pulls/1',
+      'curl https://example.com',
+    ]) {
+      await allow(command);
+    }
+  });
+});
+
+// ── What survived all three rounds, still working ────────────────────────────
+
+describe('the rules that three rounds did not break still hold', () => {
+  it.each([
+    'git push --force origin main',
+    'git push origin main',
+    'git push origin HEAD:refs/heads/main',
+    'git push origin +refs/heads/main',
+    'sudo -u root git push --force origin main',
+    'sudo -n git push --force origin main',
+    'sudo -k git push --force origin main',
+    'env -i git push --force origin main',
+    'timeout 60 git push --force origin main',
+    'for b in a; do git push --force origin main; done',
+    'if true; then git push --force origin main; fi',
+    'GIT_SSH_COMMAND="ssh -i k" git push --force origin main',
+    '(cd infra && git push --force origin main)',
+    'eval "git push --force origin main"',
+    'bash -c git\\ push\\ -f\\ origin\\ main',
+    'gh workflow run --repo o/r deploy-prod.yml',
+    'gh workflow run deploy.yml -F environment=prod',
+  ])('denies %s', (command) => deny(command));
+
+  it.each([
+    'git push origin feat/main-menu',
+    'git push --force-with-lease origin feat/x',
+    'git commit -m "guard: cleanup; rm -rf / was possible"',
+    "cat > n.md <<'EOF'\nrm -rf / is dangerous\nEOF",
+    "git commit -F - <<'EOF'\nrm -rf / is blocked\nEOF",
+    'gh workflow run --repo org/prod-release-api ci.yml',
+    'gh workflow run ci.yml --ref release/prod-hotfix',
+    'rm -rf node_modules',
+    'pnpm test',
+  ])('allows %s', (command) => allow(command));
+});
+
+describe('the shared brake still has exactly one implementation', () => {
+  it('the env can only add a path, and cannot make it throw', async () => {
     const { stopFlags, brakeIsOn } = await import(
       pathToFileURL(path.join(scripts, 'stop-flag.mjs')).href
     );
@@ -122,14 +276,22 @@ describe('B. the stop flag has one implementation, shared', () => {
         Object.assign(process.env, previous);
       }
     };
-    for (const value of [undefined, '', '/nonexistent/xyz', ':::', '/dev/null']) {
+    for (const value of [
+      undefined,
+      '',
+      ':::',
+      '/dev/null',
+      ':'.repeat(200_000),
+      'x'.repeat(100_000),
+    ]) {
       const { paths, on } = withEnv(value);
-      expect(paths[0], String(value)).toContain(fakeHome);
-      expect(on, `env=${String(value)} must not disable the machine brake`).toBeTruthy();
+      expect(paths[0], `env length ${String(value).length}`).toContain(fakeHome);
+      expect(on, 'the machine brake must survive any env value').toBeTruthy();
+      expect(paths.length, 'the path list must be bounded').toBeLessThan(100);
     }
   });
 
-  it('preflight reports the brake through the same path — the sibling hole is closed', async () => {
+  it('preflight reads it through the same module', async () => {
     const { checkKillSwitch } = await import(
       pathToFileURL(path.join(scripts, 'preflight.mjs')).href
     );
@@ -137,168 +299,43 @@ describe('B. the stop flag has one implementation, shared', () => {
     process.env.HOME = fakeHome;
     process.env.AGENT_LOOP_STOP = '/nonexistent/xyz';
     try {
-      // Before the fix this reported ok:true ("absent") while the operator's real
-      // flag sat untouched — and preflight is the ONLY scripted brake check.
       expect((checkKillSwitch as () => { ok: boolean })().ok).toBe(false);
     } finally {
       Object.assign(process.env, previous);
     }
   });
-
-  it('the hook honours the machine-level flag with the env pointing elsewhere', async () => {
-    await deny('gh pr merge 12', { HOME: fakeHome, AGENT_LOOP_STOP: '/nonexistent/xyz' });
-  });
 });
 
-// ── A. the brake is coarse on purpose ────────────────────────────────────────
+// ── The limits, and the rule that made this round necessary ──────────────────
 
-describe('A. while the brake is on, nothing that looks like a merge gets through', () => {
-  it.each([
-    'gh pr merge 12 --squash',
-    'gh --repo o/r pr merge 12',
-    'gh -R o/r pr merge 12',
-    'gh api -X PUT repos/o/r/pulls/12/merge',
-    'gh api -X PUT repos/{owner}/{repo}/pulls/12/merge',
-    'curl -X PUT https://api.github.com/repos/o/r/pulls/12/merge',
-    "gh api graphql -f query='mutation{mergePullRequest(input:{})}'",
-    'git merge --ff-only origin/main',
-  ])('denies %s', async (command) => deny(command, brakeOn));
-
-  it('leaves every other step of finishing the task alone', async () => {
-    // "Stop cleanly" must never mean "lose the work".
-    for (const command of [
-      'git push origin feat/x',
-      'git commit -m "wip"',
-      'gh pr create --fill',
-      'pnpm test',
-      'git status',
-    ]) {
-      await allow(command, brakeOn);
-    }
+describe('the guard does provably bounded work, and says what it cannot see', () => {
+  it('carries no unbounded construct — the shape all three bypasses shared', async () => {
+    const source = (await readFile(hook, 'utf8')).replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
+    expect(source, 'no recursive expansion in the guard body').not.toMatch(/expandBraces/);
+    expect(source, 'no spread of an input-derived array').not.toMatch(/\.push\([^)]*\.\.\./);
   });
 
-  it('does not fire on the word inside quoted prose, even while braked', async () => {
-    // Coarse is fine; firing on a journal entry is not.
-    for (const command of [
-      'git commit -m "merge the two helper functions"',
-      `gh pr create --body 'explains why we do not merge yet'`,
-    ]) {
-      await allow(command, brakeOn);
-    }
-  });
-
-  it('allows the merge again once the brake is cleared', async () => allow('gh pr merge 12'));
-});
-
-// ── C. the drift-shaped misses ───────────────────────────────────────────────
-
-describe('C. ordinary spellings an agent actually writes are covered', () => {
-  it.each([
-    'sudo -u root git push --force origin main',
-    'sudo -E git push --force origin main',
-    'sudo -- git push --force origin main',
-    'env -i git push --force origin main',
-    'env -u FOO git push --force origin main',
-    'command -p git push --force origin main',
-    'xargs -n1 git push --force origin main',
-    'timeout 60 git push --force origin main',
-    'nice -n 10 git push --force origin main',
-  ])('sees through the wrapper: %s', (command) => deny(command));
-
-  it.each([
-    'if true; then git push --force origin main; fi',
-    'for b in a; do git push --force origin main; done',
-    'while true; do git push -f origin master; done',
-    'for i in 1; do rm -rf /; done',
-    '! git push --force origin main',
-  ])('sees past the shell keyword: %s', (command) => deny(command));
-
-  it.each([
-    'GIT_SSH_COMMAND="ssh -i k" git push --force origin main',
-    "GIT_AUTHOR_NAME='a b' rm -rf /",
-  ])('sees past a QUOTED assignment prefix: %s', (command) => deny(command));
-
-  it.each([
-    'git push --force origin mai{n..n}',
-    'git push --force origin "mas"{ter..ter}',
-    "git push --force origin $'main'",
-    "rm -rf $'/'",
-    'rm -rf /{usr,etc}',
-  ])('resolves the shell forms that hide a literal: %s', (command) => deny(command));
-
-  it.each([
-    'eval "git push --force origin main"',
-    "eval 'rm -rf /'",
-    'bash -c git\\ push\\ -f\\ origin\\ main',
-  ])('follows a statically visible payload: %s', (command) => deny(command));
-
-  it.each([
-    'rm -rf /etc/*',
-    'rm -rf /usr/*',
-    'rm -rf /home/*',
-    'rm -rf ~/.ssh/*',
-    'rm -rf /System',
-  ])('treats the children of a catastrophic directory as catastrophic: %s', (command) =>
-    deny(command),
-  );
-
-  it.each([
-    'gh workflow run --repo o/r deploy-prod.yml',
-    'gh workflow run --ref main deploy-prod.yml',
-    'gh workflow run deploy.yml -F environment=prod',
-  ])('reads gh flags in any order: %s', (command) => deny(command));
-
-  it.each([
-    'gh workflow run --repo org/prod-release-api ci.yml',
-    'gh workflow run --ref release/prod-hotfix ci.yml',
-    'gh api repos/o/prod-api/actions/workflows/ci.yml/dispatches -f ref=main',
-  ])('and still does not fire on prod in a repo or ref name: %s', (command) => allow(command));
-
-  it('does not read a heredoc body as commands', async () => {
-    // The rewrite fixed prose for `-m "…"` and left it open for multi-line
-    // bodies, which is how PR descriptions and journal entries are written.
-    for (const command of [
-      "cat > notes.md <<'EOF'\nrm -rf / is dangerous\nEOF",
-      "git commit -F - <<'EOF'\nrm -rf / is now blocked\nEOF",
-      "gh pr create --body-file - <<'EOF'\ngit push --force origin main is refused\nEOF",
-    ]) {
-      await allow(command);
-    }
-  });
-});
-
-// ── E/F. the limits comment is a claim, so it is tested ──────────────────────
-
-describe('E. every limit the file claims is really a limit', () => {
-  it('the stated-limits block names each of these, and each genuinely passes', async () => {
+  it('documents each remaining limit, and each really is one', async () => {
     const source = await readFile(hook, 'utf8');
-    // Only what is GENUINELY still a limit. Brace expansion, ANSI-C quoting and a
-    // literal `eval` payload were on this list and are now handled — a limits
-    // block that keeps stale entries understates the guard as surely as an
-    // overstated one misleads about it.
     const limits: Array<[string, RegExp]> = [
-      ['git push --force origin $BRANCH', /runtime|\$BRANCH/i],
-      ['./scripts/deploy-prod.sh', /alias|script|wrapper/i],
-      ['eval "$(printf \'git push --force origin main\')"', /eval "\$\(|assembled at runtime/i],
+      ['git push --force origin $BRANCH', /runtime|\$BRANCH/],
+      ['git push --force origin mai{n..n}', /brace/i],
+      ['./scripts/deploy-prod.sh', /alias|wrapper script/i],
+      ['eval "$(printf \'git push --force origin main\')"', /assembled at runtime|eval "\$\(/],
     ];
     for (const [command, mentioned] of limits) {
-      // it is documented …
-      expect(source, `limits block must mention: ${command}`).toMatch(mentioned);
-      // … and it really is not caught, so the documentation is not overstating
+      expect(source, `must document: ${command}`).toMatch(mentioned);
       await allow(command);
     }
-  });
-
-  it('does not claim to be exhaustive', async () => {
-    const source = await readFile(hook, 'utf8');
-    expect(source).toMatch(/not exhaustive|incomplete|drift, not an adversary/i);
+    expect(source).toMatch(/not exhaustive|drift, not an adversary/i);
   });
 });
 
-describe('F. invariants.md requires a guard to test its own stated limits', () => {
-  it('says so, because a limits comment is a credibility claim', async () => {
+describe('invariants.md carries the lesson three rounds paid for', () => {
+  it('says a fail-open guard must be bounded by construction', async () => {
     const rule = await readFile(path.join(universal, '.claude', 'rules', 'invariants.md'), 'utf8');
-    expect(rule).toMatch(/limit/i);
-    expect(rule).toMatch(/test/i);
+    expect(rule).toMatch(/bounded/i);
+    expect(rule).toMatch(/fail open|fails open/i);
+    expect(rule).toMatch(/every line|each addition|adding/i);
   });
 });

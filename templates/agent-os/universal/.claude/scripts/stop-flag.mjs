@@ -26,11 +26,19 @@ export const stopFlags = (env = process.env) => {
   const paths = [join(homedir(), '.claude', '__PROJECT_NAME__-loop-STOP')];
   const extra = env.AGENT_LOOP_STOP;
   if (extra) {
-    // The raw value first, so a path containing the platform delimiter still
-    // arms; then the split, so a list works too.
-    paths.push(extra, ...extra.split(delimiter));
+    // Filtered and CAPPED before the spread, never after. Spreading an
+    // input-derived array is unbounded: 115k empty entries from `':'.repeat(…)`
+    // overflowed the argument limit, and the RangeError was swallowed into
+    // "allow" by the hook's fail-open catch — disarming every rule while the
+    // brake was armed. Bounded work is not a performance concern here, it is the
+    // security property.
+    const extras = extra
+      .split(delimiter)
+      .filter(Boolean)
+      .slice(0, 32);
+    paths.push(extra, ...extras);
   }
-  return [...new Set(paths.filter(Boolean))];
+  return [...new Set(paths)].slice(0, 64);
 };
 
 /** The armed flag file, or null. */
