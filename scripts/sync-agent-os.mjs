@@ -30,6 +30,7 @@ const ELEVATED_PATHS = [
   'templates/agent-os/universal/.claude/hooks/', // the enforcement layer
   'templates/agent-os/universal/.claude/scripts/', // and the sweeps that watch it
   'templates/agent-os/universal/.claude/settings.json', // the hook wiring
+  'templates/agent-os/init/', // the map and overrides every `init`ed repo gets
 ];
 
 const withElevatedPaths = (claudeMd) =>

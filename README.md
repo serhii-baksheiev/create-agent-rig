@@ -22,7 +22,15 @@ npx create-agent-rig init --dry-run  # print the plan, write nothing
 ```
 
 `init` drops in the autonomy tiers, stop rules, workflow, and the enforcement
-hooks, and refuses to clobber an existing `CLAUDE.md`.
+hooks — **wired**, in a `.claude/settings.json` that names exactly the hooks it
+installed — plus a `CLAUDE.md` that describes that rig rather than the generated
+monorepo. It refuses to clobber an existing `CLAUDE.md`; if the repo already has
+a `.claude/settings.json`, it keeps it and prints the entries to merge, because a
+hook nothing calls is not enforcement.
+
+Two things it deliberately leaves to you, and says so in the installed
+`CLAUDE.md`: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
+your commands), and the elevated-path list names only what every repo has.
 
 ## What you get
 

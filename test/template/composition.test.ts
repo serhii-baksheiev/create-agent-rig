@@ -39,9 +39,14 @@ async function walk(dir: string): Promise<string[]> {
   return files.flat();
 }
 
-describe('agent-os/universal is stack-neutral', () => {
+// The init override layer travels to the same arbitrary repos, so it is held
+// to the same neutrality bar as universal.
+describe.each([
+  ['agent-os/universal', universalDir],
+  ['agent-os/init', path.join(repoRoot, 'templates', 'agent-os', 'init')],
+])('%s is stack-neutral', (_name, dir) => {
   it('mentions no provider, no infrastructure vendor, no cloud SDK', async () => {
-    const files = await walk(universalDir);
+    const files = await walk(dir);
     expect(files.length).toBeGreaterThan(0);
     const offences: string[] = [];
     for (const file of files) {
@@ -50,7 +55,7 @@ describe('agent-os/universal is stack-neutral', () => {
         // match whole-ish words to avoid false positives inside other words
         const re = new RegExp(`(^|[^a-z0-9])${term}([^a-z0-9]|$)`, 'i');
         if (re.test(content)) {
-          offences.push(`${path.relative(universalDir, file)}: "${term}"`);
+          offences.push(`${path.relative(dir, file)}: "${term}"`);
         }
       }
     }

@@ -23,3 +23,12 @@ export function agentOsUniversalDir(): string {
 export function agentOsStackDir(stack: string): string {
   return path.join(templatesRoot(), 'agent-os', 'stack', stack);
 }
+
+/**
+ * Overrides `init` applies on top of the universal layer. A file here replaces
+ * its universal namesake when the rig is installed into an existing repo whose
+ * shape the generator knows nothing about. `create` never reads this directory.
+ */
+export function agentOsInitDir(): string {
+  return path.join(templatesRoot(), 'agent-os', 'init');
+}

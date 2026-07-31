@@ -125,27 +125,28 @@ Two rules that follow from it:
 
 ## The worked example — and it is one project's answer, not a law
 
-`.claude/hooks/guard-core-purity.mjs` is this pattern, filled in:
+`.claude/hooks/block-no-verify.mjs` is this pattern, filled in:
 
 | Part | Where |
 | --- | --- |
-| the invariant | `.claude/rules/architecture.md`, "The core is pure" |
-| the check | `.claude/hooks/guard-core-purity.mjs` |
+| the invariant | `.claude/rules/autonomy.md`, "Never" — pre-commit is never bypassed |
+| the check | `.claude/hooks/block-no-verify.mjs` |
 | the test | the hook's blocking behaviour, under test |
 
-**It is an example, not a truth.** "The domain core is pure" is a good rule for
-the shape this project was generated in; it is not a law of software. If your
-project has no pure core — a thin CRUD service, a CLI, a data pipeline — then
-**delete the hook, the rule and its test**, and spend the slot on the invariant
-your project actually has. An inherited rule nobody chose is worse than an empty
-rule file: the empty one is visibly incomplete, the inherited one is invisibly
-wrong.
+**Every one of them is an example, not a truth.** Take the rule a generated
+project ships as `guard-core-purity` — "the domain core is pure". It is a good
+rule for the shape that project was generated in; it is not a law of software.
+Where a project has no pure core — a thin CRUD service, a CLI, a data pipeline —
+the right move is to **delete the hook, the rule and its test**, and spend the
+slot on the invariant that project actually has. An inherited rule nobody chose
+is worse than an empty rule file: the empty one is visibly incomplete, the
+inherited one is invisibly wrong.
 
 The invariants worth your slots are the ones you can finish this sentence about:
 *"the last time this went wrong, it cost us ___."* If you cannot finish it, you
 are guessing, and a guessed invariant is the one that will fire on honest work.
 
-## About the six hooks you were given
+## About the hooks you were given
 
 They arrive with their tests **in the generator that produced this project**, not
 in this repository — so by the rule above, as they sit here, they are checks

@@ -2,7 +2,13 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { InitError, initProject, planInit } from '../src/commands/init.js';
+import {
+  InitError,
+  initManifest,
+  initProject,
+  planInit,
+  projectNameFor,
+} from '../src/commands/init.js';
 
 let repo: string;
 
@@ -76,5 +82,120 @@ describe('initProject — the install', () => {
     expect(result.written).toEqual([]);
     await expect(readFile(path.join(repo, '.claude', 'rules', 'workflow.md'))).rejects.toThrow();
     expect(result.plannedCount).toBeGreaterThan(0);
+  });
+});
+
+// A hook nothing calls is not enforcement. `init` used to lay the hook files
+// down and stop there: no settings.json meant guard-bash, block-no-verify,
+// gate-stop-dod and inject-rules were never invoked, while CLAUDE.md claimed
+// they were.
+describe('initProject — the hooks are actually wired', () => {
+  it('writes a settings.json naming every process hook it installed', async () => {
+    await initProject(repo, {});
+    const settings = await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8');
+    for (const hook of [
+      'block-no-verify.mjs',
+      'guard-bash.mjs',
+      'gate-stop-dod.mjs',
+      'inject-rules.mjs',
+    ]) {
+      expect(settings, hook).toContain(hook);
+    }
+    expect(JSON.parse(settings)).toBeTypeOf('object');
+  });
+
+  it('names no hook it did not install — a wired-but-absent hook errors on every call', async () => {
+    await initProject(repo, {});
+    const settings = await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8');
+    expect(settings).not.toContain('guard-core-purity');
+    expect(settings).not.toContain('guard-web-boundary');
+  });
+
+  it('keeps a settings.json the repo already had, and reports it as kept', async () => {
+    await mkdir(path.join(repo, '.claude'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'settings.json'), '{"mine":true}');
+    const result = await initProject(repo, {});
+    expect(await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8')).toBe(
+      '{"mine":true}',
+    );
+    expect(result.skipped).toContain('.claude/settings.json');
+  });
+
+  it('lists the wiring in the plan, so a dry run shows it too', async () => {
+    const plan = await planInit(repo);
+    expect(plan.files.map((f) => f.path)).toContain('.claude/settings.json');
+  });
+});
+
+// The kill switch is a filename. An unsubstituted token means the operator
+// creates `~/.claude/<repo>-loop-STOP` and the brake looks for
+// `~/.claude/__PROJECT_NAME__-loop-STOP` — silently, with no error.
+describe('initProject — token substitution', () => {
+  it('leaves no __PROJECT_NAME__ token in any installed file', async () => {
+    const result = await initProject(repo, {});
+    for (const rel of result.written) {
+      const content = await readFile(path.join(repo, rel), 'utf8');
+      expect(content, rel).not.toContain('__PROJECT_NAME__');
+    }
+  });
+
+  it('points the kill switch at this repo', async () => {
+    await initProject(repo, {});
+    const stopFlag = await readFile(path.join(repo, '.claude', 'scripts', 'stop-flag.mjs'), 'utf8');
+    expect(stopFlag).toContain(`${projectNameFor(repo)}-loop-STOP`);
+    expect(projectNameFor(repo)).toMatch(/^caf-init-/); // and that name is the directory's
+  });
+
+  it('derives a filename-safe project name from the directory', () => {
+    expect(projectNameFor('/tmp/lambda-puppeteer')).toBe('lambda-puppeteer');
+    expect(projectNameFor('/tmp/My Repo!')).toBe('my-repo');
+    expect(projectNameFor('/')).toBe('project');
+  });
+});
+
+// The installed CLAUDE.md is the map an agent reads first. Shipping the
+// generated monorepo's map into an arbitrary repo describes directories that
+// do not exist and links to rules that were deliberately not installed.
+describe('initProject — the map describes THIS repo, not the generated shape', () => {
+  it('claims no monorepo layout', async () => {
+    await initProject(repo, {});
+    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    for (const ghost of ['packages/core/', 'packages/db/', 'apps/web/']) {
+      expect(claudeMd, ghost).not.toContain(ghost);
+    }
+  });
+
+  it('links to no rule or hook that init does not install', async () => {
+    await initProject(repo, {});
+    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).not.toContain('architecture.md');
+    expect(claudeMd).not.toContain('guard-core-purity');
+    expect(claudeMd).not.toContain('guard-web-boundary');
+  });
+
+  it('declares elevated paths that exist here, not in the generated shape', async () => {
+    await initProject(repo, {});
+    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    const block = /```elevated-paths\n([\s\S]*?)```/.exec(claudeMd);
+    expect(block, 'CLAUDE.md must still declare an elevated-paths block').not.toBeNull();
+    const paths = (block?.[1] ?? '').trim().split('\n');
+    expect(paths).toContain('.claude/');
+    expect(paths.some((p) => p.startsWith('packages/'))).toBe(false);
+  });
+
+  it('says the DoD stop gate is inert until the repo supplies its checks', async () => {
+    await initProject(repo, {});
+    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).toContain('dod-checks.json');
+  });
+});
+
+describe('initManifest — one list, used by the plan and the install alike', () => {
+  it('carries the process layer, the map and the wiring', async () => {
+    const rels = (await initManifest()).map((f) => f.rel);
+    expect(rels).toContain('.claude/rules/workflow.md');
+    expect(rels).toContain('CLAUDE.md');
+    expect(rels).toContain('.claude/settings.json');
+    expect(rels).not.toContain('.claude/rules/architecture.md');
   });
 });
