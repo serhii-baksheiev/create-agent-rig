@@ -271,13 +271,13 @@ describe('guard-bash: the kill switch cannot be turned off by pointing the env e
     expect(both).toBe(2);
   });
 
-  it('documents the machine-level default in the file, so the override cannot be the only brake', async () => {
+  // Superseded by `guard-hardening.test.ts`, which exercises the machine-level
+  // path behaviourally through a fake HOME. This one only checks that the hook
+  // does not carry its own copy of the logic — the shared module is the subject.
+  it('reads the brake from the one shared implementation, not its own copy', async () => {
     const { readFile } = await import('node:fs/promises');
     const source = await readFile(hook, 'utf8');
-    // the default path must be joined from homedir, not read from the env alone
-    expect(source).toMatch(/homedir\(\)/);
-    expect(source).toMatch(/AGENT_LOOP_STOP/);
-    // and the env must be additive
-    expect(source).toMatch(/never remove|only add|additive/i);
+    expect(source).toMatch(/stop-flag\.mjs/);
+    expect(source.replace(/^\s*\/\/.*$/gm, '')).not.toMatch(/homedir\(\)/);
   });
 });

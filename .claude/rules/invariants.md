@@ -67,6 +67,62 @@ costs it all its credibility.
 gets a payload it does not understand, it must allow the edit. A crashed guard
 that blocks everything gets deleted within the hour.
 
+**A guard that fails open must do provably bounded work — and this is the rule
+that cost the most to learn.**
+
+Fail-open is right: a crashed guard must not make the session unusable. But it
+means **every line of work the guard does is a potential total bypass**. Any
+exception, any timeout, any stack overflow inside it resolves to *allow* — not
+for the rule that broke, for **all** of them.
+
+Three review rounds on one hook produced three separate total bypasses, and all
+three were the same shape: an input made the guard's own code throw, and the
+fail-open catch turned that into permission.
+
+- an unbounded `spread` over an input-derived array → `RangeError` → allow;
+- a recursive expansion whose bound was per-group, not total → stack overflow →
+  allow;
+- a quadratic loop → killed by the hook timeout → allow.
+
+So the test is not "is it fast enough on realistic input" but **"can any input
+make it do unbounded work at all"**. In practice:
+
+- no recursion over input, or an explicit total budget rather than a per-step one;
+- no `spread` of an array whose length is unbounded by input — cap it first,
+  then spread;
+- one forward pass; no rescanning, no loop that re-copies the whole string;
+- when a bound is hit, fail **closed** or keep the input intact — never silently
+  drop part of it, which is how one of those bypasses hid whole commands.
+
+And the corollary that follows from all of it: **prefer deleting a rule to adding
+one.** Each of those three bypasses arrived in a commit whose purpose was to make
+the guard stricter. Subtraction cannot introduce this class of defect; addition
+routinely does.
+
+## State the limits — and test them
+
+Every guard has cases it cannot see. Write them down **in the file**, and then
+**test each one**: assert that the limit is documented, and that the command
+really does still pass.
+
+This is the part most easily skipped, and skipping it has a specific
+consequence. A limits comment is the guard's own claim about how far it can be
+trusted; nothing checks prose, so it drifts — either into overstatement (readers
+rely on cover that is not there) or into staleness (limits listed that were
+fixed long ago, understating the guard). Both have happened here, in the same
+file, within one review cycle.
+
+Two rules that follow from it:
+
+- **Match a rule's precision to the cost of a false positive.** Where a false
+  block is cheap — a kill switch is on, the session is already stopped — be
+  deliberately coarse and stop trying to out-parse the input. Where a false block
+  interrupts ordinary work, stay narrow and specific. Uniform precision
+  everywhere is how a guard ends up simultaneously too loose and too annoying.
+- **One mechanism, one implementation.** If two files enforce the same
+  invariant, they will disagree — and the one nobody is looking at is the one
+  that is wrong. Export it from a single module and import it.
+
 ## The worked example — and it is one project's answer, not a law
 
 `.claude/hooks/guard-core-purity.mjs` is this pattern, filled in:

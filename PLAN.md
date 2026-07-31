@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (v0.2.0).** Phases 0–7 are all shipped. Distribution is git-first (`github.com/serhii-baksheiev/create-agent-rig`, CI green). Several briefs landed on top of the original plan — see §7.5. What remains for the owner: the npm registry publish and a recorded demo. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (v0.3.0).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6). Distribution is git-first (`github.com/serhii-baksheiev/create-agent-rig`, CI green). Several briefs landed on top of the original plan — see §7.5. What remains for the owner: the npm registry publish and a recorded demo. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -63,16 +63,22 @@ create-agent-rig/                    — root package: the publishable unit (bin
         PLAN.md                      — two-queue work convention (Agent / Operator / Journal)
         layers.json                  — classifies every universal file: process | architecture | meta
         .claude/
-          rules/                     — architecture.md, workflow.md, autonomy.md
+          rules/                     — architecture.md, workflow.md, autonomy.md, invariants.md
           agents/                    — test-writer, code-reviewer, security-scanner
           hooks/                     — guard-core-purity, guard-web-boundary, block-no-verify,
+                                       guard-bash (Never tier + kill switch),
                                        gate-stop-dod (Stop), inject-rules (SessionStart)
-          skills/                    — pr-ship, loop
-          settings.json              — wires the hooks (PreToolUse ×3, Stop, SessionStart)
+          scripts/                   — stop-flag (the brake, one implementation),
+                                       detect-missed-gate, reconcile-external-prs, preflight,
+                                       queue/{core,plan-md,github-issues,jira,index}
+          skills/                    — pr-ship, loop, worktree-task, new-invariant
+          queue.json                 — which queue adapter this project uses
+          settings.json              — wires the hooks (PreToolUse ×4, Stop, SessionStart)
       stack/
         node-ts/.claude/             — rules/node-ts.md + hooks/dod-checks.json (DoD gate config)
-        aws-cdk/.claude/             — rules/aws-cdk.md, agents/cdk-diff-reviewer,
-                                       skills/post-deploy-verify
+        aws-cdk/.claude/             — rules/aws-cdk.md (+ its own elevated-paths block),
+                                       agents/cdk-diff-reviewer,
+                                       skills/{post-deploy-verify,ro-debug}
     skeleton/
       aws-serverless/                — packages/{core,db,shared}, services/{api,worker},
                                        apps/web, infra/{app-stack,web-stack}, .github/workflows/{ci,deploy}
@@ -110,7 +116,14 @@ This split is what makes `agent-rig init` (§6) safe — it installs only the pr
   - `block-no-verify` (PreToolUse) — refuses pre-commit bypass (quote-aware);
   - `gate-stop-dod` (Stop) — refuses to end the session while a DoD check fails (anti-loop via `stop_hook_active`, fails open);
   - `inject-rules` (SessionStart) — re-injects `autonomy.md` so the rules survive compaction/resume.
-- **Skills** — `pr-ship` (pre-merge gate → SHIP/HOLD), `loop` (unattended driver over the two-queue `PLAN.md`; "queue empty → end, do not invent work").
+- **Skills** — `pr-ship` (pre-merge gate → SHIP/HOLD), `loop` (unattended driver
+  over the queue adapter; "queue empty → end, do not invent work"),
+  `worktree-task` (isolation when a second session may run), `new-invariant`
+  (the generator for the hook+rule+test pattern).
+- **Scripts** — the two gate sweeps that run *outside* any session
+  (`detect-missed-gate`, `reconcile-external-prs`), `preflight`, the queue seam
+  (`queue/core.mjs` pure + three adapters), and `stop-flag.mjs` — the kill
+  switch, with exactly one implementation because two disagreed.
 
 **Stack layers:** `node-ts` (TS/vitest conventions, the merge-criterion command, the `dod-checks.json` the Stop gate runs) and `aws-cdk` (IAM/DLQ/single-table rules, the `cdk-diff-reviewer` deploy-gate agent, the `post-deploy-verify` skill).
 
@@ -190,6 +203,47 @@ Work driven by later briefs, each closing a rule the template already stated (de
 - **Enforcement hooks + reach** — `gate-stop-dod` (Stop), `inject-rules` (SessionStart), the process/architecture seam (`layers.json`), `agent-rig init`, the `loop` skill + two-queue `PLAN.md`.
 - **PR flow** — branch discipline + the provider-neutral merge criterion in `workflow.md` (concrete command in `stack/node-ts`).
 - **CD** — dev deploy workflows (aws-serverless: OIDC `cdk deploy`; node-service: artifact build), `post-deploy-verify` scoped to what the skeleton provisions.
+
+### 7.6 The factory extraction (landed in 0.3.0)
+
+Seven increments from `agent-rig-extraction-brief.md`, which asked what could move
+out of a real project's `.claude/` so a scaffolded project arrives with a working
+autonomous loop rather than an empty directory. Its thesis — **extract mechanisms,
+not rules** — is what shaped every decision below.
+
+- **Tier A mechanisms** — `guard-bash` (the Never tier made mechanical, plus the
+  kill switch as a real file), the `worktree-task` skill, a journal template with
+  named fields. Shipped unconditionally rather than behind the brief's proposed
+  `--with-factory` flag: §2 locks zero options and §10 forbids `--with-*`, so
+  flexibility stays subtraction.
+- **The gate sweeps** — `detect-missed-gate` and `reconcile-external-prs`, ported
+  first because extracting a process without the mechanisms that detect its drift
+  exports the hole. The elevated-path declaration is **composed** from `CLAUDE.md`
+  plus every `.claude/rules/*.md`, so a stack layer declares the paths that only
+  exist in its shape.
+- **The invariant pattern** (`rules/invariants.md` + the `new-invariant` skill) —
+  the brief's central point: the reusable thing is one pattern (stated invariant,
+  mechanical check, test for the check), not any one rule. The hooks that ship are
+  labelled examples, deletable.
+- **The queue seam** — a pure `core.mjs` above it (filters, blocker resolution,
+  tier ration, sort, stop conditions) and three adapters below (`plan-md` by
+  default, `github-issues`, `jira`). `plan-md` is the default rather than the
+  brief's GitHub Issues: a freshly generated project has no remote, and a loop
+  that cannot read its queue on day one never runs.
+- **The two invariants the brief marks load-bearing**, each tested from both
+  directions: blockers resolve from **links, never labels**; and the agent never
+  creates its own queue items (proposals land in `triage`, excluded twice over).
+- **`aws-cdk` extras** — the `ro-debug` skill and the transferable AWS knowledge
+  folded into the existing one-page rulebook rather than three new rule files.
+
+**Two review passes, seven reviewers, on the extraction itself.** The first
+returned HOLD on a forgeable gate verdict (a PR body could suppress its own
+finding), a queue write that deleted the wrong line, and writes that threw on
+success. The second, over the fixes, returned HOLD again — on a kill switch fixed
+in one file and left open in its sibling, and on a guard that could be stalled
+into failing open. Both rounds are in the history; the lessons that generalise are
+now rules in `invariants.md` (state your limits *and test them*; match a rule's
+precision to the cost of a false positive; one mechanism, one implementation).
 
 ---
 
