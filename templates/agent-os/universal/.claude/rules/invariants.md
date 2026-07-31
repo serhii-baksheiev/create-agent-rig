@@ -67,6 +67,35 @@ costs it all its credibility.
 gets a payload it does not understand, it must allow the edit. A crashed guard
 that blocks everything gets deleted within the hour.
 
+**A guard that fails open must not be slow.** If it can be made to hang, it can
+be made to time out — and a timed-out hook does not block, so every rule in it
+switches off silently. Treat a pathological input that takes seconds as the same
+class of defect as a missed match, because that is what it becomes.
+
+## State the limits — and test them
+
+Every guard has cases it cannot see. Write them down **in the file**, and then
+**test each one**: assert that the limit is documented, and that the command
+really does still pass.
+
+This is the part most easily skipped, and skipping it has a specific
+consequence. A limits comment is the guard's own claim about how far it can be
+trusted; nothing checks prose, so it drifts — either into overstatement (readers
+rely on cover that is not there) or into staleness (limits listed that were
+fixed long ago, understating the guard). Both have happened here, in the same
+file, within one review cycle.
+
+Two rules that follow from it:
+
+- **Match a rule's precision to the cost of a false positive.** Where a false
+  block is cheap — a kill switch is on, the session is already stopped — be
+  deliberately coarse and stop trying to out-parse the input. Where a false block
+  interrupts ordinary work, stay narrow and specific. Uniform precision
+  everywhere is how a guard ends up simultaneously too loose and too annoying.
+- **One mechanism, one implementation.** If two files enforce the same
+  invariant, they will disagree — and the one nobody is looking at is the one
+  that is wrong. Export it from a single module and import it.
+
 ## The worked example — and it is one project's answer, not a law
 
 `.claude/hooks/guard-core-purity.mjs` is this pattern, filled in:

@@ -17,10 +17,13 @@
 // nothing, and "I could not look" recorded as "it is fine" is the failure this
 // checklist exists to prevent.
 import { execFileSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+// One implementation of the brake, shared with the hook that enforces it. This
+// file used to carry its own `process.env.AGENT_LOOP_STOP || <default>`, which is
+// the replace-not-add bug — fixed in the hook and left open here for a full review
+// cycle, because preflight is the only scripted brake check and had no test.
+import { brakeIsOn } from './stop-flag.mjs';
 
 /** The items this script cannot check: judgement, or a call worth more than it saves. */
 export const UNCHECKED = [
@@ -34,10 +37,10 @@ const run = (command, args) =>
 
 /** The kill switch must be absent before a run starts. */
 export const checkKillSwitch = () => {
-  const flag = process.env.AGENT_LOOP_STOP || join(homedir(), '.claude', 'create-agent-rig-loop-STOP');
-  return existsSync(flag)
-    ? { ok: false, detail: `kill switch is SET (${flag}) — do not start; deal with the cause` }
-    : { ok: true, detail: `absent (${flag})` };
+  const armed = brakeIsOn();
+  return armed
+    ? { ok: false, detail: `kill switch is SET (${armed}) — do not start; deal with the cause` }
+    : { ok: true, detail: 'absent' };
 };
 
 /**
