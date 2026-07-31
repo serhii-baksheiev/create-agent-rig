@@ -8,3 +8,10 @@ cdk.out/
 out/
 next-env.d.ts
 .claude/worktrees/
+
+# secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key

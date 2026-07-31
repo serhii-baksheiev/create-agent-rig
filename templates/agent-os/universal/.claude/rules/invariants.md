@@ -145,6 +145,22 @@ The invariants worth your slots are the ones you can finish this sentence about:
 *"the last time this went wrong, it cost us ___."* If you cannot finish it, you
 are guessing, and a guessed invariant is the one that will fire on honest work.
 
+## About the six hooks you were given
+
+They arrive with their tests **in the generator that produced this project**, not
+in this repository — so by the rule above, as they sit here, they are checks
+without tests. That is deliberate and it has a boundary: it holds only while they
+are untouched.
+
+**The moment you edit one, its test is yours.** A guard whose behaviour has
+changed and whose test lives somewhere else is precisely the "quietly stopped
+matching" case this rule names, and nothing here would catch it. The same applies
+if you keep a hook whose invariant you have re-scoped.
+
+If a hook matters enough to keep, it is worth ten minutes to copy the shape from
+`.claude/skills/new-invariant/guard-invariant.example.test.mjs` and pin the
+behaviour you actually rely on.
+
 ## Adding one
 
 Use the `new-invariant` skill. It asks what the invariant is (it will not invent

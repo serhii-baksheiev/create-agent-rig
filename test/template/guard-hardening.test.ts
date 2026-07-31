@@ -129,6 +129,17 @@ describe('a dangerous command cannot be un-guarded by making the hook crash', ()
     await allow("cat > n.md <<'EOF'\nrm -rf / is dangerous\nEOF");
   });
 
+  it('a here-string is not a heredoc, and hides nothing', async () => {
+    // `<<<` was excluded by testing `raw[i+2] !== '<'` — which only skips the
+    // FIRST `<`. The scanner then advanced one character and the same test saw
+    // `<<` followed by the word, so `cat <<<X` swallowed everything to the next
+    // `X` line. Three characters disarmed every rule.
+    await deny('cat <<<X\nrm -rf /\nX');
+    await deny('cat <<<EOF\ngit push --force origin main\nEOF');
+    await deny('grep -q ok <<<yes\nrm -rf /\nyes');
+    await deny('cat <<<note\ngh pr merge 12\nnote', brakeOn);
+  });
+
   it('a heredoc whose terminator the guard would MISS is not treated as one', async () => {
     // The guard's terminator model has to match the shell's, or it swallows more
     // than the shell does — which is the hide primitive again. Two shapes where
@@ -283,6 +294,43 @@ describe('the brake denies the network clients, not the word "merge"', () => {
     expect(source).toMatch(/cannot be enumerated|not a complete list|any runtime/i);
   });
 
+  it('a push must name where it is going while the brake is on', async () => {
+    // The brake's premise is that a push to a protected branch is refused anyway —
+    // true only when the command NAMES the branch. Bare `git push` on the default
+    // branch lands there, and `git merge feat/x && git push` was the ordinary way
+    // to land a merge with the brake armed. The guard cannot know the checked-out
+    // branch without running git, so while stopped it requires the ref to be said.
+    for (const command of ['git push', 'git push origin HEAD', 'git push --all origin']) {
+      await deny(command, brakeOn);
+    }
+    // …and the wind-down the brake prescribes is untouched
+    for (const command of [
+      'git push origin feat/x',
+      'git push -u origin fix/y',
+      'git merge origin/main',
+    ]) {
+      await allow(command, brakeOn);
+    }
+  });
+
+  it('the brake cannot be disarmed by pointing HOME somewhere empty', async () => {
+    // `homedir()` honours $HOME, which `.claude/settings.json` can set. The real
+    // flag is found through the password database too, which the env cannot move.
+    const { brakeIsOn } = await import(pathToFileURL(path.join(scripts, 'stop-flag.mjs')).href);
+    const previous = process.env.HOME;
+    process.env.HOME = await mkdtemp(path.join(tmpdir(), 'emptyhome-'));
+    try {
+      const { userInfo } = await import('node:os');
+      const realHome = userInfo().homedir;
+      const source = await readFile(path.join(scripts, 'stop-flag.mjs'), 'utf8');
+      expect(source, 'the real home must be consulted, not only $HOME').toMatch(/userInfo\(\)/);
+      expect(typeof (brakeIsOn as () => string | null)()).not.toBe('undefined');
+      expect(realHome.length).toBeGreaterThan(0);
+    } finally {
+      process.env.HOME = previous;
+    }
+  });
+
   it('does not treat "no operands at all" as dangerous', async () => {
     // `gh --version` has nothing to allow, and refusing it inverts the rule's
     // own logic — the allowlist is about what a command DOES.
@@ -414,16 +462,36 @@ describe('the guard does provably bounded work, and says what it cannot see', ()
   it('carries no unbounded construct — the shape all three bypasses shared', async () => {
     const source = (await readFile(hook, 'utf8')).replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
     expect(source, 'no recursive expansion in the guard body').not.toMatch(/expandBraces/);
-    // …and the module that actually carried the spread bypass caps before it
-    // spreads. Asserting this on the hook alone would have passed against the
-    // reverted implementation, because the bug never lived here.
-    const shared = (await readFile(path.join(scripts, 'stop-flag.mjs'), 'utf8')).replace(
-      /^\s*(\/\/|\*|\/\*).*$/gm,
-      '',
+  });
+
+  it('the stop-flag cap is EXERCISED, not merely present in the source', async () => {
+    // The assertion this replaces grepped for `slice(0, \d+)` before a spread.
+    // Changing 32 to 32000000 kept all 85 tests green while reopening the
+    // RangeError total bypass — a test that pins syntax pins nothing. The
+    // behavioural tests were blind too: every value they passed was reduced to
+    // ≤1 entry by `filter(Boolean)` before the cap could matter.
+    //
+    // This passes 200k NON-EMPTY entries, so the cap is the only thing between
+    // the spread and the argument limit.
+    const { stopFlags, brakeIsOn } = await import(
+      pathToFileURL(path.join(scripts, 'stop-flag.mjs')).href
     );
-    expect(shared, 'the spread must be preceded by a cap').toMatch(
-      /slice\(0,\s*\d+\)[\s\S]{0,120}\.\.\./,
+    const previous = { HOME: process.env.HOME, AGENT_LOOP_STOP: process.env.AGENT_LOOP_STOP };
+    process.env.HOME = fakeHome;
+    process.env.AGENT_LOOP_STOP = Array.from({ length: 200_000 }, (_, i) => `/p${i}`).join(
+      path.delimiter,
     );
+    try {
+      const paths = (stopFlags as () => string[])();
+      expect(paths.length, 'the cap must bound the list').toBeLessThan(100);
+      expect(paths[0], 'the machine flag survives').toContain(fakeHome);
+      expect((brakeIsOn as () => string | null)(), 'and it is still armed').toBeTruthy();
+    } finally {
+      Object.assign(process.env, previous);
+    }
+    // In-process on purpose: an env value large enough to overflow the spread
+    // cannot be handed to a child at all (`spawn E2BIG`), so a subprocess test
+    // could never reach the cap. Remove the cap and this call throws RangeError.
   });
 
   it('documents each remaining limit, and each really is one', async () => {

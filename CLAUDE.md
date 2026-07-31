@@ -92,7 +92,12 @@ templates/agent-os/universal/.claude/scripts/
 templates/agent-os/universal/.claude/settings.json
 ```
 
-**That one is a seed, not a law — the list is yours to extend.** It is what every
+`.claude/` and `.github/workflows/` are there because they are what *disarms* the
+rest: a merge that rewrites the Never tier, unwires a hook or edits what CI runs
+should never pass unreviewed. `packages/db/src/` is the one the generated shape
+has.
+
+**They are a seed, not a law — the list is yours to extend.** It is what every
 generated shape has; a real project accumulates more (auth handlers, billing, a
 credentials module, a migration directory). Add a path the same day you add the
 code, because the gap between the two is exactly the window in which a change

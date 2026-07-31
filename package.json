@@ -15,6 +15,12 @@
     "node-service"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/serhii-baksheiev/create-agent-rig.git"
+  },
+  "homepage": "https://github.com/serhii-baksheiev/create-agent-rig#readme",
+  "bugs": "https://github.com/serhii-baksheiev/create-agent-rig/issues",
   "type": "module",
   "bin": {
     "create-agent-rig": "packages/cli/dist/index.js"

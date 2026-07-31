@@ -208,6 +208,27 @@ describe('block-no-verify hook', () => {
     );
     expect(result.code).toBe(2);
   });
+
+  // Round 5: `git commit -nm "msg"` bypassed the gate outright — the one thing
+  // this hook exists to stop, in the spelling people actually type.
+  it('blocks -n bundled into a combined short-flag cluster', async () => {
+    const bundled = ['-nm "combined"', '-qn -m x', '-amn "x"', '-n -m x'];
+    for (const flags of bundled) {
+      const command = `git commit ${flags}`;
+      expect((await runHook('block-no-verify.mjs', bash(command))).code, command).toBe(2);
+    }
+  });
+
+  it('still allows clusters that do not contain n', async () => {
+    for (const command of [
+      'git commit -am "x"',
+      'git commit -S -m "x"',
+      'git log -n 3',
+      'git status',
+    ]) {
+      expect((await runHook('block-no-verify.mjs', bash(command))).code, command).toBe(0);
+    }
+  });
 });
 
 // extraction brief §3 Tier A: the Never-tier deny-list is the one guard that is

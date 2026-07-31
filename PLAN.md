@@ -110,10 +110,13 @@ This split is what makes `agent-rig init` (§6) safe — it installs only the pr
 
 - **Rules** — `autonomy.md` (tiers: self-merge / human-review / never; stop rules incl. N-strike, flaky≠retry, invariant conflict, session-staleness; post-deploy verdict), `workflow.md` (TDD, branch discipline, PR flow, review-context isolation, DoD), `architecture.md` (layers, mandatory usecase, core purity, the web boundary).
 - **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist), `security-scanner` (auth/secrets/parsing/outbound triggers).
-- **Hooks** — five, wired in `settings.json`:
+- **Hooks** — six, wired in `settings.json`:
   - `guard-core-purity` (PreToolUse) — refuses I/O/clock/randomness/env in `packages/core`;
   - `guard-web-boundary` (PreToolUse) — refuses `db`/service imports from `apps/web`;
-  - `block-no-verify` (PreToolUse) — refuses pre-commit bypass (quote-aware);
+  - `block-no-verify` (PreToolUse) — refuses pre-commit bypass (quote-aware,
+    including a `-n` inside a combined short-flag cluster);
+  - `guard-bash` (PreToolUse) — the part of the Never tier a text scan can
+    decide, plus the kill switch; the file states exactly what it does not see;
   - `gate-stop-dod` (Stop) — refuses to end the session while a DoD check fails (anti-loop via `stop_hook_active`, fails open);
   - `inject-rules` (SessionStart) — re-injects `autonomy.md` so the rules survive compaction/resume.
 - **Skills** — `pr-ship` (pre-merge gate → SHIP/HOLD), `loop` (unattended driver
@@ -258,7 +261,7 @@ The scaffolder is kept from rotting by:
 5. **Hook / gate tests** — every hook's blocking behaviour under test; the DoD stop-gate and rule-injection behaviour; the deploy workflows' OIDC/no-static-keys/degrade-cleanly invariants.
 6. **A weekly lockfile-free run** — `template-freshness.yml` reinstalls each template without a lockfile and runs its checks (the primary early-warning channel now that Next is in the stack).
 
-Test surface: 6 CLI unit files, 10 `test/template/*` files, 6 `test/e2e/*` files (~135 tests). Items 1–2 are mandatory in CI.
+Test surface: 7 CLI unit files, 18 `test/template/*` files, 6 `test/e2e/*` files (503 tests). Items 1–2 are mandatory in CI.
 
 ---
 
@@ -291,5 +294,5 @@ In practice: open an empty file and write the rule in your own words rather than
 - ~~Repository hosting~~ — **decided: `github.com/serhii-baksheiev/create-agent-rig`** (remote + CI live).
 - **npm registry publish** — done for `0.1.0` and `0.2.0`; `0.2.0` has been live since 2026-07-23. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
 - **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
-- **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). The `worktree` rule is likewise parked until unattended `loop` runs overlap hand-driven work.
+- **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). (The `worktree` rule is no longer parked — `worktree-task` shipped in 0.3.0.)
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.

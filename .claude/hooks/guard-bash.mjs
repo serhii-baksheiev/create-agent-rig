@@ -1,5 +1,5 @@
-// PreToolUse hook: the "Never" tier of .claude/rules/autonomy.md, made
-// mechanical. A prompt-level rule is followed most of the time; a hook is
+// PreToolUse hook: the part of the "Never" tier of .claude/rules/autonomy.md
+// that a text scan can decide, made mechanical. A prompt-level rule is followed most of the time; a hook is
 // followed every time, and these are the actions where "most of the time" is not
 // good enough because they are not reversible.
 //
@@ -52,6 +52,23 @@
 // See .claude/rules/invariants.md, "A guard that fails open must do provably
 // bounded work".
 //
+// And the SCOPE of each rule, because "refuses the Never tier" reads wider than
+// what is actually inspected:
+//   - deletes: only `rm` is examined. `find -delete`, `dd`, `shred`, `truncate`,
+//     `mv`, `rsync --delete` and `chmod -R 000` are not;
+//   - production deploys: only a workflow dispatch (`gh workflow run`, `gh api
+//     …/dispatches`). A deploy driven straight from an infrastructure CLI, or a
+//     registry publish, is not caught — and on a target whose own deploy command
+//     IS such a CLI, that is the ordinary spelling, not an exotic one;
+//   - direct pushes: only when the command NAMES the branch. Bare `git push` and
+//     `git push origin HEAD` depend on the checked-out branch, which this guard
+//     cannot know without running git. While the kill switch is on they are
+//     refused for that reason; the rest of the time they are not;
+//   - branch deletion: `git push --delete` is caught; `git branch -D main`,
+//     `git update-ref -d` and `gh api -X DELETE …/refs/heads/main` are not;
+//   - a command carried as a flag value (`find … -exec`, `env -S`) is not
+//     followed.
+//
 // The list is **not exhaustive**. The guard targets DRIFT — the ordinary spelling
 // written without thinking — not an adversary, and circumventing it is itself a
 // Never-tier violation. The layers behind it are review and CI.
@@ -96,7 +113,7 @@ const WRAPPERS = new Set([
  */
 const WRAPPER_VALUE_FLAGS = {
   sudo: new Set([
-    '-u', '-g', '-U', '-C', '-r', '-t', '-p', '-h', '-D', '-R',
+    '-u', '-g', '-U', '-C', '-r', '-t', '-p', '-D', '-R',
     '--user', '--group', '--other-user', '--close-from', '--role', '--type',
     '--prompt', '--host', '--chdir', '--chroot',
   ]),
@@ -104,8 +121,12 @@ const WRAPPER_VALUE_FLAGS = {
   // `-S` deliberately absent: its value is a whole command line, so skipping it
   // would hide the command. Left visible, it becomes an unrecognised command name
   // — a miss, but a miss that inspects rather than one that hides.
-  env: new Set(['-u', '-C', '-P', '--unset', '--chdir', '--split-string']),
-  xargs: new Set(['-n', '-I', '-L', '-P', '-s', '-d', '-a', '-E', '-e']),
+  env: new Set(['-u', '-C', '-P', '--unset', '--chdir']),
+  xargs: new Set([
+    '-n', '-I', '-L', '-P', '-s', '-d', '-a', '-E', '-e',
+    '--max-args', '--replace', '--max-lines', '--max-procs', '--max-chars',
+    '--delimiter', '--arg-file', '--eof-str',
+  ]),
   nice: new Set(['-n', '--adjustment']),
   ionice: new Set(['-c', '-n']),
   timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
@@ -227,7 +248,28 @@ const NETWORK_CLIENTS = new Set([
 /** `gh` subcommands that read, or open a PR — the wind-down the brake asks for. */
 const BRAKE_SAFE_GH = new Set(['view', 'list', 'status', 'diff', 'checks', 'create', 'help']);
 
+/**
+ * Under the brake a `git push` must name an explicit branch.
+ *
+ * The brake's premise is that pushing to a protected branch is refused anyway —
+ * but that is only true when the command NAMES the branch. Bare `git push`,
+ * `git push origin HEAD` and `git push --all` all land on the default branch when
+ * you are on it, and the guard cannot know which branch you are on without
+ * running git (it is deliberately pure). So while stopped, a push has to say
+ * where it is going. `git push origin feat/x` — the wind-down the brake asks for —
+ * is unaffected.
+ */
+const pushWithoutExplicitRef = ({ name, args }) => {
+  if (name !== 'git') return false;
+  const operands = operandsOf(args);
+  if (!operands.some(({ value }) => value === 'push')) return false;
+  if (hasFlag(args, '--all', '--mirror')) return true;
+  const refs = operands.filter(({ value }) => value !== 'push').slice(1);
+  return refs.length === 0 || refs.some(({ value }) => /^HEAD(:|$)/.test(value));
+};
+
 const deniedByBrake = (name, args) => {
+  if (pushWithoutExplicitRef({ name, args })) return true;
   if (!NETWORK_CLIENTS.has(name)) return false;
   if (name !== 'gh' && name !== 'hub') return true;
   const operands = operandsOf(args, GH_FLAGS).map(({ value }) => value);
@@ -236,6 +278,9 @@ const deniedByBrake = (name, args) => {
   // Read by POSITION. `some()` let any operand anywhere satisfy the allowlist,
   // so `gh pr merge 12 --subject create` passed on the word `create`.
   const [group, verb] = operands;
+  // `create` is only safe for a PR — `gh release create --target main` is not the
+  // wind-down the brake permits.
+  if (verb === 'create') return group !== 'pr';
   return !(BRAKE_SAFE_GH.has(verb) || BRAKE_SAFE_GH.has(group));
 };
 
@@ -331,7 +376,17 @@ export const tokenize = (raw) => {
       i = end === -1 ? raw.length : end; // an unquoted comment is not arguments
       continue;
     }
-    if (ch === '<' && raw[i + 1] === '<' && raw[i + 2] !== '<' && heredocBudget > 0) {
+    if (ch === '<' && raw[i + 1] === '<' && raw[i + 2] === '<') {
+      // A here-string, not a heredoc: the word after it is DATA on stdin, and no
+      // terminator line follows. Consumed whole — testing `raw[i+2] !== '<'` only
+      // skipped the FIRST `<`, so the scanner advanced one and matched `<<WORD`
+      // on the second, turning the here-string's word into a terminator and
+      // swallowing everything up to the next line equal to it. Three characters
+      // disarmed every rule.
+      i += 3;
+      continue;
+    }
+    if (ch === '<' && raw[i + 1] === '<' && heredocBudget > 0) {
       // A heredoc body is data, not commands. Recognised HERE, inside the
       // scanner, because only here is it known that the `<<` is unquoted.
       //
@@ -344,7 +399,7 @@ export const tokenize = (raw) => {
       // for the shell, and a guard that stops at `EOF` swallows further than the
       // shell does — the hide primitive again. When the models cannot be made to
       // agree, the marker is left inert and the body gets inspected.
-      const marker = /^<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(
+      const marker = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(
         raw.slice(i, i + 64),
       );
       if (marker) {
@@ -369,6 +424,16 @@ export const tokenize = (raw) => {
       value += end === -1 ? raw.slice(i) : raw.slice(i, end + 1);
       started = true;
       i = end === -1 ? raw.length : end + 1;
+      continue;
+    }
+    if (ch === '$' && raw[i + 1] === '(' && raw[i + 2] === '(') {
+      // Arithmetic. `$((1<<n))` contains a LEFT SHIFT, not a heredoc — splitting
+      // it as a subshell left `1<<n))` to be scanned as ordinary text, where the
+      // marker regex matched `<<n` and swallowed the rest of the input.
+      const end = raw.indexOf('))', i + 3);
+      value += end === -1 ? raw.slice(i) : raw.slice(i, end + 2);
+      started = true;
+      i = end === -1 ? raw.length : end + 2;
       continue;
     }
     if (ch === '$' && raw[i + 1] === '(') {
