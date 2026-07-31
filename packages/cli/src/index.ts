@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
-import { InitError, initProject, planInit } from './commands/init.js';
+import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
 import { makePalette } from './lib/colors.js';
 import { promptTarget } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
@@ -81,6 +81,19 @@ async function runInit(rawArgs: string[]): Promise<number> {
       (result.skipped.length ? `, kept ${result.skipped.length} existing` : '') +
       '.\n',
   );
+
+  // The one kept file that silently disables everything else: without this
+  // wiring the hooks sit on disk and are never called, while the rules claim
+  // they are enforced. Say so loudly, and hand over the exact entries.
+  if (result.skipped.includes('.claude/settings.json')) {
+    const wiring = (await initFileContents(cwd)).get('.claude/settings.json') ?? '';
+    process.stdout.write(
+      `\n!  .claude/settings.json already exists — it was kept, so the rig's hooks are NOT wired.\n` +
+        `   Until you merge these entries into it, nothing enforces the rules:\n\n` +
+        wiring.replace(/^/gm, '   ') +
+        '\n',
+    );
+  }
   return 0;
 }
 

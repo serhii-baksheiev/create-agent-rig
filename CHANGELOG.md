@@ -7,6 +7,42 @@ the generator.
 Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/package/create-agent-rig);
 `npx github:serhii-baksheiev/create-agent-rig` keeps working for either path.
 
+## 0.3.1
+
+`create-agent-rig init` shipped a rig that looked installed and enforced
+nothing. Everything below is that one failure, in its four parts — a repo
+`init`ed with 0.3.0 should be re-run with this version (`--force` to replace the
+CLAUDE.md it wrote).
+
+### Fixed
+
+- **The hooks are wired.** `init` laid the hook files down and stopped there: no
+  `.claude/settings.json` meant `guard-bash`, `block-no-verify`, `gate-stop-dod`
+  and `inject-rules` were never called, while the installed `CLAUDE.md` claimed
+  they were enforced at the tool layer. The wiring is now _derived_ from the
+  shipped settings, so it names exactly the hooks that travelled — never one that
+  did not. Where the repo already has a `settings.json`, `init` keeps it and
+  prints the entries to merge rather than failing silently.
+- **The kill switch works.** `init` copied templates byte-for-byte, leaving
+  `__PROJECT_NAME__` in six places — including `stop-flag.mjs`, so the brake
+  looked for `~/.claude/__PROJECT_NAME__-loop-STOP` while the operator, following
+  the instructions in the same install, created `~/.claude/<repo>-loop-STOP`. It
+  never fired, and never said so.
+- **The installed `CLAUDE.md` describes the repo it landed in.** It used to be
+  the generated monorepo's map — `packages/core/`, `apps/web/`, links to an
+  `architecture.md` and two guards that `init` deliberately does not install. It
+  is now its own document: what was installed, what was not, and that the
+  architecture rules are yours to write.
+- **The elevated-path block names paths that exist.** It seeded
+  `packages/db/src/` into repos that have no such directory, so the Tier-2 gate
+  sweep reported "clean" while looking at nothing.
+
+### Added
+
+- A template test that fails if anything `init` installs references a `.claude`
+  file `init` does not install — the drift that produced three of the four
+  findings above, now mechanical.
+
 ## 0.3.0
 
 The factory extraction: a scaffolded project now arrives with a working

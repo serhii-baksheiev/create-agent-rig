@@ -90,6 +90,7 @@ package.json
 templates/agent-os/universal/.claude/hooks/
 templates/agent-os/universal/.claude/scripts/
 templates/agent-os/universal/.claude/settings.json
+templates/agent-os/init/
 ```
 
 `.claude/` and `.github/workflows/` are there because they are what *disarms* the
@@ -136,7 +137,9 @@ generator itself, dogfooding the same rulebook. Its own map:
 
 ```
 packages/cli/       the generator (TS, tested): copy-tree, substitute, targets
-templates/agent-os/ layer 1 — universal rules + stack/<name> overlays
+templates/agent-os/ layer 1 — universal rules, stack/<name> overlays, and
+                    init/ (overrides `init` applies when the rig goes into an
+                    existing repo whose shape we know nothing about)
 templates/skeleton/ layer 2 — one runnable project per target
 test/e2e/           generate → install → run the generated project's checks
 test/template/      hook blocking, composition neutrality, dogfood drift
