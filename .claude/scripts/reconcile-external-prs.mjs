@@ -226,7 +226,7 @@ const fetchMergedPrs = (since) => {
           '--search',
           `merged:>=${since}`,
           '--json',
-          'number,title,body,headRefName,mergedAt,url,files',
+          'number,title,body,headRefName,mergedAt,url,files,changedFiles,authorAssociation',
         ],
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
       ),

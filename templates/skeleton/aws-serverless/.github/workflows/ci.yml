@@ -1,5 +1,10 @@
 name: CI
 
+# The default token is read-only for this job: CI needs nothing else, and a
+# workflow that can write is a workflow a compromised dependency can write with.
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
@@ -16,7 +21,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

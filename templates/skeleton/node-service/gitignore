@@ -9,3 +9,10 @@ out/
 next-env.d.ts
 dist/
 .claude/worktrees/
+
+# secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key

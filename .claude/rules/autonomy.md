@@ -53,8 +53,11 @@ node .claude/scripts/detect-missed-gate.mjs --since <date>          # human repo
 node .claude/scripts/detect-missed-gate.mjs --since <date> --json    # for a job
 ```
 
-It flags each merge that crossed an elevated path with **no recorded verdict** —
-no `human-review` label, no reviewer verdict in the PR body. Two consequences
+It flags each merge that crossed an elevated path with no `human-review` label.
+**Only the label suppresses a finding** — applying one needs repository
+permission, whereas the PR body is written by whoever opened the PR, including
+the run being audited. A verdict claimed in the body is reported as weaker
+evidence, never as a pass. Two consequences
 worth stating plainly:
 
 - **Never run it as a step inside a session.** A check a run performs on itself

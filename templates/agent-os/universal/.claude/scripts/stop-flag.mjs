@@ -18,12 +18,22 @@
 // root, so a flag dropped in the main checkout would be invisible to a session
 // running inside one. A brake that is silently absent is worse than no brake.
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { delimiter, join } from 'node:path';
 
 /** Every path that arms the brake. The machine-level default is always first. */
 export const stopFlags = (env = process.env) => {
-  const paths = [join(homedir(), '.claude', '__PROJECT_NAME__-loop-STOP')];
+  // BOTH homes: `homedir()` honours $HOME, which `.claude/settings.json` can set —
+  // pointing it at an empty directory disarmed the brake. `userInfo()` reads the
+  // password database and ignores the environment, so the operator's real flag is
+  // always among the paths checked.
+  const homes = new Set([homedir()]);
+  try {
+    homes.add(userInfo().homedir);
+  } catch {
+    // no password entry — the env-derived home is all there is
+  }
+  const paths = [...homes].map((home) => join(home, '.claude', '__PROJECT_NAME__-loop-STOP'));
   const extra = env.AGENT_LOOP_STOP;
   if (extra) {
     // Filtered and CAPPED before the spread, never after. Spreading an

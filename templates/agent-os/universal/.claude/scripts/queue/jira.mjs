@@ -47,15 +47,19 @@ const toIso = (created) => {
  * enough — and it tolerates a plain-string description from an older API shape.
  */
 export const descriptionTextOf = (issue) => {
-  const walk = (node) => {
+  // Depth-capped: the document is written by whoever filed the issue, and an
+  // unbounded walk overflows the stack at ~10k levels — which would stop the loop
+  // filing or deduplicating any proposal at all.
+  const walk = (node, depth) => {
+    if (depth > 64) return '';
     if (typeof node === 'string') return node;
-    if (Array.isArray(node)) return node.map(walk).join('\n');
+    if (Array.isArray(node)) return node.map((child) => walk(child, depth + 1)).join('\n');
     if (node && typeof node === 'object') {
-      return [node.text ?? '', walk(node.content ?? [])].filter(Boolean).join('\n');
+      return [node.text ?? '', walk(node.content ?? [], depth + 1)].filter(Boolean).join('\n');
     }
     return '';
   };
-  return walk(issue?.fields?.description ?? '');
+  return walk(issue?.fields?.description ?? '', 0);
 };
 
 /** Map one Jira issue onto the neutral Ticket shape. */

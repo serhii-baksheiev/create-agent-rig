@@ -104,11 +104,19 @@ export const parseElevatedPaths = (markdown) => {
   );
 };
 
-/** Paths that provision nothing and configure nothing, whatever directory they sit in. */
+/**
+ * Paths that provision nothing and configure nothing, whatever directory they sit
+ * in — EXCEPT the rulebook itself. Declaring `.claude/` as elevated was a no-op
+ * for every `.md` under it, so a merged PR rewriting the autonomy tiers or the
+ * Never list passed the gate meant to catch exactly that.
+ */
+const isRulebook = (path) => path === 'CLAUDE.md' || path.startsWith('.claude/');
+
 const isInert = (path) =>
-  /\.mdx?$/.test(path) ||
+  !isRulebook(path) &&
+  (/\.mdx?$/.test(path) ||
   /(^|\/)(test|tests|__tests__)\//.test(path) ||
-  /\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
+  /\.(test|spec)\.[cm]?[jt]sx?$/.test(path));
 
 /** Coerce whatever the host returned into a path string, never throwing. */
 const pathOf = (file) => {
@@ -136,7 +144,11 @@ export const elevatedPathsIn = (files = [], elevatedPaths = []) => {
 
 // A reviewer agent named in the PR body, by convention: the two universal gates
 // plus any project-specific `*-reviewer`.
-const REVIEWERS = /\b(code-reviewer|security-scanner|[a-z][a-z0-9-]*-reviewer)\b/i;
+// The quantifier is BOUNDED. `[a-z0-9-]*` before a `-reviewer` tail backtracks
+// quadratically on an attacker-written body: 3.9s on a 65k line, and the sweep
+// reads 100 PR bodies, so a crafted set costs minutes of CPU on a scheduled job
+// that reports nothing when it is killed.
+const REVIEWERS = /\b(code-reviewer|security-scanner|[a-z][a-z0-9-]{0,48}-reviewer)\b/i;
 const VERDICT = /\b(clean|passed|pass|approved|no blocking|green)\b/i;
 
 /**
@@ -219,7 +231,18 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
   // A file list that is absent is NOT an empty one. `files: null` used to read as
   // "touched nothing elevated" and pass silently — so a schema change, a truncated
   // response or a hand-exported fixture turned the sweep into a rubber stamp.
-  if (pr.files === undefined || pr.files === null) {
+  // `gh pr list --json files` uses GraphQL `files(first: 100)` and silently
+  // returns only the first 100, with no truncation marker. A PR padded past that
+  // hides its elevated file OUTSIDE the window, and the sweep reads the empty
+  // result as "touched nothing elevated" — the silent variant of the failure this
+  // file exists to prevent. `changedFiles` comes back on the same call and is the
+  // ground truth.
+  const truncated =
+    Array.isArray(pr.files) &&
+    typeof pr.changedFiles === 'number' &&
+    pr.files.length < pr.changedFiles;
+
+  if (pr.files === undefined || pr.files === null || truncated) {
     return {
       kind: 'unknown-file-list',
       pr: pr.number,
@@ -228,10 +251,13 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
       mergedAt: pr.mergedAt,
       lane: laneOf(pr).lane,
       elevatedFiles: [],
-      why:
-        'the merged PR carries no file list, so this sweep could not tell whether ' +
-        'it crossed an elevated path. That is an unknown, not a pass — re-fetch it ' +
-        'with `--json files` or check the PR by hand.',
+      why: truncated
+        ? `the host returned ${pr.files.length} of ${pr.changedFiles} changed files, so ` +
+          'this sweep could not see the whole diff. That is an unknown, not a pass — ' +
+          'check this PR by hand.'
+        : 'the merged PR carries no file list, so this sweep could not tell whether ' +
+          'it crossed an elevated path. That is an unknown, not a pass — re-fetch it ' +
+          'with `--json files` or check the PR by hand.',
     };
   }
 
@@ -385,7 +411,7 @@ const fetchMergedPrs = (since) => {
           '--search',
           `merged:>=${since}`,
           '--json',
-          'number,title,body,headRefName,mergedAt,url,labels,files',
+          'number,title,body,headRefName,mergedAt,url,labels,files,changedFiles',
         ],
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
       ),

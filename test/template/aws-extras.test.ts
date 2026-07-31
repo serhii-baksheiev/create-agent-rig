@@ -150,7 +150,6 @@ describe('elevated paths are declared per target, and every one exists there', (
         path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/detect-missed-gate.mjs'),
       ).href
     );
-    const { access } = await import('node:fs/promises');
 
     for (const { target, stacks } of MATRIX) {
       const sources = [
@@ -166,11 +165,25 @@ describe('elevated paths are declared per target, and every one exists there', (
       }
 
       expect(declared.length, target).toBeGreaterThan(0);
+
+      // Checked against the COMPOSED tree — skeleton plus the agent-os layers —
+      // because that is what a generated project is. `.claude/` is declared and
+      // real, but it arrives from the agent-os layer rather than the skeleton.
+      const { listTree } = await import('../../packages/cli/src/lib/copy-tree.js');
+      const composed = [
+        ...(await listTree(path.join(repoRoot, 'templates', 'skeleton', target))),
+        ...(await listTree(path.join(repoRoot, 'templates', 'agent-os', 'universal'))),
+        ...(
+          await Promise.all(
+            stacks.map((s) => listTree(path.join(repoRoot, 'templates', 'agent-os', 'stack', s))),
+          )
+        ).flat(),
+      ];
       for (const declaredPath of declared) {
-        await expect(
-          access(path.join(repoRoot, 'templates', 'skeleton', target, declaredPath)),
-          `${target} declares ${declaredPath}, which does not exist in that skeleton`,
-        ).resolves.toBeUndefined();
+        expect(
+          composed.some((file) => file === declaredPath || file.startsWith(declaredPath)),
+          `${target} declares ${declaredPath}, which nothing in the generated project matches`,
+        ).toBe(true);
       }
     }
   });

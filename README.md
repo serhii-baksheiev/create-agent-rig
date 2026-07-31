@@ -39,10 +39,13 @@ never inflated). The hooks live in `.claude/hooks/` and are wired in
 - **`block-no-verify`** — refuses bypassing pre-commit checks (and knows the
   difference between using the `--no-verify`/`-n` flag and merely mentioning it
   in a message);
-- **`guard-bash`** — refuses the "Never" tier: force-pushing or deleting a shared
-  branch, a direct push to the default branch, a production deploy trigger, a
-  catastrophic delete. It **parses** the command rather than pattern-matching it,
-  so a commit message mentioning a forbidden flag is prose, not a bypass;
+- **`guard-bash`** — refuses the part of the "Never" tier a text scan can decide:
+  a force-push or `--delete` naming a shared branch, a push that names the default
+  branch, `gh workflow run`/`gh api …/dispatches` against a production workflow,
+  and `rm` on a catastrophic target. It **parses** the command rather than
+  pattern-matching it, so a commit message mentioning a forbidden flag is prose,
+  not a bypass — and the file states exactly what it does **not** inspect
+  (`cdk deploy`, `find -delete`, a bare `git push`, and more);
 - **`gate-stop-dod`** — refuses to end the session while a Definition-of-Done
   check is red; it fails open (a missing or corrupt config never makes the
   session unquittable) and never blocks twice in a row;
@@ -55,7 +58,9 @@ nothing reads the rule. Everything short of the merge stays allowed on purpose:
 finish the task, push the branch, open the PR, write the journal. Stopping
 cleanly must not mean losing work.
 
-**Two sweeps that run outside any session.** `detect-missed-gate` finds merges
+**Two sweeps meant to run outside any session** — nothing schedules them for you;
+that is deliberate, because a check a run performs on itself is one a hurried run
+skips. `detect-missed-gate` finds merges
 that crossed an elevated path with no recorded reviewer verdict;
 `reconcile-external-prs` accounts for work that reached the default branch outside
 the queue. They exist because the one failure a run cannot report is its own
@@ -158,6 +163,7 @@ ones introduced by the previous round's _fix_ — are in the git history and in
 that fails open must do provably bounded work, because fail-open turns every line
 of its own work into a potential bypass.
 
-Development: `pnpm test` (full), `pnpm test:unit` (fast loop),
+Development (from a clone — `PLAN.md` and `demo.sh` live in the repository, not
+in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop),
 `pnpm template:check` (templates in place). The plan of record is `PLAN.md`;
-release notes and the release checklist are in `CHANGELOG.md`.
+release notes and the release checklist ship in `CHANGELOG.md`.

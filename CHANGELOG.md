@@ -72,6 +72,30 @@ each reproduced before the fix and re-verified after:
 - a heredoc pre-pass that could **hide any command** from every rule;
 - a ReDoS in the blocker parser reachable by anyone able to open an issue.
 
+Rounds 4 and 5, on the fixes themselves:
+
+- a here-string (`cat <<<X`) and an arithmetic left shift (`$((1<<n))`) were each
+  read as heredoc markers, **hiding every command up to the next matching line**;
+- `git commit -nm "msg"` bypassed the pre-commit gate outright — the one thing
+  that hook exists to stop, in the spelling people actually type;
+- with the kill switch armed, `git merge feat/x && git push` still landed a merge
+  on the default branch; a push must now name its ref while stopped;
+- pointing `HOME` at an empty directory disarmed the brake; it is now found
+  through the password database as well as the environment;
+- `gh --json files` truncates at 100 with **no marker**, and the gate sweep read
+  the short list as "touched nothing elevated" — a PR padded past 100 files hid
+  its elevated change. The sweep now compares against `changedFiles`;
+- declaring `.claude/` elevated was a no-op, because every `.md` under it counted
+  as inert — so a merge rewriting the autonomy tiers passed the gate meant to
+  catch exactly that;
+- a quadratic reviewer-name regex cost ~4 s per crafted PR body, minutes across a
+  sweep that reports nothing when killed.
+
+The README's enforcement claims were overstated and are now scoped to what the
+guard actually inspects, with the omissions listed in the hook itself: only `rm`
+for deletes, only a workflow dispatch for deploys, only a push that names its
+branch, and nothing carried as a flag value.
+
 The lesson that generalises is now a rule (`invariants.md`): **a guard that fails
 open must do provably bounded work**, because fail-open makes every line of work
 a potential total bypass — and prefer deleting a rule to adding one.
