@@ -36,7 +36,13 @@
 //     `./scripts/deploy-prod.sh`;
 //   - a command assembled at runtime: `eval "$(printf ...)"`;
 //   - brace expansion: `git push --force origin mai{n..n}` really does push to
-//     `main`, and the guard does not expand it.
+//     `main`, and the guard does not expand it;
+//   - more than 32 heredocs in one command: past that budget the bodies are read
+//     as commands, so a script with 33+ heredocs can be falsely BLOCKED on its
+//     own data. The budget exists because each lookahead scans forward, and an
+//     unbounded number of them is the quadratic hazard that once killed the hook.
+//     Erring toward a false block past the budget is the safe direction — but it
+//     is a limit, so it is written here rather than discovered.
 //
 // That last one is here BY CHOICE, and the choice is the point. Expanding braces
 // needs a cross-product, and a bound per group is not a bound on the result: the
@@ -89,9 +95,16 @@ const WRAPPERS = new Set([
  * `sudo -n`, so the force-push behind it was never inspected.
  */
 const WRAPPER_VALUE_FLAGS = {
-  sudo: new Set(['-u', '-g', '-U', '-C', '-r', '-t', '-p', '-h', '-D', '-R']),
+  sudo: new Set([
+    '-u', '-g', '-U', '-C', '-r', '-t', '-p', '-h', '-D', '-R',
+    '--user', '--group', '--other-user', '--close-from', '--role', '--type',
+    '--prompt', '--host', '--chdir', '--chroot',
+  ]),
   doas: new Set(['-u', '-C']),
-  env: new Set(['-u', '-S', '--unset', '--chdir']),
+  // `-S` deliberately absent: its value is a whole command line, so skipping it
+  // would hide the command. Left visible, it becomes an unrecognised command name
+  // — a miss, but a miss that inspects rather than one that hides.
+  env: new Set(['-u', '-C', '-P', '--unset', '--chdir', '--split-string']),
   xargs: new Set(['-n', '-I', '-L', '-P', '-s', '-d', '-a', '-E', '-e']),
   nice: new Set(['-n', '--adjustment']),
   ionice: new Set(['-c', '-n']),
@@ -193,8 +206,24 @@ const isCatastrophic = (target) =>
  * `fix/merge-conflict-handling`, which are literally what the brake's own message
  * tells the agent to do while stopping. A rule that forbids the wind-down it
  * prescribes is not coarse, it is wrong.
+ *
+ * ⚠ This is NOT a complete list of ways to reach the API, and cannot be:
+ * `python3 -c "urllib…"` and `node -e "fetch(…)"` reach the same endpoint and are
+ * the "assembled at runtime" limit stated at the top of this file. The brake
+ * covers the clients an agent reaches for by habit, which is the drift it exists
+ * to stop — not an adversary who has already decided to route around it.
  */
-const NETWORK_CLIENTS = new Set(['gh', 'curl', 'wget', 'http', 'https', 'httpie', 'hub']);
+const NETWORK_CLIENTS = new Set([
+  'gh',
+  'hub',
+  'curl',
+  'curlie',
+  'wget',
+  'xh',
+  'http',
+  'https',
+  'httpie',
+]);
 /** `gh` subcommands that read, or open a PR — the wind-down the brake asks for. */
 const BRAKE_SAFE_GH = new Set(['view', 'list', 'status', 'diff', 'checks', 'create', 'help']);
 
@@ -311,14 +340,22 @@ export const tokenize = (raw) => {
       // the terminator swallowed `cat <<EOF; rm -rf /` and merged the command
       // after the terminator into this segment. Both were hide-anything shapes,
       // which is precisely what moving this inside the tokenizer was meant to end.
-      const marker = /^<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(raw.slice(i, i + 64));
+      // The marker must be CLEANLY delimited. `<<EOF"X"` concatenates to `EOFX`
+      // for the shell, and a guard that stops at `EOF` swallows further than the
+      // shell does — the hide primitive again. When the models cannot be made to
+      // agree, the marker is left inert and the body gets inspected.
+      const marker = /^<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(
+        raw.slice(i, i + 64),
+      );
       if (marker) {
         // A TOTAL budget, not a per-step one: each lookahead scans forward, so an
         // input full of markers would be quadratic. Past the budget `<<` is two
         // characters again, which keeps the body visible — erring toward
         // inspecting more, never less.
         heredocBudget -= 1;
-        pendingHeredoc = marker[2];
+        // `<<-` strips leading TABS from the terminator line, so the terminator
+        // the shell accepts is not the one a plain `\nEOF\n` search finds.
+        pendingHeredoc = { word: marker[3], tabs: marker[1] === '-' };
         i += marker[0].length;
         continue;
       }
@@ -349,9 +386,10 @@ export const tokenize = (raw) => {
         // that line to act as the next boundary. If the terminator never appears
         // the body is kept and inspected rather than dropped — losing lines is
         // how the pre-pass hid commands.
-        const end = raw.indexOf(`\n${pendingHeredoc}\n`, i - 1);
-        if (end !== -1) i = end + pendingHeredoc.length + 1;
-        else if (raw.endsWith(`\n${pendingHeredoc}`)) i = raw.length;
+        const { word, tabs } = pendingHeredoc;
+        const terminator = new RegExp(`\n${tabs ? '\t*' : ''}${word}(?=\n|$)`);
+        const found = terminator.exec(raw.slice(i - 1));
+        if (found) i = i - 1 + found.index + found[0].length;
         pendingHeredoc = null;
       }
       continue;
@@ -604,7 +642,9 @@ function checkRm({ args }, atCatastrophicCwd) {
 
 /** Walk every segment of a command line, following shells and subshells inward. */
 export const inspect = (raw, brake, depth = 0) => {
-  if (depth > 8) return null; // a wrapper chain this deep is not a real command
+  // Nested `eval`/`bash -c` beyond this is not drift, and following it forever is
+  // unbounded work. The depth is a stated limit, not an accident.
+  if (depth > 16) return null;
   let atCatastrophicCwd = false;
 
   for (const segment of tokenize(raw)) {

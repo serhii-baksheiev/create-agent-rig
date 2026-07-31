@@ -129,6 +129,28 @@ describe('a dangerous command cannot be un-guarded by making the hook crash', ()
     await allow("cat > n.md <<'EOF'\nrm -rf / is dangerous\nEOF");
   });
 
+  it('a heredoc whose terminator the guard would MISS is not treated as one', async () => {
+    // The guard's terminator model has to match the shell's, or it swallows more
+    // than the shell does — which is the hide primitive again. Two shapes where
+    // it differed: `<<-` strips leading tabs from the terminator line, and
+    // `<<EOF"X"` concatenates to the marker `EOFX`.
+    //
+    // Where the models cannot be made to agree cheaply, the marker is left inert
+    // and the body is INSPECTED. Erring toward inspecting more is the only safe
+    // direction for a fail-open guard.
+    await deny('cat <<-EOF\n\tdata\n\tEOF\nrm -rf /\necho x\nEOF');
+    await deny('cat <<-EOF\n\tx\n\tEOF\ngit push --force origin main\ny\nEOF');
+    await deny('cat <<EOF"X"\ndata\nEOFX\nrm -rf /\necho x\nEOF');
+    // the tab-stripped form still hides its own body when it is really a heredoc
+    await allow('cat <<-EOF\n\trm -rf / is documentation\n\tEOF');
+  });
+
+  it('follows a deeper wrapper chain, and states where it stops', async () => {
+    for (const depth of [3, 8, 12, 16]) {
+      await deny(`${'eval "'.repeat(depth)}git push --force origin main${'"'.repeat(depth)}`);
+    }
+  });
+
   it('the ssh key directory is protected as a subtree', async () => {
     // Lost when CATASTROPHIC_TREES was deleted: its members came back as
     // explicit `/x/*` entries, but `~/.ssh/*` did not. The deleted comment had
@@ -249,6 +271,16 @@ describe('the brake denies the network clients, not the word "merge"', () => {
     await deny('gh pr merge 12 --repo o/create', brakeOn);
     await deny('npx gh pr merge 12', brakeOn);
     await deny('bunx gh pr merge 12', brakeOn);
+    await deny('xh PUT https://api.github.com/repos/o/r/pulls/12/merge', brakeOn);
+    await deny('curlie PUT https://api.github.com/repos/o/r/pulls/12/merge', brakeOn);
+  });
+
+  it('does not claim to enumerate every possible client', async () => {
+    // `python3 -c "urllib…"` and `node -e "fetch(…)"` reach the same endpoint and
+    // cannot be enumerated — they are the "assembled at runtime" limit. The file
+    // must say so rather than claim the client list is complete.
+    const source = await readFile(hook, 'utf8');
+    expect(source).toMatch(/cannot be enumerated|not a complete list|any runtime/i);
   });
 
   it('does not treat "no operands at all" as dangerous', async () => {
@@ -297,7 +329,11 @@ describe('the rules that three rounds did not break still hold', () => {
     // motivating case untested.
     'sudo -E git push --force origin main',
     'sudo -- git push --force origin main',
+    'sudo --user root git push --force origin main',
+    'sudo --group staff git push --force origin main',
     'env -u FOO git push --force origin main',
+    'env -C /repo git push --force origin main',
+    'env -P /usr/bin git push --force origin main',
     'command -p git push --force origin main',
     'xargs -n1 git push --force origin main',
     'nice -n 10 git push --force origin main',
@@ -403,6 +439,16 @@ describe('the guard does provably bounded work, and says what it cannot see', ()
       await allow(command);
     }
     expect(source).toMatch(/not exhaustive|drift, not an adversary/i);
+  });
+
+  it('states the heredoc budget as a limit, in the direction it actually errs', async () => {
+    const source = await readFile(hook, 'utf8');
+    expect(source).toMatch(/32 heredocs|heredoc.*budget/i);
+    // Past the budget the bodies are inspected, so a 33-heredoc script is falsely
+    // blocked on its own data. That is the safe direction — and a limit, so it is
+    // written down rather than discovered.
+    const many = `${'echo <<A\nA\n'.repeat(33)}cat <<Z\nrm -rf /\nZ`;
+    expect((await runHook(many)).code, 'past the budget it inspects, never hides').toBe(2);
   });
 });
 
