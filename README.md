@@ -39,19 +39,50 @@ never inflated). The hooks live in `.claude/hooks/` and are wired in
 - **`block-no-verify`** — refuses bypassing pre-commit checks (and knows the
   difference between using the `--no-verify`/`-n` flag and merely mentioning it
   in a message);
+- **`guard-bash`** — refuses the "Never" tier: force-pushing or deleting a shared
+  branch, a direct push to the default branch, a production deploy trigger, a
+  catastrophic delete. It **parses** the command rather than pattern-matching it,
+  so a commit message mentioning a forbidden flag is prose, not a bypass;
 - **`gate-stop-dod`** — refuses to end the session while a Definition-of-Done
   check is red; it fails open (a missing or corrupt config never makes the
   session unquittable) and never blocks twice in a row;
 - **`inject-rules`** — re-injects the autonomy rules at session start, so they
   survive compaction and resumes.
 
-Around the hooks, the operating system: **autonomy tiers** (what an agent does
-alone / after review / never), **stop rules** (three strikes, flaky ≠ retry,
-session staleness), **subagent gates** (`test-writer`, `code-reviewer`,
-`security-scanner`, and `cdk-diff-reviewer` on the AWS target), **skills**
-(`pr-ship` pre-merge gate; `loop` queue driver; `post-deploy-verify` with its
-binary HEALTHY/REGRESSION verdict on the AWS target), and a one-page
-`CLAUDE.md` map a fresh session orients by.
+**A brake that is a real file.** `touch ~/.claude/<project>-loop-STOP` and no
+merge lands until it is removed — enforced at the tool layer, so it holds even if
+nothing reads the rule. Everything short of the merge stays allowed on purpose:
+finish the task, push the branch, open the PR, write the journal. Stopping
+cleanly must not mean losing work.
+
+**Two sweeps that run outside any session.** `detect-missed-gate` finds merges
+that crossed an elevated path with no recorded reviewer verdict;
+`reconcile-external-prs` accounts for work that reached the default branch outside
+the queue. They exist because the one failure a run cannot report is its own
+missed gate — the run that skipped it is exactly the run that will not mention it.
+
+**A queue behind an adapter.** The `loop` driver selects through
+`.claude/scripts/queue/`: a pure core (filters in order, blocker resolution, the
+elevated-tier ration, stop conditions) with adapters for `PLAN.md` (the default,
+working before a project has a remote), GitHub Issues, and Jira. Two rules are
+load-bearing and tested from both directions — **blockers resolve from links,
+never labels**, and **the agent never files its own work items**.
+
+Around all of it: **autonomy tiers** (what an agent does alone / after review /
+never), **stop rules** (three strikes, flaky ≠ retry, session staleness),
+**subagent gates** (`test-writer`, `code-reviewer`, `security-scanner`, and
+`cdk-diff-reviewer` on the AWS target), **skills** (`pr-ship` pre-merge gate;
+`loop` queue driver; `worktree-task` for concurrent sessions; `new-invariant`, a
+generator for the invariant→hook→test pattern; `post-deploy-verify` and
+`ro-debug` on the AWS target), and a one-page `CLAUDE.md` map a fresh session
+orients by.
+
+**The hooks are examples, not laws.** `.claude/rules/invariants.md` states the
+pattern behind each one — a stated invariant, a mechanical check, a test for the
+check — so you can delete the ones whose invariant your project does not have and
+spend the slot on one it does. An inherited rule nobody chose is worse than an
+empty rule file: the empty one is visibly incomplete, the inherited one is
+invisibly wrong.
 
 The skeleton around it is real and runnable — pure core shared by server _and_
 browser (one schema validates on both sides of the wire), a mandatory usecase
@@ -117,5 +148,16 @@ dependencies fresh to catch upstream breakage early. This repo dogfoods its own
 rulebook — `CLAUDE.md` and `.claude/` are composed from the templates, and
 drift fails the suite.
 
+**And the enforcement layer is adversarially reviewed, not just tested.** The
+Bash guard went through four review rounds with ten reviewers, who executed it
+rather than read it. They found a PR body that could forge its own reviewer
+verdict, a queue write that deleted the wrong line, and three ways to make the
+guard crash into permitting everything. Each round's findings — including the
+ones introduced by the previous round's _fix_ — are in the git history and in
+`CHANGELOG.md`. The rule that came out of it is now part of what ships: a guard
+that fails open must do provably bounded work, because fail-open turns every line
+of its own work into a potential bypass.
+
 Development: `pnpm test` (full), `pnpm test:unit` (fast loop),
-`pnpm template:check` (templates in place). The plan of record is `PLAN.md`.
+`pnpm template:check` (templates in place). The plan of record is `PLAN.md`;
+release notes and the release checklist are in `CHANGELOG.md`.

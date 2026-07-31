@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (v0.3.0).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6). Distribution is git-first (`github.com/serhii-baksheiev/create-agent-rig`, CI green). Several briefs landed on top of the original plan — see §7.5. What remains for the owner: the npm registry publish and a recorded demo. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (v0.3.0).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6). **Published on npm** — `0.1.0` and `0.2.0` are live; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. Several briefs landed on top of the original plan — see §7.5. What remains for the owner: publishing `0.3.0` (§11) and a recorded demo. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -33,7 +33,7 @@ A CLI that scaffolds a new project with (a) an **agent operating system** — ru
 | **`agent-os/` is authored fresh, as a statement of the approach** | Not copy-pasted out of a private work repository — see §9 |
 | **The tool's own repo runs under its own `agent-os`** | Dogfooding: if the rules are awkward, you find out first. Since the repo has a remote + CI, it also follows its own PR flow (branch per task, merge via PR) |
 | **Package name `create-agent-rig`, unscoped** | npm convention: a `create-*` package is invoked as `npx create-agent-rig my-app` with **no install** (the `create-react-app` pattern). A scoped name breaks the short `npx` form — keep it unscoped. (`create-agent-factory`, the earlier name, was taken on npm.) |
-| **Distribution: git first, registry later** | `npx github:<user>/create-agent-rig my-app` works with no registry at all — enough for the personal stage. Publishing is only needed once other people use it |
+| **Distribution: git first, registry once it is used** | `npx github:<user>/create-agent-rig my-app` works with no registry at all, which is what made the personal stage cheap. The registry followed once the tool left this machine — **both paths are supported and both are tested** (the pack-path e2e is the gate; the git path cannot catch pack-path regressions) |
 
 ---
 
@@ -289,7 +289,7 @@ In practice: open an empty file and write the rule in your own words rather than
 - ~~Tool name~~ — **decided: `create-agent-rig`, unscoped.**
 - ~~Second target~~ — **decided: `node-service`** (plus a static web frontend in both targets).
 - ~~Repository hosting~~ — **decided: `github.com/serhii-baksheiev/create-agent-rig`** (remote + CI live).
-- **npm registry publish** — still an owner action: `npm publish` 0.2.0 with 2FA, then a post-publish smoke (`npx create-agent-rig@latest`). Until then, distribution is git-first.
+- **npm registry publish** — done for `0.1.0` and `0.2.0`; `0.2.0` has been live since 2026-07-23. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
 - **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
 - **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). The `worktree` rule is likewise parked until unattended `loop` runs overlap hand-driven work.
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.

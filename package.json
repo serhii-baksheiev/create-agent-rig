@@ -22,7 +22,8 @@
   "files": [
     "packages/cli/dist",
     "templates",
-    "scripts/prepare.mjs"
+    "scripts/prepare.mjs",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"

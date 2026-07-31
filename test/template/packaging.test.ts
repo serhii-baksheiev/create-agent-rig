@@ -46,6 +46,24 @@ describe('the root manifest is publish-complete', () => {
     expect(license).toContain('MIT License');
   });
 
+  // npm ships README, LICENSE and package.json without being asked; a CHANGELOG
+  // is NOT among them. Someone upgrading from the registry would have no way to
+  // see what changed — and this release rewrote the enforcement layer twice.
+  it('ships the changelog, and the changelog documents this version', async () => {
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      version: string;
+      files: string[];
+    };
+    expect(pkg.files).toContain('CHANGELOG.md');
+    const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    expect(changelog, `CHANGELOG.md must have an entry for ${pkg.version}`).toContain(
+      `## ${pkg.version}`,
+    );
+    // and the release checklist, so the next release is not reassembled from memory
+    expect(changelog).toMatch(/npm pack --dry-run/);
+    expect(changelog).toMatch(/2FA|owner/i);
+  });
+
   it('the bin entry keeps its shebang', async () => {
     const source = await readFile(
       path.join(repoRoot, 'packages', 'cli', 'src', 'index.ts'),
