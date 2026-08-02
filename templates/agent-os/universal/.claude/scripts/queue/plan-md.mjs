@@ -91,6 +91,12 @@ export const parsePlan = (plan) => {
       raw,
       line: index, // the identity a write uses — never the text
       url: null,
+      // 🔴 `null`, not `''`: a flat list has no per-item body, and the hygiene
+      // checks must read that as "this adapter cannot answer" rather than
+      // "checked, found nothing". An empty string would silently turn a blind
+      // spot into a clean bill of health. `raw` above is the line itself, kept
+      // for writes — it is not a body and core does not read it as one.
+      body: null,
       state: 'open',
       labels: [],
       tier: MARKERS.elevated.test(raw) ? 'elevated' : 'normal',

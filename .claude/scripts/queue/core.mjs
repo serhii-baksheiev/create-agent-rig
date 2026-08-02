@@ -22,7 +22,32 @@
 //     createdAt: ISO string | null,
 //     triage:    boolean,                        // a proposal — never selectable
 //     trigger:   'auto' | 'human' | null,        // null means unconditional
+//     body:      string | null,                  // the item's text — see below
+//     raw:       string | undefined,             // adapter-private; not read here
 //   }
+//
+// 🔴 **Why `body` is on the neutral shape, decided rather than drifted into.**
+// Two hygiene checks need the item's text: a body that claims a blocker the
+// links do not carry, and a document link that is broken on its face. The
+// alternative was to implement them inside each adapter — the same invariant in
+// three places, which `.claude/rules/invariants.md` says will disagree, with the
+// copy nobody is looking at being the wrong one. Here they are one function,
+// testable on fixtures, and the adapters stay thin.
+//
+// The item that asked for these called one of them "body vs labels". It is
+// **body vs links**, deliberately: invariant 1 in this same file says a label is
+// never decisive, so a check that compared the body against labels would be
+// asking the one source the rest of the module refuses to trust. Recorded here
+// rather than silently substituted.
+//
+// **`null` is a real answer and it is not `''`.** `plan-md` is a flat list with
+// no per-item body; it must say "I cannot answer" rather than "checked, found
+// nothing", because the second one silently converts a blind spot into a pass.
+// Every check below therefore returns `null` — no finding — when `body` is not
+// a non-empty string.
+//
+// `raw` is the adapter's own record of the line or record it parsed. It is
+// deliberately NOT read by this file: it exists for the adapter's writes.
 
 /**
  * The operations every adapter provides. A second tracker is an adapter, not a
@@ -127,7 +152,107 @@ export const hygieneOf = (ticket) => {
       why: `labelled ready while ${open.map((b) => b.id).join(', ')} still blocks it`,
     };
   }
+
+  const links = ticket.blockedBy ?? [];
+  const body = typeof ticket.body === 'string' ? ticket.body : '';
+
+  // Everything below needs the item's text. `null`/'' means the adapter has none
+  // (plan-md), which is "cannot answer" and never a pass — see the shape note at
+  // the top of this file.
+  if (body.trim() === '') return null;
+
+  if (
+    SPLIT_IN_BODY.test(body) &&
+    links.length >= 2 &&
+    open.length === 0 &&
+    ticket.state !== 'closed'
+  ) {
+    return {
+      kind: 'split-parent-left-open',
+      id: ticket.id,
+      why:
+        'its body says it was split up, every part it links to is resolved, and it ' +
+        'is still open — either it wants closing, or the work it kept is written ' +
+        'down nowhere',
+      // 🔴 Limit, and the reason this reads the body at all: "every dependency
+      // resolved and still open" describes EVERY healthy multi-dependency item
+      // from the moment its last blocker lands — including one the queue is about
+      // to hand out, and one the loop is working right now. A check that fires on
+      // those gets muted, and a muted check reports nothing about anything. The
+      // body is the only place the neutral shape carries the word "split", so an
+      // adapter without one (plan-md) cannot raise this finding at all.
+    };
+  }
+
+  if (BLOCKER_IN_BODY.test(body) && links.length === 0) {
+    return {
+      kind: 'body-claims-unlinked-blocker',
+      id: ticket.id,
+      why:
+        'a dependency line in the body names a blocker the item carries no link ' +
+        'for, so selection sees it as unblocked. Either the link is missing or the ' +
+        'adapter failed to parse it — worse than a stale label, because this one ' +
+        'takes work whose blocker may still be open',
+    };
+  }
+
+  const broken = brokenLinkIn(body);
+  if (broken) {
+    return {
+      kind: 'broken-document-link',
+      id: ticket.id,
+      why:
+        `the body links to a document with no destination (${broken}) — the item ` +
+        'points at context nobody can reach',
+      // 🔴 Limit: this core is pure, so it cannot fetch or stat anything. It
+      // catches a link that is broken ON ITS FACE — empty, or a placeholder.
+      // A link that is well-formed and dead is invisible here, by design.
+    };
+  }
+
   return null;
+};
+
+/**
+ * A dependency **line**, matching the convention `github-issues.mjs` parses.
+ *
+ * Anchoring to the line start is what makes it honest rather than merely narrow.
+ * Unanchored, it fired on "this WAS blocked by #7 last week, and #7 landed" and
+ * on "nothing is blocked by this item" — then printed a finding asserting a live
+ * blocker the body had just denied. A check that reports the opposite of what the
+ * text says is worse than no check.
+ *
+ * Linear: the bounded classes on either side of each boundary are disjoint, so
+ * there is no ambiguous split to backtrack over.
+ */
+const BLOCKER_IN_BODY = /^[-*\t ]{0,4}(?:blocked by|depends on|blocker)[ \t:]{0,8}[#A-Za-z0-9]/im;
+
+/** The item saying, in its own words, that it was broken into other items. */
+const SPLIT_IN_BODY = /\b(?:split into|split up into|broken into|broken up into|superseded by|subtasks?:)/i;
+
+/**
+ * A markdown link, destination captured for a plain-string test afterwards.
+ *
+ * 🔴 The destination is ONE bounded quantifier on purpose. The obvious regex —
+ * `\(\s*(?:TODO|TBD)?\s*\)` — puts two unbounded quantifiers around an optional
+ * group, which is `\s*\s*`: a whitespace run with no closing paren is re-split at
+ * every position. Measured on this module at 1.7s for 32k spaces and ~7s at the
+ * 64k body cap, in a function the loop runs for every item in the queue. That is
+ * the same defect, in the same shape, that `github-issues.mjs` records fixing —
+ * written out here because remembering it once evidently was not enough.
+ */
+const LINK = /\[[^\]]{0,120}\]\(([^)]{0,40})\)/;
+const PLACEHOLDER = /^(?:TODO|TBD|link|url)$/i;
+
+/** Control bytes stripped: this string is printed to a terminal. */
+const printable = (text) => text.replace(/[^\x20-\x7E]/g, '').slice(0, 40);
+
+const brokenLinkIn = (body) => {
+  const match = LINK.exec(body);
+  if (!match) return null;
+  const destination = String(match[1] ?? '').trim();
+  if (destination !== '' && !PLACEHOLDER.test(destination)) return null;
+  return printable(match[0]);
 };
 
 /**
