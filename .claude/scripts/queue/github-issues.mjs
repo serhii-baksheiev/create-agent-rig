@@ -74,6 +74,12 @@ export const toTicket = (issue, states = {}) => {
     blocks: [],
     priority: priorityLabel ? Number(priorityLabel[1]) : 999,
     createdAt: issue.createdAt ?? null,
+    // The body travels on the neutral shape so the hygiene checks live in one
+    // place (core.mjs) instead of once per adapter. This adapter also parses it
+    // internally for blocker links — the two readings are independent on
+    // purpose: that is exactly the disagreement `body-claims-unlinked-blocker`
+    // exists to surface.
+    body: typeof issue.body === 'string' ? issue.body : null,
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
       ? 'auto'

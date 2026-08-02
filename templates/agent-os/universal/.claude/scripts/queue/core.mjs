@@ -22,7 +22,26 @@
 //     createdAt: ISO string | null,
 //     triage:    boolean,                        // a proposal — never selectable
 //     trigger:   'auto' | 'human' | null,        // null means unconditional
+//     body:      string | null,                  // the item's text — see below
+//     raw:       string | undefined,             // adapter-private; not read here
 //   }
+//
+// 🔴 **Why `body` is on the neutral shape, decided rather than drifted into.**
+// Two hygiene checks need the item's text: a body that claims a blocker the
+// links do not carry, and a document link that is broken on its face. The
+// alternative was to implement them inside each adapter — the same invariant in
+// three places, which `.claude/rules/invariants.md` says will disagree, with the
+// copy nobody is looking at being the wrong one. Here they are one function,
+// testable on fixtures, and the adapters stay thin.
+//
+// **`null` is a real answer and it is not `''`.** `plan-md` is a flat list with
+// no per-item body; it must say "I cannot answer" rather than "checked, found
+// nothing", because the second one silently converts a blind spot into a pass.
+// Every check below therefore returns `null` — no finding — when `body` is not
+// a non-empty string.
+//
+// `raw` is the adapter's own record of the line or record it parsed. It is
+// deliberately NOT read by this file: it exists for the adapter's writes.
 
 /**
  * The operations every adapter provides. A second tracker is an adapter, not a
@@ -127,8 +146,69 @@ export const hygieneOf = (ticket) => {
       why: `labelled ready while ${open.map((b) => b.id).join(', ')} still blocks it`,
     };
   }
+
+  const links = ticket.blockedBy ?? [];
+  if (ticket.state !== 'closed' && links.length >= 2 && open.length === 0) {
+    return {
+      kind: 'split-parent-left-open',
+      id: ticket.id,
+      why:
+        `every one of its ${links.length} dependencies is resolved and it is still ` +
+        'open — a parent split into children usually wants closing, and if it has ' +
+        'work of its own left, that work is what the item should say',
+      // 🔴 Limit: the neutral shape cannot tell "split into children" from
+      // "waited on two things". Both end here, and both are worth a human's
+      // glance — this is a prompt to look, never a licence to close anything.
+    };
+  }
+
+  // The body-derived checks. `null`/'' means the adapter has no body to give
+  // (plan-md), which is "cannot answer" and never a pass — see the shape note.
+  const body = typeof ticket.body === 'string' ? ticket.body : '';
+  if (body.trim() !== '') {
+    if (BLOCKER_IN_BODY.test(body) && links.length === 0) {
+      return {
+        kind: 'body-claims-unlinked-blocker',
+        id: ticket.id,
+        why:
+          'the body states a blocker but the item carries no blocker link, so ' +
+          'selection sees it as unblocked. Either the link is missing or the ' +
+          'adapter failed to parse it — both are worse than a stale label, ' +
+          'because this one takes work whose blocker is still open',
+      };
+    }
+    const broken = BROKEN_LINK.exec(body);
+    if (broken) {
+      return {
+        kind: 'broken-document-link',
+        id: ticket.id,
+        why:
+          `the body links to a document with no destination (${broken[0].slice(0, 40)}) — ` +
+          'the item points at context nobody can reach',
+        // 🔴 Limit: this core is pure, so it cannot fetch or stat anything. It
+        // catches a link that is broken ON ITS FACE — empty, or a placeholder.
+        // A link that is well-formed and dead is invisible here, by design.
+      };
+    }
+  }
+
   return null;
 };
+
+/**
+ * A blocker stated in prose. Deliberately narrow: the conventions this rulebook
+ * actually uses (`Blocked by #7`, `blocked by ABC-1`), not every phrasing in
+ * which a human might imply a dependency. A hygiene check that fires on ordinary
+ * writing gets muted, and a muted check reports nothing about anything.
+ */
+const BLOCKER_IN_BODY = /\bblocked\s+by\s+[#A-Za-z0-9-]+/i;
+
+/**
+ * A markdown link whose destination is absent or a placeholder. One pass, no
+ * backtracking on the destination: the character class excludes `)` so it cannot
+ * be made to scan the rest of the body repeatedly.
+ */
+const BROKEN_LINK = /\[[^\]]{0,120}\]\(\s*(?:TODO|TBD|link|url)?\s*\)/i;
 
 /**
  * The sort among survivors.

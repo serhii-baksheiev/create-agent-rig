@@ -34,6 +34,8 @@ interface Ticket {
   createdAt: string | null;
   triage: boolean;
   trigger: string | null;
+  /** The item's text. `null` where the adapter has none — never `''`. */
+  body?: string | null;
 }
 
 const ticket = (over: Partial<Ticket> = {}): Ticket => ({
@@ -114,6 +116,64 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
     const orphan = ticket({ labels: ['blocked'], blockedBy: [] });
     expect(hygieneOf(orphan)).toMatchObject({ kind: 'stale-blocked-label' });
 
+    expect(hygieneOf(ticket())).toBeNull();
+  });
+
+  // The three checks the port brief asked for. Each one is a finding a human
+  // fixes, never something the loop corrects silently — quietly repairing the
+  // metadata destroys the evidence that the metadata is unreliable.
+  it('reports a parent whose every child is done and which is still open', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    const split = ticket({
+      blockedBy: [
+        { id: '2', resolved: true },
+        { id: '3', resolved: true },
+      ],
+    });
+    expect(hygieneOf(split)).toMatchObject({ kind: 'split-parent-left-open' });
+    // one resolved dependency is an ordinary unblocked ticket, not a split parent
+    expect(hygieneOf(ticket({ blockedBy: [{ id: '2', resolved: true }] }))).toBeNull();
+    // and an open child means the parent is legitimately still waiting
+    expect(
+      hygieneOf(
+        ticket({
+          blockedBy: [
+            { id: '2', resolved: true },
+            { id: '3', resolved: false },
+          ],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('reports a body that claims a blocker the links do not carry', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    const lying = ticket({ body: 'Blocked by #7 until the migration lands.', blockedBy: [] });
+    expect(hygieneOf(lying)).toMatchObject({ kind: 'body-claims-unlinked-blocker' });
+    // the same body WITH the link is simply a documented dependency
+    expect(
+      hygieneOf(ticket({ body: 'Blocked by #7', blockedBy: [{ id: '7', resolved: false }] })),
+    ).toBeNull();
+  });
+
+  it('reports a document link that is broken on its face', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    expect(hygieneOf(ticket({ body: 'See the [design doc]() before starting.' }))).toMatchObject({
+      kind: 'broken-document-link',
+    });
+    expect(hygieneOf(ticket({ body: 'See [the spec](TODO).' }))).toMatchObject({
+      kind: 'broken-document-link',
+    });
+    // a real link is not a finding, and neither is prose with no link at all
+    expect(hygieneOf(ticket({ body: 'See [the spec](docs/spec.md).' }))).toBeNull();
+    expect(hygieneOf(ticket({ body: 'Discussed in the design review.' }))).toBeNull();
+  });
+
+  it('says nothing about a body no adapter can supply', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    // plan-md has no per-item body: `null` must read as "cannot answer", never
+    // as "checked, found nothing"
+    expect(hygieneOf(ticket({ body: null }))).toBeNull();
     expect(hygieneOf(ticket())).toBeNull();
   });
 

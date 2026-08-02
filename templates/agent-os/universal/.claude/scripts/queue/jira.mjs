@@ -96,6 +96,9 @@ export const toTicket = (issue) => {
     blocks,
     priority: PRIORITY[String(fields.priority?.name ?? '').toLowerCase()] ?? 999,
     createdAt: toIso(fields.created),
+    // Flattened from the document description — the same text this adapter
+    // already reads internally, now visible to the shared hygiene checks.
+    body: descriptionTextOf(issue) || null,
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
       ? 'auto'
