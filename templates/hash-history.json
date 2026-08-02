@@ -1,7 +1,8 @@
 {
   "versions": [
     "0.3.0",
-    "0.3.1"
+    "0.3.1",
+    "0.3.2"
   ],
   "files": {
     ".claude/agents/cdk-diff-reviewer.md": {
@@ -14,7 +15,14 @@
       "since": "0.3.0",
       "hashes": [
         "58969edc0820463298002c618b6ec49913e1cb3aa90dec4aed2aec14c7bcfd3b",
-        "be3d2992d1f278dde46b555df1840b02f91403db1ec2fd4d489fb5efa940f019"
+        "be3d2992d1f278dde46b555df1840b02f91403db1ec2fd4d489fb5efa940f019",
+        "ec403373ef6bc0575d61c6ca11f82792817b272221fad8317ef6c45388b52628"
+      ]
+    },
+    ".claude/agents/prose-reviewer.md": {
+      "since": "0.3.2",
+      "hashes": [
+        "8d5762849afd328fdc1aabf053ad207f2e306e013665e3ff934b06cbb1bbda38"
       ]
     },
     ".claude/agents/security-scanner.md": {
@@ -44,7 +52,8 @@
     ".claude/hooks/gate-stop-dod.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "de1f331eaf93bad6ef0e1734789fd3c4ab07550a85ed2d8ff8888bc6f0bcfb0f"
+        "de1f331eaf93bad6ef0e1734789fd3c4ab07550a85ed2d8ff8888bc6f0bcfb0f",
+        "9fb8fad4d95756fb2424a97550aa85dfab0ca8dbcf91e6d0385263ba3b929135"
       ]
     },
     ".claude/hooks/guard-bash.mjs": {
@@ -111,31 +120,36 @@
     ".claude/rules/workflow.md": {
       "since": "0.3.0",
       "hashes": [
-        "dbe8025e10583e03fee5056e88aa6b73e4399453711d9156d82528a02d6e0402"
+        "dbe8025e10583e03fee5056e88aa6b73e4399453711d9156d82528a02d6e0402",
+        "9e60d0300e856a9b3f81ab748bf2c0a9de27233ad0aa58a8c7141413fa0f3cae"
       ]
     },
     ".claude/scripts/detect-missed-gate.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "bad5ce92a1c1f97ef2c25ebd216e945329e544337aa33e530631ed922ea8c495"
+        "bad5ce92a1c1f97ef2c25ebd216e945329e544337aa33e530631ed922ea8c495",
+        "edcebe8ac78cf832a42e3b6fb70fe458a9fec4cb5f8b7b4cf276efc4f9c06a64"
       ]
     },
     ".claude/scripts/preflight.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "21083ff7baeebf8aedbdf85679a353f671276a9e0201a58a8235ae63f55f081c"
+        "21083ff7baeebf8aedbdf85679a353f671276a9e0201a58a8235ae63f55f081c",
+        "ceb6d35fa028f9c5e5e2d5965c627095d5ba80c37191a584627b4bc645b6be15"
       ]
     },
     ".claude/scripts/queue/core.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "214f36e39f3809da5a121f404005d16a694280ca672ed10150b1b07d47912f6a"
+        "214f36e39f3809da5a121f404005d16a694280ca672ed10150b1b07d47912f6a",
+        "d8a5916bae71efcc6a21978af713112c9ec33a7554fd07f5978bdf2c3633b560"
       ]
     },
     ".claude/scripts/queue/github-issues.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "f473f0ee5fc469f47b2b21ee601310944faa1abed21942e97ed251aba826cd5d"
+        "f473f0ee5fc469f47b2b21ee601310944faa1abed21942e97ed251aba826cd5d",
+        "86489ac7fcd06e43e31fb3d0ac9ab23174ef9c95196b08f127f1ae74da620c0c"
       ]
     },
     ".claude/scripts/queue/index.mjs": {
@@ -147,13 +161,15 @@
     ".claude/scripts/queue/jira.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "13e187a4005136a9a1fae5fb5a3d2a61c3cf5dc097b467c12622ad82a0fd5d52"
+        "13e187a4005136a9a1fae5fb5a3d2a61c3cf5dc097b467c12622ad82a0fd5d52",
+        "86591a48b9264d641c2530238ea3720705f12e17af2ec8dccecabfa3a742a2e7"
       ]
     },
     ".claude/scripts/queue/plan-md.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "d137dad23f263b1a12b04b46625247fea648ded36d0fea7c5b4e4f2211a142eb"
+        "d137dad23f263b1a12b04b46625247fea648ded36d0fea7c5b4e4f2211a142eb",
+        "07eab69bd86b19b7a1f01eb14efe4f8c007481806cbe029d4014fe9bf0703000"
       ]
     },
     ".claude/scripts/reconcile-external-prs.mjs": {
@@ -174,10 +190,17 @@
         "55a6938b4d9967291a26e93301e34e5ffdef74a88f8c773a4d11b5d87d864fff"
       ]
     },
+    ".claude/skills/check-premises/SKILL.md": {
+      "since": "0.3.2",
+      "hashes": [
+        "d69396da276f748c89ca0284fcd606ce70da8a791defafe9c9b27ce5f8ffd29e"
+      ]
+    },
     ".claude/skills/loop/SKILL.md": {
       "since": "0.3.0",
       "hashes": [
-        "e14318a1bf4cbb19edaaabadcf14482bc70bcdcfdc2057231b15685d149db550"
+        "e14318a1bf4cbb19edaaabadcf14482bc70bcdcfdc2057231b15685d149db550",
+        "8f687f92fa60d4cc679fa13bff997cec92227f6bc0b90c1dc5b8a5400f2abef0"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -207,7 +230,8 @@
     ".claude/skills/pr-ship/SKILL.md": {
       "since": "0.3.0",
       "hashes": [
-        "368a50be809f7be865d6d29ab3e54b9d69acd2ea3ba7929c0edeef161c2521b7"
+        "368a50be809f7be865d6d29ab3e54b9d69acd2ea3ba7929c0edeef161c2521b7",
+        "75adb84414a330db621ff4f1363b3926f537133199236a9e25bb9880b935e02e"
       ]
     },
     ".claude/skills/ro-debug/SKILL.md": {
@@ -225,7 +249,8 @@
     "CLAUDE.md": {
       "since": "0.3.0",
       "hashes": [
-        "8a4f5fab7cbaf3ba2482035f7ddb3cf6e3a3a3313596d25a856506e970d55db7"
+        "8a4f5fab7cbaf3ba2482035f7ddb3cf6e3a3a3313596d25a856506e970d55db7",
+        "a247fdd1d198777f4963da42ccc10dfd9c372f4bb0488d2c0201a49d6bfd1910"
       ]
     },
     "PLAN.md": {

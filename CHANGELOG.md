@@ -7,6 +7,69 @@ the generator.
 Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/package/create-agent-rig);
 `npx github:serhii-baksheiev/create-agent-rig` keeps working for either path.
 
+Numbering is ordinary semver — **additive is a minor, a fix is a patch** — so
+that "I only take minors" remains a usable policy; 0.3.2 shipped additive
+content as a patch by the owner's call and stays recorded as one.
+
+## 0.4.0
+
+Upgrading is a command now: **`npx create-agent-rig@0.4.0 upgrade`** (`@latest`
+once you know what latest is — this section will not). That sentence replaces
+the six-file manual procedure 0.3.2 had to print, and it is the whole point of
+this release: a rig you cannot bring forward stops being maintained at whatever
+version you installed it at.
+
+Read the [Upgrading](README.md#upgrading-a-rig-you-already-have) section before
+the first run on an existing rig; `--dry-run` prints the plan and writes
+nothing.
+
+### Added
+
+- **`create-agent-rig upgrade [--dry-run] [--yes]`** — brings an installed rig
+  to this version: it replaces the files the rig wrote **and you have not
+  touched**, installs what the release adds, and **reports everything else**.
+  There is no three-way merge and no patching, by decision rather than
+  omission: silently folding your edits into the documents an agent loop obeys
+  is how a rig stops meaning what its owner thinks it means. Every conflict
+  names the file, why it was kept, and the path to the new version, so the diff
+  you may want is one command away.
+- **`.claude/.rig-manifest.json`** — written by `create` and by `init`: the rig
+  version and a hash per installed file. **Commit it.** It is what lets an
+  upgrade tell a file the rig wrote from a file you own, and without it in the
+  repository the command is blind on CI and on a colleague's machine. `init`
+  records only files it actually wrote — never one it kept, which would be
+  claiming somebody else's document.
+- **A released-hash table travels in the package**, generated from the git tags
+  at release time and never by hand. It is what makes a 0.3.x rig upgradable at
+  all, and it answers a second question too: a file that shipped in every
+  release it covers and is gone from disk was **deleted on purpose**, so it
+  stays deleted. The rules tell you to delete the invariants your project does
+  not have; an upgrade that quietly restored them would be undoing your work.
+- **The `loop` skill writes back what a close unblocked**, in a required
+  journal field with three distinct answers — the items that were waiting, by
+  name; "nothing was waiting"; or "this queue has no dependency links" where
+  the adapter cannot answer at all. It is a **report, not an edit** to those
+  items: correcting queue state by hand destroys the evidence that the state is
+  unreliable, which the rules forbid by name.
+
+### Two things `upgrade` deliberately will not do
+
+- **Replace `.claude/settings.json`.** It is where your own hooks live, so the
+  new wiring is printed for you to merge — in the dry run too. The cost is
+  real and stated: a release that adds a hook delivers the file and not its
+  wiring, and whether a manifest-proven-unmodified settings file should be
+  refreshed is an open decision for 0.5.
+- **Touch the skeleton.** After `create`, the code is your project. The manifest
+  covers the agent-os layer and nothing else.
+
+### Deferred, and on what condition
+
+- The clarify-gate (`C-0…C-2`) — unchanged from 0.3.2: it enters once that gate
+  has fired at least once anywhere. Until then there is nothing to copy but an
+  intention.
+- `init --force` now overlaps `upgrade`, and its future is an open question
+  rather than a deprecation: decided in 0.5, unchanged here.
+
 ## 0.3.2
 
 Numbered as a patch by the owner's call; the content below is additive, so
@@ -260,7 +323,8 @@ layers, and the `aws-serverless` and `node-service` targets.
 ## Releasing
 
 `npm publish` needs 2FA and cannot be undone, so an agent prepares a release and
-**stops at that command**. Everything before it is mechanical:
+**stops at the first step it is not allowed to take** — normally `npm publish`,
+sometimes earlier (step 6). Everything before that is mechanical:
 
 1. `pnpm test` — the full suite, including the e2e that generates both targets
    cold and runs their own checks through the git path **and** the pack path.
@@ -270,10 +334,23 @@ layers, and the `aws-serverless` and `node-service` targets.
 3. Version in `package.json` (and the private inner package, kept in step).
 4. `node scripts/build-hash-history.mjs` — regenerate the released-hash table
    from the tags **after** the version bump, so the version now shipping is the
-   first one it excludes. A template test fails while it is stale; forgetting it
-   would leave `upgrade` unable to recognise the previous release.
+   first one it excludes. Forgetting it would leave `upgrade` unable to
+   recognise the previous release.
 5. This file, and `PLAN.md` if the plan's claims changed.
-6. `git tag v<version> && git push --tags`.
-7. **Owner:** `npm publish`.
-8. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
-   an empty directory, then `pnpm install && pnpm check` inside it.
+6. **`pnpm test` again — this run, not step 1, is the one that can catch a
+   stale hash table.** The check compares the table against the versions this
+   file lists below the one in `package.json`, so before steps 3–5 it is
+   comparing the _old_ release to the _old_ table and passes either way. A
+   guard that can only fire after the thing it guards has changed has to be run
+   after it.
+7. `git tag v<version> && git push --tags` — **first check that the tag does not
+   already exist** (`git ls-remote --tags origin`). A leftover from an abandoned
+   attempt is a published ref: deleting or moving it is an **owner** action, and
+   the release stops here until it is gone. A tag pointing at the wrong commit
+   is not cosmetic — the next release builds its hash table from it, and every
+   file that changed in between then reads as user-modified and stops being
+   upgradable.
+8. **Owner:** `npm publish`.
+9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
+   an empty directory, then `pnpm install && pnpm check` inside it; and
+   `upgrade --dry-run` in a rig installed from the previous version.
