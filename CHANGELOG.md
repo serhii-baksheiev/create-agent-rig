@@ -11,10 +11,31 @@ Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/pack
 
 A generated project gains two review gates it did not have — one before the work
 starts, one over the prose that instructs it — and three more queue-hygiene
-checks. Everything here is **additive**: nothing that shipped in 0.3.1 changed
-shape, so an existing rig picks it all up by re-running
-`create-agent-rig init` (the path documented in 0.3.1; `--force` to replace a
-`CLAUDE.md` it wrote).
+checks.
+
+**Upgrading an existing rig: `init` alone is not enough, and here is exactly
+why.** `create-agent-rig init` installs files that are not there and **keeps
+every file that is** — `--force` replaces `CLAUDE.md` and nothing else
+(`packages/cli/src/commands/init.ts`). Re-running it on a 0.3.1 rig therefore
+delivers the two new files, `.claude/agents/prose-reviewer.md` and
+`.claude/skills/check-premises/SKILL.md`, and **none of their wiring**: the
+skill arrives with nothing calling it, and the agent arrives with `pr-ship`
+never launching it. Six files below changed rather than appeared, and `init`
+will not touch them:
+
+```
+.claude/agents/code-reviewer.md          # the sixth blocking item
+.claude/skills/loop/SKILL.md             # calls check-premises, and §3/§6/§8
+.claude/skills/pr-ship/SKILL.md          # fans out prose-reviewer, passes the item
+.claude/scripts/queue/core.mjs           # the three hygiene checks + Ticket.body
+.claude/scripts/detect-missed-gate.mjs   # sees a rulebook outside the repo root
+.claude/hooks/gate-stop-dod.mjs          # judges the tree it is in
+```
+
+Delete those six and re-run `init`, or copy them across by hand. A proper
+upgrade command is queued, not shipped — and until it exists this note tells you
+the manual steps rather than an easy sentence that leaves half the release
+inert. That failure mode is the whole subject of 0.3.1, immediately below.
 
 ### Added
 
@@ -33,9 +54,11 @@ shape, so an existing rig picks it all up by re-running
 - **`prose-reviewer` agent** — a fourth gate, read-only. In this layer the prose
   _is_ the implementation: a rule that overstates its own enforcement fails
   exactly like broken code, silently and in the direction of false confidence. It
-  blocks on four things — enforcement claimed beyond the mechanism, a dead
-  reference, two rules that contradict each other, and stated limits gone stale
-  in either direction — and its boundary comes before its checklist: it is **not
+  blocks on five things — enforcement claimed beyond the mechanism, a dead
+  reference, two rules that contradict each other, stated limits gone stale in
+  either direction, and domain that must not travel (a vendor name, a host path,
+  a tracker key or a credential in a layer meant to be neutral) — and its
+  boundary comes before its checklist: it is **not
   a literary editor**, and prose that is merely clumsy is not a finding. Wired
   into the `pr-ship` fan-out and named in both maps.
 - **A sixth blocking item for `code-reviewer`** — a change that contradicts the

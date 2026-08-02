@@ -129,7 +129,7 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     expect(content).toMatch(/clumsy|awkward|inelegant/i);
   });
 
-  it('blocks on the four failures that make a rulebook lie', async () => {
+  it('blocks on the five failures that make a rulebook lie', async () => {
     const content = await read();
     // scoped to the blocking section: demoting an item to advisory, or losing
     // the checklist and keeping the narrative, must fail this
@@ -139,6 +139,9 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     expect(blocking).toMatch(/dead (reference|link)|no longer exists/i);
     expect(blocking).toMatch(/contradict/i); // two rule files disagreeing
     expect(blocking).toMatch(/stale/i); // stated limits that drifted
+    // and the one the release note forgot it had: domain leaking into a layer
+    // that claims to be neutral
+    expect(blocking).toMatch(/must not travel|vendor|tracker key/i);
   });
 
   // The failure this agent is most likely to cause itself: a confident BLOCKER

@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (0.4.0, prepared).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6) and the port brief (§7.7). **Published on npm** — `0.1.0` and `0.2.0` are live; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. `0.4.0` is prepared and stops at `npm publish`, which is an owner action (§11). Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (0.4.0, prepared).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6) and the port brief (§7.7). **Published on npm** — `0.1.0` through `0.3.1` are live and `0.3.1` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. `0.4.0` is prepared and stops at `npm publish`, which is an owner action (§11). Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -111,7 +111,7 @@ This split is what makes `agent-rig init` (§6) safe — it installs only the pr
 **What ships in `universal/`:**
 
 - **Rules** — `autonomy.md` (tiers: self-merge / human-review / never; stop rules incl. N-strike, flaky≠retry, invariant conflict, session-staleness; post-deploy verdict), `workflow.md` (TDD, branch discipline, PR flow, review-context isolation, DoD), `architecture.md` (layers, mandatory usecase, core purity, the web boundary).
-- **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist, incl. a change that contradicts its queue item), `security-scanner` (auth/secrets/parsing/outbound triggers), `prose-reviewer` (the documents that instruct agents: overstated enforcement, dead references, rules that contradict each other, stale limits).
+- **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist, incl. a change that contradicts its queue item), `security-scanner` (auth/secrets/parsing/outbound triggers), `prose-reviewer` (the documents that instruct agents: overstated enforcement, dead references, rules that contradict each other, stale limits, domain that must not travel).
 - **Hooks** — six, wired in `settings.json`:
   - `guard-core-purity` (PreToolUse) — refuses I/O/clock/randomness/env in `packages/core`;
   - `guard-web-boundary` (PreToolUse) — refuses `db`/service imports from `apps/web`;
@@ -270,8 +270,8 @@ journal: ideas travel in, files do not.
 inherited `GIT_DIR` writing a generated project's baseline commit into the
 caller's repository, a gate sweep blind to this repository's own rulebook, a
 quadratic regex reintroduced beside its own documented fix, a hygiene check
-firing on the queue's healthiest items. Nine reviewer passes, seven PRs, and
-every pass returned HOLD at least once. None of those defects was in what the
+firing on the queue's healthiest items. Nine reviewer passes over seven PRs; seven of
+the nine returned HOLD, and only one PR cleared its gate on the first pass. None of those defects was in what the
 brief asked for; all of them were found by a gate or by running the thing for
 real.
 
@@ -319,7 +319,7 @@ In practice: open an empty file and write the rule in your own words rather than
 - ~~Tool name~~ — **decided: `create-agent-rig`, unscoped.**
 - ~~Second target~~ — **decided: `node-service`** (plus a static web frontend in both targets).
 - ~~Repository hosting~~ — **decided: `github.com/serhii-baksheiev/create-agent-rig`** (remote + CI live).
-- **npm registry publish** — done for `0.1.0` and `0.2.0`; `0.2.0` has been live since 2026-07-23. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
+- **npm registry publish** — done through `0.3.1`, which is the current `latest`. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
 - **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
 - **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). (The `worktree` rule is no longer parked — `worktree-task` shipped in 0.3.0.)
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.
@@ -347,6 +347,7 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
+- AR-13 [elevated]: `init` has no upgrade path — it installs what is absent and keeps what is present, and `--force` covers `CLAUDE.md` alone. A rig updated by re-running it gets new files with none of their wiring, which is the 0.3.1 failure in a new costume. Decide the shape (a `--refresh` that replaces only files `init` itself wrote and the user has not modified? a printed diff?) and note that "just re-run init" must stop being the documented answer until it is true
 - AR-12 [elevated]: declare `templates/agent-os/stack/aws-cdk/.claude/rules/` and `.../node-ts/.claude/rules/`. The aws-cdk one is the sharp case: that file carries its **own** `elevated-paths` block declaring `infra/`, so a merge deleting the block would silently un-declare infrastructure for every generated AWS project — and the sweep would report it clean. Found by review on AR-11, which did not ask for these two
 
 ## Operator queue
@@ -376,8 +377,9 @@ operational memory, not an archive. Fields per the template in
   CHANGELOG written in the repo's convention with a "deferred, and on what
   condition" section, `create` and `init` smoked on scratch projects, and
   `npm pack --dry-run` confirming the new skill and agent travel in the tarball
-- **reviewed** — nine reviewer passes across seven PRs, and **every single one
-  returned HOLD at least once**. The findings that mattered were never in what
+- **reviewed** — nine reviewer passes across seven PRs; **seven of the nine
+  returned HOLD**, and exactly one PR (#25) cleared its gate on the first and
+  only pass. The findings that mattered were never in what
   the brief asked for: a `GIT_DIR` inherited through a git hook writing into the
   outer repository (and flipping it to bare); a gate sweep anchored to the
   repository root and therefore blind to a generator's own rulebook; a
@@ -394,9 +396,11 @@ operational memory, not an archive. Fields per the template in
   and is recorded as such rather than quietly dropped
 - **cost** — 9 reviewer subagents, ~30 CI check runs across 7 PRs, 0 deploys
 - **the honest note** — this session caused one defect of its own (19 junk
-  commits and a repository flipped to bare, all local, all reverted) by running
-  the suite with `GIT_DIR` set to confirm a diagnosis. The fix that followed was
-  the most valuable thing in the release
+  commits and a repository flipped to bare, all local, all reverted). Half of
+  them came from the ordinary path — a `git commit` inside a worktree, which is
+  what will hit any user of the `worktree-task` skill — and half from setting
+  `GIT_DIR` by hand to confirm the diagnosis. The fix that followed was the most
+  valuable thing in the release
 
 ### the gate sweep could not see this repository, and now names its own misses
 
