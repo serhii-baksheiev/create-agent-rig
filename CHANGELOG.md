@@ -7,7 +7,10 @@ the generator.
 Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/package/create-agent-rig);
 `npx github:serhii-baksheiev/create-agent-rig` keeps working for either path.
 
-## 0.4.0
+## 0.3.2
+
+Numbered as a patch by the owner's call; the content below is additive, so
+nothing that shipped in 0.3.1 changed shape.
 
 A generated project gains two review gates it did not have — one before the work
 starts, one over the prose that instructs it — and three more queue-hygiene
