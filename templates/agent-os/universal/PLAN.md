@@ -31,7 +31,8 @@ must not take its history with it.
 The fields exist so an entry can be visibly **incomplete**. A journal with no
 stated shape decays into a diary that reads fine and proves nothing.
 
-<!-- Template — copy the block, drop the fields that do not apply:
+<!-- Template — copy the block, drop the fields that do not apply (`unblocked` is
+     the exception: it is stated even when the answer is "nothing"):
 
 ### <one-line summary of the session>
 
@@ -41,8 +42,18 @@ stated shape decays into a diary that reads fine and proves nothing.
 - **reviewed** — changes that went through a reviewer gate, and what it returned
 - **stopped at** — which stop condition ended the session (or "checkpoint,
   still running")
-- **queue hygiene** — queue items fixed in passing: stale state, a dependency
-  that was already satisfied, an item that describes work already done
+- **unblocked** — what the session's closes released. **The field that is never
+  dropped** — a missing line and an unpaid debt read identically from outside,
+  and this is the only record of whether anyone looked. It has **three**
+  answers and they do not substitute for each other: the items that were
+  waiting, by name; "nothing was waiting", where the queue carries dependency
+  links and none pointed here; and "this queue has no dependency links", where
+  it cannot answer at all — a flat-list queue is **absent**, not satisfied, and
+  writing "nothing was waiting" there claims a look that no query could perform
+- **queue hygiene** — queue state the session found unreliable and **reported**:
+  a stale marker, a dependency already satisfied, an item that describes work
+  already done. Reported, never corrected in passing — quietly fixing the
+  metadata destroys the evidence that the metadata is unreliable
 - **cost** — the counts the session actually observed: reviewer subagents run,
   CI runs consumed (re-runs included — the cheapest signal that a task fought
   its tests), deploys triggered
