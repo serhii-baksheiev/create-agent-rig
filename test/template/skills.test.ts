@@ -132,12 +132,16 @@ describe('PLAN.md queue convention (universal)', () => {
   });
 });
 
-// AR brief (Flowa -> rig port), AR-1: the main transfer. A queue item asserts
-// things about the code, and the expensive failures start with one of those
-// assertions being false. The skill exists to catch that BEFORE the Red step.
+// A queue item is a claim about the code, and the expensive failures start with
+// one of those claims being false: the test is written against the item, the
+// implementation against the test, and the reviewer compares the diff to the
+// item — so nothing downstream re-reads the file the item was wrong about. This
+// skill checks that BEFORE the Red step. Written for this repo; the shape of the
+// problem is general, the text is not carried in from anywhere.
 describe('check-premises skill (universal) — the item is a claim, not a fact', () => {
   const read = () =>
     readFile(skillPath('universal', '.claude', 'skills', 'check-premises'), 'utf8');
+  const readLoop = () => readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
 
   it('exists and cannot implement anything — a verification step, read-only', async () => {
     const content = await read();
@@ -145,9 +149,12 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
     expect(fm['name']).toBe('check-premises');
     expect(fm['allowed-tools']).toBeTruthy();
     expect(fm['allowed-tools']).not.toMatch(/Write|Edit/);
+    // a cold reader is the point: the authoring context is what talked itself
+    // into the premise in the first place (workflow.md, review-context isolation)
+    expect(fm['context']).toBe('fork');
   });
 
-  it('states both boundaries — the two the transfer is worthless without', async () => {
+  it('states both boundaries — the two it is worthless without', async () => {
     const content = await read();
     // 1. a false load-bearing premise stops the work; it is never routed around
     expect(content).toMatch(/stop and report|stop-and-report/i);
@@ -157,16 +164,51 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
     expect(content).toMatch(/not an audit/i);
   });
 
+  // The verdict vocabulary IS the contract: the loop hardcodes one of these
+  // words. Renaming a verdict here must not leave the suite green.
+  it('names its three verdicts, and an unverifiable premise is not a pass', async () => {
+    const content = await read();
+    for (const verdict of ['PREMISES HOLD', 'PREMISE FALSE', 'UNVERIFIABLE']) {
+      expect(content, verdict).toContain(verdict);
+    }
+    expect(content).toMatch(/not a soft pass|is not a pass/i);
+    // the limit this rulebook keeps insisting on: nobody observes the verdict
+    expect(content).toMatch(/Limits/);
+    expect(content).toMatch(/self-report|reporting on itself/i);
+  });
+
   it('carries worked examples, and no tracker key travels with them', async () => {
     const content = await read();
     expect(content).toMatch(/example/i);
-    // domain leaks as ticket keys: SCRUM-123, ABC-4. The rig is nobody's tracker.
-    expect(content).not.toMatch(/\b[A-Z][A-Z0-9]+-\d+\b/);
+    // Domain leaks as ticket keys: SCRUM-123, ABC-4. The rig is nobody's tracker.
+    // Narrow on purpose — technical prose is full of SHA-256 and UTF-8, and a
+    // guard that fires on honest writing gets deleted (rules/invariants.md).
+    const technical = /^(SHA|UTF|RFC|ISO|AES|RSA|HTTP|IPV|MD|CVE|EC)$/;
+    const keys = [...content.matchAll(/\b([A-Z][A-Z0-9]+)-\d+\b/g)]
+      .map((m) => m[1]!)
+      .filter((prefix) => !technical.test(prefix));
+    expect(keys).toEqual([]);
   });
 
-  it('is reachable: loop §2 calls it between taking the item and the Red step', async () => {
-    const loop = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+  it('is reachable: the loop calls it after selection and before the Red step', async () => {
+    const loop = await readLoop();
     expect(loop).toMatch(/check-premises/);
+    // order, not just presence — the whole value is that it runs before the test
+    const procedure = /check-premises[\s\S]{0,120}failing\s+test/;
+    expect(procedure.test(loop), 'the per-task procedure must run it before Red').toBe(true);
+    // and the loop must speak the skill's own vocabulary
+    expect(loop).toContain('PREMISE FALSE');
+  });
+
+  // The loop delegates to §6 for what happens next, so §6 has to recognise it.
+  // A pointer into a list that does not name the case is a dead reference.
+  it('is recognised by the loop as a per-task stop, in both lists that define them', async () => {
+    const loop = await readLoop();
+    const perTaskStops = /Per-task stops \(([^)]*)\)/.exec(loop);
+    expect(perTaskStops, 'the loop must still enumerate its per-task stops').toBeTruthy();
+    expect(perTaskStops![1]).toMatch(/premise/i);
+    const escalation = /Task-scoped[\s\S]{0,400}/.exec(loop);
+    expect(escalation![0]).toMatch(/premise/i);
   });
 });
 

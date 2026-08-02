@@ -112,8 +112,8 @@ for itself, which is the one thing this loop does not do (§8).
 ## 3. What keeps the loop running, and what stops it
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
-reviewer verdict) **do not end the run**: escalate that item (§5) and take the
-next one.
+reviewer verdict, a false premise in the item itself) **do not end the run**:
+escalate that item (§5) and take the next one.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
@@ -211,7 +211,10 @@ mechanises fully (`missed`, `.claude/rules/autonomy.md`) needs no self-report.
 ## 6. Escalation — two channels, by scope
 
 **Task-scoped — the item is the home, and the loop continues.** Three strikes, the
-attempt budget, an invariant conflict, or a blocking reviewer verdict:
+attempt budget, an invariant conflict, a blocking reviewer verdict, or a
+`PREMISE FALSE` verdict from `check-premises` — the last one is a
+`documented-stall` (§5), and its diagnosis is already written: what the item
+claimed, what the code says, and the citation:
 
 1. Comment the diagnosis on the queue item: what fails, what was tried, the
    current hypothesis, links to the PR and the failing run. **Name the outcome
@@ -281,6 +284,7 @@ three poisons the only channel by which this project learns.
 | Does not | Why |
 | --- | --- |
 | **Create its own work items** | The queue is human-filled. Self-authored work drifts scope, and unattended it drifts unwatched |
+| **Re-aim an item whose premise turned out false** | Same rule wearing a disguise: an item silently rewritten into "what it should have said" is a work item the agent authored. Escalate it (§6) |
 | Take items needing a human decision | It cannot unblock itself; those wait in the Operator queue |
 | Take a `trigger-human` item | It would build for scale that does not exist |
 | Take two elevated items back to back | One unreviewed schema/permissions change is recoverable; a chain overnight is not |

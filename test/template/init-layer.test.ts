@@ -61,6 +61,23 @@ describe('the init layer installs a rig with no dangling references', () => {
     expect([...new Set(wired)].sort()).toEqual(shipped.sort());
   });
 
+  // The dangling-reference test above catches a name with no file. This is the
+  // other direction, and it is the one that actually happened: a skill was added
+  // to the process layer, init started installing it, and the map init hands the
+  // reader still listed the previous four. A reader cannot use what nothing names.
+  it('names every skill it installs in the map it hands the reader', async () => {
+    const files = await installed();
+    const claudeMd = files.get('CLAUDE.md');
+    expect(claudeMd).toBeDefined();
+    const skills = [...files.keys()]
+      .filter((rel) => rel.startsWith('.claude/skills/') && rel.endsWith('/SKILL.md'))
+      .map((rel) => rel.split('/')[2]!);
+    expect(skills.length).toBeGreaterThan(0);
+    for (const skill of skills) {
+      expect(claudeMd, `${skill} is installed but unnamed in CLAUDE.md`).toContain(skill);
+    }
+  });
+
   it('substitutes every token — a token in a filename is a dead kill switch', async () => {
     for (const [rel, content] of await installed()) {
       expect(content, rel).not.toContain('__PROJECT_NAME__');

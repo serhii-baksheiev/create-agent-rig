@@ -116,3 +116,10 @@ is invisible to every gate downstream.
 - **It has no opinion on whether the task is worth doing.** True premises and a
   pointless task is a perfectly consistent state, and it belongs to whoever fills
   the queue.
+- 🔴 **Nothing makes this run, and the verdict is a self-report.** No hook fires
+  when a task starts building on an unchecked claim, and no artifact outlives the
+  step — so a run that skipped it and a run that passed it look identical
+  afterwards. That is the honest description of every rule of this shape here
+  (the `loop` skill says the same about its own no-hand-feeding rule), and it is
+  why the citation matters: a `file:line` in the report is the one part of this a
+  later reader can re-check.
