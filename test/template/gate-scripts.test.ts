@@ -160,6 +160,36 @@ describe('elevatedPathsIn — which files make a change elevated', () => {
   });
 });
 
+// AR-10: the sweep did not know this rulebook's own verdict words. `pr-ship`
+// emits SHIP and HOLD, so a PR body that recorded a real verdict registered as
+// no evidence at all, and the weaker `body-claim` observation — "someone says a
+// gate ran, go check" — never fired on this project's own PRs.
+describe('gateEvidence — the sweep knows the words its own gate produces', () => {
+  it('recognises a SHIP or HOLD verdict beside a reviewer name', async () => {
+    const { gateEvidence } = await load('detect-missed-gate.mjs');
+    expect(gateEvidence({ body: 'Gate: `code-reviewer` returned SHIP.' })).toBe('body-claim');
+    expect(gateEvidence({ body: 'code-reviewer: HOLD on two, both closed.' })).toBe('body-claim');
+    expect(gateEvidence({ body: 'prose-reviewer — verdict: SHIP' })).toBe('body-claim');
+  });
+
+  it('still treats the label as the only thing that suppresses a finding', async () => {
+    const { gateEvidence, classifyPr } = await load('detect-missed-gate.mjs');
+    // 🔴 The direction this may never move in: a body claim is weaker evidence,
+    // never a pass. Widening the vocabulary must not widen the authority.
+    expect(gateEvidence({ labels: ['human-review'], body: 'anything' })).toBe('label');
+    const claimed = classifyPr(pr({ files: ['infra/x.ts'], body: 'code-reviewer: SHIP' }), {
+      elevatedPaths: ELEVATED,
+    }) as Finding;
+    expect(claimed).not.toBeNull();
+    expect(claimed.kind).toBe('missed-gate');
+  });
+
+  it('does not call a reviewer name alone a claim', async () => {
+    const { gateEvidence } = await load('detect-missed-gate.mjs');
+    expect(gateEvidence({ body: 'Ask the code-reviewer about this one.' })).toBe('none');
+  });
+});
+
 describe('classifyPr — a merged PR that skipped the elevated gate', () => {
   const opts = { elevatedPaths: ELEVATED };
 
