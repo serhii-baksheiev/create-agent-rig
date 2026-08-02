@@ -28,5 +28,19 @@ export const TARGETS: Record<string, Target> = {
 
 export const TARGET_NAMES = Object.keys(TARGETS);
 
-/** Zero options at the personal stage: one implicit target (PLAN.md §6). */
+/**
+ * The pre-selected entry in the interactive menu, and the API-level default.
+ *
+ * 🔴 **Not the fallback for a non-interactive run.** A run with no TTY and no
+ * `--target` is *refused* (`index.ts`) — never prompt into a pipe, and never
+ * guess a whole project shape for a script that did not say. This constant is
+ * what `Enter`, an out-of-range number or an unrecognised name resolve to at the
+ * prompt (`prompts.ts`), plus what `createProject` uses when called as a library
+ * with no target.
+ *
+ * The comment this replaces said "one implicit target", which was stale from
+ * when there was one. Its first correction claimed the CLI defaults silently in
+ * CI — the opposite of what it does, in the file a maintainer would open to
+ * check exactly that.
+ */
 export const DEFAULT_TARGET = 'aws-serverless';

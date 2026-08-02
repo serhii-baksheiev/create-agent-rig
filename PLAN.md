@@ -324,7 +324,6 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 mid-work.
 
 - AR-12 [elevated]: declare `templates/agent-os/stack/aws-cdk/.claude/rules/` and `.../node-ts/.claude/rules/`. The aws-cdk one is the sharp case: that file carries its **own** `elevated-paths` block declaring `infra/`, so a merge deleting the block would silently un-declare infrastructure for every generated AWS project — and the sweep would report it clean. Found by review on AR-11, which did not ask for these two
-- AR-6: three review nits in one PR — the `DEFAULT_TARGET` comment still saying "one implicit target" when there are two plus interactive selection, `demo.sh` citing PLAN phases an outside user cannot see, and a NOTES.md line recording that the Flowa copies of guard-bash/detect-missed-gate/loop are behind this repo's
 - AR-5 [elevated]: prepare release 0.4.0 — CHANGELOG in the repo's convention (what a freshly generated project gets, and why), plus what the brief defers and on which entry condition; smoke `create` and `init` on a scratch project. **Stops at `npm publish`** — that is the owner action below. Genuinely depends on the items above, which a flat list cannot express: check they are merged before taking it
 
 ## Operator queue
@@ -334,7 +333,7 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 - ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
 - **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible; the agent prepares the release and stops at the command
 - **AR-4 entry conditions** — port item 117 once it is merged in Flowa; port C-0…C-2 once the clarify gate has fired at least once. Shipping an unproven gate to other people's projects is worse than not having it
-- **does Flowa take the reverse port?** Out of this brief's scope by construction; AR-6 only records the fact that its copies are behind
+- **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
 
 ## Journal
 

@@ -172,6 +172,13 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
 
 ## Repo-specific rules
 
+0. **The process layer only travels one way: outward.** `guard-bash`,
+   `detect-missed-gate` and the `loop` skill here are ahead of the copies in the
+   project this rulebook was extracted for — by hundreds of lines of checks and a
+   whole section of the loop's own procedure. "Synchronising" them from a
+   downstream copy is a regression, not an update, and no port brief may bring
+   one back. Ideas travel in; files do not. (`NOTES.md`, "the drift that runs the
+   other way".)
 1. **PLAN.md §2 decisions are locked.** Do not re-litigate them without new data.
 2. **Templates are real projects.** No template engine; generation is tree copy +
    token substitution only. The root toolchain never reaches into `templates/`

@@ -1,5 +1,5 @@
 #!/bin/sh
-# The 2-minute demo (PLAN.md phase 7):
+# The 2-minute demo — what a generated project gives you, end to end:
 #   1. generate a project        2. its own tests pass
 #   3. an attempted invariant violation is BLOCKED by a hook (the point)
 #   4. the service actually runs: smoke request → 201, event processed, DLQ empty
