@@ -320,18 +320,19 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
-- AR-1: new premise-check skill in `universal/.claude/skills/`, referenced from `loop` §2 between selection and Red, with a test in `test/template/skills.test.ts`
+- AR-8: sanitise the git environment where the CLI spawns git — `packages/cli/test/create.test.ts` asserts a generated project has exactly one baseline commit, but the CLI inherits `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`, so with an absolute `GIT_DIR` in the environment the generated project's `git add -A && git commit` lands **in the outer repository instead**. Git sets exactly that for hooks when committing from a worktree, so `git commit` inside a worktree writes "Pristine template" commits onto the branch being committed. Observed, twice, on this repo's own branches. Fix where the CLI spawns git, with a test that pins it — the `worktree-task` skill this repo ships is unusable until then
 - AR-2: S-0 (contradicting the queue item = BLOCKER) into `universal/.claude/agents/code-reviewer.md`, plus a fourth read-only agent — a prose reviewer — covered in `test/template/agents.test.ts`
 - AR-3a [elevated]: hygiene check "a split parent left open" in `queue/core.mjs` `hygieneOf`, in the existing style (a `kind` and a stated why per finding); the two existing checks stay untouched
+- AR-3b [elevated]: add `body` to the neutral `Ticket` shape per the decision below, then the two checks that need it — body-vs-labels, and the link to a document from the body. The shape's comment omits `raw`, which `plan-md` tickets already carry: document it in the same edit rather than leaving the comment one field behind again
 - AR-6: three review nits in one PR — the `DEFAULT_TARGET` comment still saying "one implicit target" when there are two plus interactive selection, `demo.sh` citing PLAN phases an outside user cannot see, and a NOTES.md line recording that the Flowa copies of guard-bash/detect-missed-gate/loop are behind this repo's
-- AR-7 [elevated]: declare `templates/agent-os/universal/.claude/{skills,agents}/` in the `elevated-paths` block, or state why they stay out — AR-1 and AR-2 land there today and `detect-missed-gate` would report those merges clean
+- AR-9 [elevated]: `detect-missed-gate.mjs` is blind to this repo's own elevated paths. `isRulebook` exempts `CLAUDE.md` and `.claude/` **at the repository root**, so in a generator — whose rulebook lives under `templates/agent-os/**` — every `.md` there is dropped as inert and the declaration of `templates/agent-os/init/` does nothing. Verified: the sweep reports no findings for #19, which crossed it. Fix `isRulebook` to recognise the rulebook wherever it sits (a `.claude/` path segment, a `CLAUDE.md` basename), **then** declare `templates/agent-os/universal/.claude/{skills,agents}/` — declaring them first buys nothing, which is what the superseded AR-7 would have done
 - AR-5 [elevated]: prepare release 0.4.0 — CHANGELOG in the repo's convention (what a freshly generated project gets, and why), plus what the brief defers and on which entry condition; smoke `create` and `init` on a scratch project. **Stops at `npm publish`** — that is the owner action below. Genuinely depends on the items above, which a flat list cannot express: check they are merged before taking it
 
 ## Operator queue
 
 Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
 
-- **decide: does the neutral `Ticket` shape gain a `body` field?** It blocks two of AR-3's three hygiene checks (body-vs-labels, the link to a document); adapters read the body internally today and do not expose it. The brief leans to adding it — core testable on fixtures, adapters stay thin. Either way the decision gets written into the shape's comment, not made silently
+- ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
 - **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible; the agent prepares the release and stops at the command
 - **AR-4 entry conditions** — port item 117 once it is merged in Flowa; port C-0…C-2 once the clarify gate has fired at least once. Shipping an unproven gate to other people's projects is worse than not having it
 - **does Flowa take the reverse port?** Out of this brief's scope by construction; AR-6 only records the fact that its copies are behind
@@ -342,6 +343,46 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### the premise check shipped, and the session tripped the defect it then filed
+
+- **done** — #18 (the queues) and #19 (the `check-premises` skill, wired into
+  `loop`, installed by `init`, named in both maps) are merged; `ci` and both
+  template jobs concluded `success` for each head commit before the merge
+- **reviewed** — `code-reviewer` twice on #19: HOLD on four findings (init's map
+  did not name the skill it installs; the loop pointed at an escalation list that
+  did not recognise the case; the verdict vocabulary was the contract and the
+  untested part; the test comment carried an outside project name and a tracker
+  key into the block asserting neither travels), then SHIP with each fix
+  confirmed red against the pre-fix commit. `code-reviewer` once on #18: HOLD on
+  two, both fixed
+- **escalated** — nothing
+- **stopped at** — checkpoint, still running
+- **queue hygiene** — 🔴 **#19 is Tier 2 and carries no `human-review` label, on
+  purpose.** It reached `templates/agent-os/init/` mid-work; the gate was run and
+  its verdict is on the PR, but the label asserts a human read the diff, and an
+  agent applying it to its own PR converts the sweep's one non-forgeable signal
+  into a forgeable one. The owner authorised the merge without reading the diff,
+  which is a different act. **This entry is therefore the only record, not half
+  of one:** the sweep reports nothing at all —
+  `detect-missed-gate.mjs --since 2026-08-01` → "2 merged PR(s) swept — no
+  findings". Its `isRulebook` exempts `CLAUDE.md` and `.claude/` **at the
+  repository root**, and a generator keeps its rulebook under
+  `templates/agent-os/**`, so every declared elevated path in this repo that
+  holds `.md` files is dropped as inert before the prefix test runs. Filed as
+  AR-9; found by the reviewer, on the sentence that claimed the opposite
+- **cost** — 3 reviewer subagents (2 on #19, 1 on #18), 8 CI check runs across
+  two PRs, 0 deploys
+- **the defect this session caused, in full** — 19 junk commits landed on two
+  local branches: 18 titled "Pristine template" plus one "clean". They arrived by
+  two different routes, and the distinction matters. Nine came from an ordinary
+  `git commit` inside a linked worktree — the pre-commit hook ran the suite with
+  the absolute `GIT_DIR` git hands its hooks, and the CLI's baseline commit
+  inherited it. Nine more came from this session then setting `GIT_DIR`
+  explicitly to confirm the diagnosis. Only the second route was deliberate; the
+  first is the one that will hit anyone using the `worktree-task` skill this repo
+  ships. Both branches were reset, `master` was never touched, nothing was
+  pushed. Filed as AR-8, at the top of the queue
 
 ### queues added to this repo's own PLAN.md, brief decomposed
 
