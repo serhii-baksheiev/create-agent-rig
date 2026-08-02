@@ -15,6 +15,7 @@
     ".claude/hooks/inject-rules.mjs",
     ".claude/skills/pr-ship/SKILL.md",
     ".claude/skills/loop/SKILL.md",
+    ".claude/skills/check-premises/SKILL.md",
     ".claude/skills/worktree-task/SKILL.md",
     ".claude/scripts/detect-missed-gate.mjs",
     ".claude/scripts/reconcile-external-prs.mjs",

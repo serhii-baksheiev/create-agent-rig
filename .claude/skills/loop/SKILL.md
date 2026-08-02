@@ -10,9 +10,9 @@ boundaries; the **queue** holds the work; `PLAN.md` holds state, standing
 decisions and the journal. This skill is the driver in between: what gets picked,
 what keeps the loop going, what stops it, and where the report goes.
 
-Per-task procedure is unchanged: (worktree if another session may run) → failing
-test first → implement → `pr-ship` → merge on the named criterion → verify the
-deployed surface if one changed.
+Per-task procedure is unchanged: (worktree if another session may run) →
+`check-premises` → failing test first → implement → `pr-ship` → merge on the
+named criterion → verify the deployed surface if one changed.
 
 ## 0. The queue is behind an adapter
 
@@ -101,6 +101,13 @@ change is recoverable; a chain of them compounding overnight is not.
 and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
+
+**Then, before the Red step: `check-premises`.** The item was written by someone
+who was not reading the code at the time, and everything downstream — the failing
+test, the implementation, the reviewer comparing diff to item — inherits its
+claims rather than checking them. On `PREMISE FALSE` the item is escalated (§6),
+not repaired in place: a run that silently re-aims its own task has authored work
+for itself, which is the one thing this loop does not do (§8).
 
 ## 3. What keeps the loop running, and what stops it
 

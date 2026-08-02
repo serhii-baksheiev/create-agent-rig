@@ -132,6 +132,44 @@ describe('PLAN.md queue convention (universal)', () => {
   });
 });
 
+// AR brief (Flowa -> rig port), AR-1: the main transfer. A queue item asserts
+// things about the code, and the expensive failures start with one of those
+// assertions being false. The skill exists to catch that BEFORE the Red step.
+describe('check-premises skill (universal) — the item is a claim, not a fact', () => {
+  const read = () =>
+    readFile(skillPath('universal', '.claude', 'skills', 'check-premises'), 'utf8');
+
+  it('exists and cannot implement anything — a verification step, read-only', async () => {
+    const content = await read();
+    const fm = frontmatterOf(content);
+    expect(fm['name']).toBe('check-premises');
+    expect(fm['allowed-tools']).toBeTruthy();
+    expect(fm['allowed-tools']).not.toMatch(/Write|Edit/);
+  });
+
+  it('states both boundaries — the two the transfer is worthless without', async () => {
+    const content = await read();
+    // 1. a false load-bearing premise stops the work; it is never routed around
+    expect(content).toMatch(/stop and report|stop-and-report/i);
+    expect(content).toMatch(/never.*(work around|route around|silently)/i);
+    // 2. load-bearing claims only — this is not an audit of the codebase
+    expect(content).toMatch(/load-bearing/i);
+    expect(content).toMatch(/not an audit/i);
+  });
+
+  it('carries worked examples, and no tracker key travels with them', async () => {
+    const content = await read();
+    expect(content).toMatch(/example/i);
+    // domain leaks as ticket keys: SCRUM-123, ABC-4. The rig is nobody's tracker.
+    expect(content).not.toMatch(/\b[A-Z][A-Z0-9]+-\d+\b/);
+  });
+
+  it('is reachable: loop §2 calls it between taking the item and the Red step', async () => {
+    const loop = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+    expect(loop).toMatch(/check-premises/);
+  });
+});
+
 describe('pr-ship skill (universal)', () => {
   it('exists in universal and states the gate + verdict', async () => {
     const content = await readFile(skillPath('universal', '.claude', 'skills', 'pr-ship'), 'utf8');
