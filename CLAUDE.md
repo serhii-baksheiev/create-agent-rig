@@ -53,11 +53,14 @@ them all; they are one rulebook.
   `.claude/rules/workflow.md` ("Branches and commits", "PR flow"). When another
   session may touch this repo at the same time, the branch lives in its own
   worktree — the `worktree-task` skill has the lifecycle and the cleanup.
-- **Gates.** `code-reviewer` runs before every PR; `security-scanner` runs when
-  a change touches auth, secrets, parsing, or outbound calls; `prose-reviewer`
-  runs when it touches the documents that instruct agents — rules, skills, agent
-  specs, this file. Blocking findings are resolved, not argued with. The
-  `pr-ship` skill drives the gate.
+- **Gates.** `code-reviewer` before every PR; `security-scanner` when a change
+  touches auth, secrets, parsing, or outbound calls; `prose-reviewer` when it
+  touches the documents that instruct agents — rules, skills, agent specs, this
+  file, the README. Blocking findings are resolved, not argued with, and the
+  `pr-ship` skill drives the fan-out. **No hook launches them** — a gate here is
+  a session following a written rule, so "the gate ran" is a claim, not a
+  guarantee. The mechanical enforcement below is a different thing, and the
+  difference is worth keeping straight.
 - **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
   the core the moment it lands; `guard-web-boundary` keeps the frontend off the
   backend; `block-no-verify` refuses pre-commit bypasses; `guard-bash` refuses

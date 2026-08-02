@@ -53,9 +53,13 @@ it a hook via the `new-invariant` skill.
   `.claude/rules/workflow.md` ("Branches and commits", "PR flow"). When another
   session may touch this repo at the same time, the branch lives in its own
   worktree — the `worktree-task` skill has the lifecycle and the cleanup.
-- **Gates.** `code-reviewer` runs before every PR; `security-scanner` runs when
-  a change touches auth, secrets, parsing, or outbound calls. Blocking findings
-  are resolved, not argued with. The `pr-ship` skill drives the gate.
+- **Gates.** `code-reviewer` before every PR; `security-scanner` when a change
+  touches auth, secrets, parsing, or outbound calls; `prose-reviewer` when it
+  touches the documents that instruct agents — rules, skills, agent specs, this
+  file, the README. Blocking findings are resolved, not argued with, and the
+  `pr-ship` skill drives the fan-out. **No hook launches them** — a gate here is
+  a session following a written rule, so "the gate ran" is a claim, not a
+  guarantee. That is the honest reading of every gate in this file.
 - **Enforcement is mechanical.** `block-no-verify` refuses pre-commit bypasses;
   `guard-bash` refuses the "Never" tier — force-pushing a shared branch, a
   production deploy, a filesystem wipe — and carries the kill switch;

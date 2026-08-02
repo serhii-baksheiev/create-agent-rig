@@ -30,6 +30,13 @@ references, and you classify every finding as **blocking** or **advisory**.
    change that is well-built and not the change that was asked for is the one
    failure the rest of this checklist cannot see.
 
+   **If the item was not handed to you, say so and stop there.** Do not
+   reconstruct it from the branch name or the PR description: those are written
+   by whoever opened the PR — including the run being reviewed — and this
+   rulebook already refuses that evidence elsewhere (`.claude/rules/autonomy.md`).
+   "Item not supplied, item 6 not checked" is a useful line in a report; a
+   guess dressed as a verdict is worse than the silence it replaces.
+
 ## Advisory findings
 
 Naming, duplication, missed simplifications, performance smells. Report them;

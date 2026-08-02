@@ -74,8 +74,12 @@ describe('code-reviewer agent (universal) — the change must be the change that
     const blocking = content.slice(content.indexOf('## Checklist'), content.indexOf('## Advisory'));
     expect(blocking).toMatch(/contradict/i);
     expect(blocking).toMatch(/queue item|the item|the task/i);
-    // and the verdict is to report it, not to reconcile the two by hand
+    // and the verdict is to report it, not to reconcile the two by hand —
+    // the refusal is the load-bearing half, so pin it rather than "report"
     expect(blocking).toMatch(/report/i);
+    expect(blocking).toMatch(/never reconcile|do not reconcile/i);
+    // a reviewer handed only a diff must say the item is missing, not guess
+    expect(blocking).toMatch(/not (handed|supplied)|no item/i);
   });
 
   it('keeps the checklist it already had — this adds one item, it rewrites none', async () => {
@@ -127,10 +131,28 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
 
   it('blocks on the four failures that make a rulebook lie', async () => {
     const content = await read();
-    expect(content).toMatch(/overstat/i); // a claim the mechanism does not support
-    expect(content).toMatch(/dead (reference|link)|no longer exists/i);
-    expect(content).toMatch(/contradict/i); // two rule files disagreeing
-    expect(content).toMatch(/limit/i); // a guard whose stated limits went stale
+    // scoped to the blocking section: demoting an item to advisory, or losing
+    // the checklist and keeping the narrative, must fail this
+    const blocking = content.slice(content.indexOf('## Checklist'), content.indexOf('## Advisory'));
+    expect(blocking.length).toBeGreaterThan(0);
+    expect(blocking).toMatch(/overstat/i); // a claim the mechanism does not support
+    expect(blocking).toMatch(/dead (reference|link)|no longer exists/i);
+    expect(blocking).toMatch(/contradict/i); // two rule files disagreeing
+    expect(blocking).toMatch(/stale/i); // stated limits that drifted
+  });
+
+  // The failure this agent is most likely to cause itself: a confident BLOCKER
+  // on the adapter seam that exists to name the vendor it adapts.
+  it('does not fire on a seam built to name a vendor', async () => {
+    const content = await read();
+    expect(content).toMatch(/seam .*not a leak|not a leak/i);
+  });
+
+  it('states the limit that applies to itself — nothing launches it', async () => {
+    const content = await read();
+    expect(content).toMatch(/nothing launches you|nothing makes this run/i);
+    // and it must say so even when the overstatement is about itself
+    expect(content).toMatch(/convention, not a mechanism|claim, not a guarantee/i);
   });
 
   it('is reachable — a gate nothing calls is decoration', async () => {
