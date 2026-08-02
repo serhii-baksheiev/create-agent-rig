@@ -100,6 +100,8 @@ templates/agent-os/universal/.claude/hooks/
 templates/agent-os/universal/.claude/scripts/
 templates/agent-os/universal/.claude/settings.json
 templates/agent-os/init/
+templates/agent-os/universal/.claude/agents/
+templates/agent-os/universal/.claude/skills/
 ```
 
 `.claude/` and `.github/workflows/` are there because they are what *disarms* the

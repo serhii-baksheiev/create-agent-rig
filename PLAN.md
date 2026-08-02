@@ -323,12 +323,11 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
-- AR-8: sanitise the git environment where the CLI spawns git — `packages/cli/test/create.test.ts` asserts a generated project has exactly one baseline commit, but the CLI inherits `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`, so with an absolute `GIT_DIR` in the environment the generated project's `git add -A && git commit` lands **in the outer repository instead**. Git sets exactly that for hooks when committing from a worktree, so `git commit` inside a worktree writes "Pristine template" commits onto the branch being committed. Observed, twice, on this repo's own branches. Fix where the CLI spawns git, with a test that pins it — the `worktree-task` skill this repo ships is unusable until then
-- AR-2: S-0 (contradicting the queue item = BLOCKER) into `universal/.claude/agents/code-reviewer.md`, plus a fourth read-only agent — a prose reviewer — covered in `test/template/agents.test.ts`
+- AR-10 [elevated]: the sweep's `VERDICT` list does not contain this rulebook's own verdict words. `pr-ship` emits SHIP/HOLD, so a PR body that records a real verdict registers as `none` rather than `body-claim`, and the weaker observation — "someone claims a gate ran, go check" — never fires on this repo's own PRs. The direction is conservative (more findings, never fewer), so this is honesty, not safety. Add the words; do NOT widen it into anything that could suppress a finding
+- AR-11 [elevated]: declare the paths the sweep can now see and nothing claims — `templates/agent-os/universal/.claude/rules/` (the autonomy tiers and the Never list are authored here), the stack layers' `hooks/`, `agents/` and `skills/`, and `templates/agent-os/universal/CLAUDE.md`. Each is the same category as something already declared; they were left out of AR-9 only to keep that change to what its item asked for
 - AR-3a [elevated]: hygiene check "a split parent left open" in `queue/core.mjs` `hygieneOf`, in the existing style (a `kind` and a stated why per finding); the two existing checks stay untouched
 - AR-3b [elevated]: add `body` to the neutral `Ticket` shape per the decision below, then the two checks that need it — body-vs-labels, and the link to a document from the body. The shape's comment omits `raw`, which `plan-md` tickets already carry: document it in the same edit rather than leaving the comment one field behind again
 - AR-6: three review nits in one PR — the `DEFAULT_TARGET` comment still saying "one implicit target" when there are two plus interactive selection, `demo.sh` citing PLAN phases an outside user cannot see, and a NOTES.md line recording that the Flowa copies of guard-bash/detect-missed-gate/loop are behind this repo's
-- AR-9 [elevated]: `detect-missed-gate.mjs` is blind to this repo's own elevated paths. `isRulebook` exempts `CLAUDE.md` and `.claude/` **at the repository root**, so in a generator — whose rulebook lives under `templates/agent-os/**` — every `.md` there is dropped as inert and the declaration of `templates/agent-os/init/` does nothing. Verified: the sweep reports no findings for #19, which crossed it. Fix `isRulebook` to recognise the rulebook wherever it sits (a `.claude/` path segment, a `CLAUDE.md` basename), **then** declare `templates/agent-os/universal/.claude/{skills,agents}/` — declaring them first buys nothing, which is what the superseded AR-7 would have done
 - AR-5 [elevated]: prepare release 0.4.0 — CHANGELOG in the repo's convention (what a freshly generated project gets, and why), plus what the brief defers and on which entry condition; smoke `create` and `init` on a scratch project. **Stops at `npm publish`** — that is the owner action below. Genuinely depends on the items above, which a flat list cannot express: check they are merged before taking it
 
 ## Operator queue
@@ -346,6 +345,34 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### the gate sweep could not see this repository, and now names its own misses
+
+- **done** — #22 (the git-environment defect, four call sites) merged; AR-9
+  lands here: `isRulebook` recognises a rulebook wherever it sits, and the two
+  gate directories are declared now that declaring them buys something
+- **reviewed** — `code-reviewer` on #22: HOLD on two (an unpinned change in an
+  elevated path, and the tier record), both closed; its advisories produced the
+  sweep test that would have found all four call sites in one pass
+- **stopped at** — checkpoint, still running
+- **queue hygiene** — AR-2 was still listed after shipping in #21; closed here.
+  🔴 **The sweep now reports three findings, and all three
+  are this session's merges** (#19, #21, #22). They are not gate misses: every
+  one ran `code-reviewer`, #21 also ran `prose-reviewer`, and each verdict is
+  written in its PR body — though not in a form this sweep recognises, since it
+  looks for a passing word and `pr-ship` says SHIP. What is missing is the
+  `human-review` label, deliberately —
+  it asserts a human read the diff, and it is the one signal
+  `detect-missed-gate` treats as unfakeable *because* an agent cannot apply it
+  honestly. The owner delegated merge authority, which is a different act from
+  reading the diff. So the findings stand, correctly, until the owner labels
+  them or decides they do not need it. Recording this here is the other half of
+  the rule that a miss which turned out harmless is still written down
+- **cost** — 8 reviewer subagents across the session, 20 CI check runs, 0 deploys
+- **note on the fix's own honesty** — the finding line used to end "no reviewer
+  verdict recorded anywhere". The sweep reads a label and scans for a reviewer
+  name beside a passing word; a verdict phrased any other way is invisible to
+  it. It now says what it actually checked
 
 ### the premise check shipped, and the session tripped the defect it then filed
 
