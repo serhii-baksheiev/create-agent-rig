@@ -31,6 +31,16 @@ const ELEVATED_PATHS = [
   'templates/agent-os/universal/.claude/scripts/', // and the sweeps that watch it
   'templates/agent-os/universal/.claude/settings.json', // the hook wiring
   'templates/agent-os/init/', // the map and overrides every `init`ed repo gets
+  // The gates themselves. An agent spec or a driver skill decides what gets
+  // blocked and what gets waved through, so a merge that quietly re-scopes one
+  // disarms the review layer as surely as unwiring a hook does.
+  //
+  // Declared only now, because until the sweep learned to see a rulebook
+  // outside the repository root these two lines would have matched nothing —
+  // a declaration that reports "clean" while looking nowhere is worse than an
+  // honest gap.
+  'templates/agent-os/universal/.claude/agents/',
+  'templates/agent-os/universal/.claude/skills/',
 ];
 
 const withElevatedPaths = (claudeMd) =>

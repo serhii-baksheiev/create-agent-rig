@@ -109,8 +109,20 @@ export const parseElevatedPaths = (markdown) => {
  * in — EXCEPT the rulebook itself. Declaring `.claude/` as elevated was a no-op
  * for every `.md` under it, so a merged PR rewriting the autonomy tiers or the
  * Never list passed the gate meant to catch exactly that.
+ *
+ * 🔴 A rulebook is recognised **wherever it sits**, not only at the repository
+ * root. The root-anchored version of this test was true of a project this tool
+ * generates and false of the tool itself: a generator keeps rulebooks under
+ * `templates/`, every one of them is a `.md`, and all of them were dropped as
+ * inert — so three merges that crossed a declared elevated path were reported
+ * clean. Any repository that vendors, templates or nests a rig has the same
+ * shape.
  */
-const isRulebook = (path) => path === 'CLAUDE.md' || path.startsWith('.claude/');
+const isRulebook = (path) =>
+  path === 'CLAUDE.md' ||
+  path.endsWith('/CLAUDE.md') ||
+  path.startsWith('.claude/') ||
+  path.includes('/.claude/');
 
 const isInert = (path) =>
   !isRulebook(path) &&
@@ -284,8 +296,14 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
           'claims a reviewer verdict, but the body is written by the author — it is ' +
           'not verifiable after the fact. Only the human-review label, which needs ' +
           'repository permission, records the gate. Confirm the gate ran and label it.'
-        : `merged touching ${elevatedFiles.length} elevated-tier path(s) with ` +
-          'no human-review label and no reviewer verdict recorded anywhere',
+        : // "anywhere" claimed more than this sweep can see: it reads the label
+          // and scans the body for a reviewer name next to a passing word. A
+          // verdict phrased any other way — or recorded in a review thread, a
+          // journal, a chat — is invisible here, and saying otherwise taught the
+          // reader to treat absence of evidence as evidence of absence.
+          `merged touching ${elevatedFiles.length} elevated-tier path(s) with ` +
+          'no human-review label, and no reviewer verdict this sweep could ' +
+          'recognise in the body',
   };
 };
 
