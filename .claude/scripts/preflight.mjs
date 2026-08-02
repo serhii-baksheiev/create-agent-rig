@@ -32,8 +32,41 @@ export const UNCHECKED = [
   'a budget is declared for this run, and it is written down somewhere the run can re-read',
 ];
 
+/**
+ * The environment loses the variables that locate a git repository.
+ *
+ * A process started under a git hook inherits an absolute `GIT_DIR`, and every
+ * probe below would then answer about a DIFFERENT repository — `fetch` writing
+ * into it, `rev-parse` comparing its refs. This file's whole point is that an
+ * `unknown` never becomes a `pass`; a confident answer about the wrong repo is
+ * worse than either.
+ *
+ * 🔴 Limit: only repository *location* is stripped. `gh` inherits the rest of
+ * the environment on purpose — its credentials live there.
+ */
+export const withoutGitLocation = (env = process.env) => {
+  const sanitised = { ...env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_NAMESPACE',
+    'GIT_PREFIX',
+  ]) {
+    delete sanitised[key];
+  }
+  return sanitised;
+};
+
 const run = (command, args) =>
-  execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  execFileSync(command, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: withoutGitLocation(),
+  }).trim();
 
 /** The kill switch must be absent before a run starts. */
 export const checkKillSwitch = () => {

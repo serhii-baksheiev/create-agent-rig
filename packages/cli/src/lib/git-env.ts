@@ -17,10 +17,17 @@
  * or `GIT_TERMINAL_PROMPT` are the caller's environment and none of our business.
  * Only repository *location* is stripped.
  *
- * 🔴 Limit, stated: this sanitises the environment of commands whose spawn site
- * uses it. It does not make git in general safe to call from a hook-invoked
- * process, and a call site that forgets to pass `gitEnv()` is unprotected —
- * nothing here can detect that.
+ * 🔴 Limit, stated: this strips repository *location*, not every way git can be
+ * redirected. The config-injection family (`GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n`,
+ * `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_GLOBAL`/`_SYSTEM`) can carry `core.worktree`
+ * or `core.bare` and is deliberately out of scope: git never sets those for the
+ * hooks that cause this problem, and stripping a caller's deliberate config
+ * overrides would be its own surprise.
+ *
+ * 🔴 And it protects exactly the call sites that use it. It does not make git
+ * safe to call from a hook-invoked process in general, and a spawn that forgets
+ * `gitEnv()` is unprotected — nothing in this module can detect that. The sweep
+ * in `test/template/git-env.test.ts` is what watches for it.
  */
 export const GIT_LOCATION_VARS = [
   'GIT_DIR',

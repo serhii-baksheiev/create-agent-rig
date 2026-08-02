@@ -205,18 +205,32 @@ describe('createProject', () => {
     // the repository running the suite **bare** and the seed commit lands on
     // its checked-out branch. Both happened here, in the commit that added
     // this test.
-    const at = (cwd: string) => ({ cwd, env: gitEnv() });
-    await exec('git', ['init', '--quiet'], at(outer));
+    await exec('git', ['init', '--quiet'], { cwd: outer, env: gitEnv() });
     await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
-    await exec('git', [...identity, 'add', '-A'], at(outer));
-    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], at(outer));
+    await exec('git', [...identity, 'add', '-A'], { cwd: outer, env: gitEnv() });
+    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+
+    // The GIT_DIR under test is a LINKED WORKTREE's gitdir, not `outer/.git`,
+    // because that is the shape the failure actually had — and only that shape
+    // makes a redirected `git init` flip the parent repository to bare. Pointed
+    // at a plain `.git`, the bare assertion below would pass either way and
+    // pin nothing.
+    const linked = path.join(work, 'linked');
+    await exec('git', ['worktree', 'add', '--quiet', '--detach', linked], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const worktreeGitDir = path.join(outer, '.git', 'worktrees', 'linked');
 
     // The inheritance under test, scoped to the one call that must survive it:
     // createProject reads process.env internally, so simulating it means
     // setting it — and setting it for no longer than that.
     const had = Object.prototype.hasOwnProperty.call(process.env, 'GIT_DIR');
     const previous = process.env['GIT_DIR'];
-    process.env['GIT_DIR'] = path.join(outer, '.git');
+    process.env['GIT_DIR'] = worktreeGitDir;
     let projectDir: string;
     try {
       ({ projectDir } = await createProject('gitted-under-git-dir', { cwd: work }));
@@ -227,13 +241,22 @@ describe('createProject', () => {
 
     // the generated project got its own repository...
     await expect(stat(path.join(projectDir, '.git'))).resolves.toBeDefined();
-    const { stdout: log } = await exec('git', ['log', '--oneline'], at(projectDir));
+    const { stdout: log } = await exec('git', ['log', '--oneline'], {
+      cwd: projectDir,
+      env: gitEnv(),
+    });
     expect(log.trim().split('\n')).toHaveLength(1);
     // ...and the caller's repository was left exactly as it was
-    const { stdout: outerLog } = await exec('git', ['log', '--oneline'], at(outer));
+    const { stdout: outerLog } = await exec('git', ['log', '--oneline'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
     expect(outerLog.trim().split('\n')).toHaveLength(1);
     expect(outerLog).toContain('outer seed');
-    const { stdout: bare } = await exec('git', ['config', '--get', 'core.bare'], at(outer));
+    const { stdout: bare } = await exec('git', ['config', '--get', 'core.bare'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
     expect(bare.trim()).toBe('false'); // a redirected `git init` flips this
   });
 
