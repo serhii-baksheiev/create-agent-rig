@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CreateError, createProject } from '../src/commands/create.js';
+import { gitEnv } from '../src/lib/git-env.js';
 
 let work: string;
 
@@ -170,9 +171,18 @@ describe('createProject', () => {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const exec = promisify(execFile);
-    const { stdout: log } = await exec('git', ['log', '--oneline'], { cwd: projectDir });
+    // sanitised like every git call in this file — under an inherited GIT_DIR
+    // these would report on the repository running the suite, not on the
+    // project just generated, and the assertion below would be meaningless
+    const { stdout: log } = await exec('git', ['log', '--oneline'], {
+      cwd: projectDir,
+      env: gitEnv(),
+    });
     expect(log.trim().split('\n')).toHaveLength(1);
-    const { stdout: status } = await exec('git', ['status', '--porcelain'], { cwd: projectDir });
+    const { stdout: status } = await exec('git', ['status', '--porcelain'], {
+      cwd: projectDir,
+      env: gitEnv(),
+    });
     expect(status.trim()).toBe(''); // everything generated is in the baseline
   });
 
@@ -188,28 +198,43 @@ describe('createProject', () => {
     const { promisify } = await import('node:util');
     const exec = promisify(execFile);
     const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
-    await exec('git', ['init', '--quiet'], { cwd: outer });
+    // 🔴 This test's OWN git calls are sanitised, every one of them. It runs
+    // under whatever environment the suite inherited — and when the suite is a
+    // pre-commit hook in a linked worktree, that includes an absolute GIT_DIR.
+    // Unsanitised, the setup below does not build a fixture: `git init` marks
+    // the repository running the suite **bare** and the seed commit lands on
+    // its checked-out branch. Both happened here, in the commit that added
+    // this test.
+    const at = (cwd: string) => ({ cwd, env: gitEnv() });
+    await exec('git', ['init', '--quiet'], at(outer));
     await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
-    await exec('git', [...identity, 'add', '-A'], { cwd: outer });
-    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], { cwd: outer });
+    await exec('git', [...identity, 'add', '-A'], at(outer));
+    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], at(outer));
 
-    const inherited = { ...process.env, GIT_DIR: path.join(outer, '.git') };
-    const restore = { ...process.env };
-    Object.assign(process.env, inherited);
+    // The inheritance under test, scoped to the one call that must survive it:
+    // createProject reads process.env internally, so simulating it means
+    // setting it — and setting it for no longer than that.
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'GIT_DIR');
+    const previous = process.env['GIT_DIR'];
+    process.env['GIT_DIR'] = path.join(outer, '.git');
+    let projectDir: string;
     try {
-      const { projectDir } = await createProject('gitted-under-git-dir', { cwd: work });
-      // the generated project got its own repository...
-      await expect(stat(path.join(projectDir, '.git'))).resolves.toBeDefined();
-      const { stdout: log } = await exec('git', ['log', '--oneline'], { cwd: projectDir });
-      expect(log.trim().split('\n')).toHaveLength(1);
-      // ...and the caller's repository was left exactly as it was
-      const { stdout: outerLog } = await exec('git', ['log', '--oneline'], { cwd: outer });
-      expect(outerLog.trim().split('\n')).toHaveLength(1);
-      expect(outerLog).toContain('outer seed');
+      ({ projectDir } = await createProject('gitted-under-git-dir', { cwd: work }));
     } finally {
-      for (const key of Object.keys(process.env)) if (!(key in restore)) delete process.env[key];
-      Object.assign(process.env, restore);
+      if (had) process.env['GIT_DIR'] = previous;
+      else delete process.env['GIT_DIR'];
     }
+
+    // the generated project got its own repository...
+    await expect(stat(path.join(projectDir, '.git'))).resolves.toBeDefined();
+    const { stdout: log } = await exec('git', ['log', '--oneline'], at(projectDir));
+    expect(log.trim().split('\n')).toHaveLength(1);
+    // ...and the caller's repository was left exactly as it was
+    const { stdout: outerLog } = await exec('git', ['log', '--oneline'], at(outer));
+    expect(outerLog.trim().split('\n')).toHaveLength(1);
+    expect(outerLog).toContain('outer seed');
+    const { stdout: bare } = await exec('git', ['config', '--get', 'core.bare'], at(outer));
+    expect(bare.trim()).toBe('false'); // a redirected `git init` flips this
   });
 
   it('skips git when asked, and generation still succeeds', async () => {
