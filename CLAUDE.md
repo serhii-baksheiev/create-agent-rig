@@ -202,6 +202,11 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
   as-is. Don't "fix" it to a token.
 - Tokens (`__PROJECT_NAME__`, `__PROJECT_SCOPE__`, `__REGION__`) may only appear
   where they don't break the template's own runnability.
+- **`templates/agent-os/` never uses `__PROJECT_SCOPE__` or `@app/`** — those two
+  substitute to the same text as `__PROJECT_NAME__`, so `upgrade` cannot reverse
+  them, and a file it cannot reverse is a permanent conflict on every rig that
+  installed it. `__PROJECT_NAME__` and `__REGION__` are fine there. A template
+  test pins this; the reversal and its limits live in `lib/substitute.ts`.
 - `pnpm-lock.yaml` inside templates is intentional (reproducible installs) —
   don't ignore it, and let substitution rewrite it.
 - esbuild's postinstall stays **unapproved** in the template workspace

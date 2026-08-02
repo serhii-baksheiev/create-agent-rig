@@ -1,9 +1,13 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
+import type { InstalledFile } from '../lib/install-set.js';
+import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
+import type { RigManifest, RigProject } from '../lib/manifest.js';
 import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { agentOsInitDir, agentOsUniversalDir } from '../templates.js';
+import { packageVersion } from '../lib/version.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class InitError extends Error {}
@@ -110,9 +114,16 @@ export async function initManifest(): Promise<InitFile[]> {
  * `__PROJECT_NAME__` in `stop-flag.mjs` is a kill switch that silently never
  * fires.
  */
-export async function initFileContents(repoDir: string): Promise<Map<string, string>> {
-  const projectName = projectNameFor(repoDir);
-  const ctx: SubstitutionContext = { projectName, projectScope: projectName, region: '' };
+export async function initFileContents(
+  repoDir: string,
+  project?: RigProject,
+): Promise<Map<string, string>> {
+  const projectName = project?.name ?? projectNameFor(repoDir);
+  const ctx: SubstitutionContext = {
+    projectName,
+    projectScope: project?.scope ?? projectName,
+    region: project?.region ?? '',
+  };
 
   const files = await initManifest();
   const contents = new Map<string, string>();
@@ -132,6 +143,16 @@ export async function initFileContents(repoDir: string): Promise<Map<string, str
     `${JSON.stringify(settingsForInstalledHooks(shipped, installedHooks), null, 2)}\n`,
   );
   return contents;
+}
+
+/** The process layer as a set of {@link InstalledFile}s — what `upgrade` reads. */
+export async function initInstallSet(
+  repoDir: string,
+  project?: RigProject,
+): Promise<InstalledFile[]> {
+  const files = await initManifest();
+  const contents = await initFileContents(repoDir, project);
+  return files.map(({ rel, source }) => ({ rel, source, content: contents.get(rel) ?? '' }));
 }
 
 export async function planInit(repoDir: string): Promise<InitPlan> {
@@ -176,5 +197,35 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     written.push(rel);
   }
 
+  if (!options.dryRun) await recordInstall(repoDir, written, contents);
+
   return { written, skipped, plannedCount };
+}
+
+/**
+ * Record what was installed, so a later `upgrade` can tell a file it wrote
+ * from a file the user owns.
+ *
+ * Only files actually **written** are recorded. A file `init` kept is
+ * somebody else's — claiming it here would let the next upgrade replace a
+ * user's own document with the rig's. Earlier entries are preserved: a re-run
+ * writes nothing and must not therefore un-remember everything.
+ */
+async function recordInstall(
+  repoDir: string,
+  written: readonly string[],
+  contents: Map<string, string>,
+): Promise<void> {
+  const previous = await readManifest(repoDir);
+  const name = projectNameFor(repoDir);
+  const files = { ...(previous?.files ?? {}) };
+  for (const rel of written) files[rel] = sha256(contents.get(rel) ?? '');
+  const manifest: RigManifest = {
+    version: await packageVersion(),
+    kind: 'init',
+    project: { name, scope: name, region: '' },
+    stacks: [],
+    files,
+  };
+  await writeManifest(repoDir, manifest);
 }

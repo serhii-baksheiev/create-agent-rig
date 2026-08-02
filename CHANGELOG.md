@@ -35,10 +35,14 @@ will not touch them:
 .claude/hooks/gate-stop-dod.mjs          # judges the tree it is in
 ```
 
-Delete those six and re-run `init`, or copy them across by hand. A proper
-upgrade command is queued, not shipped — and until it exists this note tells you
-the manual steps rather than an easy sentence that leaves half the release
-inert. That failure mode is the whole subject of 0.3.1, immediately below.
+Delete those six and re-run `init`, or copy them across by hand. This note tells
+you the manual steps rather than an easy sentence that leaves half the release
+inert — that failure mode is the whole subject of 0.3.1, immediately below.
+
+> **Superseded in 0.4.0.** `create-agent-rig upgrade` delivers exactly these
+> files, and the ones every release after it changes. The procedure above is
+> kept as the record of what 0.3.2 asked of its users; do not follow it if you
+> have 0.4.0 or later.
 
 ### Added
 
@@ -264,8 +268,12 @@ layers, and the `aws-serverless` and `node-service` targets.
    tree, are in the tarball. This is where scaffolders break, and the git path
    cannot catch it.
 3. Version in `package.json` (and the private inner package, kept in step).
-4. This file, and `PLAN.md` if the plan's claims changed.
-5. `git tag v<version> && git push --tags`.
-6. **Owner:** `npm publish`.
-7. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
+4. `node scripts/build-hash-history.mjs` — regenerate the released-hash table
+   from the tags **after** the version bump, so the version now shipping is the
+   first one it excludes. A template test fails while it is stale; forgetting it
+   would leave `upgrade` unable to recognise the previous release.
+5. This file, and `PLAN.md` if the plan's claims changed.
+6. `git tag v<version> && git push --tags`.
+7. **Owner:** `npm publish`.
+8. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it.

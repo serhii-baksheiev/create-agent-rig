@@ -32,6 +32,44 @@ Two things it deliberately leaves to you, and says so in the installed
 `CLAUDE.md`: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
 your commands), and the elevated-path list names only what every repo has.
 
+## Upgrading a rig you already have
+
+A release changes files, and `init` only ever _adds_ — so bringing an existing
+rig forward is its own command:
+
+```sh
+npx create-agent-rig@latest upgrade --dry-run  # print the plan, write nothing
+npx create-agent-rig@latest upgrade            # print the plan, then ask before writing
+npx create-agent-rig@latest upgrade --yes      # the answer up front (required off a terminal)
+```
+
+It replaces the files the rig installed **and you have not touched**, installs
+what the release added, and **reports everything else** — no three-way merge, no
+patching. Silently merging your edits into the documents an agent loop obeys is
+how a rig quietly stops meaning what you think it means; a conflict report is how
+it does not. Each conflict names the file, why it was kept, and the path to the
+new version so you can diff it yourself.
+
+How it knows: `create` and `init` write `.claude/.rig-manifest.json` — the rig
+version plus a hash per installed file. **Commit it**; without it in the
+repository the command is blind on CI and on a colleague's machine. Rigs
+installed before 0.4.0 have no manifest, so the package also carries the hashes
+of every **tagged** release (0.3.0 onward — 0.1.0 and 0.2.0 shipped untagged,
+and a rig from those reports every file as yours) and recognises a file matching
+one of them.
+
+`.claude/settings.json` is never replaced — it is where your own hooks live, so
+the new wiring is printed for you to merge.
+
+**A file you deleted stays deleted.** The rules invite you to delete the ones
+whose invariant your project does not have, so an upgrade that quietly restored
+them would be undoing your work. With a manifest that is direct — it names the
+file, the disk does not have it, and the manifest is _evidence_, not a command.
+Without one, the shipped table answers instead: a file that was in every release
+it covers was there to be removed. The single case nothing can tell apart is a
+file a **later** release added, which your rig never had — that one is installed,
+and `--dry-run` lists it before anything is written.
+
 ## What you get
 
 **A system of boundaries, each held by tooling.** An agent (or a human using

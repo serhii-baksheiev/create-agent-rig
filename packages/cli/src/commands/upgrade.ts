@@ -1,0 +1,386 @@
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { initInstallSet, projectNameFor } from './init.js';
+import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
+import type { HashHistory } from '../lib/history.js';
+import { agentOsInstallSet, agentOsLayerDirs } from '../lib/install-set.js';
+import type { InstalledFile } from '../lib/install-set.js';
+import { listTree } from '../lib/copy-tree.js';
+import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
+import type { RigManifest, RigProject } from '../lib/manifest.js';
+import { resolveInside } from '../lib/safe-path.js';
+import { detokenizeContent, substituteFileName } from '../lib/substitute.js';
+import type { SubstitutionContext } from '../lib/substitute.js';
+import { TARGETS } from '../lib/targets.js';
+import { packageVersion } from '../lib/version.js';
+
+/** A user-facing failure: message is printed as-is, no stack trace. */
+export class UpgradeError extends Error {}
+
+export type UpgradeVerdict =
+  /** Installed by the rig, untouched since, and this release changed it. */
+  | 'update'
+  /** This release adds it; nothing on disk, nothing in the manifest. */
+  | 'new'
+  /** Already what this release would write. */
+  | 'unchanged'
+  /** Edited, or of unknown provenance — reported, never written. */
+  | 'conflict'
+  /** The manifest says we installed it; the user removed it. Stays removed. */
+  | 'deleted'
+  /** `settings.json`: never replaced, its new entries are handed over. */
+  | 'wiring';
+
+export interface UpgradeAction {
+  rel: string;
+  verdict: UpgradeVerdict;
+  /** Why, for the verdicts a human has to act on. */
+  reason?: string;
+  /** Where the new version lives, so the diff can be done by hand. */
+  templatePath?: string | null;
+}
+
+export interface UpgradePlan {
+  kind: 'create' | 'init';
+  /** The version that installed this rig — `null` when there was no manifest. */
+  fromVersion: string | null;
+  toVersion: string;
+  /** True when provenance came from the hash history rather than a manifest. */
+  bootstrapped: boolean;
+  actions: UpgradeAction[];
+  /** The wiring `settings.json` would carry, when it differs from the disk. */
+  wiring: string | null;
+  /** New bytes per path — the report's payload, not part of the report. */
+  contents: Map<string, string>;
+  /** The manifest to leave behind once the plan is applied. */
+  manifest: RigManifest;
+}
+
+export interface UpgradeOptions {
+  /** Override the released-hash table (tests supply their own). */
+  history?: HashHistory;
+}
+
+export interface ApplyOptions {
+  dryRun?: boolean;
+}
+
+export interface UpgradeResult {
+  written: string[];
+}
+
+const SETTINGS = '.claude/settings.json';
+
+/** The universal layer's architecture group — installed by `create`, never by `init`. */
+const ARCHITECTURE_ONLY = [
+  '.claude/rules/architecture.md',
+  '.claude/hooks/guard-core-purity.mjs',
+  '.claude/hooks/guard-web-boundary.mjs',
+];
+
+async function exists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where `rel` lives inside the rig — refused outright if it lands anywhere
+ * else. Nothing should be able to produce such a path once the manifest is
+ * validated, which is exactly why this stays: the whole command is writes into
+ * somebody's repository, and a containment check is cheap next to the cost of
+ * being wrong about that.
+ */
+function onDisk(repoDir: string, rel: string): string {
+  const dest = resolveInside(repoDir, rel);
+  if (dest === null) {
+    throw new UpgradeError(`Refusing to touch "${rel}" — it resolves outside ${repoDir}.`);
+  }
+  return dest;
+}
+
+/**
+ * The file's bytes, or `null` when it is genuinely **absent**.
+ *
+ * Only "not there" is absence. Any other failure — a permission, a directory
+ * where a file should be, a path this command refuses to touch — is rethrown,
+ * because "I could not read your file" must never become "so I wrote mine over
+ * it": every caller of this treats `null` as grounds to install.
+ */
+async function readIfPresent(repoDir: string, rel: string): Promise<string | null> {
+  try {
+    return await readFile(onDisk(repoDir, rel), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** Every stack overlay any target composes — the candidates a rig can carry. */
+function knownStacks(): string[] {
+  return [...new Set(Object.values(TARGETS).flatMap((t) => t.stacks))];
+}
+
+/**
+ * What a rig with no manifest looks like it is, from the files it has.
+ *
+ * Two signals, because one file is too thin a thread to hang a project's map
+ * on: the architecture rules and hooks, which `create` installs and `init`
+ * deliberately does not, **and** any stack-overlay file at all — `init`
+ * composes no overlays, so one of those is proof on its own. The region comes
+ * from the target whose stack set matches; it is the only value substitution
+ * needs that the directory name cannot give.
+ *
+ * 🔴 Limit: a `create` rig that deleted every architecture file *and* every
+ * stack file reads as an `init` rig. It is then offered the `init` flavour of
+ * `CLAUDE.md` — a map of a different project shape. Nothing but a manifest
+ * distinguishes those two rigs, which is why 0.4.0 writes one.
+ */
+async function detectInstall(
+  repoDir: string,
+): Promise<{ kind: 'create' | 'init'; stacks: string[]; region: string }> {
+  const ctx: SubstitutionContext = { projectName: '', projectScope: '', region: '' };
+  const stacks: string[] = [];
+  for (const stack of knownStacks()) {
+    const [layer] = agentOsLayerDirs([stack]).slice(1);
+    if (layer === undefined) continue;
+    const rels = await listTree(layer.dir, {
+      transformName: (name) => substituteFileName(name, ctx),
+    });
+    for (const rel of rels) {
+      if (await exists(onDisk(repoDir, rel))) {
+        stacks.push(stack);
+        break;
+      }
+    }
+  }
+  let architectural = stacks.length > 0;
+  for (const rel of ARCHITECTURE_ONLY) {
+    if (architectural) break;
+    architectural = await exists(onDisk(repoDir, rel));
+  }
+  if (!architectural) return { kind: 'init', stacks: [], region: '' };
+
+  const target = Object.values(TARGETS).find(
+    (t) => t.stacks.length === stacks.length && t.stacks.every((s) => stacks.includes(s)),
+  );
+  return { kind: 'create', stacks, region: target?.defaultRegion ?? '' };
+}
+
+async function installSetFor(
+  repoDir: string,
+  kind: 'create' | 'init',
+  project: RigProject,
+  stacks: readonly string[],
+): Promise<InstalledFile[]> {
+  if (kind === 'init') return initInstallSet(repoDir, project);
+  return agentOsInstallSet(stacks, {
+    projectName: project.name,
+    projectScope: project.scope,
+    region: project.region,
+  });
+}
+
+/**
+ * Whether these bytes are a released version of this file.
+ *
+ * Two candidates are offered to the table: the bytes as they sit, and the
+ * bytes with the project's own values turned back into tokens — released
+ * template bytes carry `__PROJECT_NAME__`, installed bytes never do.
+ */
+function isReleasedVersion(
+  history: HashHistory,
+  rel: string,
+  content: string,
+  ctx: SubstitutionContext,
+): boolean {
+  const known = history.files[rel];
+  if (known === undefined || known.hashes.length === 0) return false;
+  const candidates = new Set([sha256(content), sha256(detokenizeContent(content, ctx))]);
+  return known.hashes.some((hash) => candidates.has(hash));
+}
+
+/**
+ * What an upgrade would do, decided per file, writing nothing.
+ *
+ * The rule is the whole design: **replace what the rig installed and the user
+ * did not touch; report everything else.** There is no three-way merge and no
+ * patching — silently merging someone's edits into a file the agent loop obeys
+ * is how a rig stops meaning what its owner thinks it means.
+ */
+export async function planUpgrade(
+  repoDir: string,
+  options: UpgradeOptions = {},
+): Promise<UpgradePlan> {
+  const manifest = await readManifest(repoDir);
+  // Detection is a whole-tree probe, and it answers a question the manifest
+  // has already answered when there is one.
+  const detected =
+    manifest === null
+      ? await detectInstall(repoDir)
+      : { kind: manifest.kind, stacks: manifest.stacks, region: manifest.project.region };
+  const kind = manifest?.kind ?? detected.kind;
+  const name = path.basename(path.resolve(repoDir));
+  // `init` slugs the directory name into something an operator can type (it
+  // ends up in the kill-switch filename); `create` validated it as an npm name
+  // at generation time, so there the basename is already the project name.
+  const bootstrapName = kind === 'init' ? projectNameFor(repoDir) : name;
+  const project: RigProject = manifest?.project ?? {
+    name: bootstrapName,
+    scope: bootstrapName,
+    region: detected.region,
+  };
+  // Only overlays this version actually ships. An unknown name is not input
+  // being dropped — there is no layer behind it to install from — and reading
+  // a directory a manifest names would be reading a directory a manifest names.
+  const shipped = new Set(knownStacks());
+  const stacks = (manifest?.stacks ?? detected.stacks).filter((stack) => shipped.has(stack));
+  const history = options.history ?? (await loadHashHistory());
+  const files = await installSetFor(repoDir, kind, project, stacks);
+
+  const ctx: SubstitutionContext = {
+    projectName: project.name,
+    projectScope: project.scope,
+    region: project.region,
+  };
+  const actions: UpgradeAction[] = [];
+  const contents = new Map<string, string>();
+  const nextFiles: Record<string, string> = {};
+  let wiring: string | null = null;
+
+  for (const file of files) {
+    const current = await readIfPresent(repoDir, file.rel);
+    const recorded = manifest?.files[file.rel];
+    contents.set(file.rel, file.content);
+
+    if (current === null) {
+      // Evidence, not a command. The manifest is the direct evidence; without
+      // one, a path that shipped in *every* release the table covers was there
+      // to be removed, so its absence is a decision. A path added later is
+      // simply missing from an older rig, and that one is delivered.
+      if (recorded !== undefined) {
+        actions.push({
+          rel: file.rel,
+          verdict: 'deleted',
+          reason: 'installed by the rig, removed since — not restored',
+        });
+        nextFiles[file.rel] = recorded;
+      } else if (presentInEveryRelease(history, file.rel)) {
+        actions.push({
+          rel: file.rel,
+          verdict: 'deleted',
+          reason: `shipped in every release since ${history.versions[0]}, and is gone — not restored`,
+        });
+      } else {
+        actions.push({ rel: file.rel, verdict: 'new', templatePath: file.source });
+        nextFiles[file.rel] = sha256(file.content);
+      }
+      continue;
+    }
+
+    if (file.rel === SETTINGS) {
+      if (current === file.content) {
+        actions.push({ rel: file.rel, verdict: 'unchanged' });
+        nextFiles[file.rel] = sha256(file.content);
+      } else {
+        // Same special case `init` makes: this file is a merge target, not a
+        // payload — replacing it can unwire hooks the user added themselves.
+        wiring = file.content;
+        actions.push({
+          rel: file.rel,
+          verdict: 'wiring',
+          reason: 'never replaced — merge the entries below by hand',
+        });
+        if (recorded !== undefined) nextFiles[file.rel] = recorded;
+      }
+      continue;
+    }
+
+    if (current === file.content) {
+      actions.push({ rel: file.rel, verdict: 'unchanged' });
+      nextFiles[file.rel] = sha256(file.content);
+    } else if (recorded !== undefined && sha256(current) === recorded) {
+      actions.push({ rel: file.rel, verdict: 'update', templatePath: file.source });
+      nextFiles[file.rel] = sha256(file.content);
+    } else if (isReleasedVersion(history, file.rel, current, ctx)) {
+      actions.push({ rel: file.rel, verdict: 'update', templatePath: file.source });
+      nextFiles[file.rel] = sha256(file.content);
+    } else {
+      actions.push({
+        rel: file.rel,
+        verdict: 'conflict',
+        reason:
+          recorded === undefined
+            ? 'not a version this rig ever released — treated as yours'
+            : 'edited since it was installed',
+        templatePath: file.source,
+      });
+      // deliberately NOT recorded: the rig does not own these bytes
+    }
+  }
+
+  // With no manifest, "there is a rig here" has to be *recognised*, not
+  // assumed from a file existing: `CLAUDE.md` and `.claude/settings.json` are
+  // in the install set and in nearly every repository ever opened by an agent.
+  // Recognition means bytes we know — a file already current, or one that
+  // matches a released version. Without that this command would silently
+  // perform an `init` nobody asked for.
+  if (
+    manifest === null &&
+    !actions.some((a) => a.verdict === 'unchanged' || a.verdict === 'update')
+  )
+    throw new UpgradeError(
+      `No rig found in ${repoDir}. Nothing here is recognisable as a create-agent-rig ` +
+        'install — run `create-agent-rig init` to install the process layer, or upgrade ' +
+        'from the directory that holds the rig.',
+    );
+
+  return {
+    kind,
+    fromVersion: manifest?.version ?? null,
+    toVersion: await packageVersion(),
+    bootstrapped: manifest === null,
+    actions,
+    wiring,
+    contents,
+    manifest: {
+      version: await packageVersion(),
+      kind,
+      project,
+      stacks: [...stacks],
+      files: nextFiles,
+    },
+  };
+}
+
+/**
+ * Write the plan: the `update` and `new` files, then the manifest. Everything
+ * else in the plan is a sentence for a human, not an edit.
+ */
+export async function applyUpgrade(
+  repoDir: string,
+  plan: UpgradePlan,
+  options: ApplyOptions = {},
+): Promise<UpgradeResult> {
+  const written: string[] = [];
+  if (options.dryRun === true) return { written };
+
+  for (const action of plan.actions) {
+    if (action.verdict !== 'update' && action.verdict !== 'new') continue;
+    const content = plan.contents.get(action.rel);
+    // Never a silent empty file: a missing entry is a defect in the plan, and
+    // truncating somebody's rule file is the worst way to report one.
+    if (content === undefined) {
+      throw new UpgradeError(`Internal: no content planned for "${action.rel}" — nothing written.`);
+    }
+    const dest = onDisk(repoDir, action.rel);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await writeFile(dest, content);
+    written.push(action.rel);
+  }
+  await writeManifest(repoDir, plan.manifest);
+  return { written };
+}

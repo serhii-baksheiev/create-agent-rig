@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
+import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
+import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import { makePalette } from './lib/colors.js';
-import { promptTarget } from './lib/prompts.js';
+import { promptConfirm, promptTarget } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
 import { DEFAULT_TARGET, TARGET_NAMES } from './lib/targets.js';
+import { packageVersion } from './lib/version.js';
 
 const USAGE = `Usage: create-agent-rig <dir> [options]
 
@@ -26,21 +26,11 @@ Options
 
 Also: create-agent-rig init [--dry-run] [--force]
   Install the process layer (rules, gates, stop rules — no architecture
-  assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md.`;
+  assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md.
 
-async function packageVersion(): Promise<string> {
-  // dist/index.js lives three levels under the package root — same walk as
-  // the templates resolver, valid in the repo and in the published package.
-  const pkgPath = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '..',
-    '..',
-    '..',
-    'package.json',
-  );
-  const pkg = JSON.parse(await readFile(pkgPath, 'utf8')) as { version: string };
-  return pkg.version;
-}
+Also: create-agent-rig upgrade [--dry-run] [--yes]
+  Bring the rig in the CURRENT repo up to this version. Replaces the files it
+  installed and you did not touch; everything else is reported, never merged.`;
 
 async function runInit(rawArgs: string[]): Promise<number> {
   let values: { 'dry-run'?: boolean; force?: boolean };
@@ -97,9 +87,116 @@ async function runInit(rawArgs: string[]): Promise<number> {
   return 0;
 }
 
+const MARK: Record<UpgradeVerdict, string> = {
+  update: '~',
+  new: '+',
+  conflict: '!',
+  deleted: '-',
+  wiring: '!',
+  unchanged: '·',
+};
+
+function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
+  const of = (verdict: UpgradeVerdict) => plan.actions.filter((a) => a.verdict === verdict);
+  const lines: string[] = [
+    `agent-rig upgrade — ${plan.kind} rig in ${repoDir}`,
+    plan.bootstrapped
+      ? `  no manifest here (a pre-0.4.0 rig) — matching files against released versions`
+      : `  installed by ${plan.fromVersion}`,
+    `  upgrading to ${plan.toVersion}`,
+    '',
+  ];
+
+  for (const verdict of ['update', 'new', 'deleted', 'conflict', 'wiring'] as const) {
+    for (const action of of(verdict)) {
+      lines.push(
+        `  ${MARK[verdict]} ${action.rel}` + (action.reason ? `  — ${action.reason}` : ''),
+      );
+      // A conflict is only useful if the new version can be diffed by hand.
+      if (verdict === 'conflict' && action.templatePath) {
+        lines.push(`      new version: ${action.templatePath}`);
+      }
+    }
+  }
+
+  const unchanged = of('unchanged').length;
+  lines.push(
+    '',
+    `  ${of('update').length} to replace, ${of('new').length} new, ` +
+      `${of('conflict').length} yours (kept), ${unchanged} already current`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+async function runUpgrade(rawArgs: string[]): Promise<number> {
+  let values: { 'dry-run'?: boolean; yes?: boolean };
+  try {
+    ({ values } = parseArgs({
+      args: rawArgs,
+      options: { 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' } },
+      allowPositionals: false,
+    }));
+  } catch (error) {
+    process.stderr.write(`${(error as Error).message}\n\n${USAGE}\n`);
+    return 1;
+  }
+
+  const cwd = process.cwd();
+  const plan = await planUpgrade(cwd);
+  process.stdout.write(renderUpgradePlan(cwd, plan));
+
+  // The one thing this command will not do for you — printed with the plan,
+  // because the dry run is where a reader decides whether there is work here,
+  // and a report that mentions entries it never shows is not a plan.
+  if (plan.wiring !== null) {
+    process.stdout.write(
+      `\n!  .claude/settings.json is never replaced — it is where your own hooks live.\n` +
+        `   This version wires them like this; merge in what is missing:\n\n` +
+        plan.wiring.replace(/^/gm, '   ') +
+        '\n',
+    );
+  }
+
+  if (values['dry-run'] === true) {
+    process.stdout.write('\nDry run — nothing written.\n');
+    return 0;
+  }
+
+  // The plan above is the review step, so it has to be answered before
+  // anything is written. On a terminal that is a question; off one it is the
+  // same refusal `create` makes without --target — never guess for a run that
+  // cannot be asked, least of all when the answer rewrites its repository.
+  const isInteractive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+  if (values.yes !== true) {
+    if (!isInteractive) {
+      process.stderr.write(
+        'Refusing to rewrite files in a non-interactive run. ' +
+          'Re-run with --yes once the plan above is what you want (or --dry-run to keep looking).\n',
+      );
+      return 1;
+    }
+    const confirmed = await promptConfirm('\nApply this plan?', {
+      input: process.stdin,
+      output: process.stderr,
+      isInteractive,
+    });
+    if (!confirmed) {
+      process.stdout.write('Nothing written.\n');
+      return 0;
+    }
+  }
+
+  const result = await applyUpgrade(cwd, plan);
+  process.stdout.write(`\nWrote ${result.written.length} files.\n`);
+  return 0;
+}
+
 async function main(): Promise<number> {
   if (process.argv[2] === 'init') {
     return runInit(process.argv.slice(3));
+  }
+  if (process.argv[2] === 'upgrade') {
+    return runUpgrade(process.argv.slice(3));
   }
 
   let positionals: string[];
@@ -180,7 +277,11 @@ main()
     process.exitCode = code;
   })
   .catch((error: unknown) => {
-    if (error instanceof CreateError || error instanceof InitError) {
+    if (
+      error instanceof CreateError ||
+      error instanceof InitError ||
+      error instanceof UpgradeError
+    ) {
       process.stderr.write(`${error.message}\n`);
     } else {
       console.error(error); // unexpected: the trace is the diagnostic

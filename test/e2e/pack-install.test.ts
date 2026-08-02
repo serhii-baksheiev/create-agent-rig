@@ -96,6 +96,31 @@ describe('npm pack → install → generate (the publish path)', () => {
     expect(packedPaths).toContain('README.md');
   });
 
+  // U-0: an upgrade can only recognise a manifest-less rig if the released
+  // hashes travel with the package. Left out of the tarball, `upgrade` would
+  // still run and would call every file on a 0.3.x rig a conflict.
+  it('the tarball carries the released-hash table', () => {
+    expect(packedPaths).toContain('templates/hash-history.json');
+  });
+
+  it('generated projects record what the rig installed, and nothing more', async () => {
+    for (const target of ['aws-serverless', 'node-service']) {
+      const projectDir = path.join(work, target, 'app');
+      const manifest = JSON.parse(
+        await readFile(path.join(projectDir, '.claude', '.rig-manifest.json'), 'utf8'),
+      ) as { kind: string; stacks: string[]; files: Record<string, string> };
+      expect(manifest.kind, target).toBe('create');
+      expect(manifest.files['.claude/rules/workflow.md'], target).toMatch(/^[0-9a-f]{64}$/);
+      expect(manifest.stacks, target).toContain('node-ts');
+      // the skeleton is the project's own code from the first commit on — an
+      // upgrade refreshes the process layer and never reaches into it
+      expect(
+        Object.keys(manifest.files).some((rel) => rel.startsWith('packages/')),
+        target,
+      ).toBe(false);
+    }
+  });
+
   // Brief §6: per target — a single-target gate would bake a blind spot in.
   // This turns "the files are there" into "the project works", and catches a
   // broken @app/ scope rewrite (workspace deps resolve only if consistent).
