@@ -25,9 +25,23 @@ function main() {
   if (input.stop_hook_active) return 0;
 
   try {
+    // The environment loses the variables that locate a repository first. A
+    // process started under a git hook inherits an absolute GIT_DIR, and this
+    // question — "is the tree clean?" — would then be answered about a
+    // different repository entirely: gated on somebody else's uncommitted
+    // work, or waved through despite its own.
+    //
+    // 🔴 Limit: only THIS command is sanitised. The Definition-of-Done checks
+    // below run with the environment as given, because they are the project's
+    // own commands and their environment is the project's business.
+    const env = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) {
+      delete env[key];
+    }
     const status = execSync('git status --porcelain', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      env,
     });
     if (status.trim() === '') return 0;
   } catch {
