@@ -1,8 +1,9 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CreateError, createProject } from '../src/commands/create.js';
+import { gitEnv } from '../src/lib/git-env.js';
 
 let work: string;
 
@@ -170,10 +171,93 @@ describe('createProject', () => {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const exec = promisify(execFile);
-    const { stdout: log } = await exec('git', ['log', '--oneline'], { cwd: projectDir });
+    // sanitised like every git call in this file — under an inherited GIT_DIR
+    // these would report on the repository running the suite, not on the
+    // project just generated, and the assertion below would be meaningless
+    const { stdout: log } = await exec('git', ['log', '--oneline'], {
+      cwd: projectDir,
+      env: gitEnv(),
+    });
     expect(log.trim().split('\n')).toHaveLength(1);
-    const { stdout: status } = await exec('git', ['status', '--porcelain'], { cwd: projectDir });
+    const { stdout: status } = await exec('git', ['status', '--porcelain'], {
+      cwd: projectDir,
+      env: gitEnv(),
+    });
     expect(status.trim()).toBe(''); // everything generated is in the baseline
+  });
+
+  // Observed, twice, on this repo's own branches: git hands its hooks an
+  // absolute GIT_DIR when the commit comes from a linked worktree, the
+  // pre-commit suite inherits it, and the baseline commit of every generated
+  // project in that run lands in the OUTER repository — on the branch being
+  // committed. The generated project ends up with no .git at all.
+  it('ignores an inherited git environment — the baseline is the new repo, never the caller’s', async () => {
+    const outer = path.join(work, 'outer');
+    await mkdir(outer, { recursive: true });
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+    const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
+    // 🔴 This test's OWN git calls are sanitised, every one of them. It runs
+    // under whatever environment the suite inherited — and when the suite is a
+    // pre-commit hook in a linked worktree, that includes an absolute GIT_DIR.
+    // Unsanitised, the setup below does not build a fixture: `git init` marks
+    // the repository running the suite **bare** and the seed commit lands on
+    // its checked-out branch. Both happened here, in the commit that added
+    // this test.
+    await exec('git', ['init', '--quiet'], { cwd: outer, env: gitEnv() });
+    await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
+    await exec('git', [...identity, 'add', '-A'], { cwd: outer, env: gitEnv() });
+    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+
+    // The GIT_DIR under test is a LINKED WORKTREE's gitdir, not `outer/.git`,
+    // because that is the shape the failure actually had — and only that shape
+    // makes a redirected `git init` flip the parent repository to bare. Pointed
+    // at a plain `.git`, the bare assertion below would pass either way and
+    // pin nothing.
+    const linked = path.join(work, 'linked');
+    await exec('git', ['worktree', 'add', '--quiet', '--detach', linked], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const worktreeGitDir = path.join(outer, '.git', 'worktrees', 'linked');
+
+    // The inheritance under test, scoped to the one call that must survive it:
+    // createProject reads process.env internally, so simulating it means
+    // setting it — and setting it for no longer than that.
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'GIT_DIR');
+    const previous = process.env['GIT_DIR'];
+    process.env['GIT_DIR'] = worktreeGitDir;
+    let projectDir: string;
+    try {
+      ({ projectDir } = await createProject('gitted-under-git-dir', { cwd: work }));
+    } finally {
+      if (had) process.env['GIT_DIR'] = previous;
+      else delete process.env['GIT_DIR'];
+    }
+
+    // the generated project got its own repository...
+    await expect(stat(path.join(projectDir, '.git'))).resolves.toBeDefined();
+    const { stdout: log } = await exec('git', ['log', '--oneline'], {
+      cwd: projectDir,
+      env: gitEnv(),
+    });
+    expect(log.trim().split('\n')).toHaveLength(1);
+    // ...and the caller's repository was left exactly as it was
+    const { stdout: outerLog } = await exec('git', ['log', '--oneline'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    expect(outerLog.trim().split('\n')).toHaveLength(1);
+    expect(outerLog).toContain('outer seed');
+    const { stdout: bare } = await exec('git', ['config', '--get', 'core.bare'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    expect(bare.trim()).toBe('false'); // a redirected `git init` flips this
   });
 
   it('skips git when asked, and generation still succeeds', async () => {

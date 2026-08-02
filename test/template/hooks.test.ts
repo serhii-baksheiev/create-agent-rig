@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
+import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -364,9 +365,16 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     } else if (options.checks !== undefined) {
       await writeF(path.join(hookDir, 'dod-checks.json'), JSON.stringify(options.checks));
     }
+    // Same sanitised environment the CLI uses, and for the same reason: run
+    // under an inherited GIT_DIR (which is what a pre-commit hook gets from a
+    // linked worktree) these commands would `git init` and commit into the
+    // REPOSITORY RUNNING THE SUITE instead of this scratch project. It wrote a
+    // junk commit onto a real branch here before it was caught.
     const git = (...args: string[]) =>
       new Promise<void>((resolve, reject) => {
-        execFile('git', args, { cwd: projectDir }, (error) => (error ? reject(error) : resolve()));
+        execFile('git', args, { cwd: projectDir, env: gitEnv() }, (error) =>
+          error ? reject(error) : resolve(),
+        );
       });
     await git('init', '--quiet');
     await writeF(path.join(projectDir, 'work.txt'), 'x');
@@ -386,12 +394,12 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     }
   }
 
-  function runStopHook(payload: object): Promise<HookResult> {
+  function runStopHook(payload: object, extraEnv: NodeJS.ProcessEnv = {}): Promise<HookResult> {
     return new Promise((resolve, reject) => {
       const child = execFile(
         process.execPath,
         [path.join(projectDir, '.claude', 'hooks', 'gate-stop-dod.mjs')],
-        { cwd: projectDir },
+        { cwd: projectDir, env: { ...gitEnv(), ...extraEnv } },
         (error, stdout, stderr) => {
           const code = error ? ((error as { code?: number }).code ?? 1) : 0;
           resolve({ code, stderr, stdout });
@@ -433,6 +441,32 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
   it('a clean tree stops instantly — nothing changed, nothing to gate', async () => {
     await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: false });
     expect((await runStopHook(stop())).code).toBe(0);
+  });
+
+  // The gate decides "is this tree clean?" by asking git. Asked with an
+  // inherited GIT_DIR — which is what any process started under a git hook
+  // gets — it answers about a DIFFERENT repository, and the session is gated on
+  // somebody else's uncommitted work (or waved through despite its own).
+  it('judges the tree it is in, not whatever GIT_DIR points at', async () => {
+    await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: false });
+    const elsewhere = path.join(tmpdir(), `dod-elsewhere-${process.pid}`);
+    await fsp.mkdir(elsewhere, { recursive: true });
+    const git = (...args: string[]) =>
+      new Promise<void>((resolve, reject) => {
+        execFile('git', args, { cwd: elsewhere, env: gitEnv() }, (error) =>
+          error ? reject(error) : resolve(),
+        );
+      });
+    try {
+      await git('init', '--quiet');
+      await fsp.writeFile(path.join(elsewhere, 'dirty.txt'), 'uncommitted\n');
+      // this project is clean, so the gate must stop instantly — the failing
+      // check must never run, however dirty the repository GIT_DIR names
+      const result = await runStopHook(stop(), { GIT_DIR: path.join(elsewhere, '.git') });
+      expect(result.code).toBe(0);
+    } finally {
+      await fsp.rm(elsewhere, { recursive: true, force: true });
+    }
   });
 
   it('fails open: no config, or a corrupt one, must not make the session unquittable', async () => {

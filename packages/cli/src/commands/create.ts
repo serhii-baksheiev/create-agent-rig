@@ -6,6 +6,7 @@ import { copyTree, listTree } from '../lib/copy-tree.js';
 import { ALLOWED_OVERWRITES, detectCollisions } from '../lib/composition.js';
 import { substituteContent, substituteFileName } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
+import { gitEnv } from '../lib/git-env.js';
 import { DEFAULT_TARGET, TARGETS, TARGET_NAMES } from '../lib/targets.js';
 import { agentOsStackDir, agentOsUniversalDir, skeletonDir } from '../templates.js';
 
@@ -108,9 +109,10 @@ async function initGitBaseline(projectDir: string): Promise<void> {
   // .git/objects/pack after we return — a non-deterministic tail that races any
   // caller cleaning up the directory, and pointless work on a one-commit repo.
   const quiet = ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false'];
+  const where = { cwd: projectDir, env: gitEnv() };
   try {
-    await run('git', [...quiet, 'init', '--quiet'], { cwd: projectDir });
-    await run('git', [...quiet, 'add', '-A'], { cwd: projectDir });
+    await run('git', [...quiet, 'init', '--quiet'], where);
+    await run('git', [...quiet, 'add', '-A'], where);
     // Explicit identity: the baseline must commit even where git has no
     // global user configured (fresh machines, CI). --no-verify here shields
     // the baseline from the USER'S global hooks only — the generated
@@ -129,7 +131,7 @@ async function initGitBaseline(projectDir: string): Promise<void> {
         '-m',
         'Pristine template (create-agent-rig)',
       ],
-      { cwd: projectDir },
+      where,
     );
   } catch {
     // git missing or unusable — generation never fails on this.
