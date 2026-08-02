@@ -122,21 +122,27 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
   // The three checks the port brief asked for. Each one is a finding a human
   // fixes, never something the loop corrects silently — quietly repairing the
   // metadata destroys the evidence that the metadata is unreliable.
-  it('reports a parent whose every child is done and which is still open', async () => {
+  it('reports a parent that says it was split up and is still open', async () => {
     const { hygieneOf } = await load('core.mjs');
-    const split = ticket({
-      blockedBy: [
-        { id: '2', resolved: true },
-        { id: '3', resolved: true },
-      ],
-    });
-    expect(hygieneOf(split)).toMatchObject({ kind: 'split-parent-left-open' });
-    // one resolved dependency is an ordinary unblocked ticket, not a split parent
-    expect(hygieneOf(ticket({ blockedBy: [{ id: '2', resolved: true }] }))).toBeNull();
-    // and an open child means the parent is legitimately still waiting
+    const resolved = [
+      { id: '2', resolved: true },
+      { id: '3', resolved: true },
+    ];
+    expect(hygieneOf(ticket({ body: 'Split into #2 and #3.', blockedBy: resolved }))).toMatchObject(
+      { kind: 'split-parent-left-open' },
+    );
+
+    // 🔴 The healthy case, and the reason this check reads the body at all:
+    // "every dependency resolved and still open" is EVERY multi-dependency item
+    // from the moment its last blocker lands — including one the queue is about
+    // to hand out. A check that fires on those gets muted.
+    expect(hygieneOf(ticket({ blockedBy: resolved }))).toBeNull();
+    expect(hygieneOf(ticket({ body: 'Ordinary work.', blockedBy: resolved }))).toBeNull();
+    // and a split parent with a part still open is legitimately waiting
     expect(
       hygieneOf(
         ticket({
+          body: 'Split into #2 and #3.',
           blockedBy: [
             { id: '2', resolved: true },
             { id: '3', resolved: false },
@@ -146,14 +152,22 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
     ).toBeNull();
   });
 
-  it('reports a body that claims a blocker the links do not carry', async () => {
+  it('reports a dependency line whose blocker no link carries', async () => {
     const { hygieneOf } = await load('core.mjs');
-    const lying = ticket({ body: 'Blocked by #7 until the migration lands.', blockedBy: [] });
-    expect(hygieneOf(lying)).toMatchObject({ kind: 'body-claims-unlinked-blocker' });
-    // the same body WITH the link is simply a documented dependency
+    expect(hygieneOf(ticket({ body: 'Blocked by #7', blockedBy: [] }))).toMatchObject({
+      kind: 'body-claims-unlinked-blocker',
+    });
+    // the same line WITH the link is simply a documented dependency
     expect(
       hygieneOf(ticket({ body: 'Blocked by #7', blockedBy: [{ id: '7', resolved: false }] })),
     ).toBeNull();
+
+    // 🔴 Prose that mentions blocking without asserting one. The unanchored
+    // version fired on both of these and then printed a `why` claiming a live
+    // blocker the body had just denied — a finding that says the opposite of
+    // the text is worse than no finding.
+    expect(hygieneOf(ticket({ body: 'This was blocked by #7 last week; #7 landed.' }))).toBeNull();
+    expect(hygieneOf(ticket({ body: 'Note: nothing is blocked by this item.' }))).toBeNull();
   });
 
   it('reports a document link that is broken on its face', async () => {
@@ -167,6 +181,24 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
     // a real link is not a finding, and neither is prose with no link at all
     expect(hygieneOf(ticket({ body: 'See [the spec](docs/spec.md).' }))).toBeNull();
     expect(hygieneOf(ticket({ body: 'Discussed in the design review.' }))).toBeNull();
+  });
+
+  // 🔴 The test the sibling adapter's 13-second incident never got, which is
+  // why this file reintroduced the same defect one directory away. The body is
+  // attacker-written on any public tracker, and this function runs per item on
+  // every selection.
+  it('stays linear on a body at the tracker size limit', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    const cases = [
+      `[x](${' '.repeat(65_000)}`, // an unterminated link: the quadratic shape
+      `blocked by${' '.repeat(65_000)}`,
+      `${'['.repeat(20_000)}x`,
+    ];
+    for (const body of cases) {
+      const started = performance.now();
+      hygieneOf(ticket({ body }));
+      expect(performance.now() - started, body.slice(0, 12)).toBeLessThan(250);
+    }
   });
 
   it('says nothing about a body no adapter can supply', async () => {
