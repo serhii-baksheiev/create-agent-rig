@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (0.3.2, prepared).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6) and the port brief (§7.7). **Published on npm** — `0.1.0` through `0.3.1` are live and `0.3.1` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. `0.3.2` is prepared and stops at `npm publish`, which is an owner action (§11). Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (0.4.0, prepared).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6), the port brief (§7.7) and the upgrade brief (§7.8). **Published on npm** — `0.1.0` through `0.3.2` are live and `0.3.2` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. `0.4.0` is prepared and stops at `npm publish`, which is an owner action (§11) — and this time at one more owner action before it, because the `v0.4.0` tag from an abandoned release attempt is still on the remote. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -280,6 +280,42 @@ the nine returned HOLD, and only one PR cleared its gate on the first pass. None
 brief asked for; all of them were found by a gate or by running the thing for
 real.
 
+### 7.8 The upgrade brief (landed in 0.4.0)
+
+An installed rig could not be brought forward: `init` adds what is missing and
+keeps what is there, so a file a release **changed** never arrived. 0.3.2 shipped
+with six of them listed in the CHANGELOG and a manual procedure, which is a
+maintenance cost per release per user, growing.
+
+`upgrade` replaces what the rig wrote and nobody touched, and **reports**
+everything else — no merge, no patching. The mechanism is an install manifest
+(hashes of what was written) plus a table of every released version's hashes
+generated from the git tags, which is what makes rigs installed before the
+manifest existed upgradable at all.
+
+Three things worth keeping from how it went.
+
+**The reviewers found the whole security surface, and the author had not looked
+for it.** The manifest is meant to be committed, so it arrives through a pull
+request like any other file — and its values were substituted into paths. Both
+findings came with working exploits: a write outside the repository, and an
+arbitrary directory read exfiltrated into it. The lesson is not "validate input";
+it is that a file designed to be committed is **input from whoever committed it**.
+
+**A command that writes into somebody's repository has to earn every write.**
+Three separate defects were the same shape: one existing file was enough to
+call a directory a rig (an unrequested 30-file install into any repo with a
+`CLAUDE.md`); an absent file with no manifest was treated as new (restoring
+rules an owner had deliberately deleted — the ones `invariants.md` tells them to
+delete); and `--dry-run` promised wiring it structurally could not print.
+
+**The brief's own justification was wrong in one place, and saying so was the
+fix.** U-1 asked for a write-back because a stale blocker would stall selection.
+It cannot: blocked state is re-resolved from the blocker on every query. The
+paragraph shipped anyway, with the true reason — whether anyone *looked* is the
+one thing no query can answer — and with the action changed from an edit to a
+report, because editing is what the hygiene rule forbids.
+
 ---
 
 ## 8. Verification strategy (as built)
@@ -360,7 +396,8 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 
 - ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
 - ~~**publish 0.3.2 to npm**~~ — **done by the owner**; `npm view create-agent-rig` lists it as `latest`. It is what every rig in the wild is running, and therefore what `upgrade` bootstraps from
-- **delete the stale `v0.4.0` tag before tagging the real one** — owner action: it exists locally **and on the remote**, pointing at 8dedfc7, the abandoned 0.4.0 preparation that was renumbered to 0.3.2. Nothing was ever published from it. Retagging is a rewrite of a published ref, which the agent does not do; until it is gone, `git tag v0.4.0` fails and `build-hash-history` is right to exclude it (it filters to versions *below* the one being prepared)
+- **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible. Prepared and stopped at the command: both manifests bumped, the released-hash table regenerated from the tags (it now covers 0.3.0–0.3.2), CHANGELOG written with the semver policy in its header, full suite and the pack-path e2e green. In order: **delete the stale tag first** (below), then `git tag v0.4.0 && git push --tags`, then `npm publish`, then the published-artifact smoke — `npx create-agent-rig@0.4.0` in an empty directory → `pnpm install && pnpm check`, and an `upgrade --dry-run` against a rig installed from 0.3.2
+- **delete the stale `v0.4.0` tag before tagging the real one** — owner action, and it now blocks the release: it exists locally **and on the remote**, pointing at 8dedfc7, the abandoned 0.4.0 preparation that was renumbered to 0.3.2. Nothing was ever published from it. Retagging is a rewrite of a published ref, which the agent does not do; until it is gone, `git tag v0.4.0` fails. `build-hash-history` excludes it correctly either way (it filters to versions *below* the one being prepared). **Publishing without fixing it degrades silently, one release later:** the 0.5.0 table would record 8dedfc7's bytes as "what 0.4.0 shipped", so every file 0.4.0 actually changed would read as user-modified and stop being upgradable. Nothing checks that a version tag points at the commit that bumped to it
 - **decide (0.5): does `upgrade` refresh a `settings.json` it can prove it wrote?** Today it never replaces that file — the U brief said so, and it is the right default while the file is a merge target for the user's own hooks. But with a manifest the ambiguity is gone for the unmodified case, and the cost of leaving it is the exact 0.3.1 failure: a release that adds a hook delivers the file and not its wiring. The command prints the entries to merge and says it will not do it for you
 - **decide (0.5): what happens to `init --force` now that `upgrade` exists?** Open question 3 of the U brief, non-blocking. `--force` replaces `CLAUDE.md` and nothing else; `upgrade` covers the case it was standing in for
 - **AR-4 entry conditions** — half discharged. The write-back discipline's condition fired (merged and in use where it came from) and it landed as U-1: the journal's `unblocked` field plus the §9 bullet. **C-0…C-2 stay out** — the clarify gate still has not fired anywhere, and shipping an unproven gate to other people's projects is worse than not having it
@@ -373,6 +410,41 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### the upgrade brief, and the first release you can take without a procedure
+
+- **done** — the U brief in full. `upgrade` with the install manifest and the
+  generated released-hash table (#29); the `loop` write-back as a required
+  journal field (#30); 0.4.0 numbered back onto ordinary semver, with the policy
+  stated once in the CHANGELOG header rather than argued in an essay. The 0.3.2
+  section keeps its six-file procedure as the record of what it asked, under a
+  note that says not to follow it on 0.4.0
+- **reviewed** — six reviewer passes over two PRs; **every one returned HOLD**,
+  and the second prose pass on a rewritten paragraph found two more. Two of the
+  findings were working exploits (a write outside the repository and an
+  arbitrary read exfiltrated into it, both through a manifest that is meant to
+  be committed); three were the same shape of "this command writes too
+  eagerly"; one was a rule whose stated justification the code contradicted
+- **escalated** — nothing
+- **stopped at** — the release stops at `npm publish` (§11), and at one owner
+  action before it: the remote still carries a `v0.4.0` tag from the abandoned
+  0.4.0 that became 0.3.2. Deleting a published ref is not the agent's to do
+- **unblocked** — **this queue has no dependency links** (`plan-md` is a flat
+  list — absent, not satisfied). What the closes settled is recorded on the
+  items themselves: AR-13 was what `upgrade` implements, and the AR-4 entry
+  conditions are now half discharged with `C-0…C-2` still explicitly out
+- **queue hygiene** — one stale Operator item found and reported: "publish
+  0.3.2 to npm" was still open, while `npm view create-agent-rig time` puts the
+  publish at 09:18 UTC the same morning. Hours, not days — the lane is
+  responsive, the item just outlived its own completion
+- **cost** — 6 reviewer subagents; 8 check runs, being the 4 on each of the two
+  merged PRs' head commits (14 with the merge commits, from 4 workflow runs);
+  0 deploys. The release PR's own runs are not in that count
+- **the honest note** — the failing test came first everywhere, but on two files
+  it was not *watched* fail before the implementation existed; the Red was
+  reconstructed afterwards (against `master`'s copy for the skill, and by a
+  reviewer's mutation run). That is weaker evidence than the rule asks for, and
+  it is written down rather than smoothed over
 
 ### the port brief closed, 0.3.2 prepared
 
