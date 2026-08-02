@@ -323,6 +323,7 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
+- AR-12 [elevated]: declare `templates/agent-os/stack/aws-cdk/.claude/rules/` and `.../node-ts/.claude/rules/`. The aws-cdk one is the sharp case: that file carries its **own** `elevated-paths` block declaring `infra/`, so a merge deleting the block would silently un-declare infrastructure for every generated AWS project — and the sweep would report it clean. Found by review on AR-11, which did not ask for these two
 - AR-6: three review nits in one PR — the `DEFAULT_TARGET` comment still saying "one implicit target" when there are two plus interactive selection, `demo.sh` citing PLAN phases an outside user cannot see, and a NOTES.md line recording that the Flowa copies of guard-bash/detect-missed-gate/loop are behind this repo's
 - AR-5 [elevated]: prepare release 0.4.0 — CHANGELOG in the repo's convention (what a freshly generated project gets, and why), plus what the brief defers and on which entry condition; smoke `create` and `init` on a scratch project. **Stops at `npm publish`** — that is the owner action below. Genuinely depends on the items above, which a flat list cannot express: check they are merged before taking it
 
