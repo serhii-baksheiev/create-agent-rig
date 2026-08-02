@@ -28,5 +28,11 @@ export const TARGETS: Record<string, Target> = {
 
 export const TARGET_NAMES = Object.keys(TARGETS);
 
-/** Zero options at the personal stage: one implicit target (PLAN.md §6). */
+/**
+ * The target used when none is chosen and none can be asked for.
+ *
+ * Not "the only target" — there are two, and on a terminal the CLI asks. This
+ * is the fallback for a non-interactive invocation (CI, a pipe, a script),
+ * where guessing silently is better than failing but worse than being told.
+ */
 export const DEFAULT_TARGET = 'aws-serverless';

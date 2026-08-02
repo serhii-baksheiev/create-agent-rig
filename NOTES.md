@@ -3,6 +3,33 @@
 Phase 5 of PLAN.md asks for honest data on the quality of the rules once the
 tool's own repo runs under them. Recorded as encountered:
 
+## The port brief (2026-08-02) — and the drift that runs the other way
+
+Process work was ported _into_ this repo from the project it was extracted for:
+a premise check before the failing test, a fourth reviewer for the prose layer,
+three queue-hygiene checks. Worth recording is what the reconnaissance found on
+the way in — **for a whole layer the direction is inverted.** The copies of
+`guard-bash`, `detect-missed-gate` and the `loop` skill in the downstream
+project are behind the ones here by hundreds of lines of checks and a whole
+section of the loop's own procedure. The rig generalised them and then kept
+developing them; the copies did not follow.
+
+So "syncing" that layer would be a regression, and the rule for anyone doing
+this port again is: **nothing brings a downstream copy of those three files
+back here.** Whether the downstream project catches up is its decision, not
+this repo's — recorded here only because a log of awkwardness that omits the
+awkwardness pointing outward is a log nobody should trust.
+
+The four expensive findings of that work were all in code already believed to
+be working, not in what the brief asked for: a `GIT_DIR` inherited through a
+git hook writing a generated project's baseline commit into the outer
+repository (and flipping it to `bare`); a gate sweep that could not see this
+repository's own rulebook because the exemption was anchored at the root; a
+hygiene regex that reintroduced a quadratic backtracking defect one directory
+from where it had been fixed and documented; and a hygiene check that fired on
+the healthiest items in the queue. Each was found by a reviewer or by running
+the thing for real — none by reading the diff.
+
 ## Awkward, worth watching
 
 1. **The universal CLAUDE.md assumes the generated layout.** Its "map" section
