@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (0.4.0, prepared).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6) and the port brief (§7.7). **Published on npm** — `0.1.0` through `0.3.1` are live and `0.3.1` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. `0.4.0` is prepared and stops at `npm publish`, which is an owner action (§11). Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (0.3.2, prepared).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6) and the port brief (§7.7). **Published on npm** — `0.1.0` through `0.3.1` are live and `0.3.1` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. `0.3.2` is prepared and stops at `npm publish`, which is an owner action (§11). Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -251,7 +251,7 @@ into failing open. Both rounds are in the history; the lessons that generalise a
 now rules in `invariants.md` (state your limits *and test them*; match a rule's
 precision to the cost of a false positive; one mechanism, one implementation).
 
-### 7.7 The port brief (landed in 0.4.0)
+### 7.7 The port brief (landed in 0.3.2)
 
 Process work carried **into** this repo from the project the rulebook was
 extracted for: a premise check before the failing test, a fourth reviewer for the
@@ -355,9 +355,9 @@ mid-work.
 Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
 
 - ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
-- **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible. Prepared and stopped at the command: version bumped in both manifests, CHANGELOG written, `create` and `init` smoked on scratch projects, `npm pack --dry-run` confirms the new skill and agent travel. Remaining, in order: `npm publish`, then the published-artifact smoke (`npx create-agent-rig@0.4.0` in an empty directory → `pnpm install && pnpm check`)
+- **publish 0.3.2 to npm** — owner action by standing decision (§11): 2FA, irreversible. Prepared and stopped at the command: version bumped in both manifests, CHANGELOG written, `create` and `init` smoked on scratch projects, `npm pack --dry-run` confirms the new skill and agent travel. Remaining, in order: `npm publish`, then the published-artifact smoke (`npx create-agent-rig@0.3.2` in an empty directory → `pnpm install && pnpm check`)
 - **AR-4 entry conditions** — port item 117 once it is merged in Flowa; port C-0…C-2 once the clarify gate has fired at least once. Shipping an unproven gate to other people's projects is worse than not having it
-- **tell the users, and set a date to collect what they say** — 0.4.0 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
+- **tell the users, and set a date to collect what they say** — 0.3.2 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
 
 ## Journal
@@ -367,13 +367,13 @@ operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
 
-### the port brief closed, 0.4.0 prepared
+### the port brief closed, 0.3.2 prepared
 
 - **done** — every agent-takeable item of the port brief is merged: the premise
   check (#19), the two reviewers (#21), the git-environment fix (#22), the gate
   sweep's blindness to this repository (#23), three queue-hygiene checks with the
   `Ticket.body` decision (#24), the sweep's vocabulary and declarations (#25),
-  three stale claims (#26). 0.4.0 is prepared here: both manifests bumped, the
+  three stale claims (#26). 0.3.2 is prepared here: both manifests bumped, the
   CHANGELOG written in the repo's convention with a "deferred, and on what
   condition" section, `create` and `init` smoked on scratch projects, and
   `npm pack --dry-run` confirming the new skill and agent travel in the tarball
