@@ -183,7 +183,9 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
     // Domain leaks as ticket keys: SCRUM-123, ABC-4. The rig is nobody's tracker.
     // Narrow on purpose — technical prose is full of SHA-256 and UTF-8, and a
     // guard that fires on honest writing gets deleted (rules/invariants.md).
-    const technical = /^(SHA|UTF|RFC|ISO|AES|RSA|HTTP|IPV|MD|CVE|EC)$/;
+    // Two-letter prefixes stay out: they are valid tracker project keys, so
+    // each one is a hole opened for prose nobody has written yet.
+    const technical = /^(SHA|UTF|RFC|ISO|AES|RSA|HTTP|IPV|CVE)$/;
     const keys = [...content.matchAll(/\b([A-Z][A-Z0-9]+)-\d+\b/g)]
       .map((m) => m[1]!)
       .filter((prefix) => !technical.test(prefix));

@@ -217,7 +217,8 @@ attempt budget, an invariant conflict, a blocking reviewer verdict, or a
 claimed, what the code says, and the citation:
 
 1. Comment the diagnosis on the queue item: what fails, what was tried, the
-   current hypothesis, links to the PR and the failing run. **Name the outcome
+   current hypothesis, and links to the PR and the failing run where they exist
+   — a premise stop has neither, and its citation stands in for both. **Name the outcome
    state in the same comment** — `incomplete` if the diagnosis cannot say which
    stage needed what. Writing `incomplete` on your own task is uncomfortable and
    is the point: the run that produced it is the only witness.
