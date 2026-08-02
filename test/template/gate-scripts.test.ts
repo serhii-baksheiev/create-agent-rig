@@ -130,8 +130,8 @@ describe('elevatedPathsIn — which files make a change elevated', () => {
   // The rulebook exemption used to be anchored at the repository root, which is
   // true of a project the tool generates and false of the tool itself: a
   // generator keeps rulebooks under templates/, where every one of them is a
-  // .md and was therefore dropped as inert. Three Tier-2 merges here crossed a
-  // declared elevated path and the sweep reported them clean.
+  // .md and was therefore dropped as inert. Two Tier-2 merges here crossed a
+  // declared elevated path in prose alone and the sweep reported them clean.
   it('sees a rulebook wherever it sits, not only at the repository root', async () => {
     const { elevatedPathsIn } = await load('detect-missed-gate.mjs');
     const declared = ['templates/agent-os/init/', 'templates/agent-os/universal/.claude/'];

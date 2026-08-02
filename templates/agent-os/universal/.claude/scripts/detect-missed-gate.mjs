@@ -114,9 +114,10 @@ export const parseElevatedPaths = (markdown) => {
  * root. The root-anchored version of this test was true of a project this tool
  * generates and false of the tool itself: a generator keeps rulebooks under
  * `templates/`, every one of them is a `.md`, and all of them were dropped as
- * inert — so three merges that crossed a declared elevated path were reported
- * clean. Any repository that vendors, templates or nests a rig has the same
- * shape.
+ * inert — so two merges that changed agent specs, skills and an init map were
+ * reported clean, while a third that also touched a `.mjs` was caught for that
+ * reason alone. Any repository that vendors, templates or nests a rig has the
+ * same shape.
  */
 const isRulebook = (path) =>
   path === 'CLAUDE.md' ||

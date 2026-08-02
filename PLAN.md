@@ -323,6 +323,8 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
+- AR-10 [elevated]: the sweep's `VERDICT` list does not contain this rulebook's own verdict words. `pr-ship` emits SHIP/HOLD, so a PR body that records a real verdict registers as `none` rather than `body-claim`, and the weaker observation — "someone claims a gate ran, go check" — never fires on this repo's own PRs. The direction is conservative (more findings, never fewer), so this is honesty, not safety. Add the words; do NOT widen it into anything that could suppress a finding
+- AR-11 [elevated]: declare the paths the sweep can now see and nothing claims — `templates/agent-os/universal/.claude/rules/` (the autonomy tiers and the Never list are authored here), the stack layers' `hooks/`, `agents/` and `skills/`, and `templates/agent-os/universal/CLAUDE.md`. Each is the same category as something already declared; they were left out of AR-9 only to keep that change to what its item asked for
 - AR-3a [elevated]: hygiene check "a split parent left open" in `queue/core.mjs` `hygieneOf`, in the existing style (a `kind` and a stated why per finding); the two existing checks stay untouched
 - AR-3b [elevated]: add `body` to the neutral `Ticket` shape per the decision below, then the two checks that need it — body-vs-labels, and the link to a document from the body. The shape's comment omits `raw`, which `plan-md` tickets already carry: document it in the same edit rather than leaving the comment one field behind again
 - AR-6: three review nits in one PR — the `DEFAULT_TARGET` comment still saying "one implicit target" when there are two plus interactive selection, `demo.sh` citing PLAN phases an outside user cannot see, and a NOTES.md line recording that the Flowa copies of guard-bash/detect-missed-gate/loop are behind this repo's
@@ -356,8 +358,10 @@ operational memory, not an archive. Fields per the template in
 - **queue hygiene** — AR-2 was still listed after shipping in #21; closed here.
   🔴 **The sweep now reports three findings, and all three
   are this session's merges** (#19, #21, #22). They are not gate misses: every
-  one ran `code-reviewer`, two also ran `prose-reviewer`, and the verdicts are
-  in the PR bodies. What is missing is the `human-review` label, deliberately —
+  one ran `code-reviewer`, #21 also ran `prose-reviewer`, and each verdict is
+  written in its PR body — though not in a form this sweep recognises, since it
+  looks for a passing word and `pr-ship` says SHIP. What is missing is the
+  `human-review` label, deliberately —
   it asserts a human read the diff, and it is the one signal
   `detect-missed-gate` treats as unfakeable *because* an agent cannot apply it
   honestly. The owner delegated merge authority, which is a different act from
