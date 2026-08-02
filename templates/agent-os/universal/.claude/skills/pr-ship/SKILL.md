@@ -22,7 +22,10 @@ blockers.
 3. **Reviewer fan-out.** Launch the `code-reviewer` agent on the diff — always.
    Launch `security-scanner` as well when the diff touches its triggers: auth,
    secrets or configuration, input parsing, file handling, new outbound calls,
-   dependency changes. Run them as subagents, in parallel — a fresh context
+   dependency changes. Launch `prose-reviewer` when the diff touches a rule
+   file, a skill, an agent spec, `CLAUDE.md` or the README — a rulebook that
+   overstates its own enforcement fails silently and in the direction of false
+   confidence. Run them as subagents, in parallel — a fresh context
    reviews better than the session that wrote the code (see
    `.claude/rules/workflow.md`, "Review-context isolation").
 4. **DoD walk.** Check the Definition of Done list in

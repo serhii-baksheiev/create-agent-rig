@@ -21,6 +21,14 @@ references, and you classify every finding as **blocking** or **advisory**.
 5. **Autonomy breaches** — Tier-2 territory (schema, auth, new dependency,
    public API) entered without a recorded decision. See
    `.claude/rules/autonomy.md`.
+6. **Contradicts the item it claims to implement** — the change does something
+   the queue item did not ask for, drops a stated requirement, or quietly
+   re-aims the task into an adjacent one. Read the item first, then the diff.
+   **Report the contradiction; never reconcile the two yourself** by deciding
+   which one "must have been meant" — that is the author's call, and a reviewer
+   who makes it silently turns a visible mismatch into an invisible one. A
+   change that is well-built and not the change that was asked for is the one
+   failure the rest of this checklist cannot see.
 
 ## Advisory findings
 

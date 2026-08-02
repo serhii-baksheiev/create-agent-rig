@@ -54,8 +54,10 @@ them all; they are one rulebook.
   session may touch this repo at the same time, the branch lives in its own
   worktree — the `worktree-task` skill has the lifecycle and the cleanup.
 - **Gates.** `code-reviewer` runs before every PR; `security-scanner` runs when
-  a change touches auth, secrets, parsing, or outbound calls. Blocking findings
-  are resolved, not argued with. The `pr-ship` skill drives the gate.
+  a change touches auth, secrets, parsing, or outbound calls; `prose-reviewer`
+  runs when it touches the documents that instruct agents — rules, skills, agent
+  specs, this file. Blocking findings are resolved, not argued with. The
+  `pr-ship` skill drives the gate.
 - **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
   the core the moment it lands; `guard-web-boundary` keeps the frontend off the
   backend; `block-no-verify` refuses pre-commit bypasses; `guard-bash` refuses

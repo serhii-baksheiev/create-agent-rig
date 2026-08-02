@@ -9,6 +9,7 @@
     ".claude/agents/test-writer.md",
     ".claude/agents/code-reviewer.md",
     ".claude/agents/security-scanner.md",
+    ".claude/agents/prose-reviewer.md",
     ".claude/hooks/block-no-verify.mjs",
     ".claude/hooks/guard-bash.mjs",
     ".claude/hooks/gate-stop-dod.mjs",

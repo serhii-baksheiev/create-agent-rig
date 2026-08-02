@@ -64,14 +64,16 @@ create-agent-rig/                    — root package: the publishable unit (bin
         layers.json                  — classifies every universal file: process | architecture | meta
         .claude/
           rules/                     — architecture.md, workflow.md, autonomy.md, invariants.md
-          agents/                    — test-writer, code-reviewer, security-scanner
+          agents/                    — test-writer, code-reviewer, security-scanner,
+                                       prose-reviewer
           hooks/                     — guard-core-purity, guard-web-boundary, block-no-verify,
                                        guard-bash (Never tier + kill switch),
                                        gate-stop-dod (Stop), inject-rules (SessionStart)
           scripts/                   — stop-flag (the brake, one implementation),
                                        detect-missed-gate, reconcile-external-prs, preflight,
                                        queue/{core,plan-md,github-issues,jira,index}
-          skills/                    — pr-ship, loop, worktree-task, new-invariant
+          skills/                    — pr-ship, loop, worktree-task, new-invariant,
+                                       check-premises
           queue.json                 — which queue adapter this project uses
           settings.json              — wires the hooks (PreToolUse ×4, Stop, SessionStart)
       stack/

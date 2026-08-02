@@ -20,7 +20,8 @@ wrong.
 .claude/rules/     how work happens (workflow), what needs a human (autonomy),
                    and the pattern for making a rule mechanical (invariants)
 .claude/hooks/     the checks that refuse a violation at the tool layer
-.claude/agents/    the review gates: test-writer, code-reviewer, security-scanner
+.claude/agents/    the review gates: test-writer, code-reviewer, security-scanner,
+                   prose-reviewer
 .claude/skills/    the drivers: loop, pr-ship, worktree-task, new-invariant,
                    check-premises
 .claude/scripts/   the queue adapter, the preflight, the out-of-band sweeps
