@@ -347,9 +347,11 @@ sometimes earlier (step 6). Everything before that is mechanical:
    already exist** (`git ls-remote --tags origin`). A leftover from an abandoned
    attempt is a published ref: deleting or moving it is an **owner** action, and
    the release stops here until it is gone. A tag pointing at the wrong commit
-   is not cosmetic — the next release builds its hash table from it, and every
-   file that changed in between then reads as user-modified and stops being
-   upgradable.
+   is not cosmetic: the next release builds its hash table from it, so the table
+   ends up **naming a version whose bytes it does not carry**, and everything
+   that version actually changed is absent from it. A rig with a manifest is
+   unaffected — the manifest is consulted first — which is exactly why the
+   damage is quiet rather than loud.
 8. **Owner:** `npm publish`.
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and
