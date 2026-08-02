@@ -132,7 +132,12 @@ describe('createProject', () => {
         readFile(path.join(projectDir, '.claude', 'rules', rule), 'utf8'),
       ).resolves.toBeTruthy();
     }
-    for (const agent of ['test-writer.md', 'code-reviewer.md', 'security-scanner.md']) {
+    for (const agent of [
+      'test-writer.md',
+      'code-reviewer.md',
+      'security-scanner.md',
+      'prose-reviewer.md',
+    ]) {
       const body = await readFile(path.join(projectDir, '.claude', 'agents', agent), 'utf8');
       expect(body).toMatch(/^---\nname: /); // agent frontmatter
     }

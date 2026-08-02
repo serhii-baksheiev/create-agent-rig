@@ -21,6 +21,21 @@ references, and you classify every finding as **blocking** or **advisory**.
 5. **Autonomy breaches** — Tier-2 territory (schema, auth, new dependency,
    public API) entered without a recorded decision. See
    `.claude/rules/autonomy.md`.
+6. **Contradicts the item it claims to implement** — the change does something
+   the queue item did not ask for, drops a stated requirement, or quietly
+   re-aims the task into an adjacent one. Read the item first, then the diff.
+   **Report the contradiction; never reconcile the two yourself** by deciding
+   which one "must have been meant" — that is the author's call, and a reviewer
+   who makes it silently turns a visible mismatch into an invisible one. A
+   change that is well-built and not the change that was asked for is the one
+   failure the rest of this checklist cannot see.
+
+   **If the item was not handed to you, say so and stop there.** Do not
+   reconstruct it from the branch name or the PR description: those are written
+   by whoever opened the PR — including the run being reviewed — and this
+   rulebook already refuses that evidence elsewhere (`.claude/rules/autonomy.md`).
+   "Item not supplied, item 6 not checked" is a useful line in a report; a
+   guess dressed as a verdict is worse than the silence it replaces.
 
 ## Advisory findings
 

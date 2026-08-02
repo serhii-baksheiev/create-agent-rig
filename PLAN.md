@@ -64,14 +64,16 @@ create-agent-rig/                    — root package: the publishable unit (bin
         layers.json                  — classifies every universal file: process | architecture | meta
         .claude/
           rules/                     — architecture.md, workflow.md, autonomy.md, invariants.md
-          agents/                    — test-writer, code-reviewer, security-scanner
+          agents/                    — test-writer, code-reviewer, security-scanner,
+                                       prose-reviewer
           hooks/                     — guard-core-purity, guard-web-boundary, block-no-verify,
                                        guard-bash (Never tier + kill switch),
                                        gate-stop-dod (Stop), inject-rules (SessionStart)
           scripts/                   — stop-flag (the brake, one implementation),
                                        detect-missed-gate, reconcile-external-prs, preflight,
                                        queue/{core,plan-md,github-issues,jira,index}
-          skills/                    — pr-ship, loop, worktree-task, new-invariant
+          skills/                    — pr-ship, loop, worktree-task, new-invariant,
+                                       check-premises
           queue.json                 — which queue adapter this project uses
           settings.json              — wires the hooks (PreToolUse ×4, Stop, SessionStart)
       stack/
@@ -109,7 +111,7 @@ This split is what makes `agent-rig init` (§6) safe — it installs only the pr
 **What ships in `universal/`:**
 
 - **Rules** — `autonomy.md` (tiers: self-merge / human-review / never; stop rules incl. N-strike, flaky≠retry, invariant conflict, session-staleness; post-deploy verdict), `workflow.md` (TDD, branch discipline, PR flow, review-context isolation, DoD), `architecture.md` (layers, mandatory usecase, core purity, the web boundary).
-- **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist), `security-scanner` (auth/secrets/parsing/outbound triggers).
+- **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist, incl. a change that contradicts its queue item), `security-scanner` (auth/secrets/parsing/outbound triggers), `prose-reviewer` (the documents that instruct agents: overstated enforcement, dead references, rules that contradict each other, stale limits).
 - **Hooks** — six, wired in `settings.json`:
   - `guard-core-purity` (PreToolUse) — refuses I/O/clock/randomness/env in `packages/core`;
   - `guard-web-boundary` (PreToolUse) — refuses `db`/service imports from `apps/web`;
@@ -122,7 +124,8 @@ This split is what makes `agent-rig init` (§6) safe — it installs only the pr
 - **Skills** — `pr-ship` (pre-merge gate → SHIP/HOLD), `loop` (unattended driver
   over the queue adapter; "queue empty → end, do not invent work"),
   `worktree-task` (isolation when a second session may run), `new-invariant`
-  (the generator for the hook+rule+test pattern).
+  (the generator for the hook+rule+test pattern), `check-premises` (the item's
+  claims about the code, checked before the failing test).
 - **Scripts** — the two gate sweeps that run *outside* any session
   (`detect-missed-gate`, `reconcile-external-prs`), `preflight`, the queue seam
   (`queue/core.mjs` pure + three adapters), and `stop-flag.mjs` — the kill

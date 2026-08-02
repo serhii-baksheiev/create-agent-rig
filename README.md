@@ -83,8 +83,8 @@ never labels**, and **the agent never files its own work items**.
 
 Around all of it: **autonomy tiers** (what an agent does alone / after review /
 never), **stop rules** (three strikes, flaky ≠ retry, session staleness),
-**subagent gates** (`test-writer`, `code-reviewer`, `security-scanner`, and
-`cdk-diff-reviewer` on the AWS target), **skills** (`pr-ship` pre-merge gate;
+**subagent gates** (`test-writer`, `code-reviewer`, `security-scanner`,
+`prose-reviewer`, and `cdk-diff-reviewer` on the AWS target), **skills** (`pr-ship` pre-merge gate;
 `loop` queue driver; `worktree-task` for concurrent sessions; `new-invariant`, a
 generator for the invariant→hook→test pattern; `post-deploy-verify` and
 `ro-debug` on the AWS target), and a one-page `CLAUDE.md` map a fresh session

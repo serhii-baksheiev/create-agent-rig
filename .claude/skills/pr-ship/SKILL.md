@@ -19,10 +19,20 @@ blockers.
    (see its README / package scripts). Any failure is an instant HOLD — never
    argue with a red check, never rerun flakiness to green
    (`.claude/rules/workflow.md`).
-3. **Reviewer fan-out.** Launch the `code-reviewer` agent on the diff — always.
+3. **Reviewer fan-out.** Launch the `code-reviewer` agent on the diff — always,
+   and **pass it the text of the queue item this branch implements**. Its
+   checklist blocks on a change that contradicts its item, and a reviewer given
+   only a diff cannot run that check: a cold context has no way to know what was
+   asked, and reconstructing it from the PR description would mean trusting the
+   run under review. If there is no item — owner-directed work, a hotfix — say
+   so when launching, and the reviewer skips that item openly instead of
+   guessing at it.
    Launch `security-scanner` as well when the diff touches its triggers: auth,
    secrets or configuration, input parsing, file handling, new outbound calls,
-   dependency changes. Run them as subagents, in parallel — a fresh context
+   dependency changes. Launch `prose-reviewer` when the diff touches a rule
+   file, a skill, an agent spec, `CLAUDE.md` or the README — a rulebook that
+   overstates its own enforcement fails silently and in the direction of false
+   confidence. Run them as subagents, in parallel — a fresh context
    reviews better than the session that wrote the code (see
    `.claude/rules/workflow.md`, "Review-context isolation").
 4. **DoD walk.** Check the Definition of Done list in
