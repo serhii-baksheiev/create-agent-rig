@@ -162,7 +162,16 @@ export const elevatedPathsIn = (files = [], elevatedPaths = []) => {
 // reads 100 PR bodies, so a crafted set costs minutes of CPU on a scheduled job
 // that reports nothing when it is killed.
 const REVIEWERS = /\b(code-reviewer|security-scanner|[a-z][a-z0-9-]{0,48}-reviewer)\b/i;
-const VERDICT = /\b(clean|passed|pass|approved|no blocking|green)\b/i;
+// SHIP and HOLD are what `pr-ship` actually emits, and their absence here meant
+// a PR body recording a real verdict registered as no evidence at all — so the
+// weaker "someone says a gate ran, go check" observation never fired on this
+// rulebook's own PRs, only on bodies phrased in somebody else's vocabulary.
+//
+// 🔴 Widening this list widens what is *observed*, never what is *permitted*.
+// `body-claim` is still a finding; only the `human-review` label suppresses one.
+// Adding a word must never move a PR from "reported" to "clean" — if a change
+// here could do that, it is the wrong change.
+const VERDICT = /\b(clean|passed|pass|approved|no blocking|green|ship|hold)\b/i;
 
 /**
  * 🔴 The body is NOT authority, and this is the security core of the file.

@@ -41,6 +41,16 @@ const ELEVATED_PATHS = [
   // honest gap.
   'templates/agent-os/universal/.claude/agents/',
   'templates/agent-os/universal/.claude/skills/',
+  // The rules themselves: the autonomy tiers and the Never list are authored
+  // here, and the sweep's own reason for exempting the rulebook from "inert" is
+  // "a merged PR rewriting the autonomy tiers". That text lives in this repo.
+  'templates/agent-os/universal/.claude/rules/',
+  'templates/agent-os/universal/CLAUDE.md',
+  // Same categories, one layer down: a stack layer's gates and DoD config are
+  // no less load-bearing for being target-specific.
+  'templates/agent-os/stack/aws-cdk/.claude/agents/',
+  'templates/agent-os/stack/aws-cdk/.claude/skills/',
+  'templates/agent-os/stack/node-ts/.claude/hooks/',
 ];
 
 const withElevatedPaths = (claudeMd) =>
