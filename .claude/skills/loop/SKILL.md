@@ -303,8 +303,23 @@ three poisons the only channel by which this project learns.
   the very next query.
 - **Closing:** close it with the merged PR linked, immediately after the
   post-merge verdict — not in a cleanup pass.
+- **Write-back:** with the close, record what it **unblocked** — the items that
+  were waiting on this one, by name. It is the journal's `unblocked` field, and
+  it is **required, not a step for when it applies**: an absent line and an
+  unpaid debt are the same observation from outside, so the empty case has to
+  be written to mean anything. Which empty case matters — "nothing was waiting"
+  is an answer, "this queue has no dependency links" is the absence of one
+  (§0), and a queue that cannot be asked must never be reported as asked.
 
-Between those two moments the item keeps absorbing what happens **as it happens** —
+  🔴 It is a **report, not an edit to those items.** Blocked state is
+  re-resolved from the blocker itself on every selection (§2), so nothing is
+  stuck waiting to be corrected — and a label fixed by hand is evidence
+  destroyed, which §2 forbids by name. What the write-back buys is the thing no
+  query can answer: whether anyone **looked**. Where the close changed a fact
+  rather than a state — an Operator-queue item it settles — the paragraph
+  closing this section applies instead, and that edit lands in the same PR.
+
+Between the opening and the close the item keeps absorbing what happens **as it happens** —
 a decision, a deviation, a defect found in passing, a tier discovered mid-work. A
 run that dies mid-task leaves its whole trail on the item; a run that batches its
 comments to the end leaves nothing.

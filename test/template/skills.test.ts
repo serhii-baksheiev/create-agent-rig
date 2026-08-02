@@ -71,6 +71,42 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
     expect(content).toMatch(/do not invent work/i);
     expect(content).toMatch(/journal/i);
   });
+
+  // U-1: closing an item is not the end of its state. What the close released
+  // is reported — and "nothing was waiting" is reported too, because an absent
+  // line and an unpaid debt look identical from outside.
+  it('reports what a close unblocked, including when the answer is nothing', async () => {
+    const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+    const section = /## 9\.[\s\S]*?(?=\n## |$)/.exec(content);
+    expect(section, 'the state-update section must still exist').toBeTruthy();
+    const nine = section![0];
+    // whitespace-tolerant: the prose is wrapped, and a rule that survives only
+    // until the next reflow is a rule nothing checks
+    expect(nine).toMatch(/unblocked/i);
+    // both halves: name what was released, or say nothing was
+    expect(nine).toMatch(/nothing\s+was\s+waiting/i);
+    expect(nine).toMatch(/required,\s+not\s+a\s+step\s+for\s+when\s+it\s+applies/i);
+    // and the third answer, which is the one a flat-list queue owes: an
+    // adapter that cannot be asked must not be reported as asked
+    expect(nine).toMatch(/no\s+dependency\s+links/i);
+    // and it is a REPORT: correcting the dependents is what §2 forbids, so the
+    // rule that would collide with it has to be ruled out where it is stated
+    expect(nine).toMatch(/report,\s+not\s+an\s+edit/i);
+  });
+
+  it('the journal has the field that write-back writes to', async () => {
+    // A required field with nowhere to land is a rule that decays on contact.
+    const plan = await readFile(
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'PLAN.md'),
+      'utf8',
+    );
+    expect(plan).toMatch(/\*\*unblocked\*\*/);
+    expect(plan).toMatch(/never\s+dropped/i);
+    // "cannot answer" is never "checked, found nothing" — the same distinction
+    // the nullable `Ticket.body` turns on, and the reason the field has three
+    // answers rather than two
+    expect(plan).toMatch(/absent\*?\*?,\s+not\s+satisfied/i);
+  });
 });
 
 // extraction brief §3 Tier A: the worktree lifecycle carries the mechanism and
