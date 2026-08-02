@@ -296,3 +296,67 @@ In practice: open an empty file and write the rule in your own words rather than
 - **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
 - **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). (The `worktree` rule is no longer parked — `worktree-task` shipped in 0.3.0.)
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.
+
+---
+
+## Agent queue
+
+Work an agent may take autonomously (Tier 0/1 — `.claude/rules/autonomy.md`).
+One line each, most valuable first; delete a line when it lands. This repo runs
+the `plan-md` adapter (`.claude/queue.json`), so **this heading is load-bearing**
+— renaming it makes the queue unreadable rather than empty.
+
+Current contents decompose the Flowa→rig port brief (`AR`, v2 of 2026-08-01) — an
+owner-supplied document that lives outside this repository, so an item citing an
+`AR-n` the queue does not list (`AR-3`'s other two checks, `AR-4`) points into it
+and is stated in full where it matters below. The brief's 🔴 rule governs every
+one of them: **nothing here brings a Flowa copy of `guard-bash`,
+`detect-missed-gate` or the `loop` skill into this repo** — the versions here are
+the older-and-larger ones, and "syncing" them backwards is a regression of
+hundreds of lines of checks.
+
+The `[elevated]` marker is not decoration: it is what lets `selectNext` space
+elevated work apart (`queue/core.mjs`), and an item known to touch a path in
+`CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
+mid-work.
+
+- AR-1: new premise-check skill in `universal/.claude/skills/`, referenced from `loop` §2 between selection and Red, with a test in `test/template/skills.test.ts`
+- AR-2: S-0 (contradicting the queue item = BLOCKER) into `universal/.claude/agents/code-reviewer.md`, plus a fourth read-only agent — a prose reviewer — covered in `test/template/agents.test.ts`
+- AR-3a [elevated]: hygiene check "a split parent left open" in `queue/core.mjs` `hygieneOf`, in the existing style (a `kind` and a stated why per finding); the two existing checks stay untouched
+- AR-6: three review nits in one PR — the `DEFAULT_TARGET` comment still saying "one implicit target" when there are two plus interactive selection, `demo.sh` citing PLAN phases an outside user cannot see, and a NOTES.md line recording that the Flowa copies of guard-bash/detect-missed-gate/loop are behind this repo's
+- AR-7 [elevated]: declare `templates/agent-os/universal/.claude/{skills,agents}/` in the `elevated-paths` block, or state why they stay out — AR-1 and AR-2 land there today and `detect-missed-gate` would report those merges clean
+- AR-5 [elevated]: prepare release 0.4.0 — CHANGELOG in the repo's convention (what a freshly generated project gets, and why), plus what the brief defers and on which entry condition; smoke `create` and `init` on a scratch project. **Stops at `npm publish`** — that is the owner action below. Genuinely depends on the items above, which a flat list cannot express: check they are merged before taking it
+
+## Operator queue
+
+Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
+
+- **decide: does the neutral `Ticket` shape gain a `body` field?** It blocks two of AR-3's three hygiene checks (body-vs-labels, the link to a document); adapters read the body internally today and do not expose it. The brief leans to adding it — core testable on fixtures, adapters stay thin. Either way the decision gets written into the shape's comment, not made silently
+- **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible; the agent prepares the release and stops at the command
+- **AR-4 entry conditions** — port item 117 once it is merged in Flowa; port C-0…C-2 once the clarify gate has fired at least once. Shipping an unproven gate to other people's projects is worse than not having it
+- **does Flowa take the reverse port?** Out of this brief's scope by construction; AR-6 only records the fact that its copies are behind
+
+## Journal
+
+Newest first, date-free — order carries the sequence. Prune freely: this is
+operational memory, not an archive. Fields per the template in
+`templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
+**visibly empty, never estimated**.
+
+### queues added to this repo's own PLAN.md, brief decomposed
+
+- **done** — this repo dogfooded the `plan-md` adapter without having a `## Agent
+  queue` heading at all; the adapter would have thrown `queue-unreadable` on the
+  first `loop` run here. Both queues and this journal now exist, filled from the
+  owner-supplied port brief
+- **reviewed** — `code-reviewer` on this change: HOLD, two blocking findings, both
+  fixed here — a queued item asserting `--dry-run` was missing from `USAGE` when
+  `packages/cli/src/index.ts` has documented it since `init` shipped, and two
+  items known to touch elevated paths queued without the `[elevated]` marker
+- **stopped at** — checkpoint, still running
+- **queue hygiene** — the missing heading above is the first finding. The second:
+  the brief this queue was filled from carried a false premise into an item, and
+  the reviewer caught it one line below the item that adds a premise-checking
+  skill. The check being built is the check that was missing
+- **cost** — 1 reviewer subagent, 0 CI runs, 0 deploys (this session's counts at
+  the checkpoint; the merge adds at least one CI run)
