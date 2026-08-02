@@ -10,9 +10,9 @@ boundaries; the **queue** holds the work; `PLAN.md` holds state, standing
 decisions and the journal. This skill is the driver in between: what gets picked,
 what keeps the loop going, what stops it, and where the report goes.
 
-Per-task procedure is unchanged: (worktree if another session may run) → failing
-test first → implement → `pr-ship` → merge on the named criterion → verify the
-deployed surface if one changed.
+Per-task procedure is unchanged: (worktree if another session may run) →
+`check-premises` → failing test first → implement → `pr-ship` → merge on the
+named criterion → verify the deployed surface if one changed.
 
 ## 0. The queue is behind an adapter
 
@@ -102,11 +102,18 @@ and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
+**Then, before the Red step: `check-premises`.** The item was written by someone
+who was not reading the code at the time, and everything downstream — the failing
+test, the implementation, the reviewer comparing diff to item — inherits its
+claims rather than checking them. On `PREMISE FALSE` the item is escalated (§6),
+not repaired in place: a run that silently re-aims its own task has authored work
+for itself, which is the one thing this loop does not do (§8).
+
 ## 3. What keeps the loop running, and what stops it
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
-reviewer verdict) **do not end the run**: escalate that item (§5) and take the
-next one.
+reviewer verdict, a false premise in the item itself) **do not end the run**:
+escalate that item (§5) and take the next one.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
@@ -204,10 +211,14 @@ mechanises fully (`missed`, `.claude/rules/autonomy.md`) needs no self-report.
 ## 6. Escalation — two channels, by scope
 
 **Task-scoped — the item is the home, and the loop continues.** Three strikes, the
-attempt budget, an invariant conflict, or a blocking reviewer verdict:
+attempt budget, an invariant conflict, a blocking reviewer verdict, or a
+`PREMISE FALSE` verdict from `check-premises` — the last one is a
+`documented-stall` (§5), and its diagnosis is already written: what the item
+claimed, what the code says, and the citation:
 
 1. Comment the diagnosis on the queue item: what fails, what was tried, the
-   current hypothesis, links to the PR and the failing run. **Name the outcome
+   current hypothesis, and links to the PR and the failing run where they exist
+   — a premise stop has neither, and its citation stands in for both. **Name the outcome
    state in the same comment** — `incomplete` if the diagnosis cannot say which
    stage needed what. Writing `incomplete` on your own task is uncomfortable and
    is the point: the run that produced it is the only witness.
@@ -274,6 +285,7 @@ three poisons the only channel by which this project learns.
 | Does not | Why |
 | --- | --- |
 | **Create its own work items** | The queue is human-filled. Self-authored work drifts scope, and unattended it drifts unwatched |
+| **Re-aim an item whose premise turned out false** | Same rule wearing a disguise: an item silently rewritten into "what it should have said" is a work item the agent authored. Escalate it (§6) |
 | Take items needing a human decision | It cannot unblock itself; those wait in the Operator queue |
 | Take a `trigger-human` item | It would build for scale that does not exist |
 | Take two elevated items back to back | One unreviewed schema/permissions change is recoverable; a chain overnight is not |

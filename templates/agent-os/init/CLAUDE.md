@@ -21,7 +21,8 @@ wrong.
                    and the pattern for making a rule mechanical (invariants)
 .claude/hooks/     the checks that refuse a violation at the tool layer
 .claude/agents/    the review gates: test-writer, code-reviewer, security-scanner
-.claude/skills/    the drivers: loop, pr-ship, worktree-task, new-invariant
+.claude/skills/    the drivers: loop, pr-ship, worktree-task, new-invariant,
+                   check-premises
 .claude/scripts/   the queue adapter, the preflight, the out-of-band sweeps
 ```
 
