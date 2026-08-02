@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (v0.3.0).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6). **Published on npm** — `0.1.0` and `0.2.0` are live; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. Several briefs landed on top of the original plan — see §7.5. What remains for the owner: publishing `0.3.0` (§11) and a recorded demo. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (0.4.0, prepared).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6) and the port brief (§7.7). **Published on npm** — `0.1.0` through `0.3.1` are live and `0.3.1` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. `0.4.0` is prepared and stops at `npm publish`, which is an owner action (§11). Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -111,7 +111,7 @@ This split is what makes `agent-rig init` (§6) safe — it installs only the pr
 **What ships in `universal/`:**
 
 - **Rules** — `autonomy.md` (tiers: self-merge / human-review / never; stop rules incl. N-strike, flaky≠retry, invariant conflict, session-staleness; post-deploy verdict), `workflow.md` (TDD, branch discipline, PR flow, review-context isolation, DoD), `architecture.md` (layers, mandatory usecase, core purity, the web boundary).
-- **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist, incl. a change that contradicts its queue item), `security-scanner` (auth/secrets/parsing/outbound triggers), `prose-reviewer` (the documents that instruct agents: overstated enforcement, dead references, rules that contradict each other, stale limits).
+- **Agents** — `test-writer` (writes the failing test, cannot implement), `code-reviewer` (blocking checklist, incl. a change that contradicts its queue item), `security-scanner` (auth/secrets/parsing/outbound triggers), `prose-reviewer` (the documents that instruct agents: overstated enforcement, dead references, rules that contradict each other, stale limits, domain that must not travel).
 - **Hooks** — six, wired in `settings.json`:
   - `guard-core-purity` (PreToolUse) — refuses I/O/clock/randomness/env in `packages/core`;
   - `guard-web-boundary` (PreToolUse) — refuses `db`/service imports from `apps/web`;
@@ -251,6 +251,30 @@ into failing open. Both rounds are in the history; the lessons that generalise a
 now rules in `invariants.md` (state your limits *and test them*; match a rule's
 precision to the cost of a false positive; one mechanism, one implementation).
 
+### 7.7 The port brief (landed in 0.4.0)
+
+Process work carried **into** this repo from the project the rulebook was
+extracted for: a premise check before the failing test, a fourth reviewer for the
+prose layer, a sixth blocking item for `code-reviewer`, and three queue-hygiene
+checks (which forced the `Ticket.body` decision — nullable, in the neutral shape,
+so one pure function serves three adapters).
+
+Two things are worth keeping from how it went.
+
+**For one layer the direction is inverted.** `guard-bash`, `detect-missed-gate`
+and the `loop` skill here are ahead of the downstream copies by hundreds of lines
+of checks. That rule now lives in the repo-specific rules rather than only in a
+journal: ideas travel in, files do not.
+
+**The expensive findings were all in code already believed to be working** — an
+inherited `GIT_DIR` writing a generated project's baseline commit into the
+caller's repository, a gate sweep blind to this repository's own rulebook, a
+quadratic regex reintroduced beside its own documented fix, a hygiene check
+firing on the queue's healthiest items. Nine reviewer passes over seven PRs; seven of
+the nine returned HOLD, and only one PR cleared its gate on the first pass. None of those defects was in what the
+brief asked for; all of them were found by a gate or by running the thing for
+real.
+
 ---
 
 ## 8. Verification strategy (as built)
@@ -264,7 +288,7 @@ The scaffolder is kept from rotting by:
 5. **Hook / gate tests** — every hook's blocking behaviour under test; the DoD stop-gate and rule-injection behaviour; the deploy workflows' OIDC/no-static-keys/degrade-cleanly invariants.
 6. **A weekly lockfile-free run** — `template-freshness.yml` reinstalls each template without a lockfile and runs its checks (the primary early-warning channel now that Next is in the stack).
 
-Test surface: 7 CLI unit files, 18 `test/template/*` files, 6 `test/e2e/*` files (503 tests). Items 1–2 are mandatory in CI.
+Test surface: 9 CLI unit files, 20 `test/template/*` files, 6 `test/e2e/*` files (579 tests). Items 1–2 are mandatory in CI.
 
 ---
 
@@ -295,7 +319,7 @@ In practice: open an empty file and write the rule in your own words rather than
 - ~~Tool name~~ — **decided: `create-agent-rig`, unscoped.**
 - ~~Second target~~ — **decided: `node-service`** (plus a static web frontend in both targets).
 - ~~Repository hosting~~ — **decided: `github.com/serhii-baksheiev/create-agent-rig`** (remote + CI live).
-- **npm registry publish** — done for `0.1.0` and `0.2.0`; `0.2.0` has been live since 2026-07-23. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
+- **npm registry publish** — done through `0.3.1`, which is the current `latest`. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
 - **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
 - **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). (The `worktree` rule is no longer parked — `worktree-task` shipped in 0.3.0.)
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.
@@ -323,16 +347,17 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
+- AR-13 [elevated]: `init` has no upgrade path — it installs what is absent and keeps what is present, and `--force` covers `CLAUDE.md` alone. A rig updated by re-running it gets new files with none of their wiring, which is the 0.3.1 failure in a new costume. Decide the shape (a `--refresh` that replaces only files `init` itself wrote and the user has not modified? a printed diff?) and note that "just re-run init" must stop being the documented answer until it is true
 - AR-12 [elevated]: declare `templates/agent-os/stack/aws-cdk/.claude/rules/` and `.../node-ts/.claude/rules/`. The aws-cdk one is the sharp case: that file carries its **own** `elevated-paths` block declaring `infra/`, so a merge deleting the block would silently un-declare infrastructure for every generated AWS project — and the sweep would report it clean. Found by review on AR-11, which did not ask for these two
-- AR-5 [elevated]: prepare release 0.4.0 — CHANGELOG in the repo's convention (what a freshly generated project gets, and why), plus what the brief defers and on which entry condition; smoke `create` and `init` on a scratch project. **Stops at `npm publish`** — that is the owner action below. Genuinely depends on the items above, which a flat list cannot express: check they are merged before taking it
 
 ## Operator queue
 
 Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
 
 - ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
-- **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible; the agent prepares the release and stops at the command
+- **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible. Prepared and stopped at the command: version bumped in both manifests, CHANGELOG written, `create` and `init` smoked on scratch projects, `npm pack --dry-run` confirms the new skill and agent travel. Remaining, in order: `npm publish`, then the published-artifact smoke (`npx create-agent-rig@0.4.0` in an empty directory → `pnpm install && pnpm check`)
 - **AR-4 entry conditions** — port item 117 once it is merged in Flowa; port C-0…C-2 once the clarify gate has fired at least once. Shipping an unproven gate to other people's projects is worse than not having it
+- **tell the users, and set a date to collect what they say** — 0.4.0 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
 
 ## Journal
@@ -341,6 +366,41 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### the port brief closed, 0.4.0 prepared
+
+- **done** — every agent-takeable item of the port brief is merged: the premise
+  check (#19), the two reviewers (#21), the git-environment fix (#22), the gate
+  sweep's blindness to this repository (#23), three queue-hygiene checks with the
+  `Ticket.body` decision (#24), the sweep's vocabulary and declarations (#25),
+  three stale claims (#26). 0.4.0 is prepared here: both manifests bumped, the
+  CHANGELOG written in the repo's convention with a "deferred, and on what
+  condition" section, `create` and `init` smoked on scratch projects, and
+  `npm pack --dry-run` confirming the new skill and agent travel in the tarball
+- **reviewed** — nine reviewer passes across seven PRs; **seven of the nine
+  returned HOLD**, and exactly one PR (#25) cleared its gate on the first and
+  only pass. The findings that mattered were never in what
+  the brief asked for: a `GIT_DIR` inherited through a git hook writing into the
+  outer repository (and flipping it to bare); a gate sweep anchored to the
+  repository root and therefore blind to a generator's own rulebook; a
+  quadratic-backtracking regex reintroduced one directory from where the same
+  defect was fixed and documented; a hygiene check that fired on the healthiest
+  items in the queue; and a comment "correction" that replaced a stale claim with
+  a false one
+- **escalated** — nothing
+- **stopped at** — the brief's queue is empty apart from AR-12, which review
+  produced. That is the intended ending: an empty queue ends a session and is
+  never a cue to invent work
+- **queue hygiene** — four of the items worked this session were filed by
+  reviewers, not by the brief. The `--dry-run` nit the brief carried was false
+  and is recorded as such rather than quietly dropped
+- **cost** — 9 reviewer subagents, ~30 CI check runs across 7 PRs, 0 deploys
+- **the honest note** — this session caused one defect of its own (19 junk
+  commits and a repository flipped to bare, all local, all reverted). Half of
+  them came from the ordinary path — a `git commit` inside a worktree, which is
+  what will hit any user of the `worktree-task` skill — and half from setting
+  `GIT_DIR` by hand to confirm the diagnosis. The fix that followed was the most
+  valuable thing in the release
 
 ### the gate sweep could not see this repository, and now names its own misses
 

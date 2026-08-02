@@ -7,6 +7,104 @@ the generator.
 Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/package/create-agent-rig);
 `npx github:serhii-baksheiev/create-agent-rig` keeps working for either path.
 
+## 0.4.0
+
+A generated project gains two review gates it did not have — one before the work
+starts, one over the prose that instructs it — and three more queue-hygiene
+checks.
+
+**Upgrading an existing rig: `init` alone is not enough, and here is exactly
+why.** `create-agent-rig init` installs files that are not there and **keeps
+every file that is** — `--force` replaces `CLAUDE.md` and nothing else
+(`packages/cli/src/commands/init.ts`). Re-running it on a 0.3.1 rig therefore
+delivers the two new files, `.claude/agents/prose-reviewer.md` and
+`.claude/skills/check-premises/SKILL.md`, and **none of their wiring**: the
+skill arrives with nothing calling it, and the agent arrives with `pr-ship`
+never launching it. Six files below changed rather than appeared, and `init`
+will not touch them:
+
+```
+.claude/agents/code-reviewer.md          # the sixth blocking item
+.claude/skills/loop/SKILL.md             # calls check-premises, and §3/§6/§8
+.claude/skills/pr-ship/SKILL.md          # fans out prose-reviewer, passes the item
+.claude/scripts/queue/core.mjs           # the three hygiene checks + Ticket.body
+.claude/scripts/detect-missed-gate.mjs   # sees a rulebook outside the repo root
+.claude/hooks/gate-stop-dod.mjs          # judges the tree it is in
+```
+
+Delete those six and re-run `init`, or copy them across by hand. A proper
+upgrade command is queued, not shipped — and until it exists this note tells you
+the manual steps rather than an easy sentence that leaves half the release
+inert. That failure mode is the whole subject of 0.3.1, immediately below.
+
+### Added
+
+- **`check-premises` skill** — a queue item is a _claim about the code_, written
+  by someone who was not reading the code at the time, and nothing downstream
+  re-checks it: the failing test is written against the item, the implementation
+  against the test, and the reviewer compares the diff to the item. A false
+  premise therefore produces work that is correct, tested, reviewed and useless.
+  The skill runs between taking the item and the Red step, is read-only by
+  frontmatter so it cannot start implementing, and returns `PREMISES HOLD` /
+  `PREMISE FALSE` / `UNVERIFIABLE`. Its two boundaries are the point: a false
+  load-bearing premise is **stop and report**, never a silent re-aim of the task,
+  and only load-bearing claims are checked — an audit is what makes the step
+  expensive enough to skip. The `loop` skill calls it, and treats `PREMISE FALSE`
+  as a per-task escalation rather than a licence to rewrite the item.
+- **`prose-reviewer` agent** — a fourth gate, read-only. In this layer the prose
+  _is_ the implementation: a rule that overstates its own enforcement fails
+  exactly like broken code, silently and in the direction of false confidence. It
+  blocks on five things — enforcement claimed beyond the mechanism, a dead
+  reference, two rules that contradict each other, stated limits gone stale in
+  either direction, and domain that must not travel (a vendor name, a host path,
+  a tracker key or a credential in a layer meant to be neutral) — and its
+  boundary comes before its checklist: it is **not
+  a literary editor**, and prose that is merely clumsy is not a finding. Wired
+  into the `pr-ship` fan-out and named in both maps.
+- **A sixth blocking item for `code-reviewer`** — a change that contradicts the
+  queue item it claims to implement. The instruction is to report the mismatch,
+  never to decide which side "must have been meant": a reviewer who reconciles
+  the two silently turns a visible mismatch into an invisible one. Where no item
+  was supplied, it says so rather than reconstructing one from the PR body —
+  which is evidence `autonomy.md` refuses by name. `pr-ship` now passes the item.
+- **Three queue-hygiene checks** — a parent that says it was split up and is
+  still open; a dependency line naming a blocker no link carries (worse than a
+  stale label: selection reads the item as unblocked); and a document link that
+  is broken on its face. The neutral `Ticket` shape gains a **nullable `body`**
+  so these live in one pure function instead of once per adapter — and `null`
+  means "this adapter cannot answer", never "checked, found nothing".
+
+### Fixed
+
+- **The baseline commit of a generated project could land in the caller's
+  repository.** Git hands its hooks an absolute `GIT_DIR`, and the CLI spawned
+  git with the environment intact — so `git init` re-initialised the caller's
+  repo, `add -A` staged its tree, and the commit landed on whatever branch it had
+  checked out, while the generated project got no `.git` at all. A redirected
+  `git init` can also flip the caller's repository to `core.bare=true`. The path
+  that triggers it is a pre-commit hook running a suite that generates projects —
+  which is what made the `worktree-task` skill unusable. Every git call site now
+  strips the variables that locate a repository, including the shipped
+  `gate-stop-dod` hook (which asked git whether _which_ tree was clean) and
+  `preflight`.
+- **The Tier-2 gate sweep could not see a rulebook outside the repository root.**
+  `detect-missed-gate` exempts the rulebook from its inert-file rule so a merge
+  rewriting the autonomy tiers cannot pass as "just prose" — but the exemption
+  was anchored at `CLAUDE.md` / `.claude/`. Any project that vendors, templates
+  or nests a rig keeps its rulebook elsewhere, and every `.md` there was dropped
+  before the elevated-path test ran. It is now recognised wherever it sits, and
+  the sweep's verdict vocabulary knows the words `pr-ship` actually emits.
+
+### Deferred, and on what condition
+
+Two pieces of the source brief did **not** travel, because shipping an unproven
+gate into other people's projects is worse than not having one:
+
+- the queue-closing discipline for blocked dependents — enters when it has been
+  merged and used in the project it came from;
+- the clarify-gate (`C-0…C-2`) — enters once that gate has fired at least once
+  anywhere. Until then there is nothing to copy but an intention.
+
 ## 0.3.1
 
 `create-agent-rig init` shipped a rig that looked installed and enforced
