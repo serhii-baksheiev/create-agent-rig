@@ -1,14 +1,17 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { copyTree, listTree } from '../lib/copy-tree.js';
 import { ALLOWED_OVERWRITES, detectCollisions } from '../lib/composition.js';
+import { agentOsLayerDirs } from '../lib/install-set.js';
+import { sha256, writeManifest } from '../lib/manifest.js';
 import { substituteContent, substituteFileName } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { gitEnv } from '../lib/git-env.js';
 import { DEFAULT_TARGET, TARGETS, TARGET_NAMES } from '../lib/targets.js';
-import { agentOsStackDir, agentOsUniversalDir, skeletonDir } from '../templates.js';
+import { skeletonDir } from '../templates.js';
+import { packageVersion } from '../lib/version.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class CreateError extends Error {}
@@ -66,13 +69,10 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
   };
 
   // Layer 2 (the skeleton) + layer 1 (agent-os: universal + stack overlays).
+  const agentOsLayers = agentOsLayerDirs(target.stacks);
   const layers = [
     { name: `skeleton/${target.skeletonDir}`, dir: skeletonDir(target.skeletonDir) },
-    { name: 'agent-os/universal', dir: agentOsUniversalDir() },
-    ...target.stacks.map((stack) => ({
-      name: `agent-os/stack/${stack}`,
-      dir: agentOsStackDir(stack),
-    })),
+    ...agentOsLayers,
   ];
 
   // Composition safety: layers must claim disjoint paths. Checked before any
@@ -94,11 +94,47 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
     await copyTree(layer.dir, projectDir, transforms);
   }
 
+  await recordInstall(projectDir, agentOsLayers, transforms, ctx, targetName);
+
   if (options.git !== false) {
     await initGitBaseline(projectDir);
   }
 
   return { projectDir, projectName };
+}
+
+/**
+ * Record the agent-os layer in `.claude/.rig-manifest.json`, so a later
+ * `upgrade` can tell a file the rig wrote from a file the project's own people
+ * changed.
+ *
+ * The skeleton is **not** recorded, and that is the boundary of the whole
+ * upgrade story: once generated, the code belongs to the project. The hashes
+ * are read back off the disk rather than recomputed, so the manifest states
+ * what is actually there and cannot drift from what was copied. The manifest
+ * lands before the baseline commit — it is part of the pristine template, and
+ * it belongs in the project's git history.
+ */
+async function recordInstall(
+  projectDir: string,
+  agentOsLayers: readonly { dir: string }[],
+  transforms: { transformName: (name: string) => string },
+  ctx: SubstitutionContext,
+  target: string,
+): Promise<void> {
+  const files: Record<string, string> = {};
+  for (const layer of agentOsLayers) {
+    for (const rel of await listTree(layer.dir, transforms)) {
+      files[rel] = sha256(await readFile(path.join(projectDir, ...rel.split('/')), 'utf8'));
+    }
+  }
+  await writeManifest(projectDir, {
+    version: await packageVersion(),
+    kind: 'create',
+    project: { name: ctx.projectName, scope: ctx.projectScope, region: ctx.region },
+    stacks: [...(TARGETS[target]?.stacks ?? [])],
+    files,
+  });
 }
 
 const run = promisify(execFile);

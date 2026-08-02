@@ -43,12 +43,16 @@ A CLI that scaffolds a new project with (a) an **agent operating system** — ru
 create-agent-rig/                    — root package: the publishable unit (bin → dist)
   packages/cli/                      — the generator (TS, tested; private inner package)
     src/
-      index.ts                       — bin: create <dir> [--target --no-git --no-color --version] | init
+      index.ts                       — bin: create <dir> [--target --no-git --no-color --version] | init | upgrade
       commands/create.ts             — generate: compose layers, substitute, git baseline
       commands/init.ts               — install the PROCESS layer into an existing repo
+      commands/upgrade.ts            — refresh an installed rig: replace what it wrote, report the rest
       lib/
         copy-tree.ts                 — tree copy + ignore list + mode preservation
-        substitute.ts                — token + @app/ + gitignore→.gitignore substitution
+        substitute.ts                — token + @app/ + gitignore→.gitignore substitution (and its inverse)
+        manifest.ts                  — .claude/.rig-manifest.json: what was installed, and its hashes
+        history.ts                   — the shipped hash table of released versions (bootstrap)
+        install-set.ts               — the agent-os layer as files: rel, source, content
         targets.ts                   — target registry (aws-serverless, node-service)
         composition.ts               — layer-collision policy (disjoint paths)
         prompts.ts                   — interactive target selection (TTY only)
@@ -180,6 +184,7 @@ The same layers with no cloud: a `node:http` server (which also serves the built
 | **2. Target selection** | `--target aws-serverless \| node-service` — coherent alternatives, registry + interactive picker | **Done** |
 | **3. Optional modules** | `--with-<feature>` inside a target | Still gated on Phase 11 data — **not built** |
 | **(reach) `agent-rig init`** | Install the process layer into an *existing* repo (dry-run, never clobbers CLAUDE.md) | **Done** — grows where the tool applies without growing template surface |
+| **(reach) `agent-rig upgrade`** | Bring an installed rig to this version: replace what the rig wrote and nobody edited, report everything else | **Done (0.4.0)** — no auto-merge, by decision: a rig the loop obeys must never change meaning silently |
 
 🔴 Level 3 is allowed **only** for genuinely detachable capabilities and **only** after real usage shows someone needs the choice. Until then: subtraction. No `--with-*` option exists yet, by design.
 
@@ -347,7 +352,6 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
-- AR-13 [elevated]: `init` has no upgrade path — it installs what is absent and keeps what is present, and `--force` covers `CLAUDE.md` alone. A rig updated by re-running it gets new files with none of their wiring, which is the 0.3.1 failure in a new costume. Decide the shape (a `--refresh` that replaces only files `init` itself wrote and the user has not modified? a printed diff?) and note that "just re-run init" must stop being the documented answer until it is true
 - AR-12 [elevated]: declare `templates/agent-os/stack/aws-cdk/.claude/rules/` and `.../node-ts/.claude/rules/`. The aws-cdk one is the sharp case: that file carries its **own** `elevated-paths` block declaring `infra/`, so a merge deleting the block would silently un-declare infrastructure for every generated AWS project — and the sweep would report it clean. Found by review on AR-11, which did not ask for these two
 
 ## Operator queue
@@ -355,7 +359,10 @@ mid-work.
 Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
 
 - ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
-- **publish 0.3.2 to npm** — owner action by standing decision (§11): 2FA, irreversible. Prepared and stopped at the command: version bumped in both manifests, CHANGELOG written, `create` and `init` smoked on scratch projects, `npm pack --dry-run` confirms the new skill and agent travel. Remaining, in order: `npm publish`, then the published-artifact smoke (`npx create-agent-rig@0.3.2` in an empty directory → `pnpm install && pnpm check`)
+- ~~**publish 0.3.2 to npm**~~ — **done by the owner**; `npm view create-agent-rig` lists it as `latest`. It is what every rig in the wild is running, and therefore what `upgrade` bootstraps from
+- **delete the stale `v0.4.0` tag before tagging the real one** — owner action: it exists locally **and on the remote**, pointing at 8dedfc7, the abandoned 0.4.0 preparation that was renumbered to 0.3.2. Nothing was ever published from it. Retagging is a rewrite of a published ref, which the agent does not do; until it is gone, `git tag v0.4.0` fails and `build-hash-history` is right to exclude it (it filters to versions *below* the one being prepared)
+- **decide (0.5): does `upgrade` refresh a `settings.json` it can prove it wrote?** Today it never replaces that file — the U brief said so, and it is the right default while the file is a merge target for the user's own hooks. But with a manifest the ambiguity is gone for the unmodified case, and the cost of leaving it is the exact 0.3.1 failure: a release that adds a hook delivers the file and not its wiring. The command prints the entries to merge and says it will not do it for you
+- **decide (0.5): what happens to `init --force` now that `upgrade` exists?** Open question 3 of the U brief, non-blocking. `--force` replaces `CLAUDE.md` and nothing else; `upgrade` covers the case it was standing in for
 - **AR-4 entry conditions** — port item 117 once it is merged in Flowa; port C-0…C-2 once the clarify gate has fired at least once. Shipping an unproven gate to other people's projects is worse than not having it
 - **tell the users, and set a date to collect what they say** — 0.3.2 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered

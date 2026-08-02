@@ -45,6 +45,14 @@ export async function copyTree(
   await copyDir(srcDir, destDir, '', { ...options, ignore });
 }
 
+/** One file {@link copyTree} would produce, and the template file behind it. */
+export interface TreeEntry {
+  /** Destination-relative path, always `/`-separated. */
+  rel: string;
+  /** Absolute path of the source file. */
+  source: string;
+}
+
 /**
  * The destination-relative file paths {@link copyTree} would produce — same
  * ignore list, same name transform, no writes. Used to check layer
@@ -54,8 +62,20 @@ export async function listTree(
   srcDir: string,
   options: Pick<CopyTreeOptions, 'ignore' | 'transformName'> = {},
 ): Promise<string[]> {
+  return (await listTreeEntries(srcDir, options)).map((entry) => entry.rel);
+}
+
+/**
+ * {@link listTree} with the source path kept alongside each destination — what
+ * an upgrade needs to read the new version of a file, and to name where it
+ * lives when it must not write it.
+ */
+export async function listTreeEntries(
+  srcDir: string,
+  options: Pick<CopyTreeOptions, 'ignore' | 'transformName'> = {},
+): Promise<TreeEntry[]> {
   const ignore = new Set(options.ignore ?? DEFAULT_IGNORE);
-  const files: string[] = [];
+  const files: TreeEntry[] = [];
   const walk = async (dir: string, relDir: string): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
@@ -65,7 +85,7 @@ export async function listTree(
       if (entry.isDirectory()) {
         await walk(path.join(dir, entry.name), relPath);
       } else if (entry.isFile()) {
-        files.push(relPath);
+        files.push({ rel: relPath, source: path.join(dir, entry.name) });
       }
     }
   };
