@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -174,6 +174,42 @@ describe('createProject', () => {
     expect(log.trim().split('\n')).toHaveLength(1);
     const { stdout: status } = await exec('git', ['status', '--porcelain'], { cwd: projectDir });
     expect(status.trim()).toBe(''); // everything generated is in the baseline
+  });
+
+  // Observed, twice, on this repo's own branches: git hands its hooks an
+  // absolute GIT_DIR when the commit comes from a linked worktree, the
+  // pre-commit suite inherits it, and the baseline commit of every generated
+  // project in that run lands in the OUTER repository — on the branch being
+  // committed. The generated project ends up with no .git at all.
+  it('ignores an inherited git environment — the baseline is the new repo, never the caller’s', async () => {
+    const outer = path.join(work, 'outer');
+    await mkdir(outer, { recursive: true });
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+    const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
+    await exec('git', ['init', '--quiet'], { cwd: outer });
+    await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
+    await exec('git', [...identity, 'add', '-A'], { cwd: outer });
+    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], { cwd: outer });
+
+    const inherited = { ...process.env, GIT_DIR: path.join(outer, '.git') };
+    const restore = { ...process.env };
+    Object.assign(process.env, inherited);
+    try {
+      const { projectDir } = await createProject('gitted-under-git-dir', { cwd: work });
+      // the generated project got its own repository...
+      await expect(stat(path.join(projectDir, '.git'))).resolves.toBeDefined();
+      const { stdout: log } = await exec('git', ['log', '--oneline'], { cwd: projectDir });
+      expect(log.trim().split('\n')).toHaveLength(1);
+      // ...and the caller's repository was left exactly as it was
+      const { stdout: outerLog } = await exec('git', ['log', '--oneline'], { cwd: outer });
+      expect(outerLog.trim().split('\n')).toHaveLength(1);
+      expect(outerLog).toContain('outer seed');
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in restore)) delete process.env[key];
+      Object.assign(process.env, restore);
+    }
   });
 
   it('skips git when asked, and generation still succeeds', async () => {

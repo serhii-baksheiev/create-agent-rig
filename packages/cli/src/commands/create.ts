@@ -102,15 +102,54 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
 
 const run = promisify(execFile);
 
+/**
+ * Variables that point git at a repository other than `cwd`. Inherited, they
+ * silently redirect every command below into the CALLER's repository: `git
+ * init` re-initialises it, `add -A` stages the caller's tree, and the baseline
+ * commit lands on whatever branch the caller has checked out — while the
+ * generated project ends up with no `.git` at all.
+ *
+ * This is not hypothetical. Git sets `GIT_DIR` and `GIT_INDEX_FILE` — absolute
+ * — for hooks it runs, so a `git commit` from a linked worktree whose
+ * pre-commit runs a test suite that generates projects writes one junk commit
+ * per generated project onto the branch being committed. Observed twice.
+ *
+ * The list is explicit rather than a `GIT_*` sweep on purpose: variables like
+ * `GIT_SSH_COMMAND` or `GIT_TERMINAL_PROMPT` are the caller's environment and
+ * none of our business. Only repository *location* is stripped.
+ *
+ * 🔴 Limit, stated: this scopes the commands **this file** runs. It does not
+ * make git in general safe to call from a hook-invoked process, and it cannot
+ * help a caller who spawns git themselves.
+ */
+const GIT_LOCATION_VARS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_PREFIX',
+] as const;
+
+/** The caller's environment minus anything that re-points git at another repo. */
+function gitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of GIT_LOCATION_VARS) delete env[key];
+  return env;
+}
+
 async function initGitBaseline(projectDir: string): Promise<void> {
   // Disable git's background maintenance for these one-shot commands: a commit
   // can otherwise fork an auto-gc / maintenance process that keeps writing to
   // .git/objects/pack after we return — a non-deterministic tail that races any
   // caller cleaning up the directory, and pointless work on a one-commit repo.
   const quiet = ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false'];
+  const where = { cwd: projectDir, env: gitEnv() };
   try {
-    await run('git', [...quiet, 'init', '--quiet'], { cwd: projectDir });
-    await run('git', [...quiet, 'add', '-A'], { cwd: projectDir });
+    await run('git', [...quiet, 'init', '--quiet'], where);
+    await run('git', [...quiet, 'add', '-A'], where);
     // Explicit identity: the baseline must commit even where git has no
     // global user configured (fresh machines, CI). --no-verify here shields
     // the baseline from the USER'S global hooks only — the generated
@@ -129,7 +168,7 @@ async function initGitBaseline(projectDir: string): Promise<void> {
         '-m',
         'Pristine template (create-agent-rig)',
       ],
-      { cwd: projectDir },
+      where,
     );
   } catch {
     // git missing or unusable — generation never fails on this.
