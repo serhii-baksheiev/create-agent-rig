@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
+import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -364,9 +365,16 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     } else if (options.checks !== undefined) {
       await writeF(path.join(hookDir, 'dod-checks.json'), JSON.stringify(options.checks));
     }
+    // Same sanitised environment the CLI uses, and for the same reason: run
+    // under an inherited GIT_DIR (which is what a pre-commit hook gets from a
+    // linked worktree) these commands would `git init` and commit into the
+    // REPOSITORY RUNNING THE SUITE instead of this scratch project. It wrote a
+    // junk commit onto a real branch here before it was caught.
     const git = (...args: string[]) =>
       new Promise<void>((resolve, reject) => {
-        execFile('git', args, { cwd: projectDir }, (error) => (error ? reject(error) : resolve()));
+        execFile('git', args, { cwd: projectDir, env: gitEnv() }, (error) =>
+          error ? reject(error) : resolve(),
+        );
       });
     await git('init', '--quiet');
     await writeF(path.join(projectDir, 'work.txt'), 'x');
