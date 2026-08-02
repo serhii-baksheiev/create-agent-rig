@@ -296,3 +296,50 @@ In practice: open an empty file and write the rule in your own words rather than
 - **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
 - **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). (The `worktree` rule is no longer parked — `worktree-task` shipped in 0.3.0.)
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.
+
+---
+
+## Agent queue
+
+Work an agent may take autonomously (Tier 0/1 — `.claude/rules/autonomy.md`).
+One line each, most valuable first; delete a line when it lands. This repo runs
+the `plan-md` adapter (`.claude/queue.json`), so **this heading is load-bearing**
+— renaming it makes the queue unreadable rather than empty.
+
+Current contents decompose the Flowa→rig port brief (`AR`, v2 of 2026-08-01), an
+owner-directed item. The brief's 🔴 rule governs every one of them: **nothing here
+brings a Flowa copy of `guard-bash`, `detect-missed-gate` or the `loop` skill into
+this repo** — the versions here are the older-and-larger ones, and "syncing" them
+backwards is a regression of hundreds of lines of checks.
+
+- AR-1: new premise-check skill in `universal/.claude/skills/`, referenced from `loop` §2 between selection and Red, with a test in `test/template/skills.test.ts`
+- AR-2: S-0 (contradicting the queue item = BLOCKER) into `universal/.claude/agents/code-reviewer.md`, plus a fourth read-only agent — a prose reviewer — covered in `test/template/agents.test.ts`
+- AR-3a: hygiene check "a split parent left open" in `queue/core.mjs` `hygieneOf`, in the existing style (a `kind` and a stated why per finding); the two existing checks stay untouched
+- AR-6: four review nits in one PR — stale `DEFAULT_TARGET` comment, `--dry-run` missing from `USAGE`, `demo.sh` citing PLAN phases an outside user cannot see, a NOTES.md line recording the reverse drift of the Flowa copies
+- AR-5: prepare release 0.4.0 — CHANGELOG in the repo's convention (what a freshly generated project gets, and why), plus what AR-4 defers and on which entry condition; smoke `create` and `init` on a scratch project. **Stops at `npm publish`** — that is the owner action below
+
+## Operator queue
+
+Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
+
+- **decide: does the neutral `Ticket` shape gain a `body` field?** It blocks two of AR-3's three hygiene checks (body-vs-labels, the link to a document); adapters read the body internally today and do not expose it. The brief leans to adding it — core testable on fixtures, adapters stay thin. Either way the decision gets written into the shape's comment, not made silently
+- **publish 0.4.0 to npm** — owner action by standing decision (§11): 2FA, irreversible; the agent prepares the release and stops at the command
+- **AR-4 entry conditions** — port item 117 once it is merged in Flowa; port C-0…C-2 once the clarify gate has fired at least once. Shipping an unproven gate to other people's projects is worse than not having it
+- **does Flowa take the reverse port?** Out of this brief's scope by construction; AR-6 only records the fact that its copies are behind
+
+## Journal
+
+Newest first, date-free — order carries the sequence. Prune freely: this is
+operational memory, not an archive. Fields per the template in
+`templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
+**visibly empty, never estimated**.
+
+### queues added to this repo's own PLAN.md, brief decomposed
+
+- **done** — this repo dogfooded the `plan-md` adapter without having a `## Agent
+  queue` heading at all; the adapter would have thrown `queue-unreadable` on the
+  first `loop` run here. Both queues and this journal now exist, filled from the
+  AR brief
+- **stopped at** — checkpoint, still running (AR-1 next)
+- **queue hygiene** — the missing heading above is itself the first finding
+- **cost** —
