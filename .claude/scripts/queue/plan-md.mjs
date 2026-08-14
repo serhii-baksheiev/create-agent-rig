@@ -267,7 +267,11 @@ const COUNT = /seen ×(\d+)\s*$/;
  *
  * Not an exotic input: `autonomy.md` tells an escalating run to report "verbatim
  * errors, not summaries", so a stack trace in `finding` is the expected case.
- * The text survives; only its layout does not.
+ * The text survives; its layout does not — and "layout" includes interior runs
+ * of tabs and spaces, which collapse to one space each. `parsePlan` normalises
+ * titles the same way, so this is the house convention rather than a special
+ * case, but it is wider than "newlines are folded" and worth knowing before
+ * relying on a field surviving byte-for-byte.
  *
  * 🔴 One quantifier over one class, because the obvious spelling was quadratic:
  * putting an unbounded whitespace quantifier in front of a line-terminator class
@@ -343,9 +347,16 @@ const bulletFor = (item, proposal, seen) =>
  *   prefix of a longer one matches it even when both are well under 40
  *   characters (`f:p:rename-the` against `f:p:rename-the-counter`). The prefix
  *   case bites in one direction only: the short one filed second is swallowed,
- *   the reverse order files both;
+ *   the reverse order files both. When it bites, the caller is told
+ *   `{ok: true, incremented: <the short fingerprint>}` for a bullet that carries
+ *   the long one — the same "incremented something that does not exist" shape
+ *   this adapter has a test for in the quoted-prose case;
  * - a CRLF plan file comes back mixed — `sectionRange` splits on `\n`, so every
- *   pre-existing line keeps its `\r` and the appended bullet has none;
+ *   pre-existing line keeps its `\r` and the appended bullet has none. An
+ *   increment drops the `\r` from the line it rewrites, because the counter
+ *   pattern's trailing whitespace is inside the match;
+ * - only the FIRST `## Operator queue` is ever written to: `sectionRange` uses
+ *   `findIndex`, so a second one later in the file is invisible;
  * - a missing plan file throws `ENOENT` from the read rather than returning
  *   `ok: false` — loud, so nothing is lost, but it is not one of the structured
  *   refusals;

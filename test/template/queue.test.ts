@@ -979,6 +979,37 @@ describe('plan-md files a triage proposal instead of instructing a human to file
     }
   });
 
+  // The fold is wider than "newlines are folded": interior tabs and multi-space
+  // runs collapse too. Every other fixture here is single-spaced, so nothing
+  // pinned that — and the byte-for-byte assertions elsewhere in this block read
+  // as if verbatim preservation were guaranteed. It is guaranteed only for
+  // single-spaced text, and the docblock now says so; this is the test that
+  // keeps the two in step.
+  it('collapses interior whitespace runs, not only line breaks', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const { fingerprintOf } = await load('core.mjs');
+    const spaced = {
+      finding: 'the\t\tcolumns   drifted',
+      part: 'PLAN.md',
+      change: 'fold the field',
+      proof: 'one space survives',
+    };
+    const planPath = await withPlan();
+
+    const first = proposeTriage(spaced, { planPath });
+    const operator = sectionOf(await read(planPath), 'Operator queue');
+
+    expect(first.ok).toBe(true);
+    expect(operator).toContain('the columns drifted');
+    expect(operator).not.toContain('the\t\tcolumns');
+    // and the fold cannot reach dedupe: the fingerprint is computed on the raw
+    // proposal, before any folding, so a refiling still increments in place
+    proposeTriage({ ...spaced }, { planPath });
+    const again = sectionOf(await read(planPath), 'Operator queue');
+    expect(again.split('the columns drifted')).toHaveLength(2); // one bullet, not two
+    expect(counterIn(again, spaced, fingerprintOf(spaced) as string)).toBe(2);
+  });
+
   it('files a proposal whose fingerprint an earlier proposal quotes, on its own bullet', async () => {
     const { proposeTriage } = await load('plan-md.mjs');
     const { fingerprintOf } = await load('core.mjs');
