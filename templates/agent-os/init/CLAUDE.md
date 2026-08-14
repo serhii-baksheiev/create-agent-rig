@@ -100,9 +100,16 @@ All three are one-liners, and all three are inert until you do them.
    bring. Add both:
 
    ```
-   .claude/queue.state.json    # the tier the last close recorded
-   .claude/worktrees/          # task worktrees
+   # the tier the last close recorded
+   .claude/queue.state.json
+   # task worktrees
+   .claude/worktrees/
    ```
+
+   Each comment is on its own line, and that is not formatting: git treats `#`
+   as a comment **only at line start**, so a trailing `# …` becomes part of the
+   pattern and the line then ignores nothing. It fails silently — you find out
+   when the file lands in a commit.
 
    The first one matters more than it looks. It is how the loop rations the
    elevated tier — never two elevated items back to back — and it is

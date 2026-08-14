@@ -74,6 +74,57 @@ describe('preflight.mjs — the probes must answer about the repository they are
     expect(sanitised['GH_TOKEN']).toBe('secret');
     expect(sanitised['PATH']).toBe('/usr/bin');
   });
+
+  // Why the list is named rather than a `GIT_*` prefix sweep, stated as a test
+  // because the prefix sweep is the obvious "simplification" and it is wrong:
+  // `GIT_CONFIG_*` CONFIGURES git, it does not locate a repository. Containers
+  // and CI inject `safe.directory` through exactly these, and a child that loses
+  // them gets `fatal: detected dubious ownership` — a failure a caller that
+  // falls back on error then hides.
+  it('keeps the variables that configure git rather than locate it', () => {
+    const sanitised = withoutGitLocation({
+      GIT_CONFIG_GLOBAL: '/etc/gitconfig',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'safe.directory',
+      GIT_CONFIG_VALUE_0: '/work',
+      GIT_DIR: '/elsewhere/.git',
+    });
+    expect(sanitised['GIT_CONFIG_GLOBAL']).toBe('/etc/gitconfig');
+    expect(sanitised['GIT_CONFIG_COUNT']).toBe('1');
+    expect(sanitised['GIT_CONFIG_KEY_0']).toBe('safe.directory');
+    expect(sanitised['GIT_CONFIG_VALUE_0']).toBe('/work');
+    expect(sanitised['GIT_DIR']).toBeUndefined();
+  });
+});
+
+// `invariants.md`: "One mechanism, one implementation. If two files enforce the
+// same invariant, they will disagree — and the one nobody is looking at is the
+// one that is wrong." Three files state this rule today: `preflight.mjs` exports
+// the list, `packages/cli/src/lib/git-env.ts` states it and explicitly rejects a
+// prefix sweep — and `checkout.mjs` sweeps the prefix inline, which is the copy
+// that already disagrees.
+describe('checkout.mjs sanitises through the shared list, not a second one', () => {
+  const checkoutSource = () =>
+    readFile(
+      path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/queue/checkout.mjs'),
+      'utf8',
+    );
+
+  it('imports the exported sanitiser', async () => {
+    // From `git-env.mjs`, the small shared module — NOT from `preflight.mjs`,
+    // which merely re-exports it. The distinction is mechanical, not stylistic:
+    // `checkout.mjs` sits on the queue's READ path, and every fixture that
+    // exercises the CLI copies `.claude/scripts/queue/` alone. Importing a CLI
+    // script from here made four of them die on ERR_MODULE_NOT_FOUND, which is
+    // how the module got extracted in the first place.
+    expect(await checkoutSource()).toMatch(
+      /import\s*\{[^}]*withoutGitLocation[^}]*\}\s*from\s*['"][^'"]*git-env\.mjs['"]/,
+    );
+  });
+
+  it('carries no GIT_ prefix sweep of its own', async () => {
+    expect(await checkoutSource()).not.toMatch(/startsWith\(\s*['"]GIT_['"]\s*\)/);
+  });
 });
 
 // The sweep that would have caught this in one pass instead of four: a call
@@ -86,7 +137,9 @@ describe('every authored git spawn passes an explicit environment', () => {
     'scripts/prepare.mjs',
     'templates/agent-os/universal/.claude/scripts/preflight.mjs',
     'templates/agent-os/universal/.claude/hooks/gate-stop-dod.mjs',
+    'templates/agent-os/universal/.claude/scripts/queue/checkout.mjs',
     'test/template/hooks.test.ts',
+    'test/template/queue.test.ts',
   ];
 
   it.each(files)('%s', async (rel) => {

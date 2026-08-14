@@ -407,15 +407,20 @@ none** — the other 26 all name artefacts under `.claude/hooks/`, `scripts/`,
 one of them declared elevated in `CLAUDE.md`. ✅ **Which of the two the ration
 reads is RULED (owner): the tier a change turned out to be, computed from its
 diff's paths — the marker is advisory, and a marker disagreeing with the paths
-is hygiene to report.** ✅ **And the ration is wired:** AR3-36 landed the close
-step that records it, so spacing fires between tasks for the first time. The
-tier lives in `.claude/queue.state.json` beside the config, not in
-`config.lastCompletedTier` — the config is composed from the template layer, so
-a runtime value in it is drift. ⚠ **What follows from the two together:** with
-the paths as the authority there is no normal work in this block, so the ration
-will hold the queue the first time it fires — a correct stop, reported honestly
-as `nothing-selectable`, needing either normal work or a revised criterion. The
-original measurement stands as
+is hygiene to report.** ⏳ **The ration is being wired by AR3-36, which is open
+until that branch merges** — read the item, not this line, for its state. When
+it lands, the tier will live in `.claude/queue.state.json` beside the config,
+not in `config.lastCompletedTier`: the config is composed from the template
+layer, so a runtime value in it is drift. 🔴 **And note precisely what that
+does and does not change, because the two halves of the ration have different
+authorities.** AR3-36 fixes the value *written* — computed from the diff's
+paths. The value *filtered on* is still each item's marker (`core.mjs` tests
+`ticket.tier`, which `plan-md` derives from `[elevated]` alone). So after an
+elevated close the ration holds the 7 marked items and **hands out one of the
+26 marked `normal`** — several of which are elevated by path. It does not stop
+the queue, and the honest `nothing-selectable` stop arrives only once every
+remaining item is *marked* elevated. Closing that second gap is not AR3-36's
+scope and has no item yet. The original measurement stands as
 the record of what the day the seam is wired would have looked like —
 `selectNext(8 × elevated, {lastCompletedTier:'elevated'})` returned
 `candidates: 0, skipped: 8`, and the stop condition then read `queue-empty`

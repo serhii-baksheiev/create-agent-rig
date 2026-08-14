@@ -1,5 +1,14 @@
 import { execFile } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -21,6 +30,16 @@ const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const queueDir = path.join(universal, '.claude', 'scripts', 'queue');
 const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).href);
 const read = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
+
+// Every git this file spawns gets an explicit environment, and the list of what
+// leaves is the ONE the shipped scripts export — a hand-rolled second copy here
+// is the same defect `invariants.md` names ("one mechanism, one implementation").
+// The scar: under pre-commit an inherited relative `GIT_INDEX_FILE` killed these
+// tests with `fatal: .git/index: index file open failed: Not a directory`, while
+// `pnpm test` from a shell was green.
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(universal, '.claude', 'scripts', 'preflight.mjs')).href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 
 interface Ticket {
   id: string;
@@ -2288,16 +2307,14 @@ describe('reading the state — only a truly absent file means "nothing has clos
 // of merges. `git rev-parse --path-format=absolute --git-common-dir` answers
 // `<main>/.git` from anywhere inside either, and its parent is the root.
 describe('the queue state belongs to the checkout, so a worktree writes where the checkout reads', () => {
-  // 🔴 Every GIT_* variable is stripped, and this is not defensive tidying.
-  // A git hook exports `GIT_INDEX_FILE` and `GIT_DIR` as paths RELATIVE to the
-  // repository it fired in, so a child `git` run with a different cwd resolves
-  // them against the wrong root: under pre-commit these tests died on
-  // `fatal: .git/index: index file open failed: Not a directory`, while
-  // `pnpm test` from a shell was green. This repo has the scar already —
+  // 🔴 The location variables are stripped, through the SHARED sanitiser rather
+  // than a copy of its rule. A git hook exports `GIT_INDEX_FILE` and `GIT_DIR`
+  // as paths RELATIVE to the repository it fired in, so a child `git` run with a
+  // different cwd resolves them against the wrong root: under pre-commit these
+  // tests died on `fatal: .git/index: index file open failed: Not a directory`
+  // while `pnpm test` from a shell was green. This repo has the scar already —
   // NOTES.md's GIT_DIR incident, 19 junk commits across two branches.
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
-  );
+  const cleanEnv = withoutGitLocation();
 
   const git = (args: string[], cwd: string): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -2458,6 +2475,152 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
     const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
     expect(parsed.ticket?.title).toBe('rotate the key');
   }, 20_000);
+
+  // `mainCheckoutRoot` is now the single resolver BOTH sides go through — the
+  // writer in `state.mjs` and the reader in `index.mjs` — and every test above
+  // reaches it only through one of them. Its own contract needs pinning
+  // directly, failures included: a resolver that answers `startDir` for a reason
+  // it never names is a resolver that quietly writes the tier into the worktree
+  // again, and the next selection rations on `null`.
+  describe('mainCheckoutRoot — the one answer to "which checkout is this"', () => {
+    type Resolver = (startDir: string) => string;
+    const resolver = async (): Promise<Resolver> =>
+      (await load('checkout.mjs')).mainCheckoutRoot as Resolver;
+
+    const scratch = async (prefix: string): Promise<string> =>
+      realpath(await mkdtemp(path.join(tmpdir(), prefix)));
+
+    /**
+     * A `git` on PATH that answers however the test needs — the only portable way
+     * to construct a git failure that is NOT "there is no repository here",
+     * short of owning a directory git refuses to read.
+     *
+     * `null` installs no binary at all, which is the "git is not installed" case.
+     * PATH is restored in `finally`: every other test in this file spawns git.
+     */
+    const withStubGit = async (script: string | null, body: () => void): Promise<void> => {
+      const bin = await scratch('stub-git-');
+      if (script !== null) {
+        await writeFile(path.join(bin, 'git'), script);
+        await chmod(path.join(bin, 'git'), 0o755);
+      }
+      const original = process.env['PATH'];
+      process.env['PATH'] = bin;
+      try {
+        body();
+      } finally {
+        if (original === undefined) delete process.env['PATH'];
+        else process.env['PATH'] = original;
+      }
+    };
+
+    it('answers the checkout root when asked from the checkout itself', async () => {
+      const { main } = await checkoutWithWorktree();
+      expect((await resolver())(main)).toBe(main);
+    }, 20_000);
+
+    it('answers the MAIN checkout root when asked from a linked worktree', async () => {
+      const { main, worktree } = await checkoutWithWorktree();
+      expect((await resolver())(worktree)).toBe(main);
+    }, 20_000);
+
+    it('answers the same from a subdirectory of either', async () => {
+      const { main, worktree } = await checkoutWithWorktree();
+      const resolve = await resolver();
+      expect(resolve(path.join(main, '.claude'))).toBe(main);
+      expect(resolve(path.join(worktree, '.claude'))).toBe(main);
+    }, 20_000);
+
+    // The permissive answer is right for exactly one failure — a queue works
+    // fine in a plain directory — and the docstring promises only this one.
+    it('falls back to the directory it was given when nothing above it is a repository', async () => {
+      const plain = await scratch('plain-');
+      expect((await resolver())(plain)).toBe(plain);
+    });
+
+    it('falls back when git is not installed at all', async () => {
+      const anywhere = await scratch('no-git-');
+      const resolve = await resolver();
+      await withStubGit(null, () => {
+        expect(resolve(anywhere)).toBe(anywhere);
+      });
+    });
+
+    // The other failures are not "you are not in a repository": a broken binary,
+    // a git too old for `--path-format`, a checkout git refuses to read. Each is
+    // a question that could not be answered, and answering it anyway — with the
+    // stderr discarded — is how the tier ends up written to the wrong file with
+    // nothing on stdout to say so.
+    it('refuses to answer when git failed for a reason other than "no repository here"', async () => {
+      const dir = await scratch('dubious-');
+      const resolve = await resolver();
+      await withStubGit(
+        '#!/bin/sh\n' +
+          'echo "fatal: detected dubious ownership in repository at \'/work\'" >&2\n' +
+          'exit 128\n',
+        () => {
+          expect(() => resolve(dir)).toThrow(/dubious ownership/i);
+        },
+      );
+    });
+
+    /** The environment the child git actually received, by name. */
+    const namesHandedToGit = async (): Promise<Set<string>> => {
+      const dir = await scratch('child-env-');
+      const dump = path.join(dir, 'env.txt');
+      const resolve = await resolver();
+      const injected: Record<string, string> = {
+        // these CONFIGURE git — how a container or CI injects `safe.directory`
+        GIT_CONFIG_GLOBAL: path.join(dir, 'gitconfig'),
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'safe.directory',
+        GIT_CONFIG_VALUE_0: dir,
+        // and these LOCATE a repository, which is the whole hazard
+        GIT_DIR: '/elsewhere/.git',
+        GIT_WORK_TREE: '/elsewhere',
+        GIT_INDEX_FILE: '.git/index',
+      };
+      Object.assign(process.env, injected);
+      try {
+        await withStubGit(
+          // 🔴 `/usr/bin/env` by absolute path. PATH is the stub directory and
+          // nothing else, so a bare `env` is not found, the dump stays empty —
+          // and an empty dump makes the "locating variables are withheld" test
+          // pass for the wrong reason while this one fails for the wrong reason.
+          `#!/bin/sh\n/usr/bin/env > ${JSON.stringify(dump)}\n` +
+            `printf '%s\\n' ${JSON.stringify(path.join(dir, '.git'))}\n`,
+          () => {
+            resolve(dir);
+          },
+        );
+      } finally {
+        for (const key of Object.keys(injected)) delete process.env[key];
+      }
+      return new Set((await read(dump)).split('\n').map((line) => line.split('=')[0] ?? ''));
+    };
+
+    it('hands git the variables that configure it', async () => {
+      const received = await namesHandedToGit();
+      for (const key of [
+        'GIT_CONFIG_GLOBAL',
+        'GIT_CONFIG_COUNT',
+        'GIT_CONFIG_KEY_0',
+        'GIT_CONFIG_VALUE_0',
+      ]) {
+        expect(
+          received.has(key),
+          `${key} must survive: it configures git, it locates nothing`,
+        ).toBe(true);
+      }
+    });
+
+    it('withholds every variable that locates a repository', async () => {
+      const received = await namesHandedToGit();
+      for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) {
+        expect(received.has(key), `${key} must not reach the child`).toBe(false);
+      }
+    });
+  });
 });
 
 describe('the loop skill drives the seam, not one tracker', () => {
@@ -2587,6 +2750,32 @@ describe('composition', () => {
     expect(manifest['process']).toContain('.claude/scripts/queue/state.mjs');
   });
 
+  // The same failure one level down, and a worse one: `checkout.mjs` is imported
+  // by BOTH the writer and the reader, so a manifest that drops it ships every
+  // generated project an `index.mjs` and a `state.mjs` importing a file that is
+  // not there — the queue CLI fails to load at all, on the first `next`.
+  it('layers.json carries the resolver the writer and the reader both import', async () => {
+    const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
+    expect(manifest['process']).toContain('.claude/scripts/queue/checkout.mjs');
+  });
+
+  // and the general form, so the next module extracted out of this seam cannot
+  // be forgotten the same way
+  it('composes every module the queue seam imports from its own directory', async () => {
+    const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
+    const composed = new Set(Object.values(manifest).flat());
+    const missing: string[] = [];
+    for (const file of (await readdir(queueDir)).filter((name) => name.endsWith('.mjs'))) {
+      for (const match of (await read(queueDir, file)).matchAll(
+        /from\s+'\.\/([A-Za-z0-9._-]+\.mjs)'/g,
+      )) {
+        const target = `.claude/scripts/queue/${match[1] ?? ''}`;
+        if (!composed.has(target)) missing.push(`${file} -> ${target}`);
+      }
+    }
+    expect(missing, 'imported but not composed — generation would drop it').toEqual([]);
+  });
+
   // The other half of the same decision, and the one the drift check taught:
   // the CONFIG is composed and the STATE is not. Composing the state file would
   // ship a generated file that every close rewrites — which is precisely the
@@ -2610,7 +2799,14 @@ describe('composition', () => {
 describe("the queue's own state is per-checkout, so it is never committed", () => {
   const ignored = (file: string): Promise<boolean> =>
     new Promise((resolve) => {
-      execFile('git', ['check-ignore', '-q', file], { cwd: repoRoot }, (error) => resolve(!error));
+      // `check-ignore` consults the index, so an inherited GIT_INDEX_FILE aims it
+      // at another repository — the variable that already killed these tests once.
+      execFile(
+        'git',
+        ['check-ignore', '-q', file],
+        { cwd: repoRoot, env: withoutGitLocation() },
+        (error) => resolve(!error),
+      );
     });
 
   it('this repository ignores the state file while keeping the config tracked', async () => {
@@ -2630,4 +2826,59 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
       expect(content).toContain('.claude/queue.state.json');
     },
   );
+});
+
+// The third place the same invariant is expressed, and the only one with no
+// file behind it: `init` installs into a repository it did not create, so it
+// cannot edit that repository's `.gitignore` — it hands the reader a block to
+// paste. A pasted block that ignores nothing is the worst of both outcomes: the
+// document reads as finished and the next `git add -A` stages the state file.
+//
+// 🔴 Assert it BEHAVIOURALLY, and extract the block rather than restating it.
+// The bug here is invisible to any assertion on the markdown: git honours `#` as
+// a comment only at the START of a line, so a trailing `# why` is part of the
+// pattern. Reproduced with the block as written — `git check-ignore -q
+// .claude/queue.state.json` exits 1, and `git status --short` shows `?? .claude/`.
+describe('the ignore block the init doc tells a reader to paste', () => {
+  /** The block, dedented exactly as pasting it out of the fence would give it. */
+  const pastedBlock = async (): Promise<string> => {
+    const doc = await read(repoRoot, 'templates', 'agent-os', 'init', 'CLAUDE.md');
+    const fenced = [...doc.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
+      .map((match) => match[1] ?? '')
+      .filter((body) => body.includes('.claude/queue.state.json'));
+    expect(fenced, 'the doc must still show the reader one block to paste').toHaveLength(1);
+    const lines = (fenced[0] ?? '').replace(/\n$/, '').split('\n');
+    const indent = lines
+      .filter((line) => line.trim())
+      .reduce((least, line) => Math.min(least, line.length - line.trimStart().length), Infinity);
+    return lines.map((line) => line.slice(indent)).join('\n');
+  };
+
+  const git = (args: string[], cwd: string): Promise<number> =>
+    new Promise((resolve) => {
+      execFile('git', args, { cwd, env: withoutGitLocation() }, (error) =>
+        resolve(error ? ((error as { code?: number }).code ?? 1) : 0),
+      );
+    });
+
+  /** A scratch repository with the block pasted in and both paths present. */
+  const repoWithPastedBlock = async (): Promise<string> => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'ignore-block-')));
+    expect(await git(['init', '-b', 'main'], dir)).toBe(0);
+    await writeFile(path.join(dir, '.gitignore'), `${await pastedBlock()}\n`);
+    await mkdir(path.join(dir, '.claude', 'worktrees', 'task-1'), { recursive: true });
+    await writeFile(path.join(dir, '.claude', 'queue.state.json'), '{}\n');
+    return dir;
+  };
+
+  it('ignores the state file once pasted into a .gitignore', async () => {
+    const dir = await repoWithPastedBlock();
+    // `check-ignore -q`: 0 = ignored, 1 = tracked-in-waiting
+    expect(await git(['check-ignore', '-q', '.claude/queue.state.json'], dir)).toBe(0);
+  }, 20_000);
+
+  it('ignores the worktrees directory once pasted', async () => {
+    const dir = await repoWithPastedBlock();
+    expect(await git(['check-ignore', '-q', '.claude/worktrees/task-1'], dir)).toBe(0);
+  }, 20_000);
 });
