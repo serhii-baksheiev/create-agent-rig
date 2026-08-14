@@ -104,10 +104,13 @@ describe('preflight.mjs — the probes must answer about the repository they are
 
 // `invariants.md`: "One mechanism, one implementation. If two files enforce the
 // same invariant, they will disagree — and the one nobody is looking at is the
-// one that is wrong." Three files state this rule today: `preflight.mjs` exports
-// the list, `packages/cli/src/lib/git-env.ts` states it and explicitly rejects a
-// prefix sweep — and `checkout.mjs` sweeps the prefix inline, which is the copy
-// that already disagrees.
+// one that is wrong." TWO files state the list today, and the duplication is
+// forced: `.claude/scripts/git-env.mjs` for anything that ships into a generated
+// project, and `packages/cli/src/lib/git-env.ts` for the generator itself, which
+// runs as compiled TypeScript and cannot import the template. Everything else
+// imports one of those two — `preflight.mjs` re-exports the function,
+// `checkout.mjs` and `gate-stop-dod.mjs` import it. The describes below pin
+// each of those, and the equality test pins the one drift the layering forces.
 describe('checkout.mjs sanitises through the shared list, not a second one', () => {
   const checkoutSource = () =>
     readFile(
@@ -145,11 +148,11 @@ describe('the two copies of the location list are one list', () => {
   });
 });
 
-// And the copy nobody named. `gate-stop-dod.mjs` carries four of the eight
-// inline, justified by "this file ships into generated projects, so it cannot
-// import the canonical list from the generator" — a reason that expired the day
-// `layers.json` started shipping `.claude/scripts/git-env.mjs` into generated
-// projects too. Both files are in the SAME layer, one directory apart.
+// The copy nobody named, now removed. `gate-stop-dod.mjs` USED TO carry four of
+// the eight inline, justified by "this file ships into generated projects, so it
+// cannot import the canonical list from the generator" — a reason that expired
+// the day `layers.json` started shipping `.claude/scripts/git-env.mjs` into
+// generated projects too. Both files are in the SAME layer, one directory apart.
 //
 // The shorter list is not a smaller opinion either: `GIT_OBJECT_DIRECTORY` is
 // on the canonical list, is missing from these four, and makes `git status`
@@ -204,17 +207,21 @@ describe('every authored git spawn passes an explicit environment', () => {
   });
 
   // 🔴 The sweep above reads eight SOURCE files, and a rule layer's commands do
-  // not all live in source. The `recordCompletedTier` snippet in the loop
-  // skill is executed verbatim by every session that closes an item — from a
-  // shell whose `GIT_DIR` is whatever the close step left behind — and it
-  // spawns git with no `env` at all. A documented command is a call site.
+  // not all live in source. The `recordCompletedTier` snippet in the loop skill
+  // is executed verbatim by every session that closes an item — from a shell
+  // whose `GIT_DIR` is whatever fired it — and it shipped, in the very branch
+  // that wrote this rule, spawning git with no `env`. A documented command is a
+  // call site, and nothing was watching this kind.
   //
   // Deliberately general rather than one string match, so the next snippet is
-  // covered too: every fenced block in the shipped markdown, every programmatic
-  // git spawn inside it. It is scoped to `execFileSync`/`spawnSync`/… and NOT
-  // to shell `git` lines, because a bash snippet runs in the session's own
-  // shell and its environment is not ours to rewrite — that scoping is also
-  // what keeps the false-positive count at zero across all 21 documents here.
+  // covered too: every fenced block in the shipped markdown, both spawn forms.
+  //
+  // ⚠ Scope, stated because it is a real limit and not an oversight: shell
+  // `git …` LINES in bash blocks are not checked. A bash snippet runs in the
+  // session's own shell and its environment is not ours to rewrite. Only
+  // programmatic spawns — where the snippet chooses the child's environment —
+  // are in scope. That boundary is also what keeps false positives at zero
+  // across all 21 documents here.
   it('every fenced snippet that spawns git names its environment', async () => {
     const docs = path.join(repoRoot, 'templates', 'agent-os');
     const entries = await readdir(docs, { recursive: true, withFileTypes: true });
@@ -230,8 +237,12 @@ describe('every authored git spawn passes an explicit environment', () => {
         (fence) => fence[1] ?? '',
       );
       for (const block of blocks) {
+        // Both forms: argv (`exec…('git', [...])`) and the command string
+        // (`execSync('git diff …')`). The source sweep needs a second pass for
+        // the string form; here one alternation covers it, and missing it would
+        // have left the commonest shape in a document invisible.
         const calls = block.matchAll(
-          /(?:execFileSync|execFile|spawnSync|spawn|exec)\(\s*["']git["']/g,
+          /(?:execFileSync|execFile|spawnSync|spawn|execSync|exec)\(\s*["']git(?:["']|\s)/g,
         );
         for (const call of calls) {
           const window = block.slice(call.index ?? 0, (call.index ?? 0) + 400).split('\n\n')[0]!;

@@ -479,13 +479,15 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     }
   });
 
-  // The same question, asked with a variable outside the four the gate strips
-  // by hand. `GIT_OBJECT_DIRECTORY` is on the canonical list and not on the
-  // gate's, and it is not a theoretical member: pointed anywhere other than
-  // this repository's own objects, `git status` exits 128 (measured on git
-  // 2.47.1 — `fatal: bad object HEAD`). The gate catches that as "not a git
-  // repo" and runs the whole check suite on a tree it never managed to read,
-  // so a clean session ends up gated on a check that had no business running.
+  // The same question, asked with the variable that made the gate stop keeping
+  // its own list. `GIT_OBJECT_DIRECTORY` is on the canonical list and was NOT
+  // among the four this hook once stripped by hand — and it is not a
+  // theoretical member: pointed anywhere other than this repository's own
+  // objects, `git status` exits 128 (measured on git 2.47.1 — `fatal: bad
+  // object HEAD`). The gate catches that as "not a git repo" and runs the whole
+  // check suite on a tree it never managed to read, so a clean session ends up
+  // gated on a check that had no business running. This passes because the hook
+  // imports the shared list now; it is the regression pin for that.
   it('judges the tree it is in under every variable that can relocate a repository', async () => {
     await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: false });
     const objects = await fsp.mkdtemp(path.join(tmpdir(), 'dod-objects-'));
