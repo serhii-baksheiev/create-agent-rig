@@ -60,6 +60,49 @@ export const loadConfig = (configPath) => {
   }
 };
 
+/**
+ * The state file that travels with a config: `<name>.json` → `<name>.state.json`.
+ *
+ * Derived from the config path rather than from the project root on purpose. The
+ * two must stay a pair: a run pointed at a temp config by `--config` would
+ * otherwise read the developer's own leftover state and let a tier from an
+ * unrelated checkout decide its selection.
+ */
+export const statePathFor = (configPath) => configPath.replace(/(\.json)?$/, '.state.json');
+
+/**
+ * Per-checkout state, kept OUT of the composed config.
+ *
+ * The config is a template-layer file: a runtime value written into it is drift
+ * here and an upgrade conflict in a generated project. So the tier of the last
+ * closed item lands beside it, in a gitignored file.
+ *
+ * Missing is not an error — it means no item has closed yet, and selection
+ * proceeds with no spacing. Present-and-unparseable IS: the tier is then
+ * *unknown*, and the silent reading of unknown is `null`, which is the
+ * permissive value that lets a second elevated item straight through. That is
+ * the exact failure this state file exists to end, so it refuses instead.
+ */
+export const loadState = (statePath) => {
+  let raw;
+  try {
+    raw = readFileSync(statePath, 'utf8');
+  } catch {
+    return {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `${statePath} exists but is not valid JSON, so the last completed tier cannot ` +
+        `be read: ${String(error?.message ?? error).split('\n')[0]}. Delete the file ` +
+        'if you are unsure — an absent state means "nothing has closed yet", which is ' +
+        'safe; a tier that cannot be read would silently disable the elevated ration.',
+      { cause: error },
+    );
+  }
+};
+
 const parseArgs = (argv) => {
   const args = { command: argv[0] ?? 'next', json: false, config: null };
   for (let i = 1; i < argv.length; i += 1) {
@@ -119,9 +162,12 @@ if (invokedDirectly()) {
   }
 
   let config;
+  let state;
   let adapter;
   try {
-    config = loadConfig(args.config ?? join(projectRoot, '.claude', 'queue.json'));
+    const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
+    config = loadConfig(configPath);
+    state = loadState(statePathFor(configPath));
     adapter = await resolveAdapter(config.adapter ?? 'plan-md');
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
@@ -157,7 +203,10 @@ if (invokedDirectly()) {
   }
 
   const result = selectNext(tickets, {
-    lastCompletedTier: config.lastCompletedTier ?? null,
+    // The state file wins: it is what a close actually recorded. A tier left in
+    // the config is a hand-written hint at best, and it is the composed file, so
+    // it cannot be the live value.
+    lastCompletedTier: state.lastCompletedTier ?? config.lastCompletedTier ?? null,
     triggersFired: config.triggersFired ?? null,
   });
   // The skipped records travel with the count: without them "nothing left" and

@@ -8,6 +8,9 @@ cdk.out/
 out/
 next-env.d.ts
 .claude/worktrees/
+# per-checkout queue state: the tier the last close recorded. The queue CONFIG
+# is composed and tracked; this is runtime state and must never be committed.
+.claude/queue.state.json
 
 # secrets — never commit these
 .env

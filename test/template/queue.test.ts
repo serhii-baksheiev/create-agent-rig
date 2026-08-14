@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -437,6 +437,276 @@ describe('the elevated tier is rationed by spacing, not by a count', () => {
     const skipped = result.skipped as Array<{ id: string; reason: string; causes: string[] }>;
     expect(skipped.map((s) => s.causes)).toEqual([['triage'], ['blocked']]);
     for (const skip of skipped) expect(skip.reason, skip.id).toBeTruthy();
+  });
+});
+
+// AR3-36: the ration above has never fired between tasks in this repository.
+// `selectNext` reads `lastCompletedTier` and `index.mjs` passes it, but
+// `.claude/queue.json` has carried only `{"adapter":"plan-md"}` since its first
+// commit and NOTHING writes that field — so the filter has been called with
+// `null` every time. A filter whose input nobody supplies is indistinguishable
+// from a filter that agrees with you, and neither a green suite nor a reading of
+// `core.mjs` shows it.
+//
+// 🔴 **The state does NOT live in `.claude/queue.json`.** That file is composed
+// from `templates/agent-os/universal/` and `test/template/dogfood.test.ts` runs
+// `sync-agent-os.mjs --check` over it, so a close that writes a field into it
+// fails the drift check — observed, not predicted:
+//
+//     agent-os drift detected in:
+//       - .claude/queue.json
+//
+// The config is a GENERATED file; per-run state cannot live in a generated file.
+// So the tier goes in a state file of its own, `.claude/queue.state.json`, which
+// the CLI merges over the config when it selects.
+//
+// The close step is the writer, and it records **the tier the change turned out
+// to be, computed from the diff's paths** — not the item's `[elevated]` marker.
+// `autonomy.md`: "the tier is decided by what the change touches, not by what
+// the task said it would touch". The marker stays advisory; a marker that
+// disagrees with the paths is queue hygiene for a human, not an input here.
+describe('the close step records the tier the change turned out to be', () => {
+  /** What a generated project declares, near enough — never this repo's own list. */
+  const DECLARED = ['packages/db/src/', '.claude/', '.github/workflows/'];
+
+  /**
+   * A throwaway project root the gate sweep can read: its own `CLAUDE.md` carries
+   * the declaration, its `.claude/queue.json` is the (untouched) config, and
+   * `.claude/queue.state.json` is where the tier is expected to land.
+   *
+   * 🔴 Every path here is inside a `mkdtemp` dir. This repository's real
+   * `.claude/queue.json` is TRACKED **and generated** — a test that wrote to it
+   * would both commit a session's leftover state and fail the drift check.
+   */
+  const withProject = async (
+    config: Record<string, unknown> = { adapter: 'plan-md' },
+    declared: string[] = DECLARED,
+  ): Promise<{ dir: string; configPath: string; statePath: string }> => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'tier-'));
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, 'CLAUDE.md'),
+      `# P\n\n\`\`\`elevated-paths\n${declared.join('\n')}\n\`\`\`\n`,
+    );
+    const configPath = path.join(dir, '.claude', 'queue.json');
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    return { dir, configPath, statePath: path.join(dir, '.claude', 'queue.state.json') };
+  };
+
+  const jsonAt = async (file: string): Promise<Record<string, unknown>> =>
+    JSON.parse(await read(file)) as Record<string, unknown>;
+
+  it('records elevated in the state file when the change crossed a declared path', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    // No `statePath` given: the default is the project's own
+    // `.claude/queue.state.json`, which is what the close step will call with.
+    recordCompletedTier({ changedFiles: ['packages/db/src/schema.ts'], projectRoot: dir });
+
+    expect((await jsonAt(statePath)).lastCompletedTier).toBe('elevated');
+  });
+
+  it('records normal when no changed file falls under a declared path', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    recordCompletedTier({
+      changedFiles: ['services/api/src/handler.ts', 'packages/core/src/todo.ts'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect((await jsonAt(statePath)).lastCompletedTier).toBe('normal');
+  });
+
+  // 🔴 The regression the drift check caught, pinned so the next change cannot
+  // put it back. `.claude/queue.json` is composed from the template; a close that
+  // edits it makes every closing PR carry a diff to a generated file and turns
+  // `sync-agent-os.mjs --check` red.
+  it('leaves the queue config byte-identical, because the config is generated', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, configPath, statePath } = await withProject({
+      adapter: 'github-issues',
+      options: { repo: 'owner/name' },
+      triggersFired: { '7': true },
+    });
+    const before = await read(configPath);
+
+    recordCompletedTier({
+      changedFiles: ['packages/db/src/schema.ts'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(await read(configPath)).toBe(before);
+    expect(await jsonAt(configPath)).not.toHaveProperty('lastCompletedTier');
+  });
+
+  it('keeps the state file to state, not a second copy of the config', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject({
+      adapter: 'github-issues',
+      options: { repo: 'owner/name' },
+    });
+
+    recordCompletedTier({
+      changedFiles: ['packages/db/src/schema.ts'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    // A state file that carried `adapter` would be a config the sync does not
+    // know about: two files answering "which queue is this" and no rule for which
+    // wins. The state answers exactly one question.
+    const state = await jsonAt(statePath);
+    expect(state.lastCompletedTier).toBe('elevated');
+    expect(state).not.toHaveProperty('adapter');
+    expect(state).not.toHaveProperty('options');
+  });
+
+  it('overwrites the tier the previous close left behind', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    // The ration is spacing, not history: only the LAST completed tier decides,
+    // so a stale `elevated` that never clears would hold the queue forever.
+    const { dir, statePath } = await withProject();
+    await writeFile(statePath, `${JSON.stringify({ lastCompletedTier: 'elevated' })}\n`);
+
+    recordCompletedTier({
+      changedFiles: ['services/api/src/handler.ts'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect((await jsonAt(statePath)).lastCompletedTier).toBe('normal');
+  });
+
+  it('reports the tier it wrote and the paths that earned it', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    const elevated = recordCompletedTier({
+      changedFiles: ['README.md', '.github/workflows/ci.yml', 'packages/db/src/schema.ts'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    // A close that cannot say WHY it wrote `elevated` cannot journal it, and an
+    // unexplained tier is the same unfalsifiable claim this item exists to remove.
+    expect(elevated.tier).toBe('elevated');
+    expect(elevated.elevatedPaths).toEqual([
+      '.github/workflows/ci.yml',
+      'packages/db/src/schema.ts',
+    ]);
+
+    const normal = recordCompletedTier({
+      changedFiles: ['services/api/src/handler.ts'],
+      projectRoot: dir,
+      statePath,
+    });
+    expect(normal.tier).toBe('normal');
+    // `[]` and not `undefined`: "nothing matched" and "nothing was looked at"
+    // are opposite facts, and a journal line cannot tell them apart from absence.
+    expect(normal.elevatedPaths).toEqual([]);
+  });
+
+  // 🔴 The absence case, and it is the whole reason this module refuses instead
+  // of defaulting. `normal` is the permissive answer — it lets the next elevated
+  // item straight through — so inferring it from "I was given no files" hands the
+  // ration back exactly the blind spot AR3-36 is closing, one layer over.
+  const noFiles: Array<[string, Record<string, unknown>]> = [
+    ['an empty list', { changedFiles: [] }],
+    ['no list at all', {}],
+    ['a null list', { changedFiles: null }],
+    ['something that is not a list', { changedFiles: 'packages/db/src/schema.ts' }],
+  ];
+
+  it.each(noFiles)('refuses to write a tier for %s of changed files', async (_kind, over) => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    expect(() => recordCompletedTier({ projectRoot: dir, statePath, ...over })).toThrow(
+      /changed file/i,
+    );
+
+    // and it refuses without leaving a state file behind: an absent file means
+    // "nothing has closed yet", which is a true statement here.
+    await expect(read(statePath)).rejects.toThrow();
+  });
+
+  it('refuses when nothing in the project declares an elevated path at all', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const dir = await mkdtemp(path.join(tmpdir(), 'tier-'));
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(path.join(dir, 'CLAUDE.md'), '# P\n\nno declaration here.\n');
+    const statePath = path.join(dir, '.claude', 'queue.state.json');
+
+    // `readDeclaredPaths` returns `null` rather than `[]` for precisely this, and
+    // the difference is load-bearing: with no declaration, "no path matched" means
+    // "nothing was checked". Writing `normal` there is a gate declared over a
+    // directory that does not exist — it reports clean while looking nowhere.
+    expect(() =>
+      recordCompletedTier({
+        changedFiles: ['packages/db/src/schema.ts'],
+        projectRoot: dir,
+        statePath,
+      }),
+    ).toThrow(/elevated[- ]paths|declare/i);
+    await expect(read(statePath)).rejects.toThrow();
+  });
+
+  it('treats a plain document under a declared path as inert, exactly as the sweep does', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    const result = recordCompletedTier({
+      changedFiles: ['packages/db/src/NOTES.md'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(result.tier).toBe('normal');
+    expect(result.elevatedPaths).toEqual([]);
+  });
+
+  it('treats a rulebook under a declared path as an elevated change', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    // A `.md` is inert EXCEPT the rulebook — a merge that rewrites the Never list
+    // or unwires a hook is the elevated change the whole tier exists for.
+    const result = recordCompletedTier({
+      changedFiles: ['.claude/rules/autonomy.md'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(result.tier).toBe('elevated');
+    expect(result.elevatedPaths).toEqual(['.claude/rules/autonomy.md']);
+  });
+
+  it('computes the tier from the same declaration the gate sweep reads', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { elevatedPathsIn, readDeclaredPaths } = await load('../detect-missed-gate.mjs');
+    const { dir, statePath } = await withProject();
+    const changedFiles = [
+      'services/api/src/handler.ts',
+      '.claude/rules/autonomy.md',
+      'packages/db/src/NOTES.md',
+      './packages/db/src/schema.ts',
+    ];
+
+    const result = recordCompletedTier({ changedFiles, projectRoot: dir, statePath });
+
+    // Delegated, never re-derived. Inertness, the rulebook exception, path
+    // normalisation and the union over every declaring layer are one mechanism;
+    // a second implementation of them here would disagree with the sweep, and the
+    // copy nobody is looking at is the one that would be wrong.
+    expect(result.elevatedPaths).toEqual(elevatedPathsIn(changedFiles, readDeclaredPaths(dir)));
+    expect(result.elevatedPaths).toEqual([
+      '.claude/rules/autonomy.md',
+      'packages/db/src/schema.ts',
+    ]);
   });
 });
 
@@ -1655,6 +1925,179 @@ describe('the queue CLI', () => {
     expect(parsed.stop?.why).toMatch(/spacing/i);
   });
 
+  // AR3-36 end to end, and this fixture IS the item. A test asserting that a
+  // field was written proves the writer runs, not that the ration fires — the
+  // same existence-shaped proof that let `lastCompletedTier` sit unwritten
+  // through every green run since the first commit. So the close writes the
+  // state file, and the CLI is then asked for work the way a session asks.
+  //
+  // 🔴 **Where the CLI looks for the state, and why it is derived from
+  // `--config`.** The state file is the config path with `.json` swapped for
+  // `.state.json` — in a real project `.claude/queue.json` → `.claude/queue.state.json`,
+  // which is exactly the default `recordCompletedTier` writes to. It is NOT
+  // resolved from the script's own location the way `projectRoot` is: this
+  // repository's own state file is gitignored and may exist on any machine, and a
+  // CLI that read it while a test pointed `--config` at a temp dir would let a
+  // developer's leftover tier decide the run. Config and state travel as a pair.
+
+  /** A project whose whole Agent queue is elevated — this repository's own shape. */
+  const allElevated = async (
+    config: Record<string, unknown> = { adapter: 'plan-md' },
+  ): Promise<{ dir: string; configPath: string; statePath: string }> => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, 'PLAN.md'),
+      '# P\n\n## Agent queue\n\n- rotate the key [elevated]\n- migrate the store [elevated]\n\n## Journal\n',
+    );
+    await writeFile(
+      path.join(dir, 'CLAUDE.md'),
+      '# P\n\n```elevated-paths\npackages/db/src/\n.claude/\n```\n',
+    );
+    const configPath = path.join(dir, '.claude', 'queue.json');
+    await writeFile(configPath, JSON.stringify(config));
+    return { dir, configPath, statePath: path.join(dir, '.claude', 'queue.state.json') };
+  };
+
+  it('holds an all-elevated queue back once a close has recorded an elevated change', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, configPath } = await allElevated();
+    const configBefore = await read(configPath);
+
+    recordCompletedTier({ changedFiles: ['packages/db/src/schema.ts'], projectRoot: dir });
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as {
+      ticket: Ticket | null;
+      skipped: Array<{ id: string; reason: string; causes: string[] }>;
+      stop: { kind: string; why: string } | null;
+    };
+    // Observed before this item: the CLI hands `rotate the key` straight back,
+    // because nothing ever wrote the value the ration reads.
+    expect(parsed.ticket).toBeNull();
+    expect(parsed.skipped.map((s) => s.causes)).toEqual([['spacing'], ['spacing']]);
+    for (const skip of parsed.skipped) expect(skip.reason).toMatch(/back to back|spacing/i);
+    expect(parsed.stop?.kind).toBe('nothing-selectable');
+    // …and the ration fired WITHOUT the close touching the generated config.
+    // Without this line the whole fixture passes against a close that writes
+    // into `.claude/queue.json` — the design the drift check rejected.
+    expect(await read(configPath)).toBe(configBefore);
+  });
+
+  it('hands an elevated item straight back once a close has recorded a normal change', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, configPath, statePath } = await allElevated();
+    // Seeded held-back, so this proves the record CLEARED the ration rather than
+    // proving that nothing was written at all — the two look identical from an
+    // empty starting state, and only one of them is the behaviour wanted.
+    await writeFile(statePath, `${JSON.stringify({ lastCompletedTier: 'elevated' })}\n`);
+
+    recordCompletedTier({ changedFiles: ['services/api/src/handler.ts'], projectRoot: dir });
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    // The other direction, so a constant that always says `elevated` cannot pass:
+    // spacing rations elevated work, it does not stop it.
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
+    expect(parsed.ticket?.title).toBe('rotate the key');
+  });
+
+  it('selects normally when no item has closed yet and there is no state file', async () => {
+    const { dir, configPath, statePath } = await allElevated();
+
+    // A missing state file is the normal state of a fresh checkout, not an error:
+    // nothing has closed, so nothing is being rationed against. Refusing here
+    // would make a clone unable to take its first item.
+    await expect(read(statePath)).rejects.toThrow();
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
+    expect(parsed.ticket?.title).toBe('rotate the key');
+  });
+
+  it('lets the recorded state outrank a tier left behind in the config', async () => {
+    // The config is a generated file; if a `lastCompletedTier` is ever in one —
+    // a hand edit, an older rig, a merge — the state file is the live value and
+    // wins. Two sources disagreeing silently is how the ration goes quiet again.
+    const { dir, configPath, statePath } = await allElevated({
+      adapter: 'plan-md',
+      lastCompletedTier: 'normal',
+    });
+    await writeFile(statePath, `${JSON.stringify({ lastCompletedTier: 'elevated' })}\n`);
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null; stop: { kind: string } };
+    expect(parsed.ticket).toBeNull();
+    expect(parsed.stop?.kind).toBe('nothing-selectable');
+  });
+
+  it('still reads the config for everything the state does not carry', async () => {
+    // The state is merged OVER the config, not swapped for it: `adapter` and
+    // `options` still come from the config, so a project whose queue lives
+    // somewhere other than PLAN.md keeps working once a close has recorded a tier.
+    const { dir, configPath, statePath } = await allElevated({
+      adapter: 'plan-md',
+      options: { planPath: 'docs/QUEUE.md' },
+    });
+    await mkdir(path.join(dir, 'docs'), { recursive: true });
+    await writeFile(
+      path.join(dir, 'docs', 'QUEUE.md'),
+      '# P\n\n## Agent queue\n\n- take the elsewhere item\n\n## Journal\n',
+    );
+    await writeFile(statePath, `${JSON.stringify({ lastCompletedTier: 'normal' })}\n`);
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
+    expect(parsed.ticket?.title).toBe('take the elsewhere item');
+  });
+
+  // 🔴 Refuse, do not shrug. A state file that exists and does not parse leaves
+  // the tier UNKNOWN, and the silent reading of unknown is `null` — the
+  // permissive value that lets the next elevated item through. That is the exact
+  // failure AR3-36 exists to end, so it may not be how a corrupt file behaves.
+  // `loadConfig` already takes this line for the config, and the recovery here is
+  // cheaper still: the file is per-checkout scratch, so deleting it is safe and
+  // the message has to say so.
+  it('refuses to select on a state file that exists and does not parse', async () => {
+    const { dir, configPath, statePath } = await allElevated();
+    await writeFile(statePath, '{"lastCompletedTier": "elevated",}\n');
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/queue\.state\.json/);
+    expect(result.out).toMatch(/json/i);
+    expect(result.out).toMatch(/delete|remove/i);
+  });
+
+  it('reads the state beside whichever config it was pointed at', async () => {
+    // The pairing rule, pinned on a non-default config name so the implementation
+    // cannot satisfy it by hardcoding `.claude/queue.state.json`.
+    const { dir } = await allElevated();
+    await mkdir(path.join(dir, 'nest'), { recursive: true });
+    const configPath = path.join(dir, 'nest', 'custom.json');
+    await writeFile(configPath, JSON.stringify({ adapter: 'plan-md' }));
+    await writeFile(
+      path.join(dir, 'nest', 'custom.state.json'),
+      `${JSON.stringify({ lastCompletedTier: 'elevated' })}\n`,
+    );
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null; stop: { kind: string } };
+    expect(parsed.ticket).toBeNull();
+    expect(parsed.stop?.kind).toBe('nothing-selectable');
+  });
+
   it('refuses an unknown adapter loudly instead of falling back to a guess', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
     await writeFile(path.join(dir, 'PLAN.md'), '# P\n\n## Agent queue\n\n- x\n');
@@ -1726,6 +2169,20 @@ describe('the loop skill drives the seam, not one tracker', () => {
     }
   });
 
+  it('gives the close step the call that records the tier, not just the instruction', async () => {
+    // The writer and the reader have to land together. A module nothing invokes
+    // records nothing, and this seam's whole defect was a field with a reader
+    // and no writer — shipping the writer unwired would rebuild it one layer up.
+    // §6 already proves the shape: `proposeTriage` is a write op the CLI refuses
+    // to expose, so the skill carries the `import` snippet instead.
+    const content = await skill();
+    expect(content).toMatch(/state\.mjs/);
+    expect(content).toMatch(/recordCompletedTier/);
+    // and it must say where the file list comes from — a call with no argument
+    // is the refusal case, not a working example
+    expect(content).toMatch(/--name-only/);
+  });
+
   it('keeps proposals in triage and the patching with the human', async () => {
     const content = await skill();
     expect(content).toMatch(/triage/i);
@@ -1768,4 +2225,57 @@ describe('composition', () => {
       expect(manifest['process'], file).toContain(file);
     }
   });
+
+  // AR3-36, in its own test rather than a line in the list above: a module the
+  // manifest does not name is a module composition DROPS, and the seam would
+  // then ship a reader in every generated project with no writer anywhere —
+  // which is the state this item exists to end.
+  it('layers.json carries the close step that writes the tier', async () => {
+    const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
+    expect(manifest['process']).toContain('.claude/scripts/queue/state.mjs');
+  });
+
+  // The other half of the same decision, and the one the drift check taught:
+  // the CONFIG is composed and the STATE is not. Composing the state file would
+  // ship a generated file that every close rewrites — which is precisely the
+  // `sync-agent-os.mjs --check` failure that sent this design back.
+  it('composes the queue config and never the queue state', async () => {
+    const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
+    expect(manifest['process']).toContain('.claude/queue.json');
+    for (const layer of Object.keys(manifest)) {
+      expect(manifest[layer], layer).not.toContain('.claude/queue.state.json');
+    }
+  });
+});
+
+// 🔴 The state file is per-checkout runtime state: it changes on every close,
+// it is written by whichever session closed last, and it means nothing in
+// another checkout. Committing it would put a merge conflict on the critical
+// path of every task and let a stale tier arrive by `git pull`.
+//
+// `.claude/worktrees/` is the precedent in both places — the root `.gitignore`
+// here, and each skeleton's un-dotted `gitignore` for generated projects.
+describe("the queue's own state is per-checkout, so it is never committed", () => {
+  const ignored = (file: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      execFile('git', ['check-ignore', '-q', file], { cwd: repoRoot }, (error) => resolve(!error));
+    });
+
+  it('this repository ignores the state file while keeping the config tracked', async () => {
+    await expect(ignored('.claude/queue.state.json')).resolves.toBe(true);
+    // and the config stays tracked: it is generated content, not scratch state
+    await expect(ignored('.claude/queue.json')).resolves.toBe(false);
+  });
+
+  // The agent-os layer ships no `.gitignore` of its own, so a generated project's
+  // entry can only come from its skeleton — the same file that already carries
+  // `.claude/worktrees/`, stored un-dotted because `npm publish` strips the
+  // dotted form.
+  it.each(['node-service', 'aws-serverless'])(
+    'a generated %s project ignores the state file too',
+    async (target) => {
+      const content = await read(repoRoot, 'templates', 'skeleton', target, 'gitignore');
+      expect(content).toContain('.claude/queue.state.json');
+    },
+  );
 });

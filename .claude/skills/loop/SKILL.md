@@ -346,7 +346,29 @@ three poisons the only channel by which this project learns.
   while it still reads as available is invisible to the human and re-selectable by
   the very next query.
 - **Closing:** close it with the merged PR linked, immediately after the
-  post-merge verdict — not in a cleanup pass.
+  post-merge verdict — not in a cleanup pass. **Record the tier in the same
+  step**, because the next selection rations on it:
+
+  ```bash
+  node --input-type=module -e '
+    const { recordCompletedTier } = await import("./.claude/scripts/queue/state.mjs");
+    const { execSync } = await import("node:child_process");
+    const changedFiles = execSync("git diff --name-only origin/<default>...<merge-sha>")
+      .toString().split("\n").filter(Boolean);
+    console.log(recordCompletedTier({ changedFiles, projectRoot: process.cwd() }));
+  '
+  ```
+
+  🔴 **The tier comes from the diff, never from the item's marker.** The marker
+  is a pre-filter (§2); `autonomy.md` decides the tier by what the change
+  *touches*, and rationing on the marker would mean one written a tier low
+  silently buys a second elevated item in a row. A marker that disagrees with
+  the paths is queue hygiene to report, not the value to ration on.
+
+  It **refuses** rather than guessing when the file list is empty or missing:
+  an absence is not a normal-tier change, and the permissive answer written
+  confidently is exactly how this seam went unnoticed in the first place. If it
+  refuses, find the file list — do not pass one to make it quiet.
 - **Write-back:** with the close, record what it **unblocked** — the items that
   were waiting on this one, by name. It is the journal's `unblocked` field, and
   it is **required, not a step for when it applies**: an absent line and an
