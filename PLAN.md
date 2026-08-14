@@ -431,6 +431,46 @@ operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
 
+### the v3 brief taken in, and a flake that turned out to be the harness racing itself
+
+- **done** — the AR2 block carried into the Agent queue (#34), spliced rather
+  than written over the file, so the history shows the 16 added lines instead of
+  a whole-file replacement. Split in two commits on purpose: the delivered text,
+  then what review changed. And #33, which was not the task: the pre-PR gate went
+  red on `test/e2e/upgrade.test.ts`, and the cause was three e2e suites each
+  running `npm pack` at the repo root in parallel — `pack` runs `prepare`, which
+  `tsc`-rewrites `packages/cli/dist`, which `files` also tells `pack` to read. A
+  tarball could carry a half-written CLI. One `globalSetup` packs once now, and
+  `test/template/e2e-pack.test.ts` holds that line
+- **reviewed** — four reviewer passes. Both passes on the queue text returned
+  HOLD and agreed on the sharpest finding independently: AR2-4/6/7 named work
+  under declared elevated paths and were queued `normal`. The pass on the race
+  fix returned clean, having re-verified the two claims it was asked not to take
+  on trust — that `globalSetup` completes before any `beforeAll`, and that
+  `git-install.test.ts` builds in npm's clone rather than in `packages/cli/dist`
+  (measured by mtime across its 62-second run)
+- **escalated** — nothing
+- **stopped at** — the run ended here, deliberately: both PRs merged, master
+  synced, no work in flight
+- **post-release verdict** — **not applicable; nothing was deployed or
+  published.** Both changes are repository-internal
+- **unblocked** — nothing; this queue has no dependency links
+- **queue hygiene** — clean throughout (8 items, nothing stale). One finding
+  about the queue rather than in it: with AR2-4/6/7's markers corrected, all
+  eight open items are elevated, and `selectNext` then refuses the second one —
+  so a run drains a single item and stops reporting `queue-empty` with eight
+  items open. Simulated against the real module and filed as an Operator
+  decision rather than silently worked around by understating a tier
+- **cost** — 4 reviewer subagents, 1 test-writer; 8 check runs across the two
+  merged PRs' head commits; 0 deploys
+- **the honest note** — the red suite was found by the gate, not by the session:
+  it had been running `pnpm test:unit` at each commit, which is green on this
+  defect by construction, and the full suite only ran because `pr-ship` step 2
+  demands it. A gate caught what the working rhythm was structurally unable to
+  see. Second, smaller: the first full-suite run was piped through `tail`, so its
+  exit code was `tail`'s and the failure was visible only in the text — the later
+  runs set `pipefail`
+
 ### the upgrade brief, and the first release you can take without a procedure
 
 - **done** — the U brief in full. `upgrade` with the install manifest and the
