@@ -1,5 +1,15 @@
 import { execFile } from 'node:child_process';
-import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -697,6 +707,86 @@ describe('an unusable journal does not take the queue selection with it', () => 
 
     // the ended run keeps exactly its marker — nothing was appended past the end
     expect(await linesIn(runDir, 'events.jsonl')).toHaveLength(1);
+  });
+});
+
+// 🔴 The gate found the read door guarded and the WRITE door open: `appendFileSync`
+// was the one unwrapped fs call, so a full disk or an unwritable file arrived as a
+// plain Error, missed the classification, and withheld the selection — the very
+// defect the classification was added to close, reached from the other side.
+//
+// The fixture takes the run directory's write permission away rather than chmod-ing
+// a file, because with no journal files yet the READ path returns cleanly and only
+// the append can fail. Under a uid that ignores permissions there is nothing to
+// measure, so the case says so instead of passing on a check it never made.
+describe('a journal that cannot be written to loses the trace, not the work', () => {
+  const rootless = process.getuid === undefined || process.getuid() !== 0;
+
+  it.runIf(rootless)('refuses as an exhausted trace when the append cannot land', async () => {
+    const { recordDecision, isTraceExhausted } = (await load()) as unknown as {
+      recordDecision: (input: Input) => unknown;
+      isTraceExhausted: (error: unknown) => boolean;
+    };
+    const runDir = await newRunDir();
+    await chmod(runDir, 0o555);
+
+    const error = await refusalFrom(() =>
+      recordDecision({ runDir, gate: 'item-selection', verdict: 'taken 1', now: T0 }),
+    );
+
+    // Not merely "it threw": the CALLER has to be able to tell this apart from a
+    // mis-declaration, and it can only do that through the module's own answer.
+    expect(isTraceExhausted(error)).toBe(true);
+    await chmod(runDir, 0o755);
+  });
+
+  it.runIf(rootless)(
+    'still prints the selection when the run directory is unwritable',
+    async () => {
+      const dir = await project();
+      const runDir = await newRunDir();
+      await chmod(runDir, 0o555);
+
+      const result = await run(['next', '--json'], dir, {
+        ...withoutGitLocation(),
+        RIG_RUN_DIR: runDir,
+      });
+
+      await chmod(runDir, 0o755);
+      expect(result.code, result.out).toBe(0);
+      expect(JSON.parse(result.stdout).ticket).toMatchObject({ id: '1' });
+      expect(result.stderr).toMatch(/run journal/i);
+      expect(result.stderr).toMatch(/not recorded|unrecorded|no record|without a record/i);
+    },
+  );
+});
+
+// A rig can carry a run-journal module OLDER than this CLI — `upgrade` leaves a
+// locally-edited copy in place beside a new caller. The module then imports fine
+// and the export the CLI asks for is simply absent, which crashed the CLI inside
+// its own error handler: a raw stack trace, exit 1, and no selection.
+describe('a run journal too old to classify its own failures does not crash the caller', () => {
+  it('still prints the selection when the module predates the classification', async () => {
+    const dir = await project();
+    const runDir = await newRunDir();
+    const rig = await mkdtemp(path.join(tmpdir(), 'stale-rig-'));
+    const scripts = path.join(rig, 'scripts');
+    await cp(scriptsDir, scripts, { recursive: true });
+    // The shape of an older module: the record operations, and nothing that can
+    // answer "is this failure fatal?". Its write fails, as a stale one would.
+    await writeFile(
+      path.join(scripts, 'run-journal.mjs'),
+      'export const recordDecision = () => { throw new Error("stale journal"); };\n',
+    );
+
+    const result = await runCli(path.join(scripts, 'queue', 'index.mjs'), ['next', '--json'], dir, {
+      ...withoutGitLocation(),
+      RIG_RUN_DIR: runDir,
+    });
+
+    expect(result.stderr).not.toMatch(/is not a function/);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stderr).toMatch(/run journal/i);
   });
 });
 

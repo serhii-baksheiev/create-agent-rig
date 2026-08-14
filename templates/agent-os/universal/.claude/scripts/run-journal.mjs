@@ -291,7 +291,23 @@ const append = (runDir, file, fields, now) => {
   }
 
   const record = { seq: all.length + 1, at: now, ...fields };
-  appendFileSync(join(runDir, file), `${JSON.stringify(record)}\n`);
+  try {
+    appendFileSync(join(runDir, file), `${JSON.stringify(record)}\n`);
+  } catch (error) {
+    // 🔴 The write door needs the same classification as the read door, and it
+    // was the one fs call left unwrapped. A full disk or a file the run cannot
+    // write reached the caller as a plain error, missed `isTraceExhausted`, and
+    // withheld the work — reproducing from this side the exact failure the
+    // classification exists to prevent. A journal that cannot take this record
+    // will not take the next one either: the trace is over, the run is not.
+    throw new RunJournalError(
+      'unusable',
+      `the run journal in ${runDir} could not be appended to ` +
+        `(${error?.code ?? 'unknown error'}), so this run's trace stops here. The ` +
+        'record was not written and nothing was modified.',
+      { cause: error },
+    );
+  }
   return record;
 };
 

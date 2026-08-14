@@ -305,7 +305,13 @@ if (invokedDirectly()) {
       // this gate caught. The journal asks the module which one this is — never
       // the message text, which would put the decision in two files and let them
       // drift the day someone improves the wording.
-      if (journal?.isTraceExhausted(error)) {
+      // `?.` would guard a MISSING module and not a missing export. A rig can
+      // carry a run journal older than this CLI — `upgrade` leaves a
+      // locally-edited copy beside a new caller — and calling through to an
+      // absent export crashed the CLI inside its own error handler: a raw stack
+      // trace instead of the failure it was reporting.
+      const classify = journal?.isTraceExhausted;
+      if (typeof classify === 'function' && classify(error)) {
         // The trace is over and the work is not. This journal cannot accept
         // another record — it is append-only and every write re-reads it — so
         // exiting here would make one collision between two sessions leave the
@@ -317,10 +323,12 @@ if (invokedDirectly()) {
             'here; the queue is fine, and a new run needs a new run directory.\n',
         );
       } else {
-        // The other half: the run directory was declared and is not there, the
-        // journal module is missing, the declaration is empty. Nothing has
-        // happened yet, it is fixed in a second, and continuing would produce a
-        // run with no trace at all — so this one does stop the selection.
+        // The other half: the declaration is empty, its directory is not there,
+        // the path is not a directory, or the journal module is missing. Each is
+        // the run pointing at something that was never set up — one `mkdir` or
+        // one corrected variable away — and continuing would produce a run with
+        // no trace at all, so this half does stop the selection. (A directory
+        // deleted mid-run lands here too, and the same `mkdir` restores it.)
         process.stderr.write(`run journal: ${error.message}\n`);
         process.exit(1);
       }

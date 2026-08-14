@@ -78,12 +78,20 @@ export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
 mkdir -p "$RIG_RUN_DIR"
 ```
 
-🔴 **One directory per run, never shared and never reused.** Two sessions writing
-into one directory produce two records claiming the same position, and a reused
-one already carries its run-end marker; in both cases the journal stops accepting
-records — the selection still works and says so on stderr, but that run's trace
-ends there. Reach the end of the run and the marker closes it (§3); a new run
-gets a new directory.
+🔴 **One directory per run, never shared and never reused — and the journal
+cannot enforce this for you.** Stated precisely, because the difference decides
+whether you get a warning or a lie:
+
+- **What it catches.** Two writers landing on the same sequence number, and a
+  directory that already carries its run-end marker. Both are refused, the
+  selection still works and says so on stderr, and that run's trace ends there —
+  loudly.
+- **What it cannot catch.** Two runs whose records happen not to collide. A run
+  that died before writing its marker (§7 — dying unexpectedly is exactly the
+  case the checkpoint discipline exists for) leaves an intact sequence, and the
+  next run pointed at that directory **continues it in silence**: one seamless
+  trace of two runs, with nothing in the file able to say so. A fresh directory
+  per run is the only thing that prevents it, and it is yours to do.
 
 ## 2. Selection — filters in order, then the sort
 
@@ -290,7 +298,7 @@ field list is in `PLAN.md` under `## Journal`.
 **Behind that entry there is a machine trace, and it is a different artifact.**
 `.claude/scripts/run-journal.mjs` writes gate verdicts to `decisions.jsonl` and
 everything else to `events.jsonl`, both append-only, inside the run directory
-declared in §1. Four things about it are worth knowing before relying on it:
+declared in §1. Five things about it are worth knowing before relying on it:
 
 - **The run declares the directory; nothing invents one.** With `RIG_RUN_DIR`
   unset, every call site stays silent — the trace is opt-in, and a run that never
@@ -302,19 +310,28 @@ declared in §1. Four things about it are worth knowing before relying on it:
   refused on both write and read.** The order is asserted rather than described,
   so a stale record cannot read as the current one — which is the whole failure a
   journal exists to prevent.
-- ⚠ **The trace can stop before the run does, and it says so on stderr rather
-  than stopping the run.** A journal the selection cannot write to — a shared
-  directory, a reused one, a sequence already broken — is a lost trace, not a
-  reason to withhold work the queue can still hand out correctly. The one case
-  that DOES refuse is a run directory that was declared and does not exist:
-  nothing has happened yet, and continuing would produce a run with no trace at
-  all. **`queue: unreadable` is about the QUEUE** (§0) — a `run journal:` line on
-  stderr is a different failure and never means the queue could not be read.
+- ⚠ **The trace can stop before the run does, and the two failures part ways
+  here.** A journal that can no longer accept records — a sequence already
+  broken, a file that will not parse, a run already marked ended — is a lost
+  trace, **not** a reason to withhold work the queue can still hand out: the
+  selection prints, stderr carries a `run journal:` line, the exit code stays 0.
+  The refusals are the ones where nothing has happened yet and a second fixes
+  it, and there are **four**: the declaration is empty, its directory does not
+  exist, the path is not a directory, or the journal module is missing. Each
+  exits 1 with nothing on stdout.
+- 🔴 A `run journal:` line on stderr is **not** the queue failing. That one is
+  `queue: queue-unreadable` on stdout (§0) and it ends the run; this one does
+  not.
 
 **The marker is written by the stop, and the stop is a step in this skill.** A
 journal whose end nobody writes leaves every run reading as still-running, which
-is exactly the ambiguity the marker exists to remove. So the last thing a run does
-— after the journal entry above, whatever the stop condition was:
+is exactly the ambiguity the marker exists to remove.
+
+🔴 **At a stop — never at a checkpoint — and after the proposals below, not
+before them.** The marker closes the journal to further records, so a run that
+writes it mid-way keeps working while every later record is refused: a trace
+truncated quietly, which is worse than one that stops loudly. It is the last
+thing the run does, in document order and in wall-clock order both:
 
 ```bash
 node --input-type=module -e '
