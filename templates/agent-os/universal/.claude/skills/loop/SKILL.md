@@ -269,6 +269,21 @@ node --input-type=module -e '
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
 
+**All three adapters write it themselves** — `jira` and `github-issues` create a
+`triage`-labelled issue, `plan-md` appends a bullet to the **Operator queue**, and
+each increments an existing proposal carrying the same fingerprint rather than
+filing a second. `ok: true` means it is filed: there is no "I noted it in the
+summary" version of filing.
+
+`ok: false` is the one case that still needs you, and it is a structural fault
+rather than a step in the procedure: `plan-md` returns it when the plan file has
+no `## Operator queue` heading, because a proposal then has nowhere to land that
+the selection query cannot reach. Add the heading — never the Agent queue.
+
+One adapter needs more than the snippet above carries: `jira` requires
+`options.project` and throws rather than filing without it. It fails loudly, so
+nothing is lost — but called exactly as written, it does not file.
+
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on
 with the rule that the agent authors no work for itself.
