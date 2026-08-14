@@ -388,7 +388,6 @@ elevated work apart (`queue/core.mjs`), and an item known to touch a path in
 `CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
 mid-work.
 
-- AR-12 [elevated]: declare `templates/agent-os/stack/aws-cdk/.claude/rules/` and `.../node-ts/.claude/rules/`. The aws-cdk one is the sharp case: that file carries its **own** `elevated-paths` block declaring `infra/`, so a merge deleting the block would silently un-declare infrastructure for every generated AWS project — and the sweep would report it clean. Found by review on AR-11, which did not ask for these two
 
 The `AR2-n` block decomposes the Flowa→rig port brief **v3** (2026-08-14,
 `rig-port-brief-v3-2026-08-14.md`) — the factory-gates wave: pieces born in
@@ -397,7 +396,6 @@ stands unchanged; v3 adds one of its own: **`stage-guard` does not port** until
 Flowa's SCRUM-394 fix lands (the hook today silently guards nothing from a
 worktree — porting it ports the defect into every generated project).
 
-- AR2-1 [elevated]: the evidence gate — `evidence/<key>.json` (failing/passing excerpts + command) per queue key in the PR title, checked in CI; key comes from the queue adapter, never a hard-coded tracker regex. Measured motive: the same obligation as prose let 14 PRs through in Flowa. The no-key exemption applies to the missing key and nothing else, and the exempting label must not be self-assignable together with the review label (Flowa 378)
 - AR2-2 [elevated]: `file-triage` on the queue seam — the loop files `triage`-labelled proposals it cannot act on, fingerprint dedup, never `ready`, promotion is human; one implementation above the adapters (`jira`/`github-issues`/`plan-md` append). Measured motive: the dead channel produced one triage ticket in the loop's entire history; the live one was used twice on its first day and its first real write caught a render defect 21 tests had missed
 - AR2-3 [elevated]: the rules wave — five one-paragraph rules with their measured arguments into existing documents: TDD-hatch-is-about-the-criterion (→ `workflow.md`), live-run-once-before-merge (→ `pr-ship`), every-PR-write-confirmed-by-re-read with the measured-unstable exit code (→ `pr-ship`), recon-comment-is-a-snapshot with the SHA-immutable vs silently-stale boundary (→ `loop`), jsdom-implements-DOM-not-layout (→ `stack/node-ts` web rules)
 - AR2-4 [elevated]: the queue reads comments — a ticket is its description AND its comments, a superseding comment wins, and the run names what the comment said; `jira` fetches with comments, `github-issues` reads the thread, `plan-md` returns null (the `body` precedent: null is "cannot answer", never "checked, found nothing")
@@ -411,7 +409,7 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 
 - 🔴 **the queue is now entirely `[elevated]`, and the loop reports that as an empty queue.** Correcting AR2-4/6/7's markers (below) made all eight open items elevated, and `selectNext` refuses an elevated item when the last completed one was elevated — correct spacing, but with no normal item anywhere the run drains exactly one item and stops. Simulated against the real module, not inferred: `selectNext(8×elevated, {lastCompletedTier:'elevated'})` → `ticket: null, candidates: 0, skipped: 8`, and `stopConditionOf({candidates:0})` → `kind: 'queue-empty'`, *"no item survives the filters … do not invent work"*. So a session ends reporting an empty queue with eight items open. Two things need a ruling, and they are separable: **(a)** whether to interleave normal work so the queue drains — the markers themselves are not negotiable, since understating a tier is the failure this repo already recorded twice; **(b)** whether `stopConditionOf` should distinguish "nothing left" from "everything left is spaced out" — today the operator cannot tell those apart from the stop line, and only one of them means the owner must refill
 - **decide (AR2-3): which document gets the jsdom rule, because the two answers carry opposite tiers.** The item routes it to "`stack/node-ts` web rules", and that section does not exist — `templates/agent-os/stack/node-ts/.claude/rules/node-ts.md` is 57 lines with no `web`, `jsdom`, `DOM` or `browser` in it. The web rules live in `templates/agent-os/universal/.claude/rules/architecture.md`. **The tier half of this question is now closed: AR-12 landed, so both candidate homes are declared elevated and the choice no longer changes the gate.** What remains is where the rule belongs and whether it is wanted at all. The rule's content needs a ruling too: `architecture.md` already puts component-level DOM testing deliberately out of scope, so "jsdom implements the DOM, not layout" reads either as reinforcing that exclusion or as licence to adopt jsdom
-- **decide (AR2-1): what the evidence key is under `plan-md`, which is the adapter this repo runs.** The item says the key "comes from the queue adapter, never a hard-coded tracker regex" — true for `jira` (issue key) and `github-issues` (issue number), false for the default: `plan-md.mjs` derives `id: String(items.length + 1)`, a positional index, and `closeInPlan` deletes the closed line so every id below it shifts. `evidence/<key>.json` would therefore be named for a value that means something else next week and collides with a closed task. Either `plan-md` gains a stable derived id (the brief says "`plan-md` items get a derived stable id" without saying from what), or the gate is specified as tracker-backed only and this repo's CI cannot be its first home
+- 🔴 **AR2-1 is escalated out of the Agent queue and waits here: decide what the evidence key is under `plan-md`, the adapter this repo runs.** The item says the key "comes from the queue adapter, never a hard-coded tracker regex" — true for `jira` (issue key) and `github-issues` (issue number), false for the default: `plan-md.mjs:89` derives `id: String(items.length + 1)`, a positional index, and `closeInPlan` deletes the closed line so every id below it shifts. **This stopped being a prediction and became an observation when AR-12 closed:** every remaining id shifted by one in that single edit — AR2-1 went 2→1, AR2-4 went 5→4, AR2-7 went 8→7. An `evidence/5.json` filed for AR2-4 yesterday names a different item today, so the gate cannot be built on this key here. Either `plan-md` gains a stable derived id (the brief says "`plan-md` items get a derived stable id" without saying derived from what — the raw title's first token is the obvious candidate, and it is the owner's call, not a run's), or the gate is specified as tracker-backed only and this repo's CI cannot be its first home. **Escalated rather than re-aimed on purpose:** a run that rewrites an item into what it should have said has authored work for itself
 - **stage-guard's entry condition (port brief v3):** Flowa's SCRUM-394 must land — the fix for the hook reading its stage file in the main checkout while `--set` from a worktree writes another — together with the chosen resolution form and the promise↔read pair test. When it does, the owner supplies the next brief line; until then the piece is named in v3's "does NOT ship" list and nothing here should reference it as available
 - ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
 - ~~**publish 0.3.2 to npm**~~ — **done by the owner**; `npm view create-agent-rig` lists it as `latest`. It is what every rig in the wild is running, and therefore what `upgrade` bootstraps from
@@ -430,6 +428,44 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### AR-12 landed, and the next item's premise failed in front of the run that closed it
+
+- **done** — AR-12 (#36, `human-review`): both stack rulebooks declared, with the
+  test asking coverage of the sweep's own `elevatedPathsIn` rather than
+  re-implementing a prefix match — a path can be declared and still dropped as
+  inert, which is how `.md` rulebooks were once invisible to this gate. Verified
+  on the sweep: a merge touching either rulebook without the label now
+  classifies `missed-gate`, with it `null`
+- **reviewed** — two passes, no blocking code findings; prose returned two
+  blockers, both claims the mechanism contradicted. The sharper one was
+  pre-existing and inherited: the paragraph under the block named `.claude/` and
+  `packages/db/src/` as declared, and in this repo's composition neither is — a
+  reader would conclude edits under `.claude/` are swept by path. Corrected in
+  the template, so every rig composed after it says something true
+- **escalated** — **AR2-1, on a false premise, and the evidence arrived
+  unprompted.** The item specifies `evidence/<key>.json` keyed by the queue
+  adapter; under `plan-md` the id is positional, and closing AR-12 shifted every
+  remaining id by one in that single edit (AR2-1 2→1, AR2-4 5→4, AR2-7 8→7). The
+  gate cannot be built on that key here. Moved to the Operator queue rather than
+  re-aimed: an item rewritten into what it should have said is work the agent
+  authored for itself
+- **stopped at** — this checkpoint; the run continues on AR2-2
+- **post-release verdict** — not applicable; nothing deployed or published
+- **unblocked** — this queue has no dependency links (`plan-md` is a flat list —
+  absent, not satisfied). What AR-12 settled is recorded on the item it settled:
+  the jsdom-rule decision no longer turns on which side of the elevated line the
+  two candidate files sit
+- **queue hygiene** — clean (7 items at the checkpoint, nothing stale)
+- **cost** — 3 reviewer subagents, 1 test-writer; 4 check runs on the merged PR's
+  head commit; 0 deploys
+- **the honest note** — the elevated-spacing rule says never take two elevated
+  items back to back, and after AR-12 every remaining item is elevated, so the
+  loop's own selection would stop here. It is continuing on the owner's explicit
+  instruction, which makes this **owner-directed work rather than loop-selected**
+  — and that distinction is the whole reason the rule is not simply being
+  ignored. The rule needs a ruling, and it has one recorded above; until then
+  every such PR says on its face that spacing was overridden by instruction
 
 ### the v3 brief taken in, and a flake that turned out to be the harness racing itself
 
