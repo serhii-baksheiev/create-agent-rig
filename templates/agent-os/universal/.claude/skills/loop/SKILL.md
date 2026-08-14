@@ -131,14 +131,23 @@ Four of them deserve their reasons repeated:
   sprees, no polish, no pre-emptive optimisation. An empty filtered queue is a
   legitimate, successful end of session; refilling it is the owner's job.
   **Expect this to be the most common ending** — the queue is finite and the loop
-  drains it. That is the system working.
-- **Nothing selectable** → also a clean stop, and **not the same finding**. Items
-  are still open; every one of them was held back — by the elevated spacing, by a
-  trigger nobody declared, by a blocker still open. The stop line names how many
-  and by what, because the two endings ask the owner for opposite things: an
-  empty queue wants refilling, a held queue wants a normal item to interleave, a
-  trigger declared, or simply time. Reporting a full queue as empty is the defect
-  this kind exists to prevent — **and refilling is still not this run's job.**
+  drains it. That is the system working. The stop line also names the **parked**
+  pile if there is one: escalated items and filed proposals stay open on a
+  tracker-backed adapter, so they are reported next to the verdict rather than
+  swept into it. They are not work this run can take, and they are not why the
+  queue is empty.
+- **Nothing selectable** → also a clean stop, and **not the same finding**.
+  Takeable work is still there and every piece of it is **held back by a
+  condition that clears without anything being written**: the elevated spacing
+  (a normal item lands), a blocker (its item closes), in-progress (the other
+  session finishes), a trigger (a human declares it). The stop line names how
+  many and by which of those, because the two endings ask the owner for opposite
+  things: an empty queue wants refilling, a held one wants interleaving or
+  simply time. **Escalated and triage items never count as held** — they are
+  parked, they wait on a human, and counting them here is what would make the
+  empty verdict unreachable on a tracker-backed adapter. Reporting a working
+  queue as empty is the defect this kind exists to prevent — **and refilling is
+  still not this run's job, nor is inventing work.**
 
 🔴 **The kill switch is a real file, not an intention:**
 
@@ -314,7 +323,7 @@ three poisons the only channel by which this project learns.
 | Take two elevated items back to back | One unreviewed schema/permissions change is recoverable; a chain overnight is not |
 | Merge past a blocking reviewer verdict | The reviewer gate is what replaced the human merge |
 | Trust a `blocked` label over the links | The label is a snapshot; the links are the dependency |
-| "Improve" on an empty queue | An empty filtered queue is the end of the run, not an invitation |
+| "Improve" on a queue that hands out nothing | Whether it stopped as empty or as held back, a run with no item is at its end, not at an invitation |
 | Start new work on an unhealthy runtime | The regression compounds into everything above it |
 | Act on the "Never" tier | A hard stop, enforced by hooks |
 

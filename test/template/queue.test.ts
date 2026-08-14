@@ -568,6 +568,116 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       'runtime-regression',
     );
   });
+
+  // --- not every skip is a HOLD ------------------------------------------------
+  //
+  // The `prose-reviewer` gate on the first half of AR3-35: `skipped.length > 0`
+  // treats all seven causes as one thing, and they are two things.
+  //
+  //   HELD  — a takeable item behind a condition that clears with NO new work:
+  //           `spacing`, `blocked`, `in-progress`, `trigger`. Wait and interleave.
+  //   PARKED — not work in the queue at all: `closed`, `triage`, `escalated`.
+  //           They wait on a human, and on two of the three adapters they
+  //           ACCUMULATE: `github-issues.mjs:171-175` leaves an escalated issue
+  //           open and only labels it, `proposeTriage` files an open `triage`
+  //           issue at every stop, and `listEligible` filters only `CLOSED`.
+  //
+  // So from the first stop that escalates or files a proposal, `skipped` is never
+  // empty again — and `queue-empty` becomes UNREACHABLE. The owner is never told
+  // to refill: the exact refill-versus-wait inversion AR3-35 exists to remove,
+  // pointing the other way.
+
+  /**
+   * `count` skip records carrying a PARKED cause. Same shape as `heldBy` — and
+   * that is the point: nothing in a record says which side of the split it is on,
+   * so the split has to be a property of the cause vocabulary itself.
+   */
+  const parked = (cause: string, count: number) =>
+    heldBy(cause, count).map((skip) => ({ ...skip, reason: `parked: ${cause}` }));
+
+  it('splits every skip cause into exactly one of held-back and parked', async () => {
+    const { SKIP_CAUSES, HOLDING_CAUSES } = await load('core.mjs');
+    // The subset that holds a TAKEABLE item back — the four a stop line can
+    // honestly tell the owner to wait out.
+    expect(HOLDING_CAUSES).toEqual(['blocked', 'in-progress', 'spacing', 'trigger']);
+    expect(Object.isFrozen(HOLDING_CAUSES)).toBe(true);
+
+    // A partition, not merely a subset: a cause added to the vocabulary later
+    // must land on one side or the other, never fall through unclassified into
+    // whichever branch the `if` happens to reach first.
+    const holding = new Set(HOLDING_CAUSES as string[]);
+    expect(holding.size).toBe((HOLDING_CAUSES as string[]).length);
+    for (const cause of HOLDING_CAUSES as string[]) expect(SKIP_CAUSES, cause).toContain(cause);
+    expect((SKIP_CAUSES as string[]).filter((cause) => !holding.has(cause))).toEqual([
+      'closed',
+      'triage',
+      'escalated',
+    ]);
+  });
+
+  it('reports a queue whose every skipped item is parked as empty, not as held back', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    // An escalated item and a filed proposal are not work waiting on time; the
+    // queue really is out of takeable work, and the owner's action is to refill.
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [...parked('escalated', 4), ...parked('triage', 2)],
+    });
+    expect(stop?.kind).toBe('queue-empty');
+    expect(stop?.success).toBe(true);
+    expect(stop?.why).toMatch(/never invent|not an invitation|do not invent/i);
+  });
+
+  it('names the parked pile when it reports an empty queue, so it cannot grow unseen', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [...parked('escalated', 4), ...parked('triage', 2)],
+    });
+    // Six open items the owner never hears about is how a pile of escalations
+    // hides behind the word "empty" — and they wait on a HUMAN, not on time,
+    // which is the one thing "refill the queue" does not say.
+    expect(names(String(stop.why), 6, 'parked'), String(stop.why)).toBe(true);
+    expect(String(stop.why)).toMatch(/human|owner/i);
+  });
+
+  it('counts held and parked items separately when a queue carries both', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [...heldBy('spacing', 3), ...parked('escalated', 5)],
+    });
+    expect(stop?.kind).toBe('nothing-selectable');
+    expect(names(String(stop.why), 3, 'spacing'), String(stop.why)).toBe(true);
+    expect(names(String(stop.why), 5, 'parked'), String(stop.why)).toBe(true);
+    // 🔴 And the two are never one number. `8` is the sum of a count that clears
+    // by waiting and a count that clears only when a human acts; a line that
+    // prints it tells the owner to wait for five items that will never move.
+    expect(String(stop.why), 'the held and parked counts are summed').not.toMatch(/\b8\b/);
+  });
+
+  // The remedy has to cover every holding cause the line actually reports —
+  // `in-progress` included, which the first half named nowhere. The map fails
+  // both ways: a holding cause with no phrase, and a phrase with no prose.
+  const REMEDY_FOR: Record<string, RegExp> = {
+    blocked: /blocker|its item closes/i,
+    'in-progress': /another session|the other session|finishes|releases/i,
+    spacing: /normal item|interleave/i,
+    trigger: /declare|declares/i,
+  };
+
+  it('names a remedy for every cause that can hold an item back', async () => {
+    const { stopConditionOf, HOLDING_CAUSES } = await load('core.mjs');
+    expect(Object.keys(REMEDY_FOR).sort()).toEqual([...(HOLDING_CAUSES as string[])].sort());
+    for (const cause of HOLDING_CAUSES as string[]) {
+      const stop = stopConditionOf({ candidates: 0, skipped: heldBy(cause, 2) });
+      expect(stop?.kind, cause).toBe('nothing-selectable');
+      // "wait and interleave" is only advice if the line says what is being
+      // waited FOR — an owner told to interleave a normal item cannot clear a
+      // task another session is holding.
+      expect(String(stop.why), cause).toMatch(REMEDY_FOR[cause]!);
+    }
+  });
 });
 
 describe('plan-md adapter — the zero-setup default', () => {

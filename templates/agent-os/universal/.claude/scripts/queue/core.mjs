@@ -82,6 +82,23 @@ export const SKIP_CAUSES = Object.freeze([
 ]);
 
 /**
+ * The causes that hold a takeable item back — and the reason the stop conditions
+ * cannot treat "something was skipped" as one thing.
+ *
+ * Each of these clears WITHOUT new work being written: a normal item lands, a
+ * blocker closes, another session finishes, a human declares the window. The
+ * three causes NOT in this list — `closed`, `triage`, `escalated` — are items
+ * out of play, and on a tracker-backed adapter they accumulate forever: an
+ * escalated issue stays open and merely gains a label, and the loop files a
+ * `triage` proposal at every stop. Counting those as "the queue is full, wait"
+ * would make `queue-empty` unreachable from the first stop that escalated or
+ * proposed anything — so a drained queue would report "wait and interleave" and
+ * the owner would never be told to refill. That is the same refill-versus-wait
+ * inversion this split exists to remove, pointing the other way.
+ */
+export const HOLDING_CAUSES = Object.freeze(['blocked', 'in-progress', 'spacing', 'trigger']);
+
+/**
  * Is this item takeable, and if not, why not?
  *
  * The filters run in order and every rejection carries a reason: an unexplained
@@ -340,30 +357,60 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
 };
 
 /**
- * "N held by X, M by Y" — what is holding the queue back, as a partition.
+ * Split the skipped records into the ones holding takeable work back and the
+ * ones that are simply out of play.
  *
- * Each skipped item counts ONCE, under the first filter that rejected it, so the
- * parts foot to the total. Counting it under every cause would read as a
- * breakdown and silently sum past the number beside it.
+ * A record with no cause this module recognises counts as **held**: it is the
+ * reading that stops rather than the one that declares the queue drained, and an
+ * unclassified skip is exactly where a wrong declaration would come from.
  *
- * Bounded by construction: one forward pass, and a tally whose key set is the
- * closed vocabulary plus one bucket for a record that carries no tag at all.
+ * Bounded by construction: one forward pass, no recursion, and every array it
+ * builds is bounded by the input it walks.
  */
-const heldBreakdown = (skipped) => {
-  const tally = new Map();
+const partitionSkipped = (skipped) => {
+  const held = [];
+  let parked = 0;
   for (const skip of skipped) {
     const causes = Array.isArray(skip?.causes) ? skip.causes : [];
-    const [first] = causes.filter((cause) => SKIP_CAUSES.includes(cause));
-    // An untagged record is reported as untagged, never folded into a cause it
-    // did not claim: a wrong attribution is worse than an admitted gap.
-    const cause = first ?? 'an unnamed filter';
-    tally.set(cause, (tally.get(cause) ?? 0) + 1);
+    const holding = causes.find((cause) => HOLDING_CAUSES.includes(cause));
+    const known = causes.find((cause) => SKIP_CAUSES.includes(cause));
+    if (holding || !known) held.push(holding ?? 'an unnamed filter');
+    else parked += 1;
   }
+  return { held, parked };
+};
+
+/**
+ * "N held by X, M by Y" — what is holding the queue back, as a partition.
+ *
+ * Each held item counts ONCE, under the first holding cause that rejected it, so
+ * the parts foot to the total beside them. Counting it under every cause would
+ * read as a breakdown and silently sum past that number.
+ *
+ * Bounded by construction: one forward pass, and a tally whose key set is the
+ * holding vocabulary plus one bucket for a record that carries no tag at all.
+ */
+const heldBreakdown = (held) => {
+  const tally = new Map();
+  for (const cause of held) tally.set(cause, (tally.get(cause) ?? 0) + 1);
   return [...tally.entries()]
     .sort(([tagA, countA], [tagB, countB]) => countB - countA || tagA.localeCompare(tagB))
     .map(([tag, count]) => `${count} held by ${tag}`)
     .join(', ');
 };
+
+/**
+ * The parked pile, named rather than left to grow unseen.
+ *
+ * Reported beside the held count and never summed with it: they ask the owner
+ * for different things, and one number covering both would ask for neither.
+ */
+const parkedNote = (parked) =>
+  parked === 0
+    ? ''
+    : ` A further ${parked} item(s) are parked — escalated, in triage or closed. ` +
+      'Those wait on a human, never on time, and they grow every time this loop ' +
+      'escalates an item or files a proposal.';
 
 /**
  * Should the whole run stop? Checked in severity order, because a regression must
@@ -431,29 +478,30 @@ export const stopConditionOf = ({
         'than starting something that will be abandoned half-done.',
     };
   }
-  if (candidates === 0 && skipped.length > 0) {
-    return {
-      kind: 'nothing-selectable',
-      success: true,
-      why:
-        `${skipped.length} item(s) are still open and none is takeable right now — ` +
-        `${heldBreakdown(skipped)}. This is NOT an empty queue and the two ask for ` +
-        'opposite things: an empty queue wants refilling, whereas this one is full ' +
-        'and held by its own filters. Spacing clears when a normal item lands, a ' +
-        'trigger when a human declares it, a blocker when its item closes — so the ' +
-        'action is to interleave or to wait, never to refill and never to invent ' +
-        'work.',
-    };
-  }
   if (candidates === 0) {
+    const { held, parked } = partitionSkipped(skipped);
+    if (held.length > 0) {
+      return {
+        kind: 'nothing-selectable',
+        success: true,
+        why:
+          `${held.length} item(s) are takeable work held back right now — ` +
+          `${heldBreakdown(held)}.${parkedNote(parked)} This is NOT an empty queue, ` +
+          'and the two ask for opposite things: an empty queue wants refilling, ' +
+          'whereas this one still holds work. Spacing clears when a normal item ' +
+          'lands, a blocker when its item closes, in-progress when the other ' +
+          'session finishes, a trigger when a human declares it — so the action is ' +
+          'to interleave or to wait, never to refill and never to invent work.',
+      };
+    }
     return {
       kind: 'queue-empty',
       success: true,
       why:
-        'no item survives the filters and none was held back either — the queue is ' +
-        'genuinely out of work. This is a legitimate end of session, not an ' +
-        'invitation to refactor: **do not invent work**. Refilling the queue is the ' +
-        "owner's job.",
+        'no item survives the filters and nothing is merely held back — the queue ' +
+        `is genuinely out of work.${parkedNote(parked)} This is a legitimate end of ` +
+        'session, not an invitation to refactor: **do not invent work**. Refilling ' +
+        "the queue is the owner's job.",
     };
   }
   return null;
@@ -462,9 +510,10 @@ export const stopConditionOf = ({
 /**
  * The stable fingerprint of an improvement proposal.
  *
- * Under a scheduler against a finite queue the most common stop is "queue empty";
- * twenty such stops must produce ONE proposal with a count of twenty, not twenty
- * proposals. Dedupe by fingerprint, then increment.
+ * Under a scheduler against a finite queue the most common stops are the two that
+ * hand out nothing — "queue empty" and "nothing selectable"; twenty such stops
+ * must produce ONE proposal with a count of twenty, not twenty proposals. Dedupe
+ * by fingerprint, then increment.
  */
 export const fingerprintOf = ({ finding, part, change }) =>
   [finding, part, change]
