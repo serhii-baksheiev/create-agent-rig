@@ -88,13 +88,15 @@ export const SKIP_CAUSES = Object.freeze([
  * Each of these clears WITHOUT new work being written: a normal item lands, a
  * blocker closes, another session finishes, a human declares the window. The
  * three causes NOT in this list — `closed`, `triage`, `escalated` — are items
- * out of play, and on a tracker-backed adapter they accumulate forever: an
- * escalated issue stays open and merely gains a label, and the loop files a
+ * out of play, waiting on a human. On a tracker-backed adapter they accumulate:
+ * an escalated issue stays open and merely gains a label, and the loop files a
  * `triage` proposal at every stop. Counting those as "the queue is full, wait"
  * would make `queue-empty` unreachable from the first stop that escalated or
  * proposed anything — so a drained queue would report "wait and interleave" and
  * the owner would never be told to refill. That is the same refill-versus-wait
- * inversion this split exists to remove, pointing the other way.
+ * inversion this split exists to remove, pointing the other way. (`plan-md`
+ * cannot reach any of the three: it moves an escalation out of the Agent queue
+ * and files proposals where selection does not look.)
  */
 export const HOLDING_CAUSES = Object.freeze(['blocked', 'in-progress', 'spacing', 'trigger']);
 
@@ -360,6 +362,19 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
  * Split the skipped records into the ones holding takeable work back and the
  * ones that are simply out of play.
  *
+ * 🔴 **A parked cause outranks a holding one, per record** — and this precedence
+ * is the whole mechanism, not a detail. An escalated item is left CLAIMED on
+ * purpose (`escalate` labels it and nothing more), so on a tracker-backed
+ * adapter it arrives carrying `['in-progress', 'escalated']`. Let the holding
+ * cause win and every escalated item reads as "another session will finish it" —
+ * an item no session is on, which only a human clears — and `queue-empty` is
+ * unreachable from the first escalation onward. That is the exact defect this
+ * split exists to remove, one label over.
+ *
+ * The rule generalises past that case: a parked cause says the item does not
+ * come back into play without a human, and that outlasts any condition which
+ * would clear on its own.
+ *
  * A record with no cause this module recognises counts as **held**: it is the
  * reading that stops rather than the one that declares the queue drained, and an
  * unclassified skip is exactly where a wrong declaration would come from.
@@ -369,48 +384,63 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
  */
 const partitionSkipped = (skipped) => {
   const held = [];
-  let parked = 0;
+  const parked = [];
   for (const skip of skipped) {
     const causes = Array.isArray(skip?.causes) ? skip.causes : [];
-    const holding = causes.find((cause) => HOLDING_CAUSES.includes(cause));
-    const known = causes.find((cause) => SKIP_CAUSES.includes(cause));
-    if (holding || !known) held.push(holding ?? 'an unnamed filter');
-    else parked += 1;
+    const parking = causes.find(
+      (cause) => SKIP_CAUSES.includes(cause) && !HOLDING_CAUSES.includes(cause),
+    );
+    if (parking) {
+      parked.push(parking);
+      continue;
+    }
+    held.push(causes.find((cause) => HOLDING_CAUSES.includes(cause)) ?? 'an unnamed filter');
   }
   return { held, parked };
 };
 
 /**
- * "N held by X, M by Y" — what is holding the queue back, as a partition.
+ * "3 X, 1 Y" — a list of causes counted, as a partition.
  *
- * Each held item counts ONCE, under the first holding cause that rejected it, so
- * the parts foot to the total beside them. Counting it under every cause would
+ * Each item counts ONCE, under the one cause it was classified by, so the parts
+ * foot to the total beside them. Counting it under every cause it carries would
  * read as a breakdown and silently sum past that number.
  *
  * Bounded by construction: one forward pass, and a tally whose key set is the
- * holding vocabulary plus one bucket for a record that carries no tag at all.
+ * closed vocabulary plus one bucket for a record that carries no tag at all.
  */
-const heldBreakdown = (held) => {
+const breakdownOf = (causes, label = (count, tag) => `${count} ${tag}`) => {
   const tally = new Map();
-  for (const cause of held) tally.set(cause, (tally.get(cause) ?? 0) + 1);
+  for (const cause of causes) tally.set(cause, (tally.get(cause) ?? 0) + 1);
   return [...tally.entries()]
     .sort(([tagA, countA], [tagB, countB]) => countB - countA || tagA.localeCompare(tagB))
-    .map(([tag, count]) => `${count} held by ${tag}`)
+    .map(([tag, count]) => label(count, tag))
     .join(', ');
 };
+
+const heldBreakdown = (held) => breakdownOf(held, (count, tag) => `${count} held by ${tag}`);
 
 /**
  * The parked pile, named rather than left to grow unseen.
  *
  * Reported beside the held count and never summed with it: they ask the owner
  * for different things, and one number covering both would ask for neither.
+ *
+ * It names the causes the pile actually carries rather than the vocabulary it
+ * could have carried. A fixed list would announce `closed` — which no adapter
+ * can present, since every one of them drops closed items before selection —
+ * while staying silent about which of the reachable two this pile is made of.
+ * It also stops at what it can see: how the pile GROWS differs per adapter (on
+ * `plan-md` an escalation leaves the Agent queue entirely and a proposal is
+ * written where selection cannot reach), so a sentence claiming one mechanism
+ * would be false on the default adapter.
  */
 const parkedNote = (parked) =>
-  parked === 0
+  parked.length === 0
     ? ''
-    : ` A further ${parked} item(s) are parked — escalated, in triage or closed. ` +
-      'Those wait on a human, never on time, and they grow every time this loop ' +
-      'escalates an item or files a proposal.';
+    : ` A further ${parked.length} item(s) are parked — ${breakdownOf(parked)}. ` +
+      'Those are not work this run can take and they wait on a human, never on ' +
+      'time.';
 
 /**
  * Should the whole run stop? Checked in severity order, because a regression must

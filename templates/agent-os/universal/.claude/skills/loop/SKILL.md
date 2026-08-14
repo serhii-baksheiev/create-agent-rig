@@ -132,10 +132,13 @@ Four of them deserve their reasons repeated:
   legitimate, successful end of session; refilling it is the owner's job.
   **Expect this to be the most common ending** — the queue is finite and the loop
   drains it. That is the system working. The stop line also names the **parked**
-  pile if there is one: escalated items and filed proposals stay open on a
-  tracker-backed adapter, so they are reported next to the verdict rather than
-  swept into it. They are not work this run can take, and they are not why the
-  queue is empty.
+  pile if there is one, by cause and count: items that are out of play and wait
+  on a human. They are reported next to the verdict rather than swept into it —
+  they are not work this run can take, and they are not why the queue is empty.
+  How that pile grows is the adapter's business and the line does not guess at
+  it: on a tracker-backed adapter an escalated item and a filed proposal both
+  stay open and land there, whereas `plan-md` moves an escalation out of the
+  Agent queue entirely and files proposals where selection cannot reach.
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
   condition that clears without anything being written**: the elevated spacing
@@ -143,11 +146,14 @@ Four of them deserve their reasons repeated:
   session finishes), a trigger (a human declares it). The stop line names how
   many and by which of those, because the two endings ask the owner for opposite
   things: an empty queue wants refilling, a held one wants interleaving or
-  simply time. **Escalated and triage items never count as held** — they are
-  parked, they wait on a human, and counting them here is what would make the
-  empty verdict unreachable on a tracker-backed adapter. Reporting a working
-  queue as empty is the defect this kind exists to prevent — **and refilling is
-  still not this run's job, nor is inventing work.**
+  simply time. 🔴 **A parked cause outranks a holding one on the same item.** An
+  escalated item is left claimed on purpose, so it arrives carrying
+  `in-progress` as well — and reading that as held would report "another session
+  will finish it" about an item no session is on, and make the empty verdict
+  unreachable from the first escalation onward. Reporting a working queue as
+  empty is the defect this kind exists to prevent, and reporting a parked one as
+  working is the same defect reversed — **and refilling is still not this run's
+  job, nor is inventing work.**
 
 🔴 **The kill switch is a real file, not an intention:**
 

@@ -678,6 +678,169 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       expect(String(stop.why), cause).toMatch(REMEDY_FOR[cause]!);
     }
   });
+
+  // --- which side wins when ONE record carries both ----------------------------
+  //
+  // The `code-reviewer` gate on the second half of AR3-35: every test above builds
+  // a SINGLE-cause record, so nothing pins the precedence — the reviewer inverted
+  // it in `core.mjs` and all 103 tests still passed. And the precedence is not a
+  // corner case: it decides the exact record the split was written for.
+  //
+  // An escalated item never carries `escalated` alone. The loop escalates it and
+  // **leaves it claimed** (`.claude/skills/loop/SKILL.md:242`); `escalate` only
+  // adds the label (`github-issues.mjs:171-175`, `jira.mjs:263-276`) and only
+  // `close` removes `in-progress` (`github-issues.mjs:157`), which is what maps to
+  // `state: 'in-progress'` (`github-issues.mjs:62-67`, `jira.mjs:92`). So
+  // `selectionOf` emits `['in-progress','escalated']` for every escalated item on
+  // both tracker adapters.
+  //
+  // 🔴 PARKED DOMINATES. A parked cause means the item does not return to play
+  // without a human, and that outranks any condition that would clear on its own.
+  // Read the other way round, a queue of nothing but escalated items reports
+  // "held by in-progress — wait for the other session to finish" about items no
+  // session is on, and `queue-empty` is unreachable from the first escalation
+  // onwards — the refill-versus-wait inversion again, one layer down.
+
+  /** One skip record carrying exactly the causes given — the multi-cause shape. */
+  const skipWith = (id: string, causes: string[]) => ({
+    id,
+    reason: `skipped: ${causes.join('; ')}`,
+    causes,
+  });
+
+  /**
+   * A parked-only queue must offer NONE of the remedies a held line offers.
+   *
+   * Drawn from `REMEDY_FOR` rather than written out again: that map is already
+   * pinned to exactly `HOLDING_CAUSES` by the test above, so this cannot drift
+   * into checking a phrase the held line no longer uses. Deliberately not a bare
+   * /wait/ — "those wait on a human" is the parked line's own honest wording, and
+   * banning it would drive the implementation to mangle good prose.
+   */
+  const expectNoHoldingRemedy = (why: string, label: string) => {
+    for (const [cause, remedy] of Object.entries(REMEDY_FOR)) {
+      expect(why, `${label}: offers the ${cause} remedy`).not.toMatch(remedy);
+    }
+  };
+
+  it('calls an escalated item that is still claimed parked, not held back', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [skipWith('7', ['in-progress', 'escalated'])],
+    });
+    expect(stop?.kind).toBe('queue-empty');
+    expect(stop?.success).toBe(true);
+  });
+
+  it('offers no wait-it-out remedy for a queue of nothing but escalated items', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [skipWith('7', ['in-progress', 'escalated'])],
+    });
+    // The kind alone would pass an implementation that kept the held prose; this
+    // is the half that fails if the precedence is inverted OR simply removed.
+    expectNoHoldingRemedy(String(stop.why), 'a queue of nothing but escalated items');
+    expect(String(stop.why)).toMatch(/never invent|not an invitation|do not invent/i);
+  });
+
+  it('lets a parked cause outrank a holding one whichever order the record carries them in', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const pairs: string[][] = [
+      ['in-progress', 'escalated'],
+      ['escalated', 'in-progress'],
+      ['blocked', 'escalated'],
+      ['spacing', 'triage'],
+    ];
+    for (const causes of pairs) {
+      const stop = stopConditionOf({ candidates: 0, skipped: [skipWith('7', causes)] });
+      expect(stop?.kind, causes.join('+')).toBe('queue-empty');
+      expectNoHoldingRemedy(String(stop.why), causes.join('+'));
+    }
+  });
+
+  it('still reports held back when a parked record sits beside a genuinely held one', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    // Precedence is per RECORD, not per queue: one item nobody can take does not
+    // hide another item that a normal landing really would release.
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [skipWith('7', ['in-progress', 'escalated']), ...heldBy('spacing', 2)],
+    });
+    expect(stop?.kind).toBe('nothing-selectable');
+    expect(names(String(stop.why), 2, 'spacing'), String(stop.why)).toBe(true);
+    expect(names(String(stop.why), 1, 'parked'), String(stop.why)).toBe(true);
+  });
+
+  it('counts a skip it cannot classify as held back, never as parked', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    // `core.mjs` claims this in a comment and nothing tested it. Unclassified must
+    // read as the answer that STOPS rather than the one that declares the queue
+    // drained: an owner told to refill a queue that is actually full acts on a
+    // lie, and a filter that grew a new tag is exactly where that lie comes from.
+    const unclassified: Array<Record<string, unknown>> = [
+      { id: 'a', reason: 'a filter nobody tagged', causes: ['not-a-real-cause'] },
+      { id: 'b', reason: 'a filter that tagged nothing', causes: [] },
+      { id: 'c', reason: 'a record from before causes existed' },
+    ];
+    for (const skip of unclassified) {
+      const stop = stopConditionOf({ candidates: 0, skipped: [skip] });
+      expect(stop?.kind, JSON.stringify(skip)).toBe('nothing-selectable');
+    }
+  });
+
+  it('names the causes the parked pile actually carries, with their counts', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [...parked('escalated', 2), ...parked('triage', 1)],
+    });
+    expect(stop?.kind).toBe('queue-empty');
+    // "escalated, in triage or closed" is a fixed list: it names the same three
+    // whatever the pile holds, so it tells the owner nothing about which one to go
+    // and clear. Two escalations and one proposal need two different human acts.
+    expect(names(String(stop.why), 2, 'escalated'), String(stop.why)).toBe(true);
+    expect(names(String(stop.why), 1, 'triage'), String(stop.why)).toBe(true);
+  });
+
+  it('never names a parked cause the pile does not carry', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [...parked('escalated', 2), ...parked('triage', 1)],
+    });
+    // `closed` is unreachable in practice — every adapter drops closed items
+    // before `selectNext` (`github-issues.mjs:138`, `jira.mjs:201`, and plan-md
+    // removes the line). A line that names it is describing a pile the owner can
+    // never be looking at, while staying silent about the two real ones.
+    expect(String(stop.why), 'names a parked cause the pile does not carry').not.toMatch(
+      /\bclosed\b/i,
+    );
+  });
+
+  it('carries the real escalated shape from the ticket through to the stop line', async () => {
+    const { selectionOf, selectNext, stopConditionOf } = await load('core.mjs');
+    // What `github-issues.mjs` and `jira.mjs` hand up for an item this loop
+    // escalated: the label is added, the claim is deliberately left in place.
+    const escalated = ticket({
+      id: '7',
+      state: 'in-progress',
+      labels: ['in-progress', 'escalated'],
+    });
+
+    expect(selectionOf(escalated).causes).toEqual(['in-progress', 'escalated']);
+
+    const result = selectNext([escalated], {});
+    expect(result.candidates).toBe(0);
+    expect((result.skipped as Array<{ causes: string[] }>).map((s) => s.causes)).toEqual([
+      ['in-progress', 'escalated'],
+    ]);
+
+    const stop = stopConditionOf({ candidates: result.candidates, skipped: result.skipped });
+    expect(stop?.kind).toBe('queue-empty');
+    expectNoHoldingRemedy(String(stop.why), 'the escalated shape end to end');
+  });
 });
 
 describe('plan-md adapter — the zero-setup default', () => {
