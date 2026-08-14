@@ -470,6 +470,555 @@ describe('plan-md adapter — the zero-setup default', () => {
   });
 });
 
+describe('plan-md files a triage proposal instead of instructing a human to file it', () => {
+  // WHY this exists (AR2-2): the triage channel is only worth having if it
+  // WRITES. `github-issues` files for real and was used twice on its first day —
+  // its first real write caught a render defect 21 tests had missed. `plan-md`
+  // returned `{ok: false, why: 'add it yourself'}` and produced ONE triage ticket
+  // in the loop's entire history: an instruction nobody executes is a dead
+  // channel, and a dead channel is indistinguishable from a loop with nothing to
+  // say.
+  //
+  // 🔴 And it must file without ever becoming a source of its own work. A
+  // proposal is not work: it lands in the **Operator queue**, never the Agent
+  // queue, and promotion is a human act (invariant 2, above). The Agent-queue
+  // assertion below is the load-bearing one — everything else here is about the
+  // channel being alive; that one is about it being safe.
+
+  const PLAN = [
+    '# P — plan',
+    '',
+    '## Agent queue',
+    '',
+    '- add a route',
+    '- rotate the signing key [elevated]',
+    '',
+    '## Operator queue',
+    '',
+    '- decide: retention window',
+    '',
+    '## Journal',
+    '',
+  ].join('\n');
+
+  /** A fresh temp copy — the repo's real PLAN.md is never the fixture. */
+  const withPlan = async (plan: string = PLAN): Promise<string> => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'triage-'));
+    const planPath = path.join(dir, 'PLAN.md');
+    await writeFile(planPath, plan);
+    return planPath;
+  };
+
+  /** The lines under a `## <heading>` section, up to the next heading. One pass. */
+  const sectionOf = (plan: string, heading: string): string => {
+    const wanted = new RegExp(`^##\\s+${heading}\\s*$`, 'i');
+    const lines = plan.split('\n');
+    const start = lines.findIndex((line) => wanted.test(line));
+    if (start === -1) return '';
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^##\s+/.test(lines[i]!)) {
+        end = i;
+        break;
+      }
+    }
+    return lines.slice(start + 1, end).join('\n');
+  };
+
+  const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+  // Neither fixture carries a digit, so a digit found near the proposal is the
+  // implementation's counter and nothing else.
+  const queueEmpty = {
+    finding: 'stop condition: queue empty on every run this session',
+    part: 'PLAN.md',
+    change: 'seed the Agent queue with the next slice of work',
+    proof: 'the next run selects an item instead of stopping',
+  };
+  const other = {
+    finding: 'the loop re-read the whole rulebook for every task',
+    part: '.claude/skills/loop/SKILL.md',
+    change: 'name the wall in the journal entry',
+    proof: 'the next run cites the wall instead of re-hitting it',
+  };
+
+  it('writes the proposal into the Operator queue and reports that it filed it', async () => {
+    const { proposeTriage, triageItemFor } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+
+    const result = proposeTriage(queueEmpty, { planPath });
+
+    expect(result.ok).toBe(true);
+    expect(result.filed).toBeTruthy();
+    const operator = sectionOf(await read(planPath), 'Operator queue');
+    expect(operator).toContain(triageItemFor(queueEmpty).fingerprint);
+  });
+
+  it('🔴 leaves the Agent queue byte-identical — the loop never files its own work', async () => {
+    const { proposeTriage, parsePlan } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+    const before = await read(planPath);
+
+    proposeTriage(queueEmpty, { planPath });
+
+    const after = await read(planPath);
+    expect(sectionOf(after, 'Agent queue')).toBe(sectionOf(before, 'Agent queue'));
+    expect((parsePlan(after) as Ticket[]).map((t) => t.title)).toEqual(
+      (parsePlan(before) as Ticket[]).map((t) => t.title),
+    );
+  });
+
+  it('files something the selection path cannot reach', async () => {
+    const { proposeTriage, listEligible } = await load('plan-md.mjs');
+    const { selectNext } = await load('core.mjs');
+    const planPath = await withPlan();
+
+    proposeTriage(queueEmpty, { planPath });
+
+    // The real selection path, not a string assertion: what matters is that no
+    // run can be handed this item, however the line ends up formatted.
+    const tickets = listEligible({ planPath }) as Ticket[];
+    const selected = selectNext(tickets, {}) as { ticket: Ticket | null };
+    for (const ticket of tickets) expect(ticket.title).not.toContain(queueEmpty.change);
+    expect(selected.ticket?.title ?? '').not.toContain(queueEmpty.change);
+  });
+
+  it('increments the proposal already on file rather than filing it twice', async () => {
+    const { proposeTriage, triageItemFor } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+    const { fingerprint } = triageItemFor(queueEmpty);
+
+    proposeTriage(queueEmpty, { planPath });
+    const second = proposeTriage({ ...queueEmpty }, { planPath });
+
+    expect(second.ok).toBe(true);
+    expect(second.incremented).toBeTruthy();
+    const operator = sectionOf(await read(planPath), 'Operator queue');
+    expect(occurrences(operator, fingerprint)).toBe(1);
+    expect(operator).toMatch(/\b2\b/); // the count rose, and it is visible in the file
+  });
+
+  it('turns twenty identical stops into one proposal counted twenty times', async () => {
+    const { proposeTriage, triageItemFor } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+    const { fingerprint } = triageItemFor(queueEmpty);
+
+    // The stated reason the fingerprint exists: under a scheduler against a
+    // finite queue, "queue empty" is the most common stop of all.
+    for (let i = 0; i < 20; i += 1) proposeTriage(queueEmpty, { planPath });
+
+    const operator = sectionOf(await read(planPath), 'Operator queue');
+    expect(occurrences(operator, fingerprint)).toBe(1);
+    expect(operator).toMatch(/\b20\b/);
+  });
+
+  it('files a second, separate item for a different proposal', async () => {
+    const { proposeTriage, triageItemFor } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+
+    proposeTriage(queueEmpty, { planPath });
+    const second = proposeTriage(other, { planPath });
+
+    expect(second.ok).toBe(true);
+    expect(second.filed).toBeTruthy();
+    const operator = sectionOf(await read(planPath), 'Operator queue');
+    expect(occurrences(operator, triageItemFor(queueEmpty).fingerprint)).toBe(1);
+    expect(occurrences(operator, triageItemFor(other).fingerprint)).toBe(1);
+  });
+
+  it('refuses an incomplete proposal without leaving a half-formed item behind', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+    const before = await read(planPath);
+
+    expect(() => proposeTriage({ finding: 'x' }, { planPath })).toThrow(/part|change|proof/i);
+
+    expect(await read(planPath)).toBe(before);
+  });
+
+  // --- what the loop writes about ITSELF is the hardest text to write back ------
+  //
+  // Every proposal above is prose about something else. The findings this channel
+  // exists for are about the loop, so its own vocabulary — "seen ×N" among it —
+  // lands inside the finding, the change and the proof. Cost of finding these
+  // three: a code review that re-ran the adapter by hand; 21 green tests did not
+  // see any of them, because every fixture above was written to carry no digit.
+
+  interface Proposal {
+    finding: string;
+    part: string;
+    change: string;
+    proof: string;
+  }
+
+  /** A proposal about the counter — so the counter's own syntax is in its title. */
+  const aboutTheCounter: Proposal = {
+    finding: 'the repeat count renders with a multiplication sign nobody can grep',
+    part: 'PLAN.md',
+    change: 'render seen ×2 as "twice"',
+    proof: 'the next run reads "twice" in the filed bullet',
+  };
+
+  /** The same hazard one field over: the count sits in the finding, not the title. */
+  const countInTheFinding: Proposal = {
+    finding: 'the same stop arrived seen ×7 times before anyone looked at it',
+    part: '.claude/skills/loop/SKILL.md',
+    change: 'name the repeat count in the journal entry',
+    proof: 'the next run cites the count instead of re-deriving it',
+  };
+
+  const carriesItsOwnCount: Array<[string, Proposal]> = [
+    ['change', aboutTheCounter],
+    ['finding', countInTheFinding],
+  ];
+
+  const fieldsOf = (proposal: Proposal): string[] => [
+    proposal.finding,
+    proposal.part,
+    proposal.change,
+    proposal.proof,
+  ];
+
+  /**
+   * The count the FILE holds — read after masking out the prose the proposal
+   * itself submitted. Without the mask a digit the agent wrote is
+   * indistinguishable from the one the adapter maintains, and that confusion is
+   * the whole defect these tests pin.
+   */
+  const counterIn = (section: string, proposal: Proposal, fingerprint: string): number | null => {
+    // Matched on the proposal's own `proof` AS WELL AS the fingerprint, and the
+    // reason is the defect this file exists to pin: a proposal's prose may quote
+    // another proposal's fingerprint, so "the first line containing the
+    // fingerprint" reads the quoter's line rather than the bullet the adapter
+    // wrote for this proposal. The helper made the same mistake the code did.
+    const line = section
+      .split('\n')
+      .find((candidate) => candidate.includes(fingerprint) && candidate.includes(proposal.proof));
+    if (line === undefined) return null;
+    let rest = line;
+    for (const own of fieldsOf(proposal)) rest = rest.split(own).join(' ');
+    const match = /seen\s*×?\s*(\d+)/.exec(rest);
+    return match ? Number(match[1]) : null;
+  };
+
+  it.each(carriesItsOwnCount)(
+    'counts a repeat of a proposal whose %s says "seen ×N", without rewriting that text',
+    async (_field, proposal) => {
+      const { proposeTriage } = await load('plan-md.mjs');
+      const { fingerprintOf } = await load('core.mjs');
+      const fingerprint = fingerprintOf(proposal) as string;
+      const planPath = await withPlan();
+
+      proposeTriage(proposal, { planPath });
+      proposeTriage({ ...proposal }, { planPath });
+
+      const operator = sectionOf(await read(planPath), 'Operator queue');
+      // Byte-for-byte, deliberately: a recorded finding is reported, never
+      // silently corrected (`core.mjs:131`). A counter that edits the sentence it
+      // is counting destroys the evidence the channel exists to carry.
+      for (const own of fieldsOf(proposal)) expect(operator, own).toContain(own);
+      expect(counterIn(operator, proposal, fingerprint)).toBe(2);
+    },
+  );
+
+  it.each(carriesItsOwnCount)(
+    'reports a `seen` the file agrees with when the proposal\'s %s says "seen ×N"',
+    async (_field, proposal) => {
+      const { proposeTriage } = await load('plan-md.mjs');
+      const { fingerprintOf } = await load('core.mjs');
+      const fingerprint = fingerprintOf(proposal) as string;
+      const planPath = await withPlan();
+
+      proposeTriage(proposal, { planPath });
+      const second = proposeTriage({ ...proposal }, { planPath });
+
+      // Two filings is two — and agreement alone would not say so: when the
+      // counter rewrites the digit inside the proposal's own prose, the returned
+      // number and the number left in the file are the SAME wrong number. The
+      // count is what ends up quoted in the journal, so it is pinned to the fact.
+      expect(second.seen).toBe(2);
+      const operator = sectionOf(await read(planPath), 'Operator queue');
+      expect(counterIn(operator, proposal, fingerprint)).toBe(second.seen);
+    },
+  );
+
+  // --- the increment must land on a line the agent wrote ------------------------
+  //
+  // The other two adapters ask their tracker for `label:triage` before deduping
+  // (`github-issues.mjs:218`, `jira.mjs:317`). plan-md has no label, so the
+  // candidate set is a choice — and "every line under the heading" is the widest
+  // one available. The Operator queue is the human's page: it holds decisions,
+  // rejections and commented-out examples, and a fingerprint quoted in any of
+  // them is not a filed proposal.
+
+  const quotesAFingerprint: Array<[string, (fingerprint: string) => string]> = [
+    [
+      'a human WONTFIX quoting the fingerprint',
+      (fingerprint) =>
+        `- WONTFIX — we discussed \`${fingerprint}\` in March and decided against it`,
+    ],
+    [
+      'a commented-out example quoting the fingerprint',
+      (f) => `<!-- example: fingerprint ${f} -->`,
+    ],
+  ];
+
+  it.each(quotesAFingerprint)(
+    'still files the proposal when the Operator queue already holds %s',
+    async (_kind, lineFor) => {
+      const { proposeTriage } = await load('plan-md.mjs');
+      const { fingerprintOf } = await load('core.mjs');
+      const fingerprint = fingerprintOf(queueEmpty) as string;
+      const humanLine = lineFor(fingerprint);
+      const planPath = await withPlan(
+        PLAN.replace('- decide: retention window', `- decide: retention window\n${humanLine}`),
+      );
+
+      const result = proposeTriage(queueEmpty, { planPath });
+
+      // Not a formatting assertion: the proof text appears nowhere but in a bullet
+      // the adapter wrote, so a line carrying it is the proposal being on file.
+      const operator = sectionOf(await read(planPath), 'Operator queue');
+      const filed = operator
+        .split('\n')
+        .filter((line) => line.includes(fingerprint) && line.includes(queueEmpty.proof));
+      expect(filed).toHaveLength(1);
+      expect(result.filed).toBeTruthy();
+    },
+  );
+
+  it.each(quotesAFingerprint)('leaves %s exactly as the human wrote it', async (_kind, lineFor) => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const { fingerprintOf } = await load('core.mjs');
+    const humanLine = lineFor(fingerprintOf(queueEmpty) as string);
+    const planPath = await withPlan(
+      PLAN.replace('- decide: retention window', `- decide: retention window\n${humanLine}`),
+    );
+
+    proposeTriage(queueEmpty, { planPath });
+
+    // Byte-for-byte: appending ` · seen ×2` to somebody's rejection turns their
+    // decision into a counter for a proposal they never filed.
+    expect((await read(planPath)).split('\n')).toContain(humanLine);
+  });
+
+  // --- nowhere safe to land --------------------------------------------------
+  //
+  // The refusal branch had no test at all. It is the one branch where the failure
+  // mode is the invariant itself: a proposal with nowhere unselectable to go must
+  // NOT fall back to the Agent queue.
+
+  const NO_OPERATOR_QUEUE = ['# P — plan', '', '## Agent queue', '', '- add a route', ''].join(
+    '\n',
+  );
+
+  it('refuses when there is no Operator queue heading, and names the heading it wanted', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const planPath = await withPlan(NO_OPERATOR_QUEUE);
+
+    const result = proposeTriage(queueEmpty, { planPath });
+
+    expect(result.ok).toBe(false);
+    expect(result.why).toMatch(/Operator queue/);
+  });
+
+  it('🔴 writes nothing at all when there is no Operator queue heading', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const planPath = await withPlan(NO_OPERATOR_QUEUE);
+    const before = await read(planPath);
+
+    proposeTriage(queueEmpty, { planPath });
+
+    // No partial write, and above all nothing appended to the Agent queue —
+    // "there was nowhere unselectable to file it" can never resolve to "file it
+    // somewhere selectable" (invariant 2).
+    expect(await read(planPath)).toBe(before);
+  });
+
+  // --- one proposal is one LINE, whatever the proposal says ---------------------
+  //
+  // A second review round, re-running the adapter by hand, found the four fields
+  // are interpolated into ONE string that is then spliced into a `string[]` and
+  // joined with '\n' — so a newline in any of them writes real lines into the
+  // file, and `validateProposal` only checks truthiness. Not an exotic input:
+  // `autonomy.md` tells an escalating run to report "verbatim errors, not
+  // summaries", so a pasted stack trace in `finding` is the EXPECTED case.
+  //
+  // Neither test below pins how the newline is neutralised — collapsing it,
+  // escaping it, or refusing the proposal outright are all legitimate. They pin
+  // the two things that broke: one filed proposal is one line, and nothing a
+  // proposal contains can reach the Agent queue.
+
+  /** A verbatim error, pasted whole — headings, bullets and all. */
+  const verbatimError: Proposal = {
+    finding: [
+      'the run stopped on a verbatim error:',
+      '## Agent queue',
+      '- at proposeTriage (plan-md.mjs)',
+    ].join('\n'),
+    part: 'PLAN.md',
+    change: 'quote the failing frame in the journal entry',
+    proof: 'the next run cites the frame instead of re-deriving it',
+  };
+
+  it('files a proposal carrying a pasted stack trace as exactly one line, counted once', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const { fingerprintOf } = await load('core.mjs');
+    const fingerprint = fingerprintOf(verbatimError) as string;
+    const planPath = await withPlan();
+    const before = await read(planPath);
+
+    const first = proposeTriage(verbatimError, { planPath });
+    proposeTriage({ ...verbatimError }, { planPath });
+    const after = await read(planPath);
+
+    // Refusing a proposal that cannot be rendered on one line is a legitimate
+    // answer — but then it refuses every time and writes nothing at all.
+    if (first.ok === false) {
+      expect(proposeTriage({ ...verbatimError }, { planPath }).ok).toBe(false);
+      expect(after).toBe(before);
+      return;
+    }
+
+    // Observed instead: three filings produced THREE bullets each reading
+    // `seen ×1`. The injected `##` truncates the Operator range on the next
+    // read, so the `fingerprint … seen ×N` tail — which lands on a later
+    // physical line than the bullet started on — is never a candidate, and
+    // dedupe is broken permanently for this proposal.
+    expect(after.split('\n').length - before.split('\n').length).toBe(1);
+    const operator = sectionOf(after, 'Operator queue');
+    expect(operator.split('\n').filter((line) => line.includes(fingerprint))).toHaveLength(1);
+    expect(counterIn(operator, verbatimError, fingerprint)).toBe(2);
+  });
+
+  /** The heading order is a human's choice, and this one is not exotic either. */
+  const OPERATOR_BEFORE_AGENT = [
+    '# P — plan',
+    '',
+    '## Operator queue',
+    '',
+    '- decide: retention window',
+    '',
+    '## Agent queue',
+    '',
+    '- add a route',
+    '- rotate the signing key [elevated]',
+    '',
+    '## Journal',
+    '',
+  ].join('\n');
+
+  it('🔴 cannot hand a run its own proposal when the Operator queue comes first', async () => {
+    const { proposeTriage, listEligible } = await load('plan-md.mjs');
+    const { selectNext } = await load('core.mjs');
+    const planPath = await withPlan(OPERATOR_BEFORE_AGENT);
+    const before = (listEligible({ planPath }) as Ticket[]).map((t) => t.title);
+    expect(before).toEqual(['add a route', 'rotate the signing key']);
+
+    proposeTriage(verbatimError, { planPath });
+
+    // The load-bearing one, through the REAL selection path. Observed: the
+    // injected heading became the first `## Agent queue` in the file, and
+    // selection returned the proposal's own tail as ordinary work — the
+    // `[triage]` marker having stayed behind on the earlier physical line.
+    const after = listEligible({ planPath }) as Ticket[];
+    expect(after.map((t) => t.title)).toEqual(before);
+    const selected = (selectNext(after, {}) as { ticket: Ticket | null }).ticket;
+    expect(selected?.title ?? '').not.toContain(verbatimError.proof);
+  });
+
+  // --- a fingerprint quoted in prose is not a filed proposal --------------------
+  //
+  // Also from the second review round. Candidates are now restricted to lines the
+  // adapter wrote, but the WHOLE bullet is handed to `duplicateOf`, which matches
+  // by substring — so the adapter's own free text is still in the search space,
+  // and a proposal ABOUT the deduper quotes fingerprints for a living.
+
+  /** The proposal whose fingerprint the other one quotes. */
+  const dedupeIsBySubstring: Proposal = {
+    finding: 'dedupe is by substring',
+    part: 'core.mjs',
+    change: 'anchor it',
+    proof: 'the next run files a second bullet instead of counting the first',
+  };
+
+  /** Filed first, and it names the other one's fingerprint in its finding. */
+  const quoting = (fingerprint: string): Proposal => ({
+    finding: `the deduper matched ${fingerprint} by accident`,
+    part: '.claude/scripts/queue/core.mjs',
+    change: 'restrict the dedupe search to the fields this adapter wrote',
+    proof: 'a proposal quoting a fingerprint no longer swallows its bullet',
+  });
+
+  /** The bullet the adapter wrote FOR this proposal — its own proof text is only there. */
+  const bulletsFor = (operator: string, proposal: Proposal, fingerprint: string): string[] =>
+    operator
+      .split('\n')
+      .filter((line) => line.includes(proposal.proof) && line.includes(fingerprint));
+
+  // 🔴 The same quadratic shape as `hygieneOf`'s test above, in the same file,
+  // found by the third review round on this function: an unbounded `\s*` in
+  // front of `[\r\n]+` — a subset of `\s` — re-splits a whitespace run at every
+  // offset. Measured before the fix: 6,659 ms on 65k spaces, 102,801 ms on 256k,
+  // and 0 ms the moment a single newline appears anywhere after the run, which
+  // is why every injection fixture missed it. `core.mjs` calls this the third
+  // occurrence of the shape and says remembering it once was evidently not
+  // enough; this is the fourth, so it gets the same bar the sibling has.
+  it('folds a field onto one line in linear time', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+    const runs = [' '.repeat(65_000), '\t'.repeat(65_000) + 'x', ' '.repeat(65_000) + '\n'];
+
+    for (const [i, run] of runs.entries()) {
+      const started = performance.now();
+      proposeTriage(
+        { finding: `f${i}${run}`, part: 'p', change: `c${i}`, proof: 'pr' },
+        { planPath },
+      );
+      expect(performance.now() - started, `run ${i}`).toBeLessThan(250);
+    }
+  });
+
+  it('files a proposal whose fingerprint an earlier proposal quotes, on its own bullet', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const { fingerprintOf } = await load('core.mjs');
+    const quotedFingerprint = fingerprintOf(dedupeIsBySubstring) as string;
+    const quoter = quoting(quotedFingerprint);
+    const quoterFingerprint = fingerprintOf(quoter) as string;
+    const planPath = await withPlan();
+
+    proposeTriage(quoter, { planPath });
+    proposeTriage(dedupeIsBySubstring, { planPath });
+    proposeTriage({ ...dedupeIsBySubstring }, { planPath });
+
+    // Observed: the quoted proposal's bullet was never written at all, while the
+    // quoter's counter climbed to ×3 — a human's record of one finding turned
+    // into the tally of a different one.
+    const operator = sectionOf(await read(planPath), 'Operator queue');
+    expect(bulletsFor(operator, quoter, quoterFingerprint)).toHaveLength(1);
+    expect(bulletsFor(operator, dedupeIsBySubstring, quotedFingerprint)).toHaveLength(1);
+    expect(counterIn(operator, quoter, quoterFingerprint)).toBe(1);
+    expect(counterIn(operator, dedupeIsBySubstring, quotedFingerprint)).toBe(2);
+  });
+
+  it("reports filing, not incrementing, when the only match is somebody else's prose", async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const { fingerprintOf } = await load('core.mjs');
+    const quoter = quoting(fingerprintOf(dedupeIsBySubstring) as string);
+    const planPath = await withPlan();
+
+    proposeTriage(quoter, { planPath });
+    const filed = proposeTriage(dedupeIsBySubstring, { planPath });
+
+    // Observed: `{ ok: true, seen: 2, incremented: '…' }` on a first filing —
+    // the caller is told a bullet was incremented that does not exist, and that
+    // claim is what ends up quoted in the journal.
+    expect(filed.filed).toBeTruthy();
+    expect(filed.incremented).toBeFalsy();
+    expect(filed.seen).toBe(1);
+  });
+});
+
 describe('github-issues adapter', () => {
   const issue = (over: Record<string, unknown> = {}) => ({
     number: 12,
