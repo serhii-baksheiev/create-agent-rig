@@ -288,9 +288,10 @@ if (invokedDirectly()) {
   // template tree this repository publishes.
   const runDir = process.env.RIG_RUN_DIR;
   if (runDir) {
+    let journal = null;
     try {
-      const { recordDecision } = await import('../run-journal.mjs');
-      recordDecision({
+      journal = await import('../run-journal.mjs');
+      journal.recordDecision({
         runDir,
         gate: 'item-selection',
         verdict: result.ticket ? `taken ${result.ticket.id}` : `stopped ${stop.kind}`,
@@ -300,12 +301,29 @@ if (invokedDirectly()) {
         now: new Date().toISOString(),
       });
     } catch (error) {
-      // Declared and not written is a failure, never a detail. The sequence and
-      // the run-end marker exist so a missing record is visible; swallowing this
-      // would hand back a trace with a silent hole, which is the one outcome
-      // worse than having no trace at all.
-      process.stderr.write(`run journal: ${error.message}\n`);
-      process.exit(1);
+      // 🔴 Two failures wearing one face, and treating them alike was a defect
+      // this gate caught. The journal asks the module which one this is — never
+      // the message text, which would put the decision in two files and let them
+      // drift the day someone improves the wording.
+      if (journal?.isTraceExhausted(error)) {
+        // The trace is over and the work is not. This journal cannot accept
+        // another record — it is append-only and every write re-reads it — so
+        // exiting here would make one collision between two sessions leave the
+        // queue unselectable FOREVER. Loud on stderr, and the selection still
+        // goes out on stdout, because the queue was never the thing that failed.
+        process.stderr.write(
+          `run journal: ${error.message}\n` +
+            `  the selection below was NOT recorded in ${runDir}. This run's trace ends ` +
+            'here; the queue is fine, and a new run needs a new run directory.\n',
+        );
+      } else {
+        // The other half: the run directory was declared and is not there, the
+        // journal module is missing, the declaration is empty. Nothing has
+        // happened yet, it is fixed in a second, and continuing would produce a
+        // run with no trace at all — so this one does stop the selection.
+        process.stderr.write(`run journal: ${error.message}\n`);
+        process.exit(1);
+      }
     }
   }
 

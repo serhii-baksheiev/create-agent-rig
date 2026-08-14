@@ -67,6 +67,24 @@ nothing.
 unattended only after the escalation path and the post-deploy verdict have each
 been seen working at least once.
 
+### Declare the run directory here, before the first selection
+
+The machine trace (§7) is opt-in and its first call site is **selection**, which
+runs before every task. Declared later, it misses everything that already
+happened — so it is declared in preflight or not at all:
+
+```bash
+export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
+mkdir -p "$RIG_RUN_DIR"
+```
+
+🔴 **One directory per run, never shared and never reused.** Two sessions writing
+into one directory produce two records claiming the same position, and a reused
+one already carries its run-end marker; in both cases the journal stops accepting
+records — the selection still works and says so on stderr, but that run's trace
+ends there. Reach the end of the run and the marker closes it (§3); a new run
+gets a new directory.
+
 ## 2. Selection — filters in order, then the sort
 
 The queue is queried **fresh before every task**, never from a cached list: the
@@ -271,15 +289,8 @@ field list is in `PLAN.md` under `## Journal`.
 
 **Behind that entry there is a machine trace, and it is a different artifact.**
 `.claude/scripts/run-journal.mjs` writes gate verdicts to `decisions.jsonl` and
-everything else to `events.jsonl`, both append-only, inside the run directory the
-run declares:
-
-```bash
-export RIG_RUN_DIR="$PWD/.claude/runs/<run-id>"   # yours to choose and to create
-mkdir -p "$RIG_RUN_DIR"
-```
-
-Three things about it are worth knowing before relying on it:
+everything else to `events.jsonl`, both append-only, inside the run directory
+declared in §1. Four things about it are worth knowing before relying on it:
 
 - **The run declares the directory; nothing invents one.** With `RIG_RUN_DIR`
   unset, every call site stays silent — the trace is opt-in, and a run that never
@@ -288,9 +299,37 @@ Three things about it are worth knowing before relying on it:
   right*.** It replaces neither `## Journal` above nor `PLAN.md`; it is the
   evidence a reader checks those against.
 - **A record after the run-end marker is refused, and a broken sequence is
-  refused on read.** The order is asserted rather than described, so a stale
-  record cannot read as the current one — which is the whole failure a journal
-  exists to prevent.
+  refused on both write and read.** The order is asserted rather than described,
+  so a stale record cannot read as the current one — which is the whole failure a
+  journal exists to prevent.
+- ⚠ **The trace can stop before the run does, and it says so on stderr rather
+  than stopping the run.** A journal the selection cannot write to — a shared
+  directory, a reused one, a sequence already broken — is a lost trace, not a
+  reason to withhold work the queue can still hand out correctly. The one case
+  that DOES refuse is a run directory that was declared and does not exist:
+  nothing has happened yet, and continuing would produce a run with no trace at
+  all. **`queue: unreadable` is about the QUEUE** (§0) — a `run journal:` line on
+  stderr is a different failure and never means the queue could not be read.
+
+**The marker is written by the stop, and the stop is a step in this skill.** A
+journal whose end nobody writes leaves every run reading as still-running, which
+is exactly the ambiguity the marker exists to remove. So the last thing a run does
+— after the journal entry above, whatever the stop condition was:
+
+```bash
+node --input-type=module -e '
+  const { endRun } = await import("./.claude/scripts/run-journal.mjs");
+  console.log(endRun({
+    runDir: process.env.RIG_RUN_DIR,
+    stop:   "<the stop condition from §3: queue-empty | budget | kill-switch | …>",
+    now:    new Date().toISOString(),
+  }));
+'
+```
+
+If no run directory was declared, there is nothing to close and this step is
+skipped — say so in the journal entry rather than leaving the reader to guess
+which of the two happened.
 
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an
