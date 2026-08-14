@@ -117,9 +117,10 @@ escalate that item (§5) and take the next one.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
-**two escalations in a row** · **budget** · **queue empty**.
+**two escalations in a row** · **budget** · **nothing selectable** · **queue
+empty**.
 
-Three of them deserve their reasons repeated:
+Four of them deserve their reasons repeated:
 
 - **Runtime regression** → deploy the revert first, diagnose second, start no new
   work on top. A regression compounds into everything built above it.
@@ -130,7 +131,35 @@ Three of them deserve their reasons repeated:
   sprees, no polish, no pre-emptive optimisation. An empty filtered queue is a
   legitimate, successful end of session; refilling it is the owner's job.
   **Expect this to be the most common ending** — the queue is finite and the loop
-  drains it. That is the system working.
+  drains it. That is the system working. The stop line also names the **parked**
+  pile if there is one, by cause and count: items that are out of play and wait
+  on a human. They are reported next to the verdict rather than swept into it —
+  they are not work this run can take, and they are not why the queue is empty.
+  How that pile grows is the adapter's business and the line does not guess at
+  it: on a tracker-backed adapter an escalated item and a filed proposal both
+  stay open and land there. Under `plan-md` only a `[triage]` line sitting in
+  the Agent queue can — a filed proposal goes to the Operator queue, where
+  selection never looks, and an escalation leaves no mark on the queue at all,
+  because a flat list has no per-item state. 🔴 **That last one is an absence,
+  not a safety.** `plan-md`'s `escalate` writes nothing, returns `ok: false`,
+  and hands back the instruction with it: move the item to the Operator queue in
+  the same edit. That move is the session's, and skipping it means the next run
+  takes the stuck item straight back.
+- **Nothing selectable** → also a clean stop, and **not the same finding**.
+  Takeable work is still there and every piece of it is **held back by a
+  condition that clears without anything being written**: the elevated spacing
+  (a normal item lands), a blocker (its item closes), in-progress (the other
+  session finishes), a trigger (a human declares it). The stop line names how
+  many and by which of those, because the two endings ask the owner for opposite
+  things: an empty queue wants refilling, a held one wants interleaving or
+  simply time. 🔴 **A parked cause outranks a holding one on the same item.** An
+  escalated item is left claimed on purpose, so it arrives carrying
+  `in-progress` as well — and reading that as held would report "another session
+  will finish it" about an item no session is on, and make the empty verdict
+  unreachable from the first escalation onward. Reporting a working queue as
+  empty is the defect this kind exists to prevent, and reporting a parked one as
+  working is the same defect reversed — **and refilling is still not this run's
+  job, nor is inventing work.**
 
 🔴 **The kill switch is a real file, not an intention:**
 
@@ -306,7 +335,7 @@ three poisons the only channel by which this project learns.
 | Take two elevated items back to back | One unreviewed schema/permissions change is recoverable; a chain overnight is not |
 | Merge past a blocking reviewer verdict | The reviewer gate is what replaced the human merge |
 | Trust a `blocked` label over the links | The label is a snapshot; the links are the dependency |
-| "Improve" on an empty queue | An empty filtered queue is the end of the run, not an invitation |
+| "Improve" on a queue that hands out nothing | Whether it stopped as empty or as held back, a run with no item is at its end, not at an invitation |
 | Start new work on an unhealthy runtime | The regression compounds into everything above it |
 | Act on the "Never" tier | A hard stop, enforced by hooks |
 

@@ -160,7 +160,12 @@ if (invokedDirectly()) {
     lastCompletedTier: config.lastCompletedTier ?? null,
     triggersFired: config.triggersFired ?? null,
   });
-  const stop = result.ticket ? null : stopConditionOf({ candidates: 0 });
+  // The skipped records travel with the count: without them "nothing left" and
+  // "everything left is held back" both print as an empty queue, and only one of
+  // the two means the queue needs refilling.
+  const stop = result.ticket
+    ? null
+    : stopConditionOf({ candidates: 0, skipped: result.skipped });
 
   if (args.command === 'list') {
     process.stdout.write(`${JSON.stringify({ tickets, ...result }, null, 2)}\n`);

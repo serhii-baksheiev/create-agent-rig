@@ -208,7 +208,8 @@ export const triageItemFor = (proposal) => {
 /**
  * File the proposal — or increment the one already there.
  *
- * Under a scheduler against a finite queue the most common stop is "queue empty";
+ * Under a scheduler against a finite queue the most common stops are the two that
+ * hand out nothing — "queue empty" and "nothing selectable";
  * twenty such stops must produce one proposal with a count of twenty.
  */
 export const proposeTriage = (proposal, { existing = null } = {}) => {
