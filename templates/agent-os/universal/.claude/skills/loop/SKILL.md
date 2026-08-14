@@ -346,7 +346,58 @@ three poisons the only channel by which this project learns.
   while it still reads as available is invisible to the human and re-selectable by
   the very next query.
 - **Closing:** close it with the merged PR linked, immediately after the
-  post-merge verdict — not in a cleanup pass.
+  post-merge verdict — not in a cleanup pass. **Record the tier in the same
+  step**, because the next selection rations on it:
+
+  ```bash
+  node --input-type=module -e '
+    const { recordCompletedTier } = await import("./.claude/scripts/queue/state.mjs");
+    const { withoutGitLocation } = await import("./.claude/scripts/git-env.mjs");
+    const { execFileSync } = await import("node:child_process");
+    const merge = "<merge-sha>";
+    // The merge commit against its first parent: what the PR actually added.
+    const changedFiles = execFileSync(
+      "git", ["diff", "--name-only", "-z", `${merge}^1`, merge],
+      { encoding: "utf8", env: withoutGitLocation() },
+    ).split("\0").filter(Boolean);
+    console.log(recordCompletedTier({ changedFiles, projectRoot: process.cwd() }));
+  '
+  ```
+
+  Four details in that command are load-bearing, and each one was a live defect
+  before it was there:
+
+  - **`<merge-sha>^1 <merge-sha>`, not `origin/<default>...<merge-sha>`.** A
+    three-dot diff is `merge-base..head`, and once the remote-tracking ref
+    includes the merge — which is its state at exactly the moment this step
+    runs — the merge base *is* the merge, so the list comes back **empty** and
+    the call refuses. The old form worked only while the local ref happened to
+    be stale, i.e. by accident of ordering.
+  - **`-z`, and split on `\0`.** With `core.quotePath` on (the default) a path
+    with a non-ASCII byte arrives quoted and octal-escaped — `".claude/caf\303\251.mjs"`
+    — which matches no declared prefix, so an elevated change records as
+    `normal`. A name containing a newline splits into two junk paths. `-z`
+    removes both.
+  - **`execFileSync` with an argument array**, not a shell string. Nothing is
+    interpolated into a shell today, and the point is that the next session
+    cannot start.
+  - **`env: withoutGitLocation()`.** Run under a git hook, this command inherits
+    `GIT_DIR` — absolute, when the hook fired in a worktree — and then computes
+    the diff of **another repository**, recording a tier from it. Silently: the
+    list comes back non-empty, so nothing refuses. The source sweep in
+    `test/template/git-env.test.ts` cannot read markdown, so this line is guarded
+    by a sweep over the fenced blocks in these documents instead.
+
+  🔴 **The tier comes from the diff, never from the item's marker.** The marker
+  is a pre-filter (§2); `autonomy.md` decides the tier by what the change
+  *touches*, and rationing on the marker would mean one written a tier low
+  silently buys a second elevated item in a row. A marker that disagrees with
+  the paths is queue hygiene to report, not the value to ration on.
+
+  It **refuses** rather than guessing when the file list is empty or missing:
+  an absence is not a normal-tier change, and the permissive answer written
+  confidently is exactly how this seam went unnoticed in the first place. If it
+  refuses, find the file list — do not pass one to make it quiet.
 - **Write-back:** with the close, record what it **unblocked** — the items that
   were waiting on this one, by name. It is the journal's `unblocked` field, and
   it is **required, not a step for when it applies**: an absent line and an

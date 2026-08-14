@@ -116,6 +116,12 @@ describe('plan-md: a missing queue section is not an empty queue', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'noqueue-'));
     await mkdir(path.join(dir, '.claude'), { recursive: true });
     await cp(queueDir, path.join(dir, '.claude', 'scripts', 'queue'), { recursive: true });
+    // The queue seam imports the shared git-env sanitiser from one directory up;
+    // a fixture that copies only `queue/` installs a CLI that cannot resolve it.
+    await cp(
+      path.join(queueDir, '..', 'git-env.mjs'),
+      path.join(dir, '.claude', 'scripts', 'git-env.mjs'),
+    );
     await writeFile(path.join(dir, 'PLAN.md'), '# P\n\n## Journal\n');
     const result = await run(dir, ['next']);
     expect(result.out).toMatch(/unreadable|no Agent queue/i);
@@ -453,6 +459,12 @@ describe('the queue CLI fails loudly, exactly as its own header demands', () => 
     const dir = await mkdtemp(path.join(tmpdir(), 'cli-'));
     await mkdir(path.join(dir, '.claude'), { recursive: true });
     await cp(queueDir, path.join(dir, '.claude', 'scripts', 'queue'), { recursive: true });
+    // The queue seam imports the shared git-env sanitiser from one directory up;
+    // a fixture that copies only `queue/` installs a CLI that cannot resolve it.
+    await cp(
+      path.join(queueDir, '..', 'git-env.mjs'),
+      path.join(dir, '.claude', 'scripts', 'git-env.mjs'),
+    );
     await writeFile(path.join(dir, 'PLAN.md'), plan);
     if (config !== undefined) await writeFile(path.join(dir, '.claude', 'queue.json'), config);
     return dir;

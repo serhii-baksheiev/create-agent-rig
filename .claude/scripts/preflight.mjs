@@ -43,23 +43,13 @@ export const UNCHECKED = [
  *
  * 🔴 Limit: only repository *location* is stripped. `gh` inherits the rest of
  * the environment on purpose — its credentials live there.
+ *
+ * It lives in `git-env.mjs` and is re-exported here, so callers that already
+ * import it from this file keep working while the queue seam — which must not
+ * pull a CLI script into its read path — imports the small module directly.
  */
-export const withoutGitLocation = (env = process.env) => {
-  const sanitised = { ...env };
-  for (const key of [
-    'GIT_DIR',
-    'GIT_WORK_TREE',
-    'GIT_INDEX_FILE',
-    'GIT_COMMON_DIR',
-    'GIT_OBJECT_DIRECTORY',
-    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-    'GIT_NAMESPACE',
-    'GIT_PREFIX',
-  ]) {
-    delete sanitised[key];
-  }
-  return sanitised;
-};
+export { withoutGitLocation } from './git-env.mjs';
+import { withoutGitLocation } from './git-env.mjs';
 
 const run = (command, args) =>
   execFileSync(command, args, {
