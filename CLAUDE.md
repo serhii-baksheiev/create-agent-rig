@@ -107,12 +107,17 @@ templates/agent-os/universal/CLAUDE.md
 templates/agent-os/stack/aws-cdk/.claude/agents/
 templates/agent-os/stack/aws-cdk/.claude/skills/
 templates/agent-os/stack/node-ts/.claude/hooks/
+templates/agent-os/stack/aws-cdk/.claude/rules/
+templates/agent-os/stack/node-ts/.claude/rules/
 ```
 
-`.claude/` and `.github/workflows/` are there because they are what *disarms* the
-rest: a merge that rewrites the Never tier, unwires a hook or edits what CI runs
-should never pass unreviewed. `packages/db/src/` is the one the generated shape
-has.
+The entries that earn their place first are the ones that *disarm* the rest —
+wherever this project keeps its rulebook, its hooks and its CI definition. A
+merge that rewrites the Never tier, unwires a hook or edits what CI runs should
+never pass unreviewed. The rest of the block is whatever this particular shape
+has, so read the list above rather than this paragraph: the two are maintained
+separately, and a project that re-composes the block leaves prose describing
+somebody else's repository.
 
 **They are a seed, not a law — the list is yours to extend.** It is what every
 generated shape has; a real project accumulates more (auth handlers, billing, a

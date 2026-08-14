@@ -17,9 +17,10 @@ const substitute = (content) => content.replaceAll('__PROJECT_NAME__', 'create-a
 /**
  * This repo's own elevated-tier paths — the ones `detect-missed-gate.mjs` sweeps.
  *
- * The template seeds the block with the generated skeleton's paths (`infra/`,
- * `packages/db/src/`), which do not exist here. Left in place they would declare
- * a gate over nothing, and the sweep would report "clean" while looking nowhere.
+ * The template seeds the block with the generated skeleton's paths
+ * (`packages/db/src/`, `.claude/`, `.github/workflows/`), and the first of those
+ * does not exist here. Left in place it would declare a gate over nothing, and
+ * the sweep would report "clean" while looking nowhere.
  * So dogfooding replaces the block rather than appending a second one: one list,
  * one home, and every entry a real directory in this tree.
  */
@@ -51,6 +52,16 @@ const ELEVATED_PATHS = [
   'templates/agent-os/stack/aws-cdk/.claude/agents/',
   'templates/agent-os/stack/aws-cdk/.claude/skills/',
   'templates/agent-os/stack/node-ts/.claude/hooks/',
+  // The stack rulebooks. `aws-cdk.md` is the sharp one: it carries its OWN
+  // `elevated-paths` block declaring `infra/`, and it is the only declaration of
+  // `infra/` a generated AWS project has. Delete that block and every later
+  // merge under `infra/` matches no declared path, so the sweep reports clean —
+  // not because nothing is declared (that case it shouts about, as
+  // `no-elevated-paths-declared`) but because the one line that covered
+  // infrastructure is gone. A file that is a declaration source has to be
+  // covered by a declaration itself.
+  'templates/agent-os/stack/aws-cdk/.claude/rules/',
+  'templates/agent-os/stack/node-ts/.claude/rules/',
 ];
 
 const withElevatedPaths = (claudeMd) =>
