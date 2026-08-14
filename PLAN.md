@@ -414,7 +414,6 @@ and its `cost` block, replacing none of it). Every item lands **above** the queu
 seam, never beside it. §7a of the brief carries ten corrections that ride INSIDE
 these items — read them before taking AR3-1/2/4/6/7/13.
 
-- AR3-35: **take this FIRST — it fixes the diagnosis of the deadlock the Operator entry records.** (It is not the block's only `normal` item — 27 of the other 32 are normal, so the queue drains without it; what it repairs is the report, not the flow.) `stopConditionOf` must distinguish "nothing left" from "everything left is spaced out": today both surface as `candidates: 0` and read alike, while demanding opposite operator actions — refill versus wait-and-interleave. The data is already printed beside it (`skipped: N`). So `candidates:0, skipped:0` → `queue-empty`; `candidates:0, skipped>0` → a distinct kind whose line names how many items were filtered and by what (spacing, trigger, tier). Adding a member to a closed set is a deliberate edit plus a line in the test that walks the list; the red fixture is trivial. Owner's ruling, recorded — the other half of that question is closed by the block's interleaving rule above
 - AR3-2 [elevated]: `doctor` — the harness audits itself, shipping with the test-neighbour requirement covering `.husky/` and `.claude/hooks/` from day one; exemptions are an explicit file list with reasons. Rides §7a's budget-source correction: every declared budget names where its number comes from. ⚠ **Known before the first minute, raised by the owner rather than discovered mid-work:** in a GENERATED project the hooks arrive without test neighbours BY DESIGN — `invariants.md` says so — so a literal reading flags all six hooks on every rig's first run, and the only silence is an exemption list swallowing the whole directory, which makes the requirement vacuous exactly where this item thinks it matters. 🔴 The resolution is in that same paragraph and needs no invention: the exemption *"holds only while they are untouched. The moment you edit one, its test is yours."* So the check is **"every hook the project OWNS has a test"**, and ownership is mechanically observable via `.rig-manifest.json` — matching hash → shipped and tested upstream, not a finding; modified or absent from the manifest → authored here, finding; no manifest (pre-0.4.0 rig) → reports `unknown`, never a pass. That makes this item a customer of the manifest, which v4 §4 lists as a strength Flowa has no analogue for. Narrower fallback if the owner prefers: scope hook coverage to the generator repo and drop it from what generated projects install
 - AR3-3 [elevated]: `stage-guard`, the **fixed** shape only (its v3 entry condition is MET — upstream's fix landed and was verified in the shipped code) — root resolves from the work (absolute `file_path` → payload `cwd` → env last; a relative path ignored on purpose), the walk finds the nearest project ROOT not the nearest stage file (nested worktrees would adopt a stale `red`), paths made repo-relative before classification, correspondence tests rather than existence ones. Upstream's `red` never blocked one real edit from the day it shipped, under 24 green tests that all fed relative paths
 - AR3-4: the run journal — per-run dir, gate verdicts to `decisions.jsonl`, the rest to `events.jsonl`, append-only, with the run-end marker from day one. Lands with a caller: a journal nothing calls records nothing. It does NOT replace `## Journal` — it is the trace behind it
@@ -452,7 +451,7 @@ these items — read them before taking AR3-1/2/4/6/7/13.
 
 Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
 
-- ~~🔴 **the queue is now entirely `[elevated]`, and the loop reports that as an empty queue**~~ — **BOTH HALVES RULED.** (a) closed by the AR3 block's stated interleaving rule, markers unchanged; (b) ruled YES by the owner and queued as **AR3-35**, deliberately the block's only `normal` item so that taking it both drains the queue and fixes the diagnosis of the deadlock. Original finding kept below for its measurement.
+- ~~🔴 **the queue is now entirely `[elevated]`, and the loop reports that as an empty queue**~~ — **BOTH HALVES RULED, AND (b) IS NOW DELIVERED (#42).** (a) closed by the AR3 block's stated interleaving rule, markers unchanged; (b) ruled YES by the owner, queued as AR3-35, and landed: `stopConditionOf` gained `nothing-selectable`, whose line names how many items are held and by which cause. **One refinement the work forced, recorded rather than folded in silently:** the item's literal mapping was `skipped > 0` → the distinct kind, but the gate showed that counting `escalated`/`triage` items as "the queue is full, wait" makes `queue-empty` unreachable on `github-issues`/`jira` — the loop's own escalations and proposals stay open there forever. So the split is by **cause**, not by count: only the four causes that clear without new work (`blocked`, `in-progress`, `spacing`, `trigger`) mean held; the other three are parked, reported as their own number beside the verdict, and a queue whose every skip is parked is genuinely empty. Original finding kept below for its measurement.
 - 🔴 *(original)* **the queue is now entirely `[elevated]`, and the loop reports that as an empty queue.** Correcting AR2-4/6/7's markers (below) made all eight open items elevated, and `selectNext` refuses an elevated item when the last completed one was elevated — correct spacing, but with no normal item anywhere the run drains exactly one item and stops. Simulated against the real module, not inferred: `selectNext(8×elevated, {lastCompletedTier:'elevated'})` → `ticket: null, candidates: 0, skipped: 8`, and `stopConditionOf({candidates:0})` → `kind: 'queue-empty'`, *"no item survives the filters … do not invent work"*. So a session ends reporting an empty queue with eight items open. Two things need a ruling, and they are separable: ~~**(a)** whether to interleave normal work so the queue drains~~ — **(a) is answered by the v4 composition: interleaving is now a stated rule of the block above, and the markers stay as they are, since understating a tier is the failure this repo already recorded twice**; **(b)** remains live — whether `stopConditionOf` should distinguish "nothing left" from "everything left is spaced out", because today the operator cannot tell those apart from the stop line and only one of them means the queue needs refilling
 - ~~**decide (was AR2-3): which document gets the jsdom rule**~~ — **RULED: none. It does not ship as a rule at all** (owner, 14 Aug). Standalone it invites a component layer `architecture.md` deliberately excludes; the caution, if wanted, is one causal clause inside that exclusion paragraph. The finding that produced this ruling follows.
 - *(original finding)* **which document gets the jsdom rule.** ⚠ **The brief now agrees with this finding and no longer names a target** — v4 records it as a defect the brief itself authored, twice (v3 and v4), and carries the content question rather than a path. The item routes it to "`stack/node-ts` web rules", and that section does not exist — `templates/agent-os/stack/node-ts/.claude/rules/node-ts.md` is 57 lines with no `web`, `jsdom`, `DOM` or `browser` in it. The web rules live in `templates/agent-os/universal/.claude/rules/architecture.md`. **The tier half of this question is now closed: AR-12 landed, so both candidate homes are declared elevated and the choice no longer changes the gate.** What remains is where the rule belongs and whether it is wanted at all. The rule's content needs a ruling too: `architecture.md` already puts component-level DOM testing deliberately out of scope, so "jsdom implements the DOM, not layout" reads either as reinforcing that exclusion or as licence to adopt jsdom
@@ -469,6 +468,9 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 - **AR-4 entry conditions** — half discharged. The write-back discipline's condition fired (merged and in use where it came from) and it landed as U-1: the journal's `unblocked` field plus the §9 bullet. **C-0…C-2 stay out** — the clarify gate still has not fired anywhere, and shipping an unproven gate to other people's projects is worse than not having it
 - **tell the users, and set a date to collect what they say** — 0.3.2 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
+- **proposal: the loop writes the closed items tier where selectNext reads it (config.lastCompletedTier), as part of the close step in SKILL.md 9 — today the spacing filter exists in core.mjs but nothing ever supplies its input, so selectNext is always called with lastCompletedTier: null and the ration never fires across tasks [triage]** — finding: journal: closing AR3-35 shifted every id below it again; and the CLI offered AR3-2 [elevated] immediately after an elevated item because .claude/queue.json carries no lastCompletedTier · part: .claude/skills/loop/SKILL.md + .claude/queue.json · proof: after an elevated item closes, `queue/index.mjs next` reports the remaining elevated items under `skipped:` with the spacing reason, instead of handing one straight back · fingerprint: `journal-closing-ar3-35-shifted-every-id-:claude-skills-loop-skill-md-claude-queue:the-loop-writes-the-closed-items-tier-wh` · seen ×1
+- **proposal: 6 step 2 says which half the adapter does and which half the session does: under plan-md neither claim nor escalate writes anything, and the move to the Operator queue is the sessions edit — stated in the step rather than only in the adapters return value [triage]** — finding: journal: prose-reviewer on #42 — SKILL.md 6 step 2 (mark it escalated and leave it claimed) is not performable under plan-md · part: .claude/skills/loop/SKILL.md · proof: a run under plan-md that escalates an item leaves it out of the Agent queue, and the next `queue/index.mjs next` does not hand the escalated item back · fingerprint: `journal-prose-reviewer-on-42-skill-md-6-:claude-skills-loop-skill-md:6-step-2-says-which-half-the-adapter-doe` · seen ×1
+- **proposal: export the existing printable() from core.mjs — it is module-private at core.mjs:306 today — and apply it to the ticket title and id in renderNext (index.mjs:77) and to skip.reason (index.mjs:80). Export rather than re-declare: invariants.md One mechanism, one implementation. Under github-issues or jira anyone who can open an issue controls the title string, so ANSI escapes and control bytes reach the operators terminal unfiltered [triage]** — finding: journal: security-scanner on #42 — index.mjs:77 interpolates result.ticket.title raw into terminal output · part: .claude/scripts/queue/core.mjs (export) + .claude/scripts/queue/index.mjs (apply) · proof: an issue titled with a \x1b[2J prefix renders as visible text in `queue/index.mjs next`, and the terminal is not cleared · fingerprint: `journal-security-scanner-on-42-index-mjs:claude-scripts-queue-core-mjs-export-cla:export-the-existing-printable-from-core-` · seen ×1
 
 ## Journal
 
@@ -476,6 +478,79 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### one item, five gate rounds — the stop line was wrong in a way the item did not know about
+
+- **done** — AR3-35 (#42, `human-review`): `stopConditionOf` gained
+  `nothing-selectable`, so "the queue is empty" and "everything left is held
+  back" stop reading alike. Every rejection now carries a cause tag from a
+  closed vocabulary, and the split that decides the verdict is by **cause**, not
+  by whether anything was skipped: `blocked`/`in-progress`/`spacing`/`trigger`
+  hold takeable work and clear on their own; `closed`/`triage`/`escalated` are
+  parked, reported as their own count beside the verdict, never summed with the
+  held count. 🔴 **A parked cause outranks a holding one on the same record** —
+  the escalated item is left claimed on purpose, so it arrives as
+  `['in-progress','escalated']`, and letting the holding cause win reproduced
+  the original defect one label over
+- **reviewed** — five `pr-ship` rounds, eight reviewer passes. Rounds 1–4
+  returned **eight blocking findings**; round 5 was clean. Two of them were the
+  same defect found twice from opposite directions: `prose-reviewer` found the
+  first fix made `queue-empty` unreachable on the tracker adapters, and after
+  the fix for that, `code-reviewer` found it still unreachable because
+  `escalate` leaves the item claimed. Four were claims about the mechanism that
+  the mechanism did not support — **all four written by this session**, three of
+  them while fixing a finding about a claim the mechanism did not support
+- **escalated** — nothing
+- **stopped at** — **budget**. One item was the honest capacity of this run
+  after five gate rounds, and the next selectable item is `[elevated]` — which
+  spacing forbids straight after this one. The queue is not empty: 32 items
+  remain, and the run says so rather than reporting the drain it did not do
+- **post-merge verdict** — healthy, checked against the merged `master` rather
+  than the branch: `queue/index.mjs next` selects and exits 0, `hygiene` reports
+  33 items with nothing stale, and the three endings were driven through the
+  real module (`nothing-selectable` on spacing, `queue-empty` on an all-parked
+  queue, both counts named separately when a queue carries each)
+- **unblocked** — **this queue has no dependency links** (`plan-md` is a flat
+  list — absent, not satisfied). What the close settles is written on the
+  Operator item it answers: half (b) of the empty-queue deadlock, with the
+  by-cause refinement recorded there rather than edited into AR3-35's text
+- **queue hygiene** — clean (33 items, nothing stale). Two findings about the
+  queue rather than in it. Closing AR3-35 shifted every id below it again — the
+  defect AR2-1 was escalated for, still unresolved. And 🔴 **the spacing ration
+  has never fired across tasks in this repo**: `selectNext` reads
+  `config.lastCompletedTier`, `.claude/queue.json` carries only `adapter`, and
+  nothing writes it — so immediately after this elevated item closed, the CLI
+  offered `AR3-2 [elevated]`. The rule was honoured by the session reading it,
+  which is precisely the guarantee a mechanical filter is supposed to replace.
+  Reported, not corrected in passing; filed as a proposal
+- 🔴 **invariant conflict, surfaced rather than silently resolved** — `loop`
+  SKILL.md §9 collides with itself on where a close is written, and this run is
+  an instance of it. Its opening says the close goes in "with the merged PR
+  linked, immediately after the post-merge verdict", which cannot happen inside
+  the PR being merged; its closing paragraph says a `PLAN.md` fact edit —
+  naming "an Operator-queue item it unblocked" — lands "**in the same PR that
+  changed the fact**, never a docs-only follow-up". This run took the first
+  reading and said so on #42; a run taking the second would have put the
+  Operator edit in #42 and then had no way to write the close. Per the stop
+  rules the resolution belongs in the rule and to the owner, not in one PR's
+  history — so it is recorded here and **not** spent as one of the three
+  proposals, which are capped for a different purpose
+- **proposals filed** — three, all `ok: true` into the Operator queue: the
+  `lastCompletedTier` seam above; `printable()` on the ticket title in
+  `renderNext` (`security-scanner`, #42); and §6 step 2 naming which half of an
+  escalation the adapter does and which the session does (`prose-reviewer`, #42)
+- **cost** — 8 reviewer subagents, 3 test-writer, 1 check-premises; 4 check runs
+  on the merged head commit (`ci`, two template jobs, one scanner), 0 re-runs;
+  0 deploys
+- **the honest note** — the item promised "a deliberate edit plus a line in the
+  test that walks the list; the red fixture is trivial", and `check-premises`
+  passed it. It was not wrong about the code; it was wrong about the size, and
+  nothing in the intake could have caught that — the cost lived in a property
+  of the *queue's own data* (that the loop manufactures parked records) which no
+  reading of `stopConditionOf` would surface. Second, and worse: the gate found
+  four false claims about the mechanism in prose this session wrote, and three
+  of those arrived in commits whose stated purpose was to fix exactly that
+  failure. The reviewers caught every one; nothing in the authoring loop did
 
 ### AR-12 landed, and the next item's premise failed in front of the run that closed it
 
