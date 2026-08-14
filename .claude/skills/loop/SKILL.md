@@ -139,11 +139,12 @@ Four of them deserve their reasons repeated:
   it: on a tracker-backed adapter an escalated item and a filed proposal both
   stay open and land there. Under `plan-md` only a `[triage]` line sitting in
   the Agent queue can — a filed proposal goes to the Operator queue, where
-  selection never looks, and an escalation is not recorded at all, because a
-  flat list has no per-item state. 🔴 **That last one is an absence, not a
-  safety.** `plan-md`'s `escalate` writes nothing and says so; moving the item
-  to the Operator queue is the session's step (§6), and skipping it means the
-  next run takes the stuck item straight back.
+  selection never looks, and an escalation leaves no mark on the queue at all,
+  because a flat list has no per-item state. 🔴 **That last one is an absence,
+  not a safety.** `plan-md`'s `escalate` writes nothing, returns `ok: false`,
+  and hands back the instruction with it: move the item to the Operator queue in
+  the same edit. That move is the session's, and skipping it means the next run
+  takes the stuck item straight back.
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
   condition that clears without anything being written**: the elevated spacing

@@ -89,8 +89,8 @@ export const SKIP_CAUSES = Object.freeze([
  * blocker closes, another session finishes, a human declares the window. The
  * three causes NOT in this list — `closed`, `triage`, `escalated` — are items
  * out of play, waiting on a human. On a tracker-backed adapter they accumulate:
- * an escalated issue stays open and merely gains a label, and the loop files a
- * `triage` proposal at every stop. Counting those as "the queue is full, wait"
+ * an escalated issue stays open and merely gains a label, and a proposal the
+ * loop files stays open too. Counting those as "the queue is full, wait"
  * would make `queue-empty` unreachable from the first stop that escalated or
  * proposed anything — so a drained queue would report "wait and interleave" and
  * the owner would never be told to refill. That is the same refill-versus-wait
@@ -101,9 +101,10 @@ export const SKIP_CAUSES = Object.freeze([
  * case of a proposal that ended up under the wrong heading. `escalated` and
  * `closed` cannot appear there at all — a flat list carries no per-item state, so
  * `parsePlan` hands back `labels: []` and `state: 'open'` for every line. That is
- * an absence of state, NOT an adapter that filed the escalation somewhere safe:
- * under `plan-md` the escalated item is moved to the Operator queue by the
- * session, and if the session does not do it the next run picks the item straight
+ * an absence of state, NOT an adapter that filed the escalation somewhere safe.
+ * `plan-md`'s own `escalate` says so: it writes nothing, returns `ok: false`, and
+ * hands back the instruction to move the item to the Operator queue in the same
+ * edit — because if that move is not made, the next run picks the item straight
  * back up.
  */
 export const HOLDING_CAUSES = Object.freeze(['blocked', 'in-progress', 'spacing', 'trigger']);
