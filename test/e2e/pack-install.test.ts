@@ -3,31 +3,21 @@ import { mkdtemp, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
 const exec = promisify(execFile);
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // Phase 8.3: the npm-publish path differs from the git path exactly where
 // scaffolders classically break — the packed file set and the file modes.
 // This test walks the full path: pack → install tarball → generate → assert.
 describe('npm pack → install → generate (the publish path)', () => {
   let work: string;
-  let tarball: string;
-  let packedPaths: string[];
+  // Packed once for the whole e2e project — see test/e2e/pack-once.ts.
+  const tarball = inject('tarball');
+  const packedPaths = inject('packedPaths');
 
   beforeAll(async () => {
     work = await mkdtemp(path.join(tmpdir(), 'caf-pack-'));
-    const packDir = path.join(work, 'pack');
-    await mkdir(packDir);
-    const { stdout } = await exec('npm', ['pack', '--json', '--pack-destination', packDir], {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    const [packed] = JSON.parse(stdout) as Array<{ filename: string; files: { path: string }[] }>;
-    tarball = path.join(packDir, packed!.filename);
-    packedPaths = packed!.files.map((f) => f.path);
 
     for (const target of ['aws-serverless', 'node-service']) {
       const appDir = path.join(work, target);

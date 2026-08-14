@@ -4,11 +4,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
 const exec = promisify(execFile);
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const sha256 = (content: string): string =>
   createHash('sha256').update(content, 'utf8').digest('hex');
 
@@ -50,14 +48,8 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
 
   beforeAll(async () => {
     work = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-e2e-'));
-    const packDir = path.join(work, 'pack');
-    await mkdir(packDir);
-    const { stdout } = await exec('npm', ['pack', '--json', '--pack-destination', packDir], {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    const [packed] = JSON.parse(stdout) as Array<{ filename: string }>;
-    const tarball = path.join(packDir, packed!.filename);
+    // Packed once for the whole e2e project — see test/e2e/pack-once.ts.
+    const tarball = inject('tarball');
 
     const prefix = path.join(work, 'install');
     await mkdir(prefix);
