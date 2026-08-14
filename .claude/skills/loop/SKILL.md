@@ -352,17 +352,19 @@ three poisons the only channel by which this project learns.
   ```bash
   node --input-type=module -e '
     const { recordCompletedTier } = await import("./.claude/scripts/queue/state.mjs");
+    const { withoutGitLocation } = await import("./.claude/scripts/git-env.mjs");
     const { execFileSync } = await import("node:child_process");
     const merge = "<merge-sha>";
     // The merge commit against its first parent: what the PR actually added.
     const changedFiles = execFileSync(
-      "git", ["diff", "--name-only", "-z", `${merge}^1`, merge], { encoding: "utf8" },
+      "git", ["diff", "--name-only", "-z", `${merge}^1`, merge],
+      { encoding: "utf8", env: withoutGitLocation() },
     ).split("\0").filter(Boolean);
     console.log(recordCompletedTier({ changedFiles, projectRoot: process.cwd() }));
   '
   ```
 
-  Three details in that command are load-bearing, and each one was a live defect
+  Four details in that command are load-bearing, and each one was a live defect
   before it was there:
 
   - **`<merge-sha>^1 <merge-sha>`, not `origin/<default>...<merge-sha>`.** A
@@ -379,6 +381,12 @@ three poisons the only channel by which this project learns.
   - **`execFileSync` with an argument array**, not a shell string. Nothing is
     interpolated into a shell today, and the point is that the next session
     cannot start.
+  - **`env: withoutGitLocation()`.** Run under a git hook, this command inherits
+    `GIT_DIR` — absolute, when the hook fired in a worktree — and then computes
+    the diff of **another repository**, recording a tier from it. Silently: the
+    list comes back non-empty, so nothing refuses. The source sweep in
+    `test/template/git-env.test.ts` cannot read markdown, so this line is guarded
+    by a sweep over the fenced blocks in these documents instead.
 
   🔴 **The tier comes from the diff, never from the item's marker.** The marker
   is a pre-filter (§2); `autonomy.md` decides the tier by what the change

@@ -1,7 +1,8 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { GIT_LOCATION_VARS as varsInTheCli } from '../../packages/cli/src/lib/git-env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -14,6 +15,10 @@ const load = async (rel: string, name: string): Promise<EnvFn> => {
   return module[name] as EnvFn;
 };
 const gitConfigEnv = await load('scripts/prepare.mjs', 'gitConfigEnv');
+const { GIT_LOCATION_VARS: varsInTheTemplate } = (await import(
+  pathToFileURL(path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/git-env.mjs'))
+    .href
+)) as { GIT_LOCATION_VARS: readonly string[] };
 const withoutGitLocation = await load(
   'templates/agent-os/universal/.claude/scripts/preflight.mjs',
   'withoutGitLocation',
@@ -127,6 +132,49 @@ describe('checkout.mjs sanitises through the shared list, not a second one', () 
   });
 });
 
+// The duplication is legitimate and it stays: the template module must stand
+// alone inside a generated project, the CLI module ships as compiled
+// TypeScript, and neither can import the other. What does NOT follow is that
+// the two may drift. `invariants.md`: "If two files enforce the same
+// invariant, they will disagree — and the one nobody is looking at is the one
+// that is wrong." Nothing fails today when a ninth variable is added to one of
+// them; this is the thing that fails.
+describe('the two copies of the location list are one list', () => {
+  it('the template module and the CLI module name exactly the same variables', () => {
+    expect([...varsInTheTemplate].sort()).toEqual([...varsInTheCli].sort());
+  });
+});
+
+// And the copy nobody named. `gate-stop-dod.mjs` carries four of the eight
+// inline, justified by "this file ships into generated projects, so it cannot
+// import the canonical list from the generator" — a reason that expired the day
+// `layers.json` started shipping `.claude/scripts/git-env.mjs` into generated
+// projects too. Both files are in the SAME layer, one directory apart.
+//
+// The shorter list is not a smaller opinion either: `GIT_OBJECT_DIRECTORY` is
+// on the canonical list, is missing from these four, and makes `git status`
+// exit 128 — which this gate catches and reads as "not a git repo, run the
+// checks anyway".
+describe('the stop gate sanitises through the shared list, not a fourth copy', () => {
+  const hookSource = () =>
+    readFile(
+      path.join(repoRoot, 'templates/agent-os/universal/.claude/hooks/gate-stop-dod.mjs'),
+      'utf8',
+    );
+
+  it('imports the exported sanitiser', async () => {
+    expect(await hookSource()).toMatch(
+      /import\s*\{[^}]*withoutGitLocation[^}]*\}\s*from\s*['"][^'"]*git-env\.mjs['"]/,
+    );
+  });
+
+  it('carries no list of git variables of its own', async () => {
+    // an array literal whose first member is a quoted GIT_ name — the shape a
+    // second copy takes. Prose that mentions GIT_DIR is left alone on purpose.
+    expect(await hookSource()).not.toMatch(/\[\s*['"]GIT_[A-Z_]+['"]/);
+  });
+});
+
 // The sweep that would have caught this in one pass instead of four: a call
 // site that forgets the sanitised environment is unprotected, and no amount of
 // care in the shared module can detect that.
@@ -153,6 +201,47 @@ describe('every authored git spawn passes an explicit environment', () => {
       if (!/env[:\s]/.test(window)) offences.push(window.split('\n')[0]!.trim());
     }
     expect(offences, `${rel}: git spawned with the inherited environment`).toEqual([]);
+  });
+
+  // 🔴 The sweep above reads eight SOURCE files, and a rule layer's commands do
+  // not all live in source. The `recordCompletedTier` snippet in the loop
+  // skill is executed verbatim by every session that closes an item — from a
+  // shell whose `GIT_DIR` is whatever the close step left behind — and it
+  // spawns git with no `env` at all. A documented command is a call site.
+  //
+  // Deliberately general rather than one string match, so the next snippet is
+  // covered too: every fenced block in the shipped markdown, every programmatic
+  // git spawn inside it. It is scoped to `execFileSync`/`spawnSync`/… and NOT
+  // to shell `git` lines, because a bash snippet runs in the session's own
+  // shell and its environment is not ours to rewrite — that scoping is also
+  // what keeps the false-positive count at zero across all 21 documents here.
+  it('every fenced snippet that spawns git names its environment', async () => {
+    const docs = path.join(repoRoot, 'templates', 'agent-os');
+    const entries = await readdir(docs, { recursive: true, withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+      .map((entry) => path.join(entry.parentPath, entry.name));
+    expect(files.length, 'the sweep must have documents to read').toBeGreaterThan(5);
+
+    const offences: string[] = [];
+    for (const file of files) {
+      const source = await readFile(file, 'utf8');
+      const blocks = [...source.matchAll(/^[ \t]*```[^\n]*\n([\s\S]*?)^[ \t]*```/gm)].map(
+        (fence) => fence[1] ?? '',
+      );
+      for (const block of blocks) {
+        const calls = block.matchAll(
+          /(?:execFileSync|execFile|spawnSync|spawn|exec)\(\s*["']git["']/g,
+        );
+        for (const call of calls) {
+          const window = block.slice(call.index ?? 0, (call.index ?? 0) + 400).split('\n\n')[0]!;
+          if (!/env[:\s]/.test(window)) {
+            offences.push(`${path.relative(repoRoot, file)}: ${window.split('\n')[0]!.trim()}`);
+          }
+        }
+      }
+    }
+    expect(offences, 'a documented command spawns git with the inherited environment').toEqual([]);
   });
 
   // execSync takes a command string rather than argv, so it needs its own pass.

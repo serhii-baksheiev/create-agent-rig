@@ -33,6 +33,14 @@ import { withoutGitLocation } from '../git-env.mjs';
  * linked worktree it points at the main repository's `.git`, not the worktree's
  * own gitdir.
  *
+ * 🔴 **The probe runs under `LC_ALL: 'C'`, because the catch CLASSIFIES git's
+ * stderr and git translates it.** Under `fr_FR` the "no repository here" message
+ * is *"ni ceci ni aucun de ses répertoires parents n'est un dépôt git"*; the
+ * regex misses, and the legitimate fallback turns into a hard refusal from the
+ * queue CLI — in a non-git directory, for anyone whose shell is not English. CI
+ * runs under `C`, so CI can never see it. Note this SETS a variable rather than
+ * stripping one: `GIT_CONFIG_*` is untouched.
+ *
  * **Two failures fall back to `startDir`, and only those two:** there is no
  * repository above it, or git is not installed. A queue works fine in a plain
  * directory, and refusing there would break every non-git use to protect
@@ -43,10 +51,10 @@ import { withoutGitLocation } from '../git-env.mjs';
  * level up would just move it.
  *
  * 🔴 **The child's environment is sanitised through the SHARED list.** A git
- * hook exports `GIT_DIR` and `GIT_INDEX_FILE` as paths relative to the
- * repository it fired in; inherited by a child running with a different `cwd`,
- * they resolve against the wrong root and this function confidently answers
- * about a checkout the caller is not in. This repository has the scar:
+ * hook exports `GIT_DIR` and `GIT_INDEX_FILE`; inherited here, they make this
+ * function answer confidently about a checkout the caller is not in. A hook in
+ * a linked worktree exports them **absolute**, so changing `cwd` does not save
+ * you — see `git-env.mjs` for the measurements. This repository has the scar:
  * NOTES.md's `GIT_DIR` incident, 19 junk commits across two branches.
  *
  * ⚠ **Only *location* is stripped, deliberately.** A `GIT_*` prefix sweep would
@@ -64,7 +72,8 @@ export const mainCheckoutRoot = (startDir) => {
         cwd: startDir,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: withoutGitLocation(),
+        // `LC_ALL: 'C'` — see the note on classifying stderr, above.
+        env: { ...withoutGitLocation(), LC_ALL: 'C', LANGUAGE: '' },
       },
     ).trim();
     return gitDir ? dirname(gitDir) : startDir;

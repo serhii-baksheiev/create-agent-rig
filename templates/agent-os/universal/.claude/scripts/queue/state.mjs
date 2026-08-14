@@ -56,12 +56,13 @@ import { mainCheckoutRoot } from './checkout.mjs';
  *
  * ⚠ **The limit this cannot see, stated rather than covered by a test that
  * would only look like coverage:** a file list that arrived **truncated** — a
- * `maxBuffer` overflow in the caller, a bad split, a hand-trimmed array — is
- * indistinguishable here from a complete one, and a truncated list that drops
- * the elevated file records `normal`. The empty-list refusal below does not
- * catch it, because a short list is not an empty one. The caller owns
- * completeness; the documented snippet uses `-z` and an argument array for
- * exactly that reason.
+ * split on the wrong separator, a hand-trimmed array, a caller that filtered
+ * before passing — is indistinguishable here from a complete one, and a
+ * truncated list that drops the elevated file records `normal`. The empty-list
+ * refusal below does not catch it, because a short list is not an empty one.
+ * The caller owns completeness. (A `maxBuffer` overflow is NOT one of these
+ * cases: `execFileSync`, which the documented snippet uses, throws `ENOBUFS`
+ * rather than returning a short string — measured, so it fails loudly.)
  */
 export const recordCompletedTier = ({ changedFiles, projectRoot, statePath } = {}) => {
   // 🔴 An absent file list is NOT a normal change. A zero and an unknown look

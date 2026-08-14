@@ -2538,6 +2538,58 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       expect((await resolver())(plain)).toBe(plain);
     });
 
+    /**
+     * A `git` that translates its own messages, the way the real one does.
+     *
+     * It answers by locale rather than always in French on purpose: a fix that
+     * forces the child's message locale passes this, and a fix that teaches the
+     * classifier one more language still fails it — the second is the one that
+     * breaks again on the next translation.
+     *
+     * The stub stands in for an installed locale because no runner is
+     * guaranteed to have one. CI runs under C, which is exactly why CI cannot
+     * see this defect at all.
+     */
+    const localisedGit =
+      '#!/bin/sh\n' +
+      'case "${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}" in\n' +
+      '  C|POSIX) echo "fatal: not a git repository (or any of the parent directories): .git" >&2 ;;\n' +
+      '  *) echo "fatal : ni ceci ni aucun de ses répertoires parents n\'est un dépôt git : .git" >&2 ;;\n' +
+      'esac\n' +
+      'exit 128\n';
+
+    // The same fallback, asked in another language. `withoutGitLocation` keeps
+    // `LC_ALL`/`LANG` deliberately — it strips repository *location* and
+    // nothing else — so the child speaks whatever the developer's shell speaks,
+    // and a classifier reading git's English text stops recognising the one
+    // failure it is allowed to be permissive about. Measured on git 2.47.1:
+    //   fr_FR.UTF-8  fatal : ni ceci ni aucun de ses répertoires parents n'est
+    //                un dépôt git : .git
+    //   ru_RU.UTF-8  fatal: не найден git репозиторий (или один из родительских
+    //                каталогов): .git
+    // Every `next` without `--config` goes through here, so the cost is a hard
+    // refusal from the queue CLI for anyone whose shell is not English.
+    it('falls back whatever language git refuses in', async () => {
+      const plain = await scratch('translated-');
+      const resolve = await resolver();
+      const saved: Record<string, string | undefined> = {
+        LC_ALL: process.env['LC_ALL'],
+        LANGUAGE: process.env['LANGUAGE'],
+      };
+      process.env['LC_ALL'] = 'fr_FR.UTF-8';
+      process.env['LANGUAGE'] = 'fr';
+      try {
+        await withStubGit(localisedGit, () => {
+          expect(resolve(plain)).toBe(plain);
+        });
+      } finally {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    });
+
     it('falls back when git is not installed at all', async () => {
       const anywhere = await scratch('no-git-');
       const resolve = await resolver();
@@ -2564,8 +2616,26 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       );
     });
 
-    /** The environment the child git actually received, by name. */
-    const namesHandedToGit = async (): Promise<Set<string>> => {
+    /**
+     * The environment the child git actually received, name → value.
+     *
+     * 🔴 **It refuses a capture that measured nothing, and that guard is the
+     * helper's job rather than a nicety.** Every assertion below is a lookup in
+     * this map, so an empty dump makes "the locating variables were withheld"
+     * pass while no git was ever spawned. That vacuous pass happened here, and
+     * it was caught only because a sibling test read the same dump and failed
+     * — a sibling test is not a guard, and deleting or renaming it brings the
+     * vacuum straight back.
+     *
+     * `capture` is a parameter for one reason: so the refusal itself can be
+     * tested. Callers leave it alone.
+     */
+    const envHandedToGit = async (
+      capture: (file: string) => string = (file) =>
+        // 🔴 `/usr/bin/env` by absolute path. PATH is the stub directory and
+        // nothing else, so a bare `env` is not found and the dump stays empty.
+        `/usr/bin/env > ${JSON.stringify(file)}`,
+    ): Promise<Map<string, string>> => {
       const dir = await scratch('child-env-');
       const dump = path.join(dir, 'env.txt');
       const resolve = await resolver();
@@ -2579,15 +2649,14 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
         GIT_DIR: '/elsewhere/.git',
         GIT_WORK_TREE: '/elsewhere',
         GIT_INDEX_FILE: '.git/index',
+        // the developer's shell, which decides which language git answers in
+        LC_ALL: 'fr_FR.UTF-8',
+        LANGUAGE: 'fr',
       };
       Object.assign(process.env, injected);
       try {
         await withStubGit(
-          // 🔴 `/usr/bin/env` by absolute path. PATH is the stub directory and
-          // nothing else, so a bare `env` is not found, the dump stays empty —
-          // and an empty dump makes the "locating variables are withheld" test
-          // pass for the wrong reason while this one fails for the wrong reason.
-          `#!/bin/sh\n/usr/bin/env > ${JSON.stringify(dump)}\n` +
+          `#!/bin/sh\n${capture(dump)}\n` +
             `printf '%s\\n' ${JSON.stringify(path.join(dir, '.git'))}\n`,
           () => {
             resolve(dir);
@@ -2596,8 +2665,38 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       } finally {
         for (const key of Object.keys(injected)) delete process.env[key];
       }
-      return new Set((await read(dump)).split('\n').map((line) => line.split('=')[0] ?? ''));
+      const received = new Map<string, string>();
+      for (const line of (await read(dump)).split('\n')) {
+        const at = line.indexOf('=');
+        if (at > 0) received.set(line.slice(0, at), line.slice(at + 1));
+      }
+      if (!received.has('PATH') || received.size < 4) {
+        throw new Error(
+          `the child-environment probe captured nothing usable (${received.size} entries): ` +
+            'every assertion built on it would pass vacuously',
+        );
+      }
+      return received;
     };
+
+    /** The environment the child git actually received, by name. */
+    const namesHandedToGit = async (): Promise<Set<string>> =>
+      new Set((await envHandedToGit()).keys());
+
+    it('the child-environment probe refuses a capture that measured nothing', async () => {
+      await expect(envHandedToGit((file) => `: > ${JSON.stringify(file)}`)).rejects.toThrow(
+        /captured nothing usable/i,
+      );
+    });
+
+    // Pinned at the process boundary because the behavioural test above admits
+    // two fixes and only one of them survives the next translation: force the
+    // child's message locale, or teach the classifier French. `LC_ALL` is the
+    // variable that has to carry it — the caller's own `LC_ALL` would override
+    // anything narrower.
+    it('asks git for its failures in a language it can classify', async () => {
+      expect((await envHandedToGit()).get('LC_ALL')).toBe('C');
+    });
 
     it('hands git the variables that configure it', async () => {
       const received = await namesHandedToGit();

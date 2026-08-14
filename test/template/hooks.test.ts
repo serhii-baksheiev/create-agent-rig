@@ -360,6 +360,16 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
       path.join(hooksDir, 'gate-stop-dod.mjs'),
       path.join(hookDir, 'gate-stop-dod.mjs'),
     );
+    // `.claude/scripts/git-env.mjs` sits beside the hook in every generated
+    // project — `layers.json` ships both in the `process` layer — and the gate
+    // reads its sanitiser from there. A fixture that copies the hook alone is a
+    // fixture of a project that does not exist.
+    const scriptDir = path.join(projectDir, '.claude', 'scripts');
+    await mkdirP(scriptDir, { recursive: true });
+    await copyFile(
+      path.join(hooksDir, '..', 'scripts', 'git-env.mjs'),
+      path.join(scriptDir, 'git-env.mjs'),
+    );
     if (options.rawConfig !== undefined) {
       await writeF(path.join(hookDir, 'dod-checks.json'), options.rawConfig);
     } else if (options.checks !== undefined) {
@@ -466,6 +476,24 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
       expect(result.code).toBe(0);
     } finally {
       await fsp.rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  // The same question, asked with a variable outside the four the gate strips
+  // by hand. `GIT_OBJECT_DIRECTORY` is on the canonical list and not on the
+  // gate's, and it is not a theoretical member: pointed anywhere other than
+  // this repository's own objects, `git status` exits 128 (measured on git
+  // 2.47.1 — `fatal: bad object HEAD`). The gate catches that as "not a git
+  // repo" and runs the whole check suite on a tree it never managed to read,
+  // so a clean session ends up gated on a check that had no business running.
+  it('judges the tree it is in under every variable that can relocate a repository', async () => {
+    await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: false });
+    const objects = await fsp.mkdtemp(path.join(tmpdir(), 'dod-objects-'));
+    try {
+      const result = await runStopHook(stop(), { GIT_OBJECT_DIRECTORY: objects });
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      await fsp.rm(objects, { recursive: true, force: true });
     }
   });
 

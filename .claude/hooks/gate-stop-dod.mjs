@@ -14,6 +14,8 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
+import { withoutGitLocation } from '../scripts/git-env.mjs';
+
 function main() {
   let input;
   try {
@@ -31,23 +33,25 @@ function main() {
     // different repository entirely: gated on somebody else's uncommitted
     // work, or waved through despite its own.
     //
-    // Four of the eight variables that can relocate a repository, because
-    // these are the four git itself hands its hooks — and this file ships into
-    // generated projects, so it cannot import the canonical list from the
-    // generator. A shorter list that says why it is shorter beats a copy that
-    // silently drifts.
+    // The canonical list, imported. This file used to carry four of the eight
+    // inline, justified by "it ships into generated projects, so it cannot
+    // import the canonical list from the generator" — a reason that expired the
+    // day `.claude/scripts/git-env.mjs` started shipping into generated projects
+    // too. Both are in the same layer, one directory apart.
+    //
+    // The four it dropped were not a smaller opinion. `GIT_OBJECT_DIRECTORY`
+    // pointing anywhere but this repository's objects makes `git status` exit
+    // 128 (`fatal: bad object HEAD`) — which the catch below reads as "not a git
+    // repo" and waves through, running the whole Definition-of-Done suite
+    // against a tree it never managed to read.
     //
     // 🔴 Limit: only THIS command is sanitised. The Definition-of-Done checks
     // below run with the environment as given, because they are the project's
     // own commands and their environment is the project's business.
-    const env = { ...process.env };
-    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) {
-      delete env[key];
-    }
     const status = execSync('git status --porcelain', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      env,
+      env: withoutGitLocation(),
     });
     if (status.trim() === '') return 0;
   } catch {
