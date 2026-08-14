@@ -390,10 +390,26 @@ mid-work.
 
 - AR-12 [elevated]: declare `templates/agent-os/stack/aws-cdk/.claude/rules/` and `.../node-ts/.claude/rules/`. The aws-cdk one is the sharp case: that file carries its **own** `elevated-paths` block declaring `infra/`, so a merge deleting the block would silently un-declare infrastructure for every generated AWS project — and the sweep would report it clean. Found by review on AR-11, which did not ask for these two
 
+The `AR2-n` block decomposes the Flowa→rig port brief **v3** (2026-08-14,
+`rig-port-brief-v3-2026-08-14.md`) — the factory-gates wave: pieces born in
+Flowa after the v2 port, proven under load there, absent here. v2's 🔴 rule
+stands unchanged; v3 adds one of its own: **`stage-guard` does not port** until
+Flowa's SCRUM-394 fix lands (the hook today silently guards nothing from a
+worktree — porting it ports the defect into every generated project).
+
+- AR2-1 [elevated]: the evidence gate — `evidence/<key>.json` (failing/passing excerpts + command) per queue key in the PR title, checked in CI; key comes from the queue adapter, never a hard-coded tracker regex. Measured motive: the same obligation as prose let 14 PRs through in Flowa. The no-key exemption applies to the missing key and nothing else, and the exempting label must not be self-assignable together with the review label (Flowa 378)
+- AR2-2 [elevated]: `file-triage` on the queue seam — the loop files `triage`-labelled proposals it cannot act on, fingerprint dedup, never `ready`, promotion is human; one implementation above the adapters (`jira`/`github-issues`/`plan-md` append). Measured motive: the dead channel produced one triage ticket in the loop's entire history; the live one was used twice on its first day and its first real write caught a render defect 21 tests had missed
+- AR2-3 [elevated]: the rules wave — five one-paragraph rules with their measured arguments into existing documents: TDD-hatch-is-about-the-criterion (→ `workflow.md`), live-run-once-before-merge (→ `pr-ship`), every-PR-write-confirmed-by-re-read with the measured-unstable exit code (→ `pr-ship`), recon-comment-is-a-snapshot with the SHA-immutable vs silently-stale boundary (→ `loop`), jsdom-implements-DOM-not-layout (→ `stack/node-ts` web rules)
+- AR2-4: the queue reads comments — a ticket is its description AND its comments, a superseding comment wins, and the run names what the comment said; `jira` fetches with comments, `github-issues` reads the thread, `plan-md` returns null (the `body` precedent: null is "cannot answer", never "checked, found nothing")
+- AR2-5 [elevated]: `doctor` — the harness audits itself, shipping with the test-neighbour requirement covering hooks directories (`.husky/`, `.claude/hooks/`) from day one, not only `.claude/scripts/`; exemptions are an explicit file list with reasons
+- AR2-6: the run journal (`decisions/events.jsonl`) with the run-end marker folded in from day one — this PLAN's own journal carries a live "stopped at — checkpoint, still running" from a run that has long ended, which is the defect the marker removes
+- AR2-7: `evals.json` per skill + validator — rides with AR2-5
+
 ## Operator queue
 
 Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
 
+- **stage-guard's entry condition (port brief v3):** Flowa's SCRUM-394 must land — the fix for the hook reading its stage file in the main checkout while `--set` from a worktree writes another — together with the chosen resolution form and the promise↔read pair test. When it does, the owner supplies the next brief line; until then the piece is named in v3's "does NOT ship" list and nothing here should reference it as available
 - ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
 - ~~**publish 0.3.2 to npm**~~ — **done by the owner**; `npm view create-agent-rig` lists it as `latest`. It is what every rig in the wild is running, and therefore what `upgrade` bootstraps from
 - ~~**publish 0.4.0 to npm**~~ — **done by the owner**; `latest` is 0.4.0. Verified against the published artifacts, not the working tree: `npx create-agent-rig@0.4.0` generates a `node-service` project whose own `pnpm check` passes (72 tests) and whose `.rig-manifest.json` records 36 agent-os files and no skeleton; and a rig installed by `npx create-agent-rig@0.3.2 init`, then edited in one file and stripped of one hook, upgrades correctly — the two files 0.4.0 changed are offered, the edit is kept as the user's with a path to the new version, and the deleted hook is reported rather than restored
