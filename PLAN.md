@@ -404,12 +404,18 @@ AR3-15, AR3-16, AR3-36), so **by marker** there is normal work to interleave
 with, which is what the rule below asks for. ⚠ **By declared path there is
 none** — the other 26 all name artefacts under `.claude/hooks/`, `scripts/`,
 `skills/`, `rules/`, `agents/` or `settings.json` in the template tree, every
-one of them declared elevated in `CLAUDE.md`. Which of the two the ration
-should read is AR3-36's open question, and it is the owner's. ⚠ **The ration
-itself is still unwired either way:** nothing
-writes `config.lastCompletedTier`, so spacing has never fired between tasks and
-the interleaving below is upheld by the session reading it, not by the filter.
-AR3-36 is the fix and is first in the block. The original measurement stands as
+one of them declared elevated in `CLAUDE.md`. ✅ **Which of the two the ration
+reads is RULED (owner): the tier a change turned out to be, computed from its
+diff's paths — the marker is advisory, and a marker disagreeing with the paths
+is hygiene to report.** ✅ **And the ration is wired:** AR3-36 landed the close
+step that records it, so spacing fires between tasks for the first time. The
+tier lives in `.claude/queue.state.json` beside the config, not in
+`config.lastCompletedTier` — the config is composed from the template layer, so
+a runtime value in it is drift. ⚠ **What follows from the two together:** with
+the paths as the authority there is no normal work in this block, so the ration
+will hold the queue the first time it fires — a correct stop, reported honestly
+as `nothing-selectable`, needing either normal work or a revised criterion. The
+original measurement stands as
 the record of what the day the seam is wired would have looked like —
 `selectNext(8 × elevated, {lastCompletedTier:'elevated'})` returned
 `candidates: 0, skipped: 8`, and the stop condition then read `queue-empty`
@@ -427,6 +433,8 @@ seam, never beside it. §7a of the brief carries ten corrections that ride INSID
 these items — read them before taking AR3-1/2/4/6/7/13.
 
 - AR3-36 [elevated]: **wire the tier-spacing seam — take this next.** The close step writes the closed item's tier where `selectNext` reads it (`config.lastCompletedTier`). 🔴 **A defect, not a gap:** the filter exists and is correct, but `.claude/queue.json` has carried only `{"adapter":"plan-md"}` since the first commit, so it has been called with `null` every time and **tier spacing has never fired between tasks in this repository** — the rule has been kept by whichever session read it, which is exactly the guarantee a mechanical filter exists to replace. Same family as `stage-guard`'s `red` that never blocked (AR3-3) and a reviewer regex that could not match its own required reviewer: *a filter whose input nobody supplies is indistinguishable from a filter that agrees with you*, and neither a green suite nor a reading of `core.mjs` shows it. **Proof must be behavioural, not structural** — a test asserting the field is written is the existence test v4 keeps rejecting. **Scope:** the writer and the reader must land together, so this is one change, not two. It edits `templates/agent-os/universal/.claude/skills/` and `.../scripts/` (both declared) — never the synced `.claude/` copies, which is why the marker is `[elevated]`; the tier reason is the template tree, not the copy.
+
+  ✅ **SECOND RULING (owner), and it is a scope change to this item, recorded rather than taken quietly: the tier is written to a state file BESIDE the queue config, not into `config.lastCompletedTier`.** This item named the config twice and specifically, so changing the target is exactly the re-aim `loop` §8 forbids a run to perform on itself — the divergence went to the owner and came back as a ruling, which is the path §8 requires. What forced it was mechanical, not editorial: `.claude/queue.json` is composed from the template layer, and writing a runtime value into it fails the repo's own drift check (observed mid-task, exit 1, `agent-os drift detected in: - .claude/queue.json`) and would be an `upgrade` conflict in every generated project on a file it never edited. The item was right about the reader and wrong about the file. State lands in `.claude/queue.state.json`, gitignored; the reader prefers it over anything left in the config.
 
   ✅ **The one thing that had to be settled before the failing test is RULED by the owner: the close step writes the tier the change turned out to be, computed from the diff's paths — not the item's marker.** The question was real: `plan-md.mjs:110` derives `tier` from the `[elevated]` marker and from nothing else, while `autonomy.md` says *"the tier is decided by what the change touches, not by what the task said it would touch"* and `loop` §2 calls the marker *"a pre-filter, not the authority"*. The ruling follows the stated rule and costs no judgement: `detect-missed-gate.mjs` already computes exactly this from `elevatedPathsIn`, so the source is mechanical. What the two readings would have meant, kept because the fixture depends on it:
 

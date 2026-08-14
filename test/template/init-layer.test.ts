@@ -17,6 +17,9 @@ const initDir = path.join(repoRoot, 'templates', 'agent-os', 'init');
 const DOCUMENTED_ABSENT: Record<string, string> = {
   '.claude/hooks/dod-checks.json':
     'the stack layer supplies the DoD checks; init cannot know this repo’s commands',
+  '.claude/queue.state.json':
+    'runtime state, written by the first close and gitignored — shipping one would ' +
+    'commit a tier from whoever built the template',
 };
 
 async function installed(): Promise<Map<string, string>> {

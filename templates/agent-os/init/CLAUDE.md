@@ -84,9 +84,9 @@ it a hook via the `new-invariant` skill.
   this repository once it has a remote. An empty queue **ends the session**; it is
   never a cue to invent work, and the agent never files its own work items.
 
-## Two things this install left for you to finish
+## Three things this install left for you to finish
 
-Both are one-liners, and both are inert until you do them.
+All three are one-liners, and all three are inert until you do them.
 
 1. **The Definition-of-Done gate has nothing to run.** `gate-stop-dod` executes
    the commands listed in `.claude/hooks/dod-checks.json`, and `init` ships no
@@ -95,6 +95,21 @@ Both are one-liners, and both are inert until you do them.
    no-op, and the Definition of Done is back to being a wish.
 2. **The elevated-path list below is a seed, not a survey.** It names only what
    every repo has. Everything else is yours to add.
+3. **Two runtime paths need a `.gitignore` line each**, and `init` cannot add
+   them — it installs into your repository and does not edit files it did not
+   bring. Add both:
+
+   ```
+   .claude/queue.state.json    # the tier the last close recorded
+   .claude/worktrees/          # task worktrees
+   ```
+
+   The first one matters more than it looks. It is how the loop rations the
+   elevated tier — never two elevated items back to back — and it is
+   **per-checkout state, not shared configuration**. Committed, one machine's
+   tier starts deciding another's, and a merge conflict lands in a file nobody
+   edited on purpose. `.claude/queue.json` is the opposite: that one is
+   configuration and belongs in the repository.
 
 ## The elevated paths of this project
 

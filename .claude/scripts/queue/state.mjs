@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * The queue's own state — today, exactly one field: the tier of the last item
  * the loop closed.
@@ -32,6 +31,8 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { elevatedPathsIn, readDeclaredPaths } from '../detect-missed-gate.mjs';
+import { mainCheckoutRoot } from './checkout.mjs';
+
 
 /**
  * Record the tier of the change that just closed an item.
@@ -52,6 +53,15 @@ import { elevatedPathsIn, readDeclaredPaths } from '../detect-missed-gate.mjs';
  * named the config as the target ("the file `selectNext` already reads"); it was
  * right about the reader and wrong about the file, and the drift check is what
  * proved it. Config is composed and tracked; state is per-checkout and ignored.
+ *
+ * ⚠ **The limit this cannot see, stated rather than covered by a test that
+ * would only look like coverage:** a file list that arrived **truncated** — a
+ * `maxBuffer` overflow in the caller, a bad split, a hand-trimmed array — is
+ * indistinguishable here from a complete one, and a truncated list that drops
+ * the elevated file records `normal`. The empty-list refusal below does not
+ * catch it, because a short list is not an empty one. The caller owns
+ * completeness; the documented snippet uses `-z` and an argument array for
+ * exactly that reason.
  */
 export const recordCompletedTier = ({ changedFiles, projectRoot, statePath } = {}) => {
   // 🔴 An absent file list is NOT a normal change. A zero and an unknown look
@@ -87,7 +97,17 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath } = {
   // State only. It deliberately does NOT carry `adapter` or `options`: two files
   // answering "which queue is this" is two answers with no rule for which wins,
   // and the loser is whichever one nobody is looking at.
-  const file = statePath ?? join(projectRoot, '.claude', 'queue.state.json');
+  //
+  // The default lands in the MAIN checkout even when the close runs inside a
+  // worktree — see `mainCheckoutRoot`. An explicit `statePath` is used verbatim
+  // and never re-resolved: it is the escape hatch tests and odd layouts need,
+  // and silently relocating it would make it useless.
+  //
+  // Note the asymmetry, which is deliberate: the DECLARATION is read from the
+  // given `projectRoot` (the worktree's own `CLAUDE.md` is the rulebook the
+  // change was written against), while the STATE goes to the checkout that
+  // outlives the task.
+  const file = statePath ?? join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');
   writeFileSync(file, `${JSON.stringify({ lastCompletedTier: tier }, null, 2)}\n`);
 
   return { tier, elevatedPaths: elevated };

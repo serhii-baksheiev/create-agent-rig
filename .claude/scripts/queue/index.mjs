@@ -14,6 +14,11 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { hygieneOf, selectNext, stopConditionOf } from './core.mjs';
+// One resolver, imported rather than re-derived: writer and reader disagreeing
+// about which checkout they are in is the whole of the worktree defect. It lives
+// apart from `state.mjs` so the read path does not drag the tier computation —
+// and `detect-missed-gate.mjs` behind it — into a CLI that never calls either.
+import { mainCheckoutRoot } from './checkout.mjs';
 
 const ADAPTERS = {
   'plan-md': './plan-md.mjs',
@@ -87,11 +92,25 @@ export const loadState = (statePath) => {
   let raw;
   try {
     raw = readFileSync(statePath, 'utf8');
-  } catch {
-    return {};
+  } catch (error) {
+    // 🔴 ONLY a genuinely absent file means "nothing has closed yet". A bare
+    // `catch` here read EACCES, a directory at the path, and a file left by a
+    // container run under another uid as "absent" — each of them silently
+    // yielding the permissive `null`, with nothing printed. One failed write
+    // would have disabled the ration for good, and no adversary is needed.
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return {};
+    throw new Error(
+      `${statePath} exists but could not be read (${error?.code ?? 'unknown error'}), ` +
+        'so the last completed tier is unknown. Refusing rather than continuing: ' +
+        'unknown reads as "nothing has closed yet", which is the value that lets a ' +
+        'second elevated item through.',
+      { cause: error },
+    );
   }
+
+  let parsed;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(
       `${statePath} exists but is not valid JSON, so the last completed tier cannot ` +
@@ -101,6 +120,35 @@ export const loadState = (statePath) => {
       { cause: error },
     );
   }
+
+  // Syntax is not shape. `"elevated"`, `["elevated"]`, `123` and `"Elevated"` all
+  // parse, and `core.mjs` compares with `===` — so every one of them missed and
+  // handed out a second elevated item while looking like a working state file.
+  // A top-level `null` was worse: it parsed, then threw a raw TypeError from the
+  // dereference, past the message that tells you the file is safe to delete.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(
+      `${statePath} is valid JSON but not a state object, so the last completed tier ` +
+        'cannot be read. Expected `{ "lastCompletedTier": "elevated" | "normal" }`. ' +
+        'Delete the file if you are unsure — an absent state means "nothing has ' +
+        'closed yet", which is safe.',
+    );
+  }
+
+  // `null` is allowed and means exactly what an absent file means: nothing has
+  // closed yet. It is the honest spelling of an absence, and refusing it would
+  // protect nothing — deleting the file has the identical effect.
+  const tier = parsed.lastCompletedTier;
+  if (tier !== undefined && tier !== null && tier !== 'elevated' && tier !== 'normal') {
+    throw new Error(
+      `${statePath} carries lastCompletedTier: ${JSON.stringify(tier)}, which is not ` +
+        'one of "elevated" | "normal". A tier outside the vocabulary matches nothing ' +
+        'and rations nothing, so it would disable the elevated spacing while looking ' +
+        'like a working state file. Delete the file if you are unsure.',
+    );
+  }
+
+  return parsed;
 };
 
 const parseArgs = (argv) => {
@@ -167,7 +215,15 @@ if (invokedDirectly()) {
   try {
     const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
     config = loadConfig(configPath);
-    state = loadState(statePathFor(configPath));
+    // An explicit `--config` keeps its own state beside it, verbatim: a run
+    // pointed at a temp config must not pick up this checkout's real tier.
+    // Without one, the state comes from the MAIN checkout, so a selection made
+    // inside a worktree sees what a close made anywhere recorded.
+    state = loadState(
+      args.config
+        ? statePathFor(configPath)
+        : join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json'),
+    );
     adapter = await resolveAdapter(config.adapter ?? 'plan-md');
   } catch (error) {
     process.stderr.write(`${error.message}\n`);

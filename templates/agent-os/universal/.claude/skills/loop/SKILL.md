@@ -352,12 +352,33 @@ three poisons the only channel by which this project learns.
   ```bash
   node --input-type=module -e '
     const { recordCompletedTier } = await import("./.claude/scripts/queue/state.mjs");
-    const { execSync } = await import("node:child_process");
-    const changedFiles = execSync("git diff --name-only origin/<default>...<merge-sha>")
-      .toString().split("\n").filter(Boolean);
+    const { execFileSync } = await import("node:child_process");
+    const merge = "<merge-sha>";
+    // The merge commit against its first parent: what the PR actually added.
+    const changedFiles = execFileSync(
+      "git", ["diff", "--name-only", "-z", `${merge}^1`, merge], { encoding: "utf8" },
+    ).split("\0").filter(Boolean);
     console.log(recordCompletedTier({ changedFiles, projectRoot: process.cwd() }));
   '
   ```
+
+  Three details in that command are load-bearing, and each one was a live defect
+  before it was there:
+
+  - **`<merge-sha>^1 <merge-sha>`, not `origin/<default>...<merge-sha>`.** A
+    three-dot diff is `merge-base..head`, and once the remote-tracking ref
+    includes the merge — which is its state at exactly the moment this step
+    runs — the merge base *is* the merge, so the list comes back **empty** and
+    the call refuses. The old form worked only while the local ref happened to
+    be stale, i.e. by accident of ordering.
+  - **`-z`, and split on `\0`.** With `core.quotePath` on (the default) a path
+    with a non-ASCII byte arrives quoted and octal-escaped — `".claude/caf\303\251.mjs"`
+    — which matches no declared prefix, so an elevated change records as
+    `normal`. A name containing a newline splits into two junk paths. `-z`
+    removes both.
+  - **`execFileSync` with an argument array**, not a shell string. Nothing is
+    interpolated into a shell today, and the point is that the next session
+    cannot start.
 
   🔴 **The tier comes from the diff, never from the item's marker.** The marker
   is a pre-filter (§2); `autonomy.md` decides the tier by what the change
