@@ -469,8 +469,8 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 - **tell the users, and set a date to collect what they say** — 0.3.2 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
 - **proposal: the loop writes the closed items tier where selectNext reads it (config.lastCompletedTier), as part of the close step in SKILL.md 9 — today the spacing filter exists in core.mjs but nothing ever supplies its input, so selectNext is always called with lastCompletedTier: null and the ration never fires across tasks [triage]** — finding: journal: closing AR3-35 shifted every id below it again; and the CLI offered AR3-2 [elevated] immediately after an elevated item because .claude/queue.json carries no lastCompletedTier · part: .claude/skills/loop/SKILL.md + .claude/queue.json · proof: after an elevated item closes, `queue/index.mjs next` reports the remaining elevated items under `skipped:` with the spacing reason, instead of handing one straight back · fingerprint: `journal-closing-ar3-35-shifted-every-id-:claude-skills-loop-skill-md-claude-queue:the-loop-writes-the-closed-items-tier-wh` · seen ×1
-- **proposal: apply the files own printable() helper to the ticket title and id in renderNext, the way core.mjs already does for a broken-link finding — under github-issues or jira anyone who can open an issue controls that string, so ANSI escapes and control bytes reach the operators terminal unfiltered [triage]** — finding: journal: security-scanner on #42 — index.mjs:77 prints result.ticket.title raw to the terminal · part: .claude/scripts/queue/index.mjs · proof: an issue titled with a \x1b[2J prefix renders as visible text in `queue/index.mjs next`, and the terminal is not cleared · fingerprint: `journal-security-scanner-on-42-index-mjs:claude-scripts-queue-index-mjs:apply-the-files-own-printable-helper-to-` · seen ×1
 - **proposal: 6 step 2 says which half the adapter does and which half the session does: under plan-md neither claim nor escalate writes anything, and the move to the Operator queue is the sessions edit — stated in the step rather than only in the adapters return value [triage]** — finding: journal: prose-reviewer on #42 — SKILL.md 6 step 2 (mark it escalated and leave it claimed) is not performable under plan-md · part: .claude/skills/loop/SKILL.md · proof: a run under plan-md that escalates an item leaves it out of the Agent queue, and the next `queue/index.mjs next` does not hand the escalated item back · fingerprint: `journal-prose-reviewer-on-42-skill-md-6-:claude-skills-loop-skill-md:6-step-2-says-which-half-the-adapter-doe` · seen ×1
+- **proposal: export the existing printable() from core.mjs — it is module-private at core.mjs:306 today — and apply it to the ticket title and id in renderNext (index.mjs:77) and to skip.reason (index.mjs:80). Export rather than re-declare: invariants.md One mechanism, one implementation. Under github-issues or jira anyone who can open an issue controls the title string, so ANSI escapes and control bytes reach the operators terminal unfiltered [triage]** — finding: journal: security-scanner on #42 — index.mjs:77 interpolates result.ticket.title raw into terminal output · part: .claude/scripts/queue/core.mjs (export) + .claude/scripts/queue/index.mjs (apply) · proof: an issue titled with a \x1b[2J prefix renders as visible text in `queue/index.mjs next`, and the terminal is not cleared · fingerprint: `journal-security-scanner-on-42-index-mjs:claude-scripts-queue-core-mjs-export-cla:export-the-existing-printable-from-core-` · seen ×1
 
 ## Journal
 
@@ -523,6 +523,18 @@ operational memory, not an archive. Fields per the template in
   offered `AR3-2 [elevated]`. The rule was honoured by the session reading it,
   which is precisely the guarantee a mechanical filter is supposed to replace.
   Reported, not corrected in passing; filed as a proposal
+- 🔴 **invariant conflict, surfaced rather than silently resolved** — `loop`
+  SKILL.md §9 collides with itself on where a close is written, and this run is
+  an instance of it. Its opening says the close goes in "with the merged PR
+  linked, immediately after the post-merge verdict", which cannot happen inside
+  the PR being merged; its closing paragraph says a `PLAN.md` fact edit —
+  naming "an Operator-queue item it unblocked" — lands "**in the same PR that
+  changed the fact**, never a docs-only follow-up". This run took the first
+  reading and said so on #42; a run taking the second would have put the
+  Operator edit in #42 and then had no way to write the close. Per the stop
+  rules the resolution belongs in the rule and to the owner, not in one PR's
+  history — so it is recorded here and **not** spent as one of the three
+  proposals, which are capped for a different purpose
 - **proposals filed** — three, all `ok: true` into the Operator queue: the
   `lastCompletedTier` seam above; `printable()` on the ticket title in
   `renderNext` (`security-scanner`, #42); and §6 step 2 naming which half of an
