@@ -437,7 +437,6 @@ and its `cost` block, replacing none of it). Every item lands **above** the queu
 seam, never beside it. §7a of the brief carries ten corrections that ride INSIDE
 these items — read them before taking AR3-1/2/4/6/7/13.
 
-- AR3-36 [elevated]: **wire the tier-spacing seam — take this next.** The close step writes the closed item's tier where `selectNext` reads it (`config.lastCompletedTier`). 🔴 **A defect, not a gap:** the filter exists and is correct, but `.claude/queue.json` has carried only `{"adapter":"plan-md"}` since the first commit, so it has been called with `null` every time and **tier spacing has never fired between tasks in this repository** — the rule has been kept by whichever session read it, which is exactly the guarantee a mechanical filter exists to replace. Same family as `stage-guard`'s `red` that never blocked (AR3-3) and a reviewer regex that could not match its own required reviewer: *a filter whose input nobody supplies is indistinguishable from a filter that agrees with you*, and neither a green suite nor a reading of `core.mjs` shows it. **Proof must be behavioural, not structural** — a test asserting the field is written is the existence test v4 keeps rejecting. **Scope:** the writer and the reader must land together, so this is one change, not two. It edits `templates/agent-os/universal/.claude/skills/` and `.../scripts/` (both declared) — never the synced `.claude/` copies, which is why the marker is `[elevated]`; the tier reason is the template tree, not the copy.
 
   ✅ **SECOND RULING (owner), and it is a scope change to this item, recorded rather than taken quietly: the tier is written to a state file BESIDE the queue config, not into `config.lastCompletedTier`.** This item named the config twice and specifically, so changing the target is exactly the re-aim `loop` §8 forbids a run to perform on itself — the divergence went to the owner and came back as a ruling, which is the path §8 requires. What forced it was mechanical, not editorial: `.claude/queue.json` is composed from the template layer, and writing a runtime value into it fails the repo's own drift check (observed mid-task, exit 1, `agent-os drift detected in: - .claude/queue.json`) and would be an `upgrade` conflict in every generated project on a file it never edited. The item was right about the reader and wrong about the file. State lands in `.claude/queue.state.json`, gitignored; the reader prefers it over anything left in the config.
 
@@ -500,6 +499,9 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
 - **proposal: 6 step 2 says which half the adapter does and which half the session does: under plan-md neither claim nor escalate writes anything, and the move to the Operator queue is the sessions edit — stated in the step rather than only in the adapters return value [triage]** — finding: journal: prose-reviewer on #42 — SKILL.md 6 step 2 (mark it escalated and leave it claimed) is not performable under plan-md · part: .claude/skills/loop/SKILL.md · proof: a run under plan-md that escalates an item leaves it out of the Agent queue, and the next `queue/index.mjs next` does not hand the escalated item back · fingerprint: `journal-prose-reviewer-on-42-skill-md-6-:claude-skills-loop-skill-md:6-step-2-says-which-half-the-adapter-doe` · seen ×1
 - **proposal: export the existing printable() from core.mjs — it is module-private at core.mjs:306 today — and apply it to the ticket title and id in renderNext (index.mjs:77) and to skip.reason (index.mjs:80). Export rather than re-declare: invariants.md One mechanism, one implementation. Under github-issues or jira anyone who can open an issue controls the title string, so ANSI escapes and control bytes reach the operators terminal unfiltered [triage]** — finding: journal: security-scanner on #42 — index.mjs:77 interpolates result.ticket.title raw into terminal output · part: .claude/scripts/queue/core.mjs (export) + .claude/scripts/queue/index.mjs (apply) · proof: an issue titled with a \x1b[2J prefix renders as visible text in `queue/index.mjs next`, and the terminal is not cleared · fingerprint: `journal-security-scanner-on-42-index-mjs:claude-scripts-queue-core-mjs-export-cla:export-the-existing-printable-from-core-` · seen ×1
+- **proposal: selectNext rations on the tier a candidate WOULD be by its declared paths, not on its marker — the same elevatedPathsIn computation the close step now uses, applied to the item side. Today AR3-36 fixed only the value written, so the filter still trusts a hand-written marker on the input side while the output side is mechanical. A marker one tier low still buys a second elevated item, which is the failure the ration exists to prevent [triage]** — finding: journal: the ration filters CANDIDATES on the marker while recording the PATH tier, so the 26 items marked normal whose artefacts sit under declared elevated paths are handed out after an elevated close · part: .claude/scripts/queue/core.mjs + .claude/scripts/queue/plan-md.mjs · proof: an item marked normal whose named artefacts are all under declared elevated paths appears under skipped: with the spacing reason after an elevated close, instead of being handed out · fingerprint: `journal-the-ration-filters-candidates-on:claude-scripts-queue-core-mjs-claude-scr:selectnext-rations-on-the-tier-a-candida` · seen ×1
+- **proposal: add both files to the sweep list and give each spawn env: withoutGitLocation(). They are pre-existing and were deliberately left out of AR3-36 so the sweep would not go red for a reason that branch did not cause. The sweep claims every authored git spawn is covered; today it reads 8 of 10 files [triage]** — finding: journal: code-reviewer and prose-reviewer, pass 3 and 4 — scripts/build-hash-history.mjs and test/template/dogfood.test.ts spawn git with the inherited environment and are absent from the env sweep list · part: test/template/git-env.test.ts + scripts/build-hash-history.mjs + test/template/dogfood.test.ts · proof: the sweep list names 10 files and passes, and a spawn added to either file without env turns it red · fingerprint: `journal-code-reviewer-and-prose-reviewer:test-template-git-env-test-ts-scripts-bu:add-both-files-to-the-sweep-list-and-giv` · seen ×1
+- **proposal: add one checklist line: a claim about what a mechanism does is verified by RUNNING it, not by reading it — paste the command and its output into the finding. The reviewers already work this way and it is why they found these; the agent spec does not say so, so the discipline lives in habit rather than in the rulebook, and the author writing the claim has no equivalent instruction at all [triage]** — finding: journal: thirteen blocking gate findings on AR3-36, seven of them claims the run wrote about a mechanism it had not run — .gitignore lines that ignored nothing, an English-only error classifier, a stub git that measured an empty file, an inventory comment stale in its own commit · part: .claude/agents/prose-reviewer.md · proof: prose-reviewer findings cite a command and its observed output rather than a file:line reading, and the count of author-written claims refuted per gate round falls below the AR3-36 baseline of seven · fingerprint: `journal-thirteen-blocking-gate-findings-:claude-agents-prose-reviewer-md:add-one-checklist-line-a-claim-about-wha` · seen ×1
 
 ## Journal
 
@@ -507,6 +509,52 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### the ration fires for the first time, and seven of thirteen blockers were my own prose
+
+- **done** — AR3-36 (#45, `human-review`): the close step records the tier, so
+  the elevated spacing fires between tasks for the first time in this
+  repository. `selectNext` had always read `config.lastCompletedTier` and
+  **nothing had ever written it**, so the filter ran on `null` every time and
+  the rule was upheld only by whichever session read it. The tier is computed
+  from the closing diff's paths through the gate sweep's own
+  `elevatedPathsIn`, never from the item's marker. Verified on itself: closing
+  AR3-36 recorded `elevated` from 8 paths, and the next selection held the 7
+  marked-elevated items and handed out AR3-4
+- **reviewed** — four `pr-ship` rounds, nine reviewer passes. **Thirteen
+  blocking findings; seven were claims I wrote about a mechanism I had not
+  run.** The reviewers ran it: git under `fr_FR`, a real pre-commit hook in a
+  linked worktree, `execFileSync` with a clipped `maxBuffer`, a spawn injected
+  into a document. Round 4 was the first with no finding about behaviour
+- **escalated** — nothing. One scope change went to the owner rather than being
+  re-aimed in-session (§8): the item named `config.lastCompletedTier`, which is
+  composed from the template layer, so a runtime value there fails the drift
+  check and would be an `upgrade` conflict in every generated rig. Ruled, and
+  the state moved beside the config
+- **stopped at** — **budget**. One item, four gate rounds. The queue is not
+  empty: 32 items remain
+- **post-merge verdict** — healthy, checked on merged `master` rather than the
+  branch: the tier recorded through the shipped snippet, `next` selects, and
+  `hygiene` reports 32 items with nothing stale
+- **unblocked** — **this queue has no dependency links** (`plan-md` is a flat
+  list — absent, not satisfied). What the close settles is written on the item
+  and on the block preamble: the ration is wired, and the half that is not is
+  named there
+- 🔴 **queue hygiene** — the marker audit from the previous entry stands
+  unchanged and uncorrected. It now matters more, not less: the ration filters
+  **candidates** on the marker while recording the **path** tier, so the 26
+  items marked `normal` whose artefacts sit under declared elevated paths will
+  be handed out after an elevated close. Reported, not relabelled
+- **cost** — 9 reviewer subagents, 4 test-writer, 1 check-premises; 4 check runs
+  on the merged head, 0 re-runs; 0 deploys
+- 🔴 **the honest note** — the gate caught a test that was measuring nothing: a
+  stub `git` wrote `env > dump` while `PATH` held only the stub, so the dump
+  stayed empty and the sibling assertion ("the locating variables are withheld")
+  passed **because the file was empty**. A false red beside a false green, and
+  the green half is the dangerous one — it certified a protection it never
+  observed. That is this item's own defect one level up: a check whose input
+  nobody supplies is indistinguishable from a check that agrees with you. Three
+  times the stop gate, not the session, was what noticed the work was not done
 
 ### one item, five gate rounds — the stop line was wrong in a way the item did not know about
 
