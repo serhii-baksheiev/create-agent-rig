@@ -269,6 +269,29 @@ Write a checkpoint entry **every few completed items and at every stop**, not on
 at the end: a run that dies unexpectedly must not take its history with it. The
 field list is in `PLAN.md` under `## Journal`.
 
+**Behind that entry there is a machine trace, and it is a different artifact.**
+`.claude/scripts/run-journal.mjs` writes gate verdicts to `decisions.jsonl` and
+everything else to `events.jsonl`, both append-only, inside the run directory the
+run declares:
+
+```bash
+export RIG_RUN_DIR="$PWD/.claude/runs/<run-id>"   # yours to choose and to create
+mkdir -p "$RIG_RUN_DIR"
+```
+
+Three things about it are worth knowing before relying on it:
+
+- **The run declares the directory; nothing invents one.** With `RIG_RUN_DIR`
+  unset, every call site stays silent — the trace is opt-in, and a run that never
+  declared one has no journal rather than a journal in a guessed place.
+- **It answers *what the run decided and on what basis*, never *was that
+  right*.** It replaces neither `## Journal` above nor `PLAN.md`; it is the
+  evidence a reader checks those against.
+- **A record after the run-end marker is refused, and a broken sequence is
+  refused on read.** The order is asserted rather than described, so a stale
+  record cannot read as the current one — which is the whole failure a journal
+  exists to prevent.
+
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an
 unbounded improvement list is another diary, and three forces a choice. Each names
@@ -281,8 +304,10 @@ four things, and a proposal missing any of them is not ready to file:
 4. how the next run would prove it worked — the observation that would differ.
 
 Filing is the adapter's `proposeTriage`, which the CLI deliberately does **not**
-expose — `index.mjs` is read-only (`next`, `list`, `hygiene`) so that no accidental
-invocation can write to the queue. Call it directly:
+expose — `index.mjs` never writes to the QUEUE (`next`, `list`, `hygiene` only), so
+that no accidental invocation can change what the next run is handed. Its one
+write is to the run journal above, and only into a directory the run declared —
+a trace of the selection, never a change to it. Call `proposeTriage` directly:
 
 ```bash
 node --input-type=module -e '

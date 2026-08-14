@@ -277,6 +277,38 @@ if (invokedDirectly()) {
     process.exit(0);
   }
 
+  // 🔴 A journal nothing calls records nothing. Selection is a gate — it decides
+  // what the run works on and why every other item was passed over — so this is
+  // the call site the run journal ships with, rather than a writer nobody
+  // invokes.
+  //
+  // It writes only when the run DECLARED its directory. Inventing one here would
+  // make this CLI a second owner of the `.claude/runs/<run-id>/` convention, and
+  // a default derived from `projectRoot` would land the trace inside the very
+  // template tree this repository publishes.
+  const runDir = process.env.RIG_RUN_DIR;
+  if (runDir) {
+    try {
+      const { recordDecision } = await import('../run-journal.mjs');
+      recordDecision({
+        runDir,
+        gate: 'item-selection',
+        verdict: result.ticket ? `taken ${result.ticket.id}` : `stopped ${stop.kind}`,
+        why: result.ticket ? result.ticket.title : stop.why,
+        // The edge is where the clock is read: the journal itself takes `now` as
+        // an argument, which is what keeps its records reproducible.
+        now: new Date().toISOString(),
+      });
+    } catch (error) {
+      // Declared and not written is a failure, never a detail. The sequence and
+      // the run-end marker exist so a missing record is visible; swallowing this
+      // would hand back a trace with a silent hole, which is the one outcome
+      // worse than having no trace at all.
+      process.stderr.write(`run journal: ${error.message}\n`);
+      process.exit(1);
+    }
+  }
+
   process.stdout.write(
     args.json
       ? `${JSON.stringify({ ticket: result.ticket, skipped: result.skipped, stop }, null, 2)}\n`
