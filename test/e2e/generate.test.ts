@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, inject, it } from 'vitest';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -113,17 +113,11 @@ describe('create-agent-rig <dir>', () => {
 
 describe('npm pack tarball (distribution path)', () => {
   it('a packed tarball generates the same tree via npx', async () => {
-    const packDir = path.join(work, 'pack');
-    await mkdir(packDir);
-    const { stdout } = await exec('npm', ['pack', '--json', '--pack-destination', packDir], {
-      cwd: repoRoot,
-    });
-    const [packed] = JSON.parse(stdout) as Array<{ filename: string; files: { path: string }[] }>;
-    expect(packed).toBeDefined();
-    const tarball = path.join(packDir, packed!.filename);
+    // Packed once for the whole e2e project — see test/e2e/pack-once.ts.
+    const tarball = inject('tarball');
 
     // The tarball must carry the compiled CLI and the templates, nothing heavy.
-    const paths = packed!.files.map((f) => f.path);
+    const paths = inject('packedPaths');
     expect(paths).toContain('packages/cli/dist/index.js');
     expect(paths.some((p) => p.startsWith('templates/skeleton/aws-serverless/'))).toBe(true);
     expect(paths.some((p) => p.includes('node_modules'))).toBe(false);
