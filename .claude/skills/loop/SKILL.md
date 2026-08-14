@@ -117,9 +117,10 @@ escalate that item (§5) and take the next one.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
-**two escalations in a row** · **budget** · **queue empty**.
+**two escalations in a row** · **budget** · **nothing selectable** · **queue
+empty**.
 
-Three of them deserve their reasons repeated:
+Four of them deserve their reasons repeated:
 
 - **Runtime regression** → deploy the revert first, diagnose second, start no new
   work on top. A regression compounds into everything built above it.
@@ -131,6 +132,13 @@ Three of them deserve their reasons repeated:
   legitimate, successful end of session; refilling it is the owner's job.
   **Expect this to be the most common ending** — the queue is finite and the loop
   drains it. That is the system working.
+- **Nothing selectable** → also a clean stop, and **not the same finding**. Items
+  are still open; every one of them was held back — by the elevated spacing, by a
+  trigger nobody declared, by a blocker still open. The stop line names how many
+  and by what, because the two endings ask the owner for opposite things: an
+  empty queue wants refilling, a held queue wants a normal item to interleave, a
+  trigger declared, or simply time. Reporting a full queue as empty is the defect
+  this kind exists to prevent — **and refilling is still not this run's job.**
 
 🔴 **The kill switch is a real file, not an intention:**
 

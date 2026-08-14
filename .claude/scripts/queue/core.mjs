@@ -64,18 +64,46 @@ export const ADAPTER_CONTRACT = [
 ];
 
 /**
+ * Why an item was passed over, as a closed vocabulary.
+ *
+ * The reason strings below are written for a human and change freely; a counter
+ * that grouped them by re-parsing that prose would break the first time a word
+ * did. `SPACING` is the one cause no filter produces — it belongs to the tier
+ * ration in `selectNext`, which is why it lives here rather than in `selectionOf`.
+ */
+export const SKIP_CAUSES = Object.freeze([
+  'closed',
+  'in-progress',
+  'triage',
+  'escalated',
+  'blocked',
+  'trigger',
+  'spacing',
+]);
+
+/**
  * Is this item takeable, and if not, why not?
  *
  * The filters run in order and every rejection carries a reason: an unexplained
- * skip is indistinguishable from a bug in the filter.
+ * skip is indistinguishable from a bug in the filter. Each reason also carries a
+ * `cause` tag, so the stop line can say what is holding the queue back without
+ * reading the prose back.
  */
 export const selectionOf = (ticket, { triggersFired = null } = {}) => {
   const reasons = [];
+  const causes = [];
   const labels = ticket.labels ?? [];
 
-  if (ticket.state === 'closed') reasons.push('already closed');
+  // Filter order is the order these are pushed in; a cause repeats at most once,
+  // because two trigger reasons are still one thing holding the item back.
+  const reject = (cause, why) => {
+    reasons.push(why);
+    if (!causes.includes(cause)) causes.push(cause);
+  };
+
+  if (ticket.state === 'closed') reject('closed', 'already closed');
   if (ticket.state === 'in-progress') {
-    reasons.push('already in progress — another session may be on it');
+    reject('in-progress', 'already in progress — another session may be on it');
   }
 
   // Belt and braces, and deliberately so. A triage item is a proposal the loop
@@ -83,11 +111,11 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
   // one careless hand adding that marker closes the loop's feedback path into its
   // own input — the exact circuit the firewall exists to break.
   if (ticket.triage || labels.includes('triage')) {
-    reasons.push('a triage proposal: promotion to work is a human act');
+    reject('triage', 'a triage proposal: promotion to work is a human act');
   }
 
   if (labels.includes('escalated')) {
-    reasons.push('escalated — it is waiting on a human, not on another attempt');
+    reject('escalated', 'escalated — it is waiting on a human, not on another attempt');
   }
 
   // 🔴 INVARIANT 1: blockers resolve from LINKS, never from labels.
@@ -99,13 +127,14 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
   // and takes work whose blocker is still open. Both directions have been seen.
   const open = (ticket.blockedBy ?? []).filter((blocker) => !blocker.resolved);
   if (open.length > 0) {
-    reasons.push(`blocked by ${open.map((b) => b.id).join(', ')} (from links, not labels)`);
+    reject('blocked', `blocked by ${open.map((b) => b.id).join(', ')} (from links, not labels)`);
   }
 
   // No trigger label means unconditional, not missing data. Work that is
   // genuinely conditional says so.
   if (ticket.trigger === 'human') {
-    reasons.push(
+    reject(
+      'trigger',
       'trigger-human: a window, a demand or a "pass" is a human declaration — ' +
         'never self-taken, only handed over explicitly',
     );
@@ -113,7 +142,8 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
   if (ticket.trigger === 'auto') {
     const fired = triggersFired?.[ticket.id];
     if (fired !== true) {
-      reasons.push(
+      reject(
+        'trigger',
         fired === undefined
           ? 'trigger-auto with no verification of the trigger this run — ' +
             'unverified is not fired'
@@ -122,7 +152,7 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
     }
   }
 
-  return { eligible: reasons.length === 0, reasons };
+  return { eligible: reasons.length === 0, reasons, causes };
 };
 
 /**
@@ -285,7 +315,11 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
   for (const ticket of tickets) {
     const selection = selectionOf(ticket, { triggersFired });
     if (!selection.eligible) {
-      skipped.push({ id: ticket.id, reason: selection.reasons.join('; ') });
+      skipped.push({
+        id: ticket.id,
+        reason: selection.reasons.join('; '),
+        causes: selection.causes,
+      });
       continue;
     }
     if (ticket.tier === 'elevated' && lastCompletedTier === 'elevated') {
@@ -294,6 +328,7 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
         reason:
           'elevated, and the last completed item was elevated too — never two back ' +
           'to back. Land a normal item on a healthy runtime first.',
+        causes: ['spacing'],
       });
       continue;
     }
@@ -302,6 +337,32 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
 
   const [ticket = null] = sortCandidates(candidates);
   return { ticket, skipped, candidates: candidates.length };
+};
+
+/**
+ * "N held by X, M by Y" — what is holding the queue back, as a partition.
+ *
+ * Each skipped item counts ONCE, under the first filter that rejected it, so the
+ * parts foot to the total. Counting it under every cause would read as a
+ * breakdown and silently sum past the number beside it.
+ *
+ * Bounded by construction: one forward pass, and a tally whose key set is the
+ * closed vocabulary plus one bucket for a record that carries no tag at all.
+ */
+const heldBreakdown = (skipped) => {
+  const tally = new Map();
+  for (const skip of skipped) {
+    const causes = Array.isArray(skip?.causes) ? skip.causes : [];
+    const [first] = causes.filter((cause) => SKIP_CAUSES.includes(cause));
+    // An untagged record is reported as untagged, never folded into a cause it
+    // did not claim: a wrong attribution is worse than an admitted gap.
+    const cause = first ?? 'an unnamed filter';
+    tally.set(cause, (tally.get(cause) ?? 0) + 1);
+  }
+  return [...tally.entries()]
+    .sort(([tagA, countA], [tagB, countB]) => countB - countA || tagA.localeCompare(tagB))
+    .map(([tag, count]) => `${count} held by ${tag}`)
+    .join(', ');
 };
 
 /**
@@ -314,6 +375,7 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
  */
 export const stopConditionOf = ({
   candidates = 0,
+  skipped = [],
   lastDeployVerdict = null,
   consecutiveEscalations = 0,
   killSwitch = false,
@@ -369,12 +431,27 @@ export const stopConditionOf = ({
         'than starting something that will be abandoned half-done.',
     };
   }
+  if (candidates === 0 && skipped.length > 0) {
+    return {
+      kind: 'nothing-selectable',
+      success: true,
+      why:
+        `${skipped.length} item(s) are still open and none is takeable right now — ` +
+        `${heldBreakdown(skipped)}. This is NOT an empty queue and the two ask for ` +
+        'opposite things: an empty queue wants refilling, whereas this one is full ' +
+        'and held by its own filters. Spacing clears when a normal item lands, a ' +
+        'trigger when a human declares it, a blocker when its item closes — so the ' +
+        'action is to interleave or to wait, never to refill and never to invent ' +
+        'work.',
+    };
+  }
   if (candidates === 0) {
     return {
       kind: 'queue-empty',
       success: true,
       why:
-        'no item survives the filters. This is a legitimate end of session, not an ' +
+        'no item survives the filters and none was held back either — the queue is ' +
+        'genuinely out of work. This is a legitimate end of session, not an ' +
         'invitation to refactor: **do not invent work**. Refilling the queue is the ' +
         "owner's job.",
     };

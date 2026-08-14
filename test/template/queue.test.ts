@@ -304,6 +304,53 @@ describe('selection — the filters run IN ORDER, then the sort', () => {
     expect(selectionOf(auto, { triggersFired: { '1': true } }).eligible).toBe(true);
   });
 
+  // AR3-35: a `reason` is a sentence for a human; a `cause` is a tag the caller
+  // can COUNT. "nothing is left" and "everything left is held back by a filter"
+  // ask the owner for opposite actions — refill versus wait and interleave — and
+  // the breakdown that tells them apart cannot be read back out of prose.
+  it('tags each rejection with a cause, in filter order and without repeating one', async () => {
+    const { selectionOf } = await load('core.mjs');
+    const selection = selectionOf(
+      ticket({
+        state: 'closed',
+        triage: true,
+        blockedBy: [{ id: '2', resolved: false }],
+        trigger: 'human',
+      }),
+    );
+    expect(selection.causes).toEqual(['closed', 'triage', 'blocked', 'trigger']);
+    // one tag per reason it pushed, and the set stays closed under repetition
+    expect(selection.causes).toHaveLength(selection.reasons.length);
+    expect(new Set(selection.causes as string[]).size).toBe((selection.causes as string[]).length);
+  });
+
+  it('draws every cause from the closed vocabulary, never from free text', async () => {
+    const { selectionOf } = await load('core.mjs');
+    const VOCABULARY = ['closed', 'in-progress', 'triage', 'escalated', 'blocked', 'trigger'];
+    const cases: Array<[string, Partial<Ticket>]> = [
+      ['closed', { state: 'closed' }],
+      ['in-progress', { state: 'in-progress' }],
+      ['triage', { triage: true }],
+      ['escalated', { labels: ['escalated'] }],
+      ['blocked', { blockedBy: [{ id: '2', resolved: false }] }],
+      ['trigger', { trigger: 'human' }],
+      ['trigger', { trigger: 'auto' }],
+    ];
+    for (const [cause, over] of cases) {
+      const selection = selectionOf(ticket(over));
+      expect(selection.causes, cause).toEqual([cause]);
+      for (const tag of selection.causes as string[]) expect(VOCABULARY, cause).toContain(tag);
+    }
+  });
+
+  it('carries an empty cause list for an item it takes', async () => {
+    const { selectionOf } = await load('core.mjs');
+    const selection = selectionOf(ticket());
+    expect(selection.eligible).toBe(true);
+    // `[]` and not `undefined`: a counter must never have to ask which it got
+    expect(selection.causes).toEqual([]);
+  });
+
   it('sorts an item that unblocks others ahead of a merely higher priority one', async () => {
     const { sortCandidates } = await load('core.mjs');
     const ordered = sortCandidates([
@@ -364,9 +411,121 @@ describe('the elevated tier is rationed by spacing, not by a count', () => {
     expect(result.skipped).toHaveLength(2);
     for (const skip of result.skipped) expect(skip.reason).toBeTruthy();
   });
+
+  // AR3-35: the spacing skip is the one the tier ration invents here — no filter
+  // in `selectionOf` produced it — so it needs its own tag, or the commonest
+  // hold in this repo's queue is the one the breakdown cannot name.
+  it('tags the back-to-back skip as spacing', async () => {
+    const { selectNext } = await load('core.mjs');
+    const result = selectNext([ticket({ id: 'e2', tier: 'elevated' })], {
+      lastCompletedTier: 'elevated',
+    });
+    expect((result.skipped as Array<{ causes: string[] }>).map((s) => s.causes)).toEqual([
+      ['spacing'],
+    ]);
+  });
+
+  it("carries each skipped item's causes beside its id and its reason", async () => {
+    const { selectNext } = await load('core.mjs');
+    const result = selectNext(
+      [
+        ticket({ id: 'x', triage: true }),
+        ticket({ id: 'y', blockedBy: [{ id: 'z', resolved: false }] }),
+      ],
+      {},
+    );
+    const skipped = result.skipped as Array<{ id: string; reason: string; causes: string[] }>;
+    expect(skipped.map((s) => s.causes)).toEqual([['triage'], ['blocked']]);
+    for (const skip of skipped) expect(skip.reason, skip.id).toBeTruthy();
+  });
 });
 
 describe('stop conditions — the loop is bounded by health and queue depth', () => {
+  // AR3-35, from this repo's own queue: `selectNext(8 × elevated,
+  // {lastCompletedTier:'elevated'})` returned `candidates: 0, skipped: 8` and the
+  // stop condition read `queue-empty` with eight items open. `candidates === 0`
+  // answers two questions with one number, and the two demand OPPOSITE operator
+  // actions: refill the queue, versus wait and interleave normal work.
+
+  /** `count` skip records held by one cause — the shape `selectNext` emits. */
+  const heldBy = (cause: string, count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `${cause}-${i}`,
+      reason: `held by ${cause}`,
+      causes: [cause],
+    }));
+
+  /**
+   * Is this count named together with this tag? Either order, no format pinned:
+   * what is load-bearing is that the number and the cause appear as one claim,
+   * not that the sentence is worded a particular way.
+   */
+  const names = (why: string, count: number, tag: string): boolean =>
+    new RegExp(String.raw`\b${count}\b[^0-9]{0,32}\b${tag}\b`, 'i').test(why) ||
+    new RegExp(String.raw`\b${tag}\b[^0-9]{0,32}\b${count}\b`, 'i').test(why);
+
+  it('reports a queue whose every item was filtered out as held back, not as empty', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({ candidates: 0, skipped: heldBy('spacing', 1) });
+    expect(stop?.kind).toBe('nothing-selectable');
+    // still a legitimate end of session — the queue is healthy, just not takeable
+    expect(stop?.success).toBe(true);
+  });
+
+  it('names how many items are held and by what, so the owner knows which action to take', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      skipped: [...heldBy('spacing', 8), ...heldBy('trigger', 1)],
+    });
+    expect(String(stop.why)).toMatch(/\b9\b/); // the count of held items
+    expect(names(String(stop.why), 8, 'spacing'), String(stop.why)).toBe(true);
+    expect(names(String(stop.why), 1, 'trigger'), String(stop.why)).toBe(true);
+  });
+
+  it('orders the breakdown by how many are held, then by tag — never by arrival', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const stop = stopConditionOf({
+      candidates: 0,
+      // deliberately arriving in the opposite order to the one it must print in
+      skipped: [...heldBy('spacing', 1), ...heldBy('trigger', 3), ...heldBy('blocked', 3)],
+    });
+    const at = (tag: string) => String(stop.why).toLowerCase().indexOf(tag);
+    expect(Math.min(at('blocked'), at('trigger'), at('spacing')), String(stop.why)).toBeGreaterThan(
+      -1,
+    );
+    expect(at('blocked')).toBeLessThan(at('trigger')); // tied at 3, so tag ascending
+    expect(at('trigger')).toBeLessThan(at('spacing')); // 3 before 1
+  });
+
+  it('treats a missing skipped list as nothing held back at all', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    // The parameter is new, and every existing caller omits it: absent must read
+    // as "nothing was filtered", never as "unknown".
+    expect(stopConditionOf({ candidates: 0 })?.kind).toBe('queue-empty');
+    expect(stopConditionOf({ candidates: 0, skipped: [] })?.kind).toBe('queue-empty');
+  });
+
+  it('says nothing at all while an item is still selectable, however many were held', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    expect(stopConditionOf({ candidates: 1, skipped: heldBy('spacing', 8) })).toBeNull();
+  });
+
+  it('keeps every graver condition ahead of a queue held back by its filters', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const skipped = heldBy('spacing', 8);
+    const graver: Array<[string, Record<string, unknown>]> = [
+      ['queue-unreadable', { queueReadable: false }],
+      ['runtime-regression', { lastDeployVerdict: 'REGRESSION' }],
+      ['kill-switch', { killSwitch: true }],
+      ['repeated-escalation', { consecutiveEscalations: 2 }],
+      ['budget', { budgetExhausted: true }],
+    ];
+    for (const [kind, over] of graver) {
+      expect(stopConditionOf({ candidates: 0, skipped, ...over })?.kind, kind).toBe(kind);
+    }
+  });
+
   it('an empty filtered queue ends the session and is a success', async () => {
     const { stopConditionOf } = await load('core.mjs');
     const stop = stopConditionOf({ candidates: 0 });
@@ -1197,6 +1356,32 @@ describe('the queue CLI', () => {
     expect(result.out).toMatch(/do not invent|not an invitation|never invent/i);
   });
 
+  // AR3-35 end to end: the data the diagnosis needs is already computed one line
+  // above the call — `stopConditionOf({ candidates: 0 })` throws away the very
+  // records it would have to read. This is the run the owner actually sees.
+  it('reports an all-elevated queue after an elevated item as held back, not as empty', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
+    await writeFile(
+      path.join(dir, 'PLAN.md'),
+      '# P\n\n## Agent queue\n\n- rotate the key [elevated]\n- migrate the store [elevated]\n\n## Journal\n',
+    );
+    const configPath = path.join(dir, '.claude-queue.json');
+    await writeFile(configPath, JSON.stringify({ lastCompletedTier: 'elevated' }));
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as {
+      stop: { kind: string; why: string } | null;
+      skipped: Array<{ id: string; causes: string[] }>;
+    };
+    expect(parsed.skipped).toHaveLength(2);
+    expect(parsed.stop?.kind).toBe('nothing-selectable');
+    // and the line names the real records, which is the only way it could
+    expect(parsed.stop?.why).toMatch(/\b2\b/);
+    expect(parsed.stop?.why).toMatch(/spacing/i);
+  });
+
   it('refuses an unknown adapter loudly instead of falling back to a guess', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
     await writeFile(path.join(dir, 'PLAN.md'), '# P\n\n## Agent queue\n\n- x\n');
@@ -1226,6 +1411,46 @@ describe('the loop skill drives the seam, not one tracker', () => {
     const content = await skill();
     expect(content).toMatch(/unreadable|cannot read the queue/i);
     expect(content).toMatch(/never fall back|do not fall back/i);
+  });
+
+  // AR3-35: adding a member to a closed set is only safe if something walks the
+  // list. The phrases below are how the skill names each kind today; the test
+  // fails both ways — a kind with no phrase, and a phrase with no prose.
+  const NAMED_IN_PROSE: Record<string, RegExp> = {
+    'queue-unreadable': /queue unreadable|unreadable queue/i,
+    'runtime-regression': /runtime regression/i,
+    'kill-switch': /kill switch/i,
+    'repeated-escalation': /two escalations in a row/i,
+    budget: /budget/i,
+    'nothing-selectable': /nothing[- ]selectable/i,
+    'queue-empty': /queue empty/i,
+  };
+
+  it('enumerates every stop condition the core can return, the held-back one included', async () => {
+    const { stopConditionOf } = await load('core.mjs');
+    const content = await skill();
+    const kinds = [
+      stopConditionOf({ queueReadable: false }),
+      stopConditionOf({ candidates: 5, lastDeployVerdict: 'REGRESSION' }),
+      stopConditionOf({ candidates: 5, killSwitch: true }),
+      stopConditionOf({ candidates: 5, consecutiveEscalations: 2 }),
+      stopConditionOf({ candidates: 5, budgetExhausted: true }),
+      stopConditionOf({
+        candidates: 0,
+        skipped: [{ id: '1', reason: 'held by spacing', causes: ['spacing'] }],
+      }),
+      stopConditionOf({ candidates: 0 }),
+    ].map((stop) => (stop as { kind: string }).kind);
+
+    expect(new Set(kinds).size, kinds.join(', ')).toBe(kinds.length);
+    for (const kind of kinds) {
+      const phrase = NAMED_IN_PROSE[kind];
+      expect(
+        phrase,
+        `${kind} is a stop condition the skill's list does not account for`,
+      ).toBeTruthy();
+      expect(content, kind).toMatch(phrase!);
+    }
   });
 
   it('keeps proposals in triage and the patching with the human', async () => {
