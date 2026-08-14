@@ -396,12 +396,24 @@ renumbered, and **AR2-1 is NOT here**: it stays escalated in the Operator queue
 exactly as the run left it. v2's 🔴 rule stands unchanged.
 
 🔴 **Read this before taking anything from the block: an all-elevated queue
-reports itself as EMPTY.** The block is not in that shape — **6 of its 33 items
-are `[elevated]`** (AR3-2, AR3-3, AR3-6, AR3-14, AR3-15, AR3-16), so there is
-normal work to interleave with, which is what the rule below asks for. That is this
-repo's own measurement, not a caution — `selectNext(8 × elevated,
-{lastCompletedTier:'elevated'})` returned `candidates: 0, skipped: 8` and the
-stop condition read `queue-empty` with eight items open. The markers are not
+used to report itself as EMPTY.** ✅ **That half is fixed** — AR3-35 (#42) split
+the verdict, so a queue held back now stops as `nothing-selectable` and names
+how many items are held and by what. The block is not in that shape anyway —
+**7 of its 33 items are marked `[elevated]`** (AR3-2, AR3-3, AR3-6, AR3-14,
+AR3-15, AR3-16, AR3-36), so **by marker** there is normal work to interleave
+with, which is what the rule below asks for. ⚠ **By declared path there is
+none** — the other 26 all name artefacts under `.claude/hooks/`, `scripts/`,
+`skills/`, `rules/`, `agents/` or `settings.json` in the template tree, every
+one of them declared elevated in `CLAUDE.md`. Which of the two the ration
+should read is AR3-36's open question, and it is the owner's. ⚠ **The ration
+itself is still unwired either way:** nothing
+writes `config.lastCompletedTier`, so spacing has never fired between tasks and
+the interleaving below is upheld by the session reading it, not by the filter.
+AR3-36 is the fix and is first in the block. The original measurement stands as
+the record of what the day the seam is wired would have looked like —
+`selectNext(8 × elevated, {lastCompletedTier:'elevated'})` returned
+`candidates: 0, skipped: 8`, and the stop condition then read `queue-empty`
+with eight items open. The markers are not
 negotiable (understating a tier is a failure recorded twice here). **Interleave
 normal work deliberately**, and note that brief §3's sequencing is a *dependency*
 order, not a *take* order. The two rulings this needs are in the Operator queue.
@@ -414,6 +426,11 @@ and its `cost` block, replacing none of it). Every item lands **above** the queu
 seam, never beside it. §7a of the brief carries ten corrections that ride INSIDE
 these items — read them before taking AR3-1/2/4/6/7/13.
 
+- AR3-36 [elevated]: **wire the tier-spacing seam — take this next.** The close step writes the closed item's tier where `selectNext` reads it (`config.lastCompletedTier`). 🔴 **A defect, not a gap:** the filter exists and is correct, but `.claude/queue.json` has carried only `{"adapter":"plan-md"}` since the first commit, so it has been called with `null` every time and **tier spacing has never fired between tasks in this repository** — the rule has been kept by whichever session read it, which is exactly the guarantee a mechanical filter exists to replace. Same family as `stage-guard`'s `red` that never blocked (AR3-3) and a reviewer regex that could not match its own required reviewer: *a filter whose input nobody supplies is indistinguishable from a filter that agrees with you*, and neither a green suite nor a reading of `core.mjs` shows it. **Proof must be behavioural, not structural** — a test asserting the field is written is the existence test v4 keeps rejecting. **Scope:** the writer and the reader must land together, so this is one change, not two. It edits `templates/agent-os/universal/.claude/skills/` and `.../scripts/` (both declared) — never the synced `.claude/` copies, which is why the marker is `[elevated]`; the tier reason is the template tree, not the copy.
+
+  ✅ **The one thing that had to be settled before the failing test is RULED by the owner: the close step writes the tier the change turned out to be, computed from the diff's paths — not the item's marker.** The question was real: `plan-md.mjs:110` derives `tier` from the `[elevated]` marker and from nothing else, while `autonomy.md` says *"the tier is decided by what the change touches, not by what the task said it would touch"* and `loop` §2 calls the marker *"a pre-filter, not the authority"*. The ruling follows the stated rule and costs no judgement: `detect-missed-gate.mjs` already computes exactly this from `elevatedPathsIn`, so the source is mechanical. What the two readings would have meant, kept because the fixture depends on it:
+
+**(i) the marker** — mechanical, already on the ticket; but then the observation the brief calls red is not red, because AR3-35 carried no marker and a correctly wired filter would *also* have offered `AR3-2` next, so the seam is real while its cited evidence is not and a new red fixture is needed. **(ii) what the change turned out to touch** — matches the stated rule, and `detect-missed-gate.mjs` already computes exactly this from `elevatedPathsIn`, so it is mechanical too rather than a judgement; under it AR3-35 *was* elevated (its diff crossed `templates/agent-os/universal/.claude/scripts/`, and #42 carries `human-review`), the cited observation is genuinely red, and the marker becomes advisory. **(ii) is the ruling**, so the marker is advisory from here: a marker that disagrees with the paths is queue hygiene to report, never the value to ration on. ⚠ **The price came with the ruling and is stated so it is not discovered mid-run:** by declared path, 26 of this block's 33 items are marked `normal` while every artefact they name sits under a declared elevated path — so there is **no normal work in the block at all**, and the ration will stop the run the first time it fires. That stop is correct behaviour and reads honestly as `nothing-selectable` thanks to AR3-35; what it needs is normal work or a revised rationing criterion, and that is the next decision rather than this item's. The marker audit is in the journal, reported and deliberately not corrected Provenance: the loop's own `triage` proposal, promoted by the owner in brief v4 §10, moved here unchanged in substance
 - AR3-2 [elevated]: `doctor` — the harness audits itself, shipping with the test-neighbour requirement covering `.husky/` and `.claude/hooks/` from day one; exemptions are an explicit file list with reasons. Rides §7a's budget-source correction: every declared budget names where its number comes from. ⚠ **Known before the first minute, raised by the owner rather than discovered mid-work:** in a GENERATED project the hooks arrive without test neighbours BY DESIGN — `invariants.md` says so — so a literal reading flags all six hooks on every rig's first run, and the only silence is an exemption list swallowing the whole directory, which makes the requirement vacuous exactly where this item thinks it matters. 🔴 The resolution is in that same paragraph and needs no invention: the exemption *"holds only while they are untouched. The moment you edit one, its test is yours."* So the check is **"every hook the project OWNS has a test"**, and ownership is mechanically observable via `.rig-manifest.json` — matching hash → shipped and tested upstream, not a finding; modified or absent from the manifest → authored here, finding; no manifest (pre-0.4.0 rig) → reports `unknown`, never a pass. That makes this item a customer of the manifest, which v4 §4 lists as a strength Flowa has no analogue for. Narrower fallback if the owner prefers: scope hook coverage to the generator repo and drop it from what generated projects install
 - AR3-3 [elevated]: `stage-guard`, the **fixed** shape only (its v3 entry condition is MET — upstream's fix landed and was verified in the shipped code) — root resolves from the work (absolute `file_path` → payload `cwd` → env last; a relative path ignored on purpose), the walk finds the nearest project ROOT not the nearest stage file (nested worktrees would adopt a stale `red`), paths made repo-relative before classification, correspondence tests rather than existence ones. Upstream's `red` never blocked one real edit from the day it shipped, under 24 green tests that all fed relative paths
 - AR3-4: the run journal — per-run dir, gate verdicts to `decisions.jsonl`, the rest to `events.jsonl`, append-only, with the run-end marker from day one. Lands with a caller: a journal nothing calls records nothing. It does NOT replace `## Journal` — it is the trace behind it
@@ -468,7 +485,6 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 - **AR-4 entry conditions** — half discharged. The write-back discipline's condition fired (merged and in use where it came from) and it landed as U-1: the journal's `unblocked` field plus the §9 bullet. **C-0…C-2 stay out** — the clarify gate still has not fired anywhere, and shipping an unproven gate to other people's projects is worse than not having it
 - **tell the users, and set a date to collect what they say** — 0.3.2 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
-- **proposal: the loop writes the closed items tier where selectNext reads it (config.lastCompletedTier), as part of the close step in SKILL.md 9 — today the spacing filter exists in core.mjs but nothing ever supplies its input, so selectNext is always called with lastCompletedTier: null and the ration never fires across tasks [triage]** — finding: journal: closing AR3-35 shifted every id below it again; and the CLI offered AR3-2 [elevated] immediately after an elevated item because .claude/queue.json carries no lastCompletedTier · part: .claude/skills/loop/SKILL.md + .claude/queue.json · proof: after an elevated item closes, `queue/index.mjs next` reports the remaining elevated items under `skipped:` with the spacing reason, instead of handing one straight back · fingerprint: `journal-closing-ar3-35-shifted-every-id-:claude-skills-loop-skill-md-claude-queue:the-loop-writes-the-closed-items-tier-wh` · seen ×1
 - **proposal: 6 step 2 says which half the adapter does and which half the session does: under plan-md neither claim nor escalate writes anything, and the move to the Operator queue is the sessions edit — stated in the step rather than only in the adapters return value [triage]** — finding: journal: prose-reviewer on #42 — SKILL.md 6 step 2 (mark it escalated and leave it claimed) is not performable under plan-md · part: .claude/skills/loop/SKILL.md · proof: a run under plan-md that escalates an item leaves it out of the Agent queue, and the next `queue/index.mjs next` does not hand the escalated item back · fingerprint: `journal-prose-reviewer-on-42-skill-md-6-:claude-skills-loop-skill-md:6-step-2-says-which-half-the-adapter-doe` · seen ×1
 - **proposal: export the existing printable() from core.mjs — it is module-private at core.mjs:306 today — and apply it to the ticket title and id in renderNext (index.mjs:77) and to skip.reason (index.mjs:80). Export rather than re-declare: invariants.md One mechanism, one implementation. Under github-issues or jira anyone who can open an issue controls the title string, so ANSI escapes and control bytes reach the operators terminal unfiltered [triage]** — finding: journal: security-scanner on #42 — index.mjs:77 interpolates result.ticket.title raw into terminal output · part: .claude/scripts/queue/core.mjs (export) + .claude/scripts/queue/index.mjs (apply) · proof: an issue titled with a \x1b[2J prefix renders as visible text in `queue/index.mjs next`, and the terminal is not cleared · fingerprint: `journal-security-scanner-on-42-index-mjs:claude-scripts-queue-core-mjs-export-cla:export-the-existing-printable-from-core-` · seen ×1
 
@@ -535,6 +551,27 @@ operational memory, not an archive. Fields per the template in
   rules the resolution belongs in the rule and to the owner, not in one PR's
   history — so it is recorded here and **not** spent as one of the three
   proposals, which are capped for a different purpose
+- 🔴 **`plan-md` has no nesting — a sub-list becomes work** — writing AR3-36
+  with two indented sub-bullets made `parsePlan` return **35** tickets for a
+  33-item queue: the two sub-bullets parsed as items of their own, titled
+  `**the marker** — mechanical…`. Caught by running `hygiene` after the edit
+  rather than by reading the file, which looked correct. The adapter's flat-list
+  limit is documented for *dependency links*; that it also forbids nesting in an
+  item's own body is not, and the failure is silent in the direction that
+  matters — it manufactures work nobody wrote. The item was rewritten as one
+  paragraph; the adapter is untouched
+- 🔴 **marker audit, reported and NOT corrected** — taking AR3-36 in forced a
+  pass over every marker in the block, and the two authorities disagree
+  wholesale. `plan-md.mjs:110` derives `tier` from the `[elevated]` marker
+  alone; `autonomy.md` says the tier is decided by what the change touches. By
+  marker, 7 of 33 are elevated. **By declared path, 26 of the remaining 26
+  are** — AR3-4/5/7/10/12/13/18/24/25/27 name scripts, AR3-9/11/20/22/23/31
+  skills, AR3-19/28 rules, AR3-21/29/30 agents, AR3-17 `settings.json`, and
+  AR3-26/32/33/34 straddle two of those. AR3-35 is the measured case: marked
+  `normal`, its diff crossed `templates/agent-os/universal/.claude/scripts/`,
+  and #42 carries `human-review`. Left exactly as the owner wrote them —
+  quietly relabelling 26 items would destroy the evidence that the markers are
+  unreliable, which is the one thing this audit is for
 - **proposals filed** — three, all `ok: true` into the Operator queue: the
   `lastCompletedTier` seam above; `printable()` on the ticket title in
   `renderNext` (`security-scanner`, #42); and §6 step 2 naming which half of an
