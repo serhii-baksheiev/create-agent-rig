@@ -137,8 +137,13 @@ Four of them deserve their reasons repeated:
   they are not work this run can take, and they are not why the queue is empty.
   How that pile grows is the adapter's business and the line does not guess at
   it: on a tracker-backed adapter an escalated item and a filed proposal both
-  stay open and land there, whereas `plan-md` moves an escalation out of the
-  Agent queue entirely and files proposals where selection cannot reach.
+  stay open and land there. Under `plan-md` only a `[triage]` line sitting in
+  the Agent queue can — a filed proposal goes to the Operator queue, where
+  selection never looks, and an escalation is not recorded at all, because a
+  flat list has no per-item state. 🔴 **That last one is an absence, not a
+  safety.** `plan-md`'s `escalate` writes nothing and says so; moving the item
+  to the Operator queue is the session's step (§6), and skipping it means the
+  next run takes the stuck item straight back.
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
   condition that clears without anything being written**: the elevated spacing

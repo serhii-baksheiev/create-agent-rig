@@ -94,9 +94,17 @@ export const SKIP_CAUSES = Object.freeze([
  * would make `queue-empty` unreachable from the first stop that escalated or
  * proposed anything — so a drained queue would report "wait and interleave" and
  * the owner would never be told to refill. That is the same refill-versus-wait
- * inversion this split exists to remove, pointing the other way. (`plan-md`
- * cannot reach any of the three: it moves an escalation out of the Agent queue
- * and files proposals where selection does not look.)
+ * inversion this split exists to remove, pointing the other way.
+ *
+ * Under `plan-md` only `triage` is reachable of the three, and it matters that it
+ * is: `parsePlan` reads the marker out of the bullet text, which is exactly the
+ * case of a proposal that ended up under the wrong heading. `escalated` and
+ * `closed` cannot appear there at all — a flat list carries no per-item state, so
+ * `parsePlan` hands back `labels: []` and `state: 'open'` for every line. That is
+ * an absence of state, NOT an adapter that filed the escalation somewhere safe:
+ * under `plan-md` the escalated item is moved to the Operator queue by the
+ * session, and if the session does not do it the next run picks the item straight
+ * back up.
  */
 export const HOLDING_CAUSES = Object.freeze(['blocked', 'in-progress', 'spacing', 'trigger']);
 
@@ -429,11 +437,11 @@ const heldBreakdown = (held) => breakdownOf(held, (count, tag) => `${count} held
  * It names the causes the pile actually carries rather than the vocabulary it
  * could have carried. A fixed list would announce `closed` — which no adapter
  * can present, since every one of them drops closed items before selection —
- * while staying silent about which of the reachable two this pile is made of.
- * It also stops at what it can see: how the pile GROWS differs per adapter (on
- * `plan-md` an escalation leaves the Agent queue entirely and a proposal is
- * written where selection cannot reach), so a sentence claiming one mechanism
- * would be false on the default adapter.
+ * while staying silent about which of the reachable ones this pile is made of.
+ *
+ * It also stops at what it can see. How the pile GROWS differs per adapter (see
+ * `HOLDING_CAUSES` above), so a line claiming one mechanism would be false on
+ * another, and the stop line is not where that belongs.
  */
 const parkedNote = (parked) =>
   parked.length === 0
