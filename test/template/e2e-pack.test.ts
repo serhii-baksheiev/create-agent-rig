@@ -30,6 +30,17 @@ import { describe, expect, it } from 'vitest';
 //
 // Deleting this test re-opens a race that costs an intermittent red `pnpm test`
 // and an afternoon of bisecting a failure that reproduces in no single file.
+//
+// WHAT THIS GUARD CANNOT SEE — stated so nobody relies on cover it lacks
+// (`.claude/rules/invariants.md`, "State the limits"):
+//   - It scans `test/e2e/**/*.test.ts` only. A second `globalSetup`, or a
+//     helper module the test files import, can re-open the same race with this
+//     test still green.
+//   - It matches the SHAPE of the invocation, not its working directory. A
+//     future test that legitimately packs a *generated* project
+//     (`exec('npm', ['pack'], { cwd: generatedApp })` — which never touches
+//     `packages/cli/dist`) would trip it. Widen the check to compare `cwd`
+//     then; do not relax the regex, which is what removes the guard.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const e2eDir = path.join(repoRoot, 'test', 'e2e');
