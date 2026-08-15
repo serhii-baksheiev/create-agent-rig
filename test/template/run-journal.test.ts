@@ -22,17 +22,16 @@ import { describe, expect, it } from 'vitest';
 // 🔴 Two riders ride inside this item and each has its own describe block:
 //   SCRUM-390 — the run-end marker exists from day one. A run whose end can be
 //     followed by more records has no end, so the marker also CLOSES the run.
-//   SCRUM-87  — quoted rather than paraphrased, because the paraphrase is where
-//     an item gets quietly re-aimed: "the journal's **newest-on-top** invariant
-//     is not enforced, so a stale entry reads as the current one … assert the
-//     ordering, don't document it". What the tests below assert is the ordering
-//     of THIS artifact — `seq`, ascending, append-only — and `readRun` refuses
-//     rather than handing back a sequence it cannot vouch for.
-//     🔴 What they do NOT assert, stated so nobody reads cover here that is not
-//     here: the human `## Journal`'s own "newest first" (PLAN.md) is still
-//     described and unchecked. Its entries are deliberately date-free, so there
-//     is nothing mechanical to compare — which is a finding for the owner, not
-//     a thing this file can quietly redefine into something it can test.
+//   SCRUM-87  — ✅ RULED by the owner (port brief v4 §7a) to belong to the HUMAN
+//     journal, `## Journal` in PLAN.md, and NOT to this artifact: "newest-on-top"
+//     is verbatim that file's own stated invariant, while append-only oldest-first
+//     is a correct and different property of a machine trace. The ordering
+//     assertion below stays — it is sound for this artifact whichever ticket
+//     named it — and the human journal's own check is its own queue item.
+//     🔴 The line worth keeping is how that was settled: this file first claimed
+//     the rider by paraphrasing "newest-on-top" into "ordering". Choosing between
+//     two readings of an item is not a run's call (§8), and the tell was in the
+//     paraphrase.
 //
 // AR3-25 (still open, deliberately NOT built here) owns the run-id convention
 // `.claude/runs/<run-id>/` and its gitignore. This module owns no run-id policy
