@@ -453,7 +453,6 @@ these items — read them before taking AR3-1/2/4/6/7/13.
 - AR3-40 [elevated]: **an authorization a run relies on must exist OUTSIDE the run's own branch, and the run cites it rather than asserting it.** Raised by the loop about its own work: it deviated from an item with the owner's permission and recorded that permission in the same branch as the deviation, which makes the record self-attesting. The `human-review` label is real external evidence — only a human can apply it — but it attests *"a human reviewed this PR"*, not *"a human authorized this specific deviation"*. The rule: a deviation names an artifact the run could not have written — an owner comment on the PR, an owner-authored queue entry, a ruling in the brief — and quotes it. "Authorized verbally" is not an authorization the next reader can check. Same family as AR3-34's *evidence is written while the runs are in front of you*: an attestation whose only witness is the party being attested is not one
 - AR3-2 [elevated]: `doctor` — the harness audits itself, shipping with the test-neighbour requirement covering `.husky/` and `.claude/hooks/` from day one; exemptions are an explicit file list with reasons. Rides §7a's budget-source correction: every declared budget names where its number comes from. ⚠ **Known before the first minute, raised by the owner rather than discovered mid-work:** in a GENERATED project the hooks arrive without test neighbours BY DESIGN — `invariants.md` says so — so a literal reading flags all six hooks on every rig's first run, and the only silence is an exemption list swallowing the whole directory, which makes the requirement vacuous exactly where this item thinks it matters. 🔴 The resolution is in that same paragraph and needs no invention: the exemption *"holds only while they are untouched. The moment you edit one, its test is yours."* So the check is **"every hook the project OWNS has a test"**, and ownership is mechanically observable via `.rig-manifest.json` — matching hash → shipped and tested upstream, not a finding; modified or absent from the manifest → authored here, finding; no manifest (pre-0.4.0 rig) → reports `unknown`, never a pass. That makes this item a customer of the manifest, which v4 §4 lists as a strength Flowa has no analogue for. Narrower fallback if the owner prefers: scope hook coverage to the generator repo and drop it from what generated projects install
 - AR3-3 [elevated]: `stage-guard`, the **fixed** shape only (its v3 entry condition is MET — upstream's fix landed and was verified in the shipped code) — root resolves from the work (absolute `file_path` → payload `cwd` → env last; a relative path ignored on purpose), the walk finds the nearest project ROOT not the nearest stage file (nested worktrees would adopt a stale `red`), paths made repo-relative before classification, correspondence tests rather than existence ones. Upstream's `red` never blocked one real edit from the day it shipped, under 24 green tests that all fed relative paths
-- AR3-4: the run journal — per-run dir, gate verdicts to `decisions.jsonl`, the rest to `events.jsonl`, append-only, with the run-end marker from day one. Lands with a caller: a journal nothing calls records nothing. It does NOT replace `## Journal` — it is the trace behind it
 - AR3-5: `decision-router` — the dispatcher in ascending order of cost (deterministic → fast-path → model), risk flags escalating ahead of all three, one journal line per verdict at every gate. **Not covered by `pr-ship`**: that is the merge-time gate that always runs the expensive path; this decides whether the expensive path is warranted, and there is no cheap lane for docs/no-code work today
 - AR3-6 [elevated]: the rules wave — TDD-hatch-is-about-the-criterion (→ `workflow.md`), live-run-once-before-merge (→ `pr-ship`), every-PR-write-confirmed-by-re-read with the measured-unstable exit code (→ `pr-ship`), recon-comment-is-a-snapshot with the SHA-immutable vs silently-stale boundary (→ `loop`). ✅ The fifth (jsdom) is **NOT taken at all** — owner's ruling: it does not ship as a rule. Read standalone it invites a component layer that `architecture.md` deliberately excludes; if the caution is wanted it is ONE causal clause inside that existing exclusion paragraph, with no new home and no tier change. Provenance seals it: the rule is upstream-shaped (that repo has a web app with jsdom tests; generated projects deliberately have no such layer)
 - AR3-7: the queue reads comments — an item is its description AND its comments, a superseding comment wins and the run names what it said; `jira` fetches with comments, `github-issues` reads the thread, `plan-md` returns null on the `body` precedent
@@ -507,6 +506,9 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 - **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
 - **proposal: 6 step 2 says which half the adapter does and which half the session does: under plan-md neither claim nor escalate writes anything, and the move to the Operator queue is the sessions edit — stated in the step rather than only in the adapters return value [triage]** — finding: journal: prose-reviewer on #42 — SKILL.md 6 step 2 (mark it escalated and leave it claimed) is not performable under plan-md · part: .claude/skills/loop/SKILL.md · proof: a run under plan-md that escalates an item leaves it out of the Agent queue, and the next `queue/index.mjs next` does not hand the escalated item back · fingerprint: `journal-prose-reviewer-on-42-skill-md-6-:claude-skills-loop-skill-md:6-step-2-says-which-half-the-adapter-doe` · seen ×1
 - **proposal: export the existing printable() from core.mjs — it is module-private at core.mjs:306 today — and apply it to the ticket title and id in renderNext (index.mjs:77) and to skip.reason (index.mjs:80). Export rather than re-declare: invariants.md One mechanism, one implementation. Under github-issues or jira anyone who can open an issue controls the title string, so ANSI escapes and control bytes reach the operators terminal unfiltered [triage]** — finding: journal: security-scanner on #42 — index.mjs:77 interpolates result.ticket.title raw into terminal output · part: .claude/scripts/queue/core.mjs (export) + .claude/scripts/queue/index.mjs (apply) · proof: an issue titled with a \x1b[2J prefix renders as visible text in `queue/index.mjs next`, and the terminal is not cleared · fingerprint: `journal-security-scanner-on-42-index-mjs:claude-scripts-queue-core-mjs-export-cla:export-the-existing-printable-from-core-` · seen ×1
+- **proposal: the queue-unreadable branch at index.mjs exits before the journal block, so the run stop that most needs evidence leaves none. Either record it before exiting — accepting that the journal write may itself fail while the queue is unreadable, so the branch needs its own guard — or state in §0 that this stop is journalled by the session only, so nobody looks for a machine record that was never written [triage]** — finding: journal: post-merge health check — `queue-unreadable` is the stop condition most worth a trace and is the one the journal never records · part: .claude/scripts/queue/index.mjs (the queue-unreadable branch) + .claude/skills/loop/SKILL.md §0 · proof: with RIG_RUN_DIR declared and a queue the adapter cannot read, `queue/index.mjs next` leaves a decisions.jsonl carrying a queue-unreadable verdict — today the file does not exist · fingerprint: `journal-post-merge-health-check-queue-un:claude-scripts-queue-index-mjs-the-queue:the-queue-unreadable-branch-at-index-mjs` · seen ×1
+- **proposal: assert on the CLI having RUN — an exit code of 0 and a line matching the selection shape — never on output being non-empty. A crash writes to stderr, so `it printed something` is satisfied by the failure it is meant to exclude; this branch repaired the fixture but left the assertion as it was [triage]** — finding: journal: code-reviewer on #48 — the gate-scripts symlink fixture asserted `out.trim() !== ""`, which a Node stack trace satisfies, so it passed for weeks while the CLI it claimed to exercise never loaded · part: test/template/gate-scripts.test.ts (the symlink fixture) and any sibling asserting on output presence · proof: delete a module the fixture copies and the test goes RED; today it stays green because the stack trace is output · fingerprint: `journal-code-reviewer-on-48-the-gate-scr:test-template-gate-scripts-test-ts-the-s:assert-on-the-cli-having-run-an-exit-cod` · seen ×1
+- **proposal: the first says the call must sit `inside a block a run can run` but accepts any fenced block anywhere in the file; the second is titled `declares the run directory` and passes on a bare mention of RIG_RUN_DIR with no export. Either tighten them to assert placement (the block under the stop step; an `export` in the preflight section) or reword the comments to claim only what they check — a test whose comment overstates it is the same defect as prose overstating a mechanism [triage]** — finding: journal: code-reviewer on #48 — both skill-correspondence tests added by AR3-4 are looser than the comments above them claim · part: test/template/run-journal.test.ts (the two tests under `the skill that drives a run carries the calls the journal needs`) · proof: move the endRun block into an unrelated section, or replace the preflight export with a passing mention, and the tests go RED; today both stay green · fingerprint: `journal-code-reviewer-on-48-both-skill-c:test-template-run-journal-test-ts-the-tw:the-first-says-the-call-must-sit-inside-` · seen ×1
 
 ## Journal
 
@@ -514,6 +516,68 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### sixteen blockers, nine of them my own claims about a mechanism I had not run
+
+- **done** — AR3-4 (#48, `human-review`): the run journal — gate verdicts to
+  `decisions.jsonl`, everything else to `events.jsonl`, append-only, under a
+  per-run directory the run declares through `RIG_RUN_DIR`. It lands with two
+  callers, which is the half the shape it was ported from never had: selection
+  records its `item-selection` verdict, and the `loop` skill's stop step writes
+  the run-end marker. The ordering is asserted rather than described — a
+  run-wide `seq`, refused on a gap or a reversal, on write and on read
+- **reviewed** — two `pr-ship` rounds, five reviewer passes. **Sixteen blocking
+  findings; nine were claims I wrote about a mechanism I had not run.** The
+  reviewers ran them: `endRun` exported and called from nowhere, so the marker
+  existed as an API and never as behaviour; `RIG_RUN_DIR` declared in §7 while
+  its only call site fires in §2, so a run reading the skill in order exports it
+  after every selection has already happened; a journal failure exiting *before*
+  the selection printed, so one collision between two sessions made `queue next`
+  exit 1 against that directory forever — and, after that fix, the same defect
+  through the write door, because `appendFileSync` was the one unwrapped fs call
+- 🔴 **the shape worth keeping** — three of the sixteen were the item's own
+  doctrine failing on the item itself. "A journal nothing calls records nothing"
+  is the sentence in the module header, and the marker shipped with no caller.
+  Writing the rule did not make me follow it; running the mechanism did
+- **escalated** — nothing. Two questions went to the owner rather than being
+  answered in-run, and both came back as rulings in the brief — which is the
+  path §8 requires and, per AR3-40, an artifact written outside this branch:
+  **SCRUM-87** belongs to the human `## Journal`, not to this machine trace
+  ("correct instinct, wrong target"), and the human journal's own check is now
+  AR3-41; **AR3-42** rules that a run never self-applies `human-review`, even
+  holding a token that mechanically could. The owner applied the label
+- **stopped at** — **budget**. One item, two gate rounds, five reviewer passes.
+  The queue is not empty: 35 items remain
+- **post-merge verdict** — healthy, checked on merged `master` rather than on
+  the branch: `queue next` selects and writes its `item-selection` record into a
+  declared run directory, `hygiene` reports nothing stale, and the tier recorded
+  from the merge's own diff came back `elevated` from four paths
+- **unblocked** — **this queue has no dependency links** (`plan-md` is a flat
+  list — absent, not satisfied). What the close settles is on the item itself:
+  AR3-13 and AR3-24 named this journal as what makes them meaningful, and
+  AR3-25 still owns the run-id convention this module deliberately does not
+- 🔴 **queue hygiene** — AR3-4 was marked `normal` and the merge recorded
+  `elevated` from four declared paths. That is the 26-item divergence AR3-37 is
+  filed about, measured once more on a live merge rather than predicted.
+  Reported, not relabelled. Second finding, from the merge itself: `gh pr edit
+  --add-label` fails in this repository on a Projects-classic deprecation that
+  has nothing to do with labels, so the one mechanism `autonomy.md` treats as
+  the sole suppressing evidence is reached through a command that refuses for an
+  unrelated reason. `gh api …/labels` works
+- **proposals filed** — three, all `ok: true` into the Operator queue: the
+  `queue-unreadable` stop that the journal never records; a fixture asserting
+  "it printed something", which a stack trace satisfies; and the two
+  correspondence tests this task added, whose comments claim more than they
+  check
+- **cost** — 5 reviewer subagents (2 code, 2 prose, 1 security), 2 test-writer,
+  1 check-premises; 4 check runs across three pushed SHAs, 0 re-runs; 0 deploys
+- **the honest note** — the brief's §7a was named as required reading for this
+  item and the brief lives outside the repository, unreadable from the session.
+  The run stopped and asked rather than reconstructing the correction from what
+  it "already knew" — and the correction, once supplied, was load-bearing:
+  SCRUM-87 turned out to belong to a different artifact entirely. Had the run
+  answered its own question, it would have shipped a paraphrase of the rider and
+  called the ticket satisfied
 
 ### the ration fires for the first time, and seven of thirteen blockers were my own prose
 
