@@ -507,6 +507,20 @@ describe('the CLI entrypoint survives a symlinked path', () => {
     await cp(path.join(scriptsDir, 'queue'), path.join(project, '.claude', 'scripts', 'queue'), {
       recursive: true,
     });
+    // The queue CLI reaches OUTSIDE `queue/` for two modules, and a fixture that
+    // copies only the directory gets a run that fails on the missing import while
+    // still printing something — which is all this test asserts, so the gap hid.
+    // `git-env.mjs` is a static import of `queue/checkout.mjs` (the whole CLI
+    // fails to load without it); `run-journal.mjs` is a dynamic import taken only
+    // when a run directory is declared, so it fails only for a real rig.
+    await copyFile(
+      scriptPath('git-env.mjs'),
+      path.join(project, '.claude', 'scripts', 'git-env.mjs'),
+    );
+    await copyFile(
+      scriptPath('run-journal.mjs'),
+      path.join(project, '.claude', 'scripts', 'run-journal.mjs'),
+    );
     await writeFile(path.join(project, 'PLAN.md'), '# P\n\n## Agent queue\n\n- do a thing\n');
     await writeFile(path.join(project, 'prs.json'), '[]');
 

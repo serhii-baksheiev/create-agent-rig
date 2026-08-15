@@ -11,6 +11,10 @@ next-env.d.ts
 # per-checkout queue state: the tier the last close recorded. The queue CONFIG
 # is composed and tracked; this is runtime state and must never be committed.
 .claude/queue.state.json
+# per-run machine trace (.claude/scripts/run-journal.mjs): forensics that churn
+# on every gate and collide across concurrent sessions. Unlike a committed
+# evidence directory, this one is per-run and stays out of the repository.
+.claude/runs/
 
 # secrets — never commit these
 .env

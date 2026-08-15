@@ -277,6 +277,64 @@ if (invokedDirectly()) {
     process.exit(0);
   }
 
+  // 🔴 A journal nothing calls records nothing. Selection is a gate — it decides
+  // what the run works on and why every other item was passed over — so this is
+  // the call site the run journal ships with, rather than a writer nobody
+  // invokes.
+  //
+  // It writes only when the run DECLARED its directory. Inventing one here would
+  // make this CLI a second owner of the `.claude/runs/<run-id>/` convention, and
+  // a default derived from `projectRoot` would land the trace inside the very
+  // template tree this repository publishes.
+  const runDir = process.env.RIG_RUN_DIR;
+  if (runDir) {
+    let journal = null;
+    try {
+      journal = await import('../run-journal.mjs');
+      journal.recordDecision({
+        runDir,
+        gate: 'item-selection',
+        verdict: result.ticket ? `taken ${result.ticket.id}` : `stopped ${stop.kind}`,
+        why: result.ticket ? result.ticket.title : stop.why,
+        // The edge is where the clock is read: the journal itself takes `now` as
+        // an argument, which is what keeps its records reproducible.
+        now: new Date().toISOString(),
+      });
+    } catch (error) {
+      // 🔴 Two failures wearing one face, and treating them alike was a defect
+      // this gate caught. The journal asks the module which one this is — never
+      // the message text, which would put the decision in two files and let them
+      // drift the day someone improves the wording.
+      // `?.` would guard a MISSING module and not a missing export. A rig can
+      // carry a run journal older than this CLI — `upgrade` leaves a
+      // locally-edited copy beside a new caller — and calling through to an
+      // absent export crashed the CLI inside its own error handler: a raw stack
+      // trace instead of the failure it was reporting.
+      const classify = journal?.isTraceExhausted;
+      if (typeof classify === 'function' && classify(error)) {
+        // The trace is over and the work is not. This journal cannot accept
+        // another record — it is append-only and every write re-reads it — so
+        // exiting here would make one collision between two sessions leave the
+        // queue unselectable FOREVER. Loud on stderr, and the selection still
+        // goes out on stdout, because the queue was never the thing that failed.
+        process.stderr.write(
+          `run journal: ${error.message}\n` +
+            `  the selection below was NOT recorded in ${runDir}. This run's trace ends ` +
+            'here; the queue is fine, and a new run needs a new run directory.\n',
+        );
+      } else {
+        // The other half: the declaration is empty, its directory is not there,
+        // the path is not a directory, or the journal module is missing. Each is
+        // the run pointing at something that was never set up — one `mkdir` or
+        // one corrected variable away — and continuing would produce a run with
+        // no trace at all, so this half does stop the selection. (A directory
+        // deleted mid-run lands here too, and the same `mkdir` restores it.)
+        process.stderr.write(`run journal: ${error.message}\n`);
+        process.exit(1);
+      }
+    }
+  }
+
   process.stdout.write(
     args.json
       ? `${JSON.stringify({ ticket: result.ticket, skipped: result.skipped, stop }, null, 2)}\n`

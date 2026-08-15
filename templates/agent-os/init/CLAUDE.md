@@ -95,15 +95,17 @@ All three are one-liners, and all three are inert until you do them.
    no-op, and the Definition of Done is back to being a wish.
 2. **The elevated-path list below is a seed, not a survey.** It names only what
    every repo has. Everything else is yours to add.
-3. **Two runtime paths need a `.gitignore` line each**, and `init` cannot add
+3. **Three runtime paths need a `.gitignore` line each**, and `init` cannot add
    them — it installs into your repository and does not edit files it did not
-   bring. Add both:
+   bring. Add all three:
 
    ```
    # the tier the last close recorded
    .claude/queue.state.json
    # task worktrees
    .claude/worktrees/
+   # the run journal's per-run trace
+   .claude/runs/
    ```
 
    Each comment is on its own line, and that is not formatting: git treats `#`

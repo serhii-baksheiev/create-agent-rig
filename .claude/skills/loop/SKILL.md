@@ -67,6 +67,32 @@ nothing.
 unattended only after the escalation path and the post-deploy verdict have each
 been seen working at least once.
 
+### Declare the run directory here, before the first selection
+
+The machine trace (§7) is opt-in and its first call site is **selection**, which
+runs before every task. Declared later, it misses everything that already
+happened — so it is declared in preflight or not at all:
+
+```bash
+export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
+mkdir -p "$RIG_RUN_DIR"
+```
+
+🔴 **One directory per run, never shared and never reused — and the journal
+cannot enforce this for you.** Stated precisely, because the difference decides
+whether you get a warning or a lie:
+
+- **What it catches.** Two writers landing on the same sequence number, and a
+  directory that already carries its run-end marker. Both are refused, the
+  selection still works and says so on stderr, and that run's trace ends there —
+  loudly.
+- **What it cannot catch.** Two runs whose records happen not to collide. A run
+  that died before writing its marker (§7 — dying unexpectedly is exactly the
+  case the checkpoint discipline exists for) leaves an intact sequence, and the
+  next run pointed at that directory **continues it in silence**: one seamless
+  trace of two runs, with nothing in the file able to say so. A fresh directory
+  per run is the only thing that prevents it, and it is yours to do.
+
 ## 2. Selection — filters in order, then the sort
 
 The queue is queried **fresh before every task**, never from a cached list: the
@@ -269,6 +295,59 @@ Write a checkpoint entry **every few completed items and at every stop**, not on
 at the end: a run that dies unexpectedly must not take its history with it. The
 field list is in `PLAN.md` under `## Journal`.
 
+**Behind that entry there is a machine trace, and it is a different artifact.**
+`.claude/scripts/run-journal.mjs` writes gate verdicts to `decisions.jsonl` and
+everything else to `events.jsonl`, both append-only, inside the run directory
+declared in §1. Five things about it are worth knowing before relying on it:
+
+- **The run declares the directory; nothing invents one.** With `RIG_RUN_DIR`
+  unset, every call site stays silent — the trace is opt-in, and a run that never
+  declared one has no journal rather than a journal in a guessed place.
+- **It answers *what the run decided and on what basis*, never *was that
+  right*.** It replaces neither `## Journal` above nor `PLAN.md`; it is the
+  evidence a reader checks those against.
+- **A record after the run-end marker is refused, and a broken sequence is
+  refused on both write and read.** The order is asserted rather than described,
+  so a stale record cannot read as the current one — which is the whole failure a
+  journal exists to prevent.
+- ⚠ **The trace can stop before the run does, and the two failures part ways
+  here.** A journal that can no longer accept records — a sequence already
+  broken, a file that will not parse, a run already marked ended — is a lost
+  trace, **not** a reason to withhold work the queue can still hand out: the
+  selection prints, stderr carries a `run journal:` line, the exit code stays 0.
+  The refusals are the ones where nothing has happened yet and a second fixes
+  it, and there are **four**: the declaration is empty, its directory does not
+  exist, the path is not a directory, or the journal module is missing. Each
+  exits 1 with nothing on stdout.
+- 🔴 A `run journal:` line on stderr is **not** the queue failing. That one is
+  `queue: queue-unreadable` on stdout (§0) and it ends the run; this one does
+  not.
+
+**The marker is written by the stop, and the stop is a step in this skill.** A
+journal whose end nobody writes leaves every run reading as still-running, which
+is exactly the ambiguity the marker exists to remove.
+
+🔴 **At a stop — never at a checkpoint — and after the proposals below, not
+before them.** The marker closes the journal to further records, so a run that
+writes it mid-way keeps working while every later record is refused: a trace
+truncated quietly, which is worse than one that stops loudly. It is the last
+thing the run does, in document order and in wall-clock order both:
+
+```bash
+node --input-type=module -e '
+  const { endRun } = await import("./.claude/scripts/run-journal.mjs");
+  console.log(endRun({
+    runDir: process.env.RIG_RUN_DIR,
+    stop:   "<the stop condition from §3: queue-empty | budget | kill-switch | …>",
+    now:    new Date().toISOString(),
+  }));
+'
+```
+
+If no run directory was declared, there is nothing to close and this step is
+skipped — say so in the journal entry rather than leaving the reader to guess
+which of the two happened.
+
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an
 unbounded improvement list is another diary, and three forces a choice. Each names
@@ -281,8 +360,10 @@ four things, and a proposal missing any of them is not ready to file:
 4. how the next run would prove it worked — the observation that would differ.
 
 Filing is the adapter's `proposeTriage`, which the CLI deliberately does **not**
-expose — `index.mjs` is read-only (`next`, `list`, `hygiene`) so that no accidental
-invocation can write to the queue. Call it directly:
+expose — `index.mjs` never writes to the QUEUE (`next`, `list`, `hygiene` only), so
+that no accidental invocation can change what the next run is handed. Its one
+write is to the run journal above, and only into a directory the run declared —
+a trace of the selection, never a change to it. Call `proposeTriage` directly:
 
 ```bash
 node --input-type=module -e '

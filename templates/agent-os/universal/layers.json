@@ -23,6 +23,7 @@
     ".claude/scripts/stop-flag.mjs",
     ".claude/scripts/git-env.mjs",
     ".claude/scripts/preflight.mjs",
+    ".claude/scripts/run-journal.mjs",
     ".claude/scripts/queue/core.mjs",
     ".claude/scripts/queue/plan-md.mjs",
     ".claude/scripts/queue/github-issues.mjs",
