@@ -540,24 +540,37 @@ operational memory, not an archive. Fields per the template in
   is the sentence in the module header, and the marker shipped with no caller.
   Writing the rule did not make me follow it; running the mechanism did
 - **escalated** — nothing. Two questions went to the owner rather than being
-  answered in-run, and both came back as rulings in the brief — which is the
-  path §8 requires and, per AR3-40, an artifact written outside this branch:
-  **SCRUM-87** belongs to the human `## Journal`, not to this machine trace
-  ("correct instinct, wrong target"), and the human journal's own check is now
-  AR3-41; **AR3-42** rules that a run never self-applies `human-review`, even
-  holding a token that mechanically could. The owner applied the label
+  answered in-run, which is what the `loop` skill's §8 requires, and both came
+  back as rulings in the port brief (v4, 2026-08-14) — an artifact written
+  outside this branch. AR3-40 asks that such a ruling be **quoted**, not just
+  named, so: on the rider, *"RULED: the human journal, `## Journal` in
+  `PLAN.md` — not AR3-4's machine journal … The loop built the ordering
+  assertion on the machine journal instead … and **said so honestly** in its
+  test header rather than silently calling the ticket satisfied — correct
+  instinct, wrong target"*; and on the label, *"RULED: the run does not
+  self-apply `human-review`, even with a token that technically could … that
+  capability is not authorization to use it"*. ⚠ **Both rulings carry brief-side
+  item numbers (AR3-41 for the human journal's own check, AR3-42 for the label)
+  and NEITHER is in this queue** — taking a brief item into the queue is the
+  owner's act, not a closing run's. Until that happens the numbers resolve in
+  the brief only, and the quotes above are what a reader here can check. The
+  owner applied the label
 - **stopped at** — **budget**. One item, two gate rounds, five reviewer passes.
   The queue is not empty: 35 items remain
 - **post-merge verdict** — healthy, checked on merged `master` rather than on
   the branch: `queue next` selects and writes its `item-selection` record into a
   declared run directory, `hygiene` reports nothing stale, and the tier recorded
-  from the merge's own diff came back `elevated` from four paths
+  from the merge's own diff came back `elevated` — four files, under three of
+  the declared prefixes
 - **unblocked** — **this queue has no dependency links** (`plan-md` is a flat
-  list — absent, not satisfied). What the close settles is on the item itself:
-  AR3-13 and AR3-24 named this journal as what makes them meaningful, and
-  AR3-25 still owns the run-id convention this module deliberately does not
+  list — absent, not satisfied). One item names this one in its own text and is
+  the whole of what a reader can check: AR3-13, *"last, because AR3-4 is what
+  makes it meaningful"*. AR3-24 is **not** released by this close — it names the
+  human journal's `cost` block as its home, not this trace — and AR3-25 still
+  owns the run-id convention this module deliberately does not
 - 🔴 **queue hygiene** — AR3-4 was marked `normal` and the merge recorded
-  `elevated` from four declared paths. That is the 26-item divergence AR3-37 is
+  `elevated` from four files under three declared prefixes. That is the 26-item
+  divergence AR3-37 is
   filed about, measured once more on a live merge rather than predicted.
   Reported, not relabelled. Second finding, from the merge itself: `gh pr edit
   --add-label` fails in this repository on a Projects-classic deprecation that
@@ -570,7 +583,9 @@ operational memory, not an archive. Fields per the template in
   correspondence tests this task added, whose comments claim more than they
   check
 - **cost** — 5 reviewer subagents (2 code, 2 prose, 1 security), 2 test-writer,
-  1 check-premises; 4 check runs across three pushed SHAs, 0 re-runs; 0 deploys
+  1 check-premises; **four pushed SHAs, each carrying the full check set** (`ci`,
+  two template jobs, one scanner) — 4 `ci` runs, 16 check runs, 0 re-runs; 0
+  deploys
 - **the honest note** — the brief's §7a was named as required reading for this
   item and the brief lives outside the repository, unreadable from the session.
   The run stopped and asked rather than reconstructing the correction from what
