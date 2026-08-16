@@ -122,10 +122,18 @@ metadata destroys the evidence that the metadata is unreliable.
 
 🔴 **A missing trigger marker means unconditional, not missing data.** Work that is
 genuinely conditional says so. A `trigger-human` item — a "security pass", a
-"window", "user demand" without a named metric — is **never self-taken**; the human
-hands it over explicitly. A `trigger-auto` item needs its trigger verified *this
-run*: unverified is not fired, and rationalising a trigger into firing builds for
-scale that does not exist.
+"window", "user demand" without a named metric — is **never taken on that marker
+alone**; the human hands it over explicitly. A `trigger-auto` item needs its
+trigger verified *this run*: unverified is not fired, and rationalising a
+trigger into firing builds for scale that does not exist.
+
+⚠ **An item carrying BOTH markers is taken as `trigger-auto`.** Every adapter
+resolves `auto` first, nothing refuses the combination, and no hygiene check
+reports it — so one recorded declaration takes an item whose author also marked
+it human-gated. The reachable path is an owner tightening an auto-gated item and
+not deleting the old marker, and the silent resolution goes to the **less**
+restrictive gate. Until that is fixed, treat a double-marked item as
+human-gated by hand.
 
 **For a `trigger-auto` item, record the declaration** — it has to outlive the
 turn it was made in, or the next selection holds the item back again:

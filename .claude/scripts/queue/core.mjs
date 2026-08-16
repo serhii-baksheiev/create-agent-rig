@@ -173,11 +173,19 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
 
   // No trigger label means unconditional, not missing data. Work that is
   // genuinely conditional says so.
+  // ⚠ **The markers are resolved by the adapter, `auto` first**, so an item
+  // carrying BOTH reaches here as `auto` and one recorded declaration takes it.
+  // Nothing refuses that combination and no hygiene check reports it — so this
+  // branch describes the item as the adapter classified it, and claims nothing
+  // about what the item's author wrote. "Never self-taken" would be exactly
+  // that claim, and it would be false for the item most likely to carry both:
+  // one an owner tightened from auto-gated to human-gated without deleting the
+  // old marker, where the silent resolution goes to the LESS restrictive gate.
   if (ticket.trigger === 'human') {
     reject(
       'trigger-human',
       'trigger-human: a window, a demand or a "pass" is a human declaration — ' +
-        'never self-taken, only handed over explicitly',
+        'handed over explicitly, never taken on this marker alone',
     );
   }
   if (ticket.trigger === 'auto') {
@@ -495,8 +503,8 @@ const triggerNote = (held) => {
         'out waits forever;'
       : '') +
     (human
-      ? ' a trigger-human item is never self-taken, and recording a declaration ' +
-        "against it does nothing: only a human changing the item's own marker " +
+      ? ' an item held as trigger-human is not freed by recording a declaration ' +
+        "— that does nothing here; only a human changing the item's own marker " +
         'frees it;'
       : '') +
     ' both are declarations, not delays.'
