@@ -384,7 +384,9 @@ file is one the drift check stops reading.
 
 🔴 **Everything below this line is prose, and that is mechanical, not
 stylistic.** `parsePlan` takes **any** `- ` or `* ` line in this section as a
-work item — including an indented one, since the pattern is `/^\s*[-*]\s+/`, which is how a sub-list once became work — it has no notion of a note. So a fact written here as a bullet
+work item — including an **indented** one, since the pattern is
+`/^\s*[-*]\s+/`, which is how a sub-list once became work. It has no
+notion of a note. So a fact written here as a bullet
 becomes the next task a `plan-md` run is handed, silently and at `tier:
 normal`. AR-64 cut this section to bullets, measured `parsePlan` → 3, and put
 the facts back as paragraphs; the byte saving was never worth a queue that

@@ -445,6 +445,13 @@ describe('the Agent queue is empty to the parser, not just to the eye', () => {
     expect(readQueue(plan).found, 'the heading must still parse AS a heading').toBe(true);
     // the template ships its examples inside an HTML comment for this reason
     expect(parsePlan(plan)).toEqual([]);
+    // The Operator heading too, for symmetry — though its failure mode is the
+    // opposite one and that is why this line is a nicety rather than the point:
+    // a mangled Operator heading makes `proposeTriage` return `ok: false`
+    // naming the missing heading, so a project loses proposal-filing LOUDLY.
+    // The Agent heading loses the queue silently, which is the case worth the
+    // ceremony above.
+    expect(plan, 'proposeTriage has nowhere to file without it').toMatch(/^## Operator queue$/m);
   });
 });
 
@@ -480,15 +487,30 @@ describe('the carried fingerprints are artifacts, not notes', () => {
         /· fingerprint: `[^`]+` · seen ×\d+\s*$/,
       );
     }
+    // 🔴 The limit of this check, stated because `invariants.md` requires a
+    // guard to say how far it can be trusted: this covers the tail's SHAPE and
+    // the bullets' existence — the deletion half of the rule. It does NOT check
+    // that a fingerprint still agrees with the finding/part/change on its own
+    // line, so hand-editing one character inside a fingerprint passes here and
+    // fails silently at the next filing, exactly as deletion would. This repo
+    // has committed that mutation once already (see the AR-48 proposal). Making
+    // it checkable means re-deriving `fingerprintOf` from the bullet, which is
+    // AR-48(c)'s sweep, not this test's.
     expect([...plan.matchAll(CARRIED)].map((m) => m[1])).toEqual(['AR-46', 'AR-47', 'AR-48']);
   });
 
   it('still says why they are not open items', async () => {
     const plan = await repoPlan();
-    // the rule survived the cut reworded; what it must keep saying is that
-    // these are not work, and that deleting one is the defect rather than tidy
-    expect(nearAnchor(plan, /carried/i, /fingerprint/i, 600)).toBe(true);
-    expect(nearAnchor(plan, /carried/i, /not open items|are not open/i, 600)).toBe(true);
-    expect(nearAnchor(plan, /carried/i, /AR-48/, 900)).toBe(true);
+    // 🔴 The anchor is the RULE, not the word "carried". Anchoring on /carried/
+    // looks stronger and is weaker: it matches the `[carried → AR-n]` bullets
+    // themselves, and those already contain "fingerprint" and the literal
+    // "AR-48" — so two of three assertions passed on a plan with no rule at all.
+    // The `it` still failed, so nothing was broken; the damage would have been a
+    // later editor seeing three pinned properties where there was one, and
+    // trimming the rule to the few words that happened to be load-bearing.
+    const anchor = /not open items|are not open/i;
+    expect(anchor.test(plan), 'the rule itself must still be here').toBe(true);
+    expect(nearAnchor(plan, anchor, /fingerprint/i, 600), 'why they exist').toBe(true);
+    expect(nearAnchor(plan, anchor, /AR-48/, 900), 'and what closing them out waits on').toBe(true);
   });
 });
