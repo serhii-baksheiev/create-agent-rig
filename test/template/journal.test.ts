@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -312,9 +312,10 @@ describe('three facts stated nowhere else survive the queue-section cut', () => 
     // verdicts from a one-line edit. The mechanism is in the code and tested
     // there; the INSTRUCTION not to delete this particular heading is not.
     //
-    // (The current prose adds "Nothing else in this repository states that
-    // condition", which is now inaccurate — the code states and enforces it.
-    // That overstatement is deliberately NOT pinned; only the instruction is.)
+    // (The prose this replaced added "Nothing else in this repository states
+    // that condition". That was inaccurate — the code states and enforces it —
+    // so the cut dropped it rather than carrying it forward, and nothing here
+    // pins it. Only the instruction not to delete is pinned.)
     const plan = await repoPlan();
     const anchor = /queue-unreadable/;
     expect(nearAnchor(plan, anchor, /queue-empty/, 400), 'both verdicts, named together').toBe(
@@ -374,5 +375,61 @@ describe('three facts stated nowhere else survive the queue-section cut', () => 
         `the cost of trusting it: ${consequence.source}`,
       ).toBe(true);
     }
+  });
+});
+
+// 🔴 The defect this file's own change introduced, and the only check that
+// would have caught it. Both reviewers found it by RUNNING the parser; every
+// test above reads PLAN.md as text, and text cannot tell you that a paragraph
+// became a work item.
+//
+// AR-64 cut the Agent queue "to bullets" — the words the item and the owner
+// decision both use — and `parsePlan` takes ANY `- `/`* ` line in that section
+// as a ticket, with no notion of a note. Measured on the first attempt:
+// `parsePlan` → 3, so a `plan-md` run would have been handed
+// "🔴 **The empty heading above stays.**" as its next task, at `tier: normal`,
+// with no error anywhere. The file meanwhile still promised the opposite in
+// prose. The deleted text had warned about exactly this — "written as prose on
+// purpose so the adapter cannot mistake them for items" — and the cut removed
+// the warning and then did the thing.
+//
+// The instruction and the mechanism genuinely collide here, so the resolution
+// is written down rather than left in a PR's history: facts in the Agent queue
+// are PARAGRAPHS, and "cut to bullets" applies to the Operator queue, which is
+// never parsed for items. This test is what makes that resolution mechanical.
+describe('the Agent queue is empty to the parser, not just to the eye', () => {
+  it('yields no work items from this repo, whatever prose the section carries', async () => {
+    const { parsePlan, readQueue } = await import(
+      pathToFileURL(path.join(universalDir, '.claude', 'scripts', 'queue', 'plan-md.mjs')).href
+    );
+    const plan = await repoPlan();
+
+    // 🔴 `found` FIRST, and this assertion exists because its absence already
+    // bit — in this very commit. A rewrite of the section glued the `---` rule
+    // above onto the heading (`---## Agent queue`), so the heading stopped
+    // being a heading. `parsePlan` then returned `[]` — not because the section
+    // was empty but because there was no section — and this test passed while
+    // `listEligible` would have thrown `queue-unreadable` / exit 1.
+    //
+    // That is precisely the distinction the section's own first surviving fact
+    // is about: an empty section and a missing one are OPPOSITE verdicts. A
+    // check that cannot tell them apart is worse than none, because it reports
+    // the good one for the bad case. `toContain('## Agent queue')` misses it
+    // too — the mangled line still contains that substring.
+    expect(readQueue(plan).found, 'the heading must still parse AS a heading').toBe(true);
+
+    const items = parsePlan(plan);
+    expect(
+      items.map((i: { title: string }) => i.title),
+      'a bullet in this section IS a work item — write facts as paragraphs',
+    ).toEqual([]);
+  });
+
+  it('yields no work items from the template either', async () => {
+    const { parsePlan } = await import(
+      pathToFileURL(path.join(universalDir, '.claude', 'scripts', 'queue', 'plan-md.mjs')).href
+    );
+    // the template ships its examples inside an HTML comment for this reason
+    expect(parsePlan(await templatePlan())).toEqual([]);
   });
 });

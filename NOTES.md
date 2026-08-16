@@ -239,7 +239,9 @@ check with zero adjustments.
   surface doesn't. (Plugin/marketplace transport noted, not built — evaluate
   when there's demand.)
 - **Loop driver (§5):** the `loop` skill + a two-queue `PLAN.md` convention
-  (Agent queue / Operator queue / Journal) ship in universal. The load-bearing
+  (Agent queue / Operator queue) ship in universal, with the journal alongside
+  in `journal/YYYY-MM.md` — it was a third section of `PLAN.md` until AR-64
+  moved it out. The load-bearing
   stop condition — **queue empty → end, do not invent work** — is stated and
   tested. The autonomy tiers finally have something that runs the agent alone.
   Note: `PLAN.md` is a process-layer file, so `init` brings it too; sync skips

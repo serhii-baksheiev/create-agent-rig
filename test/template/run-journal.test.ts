@@ -15,8 +15,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// AR3-4: the run journal — the machine-readable trace BEHIND `## Journal`, not a
-// replacement for it. Gate verdicts land in `decisions.jsonl`, everything else in
+// AR3-4: the run journal — the machine-readable trace BEHIND the human journal
+// in `journal/YYYY-MM.md`, not a replacement for it. The two are opposites and
+// stay that way: this one is append-only and oldest-first, the month file is
+// newest-on-top. Gate verdicts land in `decisions.jsonl`, everything else in
 // `events.jsonl`, both append-only, both under one per-run directory.
 //
 // 🔴 Two riders ride inside this item and each has its own describe block:

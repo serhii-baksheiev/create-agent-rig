@@ -64,7 +64,9 @@ create-agent-rig/                    — root package: the publishable unit (bin
     agent-os/
       universal/                     — stack-neutral (process + architecture)
         CLAUDE.md                    — the map
-        PLAN.md                      — two-queue work convention (Agent / Operator / Journal)
+        PLAN.md                      — two-queue work convention (Agent / Operator)
+        journal/README.md            — the journal convention: one file per month,
+                                       journal/YYYY-MM.md, newest-on-top (AR-64)
         layers.json                  — classifies every universal file: process | architecture | meta
         .claude/
           rules/                     — architecture.md, workflow.md, autonomy.md, invariants.md
@@ -366,39 +368,56 @@ In practice: open an empty file and write the rule in your own words rather than
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.
 
 ---
+
 ## Agent queue
 
-**Moved to Jira on 16 Aug 2026 — project `AR`, board 34.** `.claude/queue.json`
-reads `{"adapter":"jira","options":{"project":"AR"}}`; this section is
-deliberately empty and `parsePlan` must return zero from it. The adapter needs
-`JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` from the environment, read
-per-invocation from a file **outside** the repository, never an exported
-variable. The value in `queue.json` is written by a repo-specific override in
-`compose()` (`scripts/sync-agent-os.mjs`) — an in-place edit is drift.
+**Moved to Jira on 16 Aug 2026 — project `AR`, board 34**
+(`https://sbaksheiev.atlassian.net/jira/software/projects/AR/boards/34/backlog`).
+`.claude/queue.json` reads `{"adapter":"jira","options":{"project":"AR"}}`; this
+section is deliberately empty and `parsePlan` must return zero from it. The
+adapter needs `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` from the
+environment, read per-invocation from a file **outside** the repository, never
+an exported variable. The value in `queue.json` is written by a repo-specific
+override in `compose()` (`scripts/sync-agent-os.mjs`) — an in-place edit is
+drift, and exempting the file was the rejected alternative, because an exempted
+file is one the drift check stops reading.
+
+🔴 **Everything below this line is prose, and that is mechanical, not
+stylistic.** `parsePlan` takes **any** `- ` or `* ` line in this section as a
+work item — it has no notion of a note. So a fact written here as a bullet
+becomes the next task a `plan-md` run is handed, silently and at `tier:
+normal`. AR-64 cut this section to bullets, measured `parsePlan` → 3, and put
+the facts back as paragraphs; the byte saving was never worth a queue that
+hands out its own footnotes. Write additions here as paragraphs, and keep the
+"cut to bullets" instruction for the Operator queue, which is never parsed for
+items.
 
 Three facts below survive from the prose this section used to carry (AR-64).
 Everything else was cut because it is stated elsewhere: the tier marker as a
 pre-filter is in `loop/SKILL.md` and `state.mjs`, blockers-from-links is in
-`loop/SKILL.md`, the Flowa provenance rule is `CLAUDE.md` rule 0, and the
-migration map is history — it is in `journal/2026-08.md`. Do not restore the
-rest; do not delete these three.
+`loop/SKILL.md`, and the Flowa provenance rule is `CLAUDE.md` rule 0. The
+migration map went to `journal/2026-08.md` with the entry that describes the
+move. Do not restore the rest; do not delete these three.
 
-- 🔴 **The empty heading above stays.** A missing `## Agent queue` is
-  `queue-unreadable` and **exit 1**, not the `queue-empty` **exit 0** an empty
-  section gives — opposite verdicts. `plan-md.mjs` throws and `index.mjs`
-  turns it into that stop, so deleting a contentless heading is not tidying.
-- ⚠ **`AR-n` names two different things.** Keys on board 34 are Jira issues;
-  `AR-3`, `AR-4`, `AR-12` and their neighbours in the port brief and in the
-  journal are the brief's own numbering, which predates this project. Every
-  brief-sense key now also exists as a real ticket, so a reader following a
-  citation lands on an unrelated issue **with no error**. Check which numbering
-  a citation is in before following it.
-- 🔴 **`ready` is a human-facing hint that no selection path reads.** What keeps
-  `operator-queue` and `triage` out of selection is the adapter reading those
-  labels (`EXCLUDED_LABELS`, `jira.mjs`). Resting the split on `ready` would be
-  worse than useless: a JQL filter on `labels = ready` against a board that does
-  not carry it returns an empty set, and an empty set with nothing skipped is
-  `queue-empty` — exit 0, a "successful session", with 40 issues open.
+🔴 **The empty heading above stays.** A missing `## Agent queue` is
+`queue-unreadable` and **exit 1**, not the `queue-empty` **exit 0** an empty
+section gives — opposite verdicts. `plan-md.mjs` throws and `index.mjs` turns it
+into that stop, so deleting a contentless heading is not tidying.
+
+⚠ **`AR-n` names two different things.** Keys on board 34 are Jira issues;
+`AR-3`, `AR-4`, `AR-12` and their neighbours in the port brief and in the
+journal are the brief's own numbering, which predates this project. Every
+brief-sense key now also exists as a real ticket, so a reader following a
+citation lands on an unrelated issue **with no error**. Check which numbering a
+citation is in before following it.
+
+🔴 **`ready` is a human-facing hint that no selection path reads.** What keeps
+`operator-queue` and `triage` out of selection is the adapter reading those
+labels (`EXCLUDED_LABELS`, `jira.mjs`). Resting the split on `ready` would be
+worse than useless: a JQL filter on `labels = ready` against a board that does
+not carry it returns an empty set, and an empty set with nothing skipped is
+`queue-empty` — exit 0, a "successful session", with 40 issues open.
+
 ## Operator queue
 
 **Moved to Jira with the Agent queue** — label `operator-queue`, plus `triage`
@@ -426,6 +445,7 @@ Two rules survive from the prose this section used to carry (AR-64):
 - [carried → AR-46] **proposal: Either scope the declaration so it does not reach spawned children of the test runner (declare it per-command rather than as a shell export), or have the harness strip RIG_RUN_DIR from the environment it passes to the CLI, the way withoutGitLocation() strips GIT_DIR for git spawns. Same family as the GIT_DIR incident: ambient environment reaching a child that was never meant to see it, and resolving to a wrong answer rather than an error. [triage]** — finding: journal: the queue left the file — `loop` §1 tells every run to export RIG_RUN_DIR, and the exported variable reached both the CLI a test spawns in a temp project (turning test/template/review-fixes.test.ts RED) and this run’s real decisions.jsonl, which took 14 fixture records at seq 5-18 · part: .claude/skills/loop/SKILL.md §1 (the RIG_RUN_DIR declaration) and the harness that spawns the queue CLI — the contamination path, not only the exit-1 symptom · proof: EITHER branch is checkable and the proposal is satisfied by one. STRIP: `RIG_RUN_DIR=<a real run dir> pnpm test:unit` is green AND leaves that directory unchanged — today it fails 1 of 868 (test/template/review-fixes.test.ts:494, "expected 1 to be +0") and appends 14 records. SCOPE: the skill no longer instructs a shell export, so a run following it verbatim finishes with `pnpm test:unit` green and its run directory carrying only records the run itself wrote — check the DIRECTORY, not the command, because under this branch the variable is never in the environment to begin with. Precondition for either check: `pnpm test:unit` in a shell that never exported the variable is green TODAY, so checking the bare command retires a live defect. · fingerprint: `journal-the-queue-left-the-file-loop-1-t:claude-skills-loop-skill-md-1-the-rig-ru:either-scope-the-declaration-so-it-does-` · seen ×1
 - [carried → AR-47] **proposal: A third stop kind, or a qualifier on queue-empty, for the case where the configured adapter is not the one the project declares its work lives in. AR3-35 split `queue-empty` from `nothing-selectable` precisely because an operator cannot otherwise tell whether the queue needs refilling; this run hit a third case neither covers — the work exists and is unreachable — and reported it as genuinely out of work. [triage]** — finding: journal: the queue left the file — stopped at `queue-empty` with 45 issues open on the board, because the adapter that can read them is not switched yet (AR-45) · part: .claude/scripts/queue/core.mjs (stopConditionOf) + .claude/skills/loop/SKILL.md §3 · proof: A run configured with `plan-md` against a PLAN.md whose Agent queue section declares the work has moved elsewhere stops with a verdict naming the unreachable queue, not "queue empty … refilling the queue is the owner’s job". Today the two are indistinguishable from the stop line. · fingerprint: `journal-the-queue-left-the-file-stopped-:claude-scripts-queue-core-mjs-stopcondit:a-third-stop-kind-or-a-qualifier-on-queu` · seen ×1
 - [carried → AR-48] **proposal: State, or handle, what dedup means once the queue a fingerprint was filed into is no longer the queue being read — `seen ×N` silently resets, so a proposal filed twenty times before the migration reappears as a fresh `seen ×1`, the failure the cap exists to prevent. Cover the second path too: the fingerprint is derived from finding/part/change, so editing any of those three in place leaves a slug that matches nothing and the next filing writes a duplicate. [triage]** — finding: journal: the queue left the file — the eight triage proposals migrated to Jira, so proposeTriage under plan-md can no longer find the fingerprints of proposals this repo has already filed; and hand-editing a filed bullet desynchronises its fingerprint from its own text, which this run did and the gate caught · part: .claude/scripts/queue/core.mjs (`duplicateOf` at :575, `fingerprintOf` at :557) as called from .claude/scripts/queue/plan-md.mjs:408 · proof: EITHER branch is checkable and the proposal is satisfied by one. HANDLE: filing a proposal whose fingerprint matches a migrated one increments a count or reports the collision instead of writing a fresh `seen ×1`; and editing a filed bullet’s prose either regenerates its fingerprint or is refused. STATE: plan-md cannot query Jira for a migrated fingerprint, so both limits are written into the dedup comment and a reader finds them there rather than inferring the reset from a count. · fingerprint: `journal-the-queue-left-the-file-the-eigh:claude-scripts-queue-core-mjs-duplicateo:state-or-handle-what-dedup-means-once-th` · seen ×1
+
 ## Where the journal is
 
 `journal/YYYY-MM.md` — one file per month, newest-on-top inside each (AR-64).

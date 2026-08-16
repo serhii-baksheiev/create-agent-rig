@@ -8,6 +8,19 @@ stay date-free and their order carries the sequence.
 heading, so the file reads as a stack. Prune freely: this is operational memory,
 not an archive.
 
+**The shape of a month file**, because a check enforces it and a rule nobody
+stated is a trap the first session of a new month walks into:
+
+- it **opens with a single `#` heading** naming the month;
+- **every entry is a `###`** under that heading, and there is nothing at `##`
+  or any other level in between;
+- a new entry is inserted directly beneath the `#` heading, above the previous
+  newest.
+
+The first session of a month creates the file with that shape. Nothing else in
+the directory is a month file: `README.md` is this document, and any other name
+is neither read nor checked.
+
 An unattended run writes an entry at every stop **and** at checkpoints along the
 way, because a run that dies unexpectedly must not take its history with it.
 
@@ -57,10 +70,15 @@ written to mean anything.
 
 **`cost` carries only what the session observed** — reviewer subagents run, CI
 runs consumed (re-runs included, the cheapest signal that a task fought its
-tests), deploys triggered. A field the session cannot observe stays **visibly
-empty, never estimated**. A plausible number will be believed, by the next reader
-and by the next run reasoning about its own budget. Leave the gap; it is
-information.
+tests), deploys triggered.
+
+## Never estimated — and this governs every field, not just `cost`
+
+**Any** field the session cannot observe stays **visibly empty, never
+estimated**. A plausible number will be believed, by the next reader and by the
+next run reasoning about its own budget — and the same is true of a plausible
+sentence: a guessed `reviewed` or an inferred `unblocked` is the identical
+failure without the digits. Leave the gap; it is information.
 
 ## Queue hygiene is reported, never corrected in passing
 

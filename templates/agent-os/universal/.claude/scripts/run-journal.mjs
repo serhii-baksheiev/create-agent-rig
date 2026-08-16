@@ -1,10 +1,15 @@
 /**
- * The run journal — the machine-readable trace BEHIND the human `## Journal`.
+ * The run journal — the machine-readable trace BEHIND the human journal in
+ * `journal/YYYY-MM.md`.
  *
  * Gate verdicts go to `decisions.jsonl`, everything else to `events.jsonl`, both
  * append-only, both inside one per-run directory the caller hands over. It
  * answers *what did the run decide, and on what basis*; it never answers *was
- * that the right call*, and it replaces neither `## Journal` nor `PLAN.md`.
+ * that the right call*, and it replaces neither the month file nor `PLAN.md`.
+ *
+ * The two are opposites and stay that way: this trace is append-only and
+ * OLDEST-first, the month file is newest-on-top. Reading one as the other is
+ * how a reader concludes a run did nothing.
  *
  * 🔴 **A journal with no call site records nothing.** The writer is the easy
  * half and the worthless one on its own — the shape this module is ported from
