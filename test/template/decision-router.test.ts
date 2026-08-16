@@ -838,6 +838,20 @@ describe('parseNameStatus — the diff format the router actually reads', () => 
     ]);
   });
 
+  it('refuses to guess a status letter it does not know', async () => {
+    // 🔴 `T` was fixed by ADDING a table entry, which left the class open: every
+    // other letter — `U` unmerged, `X` unknown, `B` broken pairing, and whatever
+    // git adds next — defaulted to `modified`, the one status that unlocks the
+    // lane with no reviewer.
+    for (const letter of ['U', 'X', 'B', 'Q']) {
+      expect((await parse(`${letter}\0dist/x.js\0`))[0]?.status, letter).toBe('unknown');
+    }
+    const { route } = await load();
+    expect(
+      route({ files: [{ path: 'dist/x.js', status: 'unknown' }], elevatedPaths: ELEVATED }).lane,
+    ).toBe('model');
+  });
+
   it('always advances, so a truncated or malformed record cannot hang it', async () => {
     // A truncated rename keeps the half it DID read, as the removal it is —
     // dropping it would be the permissive answer on malformed input, which is
@@ -958,20 +972,104 @@ describe('the cheap lanes cannot be unlocked by choosing a filename', () => {
     }
   });
 
-  it('keeps a derived file under a declared elevated path out of the no-reviewer lane', async () => {
+  it('keeps a derived file under a declared elevated path out of the cheap lanes', async () => {
     const { route } = await load();
-    // The gate sweep drops test paths as inert, which is right for IT and wrong
-    // for the lane that launches nobody: composed with the derived carve-out it
-    // put a declared elevated path into `deterministic` with zero reviewers.
+    // 🔴 The first version of this test named two paths that classify as `code`
+    // BEFORE the derived branch is reached, so deleting the guard it claimed to
+    // pin left the suite green. These four reach the derived branch and are
+    // disqualified by the prefix test alone.
     for (const file of [
-      'packages/db/src/tests/x.generated.ts',
-      '.github/workflows/e2e/deploy.generated.yml',
+      'packages/db/src/dist/notes.md',
+      'packages/db/src/schema.generated.md',
+      'infra/dist/readme.md',
+      '.github/workflows/dist/notes.md',
     ]) {
       const result = route({
         files: [{ path: file, status: 'modified' }],
         elevatedPaths: ELEVATED,
       });
       expect(result.lane, file).toBe('model');
+      // and the verdict names WHICH disqualifier fired — git reported `M`, so
+      // "no status saying it was drift" would be a false line in the journal
+      const declined = result.gates.find((g) => g.gate === 'deterministic');
+      expect(declined?.why, file).toMatch(/elevated/i);
+    }
+    // the same shape outside every declared prefix still reaches the cheap lane
+    expect(
+      route({
+        files: [{ path: 'build/dist/notes.md', status: 'modified' }],
+        elevatedPaths: ELEVATED,
+      }).lane,
+    ).toBe('deterministic');
+  });
+
+  it('splits a digit boundary in BOTH directions', async () => {
+    const { riskFlagsIn } = await load();
+    // Pinned apart from the manifest cases, which the `requirement` prefix rule
+    // satisfies on its own — deleting the digit boundary left those green.
+    for (const file of ['src/auth2.ts', 'src/session2.ts', 'src/key1.ts']) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+    // and the mirror, which was missing entirely
+    for (const file of ['src/v2auth.ts', 'src/s3credentials.ts', 'src/api2key.ts']) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+    // without dragging ordinary names in with them
+    for (const file of ['src/utf8parser.ts', 'src/sha256hash.ts', 'src/http2server.ts']) {
+      expect(riskFlagsIn([file], { elevatedPaths: [] }), file).toEqual([]);
+    }
+  });
+
+  it('still earns the prose reviewer for a doc extension the lane logic calls code', async () => {
+    const { route } = await load();
+    // The stated mitigation for reclassifying `.mdx`: it is code to the ladder
+    // and a document to a reader. Nothing pinned it, so reverting
+    // `DOC_EXTENSIONS` left the suite green while dropping `prose-reviewer`.
+    expect(route({ files: ['app/page.mdx'], elevatedPaths: ELEVATED }).reviewers).toEqual([
+      'code-reviewer',
+      'prose-reviewer',
+    ]);
+  });
+
+  it('treats a .txt that is a build script as the supply chain, not as prose', async () => {
+    const { riskFlagsIn } = await load();
+    // `CMakeLists.txt` runs `execute_process` and `FetchContent_Declare` at
+    // configure time. It is the most common `.txt` in software and it took the
+    // prose lane.
+    for (const file of ['CMakeLists.txt', 'cmake/CMakeLists.txt', 'conanfile.txt']) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+  });
+
+  it('recognises a test directory whatever the case of its name', async () => {
+    const { classifyFile, riskFlagsIn } = await load();
+    // The intersection of two round-four fixes: the rulebook check was folded,
+    // the directory check was not — so `git mv test Test` put deleted fixtures
+    // back on the prose lane, silently, because test runners glob.
+    for (const file of ['Tests/golden/expected.txt', 'Test/fixtures/contract.md']) {
+      expect(classifyFile(file), file).toBe('code');
+      expect(
+        riskFlagsIn([{ path: file, status: 'removed' }], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['test-removed']);
+    }
+  });
+
+  it('leaves the documentation directory names out of the test set', async () => {
+    const { classifyFile } = await load();
+    // A router that escalates everything routes nothing: `features/` and
+    // `integration/` are test conventions AND ordinary doc directories.
+    for (const file of ['docs/features/login.md', 'docs/integration/stripe.md']) {
+      expect(classifyFile(file), file).toBe('prose');
     }
   });
 
@@ -1219,6 +1317,20 @@ describe('the gate skill and the rules point at the router', () => {
     expect(invocation, 'the documented invocation does not pass a base').toMatch(/--base/);
   });
 
+  it('pr-ship tells the reader to key on stdout, not on the `run journal:` prefix', async () => {
+    const text = await skill();
+    // 🔴 Round four replaced one false claim with another: it said a
+    // `run journal:` line is never exit 1, and a run directory that is not there
+    // exits 1 wearing exactly that prefix. Both journal failures share the
+    // prefix and end differently, so the prefix is not the thing to read.
+    const flat = text.replace(/[ \t]*\n[ \t]*/g, ' ');
+    expect(flat).toMatch(/read STDOUT|read stdout/i);
+    expect(flat).toMatch(/if stdout is empty[^.]*model/i);
+    expect(flat, 'the skill still tells the reader to key on the prefix').not.toMatch(
+      /`run journal:` line on stderr is not one of those/,
+    );
+  });
+
   it('pr-ship says an exit code of 1 is not a lane, and excludes the journal from it', async () => {
     const text = await skill();
     // 🔴 The first version of this test matched `/exit 1|.../` and
@@ -1234,7 +1346,7 @@ describe('the gate skill and the rules point at the router', () => {
       /journal/i,
     );
     // …and the skill says so explicitly, rather than by omission
-    expect(flat).toMatch(/run journal:[^.]*not one of those|exit code stays 0/i);
+    expect(flat).toMatch(/exit stays 0|exit code stays 0/i);
   });
 
   it('CLAUDE.md no longer claims code-reviewer runs before every PR', async () => {

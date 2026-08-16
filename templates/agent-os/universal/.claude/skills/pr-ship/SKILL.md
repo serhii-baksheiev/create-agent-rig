@@ -57,22 +57,26 @@ blockers.
    Never chain it on `&&`, and never read `0` as "cheap" — that misreading turns
    this gate into a rubber stamp. **Exit 1 is not a lane**: it means nothing was
    routed — an unreadable diff, an empty file list, a project declaring no
-   elevated path, or a base or head that is not a revision. Treat it as `model`
-   and fix the cause; it is never a reason to skip the gate.
+   elevated path, an unrecognised flag, a base or head that is not a revision,
+   or a run directory that is not there. Treat it as `model` and fix the cause;
+   it is never a reason to skip the gate.
 
-   ⚠ **A `run journal:` line on stderr is not one of those.** A journal that can
-   no longer accept records ends the *trace*, not the routing: the lane still
-   prints and the exit code stays 0. Read the lane, and start the next run in a
-   new run directory.
+   🔴 **One rule covers every outcome: read STDOUT.** If a lane printed, that is
+   the answer; if stdout is empty, treat the change as `model`. Do **not** key
+   on the `run journal:` prefix — both journal failures wear it and they end
+   differently. A trace that can no longer accept records ends the *trace*, not
+   the routing, so the lane still prints and the exit stays 0 (start the next
+   run in a new run directory). A run directory that was never there exits 1
+   with nothing routed.
 
    What each lane buys:
 
-   - `deterministic` — every changed file is a derived artifact **and git says
-     it was `modified` or `removed`**. The lane's floor is empty; step 4's
-     triggers still apply on top of it.
+   - `deterministic` — every changed file is a derived artifact, git says it was
+     `modified` or `removed`, and **none of them sits under a declared elevated
+     path**. The lane's floor is empty; step 4's triggers still apply on top.
    - `fast-path` — documentation outside the rulebook, plus any derived file
-     travelling with it under the same `modified`/`removed` rule.
-     `prose-reviewer` is the floor.
+     travelling with it under those same two rules. `prose-reviewer` is the
+     floor.
    - `model` — everything else, and `code-reviewer` runs on it **always**,
      with the triggers in step 4 beside it. Anything the router cannot classify
      lands here.

@@ -25,15 +25,21 @@
  * ⚠ Read "under a declared elevated path" exactly, because it has one carve-out
  * and the carve-out is inherited rather than chosen here: `elevatedPathsIn`
  * treats **`.md`/`.mdx` files and test paths** that provision nothing as inert,
- * so `infra/README.md` does not escalate while `infra/stack.ts` does. Note that
- * is those two extensions and test paths exactly — **not** this file's own,
- * wider notion of prose, which also covers `.txt`; aligning the two would take
- * `requirements.txt` in an elevated directory out of escalation. A rulebook file
+ * so `infra/README.md` does not escalate while `infra/stack.ts` does. 🔴 Both
+ * halves are the SWEEP's definitions and neither matches this file's: its inert
+ * test paths are `test|tests|__tests__` directories and `.test.`/`.spec.`
+ * JS-flavoured names, while `isTestPath` here is wider; and its inert
+ * extensions are `.md`/`.mdx` while `PROSE_EXTENSIONS` here also covers `.txt`.
+ * Aligning either would loosen the sweep — `requirements.txt` and a Go test in
+ * an elevated directory would stop escalating — so they stay apart on purpose,
+ * and the difference is written here rather than discovered. A rulebook file
  * is not inert wherever it sits. That is the sweep's definition and this file
  * delegates to it on purpose — two answers to "is this path elevated" would
- * disagree. The **no-reviewer lane** does not rely on that carve-out: it tests
- * the declared prefixes raw, so an inert-looking derived file under one cannot
- * compose its way in.
+ * disagree. **Neither cheap lane relies on that carve-out for a derived file:**
+ * both test the declared prefixes raw, so an inert-looking derived file under
+ * one cannot compose its way in. (Round four scoped this sentence to the
+ * no-reviewer lane; the mechanism gated both from the start, and the narrower
+ * claim understated the guard.)
  *
  * 🔴 **The lane is a value on stdout; the exit code says only that the router
  * ran.** `0` never means "cheap" and non-zero never means "expensive" — a caller
@@ -43,7 +49,7 @@
  * **What it deliberately does not do:** decide whether a review PASSED (that is
  * the gate's job), run any reviewer, or write anything except journal records.
  *
- * ⚠ **The limits, stated rather than implied — all five of them.**
+ * ⚠ **The limits, stated rather than implied — all six of them.**
  *
  * 1. **It sees paths, never content.** A diff that guts a function inside
  *    `docs/` is invisible to it, and so is a secret pasted into a `.md`. It
@@ -56,24 +62,38 @@
  *    `src/x.generated.ts` satisfies it. So **both cheap lanes** require a status
  *    saying the file was drift — `modified` or `removed`; everything else,
  *    including an entry with **no status at all** (the `--files` string form),
- *    is refused them. A `modified` derived file is still taken on trust, and
- *    that trust rests on the project having a check that regenerates it.
+ *    is refused them — as is a derived file **under a declared elevated path**,
+ *    whatever its status. A `modified` derived file elsewhere is still taken on
+ *    trust, and that trust rests on the project having a check that regenerates
+ *    it.
  * 3. **The journal is written only when `RIG_RUN_DIR` is declared**, and only
  *    from the CLI — `route()` used as a library writes nothing. So an absent
  *    `decisions.jsonl` is the ordinary state of an undeclared run, and a reader
  *    auditing one must check the run declared a directory before reading
  *    absence as a gate that stopped firing.
- * 4. **Exit 1 is not a lane.** It means nothing was routed — an unreadable diff,
- *    an absent file list, a project declaring no elevated path, or a `--base` or
- *    `--head` that is not a revision. The caller treats it as `model`; it is
- *    never a reason to skip the gate. ⚠ A run journal that can no longer accept
- *    records is deliberately NOT in that list: the trace ends, the routing does
- *    not, so the lane still prints and the exit code stays 0 with a `run
- *    journal:` line on stderr. A journal failure that DOES exit 1 is the
- *    narrower one where the run pointed at a directory that is not there.
+ * 4. **Exit 1 is not a lane, and STDOUT is the thing to read.** Exit 1 means
+ *    nothing was routed — an unreadable diff, an absent file list, a project
+ *    declaring no elevated path, an unrecognised flag, a `--base`/`--head` that
+ *    is not a revision, or a run directory that is not there. The caller treats
+ *    it as `model`; it is never a reason to skip the gate.
+ *
+ *    ⚠ **Do not key on the `run journal:` prefix**, because both journal
+ *    failures wear it and they end differently: a trace that can no longer
+ *    accept records ends the TRACE, not the routing — the lane still prints and
+ *    the exit stays 0 — while a run directory that was never there exits 1 with
+ *    nothing on stdout. One rule covers both and every other case: **if a lane
+ *    printed, read it; if stdout is empty, treat the change as `model`.**
  *    ⚠ And the diff it reads is the **committed** one, `<base>...<head>`: an
  *    uncommitted edit is not routed, so commit before routing.
- * 5. **`reviewers` is a floor, not a ceiling** — and this was measured on the
+ * 5. **The case fold is basename-only, and the residual is real.** A rulebook
+ *    file is recognised whatever the case of its NAME, but the elevated-prefix
+ *    match is case-sensitive on purpose (`normalizePath` explains why), so a
+ *    renamed elevated DIRECTORY — `Scripts/notes.txt` against a declared
+ *    `scripts/` — stops escalating. The rename itself is caught, because a
+ *    rename records its source; a `.md` under such a directory is inert in both
+ *    renderings, and code still classifies as code, so what actually moves is a
+ *    `.txt`. Narrow, but it is a residual rather than a closed case.
+ * 6. **`reviewers` is a floor, not a ceiling** — and this was measured on the
  *    router's own first run, not predicted. It returned `code-reviewer` and
  *    `prose-reviewer` for a diff that parses untrusted argv and git output,
  *    which `pr-ship`'s own trigger list calls a `security-scanner` case. Paths
@@ -278,6 +298,15 @@ const DEPENDENCY_FILES = new Set([
   // shape nobody here knows.
   'requirements.txt',
   'constraints.txt',
+  // 🔴 A `.txt` that is a BUILD SCRIPT, not prose. `CMakeLists.txt` runs
+  // `execute_process` and `FetchContent_Declare` at configure time — a new
+  // dependency, a new outbound destination and arbitrary shell, three of the
+  // gate's own `security-scanner` triggers — and it took the prose lane.
+  // `conanfile.txt` is C/C++'s `requirements.txt`. The same reasoning that
+  // pulled Python's manifests out of prose applies here and was simply not
+  // carried across.
+  'cmakelists.txt',
+  'conanfile.txt',
   // Other ecosystems. These classify as `code` and so reach `model` anyway —
   // what they buy is the `security-scanner` member of the reviewer floor, which
   // a supply-chain edit is exactly the case for.
@@ -446,6 +475,7 @@ const wordsOf = (stem) => {
   const words = [];
   const isUpper = (c) => c !== undefined && c >= 'A' && c <= 'Z';
   const isLower = (c) => c !== undefined && c >= 'a' && c <= 'z';
+  const isDigit = (c) => c !== undefined && c >= '0' && c <= '9';
   let start = 0;
   const cut = (end) => {
     if (end > start) words.push(stem.slice(start, end).toLowerCase());
@@ -461,9 +491,13 @@ const wordsOf = (stem) => {
     if (i > start && isUpper(ch) && (!isUpper(stem[i - 1]) || isLower(stem[i + 1]))) cut(i);
     // A digit after a letter is a boundary too: `auth2`, `oauth2` and
     // `requirements2` each hid a whole word behind one character.
-    else if (i > start && ch >= '0' && ch <= '9' && !(stem[i - 1] >= '0' && stem[i - 1] <= '9')) {
-      cut(i);
-    }
+    else if (i > start && isDigit(ch) && !isDigit(stem[i - 1])) cut(i);
+    // …and the mirror, which was missing: `v2auth`, `s3credentials` and
+    // `api2key` hid a whole word behind one leading character exactly the way
+    // `auth2` hid one behind a trailing character. Verified against every
+    // documented negative — `utf8parser`, `sha256hash`, `base64`, `http2server`
+    // all stay clean.
+    else if (i > start && !isDigit(ch) && isDigit(stem[i - 1])) cut(i);
   }
   cut(stem.length);
   return words;
@@ -498,10 +532,13 @@ const TEST_DIRECTORIES = new Set([
   'spec',
   'specs',
   'e2e',
-  'integration',
   'cypress',
-  'features',
 ]);
+// ⚠ `integration/` and `features/` are deliberately NOT here. They are test
+// conventions AND ordinary documentation directory names, and `docs/features/
+// login.md` classifying as code narrows the very lane this module exists to
+// open — "a router that escalates everything routes nothing". A test inside one
+// is still caught by the stem rules below (`x_test.go`, `login.spec.rb`).
 
 const isTestPath = (path) => {
   const segments = segmentsOf(path);
@@ -525,7 +562,11 @@ const isTestPath = (path) => {
     }
   }
   for (let i = 0; i < segments.length - 1; i += 1) {
-    if (TEST_DIRECTORIES.has(segments[i])) return true;
+    // Folded, for the same reason `isRulebookPath` folds: `Tests/`, `Test/` and
+    // `Spec/` are the ordinary conventions in .NET, Java and Swift, and on a
+    // case-insensitive checkout `git mv test Test` also survives — unlike the
+    // rulebook rename, silently, because test runners glob.
+    if (TEST_DIRECTORIES.has(segments[i].toLowerCase())) return true;
   }
   return false;
 };
@@ -679,15 +720,21 @@ export const route = ({ files, elevatedPaths } = {}) => {
 
   let prose = 0;
   let derivedUntrusted = 0;
+  let derivedUnderDeclaredPath = 0;
   let other = 0;
   for (const file of files) {
     const path = pathOf(file);
     const kind = classifyFile(path);
     if (kind === PROSE) prose += 1;
     else if (kind !== DERIVED) other += 1; // code and unknown alike: the expensive answer
-    else if (!DERIVED_TRUSTED_STATUSES.has(statusOf(file)) || underDeclaredPath(path)) {
+    else if (underDeclaredPath(path)) {
+      // Counted apart from the status case so the gate line can name WHICH of
+      // the two refused the lane. One reason string covering both said "no
+      // status saying it was drift" about a file git reported as `M`, and that
+      // string is what lands in `decisions.jsonl`.
+      derivedUnderDeclaredPath += 1;
       derivedUntrusted += 1;
-    }
+    } else if (!DERIVED_TRUSTED_STATUSES.has(statusOf(file))) derivedUntrusted += 1;
   }
 
   const clear = line('risk-flags', 'clear', 'no risk flag fired on the changed paths');
@@ -720,9 +767,11 @@ export const route = ({ files, elevatedPaths } = {}) => {
   const declinedDeterministic = line(
     'deterministic',
     'decline',
-    everyFileDerived
-      ? 'every changed file is derived, but at least one carries no status saying it was drift — an addition, a copy, a rename, or a list with no statuses at all'
-      : 'not every changed file is a derived artifact',
+    !everyFileDerived
+      ? 'not every changed file is a derived artifact'
+      : derivedUnderDeclaredPath > 0
+        ? 'every changed file is derived, but at least one sits under a path this project declares elevated'
+        : 'every changed file is derived, but at least one carries no status saying it was drift — an addition, a copy, a rename, a type change, or a list with no statuses at all',
   );
 
   if (other === 0 && derivedUntrusted === 0 && prose > 0) {
@@ -748,7 +797,10 @@ export const route = ({ files, elevatedPaths } = {}) => {
   // reasons and they are not the same finding.
   const reasons = [];
   if (other > 0) reasons.push('code, a rulebook document, or a path the router could not classify');
-  if (derivedUntrusted > 0) {
+  if (derivedUnderDeclaredPath > 0) {
+    reasons.push('a derived artifact under a path this project declares elevated');
+  }
+  if (derivedUntrusted > derivedUnderDeclaredPath) {
     reasons.push('a derived artifact with no status saying it was drift');
   }
 
@@ -836,6 +888,14 @@ const STATUS_LETTERS = Object.freeze({
   T: 'type-changed',
 });
 
+// 🔴 The DEFAULT, and it is the point: round four fixed `T` by adding a table
+// entry, which left the class open. Every letter not in the table — `U`
+// unmerged, `X` unknown, `B` broken pairing, and whatever git adds next —
+// resolved to `modified`, the one status that unlocks the lane with no
+// reviewer. An unclassifiable input resolves to the expensive answer here like
+// everywhere else in this file.
+const UNKNOWN_STATUS = 'unknown';
+
 /**
  * `git diff --name-status -z` into `{ path, status }` records.
  *
@@ -857,7 +917,7 @@ export const parseNameStatus = (raw) => {
       continue;
     }
     const letter = code[0];
-    const status = STATUS_LETTERS[letter] ?? 'modified';
+    const status = STATUS_LETTERS[letter] ?? UNKNOWN_STATUS;
     if (letter === 'R' || letter === 'C') {
       const from = fields[i + 1];
       const to = fields[i + 2];
@@ -904,6 +964,15 @@ const parseArgs = (argv) => {
       if (value === null) args.bad = arg;
       else args[key] = value;
     } else if (arg === '--files') args.files = argv[++i] ?? '';
+    // An unrecognised flag was silently ignored, so `--file README.md` routed
+    // the whole branch diff at exit 0 — a different change than the caller
+    // asked about, reported as if it were theirs. That is the one input this
+    // module was not treating as untrusted.
+    //
+    // The FIRST offender is kept, not the last: `--file README.md` leaves two
+    // unrecognised tokens behind, and naming the second one points the reader
+    // at the argument rather than at the typo that stranded it.
+    else if (args.bad === null) args.bad = arg;
   }
   return args;
 };
@@ -965,9 +1034,9 @@ if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   if (args.bad) {
     process.stderr.write(
-      `decision-router: ${args.bad} needs a revision, and a value starting with "-" is read ` +
-        'by git as an option rather than one. Nothing was routed — treat this as the ' +
-        'expensive lane.\n',
+      `decision-router: ${args.bad} is not a flag this router understands, or was given a ` +
+        'value starting with "-" that git would read as an option rather than a revision. ' +
+        'Nothing was routed — treat this as the expensive lane.\n',
     );
     process.exit(1);
   }

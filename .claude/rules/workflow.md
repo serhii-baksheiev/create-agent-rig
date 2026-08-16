@@ -52,8 +52,8 @@ travels one path to merge, in this order:
 
    | lane | what reaches it | the floor it sets |
    | --- | --- | --- |
-   | `deterministic` | every changed file is a derived artifact git reports as modified or removed | the checks alone; no reviewer |
-   | `fast-path` | documentation outside the rulebook, and derived files under the same status rule | `prose-reviewer` |
+   | `deterministic` | every changed file is a derived artifact git reports as modified or removed, none of them under a declared elevated path | the checks alone; no reviewer |
+   | `fast-path` | documentation outside the rulebook, and derived files under those same two rules | `prose-reviewer` |
    | `model` | everything else, including anything unclassifiable | `code-reviewer`, **always** |
 
    `.claude/scripts/decision-router.mjs` decides this from the **committed**
