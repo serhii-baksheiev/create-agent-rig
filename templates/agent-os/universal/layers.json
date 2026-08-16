@@ -34,7 +34,8 @@
     ".claude/scripts/queue/checkout.mjs",
     ".claude/scripts/queue/state.mjs",
     ".claude/queue.json",
-    "PLAN.md"
+    "PLAN.md",
+    "journal/README.md"
   ],
   "architecture": [
     ".claude/rules/architecture.md",

@@ -15,15 +15,18 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// AR3-4: the run journal — the machine-readable trace BEHIND `## Journal`, not a
-// replacement for it. Gate verdicts land in `decisions.jsonl`, everything else in
+// AR3-4: the run journal — the machine-readable trace BEHIND the human journal
+// in `journal/YYYY-MM.md`, not a replacement for it. The two are opposites and
+// stay that way: this one is append-only and oldest-first, the month file is
+// newest-on-top. Gate verdicts land in `decisions.jsonl`, everything else in
 // `events.jsonl`, both append-only, both under one per-run directory.
 //
 // 🔴 Two riders ride inside this item and each has its own describe block:
 //   SCRUM-390 — the run-end marker exists from day one. A run whose end can be
 //     followed by more records has no end, so the marker also CLOSES the run.
 //   SCRUM-87  — ✅ RULED by the owner (port brief v4 §7a) to belong to the HUMAN
-//     journal, `## Journal` in PLAN.md, and NOT to this artifact: "newest-on-top"
+//     journal — `journal/YYYY-MM.md` since AR-64, a section of PLAN.md before
+//     that — and NOT to this artifact: "newest-on-top"
 //     is verbatim that file's own stated invariant, while append-only oldest-first
 //     is a correct and different property of a machine trace. The ordering
 //     assertion below stays — it is sound for this artifact whichever ticket

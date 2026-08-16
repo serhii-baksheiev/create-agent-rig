@@ -201,9 +201,13 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
    that is what keeps `npx github:…` and the tarball path working.
 4. **Provenance:** `agent-os/` content is authored fresh — never copied from a
    private work repository (PLAN.md §9).
-5. **Never edit `CLAUDE.md` or synced `.claude/` files directly** — edit
-   `templates/agent-os/` (or this addendum) and run the sync script; the drift
-   test fails otherwise.
+5. **Never edit a synced file directly** — edit `templates/agent-os/` (or this
+   addendum) and run the sync script; the drift test fails otherwise. The synced
+   set is `CLAUDE.md`, everything under `.claude/`, **and `journal/README.md`**,
+   which since AR-64 is the first synced payload file living outside `.claude/`.
+   It sits in the repo root next to `journal/YYYY-MM.md`, so it is the natural
+   thing to edit in place — and an edit there is lost at the next sync. The month
+   files themselves are this repo's own and are never synced.
 6. **This repo has a remote and CI, so it follows its own PR flow** (see the
    synced `.claude/rules/workflow.md`): one task per short-lived branch, never
    commit to `master` directly, merge through a PR once CI is green. The

@@ -96,16 +96,20 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
 
   it('the journal has the field that write-back writes to', async () => {
     // A required field with nowhere to land is a rule that decays on contact.
-    const plan = await readFile(
-      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'PLAN.md'),
+    // AR-64 moved the journal out of PLAN.md into `journal/YYYY-MM.md`, so the
+    // field documentation moved with it — the check follows the contract, it
+    // does not shrink to fit the move. (The month-file convention itself is
+    // pinned in journal.test.ts.)
+    const readme = await readFile(
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'journal', 'README.md'),
       'utf8',
     );
-    expect(plan).toMatch(/\*\*unblocked\*\*/);
-    expect(plan).toMatch(/never\s+dropped/i);
+    expect(readme).toMatch(/\*\*unblocked\*\*/);
+    expect(readme).toMatch(/never\s+dropped/i);
     // "cannot answer" is never "checked, found nothing" — the same distinction
     // the nullable `Ticket.body` turns on, and the reason the field has three
     // answers rather than two
-    expect(plan).toMatch(/absent\*?\*?,\s+not\s+satisfied/i);
+    expect(readme).toMatch(/absent\*?\*?,\s+not\s+satisfied/i);
   });
 });
 
@@ -154,17 +158,24 @@ describe('PLAN.md queue convention (universal)', () => {
   // extraction brief §3 Tier A: the journal template. A journal with no stated
   // fields decays into a diary — and the fields are what a later reader (or a
   // sweep) can actually cross-check.
-  it('states the journal entry fields, so an entry can be incomplete on purpose', async () => {
-    const plan = await readFile(
-      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'PLAN.md'),
-      'utf8',
-    );
-    expect(plan).toContain('## Journal');
+  //
+  // AR-64 moved that template out of PLAN.md — `## Journal` was 58.1 KB of this
+  // repo's plan and ~22k tokens on every session that opened it. The fields are
+  // still pinned; what changed is the file a reader is sent to. The heading's
+  // ABSENCE from PLAN.md is asserted too, so the move cannot half-happen and
+  // leave two homes for one convention.
+  it('states the journal entry fields in journal/README.md, not in PLAN.md', async () => {
+    const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
+    const plan = await readFile(path.join(universal, 'PLAN.md'), 'utf8');
+    const readme = await readFile(path.join(universal, 'journal', 'README.md'), 'utf8');
+    // the SECTION, anchored to its own line: a plan that explains where the
+    // journal went may legitimately name the old heading in prose
+    expect(plan).not.toMatch(/^##\s+Journal\s*$/m);
     for (const field of ['done', 'escalated', 'stopped at', 'queue hygiene']) {
-      expect(plan.toLowerCase(), field).toContain(field);
+      expect(readme.toLowerCase(), field).toContain(field);
     }
     // a field the session cannot observe stays visibly empty, never estimated
-    expect(plan).toMatch(/never estimate|not estimated|visibly empty/i);
+    expect(readme).toMatch(/never estimate|not estimated|visibly empty/i);
   });
 });
 
