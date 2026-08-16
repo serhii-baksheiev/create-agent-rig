@@ -27,13 +27,12 @@ export function isSafeSegment(value: string): boolean {
  *
  * 🔴 **Why this is not {@link isSafeSegment}, and why widening that one instead
  * would be wrong.** `isSafeSegment` answers "can this steer a path", and it is
- * what every segment of an installed path is held to at write time, through
- * {@link resolveInside} — `CLAUDE.md` and `.claude/rules/workflow.md` have to
- * keep passing it, so it cannot become this whitelist. But `project.name` is
- * substituted
- * into `.claude/scripts/stop-flag.mjs` **inside a single-quoted JavaScript
- * string literal**, and `guard-bash` imports that module on every Bash call. A
- * value that steers no path at all still closes that quote: it reaches code
+ * what {@link resolveInside} holds every path segment to when an upgrade
+ * writes — `CLAUDE.md` and `.claude/rules/workflow.md` have to keep passing it,
+ * so it cannot become this whitelist. But `project.name` is substituted into
+ * `.claude/scripts/stop-flag.mjs` **inside a single-quoted JavaScript string
+ * literal**, and `guard-bash` imports that module on every Bash call. A value
+ * that steers no path at all still closes that quote: it reaches code
  * execution in the hook process, and it silently disarms the kill switch,
  * because the paths it computes stop pointing at `~/.claude/<name>-loop-STOP`.
  * A brake that looks installed and is not is the worst of the two.
@@ -41,8 +40,13 @@ export function isSafeSegment(value: string): boolean {
  * So the rule is a whitelist, not a blacklist of the payloads anyone thought
  * of. It costs nothing real: `create` already refuses anything outside this
  * shape, and `projectNameFor` only ever emits `[a-z0-9._-]` — plus a leading
- * `_`, which is why the first character allows it. Nothing this repository can
- * legitimately produce is rejected here.
+ * `_`, which is why the first character allows it.
+ *
+ * One legitimate value it does reject on purpose: the **empty** region, which
+ * `init` writes to mean "no region". That carve-out belongs to the caller
+ * (`parseManifest`), not here — an empty string is exactly what a whitelist of
+ * substitutable characters should refuse, and folding "or empty" into this
+ * predicate would hand it to `name` and `scope` as well.
  */
 export function isSafeSubstitutionValue(value: string): boolean {
   return /^[a-z0-9_][a-z0-9._-]*$/.test(value);

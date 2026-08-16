@@ -78,12 +78,14 @@ export function parseManifest(raw: string): RigManifest | null {
     return null;
   }
   // Values, not just types. This file is committed, so it reaches a
-  // maintainer's disk through a pull request — and these four values are
-  // substituted into installed **files**, not only into paths. A name of
-  // `../..` would send a write out of the repository; a name carrying a quote
-  // closes the string literal `stop-flag.mjs` embeds it in, which `guard-bash`
-  // imports on every Bash call. So an unsafe value invalidates the whole
-  // manifest rather than being quietly corrected into something plausible.
+  // maintainer's disk through a pull request. A name of `../..` would send a
+  // write out of the repository — and `name` and `region` go further than
+  // paths: they are substituted into installed **files**, where a quote closes
+  // the string literal `stop-flag.mjs` embeds the name in, which `guard-bash`
+  // imports on every Bash call. (`scope` reaches no template today and a
+  // `stacks` entry names an overlay *directory*.) An unsafe value invalidates
+  // the whole manifest rather than being quietly corrected into something
+  // plausible.
   //
   // One check, not two: `isSafeSubstitutionValue` is strictly stronger than
   // `isSafeSegment` here — its first character excludes `.`, and its class

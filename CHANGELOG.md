@@ -16,18 +16,19 @@ content as a patch by the owner's call and stays recorded as one.
 ### Security
 
 - 🔴 **A committed `.claude/.rig-manifest.json` could run code on the machine
-  of whoever upgraded the rig.** `project.name` and `project.region` were
-  validated only as _path_ segments — they may not steer a write — but they are
-  substituted into installed **files**, and `.claude/scripts/stop-flag.mjs`
-  embeds the name inside a single-quoted JavaScript string literal that
-  `guard-bash` imports on every Bash call. A value closing that quote executed
-  in the hook process, **and** moved the kill switch's path off
+  of whoever upgraded the rig.** `project.name`, `project.scope`,
+  `project.region` and `stacks` were each validated — but only as _path_
+  segments, a predicate that asks whether a value can steer a write. Two of
+  them are also substituted into installed **files**:
+  `.claude/scripts/stop-flag.mjs` embeds the name inside a single-quoted
+  JavaScript string literal that `guard-bash` imports on every Bash call. A
+  value closing that quote steers no path at all and passed — it executed in
+  the hook process, **and** moved the kill switch's path off
   `~/.claude/<name>-loop-STOP`, so the brake read as installed while doing
   nothing. The manifest travels in pull requests, so the delivery was an
-  ordinary PR plus an `upgrade`. Those two values, plus `project.scope` and
-  `stacks`, are now held to the shape the rig actually produces
-  (`^[a-z0-9_][a-z0-9._-]*$`), and a manifest carrying anything else is void as
-  a whole rather than corrected.
+  ordinary PR plus an `upgrade`. All four are now held to the shape the rig
+  actually produces (`^[a-z0-9_][a-z0-9._-]*$`), and a manifest carrying
+  anything else is void as a whole rather than corrected.
 
   **Checking a rig you upgraded from a manifest you did not write — three
   places, because the name is not the only value that travelled.**
@@ -47,12 +48,24 @@ content as a patch by the owner's call and stays recorded as one.
 
 - **`upgrade` on a manifest-less rig wrote a manifest it could not read back.**
   Bootstrapping one, it took the project name from the directory name
-  **unslugged** for a `create` rig — correct for the directory `create` made,
-  wrong the moment it is renamed or cloned, and a directory called `My App`
-  produced a manifest the reader refuses outright. Every later run then said
-  `no manifest here (a pre-0.4.0 rig)` and re-detected from scratch. It is
-  slugged for both kinds now, the same way `init` has always done it. Rigs
-  whose directory is already a legal project name are unaffected.
+  **unslugged**, so a directory called `My App` produced a manifest the reader
+  refuses outright — and every later run then said `no manifest here (a
+pre-0.4.0 rig)` and re-detected from scratch. The directory name is now
+  slugged **only when the raw one is unreadable to the manifest**; a name the
+  reader accepts is written through untouched, so a rig generated as `my-app.`
+  keeps that name instead of becoming `my-app` and turning every substituted
+  file into a conflict.
+
+  ⚠ **What this does not fix, because the name still comes from the
+  directory:** rename or clone a rig into a differently-named directory and,
+  with no manifest to read, the upgrade bootstraps the **new** directory's
+  name. The substituted files then no longer match, so `CLAUDE.md`, `PLAN.md`,
+  the `loop` skill and `.claude/scripts/stop-flag.mjs` come back as conflicts —
+  kept, reported, never overwritten, but four documents to reconcile by hand.
+  That behaviour is unchanged from 0.4.0. The way to avoid it is the same as it
+  ever was: **commit `.claude/.rig-manifest.json`**, which records the name and
+  removes the guess entirely.
+
 - **`init --force` inside a generated project used to make `upgrade` stop
   refreshing the stack overlays — silently.** `init` rewrote the rig manifest
   as `kind: "init"`, `stacks: []`, empty `region`, and `upgrade` trusts a

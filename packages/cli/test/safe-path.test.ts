@@ -82,4 +82,14 @@ describe('the values safe to substitute into an installed file', () => {
   it('refuses the empty string', () => {
     expect(isSafeSubstitutionValue('')).toBe(false);
   });
+
+  it('accepts a value that is only its first character', () => {
+    // Every other accepted value here is two characters or more, which leaves
+    // the tail quantifier untested: a class that required a second character
+    // would pass the whole suite while refusing `projectNameFor`'s one-char
+    // slug and a project `create` accepts by name.
+    expect(isSafeSubstitutionValue('x')).toBe(true);
+    expect(isSafeSubstitutionValue('_')).toBe(true);
+    expect(isSafeSubstitutionValue('7')).toBe(true);
+  });
 });
