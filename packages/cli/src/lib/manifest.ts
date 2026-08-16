@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { isSafeSegment } from './safe-path.js';
+import { isSafeSegment, isSafeSubstitutionValue } from './safe-path.js';
 
 /**
  * The install manifest: what this rig installed, at which version, and the
@@ -82,10 +82,20 @@ export function parseManifest(raw: string): RigManifest | null {
   // through a pull request. A name of `../..` would send every write out of
   // the repository, so an unsafe value invalidates the whole manifest rather
   // than being quietly corrected into something plausible.
+  //
+  // 🔴 Two questions, two predicates, and the second one is why an upgrade is
+  // not a code-execution vector: these values are substituted into installed
+  // **files**, not only into paths — `stop-flag.mjs` embeds the name inside a
+  // JS string literal that `guard-bash` imports on every Bash call. "Steers no
+  // path" was never enough for that; see `isSafeSubstitutionValue`.
   if (!isSafeSegment(project.name) || !isSafeSegment(project.scope)) return null;
+  if (!isSafeSubstitutionValue(project.name) || !isSafeSubstitutionValue(project.scope)) {
+    return null;
+  }
   if (project.region !== '' && !isSafeSegment(project.region)) return null;
+  if (project.region !== '' && !isSafeSubstitutionValue(project.region)) return null;
   if (!Array.isArray(m.stacks) || m.stacks.some((s) => typeof s !== 'string')) return null;
-  if (m.stacks.some((s) => !isSafeSegment(s))) return null;
+  if (m.stacks.some((s) => !isSafeSegment(s) || !isSafeSubstitutionValue(s))) return null;
   if (!isStringRecord(m.files)) return null;
   return {
     version: m.version,

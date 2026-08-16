@@ -22,6 +22,31 @@ export function isSafeSegment(value: string): boolean {
 }
 
 /**
+ * A value that can be substituted into an **installed file** without changing
+ * what that file means.
+ *
+ * 🔴 **Why this is not {@link isSafeSegment}, and why widening that one instead
+ * would be wrong.** `isSafeSegment` answers "can this steer a path", and the
+ * manifest's own `files` keys — `CLAUDE.md`, `.claude/rules/workflow.md` — are
+ * exactly the values that need to pass it. But `project.name` is substituted
+ * into `.claude/scripts/stop-flag.mjs` **inside a single-quoted JavaScript
+ * string literal**, and `guard-bash` imports that module on every Bash call. A
+ * value that steers no path at all still closes that quote: it reaches code
+ * execution in the hook process, and it silently disarms the kill switch,
+ * because the paths it computes stop pointing at `~/.claude/<name>-loop-STOP`.
+ * A brake that looks installed and is not is the worst of the two.
+ *
+ * So the rule is a whitelist, not a blacklist of the payloads anyone thought
+ * of. It costs nothing real: `create` already refuses anything outside this
+ * shape, and `projectNameFor` only ever emits `[a-z0-9._-]` — plus a leading
+ * `_`, which is why the first character allows it. Nothing this repository can
+ * legitimately produce is rejected here.
+ */
+export function isSafeSubstitutionValue(value: string): boolean {
+  return /^[a-z0-9_][a-z0-9._-]*$/.test(value);
+}
+
+/**
  * `rel` resolved under `root`, or `null` when it would land anywhere else —
  * including an absolute path, an empty path, and the classic sibling
  * (`/tmp/rig` must not contain `/tmp/rig-evil`).

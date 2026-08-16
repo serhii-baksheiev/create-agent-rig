@@ -218,6 +218,21 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * `init` install set and the stack overlays left the plan entirely: not
  * reported as deleted, not as a conflict, simply absent. `init` describes what
  * it wrote; it does not get to re-describe how the rig was installed.
+ *
+ * ⚠ **The limit, stated because the fix reads as wider than it is:** this
+ * preserves a manifest, so a rig that has none — anything from before 0.4.0 —
+ * still gets `kind: 'init'`, no stacks and an empty region, and the advisory in
+ * `runInit` stays silent for the same reason. `upgrade`'s `detectInstall`
+ * recovers all three from the files on disk, so those values are not
+ * unavailable, only unavailable *here*: reaching for it would point
+ * `commands/init` at `commands/upgrade`, which already imports this module.
+ * The fallback below is the honest floor, not the best available answer.
+ *
+ * The item that asked for this also floated refusing `init` outright on a
+ * `create` manifest without `--force`. It is already refused a step earlier and
+ * for a different reason — {@link initProject} throws on the existing
+ * `CLAUDE.md`. The gap that leaves is a `create` rig whose `CLAUDE.md` was
+ * deleted, and this function is what makes that case safe.
  */
 async function recordInstall(
   repoDir: string,
@@ -231,9 +246,9 @@ async function recordInstall(
   const manifest: RigManifest = {
     version: await packageVersion(),
     kind: previous?.kind ?? 'init',
-    // No previous manifest means no recorded scope or region: `init` adopts an
-    // existing repository rather than generating one, so the directory name is
-    // all there is to go on.
+    // No manifest: fall back to the directory name, which is all this module
+    // reads. See the limit above — `upgrade` can do better from the files
+    // themselves, and `init` deliberately does not reach for it.
     project: previous?.project ?? { name, scope: name, region: '' },
     stacks: previous?.stacks ?? [],
     files,

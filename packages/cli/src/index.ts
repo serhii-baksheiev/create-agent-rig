@@ -52,6 +52,10 @@ async function runInit(rawArgs: string[]): Promise<number> {
   // generated — reachable with --force — it is the wrong command: it installs
   // the process layer alone and never refreshes the stack overlays. Say so
   // before anything is written, so it is visible on --dry-run too.
+  //
+  // It is a manifest read, so a pre-0.4.0 rig with no manifest gets no advisory
+  // even when it came from `create` — the same limit `recordInstall` carries,
+  // and stated in both places because either one alone reads as wider.
   const existing = await readManifest(cwd);
 
   const plan = await planInit(cwd);

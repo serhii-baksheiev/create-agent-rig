@@ -156,4 +156,24 @@ describe('create-agent-rig init (inside a rig that came from `create`)', () => {
     expect(advisoryLines(result.stdout)).toEqual([]);
     expect(result.stdout).not.toMatch(/use `?upgrade`? to refresh/i);
   });
+
+  // The two tests above pin "never" and "over a create rig", which a condition
+  // of merely `manifest !== null` also satisfies — and that condition would tell
+  // every re-`init`ed rig it came from `create`. This is the case that separates
+  // them.
+  it('stays quiet when it re-installs over a rig `init` itself put there', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const first = await runCliIn(repo, ['init']);
+    expect(first.code, first.stderr).toBe(0);
+
+    const second = await runCliIn(repo, ['init', '--force']);
+    expect(second.code, second.stderr).toBe(0);
+
+    // the fixture is what the test claims: a manifest exists, and it says `init`
+    const manifest = JSON.parse(
+      await readFile(path.join(repo, '.claude', '.rig-manifest.json'), 'utf8'),
+    ) as { kind: string };
+    expect(manifest.kind).toBe('init');
+    expect(advisoryLines(second.stdout)).toEqual([]);
+  });
 });
