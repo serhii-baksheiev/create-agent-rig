@@ -75,6 +75,152 @@ const ticket = (over: Partial<Ticket> = {}): Ticket => ({
   ...over,
 });
 
+// --- measuring SCALING, because a wall-clock budget measures the runner ---------
+//
+// 🔴 Two tests below guard the same defect — the quadratic whitespace shape this
+// queue layer has now grown four times — and both of them used to assert an
+// ABSOLUTE budget over ONE untimed sample: `expect(elapsed).toBeLessThan(250)`.
+// That is not a measurement of the code, and CI proved it. Run 31956613905 failed
+// the fold test with `run 1: expected 328.73197700000014 to be less than 250` on
+// an implementation that was, and still is, correct: the real work is **~0.1 ms**
+// per call, so ~99.9% of that 328 ms was a scheduler or GC pause landing inside
+// the single sample the test happened to take. Its sibling case on the same
+// runner passed. A budget 800× the real cost sounds generous and is in fact a
+// coin toss, because the thing it is really bounding is how busy the machine is.
+//
+// What these tests actually claim is a claim about GROWTH, so that is what is
+// asserted now: cost at 4× the input, over cost at the input. Linear work cannot
+// exceed 4×; the quadratic spelling measures ~16× (verified below, against a
+// deliberately reintroduced defect). Two sizes, one ratio, no clock budget.
+//
+// **The statistic is the FASTEST call, not the average or the median**, and that
+// is the load-bearing choice. Timing noise is one-sided — a pause can only ever
+// add — so the fastest of several calls is the closest reading of the code's own
+// cost, while a mean is a reading of the runner's mood. It is not a stylistic
+// preference: replaying this exact procedure 200 times under a 16-way CPU
+// saturation, a median of 5 produced a ratio of **129** on healthy code (three
+// paused samples are enough to move a median), where the fastest of 9 stayed at
+// **1.39** for the fold and **4.32** for the hygiene checks across 450 saturated
+// measurements each.
+
+/** Timed calls per size. Only the fastest counts; the rest buy the odds. */
+const TIMED_CALLS = 9;
+
+/**
+ * The ceiling on one size's sampling: past this, stop taking samples.
+ *
+ * Nothing healthy comes near it. A warm call plus a full set of 9 costs 0.9 ms
+ * for the fold, and 24 ms / 97 ms for the two `hygieneOf` sizes on their
+ * expensive bracket shape — that shape, not the fold, is what this number has to
+ * clear.
+ *
+ * 🔴 **Two limits, because `invariants.md` asks a guard to state what it cannot
+ * do rather than let a reader infer cover that is not there.**
+ *
+ * - **Truncation is not uniformly safe.** Cutting the sample set short can only
+ *   raise the fastest reading. On the `4n` side that raises the ratio, toward a
+ *   false red, which is the harmless direction. On the `n` side it *lowers* the
+ *   ratio — toward a MISSED defect. The window is narrow (a call must exceed
+ *   ~222 ms to truncate the set at all, yet stay under `catastropheMs` to reach
+ *   the second reading), but narrow is not the same as absent, so it is written
+ *   down rather than described as failing safe.
+ * - **It bounds sampling, not the test.** The untimed warm call below is outside
+ *   the budget, and the deadline is checked only after a call returns, so the
+ *   real bound is `SAMPLE_BUDGET_MS` plus up to two full calls at this size. For
+ *   a defect worse than quadratic those two calls are themselves unbounded, and
+ *   `catastropheMs` cannot help — it reads a number the warm call has already
+ *   paid for. **And nothing else in this process bounds it either** — the
+ *   `timeout` on the two tests below is not a ceiling and must not be read as
+ *   one. Vitest cannot preempt a synchronously blocking body, and these bodies
+ *   are one `await load(…)` followed by an unbroken synchronous stretch, so the
+ *   timer fires only once that stretch has finished: measured, a 3,000 ms busy
+ *   loop under `{ timeout: 300 }` ran the full 3.00 s and *then* reported the
+ *   timeout. The overrun scales with the defect, not with the number. What the
+ *   timeout buys is that an eventual return is reported as a named failure
+ *   rather than a mystery — and it costs the ratio, which is lost the moment the
+ *   deadline decides the message. The real wall-clock ceiling here is the CI
+ *   job's.
+ */
+const SAMPLE_BUDGET_MS = 2_000;
+
+/**
+ * The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`.
+ *
+ * Floored at one microsecond — a reading of exactly 0 would make every ratio
+ * `Infinity` and print a failure message carrying no measurement at all. Not
+ * reachable at today's costs — the smallest measured call is 22 µs — so this is
+ * insurance against a future subject cheap enough to disappear into the timer.
+ */
+const millisPerCall = (call: () => void): number => {
+  call(); // warm the JIT and compile any lazily-built regex, untimed
+  let fastest = Infinity;
+  const deadline = performance.now() + SAMPLE_BUDGET_MS;
+  for (let i = 0; i < TIMED_CALLS; i += 1) {
+    const started = performance.now();
+    call();
+    fastest = Math.min(fastest, performance.now() - started);
+    if (performance.now() >= deadline) break;
+  }
+  return Math.max(fastest, 0.001);
+};
+
+interface ScalingBounds {
+  /** The smaller input size, in characters. The larger one is always 4×. */
+  n: number;
+  /**
+   * The most the cost may grow for 4× the input. Chosen per subject, from its
+   * own measurements — the two differ because only one of them pays for I/O.
+   *
+   * 🔴 What a bound of this size does NOT detect, so "stays linear" is not read
+   * as "detects any superlinearity": over a 4× spread, a bound of 8 admits
+   * anything up to n^1.5 and a bound of 6 up to n^1.29, which means `n log n`
+   * (≈4.6 at these sizes) passes silently. That is a limit of comparing two
+   * sizes, not a regression — the absolute budget it replaced was blind to the
+   * same growth, and to quadratic terms ~22–350× larger besides.
+   */
+  maxRatio: number;
+  /** A cost at `n` this far above the real one is a catastrophe, not a pause. */
+  catastropheMs: number;
+}
+
+/**
+ * Assert that `prepare(size)`'s call costs at most `maxRatio`× as much on 4× the
+ * input — one mechanism for both subjects, per `invariants.md`.
+ *
+ * `prepare` builds the input OUTSIDE the timed call, so `' '.repeat(n)` is never
+ * charged to the code under test.
+ *
+ * The catastrophe ceiling runs BEFORE the 4× measurement on purpose. A defect
+ * worse than quadratic would make that second measurement take minutes, and a
+ * vitest timeout reports nothing about what was measured; this fails first, with
+ * the numbers in the message.
+ */
+const staysLinear = (
+  what: string,
+  prepare: (size: number) => () => void,
+  { n, maxRatio, catastropheMs }: ScalingBounds,
+): void => {
+  const atN = millisPerCall(prepare(n));
+  expect(
+    atN,
+    `${what}: ${n} characters cost ${atN.toFixed(3)}ms in the fastest of ` +
+      `${TIMED_CALLS} calls, over the ${catastropheMs}ms catastrophe ceiling. ` +
+      `That is far past anything a pause explains, so the ${n * 4}-character ` +
+      'measurement is skipped rather than left to run for minutes.',
+  ).toBeLessThan(catastropheMs);
+
+  const at4N = millisPerCall(prepare(n * 4));
+  const ratio = at4N / atN;
+  expect(
+    ratio,
+    `${what}: 4× the input cost ${ratio.toFixed(2)}× the time — ` +
+      `${at4N.toFixed(3)}ms at ${n * 4} characters against ${atN.toFixed(3)}ms at ` +
+      `${n}, each the fastest of ${TIMED_CALLS} calls. Expected under ` +
+      `${maxRatio}×: linear work cannot exceed 4×, and the quadratic whitespace ` +
+      'shape this guards against measures ~16×.',
+  ).toBeLessThan(maxRatio);
+};
+
 describe('the seam is declared, so a second tracker is an adapter and not a rewrite', () => {
   it('every adapter implements the same named operations', async () => {
     const { ADAPTER_CONTRACT } = await load('core.mjs');
@@ -209,17 +355,45 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
   // why this file reintroduced the same defect one directory away. The body is
   // attacker-written on any public tracker, and this function runs per item on
   // every selection.
-  it('stays linear on a body at the tracker size limit', async () => {
+  //
+  // Bounds GROWTH, not milliseconds — see "measuring SCALING" at the top of this
+  // file for the CI failure that retired the absolute budget. This subject sets
+  // its own numbers rather than borrowing the fold's, because it is pure: with no
+  // constant I/O to dilute it, healthy growth sits AT the linear 4.0 (measured
+  // 3.96–4.32 over 450 samples under CPU saturation) rather than the fold's ~1.4,
+  // so 8 is the bound that still separates it from the quadratic 16.05.
+  //
+  // 🔴 The sizes are 8k and 32k, where the old fixtures were 65k and 20k — so
+  // this NO LONGER measures a body at the tracker's 64k cap, and the name says
+  // 'as it grows' rather than 'at the tracker size limit' for that reason. A
+  // name is a coverage claim, and this one had to move with the fixtures.
+  // Shrinking them buys sensitivity rather than spending it: a ratio bound at
+  // these sizes fires on a quadratic term ~35× smaller than the retired 250 ms
+  // budget caught at 20k on this same shape. What it costs is the tail — a
+  // defect that only turns superlinear ABOVE 32k is now invisible here, and the
+  // reproduced link defect measures 16.07× at these sizes — a second, separate
+  // run of the same reproduction as the 16.05× above, not a different
+  // measurement — so nothing known
+  // lives in that gap.
+  it('stays linear on a body as it grows', { timeout: 60_000 }, async () => {
     const { hygieneOf } = await load('core.mjs');
-    const cases = [
-      `[x](${' '.repeat(65_000)}`, // an unterminated link: the quadratic shape
-      `blocked by${' '.repeat(65_000)}`,
-      `${'['.repeat(20_000)}x`,
+    const shapes: Array<[string, (size: number) => string]> = [
+      // the unterminated link is the quadratic shape, and it goes first so a
+      // regression is reported before the slower shapes are measured
+      ['an unterminated link', (size) => `[x](${' '.repeat(size)}`],
+      ['a dependency line before a run of spaces', (size) => `blocked by${' '.repeat(size)}`],
+      ['a run of open brackets', (size) => `${'['.repeat(size)}x`],
     ];
-    for (const body of cases) {
-      const started = performance.now();
-      hygieneOf(ticket({ body }));
-      expect(performance.now() - started, body.slice(0, 12)).toBeLessThan(250);
+
+    for (const [shape, body] of shapes) {
+      staysLinear(
+        `hygieneOf on ${shape}`,
+        (size) => {
+          const item = ticket({ body: body(size) });
+          return () => hygieneOf(item);
+        },
+        { n: 8_192, maxRatio: 8, catastropheMs: 500 },
+      );
     }
   });
 
@@ -1837,18 +2011,58 @@ describe('plan-md files a triage proposal instead of instructing a human to file
   // is why every injection fixture missed it. `core.mjs` calls this the third
   // occurrence of the shape and says remembering it once was evidently not
   // enough; this is the fourth, so it gets the same bar the sibling has.
-  it('folds a field onto one line in linear time', async () => {
+  //
+  // Bounds GROWTH, not milliseconds: this is the test CI failed at 328ms on ~0.1ms
+  // of real work, and the whole diagnosis is at the top of this file.
+  // The sizes are 4k/16k rather than the old 65k: a scaling claim needs a PAIR of
+  // sizes, not the biggest one, and the pair already separates healthy 1.39 from
+  // quadratic 16.5 while keeping a red run legible in seconds instead of minutes.
+  //
+  // 🔴 **Count two detectors here, not three.** All three original shapes are
+  // kept, but the trailing-newline one CANNOT fail on the defect described
+  // above: a newline after the run is what makes that spelling fast ("0s the
+  // moment a newline appears after the run"), so it measures ~1.0× broken and
+  // ~1.13× healthy. Against the known defect it contributes nothing, and it is
+  // here as a detector of the opposite polarity — a future defect that is slow
+  // precisely WHEN a line terminator follows the run. That is worth keeping and
+  // is not what the shape's history suggests, so it is stated rather than left
+  // for a reader to count coverage they do not have.
+  //
+  // One measurement bias, known and left alone: the three shapes share one plan
+  // file, so the `4n` reading scans a few more bullets than the `n` reading did.
+  // It pushes the ratio UP — toward a false red, the harmless direction — and
+  // measures as nil (1.10–1.32 against a bound of 6). A fresh plan per size
+  // would remove the term and cost more machinery than the term is worth.
+  it('folds a field onto one line in linear time', { timeout: 60_000 }, async () => {
     const { proposeTriage } = await load('plan-md.mjs');
     const planPath = await withPlan();
-    const runs = [' '.repeat(65_000), '\t'.repeat(65_000) + 'x', ' '.repeat(65_000) + '\n'];
+    const shapes: Array<[string, (size: number) => string]> = [
+      ['a run of spaces', (size) => ' '.repeat(size)],
+      ['a run of tabs before a non-space', (size) => `${'\t'.repeat(size)}x`],
+      ['a run of spaces before a newline', (size) => `${' '.repeat(size)}\n`],
+    ];
+    let nonce = 0;
 
-    for (const [i, run] of runs.entries()) {
-      const started = performance.now();
-      proposeTriage(
-        { finding: `f${i}${run}`, part: 'p', change: `c${i}`, proof: 'pr' },
-        { planPath },
+    for (const [shape, whitespace] of shapes) {
+      staysLinear(
+        `proposeTriage folding ${shape}`,
+        (size) => {
+          const run = whitespace(size);
+          return () => {
+            nonce += 1;
+            // Only a NEW proposal is folded — an increment rewrites a counter and
+            // never builds a bullet — so every call carries its own fingerprint,
+            // and this checks that rather than trusting it. A deduped call would
+            // time the wrong code path and report a flat, meaningless ratio.
+            const result = proposeTriage(
+              { finding: `fold ${nonce} ${run}`, part: 'p', change: 'c', proof: 'pr' },
+              { planPath },
+            );
+            if (!result.filed) throw new Error('deduped, so nothing was folded');
+          };
+        },
+        { n: 4_096, maxRatio: 6, catastropheMs: 500 },
       );
-      expect(performance.now() - started, `run ${i}`).toBeLessThan(250);
     }
   });
 
