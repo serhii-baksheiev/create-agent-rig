@@ -47,7 +47,26 @@ travels one path to merge, in this order:
 
 1. **Local checks** — the full suite, lint, typecheck, all green locally first.
    A red check is information, never something to retry until green (`autonomy.md`).
-2. **Reviewer fan-out**, by what the change touches:
+2. **Reviewer fan-out**, by what the change touches — and *how much* fan-out is
+   decided first, in ascending order of cost:
+
+   | lane | what reaches it | what it costs |
+   | --- | --- | --- |
+   | `deterministic` | every changed file is a derived artifact | the checks alone; no reviewer |
+   | `fast-path` | documentation outside the rulebook | `prose-reviewer` alone |
+   | `model` | everything else | the full fan-out below |
+
+   `.claude/scripts/decision-router.mjs` decides this from the changed paths,
+   and **risk flags escalate ahead of all three**: a file under a declared
+   elevated path, a dependency manifest, a path naming auth or secrets or
+   sessions, a deleted test. Any one of them means `model`, however cheap the
+   change otherwise looked, and a path the router cannot classify means `model`
+   too. The cheap lanes are an addition to this gate, never a subtraction from
+   it — `code-reviewer` was "always" because every change was assumed to carry
+   code, and the router decides that question mechanically instead of assuming
+   it. A rulebook document is code here, so it never reaches the prose lane.
+
+   On the `model` lane:
    - the `code-reviewer` agent **always**;
    - `security-scanner` when it touches auth, secrets/configuration, input
      parsing, file handling, or outbound calls;

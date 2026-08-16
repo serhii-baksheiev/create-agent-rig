@@ -15,11 +15,49 @@ blockers.
    against the **remote** default branch (`origin/<default>`), not a local
    copy that may be behind — diagnosing from stale local code produces
    confidently-wrong reviews. Everything below is scoped to this diff.
+1b. **Route the diff before you spend on it.** This gate always ran its most
+   expensive path, so a typo fix in a README bought the same fan-out as a
+   rewrite of the storage layer. The dispatcher decides which lane the change
+   earns, in ascending order of cost:
+
+   ```
+   `deterministic` → `fast-path` → `model`
+   ```
+
+   ```sh
+   node .claude/scripts/decision-router.mjs --json
+   ```
+
+   `decision-router` reads the changed paths and returns the lane plus the
+   reviewers that lane requires. **Risk flags escalate ahead of all three** — a
+   file under a declared elevated path, a dependency manifest or a path naming
+   auth, secrets, tokens, sessions or permissions, a deleted test — and any one
+   of them lands the change in `model` however cheap it otherwise looked.
+
+   🔴 **The lane is on stdout; the exit code says only that the router ran.**
+   Never chain it on `&&`, and never read `0` as "cheap" — that misreading turns
+   this gate into a rubber stamp.
+
+   What each lane buys, and the one thing it does not:
+
+   - `deterministic` — every changed file is a derived artifact whose drift a
+     check already catches. Step 2 alone is the gate; no reviewer runs.
+   - `fast-path` — documentation outside the rulebook. `prose-reviewer` alone.
+   - `model` — everything else, and `code-reviewer` runs on it **always**, with
+     the conditional gates below beside it. This is the path this skill has
+     always taken and nothing about it is relaxed here.
+
+   🔴 **The cheap lanes are an addition, never a subtraction.** `code-reviewer`
+   was "always" because every change was assumed to contain code; the router
+   decides that question mechanically instead of assuming it. A change the
+   router cannot classify is `model`, not cheap. If you disagree with a lane,
+   run the expensive one — never argue a diff downward.
 2. **The project's own checks.** Run the full check suite the project defines
    (see its README / package scripts). Any failure is an instant HOLD — never
    argue with a red check, never rerun flakiness to green
    (`.claude/rules/workflow.md`).
-3. **Reviewer fan-out.** Launch the `code-reviewer` agent on the diff — always,
+3. **Reviewer fan-out**, as step 1b's lane named it. On the `model` lane launch
+   the `code-reviewer` agent on the diff — always,
    and **pass it the text of the queue item this branch implements**. Its
    checklist blocks on a change that contradicts its item, and a reviewer given
    only a diff cannot run that check: a cold context has no way to know what was

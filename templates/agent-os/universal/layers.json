@@ -19,6 +19,7 @@
     ".claude/skills/check-premises/SKILL.md",
     ".claude/skills/worktree-task/SKILL.md",
     ".claude/scripts/detect-missed-gate.mjs",
+    ".claude/scripts/decision-router.mjs",
     ".claude/scripts/reconcile-external-prs.mjs",
     ".claude/scripts/stop-flag.mjs",
     ".claude/scripts/git-env.mjs",
