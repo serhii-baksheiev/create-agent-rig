@@ -109,6 +109,32 @@ function compose() {
     '.claude/hooks/dod-checks.json',
     JSON.stringify(['pnpm lint', 'pnpm typecheck', 'pnpm test:unit']) + '\n',
   );
+  // Repo-specific override, same class as the one above: this repo's queue lives
+  // on a Jira board, while a generated project must stay on the zero-setup
+  // `plan-md` default — it has no Jira, no credentials and no board of ours.
+  //
+  // Why an override rather than editing the file in place: `.claude/queue.json`
+  // is COMPOSED from the template, so an in-place edit is drift and `--check`
+  // fails. And why not exempt the file from composition instead — the obvious
+  // alternative: an exempted file is one the drift check stops reading, which is
+  // precisely the silent divergence `--check` exists to catch.
+  //
+  // It DERIVES rather than replaces: the two keys this repo decides are set over
+  // whatever the template ships, so a key added there later (a schema version, a
+  // state-file path, new default options) reaches this repo on the next sync
+  // instead of being silently dropped by a literal.
+  out.set(
+    '.claude/queue.json',
+    JSON.stringify(
+      {
+        ...JSON.parse(out.get('.claude/queue.json')),
+        adapter: 'jira',
+        options: { project: 'AR' },
+      },
+      null,
+      2,
+    ) + '\n',
+  );
   return out;
 }
 

@@ -373,22 +373,30 @@ In practice: open an empty file and write the rule in your own words rather than
 (`https://sbaksheiev.atlassian.net/jira/software/projects/AR/boards/34/backlog`).**
 This file no longer holds work items; the split rule at the top of the document
 now reads literally — a fact belongs here, a unit of work belongs in a ticket.
-The switch to the `jira` adapter is **not** a one-line edit and is filed as
-AR-45 (Operator + elevated): `.claude/queue.json` is composed from
-`templates/agent-os/universal/.claude/queue.json`, so editing it in place fails
-the drift check — the same mechanism that sent AR3-36's runtime value to
-`.claude/queue.state.json` — and the adapter needs `JIRA_BASE_URL` /
-`JIRA_EMAIL` / `JIRA_API_TOKEN` in the environment plus `options.project`
-(`AR`), none of which is set today. Ruled (owner, 16 Aug): the ADAPTER is
-fixed, not the board — `jira.mjs` **will** read the tier from the `elevated`
-label and **will** exclude `operator-queue`/`triage` by label itself; no
-`human-review` marker on Jira (it would mean something else than on GitHub),
-no jql gymnastics. Both clauses are future on purpose: today `jira.mjs:94`
-reads the tier from `human-review` and its default query excludes `triage`
-alone, which is the defect AR-45 exists to close. Until AR-45 lands the
-loop runs `plan-md` against an empty section and stops `queue-empty`. When it
-lands, the AR2-1 question closes for this repo: the evidence key is the issue
-key, so the evidence gate's full path is finally reachable here (see AR-34).
+**The switch to the `jira` adapter LANDED (AR-45, 16 Aug).** `.claude/queue.json`
+now reads `{"adapter":"jira","options":{"project":"AR"}}`, and the loop selects
+from board 34. The obstacle this paragraph used to describe was real and is
+resolved rather than removed: `.claude/queue.json` is composed from
+`templates/agent-os/universal/.claude/queue.json`, so an in-place edit is still
+drift — the value is written by a repo-specific override in `compose()`
+(`scripts/sync-agent-os.mjs`), the same class as the `dod-checks.json` override,
+which keeps `--check` verifying it. Exempting the file was the rejected
+alternative: an exempted file is one the drift check stops reading. The adapter
+still needs `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` in the
+environment; the local form is a file **outside** the repository read
+per-invocation with `node --env-file`, never an exported variable.
+
+Ruled (owner, 16 Aug) and now implemented: the ADAPTER was fixed, not the
+board — `jira.mjs:100` reads the tier from the `elevated` label, and
+`buildJql` excludes `operator-queue` and `triage` by label itself from the one
+`EXCLUDED_LABELS` list (`jira.mjs:159`); no `human-review` marker on Jira (it
+means something else than on GitHub, where `github-issues.mjs` keeps it), no
+jql gymnastics. The same change migrated the retired `GET /rest/api/3/search`
+— `410 Gone`, measured — to `POST /rest/api/3/search/jql`; that one endpoint
+had been breaking **both** selection and the triage dedupe, and is why the
+board looked empty. With `jira` the AR2-1 question closes for this repo: the
+evidence key is the issue key, so the evidence gate's full path is reachable
+here (see AR-34).
 
 🔴 **The heading above stays, and it is load-bearing** — `plan-md.mjs` throws
 *"has no `## Agent queue` heading … a structural problem in the file, not an
@@ -406,19 +414,24 @@ real ticket, so a reader resolving one gets an unrelated issue and no error.
 Brief-sense keys are not rewritten here — the journal is a record — so check
 which numbering a citation is in before following it.
 
-**Under `plan-md` this section is deliberately EMPTY** — no bullet below this
-line is a work item, and `parsePlan` must return zero. A run on the `plan-md`
-adapter therefore stops `queue-empty` here, which is the honest reading until
-the adapter switch below lands (AR-45); it must not fall back to inventing
-work from prose. The paragraphs that follow are conventions, written as
-prose on purpose so the adapter cannot mistake them for items.
+**This section is deliberately EMPTY** — no bullet below this line is a work
+item, and `parsePlan` must return zero. 🔴 **This repo no longer reads it:**
+since AR-45 the configured adapter is `jira`, so the work is on board 34 and
+this section is not where a run looks. It stays empty and its heading stays
+present for the reason the block above gives — a missing heading is
+`queue-unreadable`, not `queue-empty`. A run that somehow finds itself on
+`plan-md` here stops `queue-empty`, which remains the honest reading; it must
+not fall back to inventing work from prose. The paragraphs that follow are
+conventions, written as prose on purpose so the adapter cannot mistake them
+for items.
 
 Conventions on the board (they mirror what this section used to encode).
 **Labels:** `agent-queue` = the old Agent queue; `operator-queue` = the old
 Operator queue (decisions, Tier-2, watchers); `triage` = proposals filed by a
 run, unselectable until a human promotes them. 🔴 **What keeps those two out
-of selection is the exclusion in the ruling above — the adapter reading their
-own label — and NOT a `ready` marker.** `ready` is a human-facing hint that no
+of selection is the exclusion implemented in the ruling above — the adapter
+reading their own label, from `EXCLUDED_LABELS` in `jira.mjs` — and NOT a
+`ready` marker.** `ready` is a human-facing hint that no
 selection path reads. What occurs exactly once in the queue layer is the
 **label check** — `grep -rn "'ready'" .claude/scripts/queue/` returns one line,
 `core.mjs:206`, inside `hygieneOf`, which only *reports* a `stale-ready-label`.
@@ -426,10 +439,13 @@ The bare word returns nine (`grep -rn ready .claude/scripts/queue/ | grep -v
 already`); of the other eight, two are the rest of that same `hygieneOf`
 return (`core.mjs:208`, `:210`) and six are comments — one of which,
 `core.mjs:582`, is the ordinary English word and not the label at all. Two of
-the six, `jira.mjs:280` and
+the six, `jira.mjs:338` and
 `github-issues.mjs:182`, describe the absence of a `ready` marker as part of
 what keeps a proposal out of selection, which is looser than the mechanism and
-is why this paragraph exists.
+is why this paragraph exists. ⚠ Those two line numbers are the ones AR-45's
+change left valid; a line pointer into a file this plan does not own goes stale
+on the next edit to it, which is why the surrounding sentence names what to
+look for and not only where.
 Resting the split on it would be worse than useless: an adapter filtering on
 `labels = ready` against a board that does not carry it returns an empty set,
 and an empty set with nothing skipped is `queue-empty` — exit 0, a successful
@@ -474,11 +490,15 @@ AR-36 (0.5 decisions: `upgrade` on a provably-written `settings.json`;
 `init --force`), AR-37 (watchers: AR-4 C-0…C-2 entry condition; tell the
 users and set a feedback date; the downstream reverse port), AR-38 (rule the
 `loop` §9 self-contradiction on where a close is written — under `jira` half
-of it dissolves, say so in the rule), AR-45 (the adapter switch itself).
-Proposals in `triage`: AR-39…AR-43. ⚠ Under `plan-md`, `proposeTriage` still
-appends to THIS heading — until AR-45 lands, a proposal filed by a run lands
-here as a bullet and must be carried to Jira by hand; that is a known cost of
-the interim. 🔴 **Carried proposals then STAY here as bullets, marked
+of it dissolves, say so in the rule). **AR-45 (the adapter switch) is DONE.**
+Proposals in `triage`: AR-39…AR-43. ✅ `proposeTriage` now files to the board:
+with the adapter on `jira`, a proposal becomes a `triage`-labelled issue and
+the hand-carry step this paragraph used to describe is gone. The bullets below
+stay for the reason the next paragraph gives — they are the fingerprint's home
+under `plan-md`, and AR-48 is what moves the dedup base to the configured
+adapter. Until it does, a fingerprint filed before the move is invisible to a
+`jira` dedupe, so a pre-migration proposal can be filed again as a fresh
+`seen ×1`; that is AR-48's whole subject and it is not fixed here. 🔴 **Carried proposals then STAY here as bullets, marked
 `[carried → AR-n]`, until AR-48 moves the dedup base to the configured
 adapter: the bullet is the fingerprint's home under `plan-md`, not an open
 item.** Deleting a carried bullet would hand-perform the defect AR-48 is
@@ -505,6 +525,76 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### the adapter was calling a removed endpoint, and the gate caught two claims I had written myself
+
+- **item** — AR-45, the adapter switch. **Not selected by the loop**, and it
+  could not have been: it carries `operator-queue`, which this very PR taught
+  selection to exclude. The owner selected it by hand and directed the run to
+  it. Recorded because provenance that is not written down gets read as
+  adapter selection by the next person
+- **premises** — `PREMISES HOLD`. `check-premises` correctly reported the 410
+  as **unverifiable from inside the repository** — no file can confirm a claim
+  about Atlassian's live API — and named the one thing that would settle it.
+  That thing was then run: `GET /rest/api/3/search` → **410 Gone**, with
+  `GET /rest/api/3/myself` → 200 on the same credential, so the path is retired
+  rather than the token being bad
+- **the defect, and why 912 green checks never saw it** — one retired endpoint
+  fed **both** critical operations, `listEligible` and the `proposeTriage`
+  dedupe, so the loop reported `queue empty` against a board holding 70 open
+  issues. Not one test in this repo touches Jira; a retired endpoint is
+  invisible to every one of them. The lesson is the evidence class, not the
+  coverage number
+- **🔴 the gate found three real defects and two were mine** — (1)
+  `code-reviewer` proved by **mutation** that the rewritten JQL test was
+  *weaker* than the one it replaced: inverting `!=` to `=`, so selection takes
+  *only* the loop's own proposals and the owner's lane, left all 32 tests in
+  the file green. Re-pinned in both directions, and the same mutation was
+  re-run to confirm the fix now fails 1 test. (2) A comment of mine claimed a
+  joined `fields` string is accepted as one field name and fails **silently**;
+  measured, it answers `400 Invalid request payload` — it fails **loudly**. The
+  comment was wrong in the direction that costs most, because it told the next
+  editor which symptom to stop looking for. (3) This repo's ticket key `AR-54`
+  had leaked into `templates/agent-os/universal/`, which ships verbatim to
+  every generated project — written while looking at the synced copy, where it
+  is perfectly at home
+- **a measured form rejected on readability** — `labels NOT IN (a, b)` is valid
+  JQL and was confirmed live. It was not shipped: its nested parentheses hide
+  the `OR labels IS EMPTY` guard from anything matching innermost groups. Both
+  forms were then run against the live board and returned **identical sets**,
+  so the choice carries no behaviour. Measuring the equivalence is what made it
+  a readability decision instead of a guess
+- **the board changed under the run, and the fresh-query rule earned its keep** —
+  two counts of the same query disagreed (59/53 vs 56). Treated as a possible
+  defect in the new query and diffed issue by issue; the cause was external:
+  **AR-68, AR-69 and AR-70 were created at 10:43**, after this run's first
+  query at 10:38. A run working from a cached list would have selected against
+  a board that no longer existed and never known
+- **🔴 a gap in the gate's own integrity, found by declining to exploit it** —
+  `autonomy.md` rests the Tier-2 sweep on the `human-review` label because
+  "applying one needs repository permission, whereas the PR body is written by
+  whoever opened the PR". In this repository **the agent has that permission**:
+  `gh pr edit --add-label` was available and would have worked. The label was
+  left for the owner, who applied it. As it stands the label is no stronger
+  evidence than the body it is supposed to outrank, and the difference is held
+  by discipline rather than by a mechanism
+- **left undone, named so it is not mistaken for done** — `operator-queue` has
+  no `SKIP_CAUSES` entry, so the loop can no longer report "N items sit in the
+  owner's lane": the filter drops them before the skip report is built. Fixing
+  it reaches `core.mjs` and therefore every adapter, which is more than this
+  item bought
+- **unblocked** — AR-54 (`Blocks` link, resolved by this merge). Asked and
+  answered from the links, not from labels: the post-change `next` run printed
+  AR-54's blocker by name. Three other items remain blocked by tickets this
+  change did not touch (AR-51←AR-70, AR-69←AR-62, AR-65←AR-63)
+- **outcome** — `clean-pass`. Every stage produced its artifact from documented
+  inputs; 889/889 local, all four CI checks green on the head SHA, and the
+  end-to-end claim verified by running the real CLI against the real board
+- **cost** — 4 subagents (`test-writer`, `code-reviewer`, `security-scanner`,
+  `prose-reviewer`) plus the `check-premises` skill once — a skill, not an
+  agent, counted separately for that reason; 1 PR, 8 check runs consumed
+  (4 named checks × 2 commits), 0 re-runs; 0 deploys. Token and currency
+  figures: **not observed**
 
 ### the queue left the file, and eight review rounds bought six of their own defects
 
@@ -554,8 +644,10 @@ operational memory, not an archive. Fields per the template in
   conventions named `ready` as the selection label and `elevated` as the tier
   marker, and the `jira` adapter reads neither. Measured on the live board
   through a Jira connection this session had, not inferred — `labels =
-  "human-review"` returns **0**, so under `jira.mjs:94` all 45 issues would
-  arrive `normal` and the elevated ration would never hold anything; and the
+  "human-review"` returns **0**, so under `jira.mjs:94` *as it read then* all 45
+  issues would arrive `normal` and the elevated ration would never hold
+  anything (AR-45 has since made that line read `elevated`, at `jira.mjs:100` —
+  the pointer is left as written because the journal is a record); and the
   adapter's own default JQL returns **40 issues with `AR-35` second**, an
   `operator-queue` ticket reading "Not for the loop to take without the
   owner's tag action first". A documentation PR surfaced a defect that would
@@ -573,7 +665,7 @@ operational memory, not an archive. Fields per the template in
   figures were stale before this run (26 understating, measured at 36 items,
   against a live 33/9/24), and re-running that audit is a read of 24 items'
   prose that nobody has done. The marker/path divergence itself is what AR-1
-  now closes. Separately, `jira.mjs:280` and `github-issues.mjs:182` both
+  now closes. Separately, `jira.mjs:280` (now `:338`) and `github-issues.mjs:182` both
   describe the absence of a `ready` marker as part of what keeps a proposal
   out of selection — looser than the mechanism, which reads it in no selection
   path (`core.mjs:206` does read it, for the `stale-ready-label` hygiene
