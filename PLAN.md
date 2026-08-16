@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (0.4.0, published).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6), the port brief (§7.7) and the upgrade brief (§7.8). **Published on npm** — `0.1.0` through `0.4.0` are live and `0.4.0` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. An installed rig is brought forward by `create-agent-rig upgrade` rather than by a procedure in a release note. `0.4.0` shipped **untagged** by the owner's decision, which the Operator queue carries as a live cost for 0.5.0. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (0.4.0, published; queue moved to Jira `AR` on 16 Aug 2026).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6), the port brief (§7.7) and the upgrade brief (§7.8). **Published on npm** — `0.1.0` through `0.4.0` are live and `0.4.0` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. An installed rig is brought forward by `create-agent-rig upgrade` rather than by a procedure in a release note. `0.4.0` shipped **untagged** by the owner's decision, which the Operator queue carries as a live cost for 0.5.0. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -369,166 +369,116 @@ In practice: open an empty file and write the rule in your own words rather than
 
 ## Agent queue
 
-Work an agent may take autonomously (Tier 0/1 — `.claude/rules/autonomy.md`).
-One line each, most valuable first; delete a line when it lands. This repo runs
-the `plan-md` adapter (`.claude/queue.json`), so **this heading is load-bearing**
-— renaming it makes the queue unreadable rather than empty.
+**Moved to Jira on 16 Aug 2026 — project `AR`, board 34
+(`https://sbaksheiev.atlassian.net/jira/software/projects/AR/boards/34/backlog`).**
+This file no longer holds work items; the split rule at the top of the document
+now reads literally — a fact belongs here, a unit of work belongs in a ticket.
+The switch to the `jira` adapter is **not** a one-line edit and is filed as
+AR-45 (Operator + elevated): `.claude/queue.json` is composed from
+`templates/agent-os/universal/.claude/queue.json`, so editing it in place fails
+the drift check — the same mechanism that sent AR3-36's runtime value to
+`.claude/queue.state.json` — and the adapter needs `JIRA_BASE_URL` /
+`JIRA_EMAIL` / `JIRA_API_TOKEN` in the environment plus `options.project`
+(`AR`), none of which is set today. Ruled (owner, 16 Aug): the ADAPTER is
+fixed, not the board — `jira.mjs` **will** read the tier from the `elevated`
+label and **will** exclude `operator-queue`/`triage` by label itself; no
+`human-review` marker on Jira (it would mean something else than on GitHub),
+no jql gymnastics. Both clauses are future on purpose: today `jira.mjs:94`
+reads the tier from `human-review` and its default query excludes `triage`
+alone, which is the defect AR-45 exists to close. Until AR-45 lands the
+loop runs `plan-md` against an empty section and stops `queue-empty`. When it
+lands, the AR2-1 question closes for this repo: the evidence key is the issue
+key, so the evidence gate's full path is finally reachable here (see AR-34).
 
-Current contents decompose the Flowa→rig port brief (`AR`, v2 of 2026-08-01) — an
-owner-supplied document that lives outside this repository, so an item citing an
-`AR-n` the queue does not list (`AR-3`'s other two checks, `AR-4`) points into it
-and is stated in full where it matters below. The brief's 🔴 rule governs every
-one of them: **nothing here brings a Flowa copy of `guard-bash`,
-`detect-missed-gate` or the `loop` skill into this repo** — the versions here are
-the older-and-larger ones, and "syncing" them backwards is a regression of
-hundreds of lines of checks.
+🔴 **The heading above stays, and it is load-bearing** — `plan-md.mjs` throws
+*"has no `## Agent queue` heading … a structural problem in the file, not an
+empty queue"*, which `index.mjs` turns into `queue-unreadable` and **exit 1**,
+not the `queue-empty` exit 0 this section promises. An empty section and a
+missing one are opposite verdicts, so deleting the now-contentless heading is
+not tidying. Nothing else in this repository states that condition.
 
-The `[elevated]` marker is not decoration: it is what lets `selectNext` space
-elevated work apart (`queue/core.mjs`), and an item known to touch a path in
-`CLAUDE.md` → `elevated-paths` declares it up front rather than re-tiering
-mid-work.
+⚠ **`AR-n` now names two different things, and the sentence that used to
+disambiguate them left with the items.** Keys on board 34 are Jira issues;
+`AR-3`, `AR-4`, `AR-12`, `AR-13` and their neighbours in the **brief** and in
+the journal below are the port brief's own numbering, which predates the
+project and does not map onto it. Every brief-sense key now also exists as a
+real ticket, so a reader resolving one gets an unrelated issue and no error.
+Brief-sense keys are not rewritten here — the journal is a record — so check
+which numbering a citation is in before following it.
 
+**Under `plan-md` this section is deliberately EMPTY** — no bullet below this
+line is a work item, and `parsePlan` must return zero. A run on the `plan-md`
+adapter therefore stops `queue-empty` here, which is the honest reading until
+the adapter switch below lands (AR-45); it must not fall back to inventing
+work from prose. The paragraphs that follow are conventions, written as
+prose on purpose so the adapter cannot mistake them for items.
 
-The `AR3-n` block decomposes the Flowa→rig port brief **v4** (2026-08-14,
-`rig-port-brief-v4-2026-08-14.md`), written after a full two-sided inventory. It
-**supersedes the AR2 block** of brief v3 — AR2-2…AR2-7 are folded in and
-renumbered, and **AR2-1 is NOT here**: it stays escalated in the Operator queue
-exactly as the run left it. v2's 🔴 rule stands unchanged.
-
-🔴 **Read this before taking anything from the block: an all-elevated queue
-used to report itself as EMPTY.** ✅ **That half is fixed** — AR3-35 (#42) split
-the verdict, so a queue held back now stops as `nothing-selectable` and names
-how many items are held and by what. The block is not in that shape anyway —
-**9 of its 33 open items are marked `[elevated]`** (AR3-2, AR3-3, AR3-6,
-AR3-14, AR3-15, AR3-16, AR3-38, AR3-39, AR3-40), so **by marker** there is
-normal work to interleave with, which is what the rule below asks for. 🔴 **That
-split, and nothing else in this paragraph, is measured against the live queue**
-(`queue/index.mjs list --json`, after AR3-37 left for the Operator queue). ⚠
-**By declared path there is none** — the audit below found every `normal`-marked
-item in the block naming artefacts under `.claude/hooks/`, `scripts/`,
-`skills/`, `rules/`, `agents/` or `settings.json` in the template tree, every
-one of them declared elevated in `CLAUDE.md`. 🔴 **And the divergence is
-one-directional: markers understate, none overstate** — which is the dangerous
-shape, because every mismatch lets an elevated item through the spacing while
-none of them merely starves the queue. ⚠ **The audit's own numbers are stale and
-are deliberately NOT re-counted here:** it read 26 understating and ten elevated
-markers checking out, so it was taken when the block held **36** items (26 + 10,
-and the header read exactly that when it was written) — two closes and one
-escalation ago, 36 → 35 → 34 → 33. Re-running it is a read of 24 items' prose against the declared
-paths, which is work nobody has done; the direction the rule below rests on does
-not move with the count, and quietly writing today's number beside yesterday's
-audit would claim a re-measurement that never happened. AR3-37 is the item for
-it, and it is now in the Operator queue awaiting the owner's ruling. ✅ **Which of the two the ration
-reads is RULED (owner): the tier a change turned out to be, computed from its
-diff's paths — the marker is advisory, and a marker disagreeing with the paths
-is hygiene to report.** ⏳ **The ration is being wired by AR3-36, which is open
-until that branch merges** — read the item, not this line, for its state. When
-it lands, the tier will live in `.claude/queue.state.json` beside the config,
-not in `config.lastCompletedTier`: the config is composed from the template
-layer, so a runtime value in it is drift. 🔴 **And note precisely what that
-does and does not change, because the two halves of the ration have different
-authorities.** AR3-36 fixes the value *written* — computed from the diff's
-paths. The value *filtered on* is still each item's marker (`core.mjs` tests
-`ticket.tier`, which `plan-md` derives from `[elevated]` alone). So after an
-elevated close the ration holds the marked items and **hands out one of those
-marked `normal`** — several of which are elevated by path. (The counts that
-stood in this sentence, 7 and 26, are dropped rather than refreshed. They are
-not the audit's either: the audit's split was 10 elevated / 26 normal and
-today's is 9 / 24, so 7 / 26 is neither — a third snapshot again. (Its total,
-33, happens to equal today's, which is exactly where a reader stops checking:
-the split separates them, not the sum.) The sentence is about the mechanism,
-not the size. The same pair survives further down inside AR3-36's closed item text,
-where it is a record of that day rather than a live count.) It does not stop
-the queue, and the honest `nothing-selectable` stop arrives only once every
-remaining item is *marked* elevated. Closing that second gap is not AR3-36's
-scope and has no item yet. The original measurement stands as
-the record of what the day the seam is wired would have looked like —
-`selectNext(8 × elevated, {lastCompletedTier:'elevated'})` returned
-`candidates: 0, skipped: 8`, and the stop condition then read `queue-empty`
-with eight items open. The markers are not
-negotiable (understating a tier is a failure recorded twice here). **Interleave
-normal work deliberately**, and note that brief §3's sequencing is a *dependency*
-order, not a *take* order. The two rulings this needs are in the Operator queue.
-
-v4 §4 is not decoration — five things this repo does better are named there so a
-port does not regress them (`context: fork` on `check-premises`, the queue seam,
-`upgrade`+manifest, the generative `new-invariant`, and 🔴 **the human journal,
-which already exists here**: every journal item below adds beside `## Journal`
-and its `cost` block, replacing none of it). Every item lands **above** the queue
-seam, never beside it. §7a of the brief carries ten corrections that ride INSIDE
-these items — read them before taking AR3-1/2/4/6/7/13.
-
-
-  ✅ **SECOND RULING (owner), and it is a scope change to this item, recorded rather than taken quietly: the tier is written to a state file BESIDE the queue config, not into `config.lastCompletedTier`.** This item named the config twice and specifically, so changing the target is exactly the re-aim `loop` §8 forbids a run to perform on itself — the divergence went to the owner and came back as a ruling, which is the path §8 requires. What forced it was mechanical, not editorial: `.claude/queue.json` is composed from the template layer, and writing a runtime value into it fails the repo's own drift check (observed mid-task, exit 1, `agent-os drift detected in: - .claude/queue.json`) and would be an `upgrade` conflict in every generated project on a file it never edited. The item was right about the reader and wrong about the file. State lands in `.claude/queue.state.json`, gitignored; the reader prefers it over anything left in the config.
-
-  ✅ **The one thing that had to be settled before the failing test is RULED by the owner: the close step writes the tier the change turned out to be, computed from the diff's paths — not the item's marker.** The question was real: `plan-md.mjs:110` derives `tier` from the `[elevated]` marker and from nothing else, while `autonomy.md` says *"the tier is decided by what the change touches, not by what the task said it would touch"* and `loop` §2 calls the marker *"a pre-filter, not the authority"*. The ruling follows the stated rule and costs no judgement: `detect-missed-gate.mjs` already computes exactly this from `elevatedPathsIn`, so the source is mechanical. What the two readings would have meant, kept because the fixture depends on it:
-
-**(i) the marker** — mechanical, already on the ticket; but then the observation the brief calls red is not red, because AR3-35 carried no marker and a correctly wired filter would *also* have offered `AR3-2` next, so the seam is real while its cited evidence is not and a new red fixture is needed. **(ii) what the change turned out to touch** — matches the stated rule, and `detect-missed-gate.mjs` already computes exactly this from `elevatedPathsIn`, so it is mechanical too rather than a judgement; under it AR3-35 *was* elevated (its diff crossed `templates/agent-os/universal/.claude/scripts/`, and #42 carries `human-review`), the cited observation is genuinely red, and the marker becomes advisory. **(ii) is the ruling**, so the marker is advisory from here: a marker that disagrees with the paths is queue hygiene to report, never the value to ration on. ⚠ **The price came with the ruling and is stated so it is not discovered mid-run:** by declared path, 26 of this block's 33 items are marked `normal` while every artefact they name sits under a declared elevated path — so **by path there is no normal work in the block at all**. 🔴 **That does not stop the run, and saying it would was wrong:** this item fixes the tier that gets **written**; selection still filters candidates on each item's **marker** (`core.mjs` tests `ticket.tier`, which `plan-md` reads from `[elevated]` alone). So after an elevated close the ration holds the 7 marked items and hands out one of the 26 marked `normal` — several of them elevated by path. The honest `nothing-selectable` stop arrives only once every remaining item is *marked* elevated. Closing that second gap — rationing candidates on the paths too — is neither this item's scope nor anyone's yet. The marker audit is in the journal, reported and deliberately not corrected Provenance: the loop's own `triage` proposal, promoted by the owner in brief v4 §10, moved here unchanged in substance
-- AR3-38 [elevated]: **two `git` spawns outside the env sweep** — `scripts/build-hash-history.mjs:78` and `test/template/dogfood.test.ts:112`, both spawning with the inherited environment and both absent from the sweep's file list. Pre-existing, and deliberately left untouched by #45 so that branch's deviation stayed reviewable. Bring them under the same sweep as the rest, or record why each is exempt **by name** — a directory-wide exemption is the shape this rulebook rejects everywhere else
-- AR3-39 [elevated]: **one line into `prose-reviewer`'s checklist — a claim about a mechanism is verified by RUNNING it, and the finding quotes the command with its output.** The day's lesson compressed: `stage-guard`'s `red` that never blocked, a reviewer regex that could not match its own required reviewer, a spacing filter whose input nobody supplied, a test that read an empty file and certified a protection it never observed. **None** of them would have survived one command being run and its output pasted; **all** of them survived careful reading
-- AR3-40 [elevated]: **an authorization a run relies on must exist OUTSIDE the run's own branch, and the run cites it rather than asserting it.** Raised by the loop about its own work: it deviated from an item with the owner's permission and recorded that permission in the same branch as the deviation, which makes the record self-attesting. The `human-review` label is real external evidence — only a human can apply it — but it attests *"a human reviewed this PR"*, not *"a human authorized this specific deviation"*. The rule: a deviation names an artifact the run could not have written — an owner comment on the PR, an owner-authored queue entry, a ruling in the brief — and quotes it. "Authorized verbally" is not an authorization the next reader can check. Same family as AR3-34's *evidence is written while the runs are in front of you*: an attestation whose only witness is the party being attested is not one
-- AR3-2 [elevated]: `doctor` — the harness audits itself, shipping with the test-neighbour requirement covering `.husky/` and `.claude/hooks/` from day one; exemptions are an explicit file list with reasons. Rides §7a's budget-source correction: every declared budget names where its number comes from. ⚠ **Known before the first minute, raised by the owner rather than discovered mid-work:** in a GENERATED project the hooks arrive without test neighbours BY DESIGN — `invariants.md` says so — so a literal reading flags all six hooks on every rig's first run, and the only silence is an exemption list swallowing the whole directory, which makes the requirement vacuous exactly where this item thinks it matters. 🔴 The resolution is in that same paragraph and needs no invention: the exemption *"holds only while they are untouched. The moment you edit one, its test is yours."* So the check is **"every hook the project OWNS has a test"**, and ownership is mechanically observable via `.rig-manifest.json` — matching hash → shipped and tested upstream, not a finding; modified or absent from the manifest → authored here, finding; no manifest (pre-0.4.0 rig) → reports `unknown`, never a pass. That makes this item a customer of the manifest, which v4 §4 lists as a strength Flowa has no analogue for. Narrower fallback if the owner prefers: scope hook coverage to the generator repo and drop it from what generated projects install
-- AR3-3 [elevated]: `stage-guard`, the **fixed** shape only (its v3 entry condition is MET — upstream's fix landed and was verified in the shipped code) — root resolves from the work (absolute `file_path` → payload `cwd` → env last; a relative path ignored on purpose), the walk finds the nearest project ROOT not the nearest stage file (nested worktrees would adopt a stale `red`), paths made repo-relative before classification, correspondence tests rather than existence ones. Upstream's `red` never blocked one real edit from the day it shipped, under 24 green tests that all fed relative paths
-- AR3-6 [elevated]: the rules wave — TDD-hatch-is-about-the-criterion (→ `workflow.md`), live-run-once-before-merge (→ `pr-ship`), every-PR-write-confirmed-by-re-read with the measured-unstable exit code (→ `pr-ship`), recon-comment-is-a-snapshot with the SHA-immutable vs silently-stale boundary (→ `loop`). ✅ The fifth (jsdom) is **NOT taken at all** — owner's ruling: it does not ship as a rule. Read standalone it invites a component layer that `architecture.md` deliberately excludes; if the caution is wanted it is ONE causal clause inside that existing exclusion paragraph, with no new home and no tier change. Provenance seals it: the rule is upstream-shaped (that repo has a web app with jsdom tests; generated projects deliberately have no such layer)
-- AR3-7: the queue reads comments — an item is its description AND its comments, a superseding comment wins and the run names what it said; `jira` fetches with comments, `github-issues` reads the thread, `plan-md` returns null on the `body` precedent
-- AR3-9: the proposals rule in the `loop` skill — a run that notices a seam it cannot fix **files** rather than narrates. Without it AR3-8 exists and stays empty
-- AR3-10: `queue-hygiene` as a sweep that runs OUTSIDE any session, reports and never relabels — board anomalies are invisible from inside a run
-- AR3-11: `validate-evals` + `evals.json` per skill — rides with AR3-2
-- AR3-12: `check-toolchain` — is this checkout's toolchain usable at all; matters more in a generated project, since a fresh scaffold is where a half-installed toolchain hides
-- AR3-13: `spend-report` — token accounting; last, because AR3-4 is what makes it meaningful. Rides §7a's ceiling correction (a ceiling redeclared per segment never bound)
-- AR3-14 [elevated]: personal-paths validator — no tracked file carries `/Users/<name>/` or `/home/<name>/`; exemptions an explicit FILE list, never "except docs". Matters more here than upstream: a scaffold lands on machines whose paths nobody controls. Red fixture required
-- AR3-15 [elevated]: harness frontmatter validator — `name` equals the directory/file name as ONE correspondence test, and `description` a non-empty INLINE scalar (a block scalar breaks every consumer reading it as one line, and `description` decides whether a skill triggers at all)
-- AR3-16 [elevated]: CI supply-chain assert — every `uses:` ends in a 40-hex SHA, plus a pre-emptive guard on `workflow_run` checkout of `head_branch`. Parse the workflow structure, do NOT grep the line: upstream's first grep produced 3 false hits from `uses:` in comments and an echo string
-- AR3-17: `permissions.deny` mirroring the Never tier — the hook stays enforcement and source of truth; `deny` is the belt that survives the hook failing, erroring or never being registered. A pair with a correspondence test
-- AR3-18: script the live-vs-dead half of the stray-worktree rule — **this repo's own measured pain** (NOTES.md, the `GIT_DIR` incident: 19 junk commits across two branches)
-- AR3-19: "verified locally" names its tools — into the DoD line beside AR3-6
-- AR3-20: the enum↔copy correspondence pattern — lands as an **example invariant** for `new-invariant`, not bespoke code
-- AR3-21: `prose-reviewer` gains one checklist line — a document stating a partition of a total must foot
-- AR3-22: `worktree-task` gains four incident-bought sections — dependency install as an OWNED step with a toolchain check distinguishing `no-node-modules` from **`unresolvable`** (a live `.bin` symlink with the package gone made three hook tests fail *as though the hook logic had regressed*); 🔴 **a test run's exit code is not evidence — the reported count is** (`pnpm test` exits 1, `| tail -1` exits 0, and `| grep 'Test Files'` returns the right code only because the grep MISSES); declaring the stage; and the branch carrying the queue key, with recon before the first test
-- AR3-23: the `loop` skill gains seven subsections — a stop with an unclosed item writes a resumption comment first; seam findings (instrument the edges, not the nodes); the second lane for externally-originated merges; a six-word human-gate status; the two things a run cannot see about itself; labelled assumptions and how they clear; and before `Done`, write findings back into the items this one blocked
-- AR3-24: **token accounting with its paths** — the client writes every turn's usage into transcripts under `~/.claude/projects/`, subagents included. 🔴 The projection turns **every separator AND every dot** into a dash, so a task under `.claude/worktrees/<name>` lives at `…-repo--claude-worktrees-<name>`; a projection handling only the separator looks right against the primary checkout and silently finds nothing for every session the loop actually ran. Attribution by BRANCH not commit. Four counters plus API calls. Degrade loudly: an unparseable line is counted and reported, a missing file reported unreadable, neither folded into a zero. 🔴 Its home is **`## Journal`'s existing `cost` block** — the figures land beside "N reviewer subagents; M check runs", which is the line upstream's journal said could not be filled
-- AR3-25: the run-directory convention shared by AR3-4 and AR3-24 — `.claude/runs/<run-id>/`, per-run, **gitignored** (unlike a committed evidence dir). The journal module owns no run-id policy and no rotation. 🔴 The machine trace answers what the run decided and on what basis, never whether that was right
-- AR3-26: closed vocabularies and why — a typo'd gate id makes the journal unqueryable, which is the exact failure a journal prevents. The clock is INJECTED into every builder, and a label change must carry both `before` AND `after`
-- AR3-27: `preflight` as a seven-item shape — the mechanical ones are scripted **because those already produced wrong diagnoses**; the rest stay a read list, NAMED in the output so silence is not mistaken for a full pass. Exit 0 whatever it finds
-- AR3-28: split the upstream `core.md`-class rules instead of dropping them as "domain" — portable: no clock/no randomness, additive-optional schema evolution, the pure layer is UI-string-free, effects as the only I/O escape hatch, the loop guard, capabilities over interpreter conditionals; from conventions: no hard-coded strings for fixed sets and the annotation rule
-- AR3-29: `test-writer` gains four measured rules — an artifact outside the runner's projects is still testable (`node --test` sibling); a fact in two artifacts gets ONE correspondence test; 🔴 a fake is something to ASSERT AGAINST (*a stubbed `draw: () => {}` let 41 green tests report success, and deleting the real method as a mutation check left 13 of 14 tests in that file green*); and when the subject is EXTERNAL state the report NAMES the live call it cannot make
-- AR3-30: one clause out of the upstream reviewer — a factual claim in the queue item that the diff CONTRADICTS is stop-and-report, never a silent work-around and never an edit of the item to match. `check-premises` covers intake; this is the same check after the code exists
-- AR3-31: `pr-ship` gains the local gate with its traps — one test process at a time, the FULL suite, the repo's own tooling tests separately, and 🔴 format-check is a PER-PUSH gate; run it from the task worktree or the formatter judges other sessions' in-progress files
-- AR3-32: 🔴 the four-state rule for any third-party check — `success` is the only pass; `neutral` means read the check's BODY; ABSENT is never a pass. *Measured: on 2 of 7 PRs the app posted no status at all, and a gate that silently does not run is indistinguishable from one that passed.* Timing 1 s–6 m 50 s, so the boundary is an EVENT, not a wall-clock guess
-- AR3-33: the gate's exit-code semantics where a router resolves the review gate — 🔴 `defer` is the PASS and 0 never appears; never chain on `&&`
-- AR3-34: evidence is written WHILE the runs are in front of you; the validator checks FORM only (a `fail 0` summary is rejected); the no-code hatch carries a REASON. 🔴 The half no machine can check is stated rather than hidden
+Conventions on the board (they mirror what this section used to encode).
+**Labels:** `agent-queue` = the old Agent queue; `operator-queue` = the old
+Operator queue (decisions, Tier-2, watchers); `triage` = proposals filed by a
+run, unselectable until a human promotes them. 🔴 **What keeps those two out
+of selection is the exclusion in the ruling above — the adapter reading their
+own label — and NOT a `ready` marker.** `ready` is a human-facing hint that no
+selection path reads. What occurs exactly once in the queue layer is the
+**label check** — `grep -rn "'ready'" .claude/scripts/queue/` returns one line,
+`core.mjs:206`, inside `hygieneOf`, which only *reports* a `stale-ready-label`.
+The bare word returns nine (`grep -rn ready .claude/scripts/queue/ | grep -v
+already`); of the other eight, two are the rest of that same `hygieneOf`
+return (`core.mjs:208`, `:210`) and six are comments — one of which,
+`core.mjs:582`, is the ordinary English word and not the label at all. Two of
+the six, `jira.mjs:280` and
+`github-issues.mjs:182`, describe the absence of a `ready` marker as part of
+what keeps a proposal out of selection, which is looser than the mechanism and
+is why this paragraph exists.
+Resting the split on it would be worse than useless: an adapter filtering on
+`labels = ready` against a board that does not carry it returns an empty set,
+and an empty set with nothing skipped is `queue-empty` — exit 0, a successful
+session, with 40 issues open. That is the "all-elevated queue reported itself
+as EMPTY" failure again, in the one shape `nothing-selectable` cannot catch.
+`blocked` is derived from `Blocks` links,
+never from the label (`invariants.md`); `elevated` is the marker, and per
+AR3-37's ruling (AR-1) it is **advisory** — the candidate tier is
+`max(marker, tier derived from the paths the item names)`, and a marker that
+disagrees with its derived tier is hygiene to report, never a value to relabel.
+**Order:** key order is the migration order, which is the take order this
+section carried — AR-1 (AR3-37) first, then AR-2…AR-34 in the block's own
+sequence, AR-44 (AR3-41) last. The `elevated` marker sits on exactly ten:
+AR-1, AR-2, AR-3, AR-4, AR-5, AR-6, AR-7, AR-14, AR-15, AR-16 — the same ten
+lines that carried `[elevated]` here, not a contiguous range. Brief §3
+sequencing stays a *dependency* order, not a *take* order; the spacing rule
+is mechanical on both sides (writer: AR3-36; candidate filter: AR-1 when it
+lands). **Provenance:** every description opens with its tier by marker AND by
+declared path, and names the brief item and the upstream Flowa key it was
+measured on; v2's 🔴 rule stands unchanged — **nothing brings a Flowa copy of
+`guard-bash`, `detect-missed-gate` or the `loop` skill into this repo**.
+**Completeness:** nothing was dropped — 34 agent items → AR-1…AR-34 and
+AR-44; the Operator queue's live entries → AR-35…AR-38; its eight triage
+proposals → AR-39…AR-43 (grouped by part where two findings share a file;
+fingerprints preserved verbatim so `file-triage` dedup still matches); the
+adapter switch itself → AR-45. Rulings already taken (AR2-1 = NULL under
+plan-md, jsdom = no rule, the AR3-37 shape, the AR3-36 state file) live in the
+tickets they govern; the crossed-out history that used to sit here is git
+history now. ⚠ **Not in `NOTES.md`** — that file carries none of the four
+(grep: zero hits for `AR2-1`, `AR3-36`, `AR3-37`, `queue.state.json`), and a
+pointer that resolves to nothing is worse than no pointer. Two are recoverable
+in-repo despite the tracker: the AR3-36 state-file ruling is quoted verbatim,
+with the drift output it was measured against, in
+`test/template/queue.test.ts:470-480`, and the AR3-37 shape is restated above.
 
 ## Operator queue
 
-Decisions and Tier-2 work waiting on a human. State what is needed, not what to do.
-
-- 🔴 **AR3-37 escalated out of the Agent queue: rule the shape of candidate-side tier rationing (i / ii / iii).** The item names the choice as *"Open design question, the owner's and not mechanical"*, and it has no ruling-independent remainder — (iii) needs no path extraction at all, so there is not even a shared core to build ahead of the ruling. The earlier ruling above settles the tier that is **written** (computed from a merge's diff), and a candidate has no diff, so it does not reach this. **What is needed:** one of the three shapes, or a fourth. Escalated rather than decided, per `loop` §8 — a run that picks the shape has authored a standing selection rule for itself, and it is the rule that decides what that same run is handed next. `plan-md` has no per-item state, so the move to this queue **is** the escalation (`escalate()` returns `ok: false` and says so). Original item text follows, unchanged — including its `§10`, which has **three** readings in reach and the likely one is **brief v4's**. Two are checkable and both fail: the `loop` skill ends at §9 (no `## 10` in `SKILL.md`), and this file's own `## 10. What not to do` is a table that says nothing about starving a queue. The third — brief v4 §10 — is **unverified here**, because that brief lives outside the repository, and the corroboration is weaker than it looks: the one other `brief v4 §10` in this file is AR3-**36**'s provenance line, a neighbouring item out of the same brief. AR3-37 carries no provenance line of its own, so nothing in the repository ties *this* item's `§10` to the brief.
-- *(the item)* AR3-37 [elevated]: **ration candidates by the tier that is TRUE, not the tier that is CLAIMED.** AR3-36 wired the writer; this is the half it left open. The written `lastCompletedTier` comes from the paths a merge actually touched, while `selectNext` filters candidates on `ticket.tier`, which `plan-md` reads from the `[elevated]` marker (`MARKERS.elevated.test(raw)`). Truth on one side, a claim on the other — so an item whose marker understates it is offered immediately after an elevated close. **Measured: 26 of the 32 open items carry markers that understate their declared paths, and zero overstate.** That one-directional shape is the dangerous one: every mismatch lets an elevated item through spacing, none merely starves the queue. This block authored one of the 26 — AR3-35, marked `normal` while editing `templates/…/.claude/scripts/`. ⚠ **Open design question, the owner's and not mechanical:** a candidate has no diff yet, so its true tier is unknowable before the work exists. Three shapes — **(i)** keep the marker as the filter input but make it *checkable*, a sweep flagging every item whose marker disagrees with the paths its own text names; **(ii)** derive a candidate's tier from the paths its text names, marker demoted to a human-facing hint — sharper, but silent on items naming no path; **(iii)** treat any unmatched marker as `elevated`, which never under-spaces but starves the queue exactly as §10 describes. Whatever the ruling, the writer stays as AR3-36 built it: the merge's real paths
-- ~~🔴 **the queue is now entirely `[elevated]`, and the loop reports that as an empty queue**~~ — **BOTH HALVES RULED, AND (b) IS NOW DELIVERED (#42).** (a) closed by the AR3 block's stated interleaving rule, markers unchanged; (b) ruled YES by the owner, queued as AR3-35, and landed: `stopConditionOf` gained `nothing-selectable`, whose line names how many items are held and by which cause. **One refinement the work forced, recorded rather than folded in silently:** the item's literal mapping was `skipped > 0` → the distinct kind, but the gate showed that counting `escalated`/`triage` items as "the queue is full, wait" makes `queue-empty` unreachable on `github-issues`/`jira` — the loop's own escalations and proposals stay open there forever. So the split is by **cause**, not by count: only the four causes that clear without new work (`blocked`, `in-progress`, `spacing`, `trigger`) mean held; the other three are parked, reported as their own number beside the verdict, and a queue whose every skip is parked is genuinely empty. Original finding kept below for its measurement.
-- 🔴 *(original)* **the queue is now entirely `[elevated]`, and the loop reports that as an empty queue.** Correcting AR2-4/6/7's markers (below) made all eight open items elevated, and `selectNext` refuses an elevated item when the last completed one was elevated — correct spacing, but with no normal item anywhere the run drains exactly one item and stops. Simulated against the real module, not inferred: `selectNext(8×elevated, {lastCompletedTier:'elevated'})` → `ticket: null, candidates: 0, skipped: 8`, and `stopConditionOf({candidates:0})` → `kind: 'queue-empty'`, *"no item survives the filters … do not invent work"*. So a session ends reporting an empty queue with eight items open. Two things need a ruling, and they are separable: ~~**(a)** whether to interleave normal work so the queue drains~~ — **(a) is answered by the v4 composition: interleaving is now a stated rule of the block above, and the markers stay as they are, since understating a tier is the failure this repo already recorded twice**; **(b)** remains live — whether `stopConditionOf` should distinguish "nothing left" from "everything left is spaced out", because today the operator cannot tell those apart from the stop line and only one of them means the queue needs refilling
-- ~~**decide (was AR2-3): which document gets the jsdom rule**~~ — **RULED: none. It does not ship as a rule at all** (owner, 14 Aug). Standalone it invites a component layer `architecture.md` deliberately excludes; the caution, if wanted, is one causal clause inside that exclusion paragraph. The finding that produced this ruling follows.
-- *(original finding)* **which document gets the jsdom rule.** ⚠ **The brief now agrees with this finding and no longer names a target** — v4 records it as a defect the brief itself authored, twice (v3 and v4), and carries the content question rather than a path. The item routes it to "`stack/node-ts` web rules", and that section does not exist — `templates/agent-os/stack/node-ts/.claude/rules/node-ts.md` is 57 lines with no `web`, `jsdom`, `DOM` or `browser` in it. The web rules live in `templates/agent-os/universal/.claude/rules/architecture.md`. **The tier half of this question is now closed: AR-12 landed, so both candidate homes are declared elevated and the choice no longer changes the gate.** What remains is where the rule belongs and whether it is wanted at all. The rule's content needs a ruling too: `architecture.md` already puts component-level DOM testing deliberately out of scope, so "jsdom implements the DOM, not layout" reads either as reinforcing that exclusion or as licence to adopt jsdom
-- ~~🔴 **AR2-1 escalated: what is the evidence key under `plan-md`?**~~ — **RULED (C) by the owner, 14 Aug: `plan-md` yields NULL.** The deciding argument came from this repo, one field over: the adapter already returns `body: null` because *null means "cannot answer" while an empty string would read as "checked, found nothing"*. Identity is the same case — a flat list has none and says so. The gate takes its no-key branch here; the full gate arrives with a tracker-backed adapter, and the price is stated rather than hidden: **this repo's CI is not the evidence gate's first home.** (B)/(D) were rejected because both re-key an item when its wording changes — and items are re-worded far more often than closed, while an orphaned evidence file is SILENT, the exact failure evidence exists to prevent; (A) because it makes the read path write to this file. The measurement that made the question decidable follows.
-- 🔴 *(the finding)* **AR2-1 is escalated out of the Agent queue: decide what the evidence key is under `plan-md`, the adapter this repo runs.** The item says the key "comes from the queue adapter, never a hard-coded tracker regex" — true for `jira` (issue key) and `github-issues` (issue number), false for the default: `plan-md.mjs:89` derives `id: String(items.length + 1)`, a positional index, and `closeInPlan` deletes the closed line so every id below it shifts. **This stopped being a prediction and became an observation when AR-12 closed:** every remaining id shifted by one in that single edit — AR2-1 went 2→1, AR2-4 went 5→4, AR2-7 went 8→7. An `evidence/5.json` filed for AR2-4 yesterday names a different item today, so the gate cannot be built on this key here. Either `plan-md` gains a stable derived id (the brief says "`plan-md` items get a derived stable id" without saying derived from what — the raw title's first token is the obvious candidate, and it is the owner's call, not a run's), or the gate is specified as tracker-backed only and this repo's CI cannot be its first home. **v4 §6 call 4 now carries this question with four costed options — (A) an explicit marker written into the line, (B) a content hash, (C) no invented id and the gate is tracker-backed only, (D) this entry's first-token proposal — and records that this run measured the shift rather than predicting it.** **Escalated rather than re-aimed on purpose:** a run that rewrites an item into what it should have said has authored work for itself
-- ~~**stage-guard's entry condition (port brief v3)**~~ — **MET; folded into v4 as AR3-3** (the fix landed upstream with the resolution form chosen and correspondence tests, and was verified in the shipped code). ⚠ The condition was met a day before the brief was revisited: a deferral with a condition needs a watcher, recorded in v4 §6. Original text: Flowa's SCRUM-394 must land — the fix for the hook reading its stage file in the main checkout while `--set` from a worktree writes another — together with the chosen resolution form and the promise↔read pair test. When it does, the owner supplies the next brief line; until then the piece is named in v3's "does NOT ship" list and nothing here should reference it as available
-- ~~**decide: does the neutral `Ticket` shape gain a `body` field?**~~ — **decided by the owner's delegation: yes.** The alternative was two hygiene checks living inside each adapter, which is the same invariant implemented three times — and `invariants.md` says the copy nobody is looking at is the one that is wrong. `body` is nullable, because `plan-md` has none to give and an empty string would read as "checked, found nothing" rather than "cannot answer". The decision belongs in the shape's comment, not only here (AR-3b)
-- ~~**publish 0.3.2 to npm**~~ — **done by the owner**; `npm view create-agent-rig` lists it as `latest`. It is what every rig in the wild is running, and therefore what `upgrade` bootstraps from
-- ~~**publish 0.4.0 to npm**~~ — **done by the owner**; `latest` is 0.4.0. Verified against the published artifacts, not the working tree: `npx create-agent-rig@0.4.0` generates a `node-service` project whose own `pnpm check` passes (72 tests) and whose `.rig-manifest.json` records 36 agent-os files and no skeleton; and a rig installed by `npx create-agent-rig@0.3.2 init`, then edited in one file and stripped of one hook, upgrades correctly — the two files 0.4.0 changed are offered, the edit is kept as the user's with a path to the new version, and the deleted hook is reported rather than restored
-- 🔴 **0.4.0 shipped untagged by the owner's decision, and `v0.4.0` on the remote points at 8dedfc7** — the abandoned preparation that became 0.3.2. The decision was taken with a cost stated; **that cost was overstated and the accurate one is smaller, so it is corrected here rather than repeated**. `git diff 8dedfc7 v0.3.2 -- templates/agent-os` is empty, and `buildHistory` deduplicates, so the stale tag injects **no wrong hash on any path** and can never produce a false "untouched" verdict. What it does at 0.5.0 preparation (`releasedTags` takes every `v*` tag below the version being prepared) is narrower and still real: the table will **name a version whose bytes it does not carry** — `0.4.0` labelling 0.3.2's content — and the two files 0.4.0 genuinely changed (`loop/SKILL.md`, `PLAN.md`) will be **absent from every version in it**. Nobody on 0.4.0 is affected: every 0.4.0 install writes a manifest, and the manifest is consulted before the table
-- **whoever prepares 0.5.0 inherits one trap, and it is not the obvious one.** Deleting the stale ref and doing nothing else is **worse than leaving it**: `hash-history.test.ts` asserts the table's versions equal the CHANGELOG's releases below the current version, and the CHANGELOG carries `## 0.4.0` — so with the ref gone and nothing retagged the check fails with "stale table — run: build-hash-history", which names the wrong cause and cannot be satisfied by running it. Only two things actually resolve it: **tag the real release commit** (`e7fcf6b`, or the merge `c77c6c3`) after the owner deletes the stale ref, or teach the table to record a released version that has no tag. Nothing today checks that a version tag points at the commit that bumped to it, and that check is the durable fix — it must **fail loudly**, never silently drop the tag, or it reinstates the same gap one layer down
-- **decide (0.5): does `upgrade` refresh a `settings.json` it can prove it wrote?** Today it never replaces that file — the U brief said so, and it is the right default while the file is a merge target for the user's own hooks. But with a manifest the ambiguity is gone for the unmodified case, and the cost of leaving it is the exact 0.3.1 failure: a release that adds a hook delivers the file and not its wiring. The command prints the entries to merge and says it will not do it for you
-- **decide (0.5): what happens to `init --force` now that `upgrade` exists?** Open question 3 of the U brief, non-blocking. `--force` replaces `CLAUDE.md` and nothing else; `upgrade` covers the case it was standing in for
-- **AR-4 entry conditions** — half discharged. The write-back discipline's condition fired (merged and in use where it came from) and it landed as U-1: the journal's `unblocked` field plus the §9 bullet. **C-0…C-2 stay out** — the clarify gate still has not fired anywhere, and shipping an unproven gate to other people's projects is worse than not having it
-- **tell the users, and set a date to collect what they say** — 0.3.2 adds two gates that fire during ordinary work, which is exactly the kind of change that is either load-bearing or an irritation, and only a user can say which. The agent cannot send this
-- **does the downstream project take the reverse port?** Out of the port brief's scope by construction. The fact that its copies of `guard-bash`, `detect-missed-gate` and the `loop` skill are behind this repo's is recorded in `NOTES.md` ("The port brief — and the drift that runs the other way"), which is where it stays whether or not this question is ever answered
-- **proposal: 6 step 2 says which half the adapter does and which half the session does: under plan-md neither claim nor escalate writes anything, and the move to the Operator queue is the sessions edit — stated in the step rather than only in the adapters return value [triage]** — finding: journal: prose-reviewer on #42 — SKILL.md 6 step 2 (mark it escalated and leave it claimed) is not performable under plan-md · part: .claude/skills/loop/SKILL.md · proof: a run under plan-md that escalates an item leaves it out of the Agent queue, and the next `queue/index.mjs next` does not hand the escalated item back · fingerprint: `journal-prose-reviewer-on-42-skill-md-6-:claude-skills-loop-skill-md:6-step-2-says-which-half-the-adapter-doe` · seen ×1
-- **proposal: export the existing printable() from core.mjs — it is module-private at core.mjs:306 today — and apply it to the ticket title and id in renderNext (index.mjs:77) and to skip.reason (index.mjs:80). Export rather than re-declare: invariants.md One mechanism, one implementation. Under github-issues or jira anyone who can open an issue controls the title string, so ANSI escapes and control bytes reach the operators terminal unfiltered [triage]** — finding: journal: security-scanner on #42 — index.mjs:77 interpolates result.ticket.title raw into terminal output · part: .claude/scripts/queue/core.mjs (export) + .claude/scripts/queue/index.mjs (apply) · proof: an issue titled with a \x1b[2J prefix renders as visible text in `queue/index.mjs next`, and the terminal is not cleared · fingerprint: `journal-security-scanner-on-42-index-mjs:claude-scripts-queue-core-mjs-export-cla:export-the-existing-printable-from-core-` · seen ×1
-- **proposal: the queue-unreadable branch at index.mjs exits before the journal block, so the run stop that most needs evidence leaves none. Either record it before exiting — accepting that the journal write may itself fail while the queue is unreadable, so the branch needs its own guard — or state in §0 that this stop is journalled by the session only, so nobody looks for a machine record that was never written [triage]** — finding: journal: post-merge health check — `queue-unreadable` is the stop condition most worth a trace and is the one the journal never records · part: .claude/scripts/queue/index.mjs (the queue-unreadable branch) + .claude/skills/loop/SKILL.md §0 · proof: with RIG_RUN_DIR declared and a queue the adapter cannot read, `queue/index.mjs next` leaves a decisions.jsonl carrying a queue-unreadable verdict — today the file does not exist · fingerprint: `journal-post-merge-health-check-queue-un:claude-scripts-queue-index-mjs-the-queue:the-queue-unreadable-branch-at-index-mjs` · seen ×1
-- **proposal: assert on the CLI having RUN — an exit code of 0 and a line matching the selection shape — never on output being non-empty. A crash writes to stderr, so `it printed something` is satisfied by the failure it is meant to exclude; this branch repaired the fixture but left the assertion as it was [triage]** — finding: journal: code-reviewer on #48 — the gate-scripts symlink fixture asserted `out.trim() !== ""`, which a Node stack trace satisfies, so it passed for weeks while the CLI it claimed to exercise never loaded · part: test/template/gate-scripts.test.ts (the symlink fixture) and any sibling asserting on output presence · proof: delete a module the fixture copies and the test goes RED; today it stays green because the stack trace is output · fingerprint: `journal-code-reviewer-on-48-the-gate-scr:test-template-gate-scripts-test-ts-the-s:assert-on-the-cli-having-run-an-exit-cod` · seen ×1
-- **proposal: the first says the call must sit `inside a block a run can run` but accepts any fenced block anywhere in the file; the second is titled `declares the run directory` and passes on a bare mention of RIG_RUN_DIR with no export. Either tighten them to assert placement (the block under the stop step; an `export` in the preflight section) or reword the comments to claim only what they check — a test whose comment overstates it is the same defect as prose overstating a mechanism [triage]** — finding: journal: code-reviewer on #48 — both skill-correspondence tests added by AR3-4 are looser than the comments above them claim · part: test/template/run-journal.test.ts (the two tests under `the skill that drives a run carries the calls the journal needs`) · proof: move the endRun block into an unrelated section, or replace the preflight export with a passing mention, and the tests go RED; today both stay green · fingerprint: `journal-code-reviewer-on-48-both-skill-c:test-template-run-journal-test-ts-the-tw:the-first-says-the-call-must-sit-inside-` · seen ×1
-- **proposal: State a review-round bound and what happens at it. `pr-ship` says only that the gate runs again from step 1 after fixes — no cap — and the budget stop rule reads as "many attempts, NO PROGRESS", which is false when every round finds real defects. Proposed: after the third round on one item, the run either merges with the residual filed as a triage finding, or escalates the design question to the owner; it does not open a fourth. Add the counter-signal too — three consecutive rounds where the run's own previous fix produced the next blocker is the systemic-wall shape, not diligence — measured at FIVE consecutive rounds on the run that filed this. [triage]** — finding: journal: seven rounds, six routing escapes — the review gate has no round cap, and the budget stop rule never fired because every round found real defects · part: .claude/skills/pr-ship/SKILL.md (the Verdict section) + .claude/rules/autonomy.md (Stop rules) · proof: a run that reaches a third HOLD on one queue item either files a proposal and merges, or escalates, and the journal entry names which. Today a seventh round is reachable with nothing in either document objecting to it. · fingerprint: `journal-seven-rounds-six-routing-escapes:claude-skills-pr-ship-skill-md-the-verdi:state-a-review-round-bound-and-what-happ` · seen ×1
-- **proposal: Require that a test added for a GUARD is verified by deleting the guard and watching it go red, and that the verification is recorded. Two failure shapes to name, both observed here: an assertion satisfied by a different mechanism than the one under test (a path that classifies as code before the derived branch is reached, so the derived guard was never exercised), and an assertion satisfied by an unrelated failure (a CLI test in a temp directory with no git repo, where exit 1 arrives from the git path rather than from the refusal — anchor on the diagnosis text, never on the exit code alone). [triage]** — finding: journal: seven rounds — three round-four guards had no test that would notice their removal, and one of the four tests written to fix that was itself vacuous, and a second was nearly misdiagnosed as vacuous by a mutation that did not remove the behaviour · part: .claude/agents/test-writer.md (or .claude/rules/workflow.md, "Tests are load-bearing") · proof: a PR adding a guard states the mutation it ran and its result, and a reviewer re-running that mutation gets red. Today three guards shipped whose deletion left the suite green, and the fix for that shipped two more. · fingerprint: `journal-seven-rounds-three-round-four-gu:claude-agents-test-writer-md-or-claude-r:require-that-a-test-added-for-a-guard-is` · seen ×1
-- **proposal: Record the shape as a design property rather than a backlog, and set the rule for extending it: a new entry in PROSE_EXTENSIONS, DERIVED_BASENAMES, TEST_DIRECTORIES or SECURITY_WORDS must state which of the six known escapes it is adjacent to, and carry a test in BOTH directions — the case it opens and the case it must not close. Two of the six escapes were reopenings of a defect an earlier round had declared closed, both at the boundary between two entries. [triage]** — finding: journal: seven rounds — a path-based classifier for review depth has an unbounded tail of special cases, and each fix opens a seam where it meets the previous one · part: .claude/scripts/decision-router.mjs (the limits block), and the decision of whether to keep extending it · proof: the next change to one of those four sets carries a two-direction test and a named adjacency; today `integration/` was moved in and then out across two rounds with neither. · fingerprint: `journal-seven-rounds-a-path-based-classi:claude-scripts-decision-router-mjs-the-l:record-the-shape-as-a-design-property-ra` · seen ×1
+**Moved to Jira with the Agent queue — label `operator-queue`, plus
+`triage` for proposals.** Open at migration: AR-35 (the 0.5.0 tag trap —
+owner deletes/retags, then the tag↔bump-commit check is agent work),
+AR-36 (0.5 decisions: `upgrade` on a provably-written `settings.json`;
+`init --force`), AR-37 (watchers: AR-4 C-0…C-2 entry condition; tell the
+users and set a feedback date; the downstream reverse port), AR-38 (rule the
+`loop` §9 self-contradiction on where a close is written — under `jira` half
+of it dissolves, say so in the rule), AR-45 (the adapter switch itself).
+Proposals in `triage`: AR-39…AR-43. ⚠ Under `plan-md`, `proposeTriage` still
+appends to THIS heading — until AR-45 lands, a proposal filed by a run lands
+here as a bullet and must be carried to Jira by hand; that is a known cost of
+the interim, not a place to leave items.
 
 ## Journal
 
