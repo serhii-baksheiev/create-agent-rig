@@ -87,7 +87,12 @@ diagnose second.
   layer is mandatory even when it looks like ceremony.
 - `packages/core` is pure — the `guard-core-purity` hook refuses I/O, clock,
   randomness, and environment access at the tool layer.
-- `packages/db` is the only module that touches the stored data.
+- `packages/db` is the only module that touches the stored data. It is a
+  **single-writer store**: writes serialise inside one `JsonFileNoteStore`, and
+  that is all — two processes writing the same file still need a real lock.
+- The API buffers at most **1 MB** of request body and answers `413` past that.
+  Raise it in `services/api/src/server.ts` if your payloads are bigger; do not
+  remove it.
 - A failing queue message is poison: it throws, the spool retries ×3, then the
   DLQ gets it and the ALARM line fires. Never wrap the worker in a broad catch.
 

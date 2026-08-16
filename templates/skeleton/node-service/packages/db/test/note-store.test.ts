@@ -69,6 +69,15 @@ describe('JsonFileNoteStore', () => {
     expect(listed.map((n) => n.id)).toEqual(['b', 'a']);
   });
 
+  it('keeps every concurrently written note (no lost update)', async () => {
+    const store = new JsonFileNoteStore(file);
+    const ids = Array.from({ length: 20 }, (_, i) => `n${i}`);
+    await Promise.all(ids.map((id) => store.put({ ...note, id })));
+
+    expect((await store.list()).map((n) => n.id).sort()).toEqual([...ids].sort());
+    expect(Object.keys(JSON.parse(await readFile(file, 'utf8'))).sort()).toEqual([...ids].sort());
+  });
+
   it('refuses to list corrupt entries instead of skipping them silently', async () => {
     const store = new JsonFileNoteStore(file);
     await store.put(note);

@@ -7,17 +7,10 @@ import { JsonFileNoteStore } from '@app/db';
 import { createLogger, loadEnv } from '@app/shared';
 import { SpoolEventPublisher } from './adapters/spool-publisher.js';
 import { makeServer } from './server.js';
+import { defaultStaticDirFor } from './static-dir.js';
 
 // The built web bundle (pnpm build:web) lives here; served when present.
-const defaultStaticDir = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
-  '..',
-  '..',
-  '..',
-  'apps',
-  'web',
-  'out',
-);
+const defaultStaticDir = defaultStaticDirFor(import.meta.url);
 
 const env = loadEnv(
   z.object({
