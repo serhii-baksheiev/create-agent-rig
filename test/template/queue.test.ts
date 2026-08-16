@@ -125,15 +125,17 @@ const TIMED_CALLS = 9;
  *   the second reading), but narrow is not the same as absent, so it is written
  *   down rather than described as failing safe.
  * - **It bounds sampling, not the test.** The untimed warm call and the probe
- *   are outside the budget, and the deadline is checked only after a whole
- *   SAMPLE finishes, so the real bound is `SAMPLE_BUDGET_MS` plus up to two full
- *   samples — and a sample is `batch` calls, not one. Measured on a subject
- *   whose probe is cheap and whose later calls are dear, an earlier version of
- *   this ran **59.5 s** against a documented 2. What keeps that from recurring
- *   is `sampleSizeFor`'s recalibration below, not this constant: a first sample
- *   far over target resizes the batch instead of repeating at that size. The
- *   bound is therefore `SAMPLE_BUDGET_MS` plus two samples that are themselves
- *   aimed at `SAMPLE_TARGET_MS`. For
+ *   are outside the budget, so the real bound is `SAMPLE_BUDGET_MS` plus those
+ *   four calls, plus up to `CLOCK_EVERY` calls of whichever sample was running
+ *   when the deadline passed.
+ *
+ *   Two earlier versions of this sentence were wrong, which is why it is exact
+ *   now. Checking the deadline only BETWEEN samples left the first sample
+ *   unbounded: a subject with a cheap probe and dear calls measured **59.5 s**,
+ *   then **61 s**, against a documented 2. Recalibration does not fix that — it
+ *   runs after the sample it would have resized has already been paid for. The
+ *   in-sample check is what bounds it, and the same subject now finishes in
+ *   **2.2 s**. For
  *   a defect worse than quadratic those calls are themselves unbounded, and
  *   `catastropheMs` cannot help — it reads a number the warm call has already
  *   paid for. **And nothing else in this process bounds it either** — the
@@ -203,6 +205,38 @@ export const sampleSizeFor = (probeMs: number): number => {
 const PROBE_CALLS = 3;
 
 /**
+ * How often a running sample checks the clock, in calls.
+ *
+ * 🔴 The deadline used to be checked only BETWEEN samples, which left the first
+ * sample unbounded — and the first sample is where the damage was: a subject
+ * with a cheap probe and dear calls was sized at 2,048 and measured **61 s**
+ * inside one sample, against a 2 s budget. Recalibration cannot help there,
+ * because it runs after that sample has already been paid for.
+ *
+ * Checking every call would distort the cheap side, which is the side that
+ * flakes — `performance.now()` costs about as much as the call being measured.
+ * Every 64th costs 1/64 of that and still bounds a sample at 64 calls past the
+ * deadline. A sample cut short is discarded rather than divided, because a
+ * partial count over a full clock reading is not a per-call cost.
+ */
+const CLOCK_EVERY = 64;
+
+/**
+ * The sample size to use after seeing what the first one actually cost.
+ *
+ * Pure, and exported for the same reason `sampleSizeFor` is: this is
+ * load-bearing behaviour that was previously evidenced only by a manual run.
+ * Returns the unchanged size when the first sample landed near target, so an
+ * expensive subject already at `sampleCalls === 1` does not pay for a second
+ * identical sample.
+ */
+export const resizedSample = (firstMs: number, sampleCalls: number): number => {
+  const onTarget = firstMs <= SAMPLE_TARGET_MS * 4 && firstMs >= SAMPLE_TARGET_MS / 4;
+  if (onTarget) return sampleCalls;
+  return sampleSizeFor(firstMs / sampleCalls);
+};
+
+/**
  * The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`
  * samples, divided by the number of calls in a sample.
  *
@@ -215,16 +249,21 @@ const PROBE_CALLS = 3;
  * limits sections exist to avoid.
  *
  * 🔴 **The probe is the weak point, and it is defended rather than assumed
- * away.** It sizes the sample that the min-of-N then protects, so a pause
- * landing in the probe alone yields a sample of one call — exactly the
- * noise-dominated state batching exists to remove. Two defences: the probe is
- * the FASTEST of `PROBE_CALLS`, and a first sample that lands far off target is
- * re-sized once rather than repeated eight more times at the wrong size. Both
- * are cheap; neither makes the guarantee absolute, and the sample size is
- * printed in the failure message so an undersized run is diagnosable rather
- * than mysterious.
+ * away.** It sizes the sample that the min-of-N then protects, so a probe that
+ * misreads the call yields a sample of the wrong size — either one call, the
+ * noise-dominated state batching exists to remove, or thousands, which is how a
+ * cheap probe with dear calls measured 61 s inside a single sample. Three
+ * defences, and their weights are not equal: the deadline check inside the
+ * sample (`CLOCK_EVERY`) is what bounds the damage, `resizedSample` stops a
+ * mis-sized run repeating, and the fastest-of-`PROBE_CALLS` probe helps least —
+ * measured, min-of-3 still read 0.161 ms against a true 0.021 ms on a
+ * JIT-tiering subject, and it was the resize that recovered the run. None makes
+ * the guarantee absolute, and the sample size is printed in the failure message
+ * so an undersized run is diagnosable rather than mysterious.
  */
-const millisPerCall = (call: () => void): { perCall: number; sampleCalls: number } => {
+export const millisPerCall = (
+  call: () => void,
+): { perCall: number; sampleCalls: number; samples: number } => {
   call(); // warm the JIT and compile any lazily-built regex, untimed
 
   let probe = Infinity;
@@ -235,28 +274,54 @@ const millisPerCall = (call: () => void): { perCall: number; sampleCalls: number
   }
 
   let sampleCalls = sampleSizeFor(probe);
-  const sample = (): number => {
+  const deadline = performance.now() + SAMPLE_BUDGET_MS;
+
+  /** One sample, or `null` if the deadline cut it short — a partial count over
+   *  a full clock reading is not a per-call cost, so it is discarded. */
+  const sample = (): number | null => {
     const started = performance.now();
-    for (let k = 0; k < sampleCalls; k += 1) call();
+    for (let k = 0; k < sampleCalls; k += 1) {
+      call();
+      if (k % CLOCK_EVERY === CLOCK_EVERY - 1 && performance.now() >= deadline) return null;
+    }
     return performance.now() - started;
   };
 
-  // One recalibration: if the first sample is wildly off target the probe
-  // mis-sized it, and repeating at that size is how a cheap probe with dear
-  // calls once ran 59.5 s against a 2 s budget.
-  let first = sample();
-  if (first > SAMPLE_TARGET_MS * 4 || first < SAMPLE_TARGET_MS / 4) {
-    sampleCalls = sampleSizeFor(first / sampleCalls);
-    first = sample();
+  let fastest = Infinity;
+  let taken = 0;
+  const first = sample();
+  if (first !== null) {
+    const resized = resizedSample(first, sampleCalls);
+    if (resized === sampleCalls) {
+      fastest = first;
+      taken = 1;
+    } else {
+      sampleCalls = resized; // the first sample's cost is not comparable now
+    }
   }
 
-  let fastest = first;
-  const deadline = performance.now() + SAMPLE_BUDGET_MS;
-  for (let i = 1; i < TIMED_CALLS; i += 1) {
-    if (performance.now() >= deadline) break;
-    fastest = Math.min(fastest, sample());
+  while (taken < TIMED_CALLS && performance.now() < deadline) {
+    const ms = sample();
+    if (ms === null) break;
+    fastest = Math.min(fastest, ms);
+    taken += 1;
   }
-  return { perCall: Math.max(fastest / sampleCalls, 1e-6), sampleCalls };
+
+  // 🔴 No complete sample means NO MEASUREMENT, and it must fail loudly.
+  //
+  // The first attempt here returned `SAMPLE_BUDGET_MS / sampleCalls` — which
+  // reads as a cost and is not one. Measured on a subject at ~8 ms per call
+  // whose probe was free: the sample was cut at 260 of 2,048 calls and this
+  // reported 0.98 ms/call, eight times UNDER the truth. Under-reading the `n`
+  // side lowers the ratio, toward a missed defect, and `catastropheMs` cannot
+  // catch it because 0.98 is comfortably under the ceiling. A number invented
+  // where a measurement failed is worse than no number at all.
+  //
+  // `Infinity` trips the catastrophe ceiling on the `n` side and makes the ratio
+  // `Infinity` on the `4n` side. Both are loud, and `samples: 0` in the message
+  // says which of the two happened.
+  if (taken === 0) return { perCall: Infinity, sampleCalls, samples: 0 };
+  return { perCall: Math.max(fastest / sampleCalls, 1e-6), sampleCalls, samples: taken };
 };
 
 interface ScalingBounds {
@@ -299,7 +364,7 @@ const staysLinear = (
   expect(
     small.perCall,
     `${what}: ${n} characters cost ${small.perCall.toFixed(4)}ms per call — the ` +
-      `fastest of ${TIMED_CALLS} samples of ${small.sampleCalls} calls each — ` +
+      `fastest of ${small.samples} samples of ${small.sampleCalls} calls each — ` +
       `over the ${catastropheMs}ms catastrophe ceiling. That is far past ` +
       `anything a pause explains, so the ${n * 4}-character measurement is ` +
       'skipped rather than left to run for minutes.',
@@ -316,9 +381,9 @@ const staysLinear = (
     ratio,
     `${what}: 4× the input cost ${ratio.toFixed(2)}× the time — ` +
       `${large.perCall.toFixed(4)}ms/call at ${n * 4} characters ` +
-      `(${TIMED_CALLS} samples × ${large.sampleCalls} calls) against ` +
+      `(${large.samples} samples × ${large.sampleCalls} calls) against ` +
       `${small.perCall.toFixed(4)}ms/call at ${n} ` +
-      `(${TIMED_CALLS} × ${small.sampleCalls}). Expected under ` +
+      `(${small.samples} × ${small.sampleCalls}). Expected under ` +
       `${maxRatio}×: linear work cannot exceed 4×, and the quadratic whitespace ` +
       'shape this guards against measures ~16×.',
   ).toBeLessThan(maxRatio);
@@ -354,6 +419,65 @@ describe('the scaling harness sizes its own samples', () => {
     for (const unmeasurable of [0, -0, -1, Number.NaN]) {
       expect(sampleSizeFor(unmeasurable), `${unmeasurable}`).toBe(2_048);
     }
+  });
+
+  // The pure helper is not the whole sizing path, so this exercises the caller.
+  //
+  // 🔴 What it does and does not cover, measured rather than assumed. A review
+  // round asked for a test that fails if a second bound (the old
+  // `Math.max(probe, 0.0005)`) is ever restored. This is NOT that test, and
+  // pretending otherwise would be the same false coverage claim the round was
+  // about: restoring that floor leaves this green. The reason is worth knowing —
+  // since `resizedSample` landed, the probe no longer decides the final size on
+  // its own. An empty call "probes" at 0.0003–0.003 ms (that is
+  // `performance.now()`'s own overhead, not the call), which sizes anywhere from
+  // 300 to the cap; the first sample then comes in far under target and the
+  // resize corrects it. So a floor under the probe is no longer fatal — it costs
+  // one mis-sized sample, not a wrong run.
+  //
+  // What this pins is the property that matters: the caller can reach the cap,
+  // whatever the probe reads. The one-bound rule is pinned by the
+  // `sampleSizeFor` tests above.
+  it('reaches the cap through the real sizing path, not just the pure helper', () => {
+    // a call too cheap for the timer to resolve
+    const free = () => {};
+    const { sampleCalls } = millisPerCall(free);
+    expect(sampleCalls, 'the caller must be able to ask for the largest sample').toBe(
+      MAX_SAMPLE_CALLS,
+    );
+  });
+
+  it('resizes only when the first sample missed, and keeps the size when it did not', () => {
+    // on target: unchanged, so an expensive subject already at 1 call does not
+    // pay for a second identical sample
+    expect(resizedSample(SAMPLE_TARGET_MS, 4)).toBe(4);
+    expect(resizedSample(SAMPLE_TARGET_MS * 4, 4)).toBe(4);
+    expect(resizedSample(SAMPLE_TARGET_MS / 4, 4)).toBe(4);
+    // far over: the probe under-read the call, so fewer calls per sample
+    expect(resizedSample(60_000, 2_048)).toBe(1);
+    // far under: the probe over-read it — this is the JIT-tiering case, where
+    // min-of-3 measured 0.161ms against a true 0.021ms and only the resize
+    // recovered the run
+    expect(resizedSample(0.18, 7)).toBe(39);
+  });
+
+  it('reports no measurement rather than a cheap one when the budget runs out', () => {
+    // A subject dear enough that one sample cannot finish inside the budget.
+    // The first version returned `budget / sampleCalls`, which reads as a cost:
+    // measured 0.98ms/call against a true ~8ms, an eight-fold UNDER-read on the
+    // side where under-reading hides a defect.
+    let calls = 0;
+    const dear = () => {
+      calls += 1;
+      if (calls <= PROBE_CALLS + 1) return; // free through warm-up and probes
+      const until = performance.now() + 12;
+      while (performance.now() < until) {
+        /* burn */
+      }
+    };
+    const { perCall, samples } = millisPerCall(dear);
+    expect(samples, 'no sample completed').toBe(0);
+    expect(perCall, 'and that must read as unmeasurable, never as cheap').toBe(Infinity);
   });
 
   it('never returns a size that would make the division meaningless', () => {
