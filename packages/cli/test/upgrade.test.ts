@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -217,6 +217,49 @@ describe('a rig that came from `create`, not from `init`', () => {
     const plan = await planUpgrade(project, { history: emptyHistory });
     expect(plan.actions.some((a) => a.rel.startsWith('packages/'))).toBe(false);
     expect(plan.actions.some((a) => a.rel.startsWith('services/'))).toBe(false);
+  });
+});
+
+// A `create` rig's directory name is only a legal project name until someone
+// renames the directory or clones it under another name. The manifest an
+// upgrade bootstraps from that basename is then written and immediately voided:
+// its own reader refuses the value, so every later run reports "no manifest
+// here (a pre-0.4.0 rig)" — the release's whole point, lost silently.
+describe('a `create` rig upgraded from a directory name that is not a project name', () => {
+  let project: string;
+
+  /** Generated as `my-app`, then renamed — and the manifest gone, as 0.3.x left it. */
+  const generateThenRenameAndForget = async (): Promise<void> => {
+    await createProject('my-app', { cwd: repo, target: 'node-service', git: false });
+    project = path.join(repo, 'My App');
+    await rename(path.join(repo, 'my-app'), project);
+    await rm(path.join(project, ...MANIFEST_REL.split('/')));
+  };
+
+  const readIn = (rel: string): Promise<string> =>
+    readFile(path.join(project, ...rel.split('/')), 'utf8');
+
+  it('writes a manifest its own reader can read back', async () => {
+    await generateThenRenameAndForget();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    await applyUpgrade(project, plan);
+
+    const manifest = await readManifest(project);
+    expect(manifest).not.toBeNull();
+    expect(manifest?.project.name).toBe(projectNameFor(project));
+    expect(manifest?.project.scope).toBe(projectNameFor(project));
+  });
+
+  it('substitutes the slugged name, so the installed files are not all conflicts', async () => {
+    await generateThenRenameAndForget();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    // stop-flag.mjs carries __PROJECT_NAME__: substituting the raw basename
+    // makes the kill switch differ from the bytes on disk for no reason, and
+    // an unslugged value there is what reaches the hook's string literal.
+    expect(verdictFor(plan, STOP_FLAG)).toBe('unchanged');
+
+    await applyUpgrade(project, plan);
+    expect(await readIn(STOP_FLAG)).toContain('my-app-loop-STOP');
   });
 });
 

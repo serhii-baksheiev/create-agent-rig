@@ -26,9 +26,11 @@ export function isSafeSegment(value: string): boolean {
  * what that file means.
  *
  * 🔴 **Why this is not {@link isSafeSegment}, and why widening that one instead
- * would be wrong.** `isSafeSegment` answers "can this steer a path", and the
- * manifest's own `files` keys — `CLAUDE.md`, `.claude/rules/workflow.md` — are
- * exactly the values that need to pass it. But `project.name` is substituted
+ * would be wrong.** `isSafeSegment` answers "can this steer a path", and it is
+ * what every segment of an installed path is held to at write time, through
+ * {@link resolveInside} — `CLAUDE.md` and `.claude/rules/workflow.md` have to
+ * keep passing it, so it cannot become this whitelist. But `project.name` is
+ * substituted
  * into `.claude/scripts/stop-flag.mjs` **inside a single-quoted JavaScript
  * string literal**, and `guard-bash` imports that module on every Bash call. A
  * value that steers no path at all still closes that quote: it reaches code

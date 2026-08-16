@@ -223,11 +223,16 @@ export async function planUpgrade(
       ? await detectInstall(repoDir)
       : { kind: manifest.kind, stacks: manifest.stacks, region: manifest.project.region };
   const kind = manifest?.kind ?? detected.kind;
-  const name = path.basename(path.resolve(repoDir));
-  // `init` slugs the directory name into something an operator can type (it
-  // ends up in the kill-switch filename); `create` validated it as an npm name
-  // at generation time, so there the basename is already the project name.
-  const bootstrapName = kind === 'init' ? projectNameFor(repoDir) : name;
+  // Slugged for both kinds. The `create` branch used to take the raw basename,
+  // on the reasoning that `create` had validated it as an npm name at
+  // generation time — true of the directory `create` made, and false the
+  // moment it is renamed or cloned under another name. A directory called
+  // `My App` then produced `{"name":"My App"}`, which `parseManifest` refuses
+  // outright: the manifest this command exists to write was written and
+  // immediately unreadable, so every later run reported "no manifest here (a
+  // pre-0.4.0 rig)" and re-detected forever. `projectNameFor` emits exactly
+  // the shape the manifest accepts.
+  const bootstrapName = projectNameFor(repoDir);
   const project: RigProject = manifest?.project ?? {
     name: bootstrapName,
     scope: bootstrapName,

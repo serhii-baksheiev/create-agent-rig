@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isSafeSegment, resolveInside } from '../src/lib/safe-path.js';
+import { isSafeSegment, isSafeSubstitutionValue, resolveInside } from '../src/lib/safe-path.js';
 
 describe('path safety — the containment `upgrade` writes behind', () => {
   const root = path.resolve('/tmp/rig');
@@ -35,5 +35,51 @@ describe('path safety — the containment `upgrade` writes behind', () => {
     expect(isSafeSegment('a\\b')).toBe(false);
     expect(isSafeSegment('')).toBe(false);
     expect(isSafeSegment('nul\0byte')).toBe(false);
+  });
+});
+
+// `isSafeSubstitutionValue` is a whitelisted character class, so the behaviour
+// worth pinning is the class itself — one character at a time. A payload that
+// is illegal on four counts at once proves nothing about any of them: it stays
+// rejected while the class quietly widens under it.
+describe('the values safe to substitute into an installed file', () => {
+  it('accepts everything this repository can legitimately produce', () => {
+    expect(isSafeSubstitutionValue('my-app')).toBe(true);
+    expect(isSafeSubstitutionValue('a.b_c-d')).toBe(true);
+    expect(isSafeSubstitutionValue('_work')).toBe(true); // `projectNameFor` can emit this
+    expect(isSafeSubstitutionValue('app2')).toBe(true);
+    expect(isSafeSubstitutionValue('eu-central-1')).toBe(true); // a region
+    expect(isSafeSubstitutionValue('node-ts')).toBe(true); // a stack overlay
+  });
+
+  it('refuses a quote, a backtick and a dollar — the three that end a JS string literal', () => {
+    expect(isSafeSubstitutionValue("a'b")).toBe(false);
+    expect(isSafeSubstitutionValue('a`b')).toBe(false);
+    expect(isSafeSubstitutionValue('a$b')).toBe(false);
+  });
+
+  it('refuses a space inside an otherwise legal value', () => {
+    expect(isSafeSubstitutionValue('a b')).toBe(false);
+  });
+
+  it('refuses a newline, however legal each line looks on its own', () => {
+    expect(isSafeSubstitutionValue('a\nb')).toBe(false);
+    expect(isSafeSubstitutionValue('my-app\nprocess.exit()')).toBe(false);
+  });
+
+  it('refuses an uppercase letter', () => {
+    expect(isSafeSubstitutionValue('MyApp')).toBe(false);
+    expect(isSafeSubstitutionValue('A')).toBe(false);
+  });
+
+  it('refuses a leading dash or dot, which are legal anywhere later', () => {
+    expect(isSafeSubstitutionValue('-x')).toBe(false);
+    expect(isSafeSubstitutionValue('.x')).toBe(false);
+    expect(isSafeSubstitutionValue('x-y')).toBe(true);
+    expect(isSafeSubstitutionValue('x.y')).toBe(true);
+  });
+
+  it('refuses the empty string', () => {
+    expect(isSafeSubstitutionValue('')).toBe(false);
   });
 });
