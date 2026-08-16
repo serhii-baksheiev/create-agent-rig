@@ -120,7 +120,12 @@ export function excerptAutonomy(markdown) {
   }
 
   if (fence || skipping || malformed) return markdown;
-  return kept.join('\n').trim();
+  const excerpt = kept.join('\n').trim();
+  // Nothing left is the largest possible version of "partial output", and the
+  // marker pairing cannot see it: a balanced pair around the whole file is
+  // well-formed. A zero, not a threshold — this is deliberately not the byte
+  // ratio an earlier round used and deleted.
+  return excerpt === '' ? markdown : excerpt;
 }
 
 /**
@@ -172,13 +177,20 @@ function main() {
     body = rules;
   }
 
+  // The banner reports what happened, so it cannot be written once and assumed:
+  // on the fallback path nothing was removed, and telling a session to go read
+  // four sections it is already holding is the same kind of false report the
+  // cut itself is built to avoid.
+  const notice =
+    body === rules
+      ? 'This is `.claude/rules/autonomy.md` in full.\n\n'
+      : 'This is `.claude/rules/autonomy.md` with the sections it marks as ' +
+        'reference removed — read the file itself for those: how the Tier-2 ' +
+        'gate is swept from outside, how external work is reconciled, ' +
+        'post-deploy verification, and the escalation format.\n\n';
+
   process.stdout.write(
-    '[agent-os] Autonomy rules refresh — in force regardless of compaction.\n' +
-      'This is `.claude/rules/autonomy.md` with the sections it marks as ' +
-      'reference removed — read the file itself for those: how the Tier-2 ' +
-      'gate is swept from outside, how external work is reconciled, ' +
-      'post-deploy verification, and the escalation format.\n\n' +
-      `${body}\n`,
+    `[agent-os] Autonomy rules refresh — in force regardless of compaction.\n${notice}${body}\n`,
   );
   return 0;
 }

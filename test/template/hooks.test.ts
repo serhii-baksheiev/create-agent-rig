@@ -683,13 +683,16 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     return stdout.slice(0, start);
   }
 
-  /** A `## ` heading reduced to the words that identify it: the text before the
-   *  em-dash subtitle, lowercased. Loose on purpose — the banner is prose and
-   *  should not have to quote a heading verbatim. */
+  /** A heading reduced to the words that identify it: the text before the
+   *  em-dash or comma subtitle, without a leading article, lowercased. Loose on
+   *  purpose — the banner is prose and should not have to quote a heading
+   *  verbatim, and the deeper headings that now reach it carry longer trailing
+   *  clauses than the `## ` ones did. */
   const topicOf = (heading: string) =>
-    (heading.replace(/^##\s+/, '').split(/\s+[—–-]\s+/)[0] ?? '')
+    (heading.replace(/^#+\s+/, '').split(/\s+[—–-]\s+/)[0] ?? '')
       .split(',')[0]!
       .trim()
+      .replace(/^(the|a|an)\s+/i, '')
       .toLowerCase();
 
   // The banner tells the session which topics it did NOT get, and that list is
@@ -697,10 +700,15 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
   // Nothing today notices when the two disagree: mark one more section and the
   // banner keeps naming the old four, so a run is told it has rules it does not
   // have. Derived from the file so that adding a marked region turns this red.
+  //
+  // Every heading level from `## ` down, not just `## `: the first marked region
+  // is headed `#### `, so a scan limited to two hashes left half the banner's
+  // list unpinned — the sweep section could be re-titled or dropped while the
+  // banner went on citing it, and nothing here would have noticed.
   it('names, in the banner, every section it left out', async () => {
     const rules = await readFile(autonomyPath, 'utf8');
-    const headings = rules.split('\n').filter((line) => /^##\s+\S/.test(line));
-    expect(headings.length, 'autonomy.md must have `## ` sections to reason about').toBeGreaterThan(
+    const headings = rules.split('\n').filter((line) => /^#{2,}\s+\S/.test(line));
+    expect(headings.length, 'autonomy.md must have sub-sections to reason about').toBeGreaterThan(
       0,
     );
 
@@ -745,6 +753,32 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     }
   });
 
+  // The verdict has two halves and the mechanism only unblocks on the second:
+  // `queue/core.mjs` ends the run while the recorded verdict is `REGRESSION`,
+  // and only writing `HEALTHY` clears it. So a run that reverted, redeployed and
+  // verified healthy must be told to record that — an injected rule stopping at
+  // "healthy → done" leaves the run refusing every later selection with no way
+  // out but hand-editing a state file. The injected half is the one that has to
+  // be complete because it is the ONLY half a compacted run holds: the
+  // `## Post-deploy verification` section that carries `# or HEALTHY` sits
+  // inside the skip markers and never reaches the context.
+  it('injects the healthy half of the verdict, which is what clears the run', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.code, source).toBe(0);
+      // Whitespace-collapsed: the rule wraps across lines in the source, and
+      // where the wrap falls is not a behaviour worth pinning. Asserted on the
+      // verdict word and the command that records it, so any wording carrying
+      // both stays green.
+      const injected = result.stdout.replace(/\s+/g, ' ');
+      expect(injected, source).toContain('run-state.mjs');
+      expect(injected, source).toContain('HEALTHY');
+    }
+  });
+
   // …and carrying the verdict must not mean dragging the section back in. The
   // pointer is the verdict plus a citation; the procedure — its heading, its
   // reasoning, the escalation section beside it — stays in the file.
@@ -763,6 +797,101 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     expect(result.stdout).not.toContain('CI-green ≠ runtime-healthy');
     expect(result.stdout).not.toContain('there is no run for the verdict to belong to');
     expect(result.stdout).not.toContain('Escalation format');
+  });
+
+  /** The marked regions of a rules file, and everything outside them — the same
+   *  split the excerpter makes, done here independently so a test can say
+   *  something about the two halves without asking the code under test which is
+   *  which. Marker lines belong to neither half. */
+  function splitOnMarkers(rules: string): { carried: string; omitted: string } {
+    const carried: string[] = [];
+    const omitted: string[] = [];
+    let skipping = false;
+    for (const line of rules.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('<!-- inject:skip -->')) {
+        skipping = true;
+        continue;
+      }
+      if (trimmed.startsWith('<!-- /inject:skip -->')) {
+        skipping = false;
+        continue;
+      }
+      (skipping ? omitted : carried).push(line);
+    }
+    return { carried: carried.join('\n'), omitted: omitted.join('\n') };
+  }
+
+  // The same `run-state.mjs` invocation is written twice — once in the stop rule
+  // a run carries, once in the section it reads after a deploy — and a
+  // duplicated command drifts silently: whichever copy nobody is looking at is
+  // the one that goes wrong (`invariants.md`, "one mechanism, one
+  // implementation"). Until one of them cites the other, this is what notices.
+  //
+  // Matched up to `deploy` and no further: the two halves legitimately name
+  // different verdict words (the stop rule leads with the one that clears a
+  // run, the procedure with the one that latches it), while the script path
+  // ahead of it is the part that must not diverge — rename or move it in one
+  // place and half the rulebook starts citing a command that does not exist.
+  it('names the same run-state invocation in both halves of the file', async () => {
+    const rules = await readFile(autonomyPath, 'utf8');
+    const { carried, omitted } = splitOnMarkers(rules);
+    const invocation = /node [^\s`]*run-state\.mjs deploy/.exec(carried)?.[0];
+    expect(
+      invocation,
+      'the carried stop rule must name the command that records a verdict',
+    ).toBeTruthy();
+    expect(omitted, 'the omitted procedure must spell the same invocation').toContain(invocation!);
+  });
+
+  // The banner is printed unconditionally, but the excerpt is not: on malformed
+  // markup `excerptAutonomy` hands the WHOLE file back. The session then reads a
+  // banner telling it that post-deploy verification and the escalation format
+  // were removed and must be looked up — about text sitting directly underneath
+  // it. A run that believes it is missing rules it actually has is the same
+  // defect as one missing rules it believes it has, pointed the other way.
+  it('does not claim sections were removed when the whole file was injected', async () => {
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-fallback-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks'), { recursive: true });
+      await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+
+      // Malformed on purpose, in the cheapest way a real edit produces: one
+      // closing marker deleted. Every documented malformed shape lands on the
+      // same fallback, so one is enough to reach it.
+      const rules = await readFile(autonomyPath, 'utf8');
+      const malformed = rules.replace('<!-- /inject:skip -->\n', '');
+      expect(malformed, 'the fixture must actually differ from the file').not.toBe(rules);
+      const rulesPath = path.join(planted, '.claude', 'rules', 'autonomy.md');
+      await fsp.writeFile(rulesPath, malformed);
+
+      const result = await new Promise<HookResult>((resolve, reject) => {
+        const child = execFile(process.execPath, [hookPath], (error, stdout, stderr) => {
+          resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr, stdout });
+        });
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }));
+        child.stdin.end();
+      });
+      expect(result.code).toBe(0);
+
+      const banner = bannerOf(result.stdout, malformed);
+      const body = result.stdout.slice(banner.length);
+      // the premise: this really is the fallback, not an excerpt
+      expect(body.trim(), 'malformed markup must inject the whole file').toBe(malformed.trim());
+
+      // …so nothing was omitted, and the banner may not say otherwise about a
+      // section the session is holding.
+      const claim = banner.replace(/\s+/g, ' ').toLowerCase();
+      for (const present of ['post-deploy verification', 'escalation format']) {
+        expect(body.toLowerCase(), `precondition: ${present} is in the body`).toContain(present);
+        expect(claim, `banner must not report ${present} as removed`).not.toContain(present);
+      }
+    } finally {
+      await fsp.rm(planted, { force: true, recursive: true });
+    }
   });
 });
 
@@ -1223,6 +1352,17 @@ describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
       ...AFTER,
     ].join('\n');
     expect(await excerptAutonomy(nested)).toBe(nested);
+  });
+
+  // The markers pair up here, so nothing above flags it — and the answer is an
+  // empty string: the hook prints its banner, then nothing, and exits 0, which
+  // reads exactly like a healthy session that was governed. This is the maximum
+  // case of the partial output the docstring says it refuses, so it belongs with
+  // the malformed shapes: hand the file back. A zero-length check, not a
+  // threshold — the byte-ratio constant this design replaced is not coming back.
+  it('returns the file unchanged when the markers span the whole document', async () => {
+    const allSkipped = [SKIP_OPEN, ...BEFORE, ...AFTER, SKIP_CLOSE].join('\n');
+    expect(await excerptAutonomy(allSkipped)).toBe(allSkipped);
   });
 
   it('returns the file unchanged when a code fence is never closed', async () => {
