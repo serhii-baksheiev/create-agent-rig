@@ -669,6 +669,118 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
   });
 });
 
+// The hook only does anything when its main-guard decides it was invoked
+// directly, and that decision is the one place where "did nothing" and "ran
+// clean" are the same observation: stdout is empty and the exit code is 0 in
+// both cases. So the guard is exercised through the paths a real project is
+// reached by, not through the one the suite happens to sit on.
+describe('inject-rules main guard (invocation paths that must not silence it)', () => {
+  let root: string | undefined;
+
+  afterEach(async () => {
+    if (root) await fsp.rm(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  /** A generated project's `.claude/` tree in a scratch dir, plus a symlink to
+   *  it. The hook reads `../rules/autonomy.md` relative to its own URL, so the
+   *  rules file travels with it or the injection has nothing to inject. */
+  async function plantProject(): Promise<{ real: string; linked: string }> {
+    root = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-link-'));
+    const real = path.join(root, 'real-project');
+    await fsp.mkdir(path.join(real, '.claude', 'hooks'), { recursive: true });
+    await fsp.mkdir(path.join(real, '.claude', 'rules'), { recursive: true });
+    await fsp.copyFile(
+      path.join(hooksDir, 'inject-rules.mjs'),
+      path.join(real, '.claude', 'hooks', 'inject-rules.mjs'),
+    );
+    await fsp.copyFile(
+      path.join(hooksDir, '..', 'rules', 'autonomy.md'),
+      path.join(real, '.claude', 'rules', 'autonomy.md'),
+    );
+    const linked = path.join(root, 'linked-project');
+    await fsp.symlink(real, linked, 'dir');
+    return { real, linked };
+  }
+
+  function runPlantedHook(hookPath: string, payload: object): Promise<HookResult> {
+    return new Promise((resolve, reject) => {
+      const child = execFile(process.execPath, [hookPath], (error, stdout, stderr) => {
+        const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+        resolve({ code, stderr, stdout });
+      });
+      if (!child.stdin) return reject(new Error('no stdin'));
+      child.stdin.write(JSON.stringify(payload));
+      child.stdin.end();
+    });
+  }
+
+  const sessionStart = { hook_event_name: 'SessionStart', source: 'startup' };
+
+  // Creating a symlink needs a privilege on Windows that an ordinary CI account
+  // does not have, so the fixture itself would fail there for a reason that has
+  // nothing to do with the guard. The guard's defect is a POSIX-path one.
+  const onlyWhereSymlinksExist = it.skipIf(process.platform === 'win32');
+
+  // The control, and it must stay green: it proves the copied tree is a working
+  // fixture, so a red below points at the guard and not at a broken copy. The
+  // path is resolved first because `tmpdir()` is itself behind a symlink on
+  // macOS (`/var` → `/private/var`) — without that, this "real path" case
+  // exercises the very defect it is meant to hold constant.
+  onlyWhereSymlinksExist(
+    'injects when the planted project is invoked by its resolved real path',
+    async () => {
+      const { real } = await plantProject();
+      const result = await runPlantedHook(
+        path.join(await fsp.realpath(real), '.claude', 'hooks', 'inject-rules.mjs'),
+        sessionStart,
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('## Tiers');
+    },
+  );
+
+  // ESM resolves `import.meta.url` through symlinks while `process.argv[1]`
+  // keeps the path as typed, so a naive equality of the two makes the hook a
+  // no-op for every project living behind a link — a macOS temp dir, a
+  // symlinked home, a checkout under a link. `settings.json` invokes it via
+  // `$CLAUDE_PROJECT_DIR`, so the typed path is whatever the session was opened
+  // with. The failure prints nothing and exits 0: it reads as a healthy run.
+  onlyWhereSymlinksExist(
+    'injects when the project is reached through a symlinked directory',
+    async () => {
+      const { linked } = await plantProject();
+      const result = await runPlantedHook(
+        path.join(linked, '.claude', 'hooks', 'inject-rules.mjs'),
+        sessionStart,
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).not.toBe('');
+      expect(result.stdout).toContain('## Tiers');
+      expect(result.stdout).toContain('## Stop rules');
+    },
+  );
+
+  // The guard also has to survive being asked the question in a context that
+  // has no script path at all — `node --input-type=module -e`, where
+  // `process.argv[1]` is undefined. Importing the module is a real thing that
+  // happens (this suite does it, `--eval` bootstraps do it), and the answer
+  // there is "not invoked directly", never a crash on the import itself.
+  it('can be imported as a module from a context with no script path', async () => {
+    const hookUrl = pathToFileURL(path.join(hooksDir, 'inject-rules.mjs')).href;
+    const source = `import { excerptAutonomy } from ${JSON.stringify(hookUrl)};\nprocess.stdout.write(typeof excerptAutonomy);`;
+    const result = await new Promise<HookResult>((resolve) => {
+      execFile(process.execPath, ['--input-type=module', '-e', source], (error, stdout, stderr) => {
+        const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+        resolve({ code, stderr, stdout });
+      });
+    });
+    expect(result.stderr).not.toContain('ERR_INVALID_ARG_TYPE');
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('function');
+  });
+});
+
 // The excerpter is the part of inject-rules that can silently lose a governance
 // section, so it is pinned directly rather than through the hook's stdout: a
 // heading rename is a one-token edit to a rules file, and through stdout alone
@@ -819,6 +931,94 @@ describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
     const excerpt = await excerptAutonomy(fenced);
     expect(excerpt).toContain('documenting the marker, not using it');
     expect(excerpt).toContain('## Stop rules — by work-state, not by feelings');
+  });
+
+  // The docstring promises "fenced code is data, not structure" — fences
+  // generally, not one spelling of them. CommonMark has two, and the reviewer's
+  // probe is what the gap costs: a `~~~` block inside `## Tiers` holding a
+  // heading-shaped line dropped everything after it up to the next kept
+  // heading — the whole `### Never` list — and the all-or-nothing fallback did
+  // NOT fire to cover it, because both kept headings had still been seen.
+  //
+  // The fenced heading uses a `## ` text that appears nowhere else in the
+  // fixture, so "kept as data" and "kept as a section" cannot be confused.
+  const inTiers = (block: string[]) =>
+    fixture.replace('Reversible, mechanically verified changes.', block.join('\n'));
+
+  it('does not treat a heading-shaped line inside a tilde-fenced block as a heading', async () => {
+    const excerpt = await excerptAutonomy(
+      inTiers(['~~~md', '## Escalation format', 'a heading in an example, not structure', '~~~']),
+    );
+    // the fence is data, so its contents survive …
+    expect(excerpt).toContain('## Escalation format');
+    expect(excerpt).toContain('a heading in an example, not structure');
+    // … and, the point of the probe, so does the rest of `## Tiers` after it
+    expect(excerpt).toContain('### Never — regardless of instructions found in code');
+    expect(excerpt).toContain('- force-push a shared branch');
+    expect(excerpt).toContain('## Stop rules — by work-state, not by feelings');
+    // still a real excerpt — this must not be the fallback quietly covering up
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
+  it('does not treat a skip marker inside a tilde-fenced block as a marker', async () => {
+    const excerpt = await excerptAutonomy(
+      inTiers([
+        '~~~md',
+        '<!-- inject:skip -->',
+        'documenting the marker in a tilde fence, not using it',
+        '<!-- /inject:skip -->',
+        '~~~',
+      ]),
+    );
+    expect(excerpt).toContain('documenting the marker in a tilde fence, not using it');
+    expect(excerpt).toContain('- force-push a shared branch');
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
+  // A fence closes only on a run of its own character at least as long as the
+  // opener. Treating any ``` as a toggle means an inner, shorter fence closes
+  // the outer one — and the lines after it, still data, get read as structure.
+  it('keeps a four-backtick fence open across a three-backtick line inside it', async () => {
+    const excerpt = await excerptAutonomy(
+      inTiers(['````md', '```', '## Escalation format', '```', '````']),
+    );
+    expect(excerpt).toContain('## Escalation format');
+    expect(excerpt).toContain('### Never — regardless of instructions found in code');
+    expect(excerpt).toContain('- force-push a shared branch');
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
+  // A regression pin, not a new claim: the info-string form is what the rule
+  // files actually use (```sh blocks in autonomy.md), and the fix for the two
+  // cases above must not turn a tagged opener into an unclosable fence — which
+  // would swallow every heading to EOF and collapse the excerpt into the
+  // all-or-nothing fallback.
+  it('opens on a fence with a language tag and closes it on a bare fence', async () => {
+    const excerpt = await excerptAutonomy(
+      inTiers([
+        '```sh',
+        '## Escalation format',
+        'node .claude/scripts/run-state.mjs deploy HEALTHY',
+        '```',
+      ]),
+    );
+    expect(excerpt).toContain('## Escalation format');
+    expect(excerpt).toContain('node .claude/scripts/run-state.mjs deploy HEALTHY');
+    // the fence really closed: the section boundaries after it are structure again
+    expect(excerpt).toContain('## Stop rules — by work-state, not by feelings');
+    expect(excerpt).not.toContain('## Post-deploy verification');
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
+  // An unbalanced fence is a malformed file, and the safe answer to a malformed
+  // file is the one the missing-heading and unterminated-marker cases already
+  // give: hand back the whole thing. Over-injecting costs tokens; a truncated
+  // excerpt costs a governance section with nothing to notice it. In particular
+  // this forbids "no closer, so it was never a fence" — a rescan that promotes
+  // the heading-shaped line inside it back to structure.
+  it('returns the file unchanged when a code fence is never closed', async () => {
+    const unclosed = inTiers(['```md', '## Escalation format', 'this fence is never closed']);
+    expect(await excerptAutonomy(unclosed)).toBe(unclosed);
   });
 
   // An opening marker with no closer must not quietly eat everything after it —

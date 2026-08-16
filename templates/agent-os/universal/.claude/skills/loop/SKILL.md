@@ -381,9 +381,9 @@ claimed, what the code says, and the citation:
 
 1. Comment the diagnosis on the queue item, in the shape
    `.claude/rules/autonomy.md` ("Escalation format") sets — **cite it rather
-   than working from this list**, which is a reminder and drops its
-   load-bearing clause: what was *observed*, verbatim errors rather than
-   summaries. So: what fails, what was tried, the
+   than working from this list**, which is a reminder and is short by two of
+   its clauses: what was *observed* (verbatim errors, not summaries), and the
+   single question whose answer unblocks the work. So: what fails, what was tried, the
    current hypothesis, and links to the PR and the failing run where they exist
    — a premise stop has neither, and its citation stands in for both. **Name the outcome
    state in the same comment** — `incomplete` if the diagnosis cannot say which

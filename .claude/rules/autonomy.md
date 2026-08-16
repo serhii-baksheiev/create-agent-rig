@@ -43,10 +43,15 @@ paths that exist only in its shape. A path declared in none of them is a path
 nothing checks.
 
 <!-- inject:skip -->
-<!-- Between these markers, `inject-rules` does not put the text into a
-     session's context: it is the audit procedure a human runs, not a rule a
-     run carries. Everything outside them in this section IS injected — so if
-     you add a rule here, put it outside the markers. -->
+<!-- What `inject-rules` puts into a session's context is: this file's preamble,
+     the whole of `## Tiers`, and the whole of `## Stop rules` — MINUS anything
+     between these markers. Two consequences for whoever edits this file:
+     a rule written into any other `##` section (post-deploy verification, the
+     escalation format) is NOT injected and is read only when someone opens the
+     file; and a rule written between these markers is not injected either. The
+     marked region is long-form procedure — including one rule, "never run it as
+     a step inside a session", which is stated here because it is about the
+     procedure rather than about the run. Adding to it: outside the markers. -->
 
 #### The gate is swept from outside, because a run cannot report this on itself
 

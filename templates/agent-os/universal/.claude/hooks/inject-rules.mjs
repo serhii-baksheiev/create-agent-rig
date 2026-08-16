@@ -22,8 +22,8 @@
 // the whole file pays for it twice. That is harness behaviour, observable but
 // not pinned here. Where it does not hold, this excerpt is a plain subtraction
 // — which is why the cut keeps whole sections and errs toward injecting more.
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // The `## ` sections a compacted run cannot work without, matched as a prefix
 // so a heading may carry a subtitle ("## Stop rules — by work-state, …").
@@ -36,18 +36,38 @@ const KEPT_SECTIONS = ['## Tiers', '## Stop rules'];
 const SKIP_OPEN = '<!-- inject:skip -->';
 const SKIP_CLOSE = '<!-- /inject:skip -->';
 
-const FENCE = '```';
+/**
+ * A fence opener, as CommonMark defines one: three or more backticks or
+ * tildes. The closer has to be the same character and no shorter, which is why
+ * this returns the run rather than a boolean — a three-backtick line inside a
+ * four-backtick block is content, not the end of the block.
+ */
+function fenceRun(line) {
+  const trimmed = line.trimStart();
+  const char = trimmed[0];
+  if (char !== '`' && char !== '~') return null;
+  let length = 0;
+  while (trimmed[length] === char) length += 1;
+  return length >= 3 ? { char, length } : null;
+}
 
 /**
  * The excerpt: the preamble, plus each kept `## ` section whole, minus any
  * explicitly skip-marked region. Fenced code is data, not structure, so a
- * heading or a marker inside a fence is left alone.
+ * heading or a marker inside a fence is left alone — both fence characters,
+ * with the CommonMark closing rule (same character, at least as long), because
+ * a rules file quotes shell and markdown at each other.
  *
  * It returns the input UNCHANGED — injecting everything — whenever the file
- * does not look the way this function expects: a kept heading missing, or a
- * skip region left open. Partial output is the dangerous answer, because a
- * governance section can go missing with nothing to notice it; a run that gets
- * the whole file has only paid twice.
+ * does not look the way this function expects: a kept heading missing, a skip
+ * region left open, a fence left open. Partial output is the dangerous answer,
+ * because a governance section can go missing with nothing to notice it; a run
+ * that gets the whole file has only paid twice.
+ *
+ * The limits, stated so nobody relies on cover that is not here: it reads
+ * headings by prefix, so `## Tiers of anything` satisfies the check; it does
+ * not understand indented code blocks, HTML blocks, or a heading written with
+ * trailing `#`s.
  */
 export function excerptAutonomy(markdown) {
   const lines = markdown.split('\n');
@@ -55,12 +75,16 @@ export function excerptAutonomy(markdown) {
   const seen = new Set();
   let keeping = true; // the preamble, until the first `## `
   let skipping = false;
-  let fenced = false;
+  let fence = null;
 
   for (const line of lines) {
-    if (line.trimStart().startsWith(FENCE)) {
-      fenced = !fenced;
-    } else if (!fenced) {
+    const run = fenceRun(line);
+    if (fence) {
+      // Only a run of the same character, at least as long, closes it.
+      if (run && run.char === fence.char && run.length >= fence.length) fence = null;
+    } else if (run) {
+      fence = run;
+    } else {
       const trimmed = line.trim();
       if (trimmed === SKIP_OPEN) {
         skipping = true;
@@ -79,8 +103,33 @@ export function excerptAutonomy(markdown) {
     if (keeping && !skipping) kept.push(line);
   }
 
-  if (skipping || seen.size !== KEPT_SECTIONS.length) return markdown;
+  // A fence left open, a skip region left open, or a heading that is not where
+  // it should be: the file is not the one this function knows how to cut, so
+  // it is not cut. Rescanning to "recover" would put a heading that sits inside
+  // a code block back into the structure, which is the same defect wearing a fix.
+  if (fence || skipping || seen.size !== KEPT_SECTIONS.length) return markdown;
   return kept.join('\n').trim();
+}
+
+/**
+ * Whether this file is being run as a script rather than imported.
+ *
+ * The realpath on both sides is the point: ESM resolves `import.meta.url`
+ * through symlinks while `process.argv[1]` keeps the path as typed, so a
+ * project under a symlinked directory — a macOS temp dir, a symlinked home, a
+ * checkout behind a link — fails a naive equality check. The hook would then
+ * print nothing and exit 0, which reads exactly like a healthy session.
+ */
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
 }
 
 function main() {
@@ -108,6 +157,6 @@ function main() {
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (invokedDirectly()) {
   process.exit(main());
 }
