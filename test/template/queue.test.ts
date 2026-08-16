@@ -107,15 +107,42 @@ const ticket = (over: Partial<Ticket> = {}): Ticket => ({
 const TIMED_CALLS = 9;
 
 /**
- * The ceiling on one size's sampling, so a broken implementation still FAILS
- * rather than hangs — `invariants.md` asks the same of the hooks. Sampling stops
- * early once this is spent, and a short sample set can only over-report cost,
- * which fails in the safe direction. Nothing healthy comes near it: a full set of
- * 9 costs under 3 ms.
+ * The ceiling on one size's sampling: past this, stop taking samples.
+ *
+ * Nothing healthy comes near it. A warm call plus a full set of 9 costs 0.9 ms
+ * for the fold, and 24 ms / 97 ms for the two `hygieneOf` sizes on their
+ * expensive bracket shape — that shape, not the fold, is what this number has to
+ * clear.
+ *
+ * 🔴 **Two limits, because `invariants.md` asks a guard to state what it cannot
+ * do rather than let a reader infer cover that is not there.**
+ *
+ * - **Truncation is not uniformly safe.** Cutting the sample set short can only
+ *   raise the fastest reading. On the `4n` side that raises the ratio, toward a
+ *   false red, which is the harmless direction. On the `n` side it *lowers* the
+ *   ratio — toward a MISSED defect. The window is narrow (a call must exceed
+ *   ~222 ms to truncate the set at all, yet stay under `catastropheMs` to reach
+ *   the second reading), but narrow is not the same as absent, so it is written
+ *   down rather than described as failing safe.
+ * - **It bounds sampling, not the test.** The untimed warm call below is outside
+ *   the budget, and the deadline is checked only after a call returns, so the
+ *   real bound is `SAMPLE_BUDGET_MS` plus up to two full calls at this size. For
+ *   a defect worse than quadratic those two calls are themselves unbounded, and
+ *   `catastropheMs` cannot help — it reads a number the warm call has already
+ *   paid for. What actually keeps such a defect legible is `testTimeout` on the
+ *   two tests below, which reports a timeout instead of a ratio; that is a worse
+ *   message, and it is the honest ceiling of this design.
  */
 const SAMPLE_BUDGET_MS = 2_000;
 
-/** The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`. */
+/**
+ * The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`.
+ *
+ * Floored at one 1 µs tick: a reading of exactly 0 would make every ratio
+ * `Infinity` and print a failure message carrying no measurement at all. Not
+ * reachable at today's costs — the smallest measured call is 22 µs — so this is
+ * insurance against a future subject cheap enough to disappear into the timer.
+ */
 const millisPerCall = (call: () => void): number => {
   call(); // warm the JIT and compile any lazily-built regex, untimed
   let fastest = Infinity;
@@ -126,14 +153,23 @@ const millisPerCall = (call: () => void): number => {
     fastest = Math.min(fastest, performance.now() - started);
     if (performance.now() >= deadline) break;
   }
-  return fastest;
+  return Math.max(fastest, 0.001);
 };
 
 interface ScalingBounds {
   /** The smaller input size, in characters. The larger one is always 4×. */
   n: number;
-  /** The most the cost may grow for 4× the input. Chosen per subject, from its
-   *  own measurements — the two differ because only one of them pays for I/O. */
+  /**
+   * The most the cost may grow for 4× the input. Chosen per subject, from its
+   * own measurements — the two differ because only one of them pays for I/O.
+   *
+   * 🔴 What a bound of this size does NOT detect, so "stays linear" is not read
+   * as "detects any superlinearity": over a 4× spread, a bound of 8 admits
+   * anything up to n^1.5 and a bound of 6 up to n^1.29, which means `n log n`
+   * (≈4.6 at these sizes) passes silently. That is a limit of comparing two
+   * sizes, not a regression — the absolute budget it replaced was blind to the
+   * same growth, and to quadratic terms ~22–350× larger besides.
+   */
   maxRatio: number;
   /** A cost at `n` this far above the real one is a catastrophe, not a pause. */
   catastropheMs: number;
@@ -318,7 +354,18 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
   // constant I/O to dilute it, healthy growth sits AT the linear 4.0 (measured
   // 3.96–4.32 over 450 samples under CPU saturation) rather than the fold's ~1.4,
   // so 8 is the bound that still separates it from the quadratic 16.05.
-  it('stays linear on a body at the tracker size limit', async () => {
+  //
+  // 🔴 The sizes are 8k and 32k, where the old fixtures were 65k and 20k — so
+  // this NO LONGER measures a body at the tracker's 64k cap, and the name says
+  // 'as it grows' rather than 'at the tracker size limit' for that reason. A
+  // name is a coverage claim, and this one had to move with the fixtures.
+  // Shrinking them buys sensitivity rather than spending it: a ratio bound at
+  // these sizes fires on a quadratic term ~35× smaller than the retired 250 ms
+  // budget caught at 20k on this same shape. What it costs is the tail — a
+  // defect that only turns superlinear ABOVE 32k is now invisible here, and the
+  // reproduced link defect measures 16.07× at these sizes, so nothing known
+  // lives in that gap.
+  it('stays linear on a body as it grows', { timeout: 60_000 }, async () => {
     const { hygieneOf } = await load('core.mjs');
     const shapes: Array<[string, (size: number) => string]> = [
       // the unterminated link is the quadratic shape, and it goes first so a
@@ -1956,14 +2003,27 @@ describe('plan-md files a triage proposal instead of instructing a human to file
   // enough; this is the fourth, so it gets the same bar the sibling has.
   //
   // Bounds GROWTH, not milliseconds: this is the test CI failed at 328ms on ~0.1ms
-  // of real work, and the whole diagnosis is at the top of this file. The three
-  // shapes are the originals — the trailing-newline one earns its place precisely
-  // because it is FAST under the defect (the docblock: "0s the moment a newline
-  // appears after the run"), which is how every injection fixture missed the bug.
+  // of real work, and the whole diagnosis is at the top of this file.
   // The sizes are 4k/16k rather than the old 65k: a scaling claim needs a PAIR of
   // sizes, not the biggest one, and the pair already separates healthy 1.39 from
   // quadratic 16.5 while keeping a red run legible in seconds instead of minutes.
-  it('folds a field onto one line in linear time', async () => {
+  //
+  // 🔴 **Count two detectors here, not three.** All three original shapes are
+  // kept, but the trailing-newline one CANNOT fail on the defect described
+  // above: a newline after the run is what makes that spelling fast ("0s the
+  // moment a newline appears after the run"), so it measures ~1.0× broken and
+  // ~1.13× healthy. Against the known defect it contributes nothing, and it is
+  // here as a detector of the opposite polarity — a future defect that is slow
+  // precisely WHEN a line terminator follows the run. That is worth keeping and
+  // is not what the shape's history suggests, so it is stated rather than left
+  // for a reader to count coverage they do not have.
+  //
+  // One measurement bias, known and left alone: the three shapes share one plan
+  // file, so the `4n` reading scans a few more bullets than the `n` reading did.
+  // It pushes the ratio UP — toward a false red, the harmless direction — and
+  // measures as nil (1.10–1.32 against a bound of 6). A fresh plan per size
+  // would remove the term and cost more machinery than the term is worth.
+  it('folds a field onto one line in linear time', { timeout: 60_000 }, async () => {
     const { proposeTriage } = await load('plan-md.mjs');
     const planPath = await withPlan();
     const shapes: Array<[string, (size: number) => string]> = [
