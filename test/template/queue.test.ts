@@ -3454,6 +3454,27 @@ describe('a run-state value the reader cannot make sense of never reads as "no s
     // green, because a negative count and a zero count agree about everything
     // except the refusal. "A check with no test is a guess" (`invariants.md`).
     ['a count below zero', { escalations: -1 }, /escalations/],
+    // The same value down the OTHER branch, and that is the whole point of the
+    // row: `-1` takes the number path, `"-1"` takes the string path, and the two
+    // `>= 0` guards are separate lines of code. Deleting either one leaves the
+    // other's row green, so one row cannot stand for both.
+    ['a count below zero written as a string', { escalations: '-1' }, /escalations/],
+    // 🔴 AR-62 round 3 — the array branch, which is the single source of three
+    // defects and has no writer at all: `recordEscalation` stores an integer, the
+    // CLI stores the other three fields, and no adapter stores an array. Measured
+    // on this commit:
+    //
+    //   {"escalations": [null]} → consecutiveEscalations: 0   ← selects work
+    //   {"escalations": [3]}    → 3, via a recursion nothing needs
+    //
+    // The first is the exact shape `stopInputsOf`'s own comment says it exists to
+    // refuse — a present value silently disabling the stop — arrived at by a
+    // branch written to preserve a `Number(x.join())` coercion that was itself an
+    // artifact. Both rows below MOVE from the accepting side of this file: an
+    // array is now uninterpretable like any other value the reader cannot act on,
+    // which is a strengthening in the safe direction, not a relaxation.
+    ['a count wrapped in an array', { escalations: [3] }, /escalations/],
+    ['a count of nothing wrapped in an array', { escalations: [null] }, /escalations/],
     [
       'a verdict that is an object',
       { lastDeployVerdict: { toString: 'REGRESSION' } },
@@ -3520,12 +3541,16 @@ describe('a run-state value the reader cannot make sense of never reads as "no s
 
   // and the rows that already stop, pinned so the normalisation cannot quietly
   // relax them. A guard copied verbatim from `recordEscalation`
-  // (`Number.isInteger(v) ? v : 0`) would read both counts below as zero and hand
+  // (`Number.isInteger(v) ? v : 0`) would read the count below as zero and hand
   // out work to a run that had escalated five times — the fix undoing the stop it
   // was written to protect.
+  //
+  // The one-element-array row that used to sit here has MOVED to the refusal
+  // table above. `[3]` still hands out no work either way, so what changed is the
+  // reason the operator is given: a stop that names an escalation streak the run
+  // never had, versus a refusal that names the field it could not read.
   it.each([
     ['a count written as a string', { escalations: '5' }, /repeated escalation/],
-    ['a count written as a one-element array', { escalations: [3] }, /repeated escalation/],
     ['a budget flag written as the string "false"', { budgetExhausted: 'false' }, /queue: budget/],
   ])('keeps stopping on %s', async (_case, state, kind) => {
     const result = await selectionWith(state);
@@ -3554,6 +3579,17 @@ describe('stopInputsOf decides every count deliberately, and coerces only where 
     return found as (state?: unknown) => StopInputs;
   };
 
+  /**
+   * A chain of single-element arrays, `depth` links long, with a plain count at
+   * the bottom. Built with a loop rather than a literal because the depths that
+   * matter here are not writable by hand.
+   */
+  const arrayNestedDeep = (depth: number): unknown => {
+    let value: unknown = 3;
+    for (let i = 0; i < depth; i += 1) value = [value];
+    return value;
+  };
+
   // 🔴 Every row is a value the docstring already claims to refuse, or one whose
   // only coercion lands on "no stop". A refusal is the whole answer: the caller
   // turns it into a run that does not select, which is the safe half of a state
@@ -3566,6 +3602,45 @@ describe('stopInputsOf decides every count deliberately, and coerces only where 
     ['an empty array', []],
     ['an object', {}],
     ['a negative count', -1],
+    // The string path's own `>= 0`. `-1` above never reaches it — that row is
+    // decided by `typeof value === 'number'` two lines earlier — so deleting the
+    // string guard leaves this file green with a below-zero count accepted.
+    ['a negative count written as a string', '-1'],
+    // 🔴 The `Number.isInteger` half of the same two guards, and the value is
+    // BELOW the threshold on purpose. Relaxing either one to `Number.isFinite`
+    // looks safe read at `2.5` — a fractional count still fires the stop, only
+    // earlier — and is not: `1.5` would read as one-and-a-half escalations, which
+    // is under two, so the run selects work on a value nobody can act on. That is
+    // the `-1` case exactly, wearing a decimal point. Both branches, because
+    // `Number.isInteger` is written twice and either copy can go alone.
+    ['a fractional count', 1.5],
+    ['a fractional count written as a string', '1.5'],
+    // 🔴 AR-62 round 3 — the four array rows. The first two MOVE here from the
+    // accepting table below; the array branch that accepted them is being
+    // deleted, so an array joins every other value the reader cannot act on. It
+    // has no writer (`recordEscalation` writes an integer, the CLI writes the
+    // other three fields, no adapter writes an array) and it is the single source
+    // of the three defects each row names.
+    ['a count wrapped in an array', [3]],
+    // Nesting was accepted to any depth, because the branch recursed. No number
+    // of brackets makes a value more count-like than the value inside them.
+    ['a count wrapped in two arrays', [[3]]],
+    // The dangerous one, and the reason the branch is going rather than being
+    // patched: a PRESENT value that read as `0` and let the run select work,
+    // which is verbatim the case the whole function was written to refuse.
+    ['nothing at all wrapped in an array', [null]],
+    // Refused today only by `value.length === 1`, which nothing pinned —
+    // `code-reviewer` weakened it to `>= 1` and the suite stayed green. The row
+    // survives the deletion (an array refuses on being an array), so it guards
+    // the behaviour rather than the line that currently produces it.
+    ['two counts in an array', [1, 2]],
+    // The recursion was bounded by the input's own nesting and nothing else, so a
+    // deep enough chain overflowed the stack. It fails CLOSED — the CLI catches
+    // it and exits 1 with no item — so it is not a bypass; what the operator
+    // loses is the field name, getting `Maximum call stack size exceeded` where
+    // every other refusal says which field to fix. 10_000 is comfortably past the
+    // measured limit of ~7_900 for the recursion this replaces.
+    ['a count nested ten thousand arrays deep', arrayNestedDeep(10_000)],
   ])('refuses an escalation count written as %s', async (_case, escalations) => {
     const read = await stopInputsOf();
 
@@ -3578,10 +3653,14 @@ describe('stopInputsOf decides every count deliberately, and coerces only where 
   // guard that also refused these would be the AR-62 defect in a fix's clothes:
   // the count would become unwritable by hand and unreadable after a hand-edit,
   // and the operator's next move is to delete the file.
+  //
+  // The one-element-array row that used to sit here has MOVED to the refusal
+  // table above, and the move is the point of this round: every row left is a
+  // shape a hand-edit or a writer actually produces, and none of them needs a
+  // recursive read.
   it.each<[string, unknown, number]>([
     ['a plain number', 2, 2],
     ['a hand edit that reached for a string', '5', 5],
-    ['a one-element array', [3], 3],
     ['an explicit zero', 0, 0],
     ['an explicit null, which is how absence is spelled', null, 0],
   ])('reads an escalation count given as %s', async (_case, escalations, expected) => {

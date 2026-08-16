@@ -269,8 +269,14 @@ if (invokedDirectly()) {
   // the truthful answer is that this run was already over.
   //
   // The values come from the run's own state file rather than from the
-  // session's memory, which is what the four parameters below were waiting for:
-  // every branch in `stopConditionOf` was live, and nothing ever supplied them.
+  // session's memory, which is what three of `stopConditionOf`'s parameters
+  // were waiting for: every branch was live, and nothing ever supplied them.
+  //
+  // The fourth, `killSwitch`, is still not passed here and that is deliberate —
+  // `guard-bash` denies the merge at the tool layer and preflight reads the flag,
+  // so a second answer to "is the brake on" would be the disagreement
+  // `invariants.md` forbids. Selection therefore does NOT stop on the brake, and
+  // the `loop` skill tells the run to keep checking it between tasks.
   //
   const runState = process.env.RIG_RUN_DIR ? readState(process.env.RIG_RUN_DIR) : {};
   let stopInputs;

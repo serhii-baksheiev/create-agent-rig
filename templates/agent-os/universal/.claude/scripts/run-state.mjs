@@ -109,18 +109,25 @@ export const updateState = (runDir, patch) => {
   // writers, but a torn read is not how it fails.
   const tmp = `${file}.${process.pid}.tmp`;
   // `wx` refuses an existing path rather than writing through it. Without it a
-  // symlink planted at the (entirely predictable) temp name is followed, and
-  // the rename then makes `state.json` itself that symlink — so the run's stop
-  // conditions would be read from, and written to, a file somebody else chose.
-  // `0o600` narrows what the state is readable by; nothing but this run needs it.
+  // symlink planted at the temp name is followed, and the rename then makes
+  // `state.json` itself that symlink — so the run's stop conditions would be
+  // read from, and written to, a file somebody else chose. The pid narrows who
+  // can guess the name; it does not stop anyone who watches the directory.
+  //
+  // `0o600` narrows this file specifically. It is not a claim about the run
+  // directory: `run-journal.mjs` appends beside it at the default mode, and its
+  // records carry the same run's item ids.
   writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   try {
     renameSync(tmp, file);
   } catch (error) {
-    // A failed rename used to leave the temp file in the run directory forever,
-    // where `wx` would then refuse every later write — a run bricked by its own
-    // cleanup gap. The unlink's own failure is swallowed on purpose: the caller
-    // needs the rename's error, not this one.
+    // A failed rename used to leave the temp file behind, where `wx` then
+    // refuses any later write from a process that redraws the same pid — the
+    // name carries it, so this is a narrow collision rather than a bricked run,
+    // and it is loud either way. The one case this cannot clean is a process
+    // killed between the write and the rename: no handler runs, and the temp
+    // leaks until the run directory is discarded. The unlink's own failure is
+    // swallowed on purpose: the caller needs the rename's error, not this one.
     try {
       unlinkSync(tmp);
     } catch {
@@ -211,27 +218,47 @@ export const recordEscalation = (runDir) => {
  */
 export const stopInputsOf = (state = {}) => {
   const refuse = (field, value) => {
+    // 🔴 The rendering has a CONSTANT failure path, and that is not fussiness.
+    // `JSON.stringify` recurses, so a deeply nested value overflows the stack
+    // *inside the refusal* — the operator then gets `Maximum call stack size
+    // exceeded` from a function whose entire job is to name the field that is
+    // wrong. `String(value)` is no fallback: on an array it recurses too, via
+    // `join`. Measured: `JSON.stringify` gives out around 6 800 levels deep.
+    let rendered;
+    try {
+      rendered = JSON.stringify(value);
+    } catch {
+      rendered = '(a value too deeply nested to print)';
+    }
     throw new Error(
-      `run state: ${field} is ${JSON.stringify(value) ?? String(value)}, which is not a ` +
-        `value this can act on. An input a stop condition cannot read must not be ` +
-        `read as "no stop" — fix or delete the field rather than leaving it.`,
+      `run state: ${field} is ${rendered ?? typeof value}, which is not a value this ` +
+        `can act on. An input a stop condition cannot read must not be read as ` +
+        `"no stop" — fix or delete the field rather than leaving it.`,
     );
   };
 
-  // 🔴 **Membership, not coercion — because `Number()` decides this question on
-  // the wrong axis.** The rule the three fields share is: coerce where any
-  // coercion fails safe, refuse where it fails dangerous. `Number()` gets that
-  // right for `"5"`, and wrong for everything that quietly becomes 0 or 1:
-  // measured, `true` read as one escalation, and `false`, `''`, `' '` and `[]`
-  // all read as none — a present value silently disabling the stop it was
-  // written to enforce, which is the exact case this function exists for.
+  // 🔴 **A type gate ahead of the coercion — because `Number()` decides this
+  // question on the wrong axis.** The rule the three fields share is: coerce
+  // where any coercion fails safe, refuse where it fails dangerous. `Number()`
+  // gets that right for `"5"`, and wrong for everything that quietly becomes 0
+  // or 1: measured, `true` read as one escalation, and `false`, `''`, `' '` and
+  // `[]` all read as none — a present value silently disabling the stop it was
+  // written to enforce, which is the exact case this function exists for. What
+  // survives the gate is still coerced, and every one of those coercions rounds
+  // toward stopping earlier (`"1e3"` → 1000, `"0x10"` → 16).
   //
   // A hand-edit reaching for `"2"` means two; one reaching for `false` does not
   // mean zero escalations, it means the file is not saying anything this can
   // act on.
+  //
+  // **An array is refused rather than unwrapped**, though a one-element array
+  // used to read as its contents. Nothing writes one — `recordEscalation`
+  // writes an integer and the CLI writes the other fields — and the branch that
+  // accepted it carried three defects of the very kind above: `[null]` read as
+  // zero, a multi-element array was refused only by an untested length check,
+  // and the unwrapping recursed as deep as its input. A shape with no writer is
+  // not a shape worth interpreting.
   const countOf = (value) => {
-    if (value === null || value === undefined) return 0;
-    if (Array.isArray(value)) return value.length === 1 ? countOf(value[0]) : null;
     if (typeof value === 'number') return Number.isInteger(value) && value >= 0 ? value : null;
     if (typeof value !== 'string' || value.trim() === '') return null;
     const parsed = Number(value);

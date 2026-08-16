@@ -71,11 +71,12 @@ been seen working at least once.
 
 🔴 **This is not optional, and it is not only about the trace.** The run's
 **stop conditions** live in that directory too (§3) — the escalation streak, the
-deploy verdict, the budget flag. With `RIG_RUN_DIR` unset, every one of them is
-silently absent: escalations are counted nowhere, `next` hands out work after
-two walls in a row, and **nothing says so on stderr**. An undeclared run is
-therefore not a run with a missing journal; it is a run with no brakes, and it
-looks exactly like a healthy one.
+deploy verdict, the budget flag. With `RIG_RUN_DIR` unset the two you write
+refuse loudly, so you find out; **the escalation count does not.** It is
+recorded nowhere, silently, and `next` then hands out work after two walls in a
+row with nothing on stderr to say why. An undeclared run is therefore not a run
+with a missing journal; it is a run whose main brake is off and which looks
+exactly like a healthy one.
 
 The machine trace (§7) is the other half, and its first call site is
 **selection**, which runs before every task. Declared later, it misses
@@ -222,7 +223,7 @@ Selection itself — `node .claude/scripts/queue/index.mjs next`, §0 — is wha
 
 ⚠ **The kill switch is not among them.** It stays mechanical in `guard-bash`
 and scripted in preflight; `next` does not check for the flag, so **keep
-checking it between tasks** (§3, below).
+checking it between tasks** — the brake block later in this section says how.
 
 Four of them deserve their reasons repeated:
 
@@ -409,8 +410,11 @@ everything else to `events.jsonl`, both append-only, inside the run directory
 declared in §1. Five things about it are worth knowing before relying on it:
 
 - **The run declares the directory; nothing invents one.** With `RIG_RUN_DIR`
-  unset, every call site stays silent — the trace is opt-in, and a run that never
-  declared one has no journal rather than a journal in a guessed place.
+  unset, every call site stays silent — the *trace* is opt-in, and a run that
+  never declared one has no journal rather than a journal in a guessed place.
+  🔴 **The stop conditions in the same directory are not opt-in** (§1): an
+  undeclared run also stops counting escalations, and that half is silent too.
+  Read "opt-in" as describing this file, never the declaration.
 - **It answers *what the run decided and on what basis*, never *was that
   right*.** It replaces neither `## Journal` above nor `PLAN.md`; it is the
   evidence a reader checks those against.

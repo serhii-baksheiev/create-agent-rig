@@ -132,6 +132,14 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   // what this run closed — the item's own state shape names it — not a second
   // input to the ration, and reading it as one would be the per-run clean slate
   // this module exists to prevent.
+  //
+  // ⚠ **Deliberately untried, unlike the same call inside `recordEscalation`.**
+  // There the caller has already mutated a tracker, so a throw would report a
+  // successful escalation as a failure and invite a double-posted comment. Here
+  // the durable half — the tier the ration reads — is already on disk one line
+  // above, and the half that can still fail is the streak reset, whose loss
+  // stops the run EARLIER than it needed to. A failure that errs toward
+  // stopping is one to hear about, not one to swallow.
   if (runDir) updateState(runDir, { lastCompletedTier: tier, escalations: 0 });
 
   return { tier, elevatedPaths: elevated };

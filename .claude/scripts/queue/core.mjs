@@ -529,8 +529,11 @@ export const stopConditionOf = ({
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
-          'session finishes, a trigger when a human declares it — so the action is ' +
-          'to interleave or to wait, never to refill and never to invent work.',
+          'session finishes. A trigger is the exception: when a human declares ' +
+          'one fired, nothing clears until it is RECORDED — `run-state.mjs ' +
+          'trigger <item-id>` — so waiting out that hold waits forever. ' +
+          'Otherwise the action is to interleave or to wait, never to refill ' +
+          'and never to invent work.',
       };
     }
     return {
