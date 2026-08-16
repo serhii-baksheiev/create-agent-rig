@@ -526,6 +526,97 @@ operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
 
+### two review tickets, thirteen blockers, and every one a mechanism nobody could reach
+
+- **items** — AR-56 then AR-62, taken from the owner's review batch (AR-49…AR-70)
+  after the owner directed this run at that batch ahead of the rest of the
+  queue. AR-45 was finished first as the previous run's open tail: its PR was
+  already reviewed and waiting, and leaving it would have blocked AR-54
+- **premises** — `PREMISES HOLD` on both, and both checks paid for themselves.
+  AR-56's added the one fact that made the repro possible (`init` throws on the
+  existing `CLAUDE.md` before it ever reaches the manifest write, so the test
+  must drive `--force`, and writing that out would have made it vacuous).
+  AR-62's found two things the item did not say: a per-checkout state file
+  **already existed** and was the extension point, and its writer was a
+  whole-file overwrite — so any new field would be erased by the next close
+- **🔴 the security finding, and it was already shipped** — the gate on AR-56
+  proved by execution that a committed `.claude/.rig-manifest.json` could run
+  code on the machine of whoever upgraded the rig: `project.name` was validated
+  with a **path** predicate but substituted into `stop-flag.mjs` **inside a
+  single-quoted JS string literal**, which `guard-bash` imports on every Bash
+  call. A quote-closing value executed in the hook process **and** moved the
+  kill switch's path off `~/.claude/<name>-loop-STOP`, so the brake read as
+  installed while doing nothing. Pre-existing on `master` and in the published
+  package — AR-56 only removed the accidental scrub that had hidden the `init`
+  path. The manifest is a committed file, so the carrier was an ordinary PR
+- **🔴 the defect class, stated because it recurred thirteen times** — every
+  blocker in both tickets was a mechanism whose **caller or writer was
+  missing**, and the suite was green throughout because the tests drove the
+  mechanisms directly and never the documented path to them. The sharpest:
+  `recordCompletedTier` grew a `runDir` parameter and the documented close
+  command in `loop` §9 never passed it, so the escalation streak was never
+  reset — a run following the skill literally stopped forever after two
+  escalations hours apart. Same shape: `budgetExhausted` read with no writer,
+  `triggersFired`'s reader moved without its writer, and a refusal I wrote made
+  unreachable by an import that ran earlier. Filed as proposal AR-74
+- **🔴 three regressions, each introduced by fixing the one before** — on
+  AR-56: validating the manifest made `upgrade` write a manifest its own reader
+  refused; slugging the bootstrap name to fix that renamed rigs that never
+  needed it; branching on `kind` to fix *that* broke the other kind. Each fix
+  looked total until the other case was tried, and the reviewers caught all
+  three. The comment at that line now says so, and three sibling tests pin the
+  three classes
+- **the pattern that outranked its own instances** — the `nothing-selectable`
+  stop line was rewritten three times, each revision repairing one trigger
+  sub-case. `prose-reviewer` named the pattern as the finding rather than the
+  clause: one cause tag stood for two mechanisms with different remedies, so
+  any single sentence was wrong for one of them. Fixed structurally —
+  `trigger-auto` and `trigger-human` are separate tags and the remedy is
+  composed from the tags present, so a one-sided line is unavailable rather
+  than discouraged
+- **two owner rulings, quoted on the ticket rather than only in the branch** —
+  `budgetExhausted` accepted as shipped (the item specified
+  `budget: {declared, used}`; the pair is not added, because the loop cannot
+  observe spend and a plausible number written where a stop condition reads is
+  believed), and the per-run vs per-checkout split accepted. Both were raised as
+  open decisions before the work, not after
+- **left undone, named so it is not mistaken for done** — the trigger markers
+  are **not exclusive**: every adapter resolves `auto` first, so an item
+  carrying both is taken as `auto` and one recorded declaration takes it, with
+  the silent resolution going to the *less* restrictive gate (AR-75). And a
+  `spacing` hold cannot clear when every remaining takeable item is elevated,
+  so the stop line advises waiting forever while forbidding the only exit
+  (AR-76 → **AR-72** and **AR-73**, filed by the owner with decisions attached
+  while this entry was being written; the proposals were closed as superseded
+  so one piece of work is not tracked twice). Both pre-existing, both needing
+  an owner decision; the false "never self-taken" claim this branch had put
+  into operator-facing output was removed, the defect behind it was not.
+  🔴 Worth recording as the rule working rather than as a formality: the run
+  found them, wrote them up, **declined to fix them**, and the owner turned
+  both into work with a stronger answer than either proposal asked for —
+  AR-72 refuses a double-marked item outright instead of picking a side, and
+  AR-73 gives the two livelocks their own stop kinds plus operator-only
+  remedies, keeping the run forbidden to clear either
+- **a defect found by hitting it** — `proposeTriage` puts the whole `change`
+  string into the Jira summary, capped at 255 chars, so a long proposal dies
+  with a bare `400 Bad Request` and no hint. Worked around by keeping `change`
+  to one line; a probe issue filed during the diagnosis (AR-71) was closed
+  immediately and labelled as such. Not filed as a proposal — the cap of three
+  is the mechanism, and these three outrank it
+- **unblocked** — AR-69 (`Blocks` link from AR-62, resolved by that merge).
+  AR-56 unblocked nothing: it has no dependents on the board. Asked from the
+  links, not from labels
+- **outcome** — `clean-pass` for both. Every stage produced its artifact from
+  documented inputs; 1119/1119 locally at the end, all four CI checks green by
+  name on each head SHA, and the security fix verified by executing the attack
+  in both directions
+- **cost** — 24 subagent runs across the two items (`test-writer` ×10,
+  `code-reviewer` ×5, `prose-reviewer` ×6, `security-scanner` ×2, plus
+  `check-premises` twice as a skill); 2 PRs, 8 check runs consumed, 0 re-runs;
+  0 deploys. Five gate rounds on AR-62 and five on AR-56 — the count is the
+  finding, and AR-69 exists to bound it. Token and currency figures:
+  **not observed**
+
 ### the adapter was calling a removed endpoint, and the gate caught two claims I had written myself
 
 - **item** — AR-45, the adapter switch. **Not selected by the loop**, and it
