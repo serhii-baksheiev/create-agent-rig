@@ -66,6 +66,10 @@ travels one path to merge, in this order:
    code, and the router decides that question mechanically instead of assuming
    it. A rulebook document is code here, so it never reaches the prose lane.
 
+   The reviewer list the router returns is a **floor, not a ceiling**: it reads
+   paths, while the triggers below read what the code *does*, and a path cannot
+   say that a module parses untrusted input. The triggers may only add.
+
    On the `model` lane:
    - the `code-reviewer` agent **always**;
    - `security-scanner` when it touches auth, secrets/configuration, input

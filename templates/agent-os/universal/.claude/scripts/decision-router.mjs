@@ -37,6 +37,12 @@
  * layers behind it (the suite, the reviewers, CI) are what read content. A
  * project whose risky code does not announce itself in its paths should widen
  * `elevated-paths` rather than expect this file to guess.
+ *
+ * ⚠ **`reviewers` is a floor, not a ceiling** — and this was measured on the
+ * router's own first run, not predicted. It returned `code-reviewer` and
+ * `prose-reviewer` for a diff that parses untrusted argv and git output, which
+ * `pr-ship`'s own trigger list calls a `security-scanner` case. Paths cannot see
+ * what code does. The gate's triggers still apply on top and may only add.
  */
 
 import { execFileSync } from 'node:child_process';

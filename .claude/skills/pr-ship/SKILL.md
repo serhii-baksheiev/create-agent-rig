@@ -47,6 +47,14 @@ blockers.
      the conditional gates below beside it. This is the path this skill has
      always taken and nothing about it is relaxed here.
 
+   ⚠ **The router's `reviewers` list is a floor, not a ceiling** — observed the
+   first time it was run, on its own change: it named `code-reviewer` and
+   `prose-reviewer` while step 3's triggers also called for `security-scanner`,
+   because that diff parses input. The router reads **paths**; step 3's triggers
+   read **what the code does**, and a path-based dispatcher cannot see that a
+   module named `decision-router.mjs` parses untrusted argv. So step 3 still
+   applies in full and may only *add* to the list — never remove from it.
+
    🔴 **The cheap lanes are an addition, never a subtraction.** `code-reviewer`
    was "always" because every change was assumed to contain code; the router
    decides that question mechanically instead of assuming it. A change the
