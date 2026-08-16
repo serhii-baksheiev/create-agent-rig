@@ -2981,3 +2981,320 @@ describe('the ignore block the init doc tells a reader to paste', () => {
     expect(await git(['check-ignore', '-q', '.claude/worktrees/task-1'], dir)).toBe(0);
   }, 20_000);
 });
+
+// AR-62: the same defect as AR3-36, one field over — and four times.
+//
+// `stopConditionOf` destructures `killSwitch`, `budgetExhausted`,
+// `consecutiveEscalations` and `lastDeployVerdict` and branches on every one of
+// them (`core.mjs:462-470`, branches at `:481, :491, :501, :511`). It has exactly
+// two non-test callers, `index.mjs:271-273` (`{candidates, skipped}`) and
+// `index.mjs:240` (`{queueReadable:false}`), and NEITHER passes any of the four.
+// So all four hold their defaults on every selection this rig has ever made: the
+// escalation counter is 0, the budget is never exhausted, the deploy verdict is
+// always null. The values are "remembered" by the session — and a session's
+// memory is lost at compaction, which is precisely the point in a long run where
+// a repeated-escalation guard is worth having.
+//
+// 🔴 **Which file, and why it is NOT `.claude/queue.state.json`.** That file
+// already exists and is per-CHECKOUT by design: `lastCompletedTier` rations the
+// elevated tier ACROSS runs, so it must outlive any one of them (`state.mjs`,
+// `mainCheckoutRoot`). These four are the opposite lifetime — "two escalations in
+// a row" means in THIS run, a declared budget belongs to THIS run, and a
+// `REGRESSION` verdict persisted per-checkout would stop every future run
+// forever with nothing to clear it. Two concurrent runs in one checkout would
+// also share one escalation counter and stop each other. So run state lives in
+// `.claude/runs/<id>/state.json`, keyed by the run directory the loop already
+// declares as `RIG_RUN_DIR` — the item's own title and its `readState(runDir)` /
+// `updateState(runDir, patch)` shape. The per-checkout file keeps its one field.
+/** The state a run accumulates; every field is optional until something records it. */
+type RunStateFile = Record<string, unknown>;
+
+/**
+ * Both calls are `await`ed at every call site, so nothing here pins the module to
+ * a synchronous or an asynchronous implementation — that choice belongs to the
+ * Green step, exactly as it does for the run journal beside it.
+ */
+interface RunState {
+  readState(runDir: string): RunStateFile | Promise<RunStateFile>;
+  updateState(runDir: string, patch: RunStateFile): unknown;
+}
+
+const loadRunState = async (): Promise<RunState> =>
+  (await import(
+    pathToFileURL(path.join(universal, '.claude', 'scripts', 'run-state.mjs')).href
+  )) as RunState;
+
+/** A run directory the loop declared — no module here owns the run-id convention. */
+const newRunDir = (): Promise<string> => mkdtemp(path.join(tmpdir(), 'run-'));
+
+describe('the run state is a file, so a compaction cannot lose it', () => {
+  it('reads a run that has recorded nothing yet as an empty state', async () => {
+    const { readState } = await loadRunState();
+    const runDir = await newRunDir();
+
+    // A fresh run directory has no `state.json`, and that is the normal first
+    // second of every run — never an error.
+    expect(await readState(runDir)).toEqual({});
+  });
+
+  // 🔴 The trap `state.mjs` is already sitting on, one file over. Its writer is
+  // `writeFileSync(file, JSON.stringify({ lastCompletedTier: tier }))` — a
+  // WHOLE-FILE overwrite — so a run-state writer copied from that shape would
+  // erase every field it was not asked to write, silently, and the escalation
+  // counter would be back to being remembered rather than recorded.
+  it('merges a patch into what an earlier write left behind', async () => {
+    const { readState, updateState } = await loadRunState();
+    const runDir = await newRunDir();
+
+    await updateState(runDir, { budget: { declared: 12, used: 4 } });
+    await updateState(runDir, { escalations: 1 });
+
+    expect(await readState(runDir)).toMatchObject({
+      budget: { declared: 12, used: 4 },
+      escalations: 1,
+    });
+  });
+
+  it('writes the state where the run directory says, and nowhere else', async () => {
+    const { updateState } = await loadRunState();
+    const runDir = await newRunDir();
+
+    await updateState(runDir, { escalations: 2 });
+
+    // The path is the item's, spelled out: `.claude/runs/<id>/state.json`. The CLI
+    // reads it from `RIG_RUN_DIR`, so a writer that put it anywhere else would
+    // produce a reader and a writer that never meet.
+    expect(JSON.parse(await read(runDir, 'state.json'))).toMatchObject({ escalations: 2 });
+  });
+});
+
+// The Proof line of the item, at the CLI, because that is where the four fields
+// have to arrive: `index.mjs next` reads the run's state and calls
+// `stopConditionOf` with real values instead of defaults.
+describe('the queue CLI stops the run on what the run state records', () => {
+  const runCli = (
+    args: string[],
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+  ): Promise<{ code: number; stdout: string; out: string }> =>
+    new Promise((resolve) => {
+      execFile(
+        process.execPath,
+        [path.join(queueDir, 'index.mjs'), ...args],
+        { cwd, env },
+        (error, stdout, stderr) => {
+          resolve({
+            code: error ? ((error as { code?: number }).code ?? 1) : 0,
+            stdout,
+            out: stdout + stderr,
+          });
+        },
+      );
+    });
+
+  /**
+   * A project with takeable work, a declared run directory, and an explicit
+   * `--config` so the pair (config, per-checkout state) resolves inside the temp
+   * tree. Without `--config` the CLI derives both from its OWN location — this
+   * repository's real, gitignored `.claude/queue.state.json` — and a developer's
+   * leftover tier would decide the run.
+   *
+   * `plan` is `null` for the case that needs the adapter to be unable to answer.
+   */
+  const runProject = async (
+    plan: string | null = '# P\n\n## Agent queue\n\n- add a route\n\n## Journal\n',
+  ): Promise<{ dir: string; configPath: string; runDir: string; env: NodeJS.ProcessEnv }> => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'run-state-'));
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    if (plan !== null) await writeFile(path.join(dir, 'PLAN.md'), plan);
+    const configPath = path.join(dir, '.claude', 'queue.json');
+    await writeFile(configPath, JSON.stringify({ adapter: 'plan-md' }));
+    const runDir = await mkdtemp(path.join(tmpdir(), 'run-'));
+    return {
+      dir,
+      configPath,
+      runDir,
+      env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir },
+    };
+  };
+
+  /** The run's own state file, hand-written: this pins the on-disk contract. */
+  const writeRunState = (runDir: string, state: Record<string, unknown>) =>
+    writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
+
+  it('stops the run when the state records two escalations in a row', async () => {
+    const { dir, configPath, runDir, env } = await runProject();
+    await writeRunState(runDir, { escalations: 2 });
+
+    const result = await runCli(['next', '--config', configPath], dir, env);
+
+    // Verbatim from the item's proof line, and it is the rendered form the
+    // operator sees: `renderNext` prints the kind with its dashes as spaces and
+    // appends the marker for a stop that is not a success.
+    expect(result.out).toContain('queue: repeated escalation (needs attention)');
+    // …and no item was handed out, which is the whole of "the run stops".
+    expect(result.out).not.toMatch(/add a route/);
+  });
+
+  // 🔴 The half that cannot be faked by computing the stop after the selection:
+  // a run that already hit two walls must not touch the tracker at all. Here the
+  // adapter CANNOT answer — there is no PLAN.md, and `plan-md.listEligible`
+  // reads it with `readFileSync` — so any call at all turns into
+  // `queue-unreadable`. That is the tripwire: the message tells you which one ran.
+  it('reports the repeated escalation without consulting the queue at all', async () => {
+    const { dir, configPath, runDir, env } = await runProject(null);
+    await writeRunState(runDir, { escalations: 2 });
+
+    const result = await runCli(['next', '--config', configPath], dir, env);
+
+    expect(result.out).toContain('queue: repeated escalation (needs attention)');
+    expect(result.out).not.toMatch(/unreadable|ENOENT|no such file/i);
+  });
+
+  it('lets a regression verdict outrank a run that is also out of escalations', async () => {
+    const { dir, configPath, runDir, env } = await runProject();
+    await writeRunState(runDir, { escalations: 2, lastDeployVerdict: 'REGRESSION' });
+
+    const result = await runCli(['next', '--config', configPath], dir, env);
+
+    // Severity order is `stopConditionOf`'s and is already pinned there; what is
+    // new is that BOTH values now reach it, so the order it applies is the order
+    // the operator actually gets. A regression reported as an escalation would
+    // send the run to re-read its own history instead of to the revert.
+    expect(result.out).toContain('queue: runtime regression (needs attention)');
+    expect(result.out).not.toContain('repeated escalation');
+  });
+
+  it('selects normally when the run has recorded no state yet', async () => {
+    const { dir, configPath, runDir, env } = await runProject();
+
+    // The declaration is there and the file is not: nothing has escalated, no
+    // budget was declared, nothing was deployed. Today's behaviour, unchanged —
+    // refusing here would make the first selection of every run impossible.
+    await expect(read(runDir, 'state.json')).rejects.toThrow();
+    const result = await runCli(['next', '--json', '--config', configPath], dir, env);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { ticket: Ticket | null; stop: unknown };
+    expect(parsed.ticket?.title).toBe('add a route');
+    expect(parsed.stop).toBeNull();
+  });
+
+  it('selects normally when the run declared no directory at all', async () => {
+    const { dir, configPath } = await runProject();
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+
+    // A run outside the loop skill — a human at a prompt — has no run directory,
+    // and the four fields are then simply unknown. Unknown reads as their
+    // defaults, which is exactly what every selection does today.
+    const result = await runCli(['next', '--json', '--config', configPath], dir, env);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { ticket: Ticket | null; stop: unknown };
+    expect(parsed.ticket?.title).toBe('add a route');
+    expect(parsed.stop).toBeNull();
+  });
+});
+
+// The writer at the other end. `recordCompletedTier` is the close step, and it is
+// already a whole-file overwrite of the per-checkout state — so the moment it also
+// writes the run's state, it is one line away from erasing the counters this item
+// exists to persist.
+describe('the close step writes the run state without erasing the rest of it', () => {
+  /** A project the tier computation can read: a declaration and a state path. */
+  const withProject = async (): Promise<{ dir: string; statePath: string }> => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'close-'));
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, 'CLAUDE.md'),
+      '# P\n\n```elevated-paths\npackages/db/src/\n.claude/\n```\n',
+    );
+    return { dir, statePath: path.join(dir, '.claude', 'queue.state.json') };
+  };
+
+  const runStateOf = async (runDir: string): Promise<Record<string, unknown>> =>
+    JSON.parse(await read(runDir, 'state.json')) as Record<string, unknown>;
+
+  it('breaks the escalation streak the run was carrying', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { updateState } = await loadRunState();
+    const { dir, statePath } = await withProject();
+    const runDir = await newRunDir();
+    await updateState(runDir, { escalations: 1 });
+
+    recordCompletedTier({
+      changedFiles: ['services/api/src/handler.ts'],
+      projectRoot: dir,
+      statePath,
+      runDir,
+    });
+
+    // "Consecutive" is the whole meaning of the counter: a task that closed is a
+    // task that did not hit a wall, so the streak is over. A counter that only
+    // ever rises stops the run on two escalations that were an hour and three
+    // successful tasks apart.
+    expect(await runStateOf(runDir)).toMatchObject({ escalations: 0 });
+  });
+
+  // 🔴 The whole-file-overwrite trap, pinned on a field the close does NOT own —
+  // `escalations` alone cannot pin it, because a close legitimately sets that to
+  // 0 and an erased field reads back as 0 too. The two are indistinguishable, and
+  // a test that could not tell them apart would let the close silently drop the
+  // budget and the deploy verdict while looking green.
+  it('leaves the run-state fields it does not own exactly as it found them', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { updateState } = await loadRunState();
+    const { dir, statePath } = await withProject();
+    const runDir = await newRunDir();
+    await updateState(runDir, {
+      escalations: 1,
+      budget: { declared: 12, used: 7 },
+      triggersFired: { '7': true },
+    });
+
+    recordCompletedTier({
+      changedFiles: ['services/api/src/handler.ts'],
+      projectRoot: dir,
+      statePath,
+      runDir,
+    });
+
+    expect(await runStateOf(runDir)).toMatchObject({
+      budget: { declared: 12, used: 7 },
+      triggersFired: { '7': true },
+    });
+  });
+
+  it('still records the tier in the per-checkout state, which outlives the run', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+    const runDir = await newRunDir();
+
+    recordCompletedTier({
+      changedFiles: ['packages/db/src/schema.ts'],
+      projectRoot: dir,
+      statePath,
+      runDir,
+    });
+
+    // Two files, two lifetimes, and the elevated ration keeps the one it had: it
+    // spaces elevated work across RUNS, so moving it into a per-run file would
+    // hand the next run a clean slate and let a second elevated item straight
+    // through — the AR3-36 defect, restored by tidying.
+    expect(JSON.parse(await read(statePath))).toMatchObject({ lastCompletedTier: 'elevated' });
+    // and the run's own trace carries it too, per the state shape the item names
+    expect(await runStateOf(runDir)).toMatchObject({ lastCompletedTier: 'elevated' });
+  });
+});
+
+// A module the manifest does not name is a module composition DROPS — and this one
+// is imported by the CLI, so a generated project would ship a `queue next` that
+// crashes on its first run. The same test exists for `state.mjs` and
+// `checkout.mjs` above, for the same reason and after the same near-miss.
+describe('composition carries the run state module', () => {
+  it('layers.json names the module the queue CLI reads the run state through', async () => {
+    const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
+    expect(manifest['process']).toContain('.claude/scripts/run-state.mjs');
+  });
+});

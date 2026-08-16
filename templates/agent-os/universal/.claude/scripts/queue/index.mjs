@@ -230,6 +230,61 @@ if (invokedDirectly()) {
     process.exit(1);
   }
 
+  // 🔴 The run-level stop is decided BEFORE the queue is read, because those
+  // conditions are not about the queue. A run that has escalated twice in a row
+  // has hit a systemic wall, and a run that deployed a regression must start no
+  // new work on top of it — asking the tracker first would spend a network call
+  // and, worse, would report `queue-unreadable` for an unreachable tracker when
+  // the truthful answer is that this run was already over.
+  //
+  // The values come from the run's own state file rather than from the
+  // session's memory, which is what the four parameters below were waiting for:
+  // every branch in `stopConditionOf` was live, and nothing ever supplied them.
+  //
+  // Imported the way the journal is — dynamically, and only when the run
+  // declared a directory. A rig that carries an older `.claude/scripts/` than
+  // this CLI is a real state (`upgrade` leaves a locally-edited copy beside a
+  // new caller), and a static import would turn that into a module-resolution
+  // stack trace before `main` runs at all: the CLI would stop answering
+  // `--help`, an unknown command, or a broken config with its own message.
+  //
+  // A missing module is NOT read as "no state". A run that declared a
+  // directory and cannot read its state would silently lose the escalation
+  // streak and the regression verdict — the two conditions that exist to stop
+  // it — so this fails closed, into a stop the operator can see and fix.
+  let runState = {};
+  if (process.env.RIG_RUN_DIR) {
+    try {
+      const { readState } = await import('../run-state.mjs');
+      runState = readState(process.env.RIG_RUN_DIR);
+    } catch (error) {
+      process.stderr.write(
+        `run state: ${error.message}\n` +
+          '  the run declared RIG_RUN_DIR but its state module could not be loaded, so the ' +
+          'escalation streak and the deploy verdict cannot be read. Those are stop ' +
+          'conditions, and a run that cannot read them must not select work.\n',
+      );
+      process.exit(1);
+    }
+  }
+  const runStop = stopConditionOf({
+    // `candidates: 1` says "not the empty-queue case" — the queue has not been
+    // read yet and must not be reported on here. Only the conditions that
+    // outrank it can fire from this call.
+    candidates: 1,
+    consecutiveEscalations: runState.escalations ?? 0,
+    lastDeployVerdict: runState.lastDeployVerdict ?? null,
+    budgetExhausted: runState.budgetExhausted ?? false,
+  });
+  if (runStop) {
+    // `renderNext`, not a second copy of its format — an operator reading two
+    // differently-worded stop lines has no way to know they came from one rule.
+    process.stdout.write(
+      args.json ? `${JSON.stringify({ stop: runStop }, null, 2)}\n` : renderNext(null, runStop),
+    );
+    process.exit(1);
+  }
+
   let tickets;
   try {
     // Awaited so an adapter may be async (jira) or plain (plan-md, github-issues)
