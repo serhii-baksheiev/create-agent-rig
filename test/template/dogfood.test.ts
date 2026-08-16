@@ -8,6 +8,24 @@ import { describe, expect, it } from 'vitest';
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+// Same reason as in queue.test.ts: the TWO `check-ignore` spawns below take an
+// explicit environment from the ONE shipped list. `check-ignore` consults the
+// index, so an inherited GIT_INDEX_FILE aims it at another repository — the
+// variable that already killed the ignore tests in that file once.
+//
+// 🔴 Scoped to those two on purpose, and the limit is stated rather than
+// implied: the `git ls-files` spawn further down this file inherits its
+// environment, and this file is NOT on the sweep list in git-env.test.ts.
+// Both facts predate this block. They are the open item AR-2 (`two git spawns
+// outside the env sweep`), whose premises were checked and hold — fixing them
+// here would be taking a queue item that was never handed out. A comment
+// claiming this file is GIT_DIR-safe throughout would be the overstatement
+// invariants.md warns about, in the file that carries that scar.
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/preflight.mjs'))
+    .href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
+
 // The elevated-path declaration this repo publishes, read the way the sweep
 // reads it. Imported through a URL for the same reason as below: the script
 // ships as plain .mjs with no type declarations.
@@ -147,5 +165,123 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     ) as { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } };
     const commands = settings.hooks.PreToolUse.flatMap((h) => h.hooks.map((x) => x.command));
     expect(commands.some((c) => c.includes('block-no-verify.mjs'))).toBe(true);
+  });
+});
+
+// The same dogfooding gap, one file over: the skeletons have shipped a secrets
+// block since they existed, and this repository — which runs the loop against a
+// tracker adapter that reads an API token from the environment — did not have
+// one. "Never put secrets in code, config, logs or fixtures" (`autonomy.md`,
+// Never tier) is a rule; an ignore rule is the mechanical half of it, and by
+// `invariants.md` a check with no test is a guess.
+//
+// 🔴 Assert it BEHAVIOURALLY and in BOTH directions. A one-sided ignore test is
+// vacuous: the interesting failure is not "`.env` stopped being ignored", it is
+// "`.env.example` started being ignored" — or, worse, the reverse, where a tidy
+// that widens `.env`/`.env.*` into `.env*` with a matching `!.env*` un-ignores
+// every secret while every ignore assertion here stays green. So each verdict is
+// pinned together with the RULE that produced it: not-ignored has to be the work
+// of `!.env.example`, not of the whole block having been deleted.
+describe('the secrets block the skeletons ship is live in this repository too', () => {
+  /** The real ignore verdict. `-q` alone: 0 = ignored, 1 = not. */
+  const ignored = (file: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      execFile(
+        'git',
+        ['check-ignore', '-q', '--', file],
+        { cwd: repoRoot, env: withoutGitLocation() },
+        (error) => resolve(!error),
+      );
+    });
+
+  /**
+   * The rule that decided the verdict, as `<source>:<pattern>`, or `null` when
+   * no pattern matched at all.
+   *
+   * Deliberately NOT used for the verdict: under `-v` git exits 0 for a NEGATED
+   * match too (`.env.example` matches `!.env.example` and is not ignored), so
+   * reading ignore-ness off that exit code inverts this file's headline case.
+   * The source is asserted so an ignore cannot be credited to a developer's
+   * global excludesfile — `*.pem` and `*.key` are common enough there that the
+   * whole block could be missing and these tests still pass on one machine.
+   */
+  const matchedRule = (file: string): Promise<string | null> =>
+    new Promise((resolve, reject) => {
+      execFile(
+        'git',
+        ['check-ignore', '-v', '--non-matching', '--', file],
+        { cwd: repoRoot, env: withoutGitLocation() },
+        (error, stdout) => {
+          const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+          if (code > 1) return reject(error as Error);
+          // `<source>:<line>:<pattern>\t<pathname>`, or `::\t<pathname>`
+          const match = /^(.*):(\d+):(.*)$/.exec(stdout.split('\t')[0] ?? '');
+          resolve(match ? `${match[1]}:${match[3]}` : null);
+        },
+      );
+    });
+
+  it.each([
+    // the pattern is not root-anchored — a nested one is the same secret
+    ['.env', '.env'],
+    ['packages/core/.env', '.env'],
+    ['.env.local', '.env.*'],
+    ['.env.production', '.env.*'],
+    ['id.pem', '*.pem'],
+    ['server.key', '*.key'],
+  ])('never lets %s be committed', async (file, pattern) => {
+    await expect(ignored(file)).resolves.toBe(true);
+    await expect(matchedRule(file)).resolves.toBe(`.gitignore:${pattern}`);
+  });
+
+  // The fragile line. The negation is only correct BECAUSE it sits after
+  // `.env.*`; git takes the last matching pattern, so a reorder silently commits
+  // every `.env.*` file. And the sample file has to survive nested too, or a
+  // service's own `.env.example` stops being shippable.
+  it.each(['.env.example', 'packages/core/.env.example'])(
+    'still tracks %s, and by the negation rather than by an absent block',
+    async (file) => {
+      await expect(ignored(file)).resolves.toBe(false);
+      await expect(matchedRule(file)).resolves.toBe('.gitignore:!.env.example');
+    },
+  );
+
+  // A neighbour that predates the block: adding patterns must not change what
+  // the existing entries mean.
+  it('leaves the pre-existing next-env.d.ts entry doing its job', async () => {
+    await expect(ignored('next-env.d.ts')).resolves.toBe(true);
+    await expect(matchedRule('next-env.d.ts')).resolves.toBe('.gitignore:next-env.d.ts');
+  });
+
+  // `invariants.md`: "One mechanism, one implementation. If two files enforce
+  // the same invariant, they will disagree — and the one nobody is looking at is
+  // the one that is wrong." A gitignore has no include directive, so the three
+  // copies are forced; this test is the only thing tying them together. Extract
+  // the patterns, never restate them — a restated list is a fourth copy.
+  const secretsPatterns = async (...parts: string[]): Promise<string[]> => {
+    const lines = (await readFile(path.join(repoRoot, ...parts), 'utf8')).split('\n');
+    const header = lines.findIndex((line) => /^#.*\bsecrets\b/i.test(line));
+    expect(header, `no secrets block in ${path.join(...parts)}`).toBeGreaterThanOrEqual(0);
+    const patterns: string[] = [];
+    for (const line of lines.slice(header + 1)) {
+      if (line.trim() === '') break; // the block ends at the first blank line
+      if (line.startsWith('#')) continue; // its prose is per-file, its patterns are not
+      patterns.push(line);
+    }
+    return patterns;
+  };
+
+  it('states the same secrets patterns in the root ignore and in both skeletons', async () => {
+    const root = await secretsPatterns('.gitignore');
+    // non-vacuity: three empty lists are also "identical"
+    expect(root.length, 'the root block must carry patterns, not just its comment').toBeGreaterThan(
+      0,
+    );
+    for (const target of ['node-service', 'aws-serverless']) {
+      await expect(
+        secretsPatterns('templates', 'skeleton', target, 'gitignore'),
+        `${target} has drifted from the root .gitignore`,
+      ).resolves.toEqual(root);
+    }
   });
 });
