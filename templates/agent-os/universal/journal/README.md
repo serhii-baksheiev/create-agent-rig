@@ -8,8 +8,8 @@ stay date-free and their order carries the sequence.
 heading, so the file reads as a stack. Prune freely: this is operational memory,
 not an archive.
 
-**The shape of a month file**, because a check enforces it and a rule nobody
-stated is a trap the first session of a new month walks into:
+**The shape of a month file**, stated because the first session of a new month
+creates it and a shape nobody wrote down is one that has to be guessed:
 
 - it **opens with a single `#` heading** naming the month;
 - **every entry is a `###`** under that heading, and there is nothing at `##`
@@ -17,9 +17,23 @@ stated is a trap the first session of a new month walks into:
 - a new entry is inserted directly beneath the `#` heading, above the previous
   newest.
 
-The first session of a month creates the file with that shape. Nothing else in
-the directory is a month file: `README.md` is this document, and any other name
-is neither read nor checked.
+**What is mechanically checked, precisely — because this file ships into a
+project and its checks do not.** The generator that produced this rig has tests
+for the first two bullets and for the `YYYY-MM.md` filename; **this project has
+none of them** unless you write them. That is the same arrangement
+`.claude/rules/invariants.md` describes for the hooks, and the same caveat
+applies: what is not tested here is convention, however firmly it is written.
+
+The third bullet — *where* a new entry is inserted — is convention even in the
+generator. Nothing checks entry order anywhere yet; making "newest" decidable
+for date-free entries is its own piece of work. Do not read the presence of a
+shape rule as a guarantee that a misordered file would be caught.
+
+`README.md` is this document, not a month file. Other names: a file that does
+not match `YYYY-MM.md` is never **read** as a month file — but do not read that
+as permission, because in the generator any other `*.md` in this directory
+**fails** the filename check. Keep archives and side notes out of this
+directory, or somewhere with a non-`.md` extension.
 
 An unattended run writes an entry at every stop **and** at checkpoints along the
 way, because a run that dies unexpectedly must not take its history with it.

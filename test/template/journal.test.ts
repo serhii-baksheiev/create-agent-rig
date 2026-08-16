@@ -425,11 +425,70 @@ describe('the Agent queue is empty to the parser, not just to the eye', () => {
     ).toEqual([]);
   });
 
-  it('yields no work items from the template either', async () => {
-    const { parsePlan } = await import(
+  // 🔴 The same two assertions for the template, and the `found` one matters
+  // MORE here than in the test above, not less. This repo runs on `jira`, so a
+  // mangled heading costs it a stop. The template's heading ships into every
+  // generated project, where `plan-md` IS the default adapter and there is no
+  // board to fall back to — the first `loop` run exits 1 on `queue-unreadable`,
+  // which is a failure this repo has already lived through once.
+  //
+  // Demonstrated: mangling the template heading to `x## Agent queue` left the
+  // whole template suite green — 26 files, 1018 tests — because every other
+  // assertion on it is a substring match, and the mangled line still contains
+  // the substring. The invariant was pinned for the copy that does not ship and
+  // not for the one that does.
+  it('yields no work items from the template either, and still has a queue to read', async () => {
+    const { parsePlan, readQueue } = await import(
       pathToFileURL(path.join(universalDir, '.claude', 'scripts', 'queue', 'plan-md.mjs')).href
     );
+    const plan = await templatePlan();
+    expect(readQueue(plan).found, 'the heading must still parse AS a heading').toBe(true);
     // the template ships its examples inside an HTML comment for this reason
-    expect(parsePlan(await templatePlan())).toEqual([]);
+    expect(parsePlan(plan)).toEqual([]);
+  });
+});
+
+// 🔴 The fourth fact from the cut, and the only one whose failure is SILENT.
+//
+// The three above are pinned by `nearAnchor` passages; this one guards
+// artifacts rather than prose. The `[carried → AR-n]` bullets in the Operator
+// queue are not open items — they are the only home a fingerprint has under
+// `plan-md`. Delete one and nothing complains: `proposeTriage` simply finds no
+// match and files the same proposal again as a fresh `seen ×1`, returning
+// `ok: true`. That is the defect AR-48 exists to fix, hand-performed.
+//
+// The rewrite that cut this section reworded the rule and left it unpinned,
+// which is strictly weaker than what it replaced. A second reviewer round
+// called that out; this is the ratchet.
+describe('the carried fingerprints are artifacts, not notes', () => {
+  const CARRIED = /^- \[carried → (AR-\d+)\]/gm;
+
+  it('keeps every carried bullet, each with the tail dedup matches on', async () => {
+    const plan = await repoPlan();
+    const section = /^## Operator queue$([\s\S]*?)^## /m.exec(plan);
+    expect(section, 'the Operator queue section must exist').toBeTruthy();
+
+    const bullets = section![1]!.split('\n').filter((l) => l.startsWith('- [carried'));
+    expect(bullets.length, 'a carried bullet is a fingerprint, and losing it re-files').toBe(3);
+
+    for (const bullet of bullets) {
+      const key = /\[carried → (AR-\d+)\]/.exec(bullet)?.[1];
+      // the exact tail `TAIL` in plan-md.mjs matches, and `duplicateOf`
+      // compares inside — one character off in either and the next filing is a
+      // duplicate rather than an increment
+      expect(bullet, `${key}: the fingerprint tail`).toMatch(
+        /· fingerprint: `[^`]+` · seen ×\d+\s*$/,
+      );
+    }
+    expect([...plan.matchAll(CARRIED)].map((m) => m[1])).toEqual(['AR-46', 'AR-47', 'AR-48']);
+  });
+
+  it('still says why they are not open items', async () => {
+    const plan = await repoPlan();
+    // the rule survived the cut reworded; what it must keep saying is that
+    // these are not work, and that deleting one is the defect rather than tidy
+    expect(nearAnchor(plan, /carried/i, /fingerprint/i, 600)).toBe(true);
+    expect(nearAnchor(plan, /carried/i, /not open items|are not open/i, 600)).toBe(true);
+    expect(nearAnchor(plan, /carried/i, /AR-48/, 900)).toBe(true);
   });
 });

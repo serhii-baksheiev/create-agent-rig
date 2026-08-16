@@ -194,7 +194,7 @@ export const close = (ticket, { prUrl = null, planPath: p } = {}) => {
 export const comment = (ticket, body) => ({
   ok: false,
   journalInstead: `${ticket.id} — ${body}`,
-  why: 'PLAN.md has no comment thread: write it as a journal entry in this month’s journal/YYYY-MM.md.',
+  why: 'PLAN.md has no comment thread: write it as a journal entry in journal/YYYY-MM.md for the current month.',
 });
 
 export const escalate = (ticket, diagnosis, { env = process.env } = {}) => {

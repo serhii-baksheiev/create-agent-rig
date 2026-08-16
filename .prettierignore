@@ -10,3 +10,7 @@ PLAN.md
 # composed verbatim into CLAUDE.md, so it must not be reformatted either)
 CLAUDE.md
 .claude/
+# ...and since AR-64 the synced set reaches outside .claude/: this one file is
+# composed from templates/agent-os/universal/journal/README.md, which is itself
+# ignored above. The month files next to it are this repo's own and ARE formatted.
+journal/README.md
