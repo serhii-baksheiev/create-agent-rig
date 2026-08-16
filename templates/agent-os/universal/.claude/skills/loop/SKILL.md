@@ -6,8 +6,9 @@ argument-hint: [max-tasks]
 ---
 
 You drive an unattended session. `.claude/rules/autonomy.md` sets the behaviour
-boundaries; the **queue** holds the work; `PLAN.md` holds state, standing
-decisions and the journal. This skill is the driver in between: what gets picked,
+boundaries; the **queue** holds the work; the journal is `journal/YYYY-MM.md`,
+one file per month, newest-on-top; `PLAN.md` holds state and standing
+decisions. This skill is the driver in between: what gets picked,
 what keeps the loop going, what stops it, and where the report goes.
 
 Per-task procedure is unchanged: (worktree if another session may run) →
@@ -414,7 +415,8 @@ a run still working.
 
 Write a checkpoint entry **every few completed items and at every stop**, not only
 at the end: a run that dies unexpectedly must not take its history with it. The
-field list is in `PLAN.md` under `## Journal`.
+entry goes at the TOP of `journal/YYYY-MM.md` — this month's file, newest-on-top
+— and the field list is in `journal/README.md` next to it.
 
 **Behind that entry there is a machine trace, and it is a different artifact.**
 `.claude/scripts/run-journal.mjs` writes gate verdicts to `decisions.jsonl` and
@@ -428,8 +430,10 @@ declared in §1. Five things about it are worth knowing before relying on it:
   undeclared run also stops counting escalations, and that half is silent too.
   Read "opt-in" as describing this file, never the declaration.
 - **It answers *what the run decided and on what basis*, never *was that
-  right*.** It replaces neither `## Journal` above nor `PLAN.md`; it is the
-  evidence a reader checks those against.
+  right*.** It replaces neither the month file above nor `PLAN.md`; it is the
+  evidence a reader checks those against. It is also **oldest-first**, where the
+  month file is newest-on-top — reading one as the other is how a reader
+  concludes a run did nothing.
 - **A record after the run-end marker is refused, and a broken sequence is
   refused on both write and read.** The order is asserted rather than described,
   so a stale record cannot read as the current one — which is the whole failure a
