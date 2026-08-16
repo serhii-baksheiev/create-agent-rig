@@ -883,7 +883,14 @@ describe('the journal module travels with the CLI that imports it', () => {
 
     expect(result.code, result.out).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toMatch(/run.?journal/i);
+    // 🔴 The CLI's OWN label, at the head of a line — not `/run.?journal/i`,
+    // which the module path inside a raw `Cannot find module
+    // '…/run-journal.mjs'` satisfies just as well. That looser form could not
+    // tell this refusal apart from the unhandled resolution error it exists to
+    // replace, so it would keep passing if the handler around the import went
+    // away. (Here the handler IS reached today; the assertion is what could not
+    // prove it.)
+    expect(result.stderr).toMatch(/^run journal: /m);
     // nothing was written where the run was told to write
     expect(await readdir(runDir)).toEqual([]);
   });
@@ -913,7 +920,23 @@ describe('the run-state module travels with the CLI that imports it', () => {
     // No selection, on either stream: a caller that reads a ticket here has taken
     // work under stop conditions the run could not check.
     expect(result.stdout).toBe('');
-    expect(result.stderr).toMatch(/run.?state/i);
+    // 🔴 The CLI's own diagnostic, not a substring a stack trace shares with it.
+    // `/run.?state/i` passed against the raw
+    // `Cannot find module '…/run-state.mjs' imported from '…/queue/plan-md.mjs'`
+    // — the words are in the FILENAME. Every adapter imports `run-state.mjs`
+    // statically, so a rig missing it dies inside `resolveAdapter`, and the
+    // refusal below never runs. Anchoring the CLI's own label to the head of a
+    // line is what the loader's message cannot forge.
+    expect(result.stderr).toMatch(/^run state: /m);
+    // and the sentence that follows it, which is the whole reason this stops the
+    // run rather than continuing with `{}`: the two values it could not read are
+    // the stop conditions, so no work may be selected on top of them. A refusal
+    // that named the module but not this would leave the operator reading a
+    // missing file as a missing file, not as an unchecked stop.
+    expect(result.stderr).toMatch(/escalation/i);
+    expect(result.stderr).toMatch(/deploy verdict/i);
+    expect(result.stderr).toMatch(/stop condition/i);
+    expect(result.stderr).toMatch(/must not select work/i);
     // Named as the state failure and not as the journal's — the two refusals are
     // one dynamic import apart, and an operator who reads the wrong one goes
     // looking for the wrong missing file.

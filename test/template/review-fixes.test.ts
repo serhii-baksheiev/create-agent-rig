@@ -33,6 +33,32 @@ const pr = (over: Record<string, unknown> = {}) => ({
 
 const ELEVATED = ['infra/', 'packages/db/src/'];
 
+/**
+ * The queue seam installed into `dir` the way generation installs it: the whole
+ * of `queue/`, plus every module it reaches for one directory up.
+ *
+ * 🔴 **Why the siblings are not optional.** `layers.json` composes all of them
+ * into a generated project, so a fixture that copies `queue/` alone is not a
+ * smaller rig — it is a rig whose CLI cannot load. The failure then arrives as
+ * `ERR_MODULE_NOT_FOUND` on stderr with exit 1, which is close enough to a real
+ * refusal to be read as one: the test goes on passing while measuring module
+ * resolution instead of the behaviour it names.
+ *
+ * Both siblings are STATIC imports, so both are load-bearing before a single
+ * line of queue logic runs — `git-env.mjs` from `queue/checkout.mjs`, and
+ * `run-state.mjs` from all three adapters. `run-journal.mjs` is deliberately
+ * absent: the CLI imports it dynamically and only when `RIG_RUN_DIR` is
+ * declared, which no fixture here does, and `run-journal.test.ts` owns that path.
+ */
+const installQueueCli = async (dir: string): Promise<void> => {
+  const scripts = path.join(dir, '.claude', 'scripts');
+  await mkdir(scripts, { recursive: true });
+  await cp(queueDir, path.join(scripts, 'queue'), { recursive: true });
+  for (const sibling of ['git-env.mjs', 'run-state.mjs']) {
+    await copyFile(path.join(scriptsDir, sibling), path.join(scripts, sibling));
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('plan-md: closing an item deletes THAT item and nothing else', () => {
@@ -114,14 +140,7 @@ describe('plan-md: a missing queue section is not an empty queue', () => {
 
   it('the CLI reports an unreadable queue rather than a successful empty one', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'noqueue-'));
-    await mkdir(path.join(dir, '.claude'), { recursive: true });
-    await cp(queueDir, path.join(dir, '.claude', 'scripts', 'queue'), { recursive: true });
-    // The queue seam imports the shared git-env sanitiser from one directory up;
-    // a fixture that copies only `queue/` installs a CLI that cannot resolve it.
-    await cp(
-      path.join(queueDir, '..', 'git-env.mjs'),
-      path.join(dir, '.claude', 'scripts', 'git-env.mjs'),
-    );
+    await installQueueCli(dir);
     await writeFile(path.join(dir, 'PLAN.md'), '# P\n\n## Journal\n');
     const result = await run(dir, ['next']);
     expect(result.out).toMatch(/unreadable|no Agent queue/i);
@@ -457,14 +476,7 @@ function run(cwd: string, args: string[]): Promise<{ code: number; out: string }
 describe('the queue CLI fails loudly, exactly as its own header demands', () => {
   const project = async (config?: string, plan = '# P\n\n## Agent queue\n\n- do a thing\n') => {
     const dir = await mkdtemp(path.join(tmpdir(), 'cli-'));
-    await mkdir(path.join(dir, '.claude'), { recursive: true });
-    await cp(queueDir, path.join(dir, '.claude', 'scripts', 'queue'), { recursive: true });
-    // The queue seam imports the shared git-env sanitiser from one directory up;
-    // a fixture that copies only `queue/` installs a CLI that cannot resolve it.
-    await cp(
-      path.join(queueDir, '..', 'git-env.mjs'),
-      path.join(dir, '.claude', 'scripts', 'git-env.mjs'),
-    );
+    await installQueueCli(dir);
     await writeFile(path.join(dir, 'PLAN.md'), plan);
     if (config !== undefined) await writeFile(path.join(dir, '.claude', 'queue.json'), config);
     return dir;

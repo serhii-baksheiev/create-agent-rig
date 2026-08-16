@@ -18,6 +18,7 @@
 //     { "adapter": "jira", "options": { "project": "ABC" } }
 //     { "adapter": "jira", "options": { "jql": "project = ABC AND ..." } }
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'jira';
 
@@ -330,6 +331,9 @@ export const escalate = async (ticket, diagnosis, { env = process.env } = {}) =>
     body: { update: { labels: [{ add: 'escalated' }] } },
     env,
   });
+  // Counted through the one recorder, never a counter of this adapter's own —
+  // "twice in a row" has to mean the same thing on every tracker.
+  recordEscalation(env.RIG_RUN_DIR);
   return { ok: true };
 };
 

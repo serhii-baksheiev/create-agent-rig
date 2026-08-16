@@ -35,8 +35,9 @@
  * the contract, and the `loop` skill states it.
  */
 
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const STATE = 'state.json';
 
@@ -94,3 +95,99 @@ export const updateState = (runDir, patch) => {
   renameSync(tmp, file);
   return next;
 };
+
+/**
+ * Count one task that hit a wall, and hand back the new total.
+ *
+ * 🔴 **One recorder, called by three adapters — not three counters.** Every
+ * adapter's `escalate()` needs this, and three copies of read-then-increment is
+ * how the number means something different depending on which tracker the rig
+ * happens to use (`invariants.md`, "one mechanism, one implementation"). The
+ * adapters own *how a tracker records an escalation*; the count of them in this
+ * run is not tracker business at all.
+ *
+ * A run that declared no directory records nothing and **does not throw**: an
+ * attended session escalating an item by hand is an ordinary thing to do, and a
+ * recorder that refused there would push callers into not calling it.
+ *
+ * A stored value that is not a number reads as none. It is the same permissive
+ * read as {@link readState} and for the same reason — a hand-edited state file
+ * must not be able to make the count `NaN`, which compares false against every
+ * threshold and silently disables the stop it feeds.
+ */
+export const recordEscalation = (runDir) => {
+  if (!runDir) return 0;
+  const current = readState(runDir).escalations;
+  const next = (Number.isInteger(current) && current >= 0 ? current : 0) + 1;
+  updateState(runDir, { escalations: next });
+  return next;
+};
+
+/**
+ * The post-deploy verdict, as `autonomy.md` defines it: binary, and the only
+ * two words `stopConditionOf` can act on.
+ *
+ * `HEALTHY` is not decoration. The field is `lastDeployVerdict` and "last" is
+ * the whole of it — without a word that clears a regression, one bad deploy
+ * ends every later selection in the run and the operator's only way out is to
+ * hand-edit a state file.
+ */
+export const DEPLOY_VERDICTS = Object.freeze(['REGRESSION', 'HEALTHY']);
+
+const invokedDirectly = () => {
+  if (!process.argv[1]) return false;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
+};
+
+// The one-line CLI the post-deploy step calls. It exists because the verdict is
+// produced by a human-or-script judgement outside any module — and a stop
+// condition nothing can write is the state this whole file was added to end.
+//
+// 🔴 **Reading is permissive; writing refuses.** `readState` turns an absent or
+// corrupt file into `{}` because an absent stop input is a defined state. A
+// write has nowhere to go instead, and exiting 0 would tell the operator the
+// regression was filed while the next selection hands out work on top of it —
+// the one move `autonomy.md` names as never fix-forward.
+if (invokedDirectly()) {
+  const [command, verdict] = process.argv.slice(2);
+  const runDir = process.env.RIG_RUN_DIR;
+
+  if (command !== 'deploy') {
+    process.stderr.write(
+      `unknown command: ${command ?? '(none)'}. This CLI has one: ` +
+        `\`deploy <${DEPLOY_VERDICTS.join('|')}>\`. Everything else in this module is ` +
+        'an import, not a command.\n',
+    );
+    process.exit(1);
+  }
+  if (!runDir) {
+    process.stderr.write(
+      'RIG_RUN_DIR is not set, so there is no run to record this verdict against. ' +
+        'The run declares it in preflight; a verdict written nowhere would read as a ' +
+        'healthy deploy to the next selection.\n',
+    );
+    process.exit(1);
+  }
+  // Case is normalised rather than refused: a lowercase word is not a typo of
+  // meaning, while `REGRESSED` is — it matches nothing in `stopConditionOf` and
+  // would sit in the file looking recorded and stopping nothing.
+  const normalised = String(verdict ?? '').toUpperCase();
+  if (!DEPLOY_VERDICTS.includes(normalised)) {
+    process.stderr.write(
+      `unknown deploy verdict: ${verdict ?? '(none)'}. It must be one of ` +
+        `${DEPLOY_VERDICTS.join(', ')} — the vocabulary the stop conditions compare ` +
+        'against. A word outside it would be stored, read back, and match nothing.\n',
+    );
+    process.exit(1);
+  }
+
+  updateState(runDir, { lastDeployVerdict: normalised });
+  process.stdout.write(`run state: lastDeployVerdict = ${normalised}\n`);
+}

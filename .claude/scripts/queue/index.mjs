@@ -209,6 +209,36 @@ if (invokedDirectly()) {
     process.exit(1);
   }
 
+  // A missing module is NOT read as "no state". A run that could not read its
+  // state would silently lose the escalation streak and the regression verdict
+  // — the two conditions that exist to stop it — so this fails closed, into a
+  // message the operator can act on.
+  //
+  // 🔴 **Loaded unconditionally, and ahead of the adapter, because the adapters
+  // import it statically.** An earlier version loaded it dynamically and only
+  // behind `RIG_RUN_DIR`, reasoning that a rig carrying an older
+  // `.claude/scripts/` should still get a readable message. That reasoning was
+  // sound and the code did not deliver it: all three adapters now
+  // `import { recordEscalation } from '../run-state.mjs'`, so a rig missing the
+  // module died inside `resolveAdapter` below and the operator saw a raw
+  // `Cannot find module` naming an adapter. The refusal was unreachable — and
+  // its test passed anyway, because the module's own filename satisfied the
+  // pattern it matched on. The load lives here; the READ stays behind the
+  // declaration, because a session with no run directory has no state to read
+  // and must keep working exactly as before.
+  let readState;
+  try {
+    ({ readState } = await import('../run-state.mjs'));
+  } catch (error) {
+    process.stderr.write(
+      `run state: ${error.message}\n` +
+        '  the run state module could not be loaded, so the escalation streak and the ' +
+        'deploy verdict cannot be read. Those are stop conditions, and a run that ' +
+        'cannot read them must not select work.\n',
+    );
+    process.exit(1);
+  }
+
   let config;
   let state;
   let adapter;
@@ -241,32 +271,7 @@ if (invokedDirectly()) {
   // session's memory, which is what the four parameters below were waiting for:
   // every branch in `stopConditionOf` was live, and nothing ever supplied them.
   //
-  // Imported the way the journal is — dynamically, and only when the run
-  // declared a directory. A rig that carries an older `.claude/scripts/` than
-  // this CLI is a real state (`upgrade` leaves a locally-edited copy beside a
-  // new caller), and a static import would turn that into a module-resolution
-  // stack trace before `main` runs at all: the CLI would stop answering
-  // `--help`, an unknown command, or a broken config with its own message.
-  //
-  // A missing module is NOT read as "no state". A run that declared a
-  // directory and cannot read its state would silently lose the escalation
-  // streak and the regression verdict — the two conditions that exist to stop
-  // it — so this fails closed, into a stop the operator can see and fix.
-  let runState = {};
-  if (process.env.RIG_RUN_DIR) {
-    try {
-      const { readState } = await import('../run-state.mjs');
-      runState = readState(process.env.RIG_RUN_DIR);
-    } catch (error) {
-      process.stderr.write(
-        `run state: ${error.message}\n` +
-          '  the run declared RIG_RUN_DIR but its state module could not be loaded, so the ' +
-          'escalation streak and the deploy verdict cannot be read. Those are stop ' +
-          'conditions, and a run that cannot read them must not select work.\n',
-      );
-      process.exit(1);
-    }
-  }
+  const runState = process.env.RIG_RUN_DIR ? readState(process.env.RIG_RUN_DIR) : {};
   const runStop = stopConditionOf({
     // `candidates: 1` says "not the empty-queue case" — the queue has not been
     // read yet and must not be reported on here. Only the conditions that
@@ -318,7 +323,21 @@ if (invokedDirectly()) {
     // the config is a hand-written hint at best, and it is the composed file, so
     // it cannot be the live value.
     lastCompletedTier: state.lastCompletedTier ?? config.lastCompletedTier ?? null,
-    triggersFired: config.triggersFired ?? null,
+    // Same precedence, for the same reason as the tier above: `queue.json` is
+    // composed by the sync script and drift-checked, so declaring a trigger
+    // fired there means editing a generated file — and the declaration is a
+    // fact about THIS run, not about the rig's configuration.
+    //
+    // The config keeps working as a fallback rather than being dropped: nothing
+    // in this repository or its templates ever writes the key, but a rig owner
+    // who hand-added one would otherwise find their auto-trigger items silently
+    // unselectable, and an item that stops being offered announces itself
+    // nowhere.
+    //
+    // Replacement, not a merge: a per-key merge would make a stale config entry
+    // impossible to retract, so "not this time" would again require editing the
+    // generated file this move exists to get out of.
+    triggersFired: runState.triggersFired ?? config.triggersFired ?? null,
   });
   // The skipped records travel with the count: without them "nothing left" and
   // "everything left is held back" both print as an empty queue, and only one of

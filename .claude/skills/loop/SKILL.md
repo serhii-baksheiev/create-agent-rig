@@ -146,6 +146,33 @@ severity order: **queue unreadable** · **runtime regression** · **kill switch*
 **two escalations in a row** · **budget** · **nothing selectable** · **queue
 empty**.
 
+🔴 **Their inputs come from a file, not from your memory — and that is why they
+fire at all.** `escalations` and `lastDeployVerdict` live in
+`<RIG_RUN_DIR>/state.json`, written by `run-state.mjs`. Before this existed the
+CLI called `stopConditionOf` with the queue counts alone, so every one of those
+branches held its default on every real selection: the rules were enforced by
+whichever session happened to remember them, and compaction is exactly the
+moment a long run stops remembering.
+
+Three commands are the whole of it. The first two you do not run by hand — the
+adapter and the close step call them — and the third is yours:
+
+```bash
+# recorded FOR you: every adapter's escalate() counts the wall it just hit,
+# and the close step clears the streak (a task landing in between is what
+# "two in a row" means).
+node .claude/scripts/queue/index.mjs next          # reads the state, stops on it
+
+# yours, after the post-deploy check (§ autonomy.md, "Post-deploy verification")
+node .claude/scripts/run-state.mjs deploy REGRESSION   # or HEALTHY
+```
+
+The verdict CLI **refuses** a word outside `REGRESSION | HEALTHY` and refuses to
+run with no `RIG_RUN_DIR`, rather than writing something the stop condition
+cannot match: a verdict file that looks recorded and stops nothing is worse than
+no file. `HEALTHY` exists so a regression can be cleared — without it one bad
+deploy ends every later selection in the run.
+
 Four of them deserve their reasons repeated:
 
 - **Runtime regression** → deploy the revert first, diagnose second, start no new
@@ -217,6 +244,15 @@ cost column **will be believed** — by the next reader, and by the next run
 reasoning about its own budget. A field the loop cannot observe stays **visibly
 empty, never estimated.**
 
+**Where the budget lives, and what is honest about it.** `state.json` carries a
+`budget` field, and `stopConditionOf` reads `budgetExhausted` from it — so a
+declared budget survives compaction the way the escalation count does. But
+**nothing computes it for you**: the counters above are observed by the session,
+and the decision that the remaining allowance cannot fit another task is still
+yours. Recording it is what makes it re-readable; it is not what makes it
+measured, and writing a number the run cannot observe into that field would put
+a fiction where a stop condition reads.
+
 ## 5. Every task carries an outcome state
 
 The stop conditions say why the loop stopped. None of them says whether what it
@@ -281,6 +317,15 @@ claimed, what the code says, and the citation:
    or the next query picks it up and works it twice.
 3. Journal it. 4. **Take the next item.** One stuck task does not end a run; two
    in a row does (§3).
+
+🔴 **Escalate through the adapter, never by hand-labelling the item.** Every
+adapter's `escalate()` counts the escalation into the run state as it marks the
+item, which is what makes "two in a row" a condition the next selection can
+check rather than one you have to remember across a compaction. Adding the
+label yourself marks the item and counts nothing — and the run then grinds past
+the wall this rule exists to stop it at. (`plan-md` still returns `ok: false`,
+because a flat list has no per-item state to mark; the count is recorded all the
+same, and moving the item to the Operator queue is still yours.)
 
 **Run-scoped — the run itself is broken, and it ends.** A runtime regression, two
 escalations in a row, a systemic wall, a queue-data anomaly: open an escalation
