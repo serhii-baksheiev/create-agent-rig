@@ -2,8 +2,11 @@
 // (the guard-web-boundary hook refuses such imports at the tool layer).
 import type { Note } from '@app/core';
 
-// Same-origin by default (the API server serves this bundle); set
-// NEXT_PUBLIC_API_URL at build time when the API lives elsewhere.
+// In THIS target the API is never same-origin: the bundle is served from
+// CloudFront and the API is API Gateway, so `NEXT_PUBLIC_API_URL` has to be set
+// at build time — Next inlines it, and an unset one leaves the empty string
+// here, which makes every call go to the CDN serving this page. The fallback
+// exists for `pnpm dev`, where a proxy does serve both.
 const base = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 export async function createNote(input: { title: string; tags: string[] }): Promise<Note> {

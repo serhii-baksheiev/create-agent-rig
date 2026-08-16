@@ -100,6 +100,10 @@ your own approval — reusing the dev workflow's OIDC pattern.
 After every deploy:
 
 ```sh
+# both come from the deploy's outputs file (see Local / manual above)
+API_URL=$(jq -er '.AppStack.ApiUrl' infra/cdk-outputs.json)
+WEB_URL=$(jq -er '.WebStack.WebUrl' infra/cdk-outputs.json)
+
 curl -s -X POST "$API_URL/notes" \
   -H 'content-type: application/json' \
   -d '{"title":"smoke test","tags":["deploy"]}'
