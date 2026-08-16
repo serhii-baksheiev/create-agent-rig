@@ -5,6 +5,7 @@ import { InitError, initFileContents, initProject, planInit } from './commands/i
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import { makePalette } from './lib/colors.js';
+import { readManifest } from './lib/manifest.js';
 import { promptConfirm, promptTarget } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
 import { DEFAULT_TARGET, TARGET_NAMES } from './lib/targets.js';
@@ -47,12 +48,23 @@ async function runInit(rawArgs: string[]): Promise<number> {
   const cwd = process.cwd();
   const dryRun = values['dry-run'] === true;
 
+  // `init` adopts a repo the rig knows nothing about. Run inside a rig `create`
+  // generated — reachable with --force — it is the wrong command: it installs
+  // the process layer alone and never refreshes the stack overlays. Say so
+  // before anything is written, so it is visible on --dry-run too.
+  const existing = await readManifest(cwd);
+
   const plan = await planInit(cwd);
   process.stdout.write(
     `agent-rig init — process layer into ${cwd}\n\n` +
       plan.files.map((f) => `  + ${f.path}`).join('\n') +
       '\n',
   );
+  if (existing?.kind === 'create') {
+    process.stdout.write(
+      `\n!  This rig was created by create-agent-rig — \`init\` only fills gaps here; use \`upgrade\` to refresh.\n`,
+    );
+  }
   if (plan.conflicts.length > 0) {
     process.stdout.write(
       `\nAlready present (kept, not overwritten):\n` +

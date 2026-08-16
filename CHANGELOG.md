@@ -15,6 +15,17 @@ content as a patch by the owner's call and stays recorded as one.
 
 ### Fixed
 
+- **`init --force` inside a generated project used to make `upgrade` stop
+  refreshing the stack overlays — silently.** `init` rewrote the rig manifest
+  as `kind: "init"`, `stacks: []`, empty `region`, and `upgrade` trusts a
+  manifest wholesale rather than re-detecting: the stack files simply left the
+  plan, reported neither as deleted nor as a conflict, and `CLAUDE.md` came
+  back in the `init` flavour. `init` now preserves the `kind`, `project` and
+  `stacks` it found and records only the files it wrote. It also says, before
+  writing anything, that this rig came from `create` and `upgrade` is the
+  command that refreshes it. **A project whose manifest was already flattened
+  needs it restored by hand** — `init` preserves what it finds, and what it
+  finds there is the flattened record.
 - **The `jira` queue adapter was calling an endpoint Atlassian removed.** Both
   selection and the triage dedupe went through `GET /rest/api/3/search`, which
   answers `410 Gone`; the adapter threw on the status line and the loop read

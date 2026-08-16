@@ -210,6 +210,14 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * somebody else's — claiming it here would let the next upgrade replace a
  * user's own document with the rig's. Earlier entries are preserved: a re-run
  * writes nothing and must not therefore un-remember everything.
+ *
+ * 🔴 **`kind`, `project` and `stacks` are preserved, not rewritten.** Run with
+ * `--force` inside a rig `create` produced, this used to stamp `kind: 'init'`,
+ * `stacks: []` and an empty `region` over the truth — and `planUpgrade` trusts
+ * a manifest wholesale (it never re-detects), so the next upgrade routed to the
+ * `init` install set and the stack overlays left the plan entirely: not
+ * reported as deleted, not as a conflict, simply absent. `init` describes what
+ * it wrote; it does not get to re-describe how the rig was installed.
  */
 async function recordInstall(
   repoDir: string,
@@ -222,9 +230,12 @@ async function recordInstall(
   for (const rel of written) files[rel] = sha256(contents.get(rel) ?? '');
   const manifest: RigManifest = {
     version: await packageVersion(),
-    kind: 'init',
-    project: { name, scope: name, region: '' },
-    stacks: [],
+    kind: previous?.kind ?? 'init',
+    // No previous manifest means no recorded scope or region: `init` adopts an
+    // existing repository rather than generating one, so the directory name is
+    // all there is to go on.
+    project: previous?.project ?? { name, scope: name, region: '' },
+    stacks: previous?.stacks ?? [],
     files,
   };
   await writeManifest(repoDir, manifest);

@@ -220,6 +220,65 @@ describe('a rig that came from `create`, not from `init`', () => {
   });
 });
 
+// `init` is allowed to run inside a generated project — someone refreshing the
+// process layer by hand does exactly that. What it must not do is rewrite the
+// manifest's *identity*: a create rig demoted to `kind: "init"` with no stacks
+// still upgrades, silently, from the smaller install set — the overlays leave
+// the plan without ever being reported as deleted or conflicting.
+describe('`init --force` inside a rig that came from `create`', () => {
+  let project: string;
+
+  const AWS_RULE = '.claude/rules/aws-cdk.md';
+  const NODE_RULE = '.claude/rules/node-ts.md';
+
+  /** A generated project, then the process layer re-installed over it. */
+  const generateThenInit = async (): Promise<void> => {
+    project = path.join(repo, 'my-app');
+    await createProject('my-app', { cwd: repo, target: 'aws-serverless', git: false });
+    // --force is the only way in: plain `init` refuses the existing CLAUDE.md.
+    await initProject(project, { force: true });
+  };
+
+  it('leaves the manifest still saying the rig came from `create`', async () => {
+    await generateThenInit();
+    expect((await readManifest(project))?.kind).toBe('create');
+  });
+
+  it('keeps the stack overlays the project was composed from', async () => {
+    await generateThenInit();
+    expect((await readManifest(project))?.stacks).toEqual(['node-ts', 'aws-cdk']);
+  });
+
+  it('keeps the substitution values the generated files were written with', async () => {
+    await generateThenInit();
+    // region is what `init` has no way to know and every overlay file is
+    // substituted with — blanking it makes the whole rig a conflict.
+    expect((await readManifest(project))?.project).toEqual({
+      name: 'my-app',
+      scope: 'my-app',
+      region: 'eu-central-1',
+    });
+  });
+
+  it('still records the process files it wrote', async () => {
+    await generateThenInit();
+    const manifest = await readManifest(project);
+    expect(manifest?.files['CLAUDE.md']).toBe(
+      sha256(await readFile(path.join(project, 'CLAUDE.md'), 'utf8')),
+    );
+    // and it did not forget what `create` installed
+    expect(manifest?.files[AWS_RULE]).toBeTruthy();
+  });
+
+  it('leaves the next upgrade still refreshing the stack overlays', async () => {
+    await generateThenInit();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    const planned = plan.actions.map((a) => a.rel);
+    expect(planned).toContain(AWS_RULE);
+    expect(planned).toContain(NODE_RULE);
+  });
+});
+
 // The manifest is meant to be committed, so it travels in pull requests: it is
 // input from whoever wrote it, not from the rig. Its values reach `path.join`.
 describe('a manifest is evidence, not an instruction to write anywhere', () => {
