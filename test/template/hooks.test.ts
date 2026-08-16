@@ -534,6 +534,88 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toBe('');
   });
+
+  // The whole point of the hook is the two sections an unattended run is
+  // governed by. Injecting fewer of them is a silent downgrade — the run
+  // still gets *something*, so nothing looks broken — so every tier and every
+  // stop rule is pinned by name, on every source that can drop the context.
+  const autonomyPath = path.join(
+    repoRoot,
+    'templates',
+    'agent-os',
+    'universal',
+    '.claude',
+    'rules',
+    'autonomy.md',
+  );
+  const sessionStartSources = ['startup', 'resume', 'compact'];
+
+  it('injects every tier and every stop rule, on startup, resume and compaction', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.code, source).toBe(0);
+      for (const heading of [
+        '## Tiers',
+        'Tier 0',
+        'Tier 1',
+        'Tier 2',
+        '### Never',
+        '## Stop rules',
+        'Three strikes',
+        'Budget',
+        'Flaky',
+        'Invariant conflict',
+        'Surprise scope',
+        'Session staleness',
+      ]) {
+        expect(result.stdout, `${source}: ${heading}`).toContain(heading);
+      }
+    }
+  });
+
+  // autonomy.md is already loaded as project instructions, so re-injecting it
+  // whole spends the context budget twice for nothing. Everything outside the
+  // tiers and the stop rules stays out — these strings are unique to the
+  // sections that must not be echoed.
+  it('leaves out the sections the tool already loads', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      for (const elsewhere of [
+        'detect-missed-gate.mjs',
+        'reconcile-external-prs.mjs',
+        'Post-deploy verification',
+        'Escalation format',
+      ]) {
+        expect(result.stdout, `${source}: ${elsewhere}`).not.toContain(elsewhere);
+      }
+    }
+  });
+
+  it('injects substantially less than the whole rules file', async () => {
+    const rules = await readFile(autonomyPath, 'utf8');
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'compact',
+    });
+    expect(result.stdout.length).toBeLessThanOrEqual(Math.floor(rules.length / 2));
+  });
+
+  // An excerpt that does not say it is an excerpt reads as the whole rule. A
+  // session that needs a section this hook dropped has to know it exists and
+  // where to read it.
+  it('names the file the omitted sections live in', async () => {
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+    expect(result.stdout).toContain('.claude/rules/autonomy.md');
+  });
 });
 
 describe('hook wiring (settings.json)', () => {

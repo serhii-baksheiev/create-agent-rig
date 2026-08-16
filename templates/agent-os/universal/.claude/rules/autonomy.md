@@ -36,8 +36,9 @@ would touch.** A task that passed as Tier 1 and turns out to reach an elevated
 area *is* Tier 2 from that moment: run the gate, record the verdict on the PR,
 and say in the description that the tier changed mid-work.
 
-**Where the elevated paths of this project are written down:** the
-`elevated-paths` block in `CLAUDE.md`, plus any such block in `.claude/rules/` —
+#### Where the elevated paths of this project are written down
+
+The `elevated-paths` block in `CLAUDE.md`, plus any such block in `.claude/rules/` —
 the gate sweep reads them all and unions the result, so a stack layer declares the
 paths that exist only in its shape. A path declared in none of them is a path
 nothing checks.
