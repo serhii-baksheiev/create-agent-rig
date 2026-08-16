@@ -340,7 +340,7 @@ describe('selection — the filters run IN ORDER, then the sort', () => {
         trigger: 'human',
       }),
     );
-    expect(selection.causes).toEqual(['closed', 'triage', 'blocked', 'trigger']);
+    expect(selection.causes).toEqual(['closed', 'triage', 'blocked', 'trigger-human']);
     // one tag per reason it pushed, and the set stays closed under repetition
     expect(selection.causes).toHaveLength(selection.reasons.length);
     expect(new Set(selection.causes as string[]).size).toBe((selection.causes as string[]).length);
@@ -348,15 +348,27 @@ describe('selection — the filters run IN ORDER, then the sort', () => {
 
   it('draws every cause from the closed vocabulary, never from free text', async () => {
     const { selectionOf } = await load('core.mjs');
-    const VOCABULARY = ['closed', 'in-progress', 'triage', 'escalated', 'blocked', 'trigger'];
+    // 🔴 `trigger` was ONE tag for the two rows below, and the two rows clear by
+    // different acts — see "one tag, two mechanisms" in the stop-condition block.
+    // A tag the caller COUNTS has to name the mechanism, or a counter grouping by
+    // it groups two remedies into one number.
+    const VOCABULARY = [
+      'closed',
+      'in-progress',
+      'triage',
+      'escalated',
+      'blocked',
+      'trigger-auto',
+      'trigger-human',
+    ];
     const cases: Array<[string, Partial<Ticket>]> = [
       ['closed', { state: 'closed' }],
       ['in-progress', { state: 'in-progress' }],
       ['triage', { triage: true }],
       ['escalated', { labels: ['escalated'] }],
       ['blocked', { blockedBy: [{ id: '2', resolved: false }] }],
-      ['trigger', { trigger: 'human' }],
-      ['trigger', { trigger: 'auto' }],
+      ['trigger-human', { trigger: 'human' }],
+      ['trigger-auto', { trigger: 'auto' }],
     ];
     for (const [cause, over] of cases) {
       const selection = selectionOf(ticket(over));
@@ -768,11 +780,11 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
     const { stopConditionOf } = await load('core.mjs');
     const stop = stopConditionOf({
       candidates: 0,
-      skipped: [...heldBy('spacing', 8), ...heldBy('trigger', 1)],
+      skipped: [...heldBy('spacing', 8), ...heldBy('trigger-auto', 1)],
     });
     expect(String(stop.why)).toMatch(/\b9\b/); // the count of held items
     expect(names(String(stop.why), 8, 'spacing'), String(stop.why)).toBe(true);
-    expect(names(String(stop.why), 1, 'trigger'), String(stop.why)).toBe(true);
+    expect(names(String(stop.why), 1, 'trigger-auto'), String(stop.why)).toBe(true);
   });
 
   it('orders the breakdown by how many are held, then by tag — never by arrival', async () => {
@@ -780,14 +792,15 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
     const stop = stopConditionOf({
       candidates: 0,
       // deliberately arriving in the opposite order to the one it must print in
-      skipped: [...heldBy('spacing', 1), ...heldBy('trigger', 3), ...heldBy('blocked', 3)],
+      skipped: [...heldBy('spacing', 1), ...heldBy('trigger-auto', 3), ...heldBy('blocked', 3)],
     });
     const at = (tag: string) => String(stop.why).toLowerCase().indexOf(tag);
-    expect(Math.min(at('blocked'), at('trigger'), at('spacing')), String(stop.why)).toBeGreaterThan(
-      -1,
-    );
-    expect(at('blocked')).toBeLessThan(at('trigger')); // tied at 3, so tag ascending
-    expect(at('trigger')).toBeLessThan(at('spacing')); // 3 before 1
+    expect(
+      Math.min(at('blocked'), at('trigger-auto'), at('spacing')),
+      String(stop.why),
+    ).toBeGreaterThan(-1);
+    expect(at('blocked')).toBeLessThan(at('trigger-auto')); // tied at 3, so tag ascending
+    expect(at('trigger-auto')).toBeLessThan(at('spacing')); // 3 before 1
   });
 
   it('treats a missing skipped list as nothing held back at all', async () => {
@@ -891,7 +904,18 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
     const { SKIP_CAUSES, HOLDING_CAUSES } = await load('core.mjs');
     // The subset that holds a TAKEABLE item back — the four a stop line can
     // honestly tell the owner to wait out.
-    expect(HOLDING_CAUSES).toEqual(['blocked', 'in-progress', 'spacing', 'trigger']);
+    // 🔴 `trigger` was one entry and is now two, because it was one tag over two
+    // mechanisms with different remedies (see "one tag, two mechanisms" below).
+    // Both stay on the HELD side: a `trigger-human` item is real, takeable work,
+    // so reporting it as `queue-empty` would tell the owner to refill a queue
+    // that is full — the refill-versus-wait inversion this split exists to remove.
+    expect(HOLDING_CAUSES).toEqual([
+      'blocked',
+      'in-progress',
+      'spacing',
+      'trigger-auto',
+      'trigger-human',
+    ]);
     expect(Object.isFrozen(HOLDING_CAUSES)).toBe(true);
 
     // A partition, not merely a subset: a cause added to the vocabulary later
@@ -955,7 +979,22 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
     blocked: /blocker|its item closes/i,
     'in-progress': /another session|the other session|finishes|releases/i,
     spacing: /normal item|interleave/i,
-    trigger: /declare|declares/i,
+    // 🔴 This was ONE entry — `trigger: /declare|declares/i` — and it is exactly
+    // why three revisions of this clause each fixed one sub-case and left the
+    // other wrong: one loose word matched a line that named either remedy, so a
+    // line naming only the recording command passed while being useless to the
+    // half of the pile it did not describe. Two entries, each the remedy for
+    // exactly one mechanism, and the check below runs each against a queue held
+    // by that tag alone.
+    //
+    // The auto entry pins the command AS IT IS RUN — interpreter and path — which
+    // is how every other occurrence in this layer writes it
+    // (`.claude/skills/loop/SKILL.md:134`). A bare `run-state.mjs …` is not a
+    // thing an operator can paste.
+    'trigger-auto': /node \.claude\/scripts\/run-state\.mjs trigger\b/,
+    // What actually frees one: a human changing the item's own marker. Same
+    // wording the loop skill already uses, so the two cannot drift apart.
+    'trigger-human': /marker|hand(?:s|ed) it over/i,
   };
 
   it('names a remedy for every cause that can hold an item back', async () => {
@@ -969,6 +1008,116 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       // task another session is holding.
       expect(String(stop.why), cause).toMatch(REMEDY_FOR[cause]!);
     }
+  });
+
+  // --- one tag, two mechanisms -------------------------------------------------
+  //
+  // `prose-reviewer` found the same clause wrong three rounds running, and the
+  // third time diagnosed it as structural rather than editorial: `selectionOf`
+  // emitted the cause `trigger` from TWO branches with DIFFERENT remedies.
+  //
+  //   trigger-auto  — held until `triggersFired[id] === true`; the human declares
+  //                   it and the declaration is RECORDED, or the next selection
+  //                   holds the item again.
+  //   trigger-human — held UNCONDITIONALLY. `triggersFired` is never consulted on
+  //                   that path; the only thing that frees it is a human changing
+  //                   the item's own marker.
+  //
+  // One tag collapsed both into `N held by trigger`, so the stop line named one
+  // remedy for two mechanisms. Measured end to end on the shipped module: an
+  // operator holding a `trigger-human` item runs the command the line names, gets
+  // `run state: triggersFired = {"1":true}` and exit 0, then gets back a stop line
+  // IDENTICAL to the one before — indefinitely. Under `plan-md` the id is a list
+  // POSITION, so that useless record also arms whatever occupies the slot next.
+  //
+  // 🔴 Why these tests drive real tickets rather than `heldBy`. The check above
+  // this one asserted its remedy against a synthetic `heldBy('trigger', 2)`
+  // record — a tag chosen by the test, carrying no mechanism — so it could not
+  // tell the two apart and no revision of the clause could fail it. The tag has
+  // to come from `selectionOf` deciding about a ticket, or the test is checking
+  // its own fixture.
+
+  /** The stop line a REAL queue produces, end to end: tickets → selection → stop. */
+  const stopLineFor = async (tickets: Ticket[], triggersFired: Record<string, boolean> = {}) => {
+    const { selectNext, stopConditionOf } = await load('core.mjs');
+    const { candidates, skipped } = selectNext(tickets, { triggersFired });
+    const stop = stopConditionOf({ candidates, skipped });
+    return { stop, why: String(stop?.why ?? '') };
+  };
+
+  /** Named once so a "remedy" and its "must not appear" are the same string. */
+  const RECORDING_COMMAND = REMEDY_FOR['trigger-auto']!;
+  const HUMAN_MARKER = REMEDY_FOR['trigger-human']!;
+  /** Deliberately looser than the remedy: the bare form the clause used to print. */
+  const ANY_RECORDING_COMMAND = /run-state\.mjs trigger/i;
+
+  it('names the recording command, in the form an operator can run, for a queue held by a trigger-auto item', async () => {
+    const { stop, why } = await stopLineFor([ticket({ id: '1', trigger: 'auto' })]);
+    expect(stop?.kind).toBe('nothing-selectable');
+    expect(why, 'the trigger-auto remedy').toMatch(RECORDING_COMMAND);
+  });
+
+  it('offers no recording command to a queue held by a trigger-human item', async () => {
+    const { stop, why } = await stopLineFor([ticket({ id: '1', trigger: 'human' })]);
+    expect(stop?.kind).toBe('nothing-selectable');
+    // The command is a NO-OP for this item (pinned two tests down). A line that
+    // names it hands the operator an action that changes nothing and returns the
+    // same line — which is the whole defect, not a wording preference.
+    expect(why, 'sends a trigger-human hold to the recording command').not.toMatch(
+      ANY_RECORDING_COMMAND,
+    );
+  });
+
+  it('says what does free a trigger-human item, so the line is not merely silent about it', async () => {
+    const { why } = await stopLineFor([ticket({ id: '1', trigger: 'human' })]);
+    // Not naming the wrong remedy is half the fix; an operator still has to be
+    // told the item waits on a human changing its own marker.
+    expect(why, 'the trigger-human remedy').toMatch(HUMAN_MARKER);
+  });
+
+  it('offers no human-marker remedy to a queue held by a trigger-auto item', async () => {
+    const { why } = await stopLineFor([ticket({ id: '1', trigger: 'auto' })]);
+    // The symmetric half, and the one that rules out the other candidate fix: a
+    // single sentence naming BOTH remedies passes every test above and still
+    // tells this operator to go find a human for an item a recorded declaration
+    // releases. The remedy has to follow the pile, not be printed unconditionally.
+    expect(why, 'sends a trigger-auto hold to a human').not.toMatch(HUMAN_MARKER);
+  });
+
+  it('names both remedies when a queue holds a trigger-auto and a trigger-human item together', async () => {
+    const { why } = await stopLineFor([
+      ticket({ id: '1', trigger: 'auto' }),
+      ticket({ id: '2', trigger: 'human' }),
+    ]);
+    // Neither one is the whole story here, so neither may be presented as it.
+    expect(why, 'the trigger-auto remedy').toMatch(RECORDING_COMMAND);
+    expect(why, 'the trigger-human remedy').toMatch(HUMAN_MARKER);
+  });
+
+  it('counts the two trigger kinds under separate tags, never as one trigger pile', async () => {
+    const { why } = await stopLineFor([
+      ticket({ id: '1', trigger: 'auto' }),
+      ticket({ id: '2', trigger: 'human' }),
+    ]);
+    expect(names(why, 1, 'trigger-auto'), why).toBe(true);
+    expect(names(why, 1, 'trigger-human'), why).toBe(true);
+    // `2 held by trigger` is the collapsed count the operator cannot act on: it
+    // is two items and two different acts, reported as one number.
+    expect(why, 'the two mechanisms are counted as one pile').not.toMatch(/held by trigger(?!-)/i);
+  });
+
+  it('holds a trigger-human item back just the same after its trigger is recorded', async () => {
+    const { selectionOf } = await load('core.mjs');
+    const human = ticket({ id: '1', trigger: 'human' });
+    // The ground truth every test above rests on, pinned so a "fix" cannot make
+    // the line honest by making the record work — `triggersFired` must stay
+    // unconsulted on this path, or "never self-taken" becomes self-takeable by
+    // one CLI call.
+    expect(selectionOf(human, { triggersFired: { '1': true } }).eligible).toBe(false);
+    const before = await stopLineFor([human], {});
+    const after = await stopLineFor([human], { '1': true });
+    expect(after.stop?.kind).toBe('nothing-selectable');
+    expect(after.why, 'the recorded declaration changed the stop line').toBe(before.why);
   });
 
   // --- which side wins when ONE record carries both ----------------------------
@@ -3618,9 +3767,12 @@ describe('stopInputsOf decides every count deliberately, and coerces only where 
     // 🔴 AR-62 round 3 — the four array rows. The first two MOVE here from the
     // accepting table below; the array branch that accepted them is being
     // deleted, so an array joins every other value the reader cannot act on. It
-    // has no writer (`recordEscalation` writes an integer, the CLI writes the
-    // other three fields, no adapter writes an array) and it is the single source
-    // of the three defects each row names.
+    // has no writer — `recordEscalation` writes an integer and `recordCompletedTier`
+    // writes `escalations: 0` (`queue/state.mjs:143`), the CLI writes the other
+    // three fields, and no adapter writes an array — and it is the single source
+    // of the three defects each row names. The enumeration is the part a future
+    // reader audits against, so it names every writer of this field, not the
+    // interesting ones.
     ['a count wrapped in an array', [3]],
     // Nesting was accepted to any depth, because the branch recursed. No number
     // of brackets makes a value more count-like than the value inside them.

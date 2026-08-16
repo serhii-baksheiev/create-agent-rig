@@ -253,7 +253,8 @@ export const stopInputsOf = (state = {}) => {
   //
   // **An array is refused rather than unwrapped**, though a one-element array
   // used to read as its contents. Nothing writes one — `recordEscalation`
-  // writes an integer and the CLI writes the other fields — and the branch that
+  // writes an integer, `recordCompletedTier` writes `0`, and the CLI writes
+  // only the other three fields — and the branch that
   // accepted it carried three defects of the very kind above: `[null]` read as
   // zero, a multi-element array was refused only by an untested length check,
   // and the unwrapping recursed as deep as its input. A shape with no writer is
