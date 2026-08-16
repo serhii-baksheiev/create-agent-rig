@@ -74,7 +74,7 @@ it a hook via the `new-invariant` skill.
   production deploy, a filesystem wipe — and carries the kill switch;
   `gate-stop-dod` refuses to end the session while a Definition-of-Done check
   fails; `inject-rules` puts the autonomy rules back in front of the agent at
-  the start of every session. If a hook blocks you, fix the cause; never route
+  the start of every session, minus the parts that file marks as reference. If a hook blocks you, fix the cause; never route
   around a hook.
 - **Enforcement is a pattern you can apply again.** Each of those hooks is one
   stated invariant + one mechanical check + one test — the pattern is written
