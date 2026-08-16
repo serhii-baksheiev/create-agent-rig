@@ -227,8 +227,9 @@ if (invokedDirectly()) {
   // declaration, because a session with no run directory has no state to read
   // and must keep working exactly as before.
   let readState;
+  let stopInputsOf;
   try {
-    ({ readState } = await import('../run-state.mjs'));
+    ({ readState, stopInputsOf } = await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
       `run state: ${error.message}\n` +
@@ -272,14 +273,26 @@ if (invokedDirectly()) {
   // every branch in `stopConditionOf` was live, and nothing ever supplied them.
   //
   const runState = process.env.RIG_RUN_DIR ? readState(process.env.RIG_RUN_DIR) : {};
+  let stopInputs;
+  try {
+    // Read through the module that owns the vocabulary, never field by field
+    // here: a value the reader cannot interpret must not arrive as "no stop",
+    // and deciding that at the call site is how the two halves drift.
+    stopInputs = stopInputsOf(runState);
+  } catch (error) {
+    process.stderr.write(
+      `${error.message}\n  the run declared a state file this cannot act on, so no ` +
+        'item is selected. Stop conditions read from it, and an unreadable one is ' +
+        'not the same as an absent one.\n',
+    );
+    process.exit(1);
+  }
   const runStop = stopConditionOf({
     // `candidates: 1` says "not the empty-queue case" — the queue has not been
     // read yet and must not be reported on here. Only the conditions that
     // outrank it can fire from this call.
     candidates: 1,
-    consecutiveEscalations: runState.escalations ?? 0,
-    lastDeployVerdict: runState.lastDeployVerdict ?? null,
-    budgetExhausted: runState.budgetExhausted ?? false,
+    ...stopInputs,
   });
   if (runStop) {
     // `renderNext`, not a second copy of its format — an operator reading two
@@ -287,7 +300,11 @@ if (invokedDirectly()) {
     process.stdout.write(
       args.json ? `${JSON.stringify({ stop: runStop }, null, 2)}\n` : renderNext(null, runStop),
     );
-    process.exit(1);
+    // The exit code follows `stop.success`, exactly as the empty-queue path
+    // does. A budget stop is a clean end of session — reporting it as a failure
+    // would tell a wrapper that the run broke, and `--json` already says
+    // `"success": true` right beside the code that contradicted it.
+    process.exit(runStop.success ? 0 : 1);
   }
 
   let tickets;

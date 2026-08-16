@@ -117,6 +117,20 @@ logs — the target's README says which). The verdict is binary:
 - Regression → **revert first**, diagnose second. Never fix-forward blind on a
   broken runtime.
 
+**Record the verdict where the next selection reads it**, or it stops nothing —
+an unattended run's memory of "the deploy went badly" does not survive a
+compaction, and the queue hands out the next item regardless:
+
+```sh
+node .claude/scripts/run-state.mjs deploy REGRESSION    # or HEALTHY
+```
+
+It writes into the run directory the `loop` skill declared, and the next
+`queue/index.mjs next` refuses to select on a `REGRESSION` — which is what makes
+"start no new work on top of it" a mechanism rather than a resolution. In an
+attended session with no run directory the command refuses, and that is
+correct: there is no run for the verdict to belong to.
+
 ## Escalation format
 
 When stopping, report: what was attempted, what was observed (verbatim errors,

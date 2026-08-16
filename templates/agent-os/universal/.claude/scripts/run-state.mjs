@@ -14,9 +14,14 @@
  * 🔴 **Per run, not per checkout, and the difference is the whole design.**
  * `escalations` means *two in a row in this run*; a declared budget belongs to
  * this run; a `REGRESSION` verdict is about the deploy this run made. Written
- * into a checkout-wide file, a regression would stop **every future run
- * forever** with nothing that clears it, and two runs sharing a checkout would
- * stop each other on a counter neither of them raised.
+ * into a checkout-wide file, every one of them would outlive the run that
+ * learned it: two runs sharing a checkout would stop each other on a counter
+ * neither of them raised, and a regression would carry into tomorrow's run,
+ * which knows nothing about the deploy that caused it and is the run best
+ * placed to fix it. (`HEALTHY` below can clear a verdict — so the argument is
+ * *whose fact is it*, not *can it be undone*. A stop that has to be
+ * hand-cleared by a run that did not set it is a stop that will be
+ * hand-cleared without being read.)
  *
  * The one value that is genuinely per-checkout stays where it is:
  * `lastCompletedTier` in `queue/state.mjs` rations elevated work *across* runs,
@@ -117,10 +122,89 @@ export const updateState = (runDir, patch) => {
  */
 export const recordEscalation = (runDir) => {
   if (!runDir) return 0;
-  const current = readState(runDir).escalations;
-  const next = (Number.isInteger(current) && current >= 0 ? current : 0) + 1;
-  updateState(runDir, { escalations: next });
-  return next;
+  const onDisk = readState(runDir).escalations;
+  const current = Number.isInteger(onDisk) && onDisk >= 0 ? onDisk : 0;
+  try {
+    updateState(runDir, { escalations: current + 1 });
+    return current + 1;
+  } catch (error) {
+    // 🔴 **This one call tolerates a failed write, and the reason is the caller,
+    // not the value.** Two of the three adapters run this AFTER the tracker is
+    // already mutated — the comment posted, the `escalated` label applied — so a
+    // stale `RIG_RUN_DIR` (an export surviving the last run, a cleaned run
+    // directory, a worktree the loop's `mkdir -p` never reached) would turn a
+    // fully successful escalation into a thrown error. The caller then retries,
+    // and the retry double-posts the diagnosis onto the issue.
+    //
+    // Loud, not silent: swallowing this quietly would trade a crash for a lie,
+    // and the count feeding the two-in-a-row stop would drift below the truth
+    // with nothing to show for it. Stderr, never stdout — a stray line on stdout
+    // lands inside `queue next --json`'s document.
+    //
+    // `updateState` itself keeps throwing. The CLI writers below refuse loudly
+    // on purpose, and only this call site has a mutated tracker behind it.
+    process.stderr.write(
+      `run state: the escalation was NOT counted in ${runDir} — ${error.message}\n` +
+        '  the tracker was updated; only the local count was lost. Fix the run ' +
+        'directory before the next task, or the two-in-a-row stop reads low.\n',
+    );
+    // The count actually on disk, not the one intended: a caller journalling
+    // this number must not record a streak the state file does not carry.
+    return current;
+  }
+};
+
+/**
+ * The stop inputs, read out of a state object that anything may have written.
+ *
+ * 🔴 **An uninterpretable value is never "no stop".** The writers here are
+ * careful — `recordEscalation` refuses a non-integer, the CLI checks its
+ * vocabulary before writing — but the file is documented as hand-editable, and
+ * the reader used to pass whatever JSON held straight into JS comparisons.
+ * Measured, before this existed: `{"escalations":{}}` selected work, because
+ * `{} >= 2` is `NaN >= 2`; so did a `lastDeployVerdict` that was an object,
+ * because `=== 'REGRESSION'` is false for one. Both are the dangerous
+ * direction — a value that *looks* like a recorded stop and silently disables
+ * it.
+ *
+ * So this throws, naming the field, and the caller refuses to select. The
+ * permissive readings that remain are the ones where absence is a defined
+ * state: no file, no key, or an explicit `null`.
+ */
+export const stopInputsOf = (state = {}) => {
+  const refuse = (field, value) => {
+    throw new Error(
+      `run state: ${field} is ${JSON.stringify(value) ?? String(value)}, which is not a ` +
+        `value this can act on. An input a stop condition cannot read must not be ` +
+        `read as "no stop" — fix or delete the field rather than leaving it.`,
+    );
+  };
+
+  const escalations = state.escalations ?? 0;
+  // A string or an array of one number compares correctly against the
+  // threshold, and a hand-edit that reaches for `"2"` means two. An object or a
+  // boolean cannot mean a count at all.
+  const count = Number(Array.isArray(escalations) ? escalations.join() : escalations);
+  if (!Number.isFinite(count) || count < 0) refuse('escalations', escalations);
+
+  const verdict = state.lastDeployVerdict ?? null;
+  if (verdict !== null && typeof verdict !== 'string') refuse('lastDeployVerdict', verdict);
+  // A verdict outside the vocabulary is the same defect wearing a plausible
+  // spelling: `REGRESSED` would sit in the file looking recorded and matching
+  // nothing. Case is normalised, exactly as the CLI normalises it on the way in.
+  const normalised = verdict === null ? null : verdict.toUpperCase();
+  if (normalised !== null && !DEPLOY_VERDICTS.includes(normalised)) {
+    refuse('lastDeployVerdict', verdict);
+  }
+
+  return {
+    consecutiveEscalations: count,
+    lastDeployVerdict: normalised,
+    // Any truthy value means exhausted: the only writer stores `true`, and a
+    // hand-edit reaching for `"yes"` means yes. There is no reading of a
+    // present-but-odd value here that disables the stop, so nothing to refuse.
+    budgetExhausted: Boolean(state.budgetExhausted),
+  };
 };
 
 /**
@@ -133,6 +217,22 @@ export const recordEscalation = (runDir) => {
  * hand-edit a state file.
  */
 export const DEPLOY_VERDICTS = Object.freeze(['REGRESSION', 'HEALTHY']);
+
+/**
+ * The budget vocabulary — one word, and **no word that lifts it**.
+ *
+ * The asymmetry with {@link DEPLOY_VERDICTS} is deliberate. `lastDeployVerdict`
+ * is about the *last* deploy, so a revert-and-redeploy inside the same run
+ * genuinely changes the answer and `HEALTHY` names that event. Spend only
+ * accumulates: nothing a run does later refunds it, so "un-exhaust" would name
+ * no event at all — it would name a decision to keep going, taken by the run
+ * that declared the stop. This is the one stop a run could lift on its own
+ * authority, which is exactly why it cannot.
+ *
+ * The escape hatch already exists and is cheaper than a word: a new run gets a
+ * new run directory, and therefore a clean state.
+ */
+export const BUDGET_WORDS = Object.freeze(['EXHAUSTED']);
 
 const invokedDirectly = () => {
   if (!process.argv[1]) return false;
@@ -155,39 +255,98 @@ const invokedDirectly = () => {
 // write has nowhere to go instead, and exiting 0 would tell the operator the
 // regression was filed while the next selection hands out work on top of it —
 // the one move `autonomy.md` names as never fix-forward.
-if (invokedDirectly()) {
-  const [command, verdict] = process.argv.slice(2);
-  const runDir = process.env.RIG_RUN_DIR;
+const COMMANDS = Object.freeze({
+  deploy: {
+    words: DEPLOY_VERDICTS,
+    field: 'lastDeployVerdict',
+    // The verdict is stored as the word itself: `stopConditionOf` compares it
+    // to `'REGRESSION'`, so the value on disk has to be the canonical spelling.
+    valueOf: (word) => word,
+    missingDir:
+      'there is no run to record this verdict against. The run declares it in ' +
+      'preflight; a verdict written nowhere would read as a healthy deploy to the ' +
+      'next selection.',
+  },
+  budget: {
+    words: BUDGET_WORDS,
+    field: 'budgetExhausted',
+    valueOf: () => true,
+    missingDir:
+      'there is no run whose budget this could exhaust. A budget belongs to one ' +
+      'run — that is why a new run starts with a clean one.',
+  },
+  // The one command whose argument is not a vocabulary: an item id is whatever
+  // the tracker calls it. So it validates presence rather than membership —
+  // `trigger` with nothing after it must refuse rather than fire everything.
+  trigger: {
+    words: null,
+    field: 'triggersFired',
+    // Merged, not replaced: the shallow merge in `updateState` would drop the
+    // triggers already fired this run, and a second declaration must not
+    // silently retract the first.
+    valueOf: (id, state) => ({ ...(state.triggersFired ?? {}), [id]: true }),
+    missingDir:
+      'there is no run for this trigger to be fired in. A declaration belongs to ' +
+      'one run, which is what stops it carrying into tomorrow.',
+    missingWord:
+      'trigger needs the id of the item whose trigger fired. Firing nothing in ' +
+      'particular would either do nothing or arm every gated item at once, and ' +
+      'both are worse than refusing.',
+  },
+});
 
-  if (command !== 'deploy') {
+// The CLI the post-deploy step and the budget check call. It exists because both
+// values are produced by a judgement taken outside any module — and a stop
+// condition nothing can write is the state this whole file was added to end.
+//
+// 🔴 **Reading is permissive; writing refuses.** `readState` turns an absent or
+// corrupt file into `{}` because an absent stop input is a defined state. A
+// write has nowhere to go instead, and exiting 0 would tell the operator the
+// regression was filed while the next selection hands out work on top of it —
+// the one move `autonomy.md` names as never fix-forward.
+if (invokedDirectly()) {
+  const [command, word] = process.argv.slice(2);
+  const runDir = process.env.RIG_RUN_DIR;
+  const spec = Object.hasOwn(COMMANDS, String(command)) ? COMMANDS[command] : null;
+
+  if (!spec) {
+    const names = Object.entries(COMMANDS).map(
+      ([name, { words }]) => `\`${name} <${words ? words.join('|').toLowerCase() : 'item-id'}>\``,
+    );
     process.stderr.write(
-      `unknown command: ${command ?? '(none)'}. This CLI has one: ` +
-        `\`deploy <${DEPLOY_VERDICTS.join('|')}>\`. Everything else in this module is ` +
-        'an import, not a command.\n',
+      `unknown command: ${command ?? '(none)'}. This CLI has ${names.length}: ` +
+        `${names.slice(0, -1).join(', ')} and ${names.at(-1)}. Everything else in this ` +
+        'module is an import, not a command.\n',
     );
     process.exit(1);
   }
   if (!runDir) {
-    process.stderr.write(
-      'RIG_RUN_DIR is not set, so there is no run to record this verdict against. ' +
-        'The run declares it in preflight; a verdict written nowhere would read as a ' +
-        'healthy deploy to the next selection.\n',
-    );
-    process.exit(1);
-  }
-  // Case is normalised rather than refused: a lowercase word is not a typo of
-  // meaning, while `REGRESSED` is — it matches nothing in `stopConditionOf` and
-  // would sit in the file looking recorded and stopping nothing.
-  const normalised = String(verdict ?? '').toUpperCase();
-  if (!DEPLOY_VERDICTS.includes(normalised)) {
-    process.stderr.write(
-      `unknown deploy verdict: ${verdict ?? '(none)'}. It must be one of ` +
-        `${DEPLOY_VERDICTS.join(', ')} — the vocabulary the stop conditions compare ` +
-        'against. A word outside it would be stored, read back, and match nothing.\n',
-    );
+    process.stderr.write(`RIG_RUN_DIR is not set, so ${spec.missingDir}\n`);
     process.exit(1);
   }
 
-  updateState(runDir, { lastDeployVerdict: normalised });
-  process.stdout.write(`run state: lastDeployVerdict = ${normalised}\n`);
+  // Case is normalised rather than refused: a lowercase word is not a typo of
+  // meaning, while `REGRESSED` is — it matches nothing in `stopConditionOf` and
+  // would sit in the file looking recorded and stopping nothing. An item id is
+  // not a vocabulary, so it is taken as given and only checked for presence.
+  const given = String(word ?? '');
+  if (spec.words) {
+    const normalised = given.toUpperCase();
+    if (!spec.words.includes(normalised)) {
+      process.stderr.write(
+        `unknown ${command} word: ${word ?? '(none)'}. It must be one of ` +
+          `${spec.words.join(', ')} — the vocabulary the stop conditions compare ` +
+          'against. A word outside it would be stored, read back, and match nothing.\n',
+      );
+      process.exit(1);
+    }
+  } else if (given === '') {
+    process.stderr.write(`${spec.missingWord}\n`);
+    process.exit(1);
+  }
+
+  const argument = spec.words ? given.toUpperCase() : given;
+  const value = spec.valueOf(argument, readState(runDir));
+  updateState(runDir, { [spec.field]: value });
+  process.stdout.write(`run state: ${spec.field} = ${JSON.stringify(value)}\n`);
 }

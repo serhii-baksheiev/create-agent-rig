@@ -118,6 +118,21 @@ hands it over explicitly. A `trigger-auto` item needs its trigger verified *this
 run*: unverified is not fired, and rationalising a trigger into firing builds for
 scale that does not exist.
 
+When a human declares one fired, **record it** — the declaration has to outlive
+the turn it was made in, or the next selection holds the item back again:
+
+```bash
+node .claude/scripts/run-state.mjs trigger <item-id>
+```
+
+⚠ **It is keyed by the item's id — and under `plan-md` that id is the item's
+POSITION in the list.** So a declaration made for the third bullet transfers to
+whatever occupies the third slot after someone edits `PLAN.md`, for the rest of
+the run. Re-check the item the declaration names before acting on it, or use an
+adapter whose ids are stable (`github-issues`, `jira`). There is no un-fire
+word: a new run starts with a clean state, which is the same remedy the budget
+stop relies on.
+
 **The elevated tier is rationed by spacing, not by counting** — a per-run count is
 meaningless when the run has no end. Never two elevated items back to back: land a
 normal item on a healthy runtime in between. One unreviewed permissions or schema
@@ -154,24 +169,40 @@ branches held its default on every real selection: the rules were enforced by
 whichever session happened to remember them, and compaction is exactly the
 moment a long run stops remembering.
 
-Three commands are the whole of it. The first two you do not run by hand — the
-adapter and the close step call them — and the third is yours:
+**Two of the values write themselves; two you write.** The first pair needs
+nothing from you beyond using the documented calls:
+
+- the **escalation count** — every adapter's `escalate()` records it (§6), which
+  is why escalating by hand-labelling the item counts nothing;
+- the **streak reset** — the close step's `recordCompletedTier`, and **only when
+  you pass it `runDir`** (§9 has the command; it is one of that call's
+  load-bearing arguments, not an optional extra). Omit it and the count is
+  monotonic: two escalations an hour apart end the run however many tasks
+  landed in between.
+
+The other pair is yours, after the checks that produce them:
 
 ```bash
-# recorded FOR you: every adapter's escalate() counts the wall it just hit,
-# and the close step clears the streak (a task landing in between is what
-# "two in a row" means).
-node .claude/scripts/queue/index.mjs next          # reads the state, stops on it
+# after the post-deploy check (`.claude/rules/autonomy.md`, "Post-deploy
+# verification") — REGRESSION stops the next selection, HEALTHY clears it
+node .claude/scripts/run-state.mjs deploy REGRESSION
 
-# yours, after the post-deploy check (§ autonomy.md, "Post-deploy verification")
-node .claude/scripts/run-state.mjs deploy REGRESSION   # or HEALTHY
+# when the declared budget (§4) cannot fit another task
+node .claude/scripts/run-state.mjs budget exhausted
 ```
 
-The verdict CLI **refuses** a word outside `REGRESSION | HEALTHY` and refuses to
-run with no `RIG_RUN_DIR`, rather than writing something the stop condition
-cannot match: a verdict file that looks recorded and stops nothing is worse than
-no file. `HEALTHY` exists so a regression can be cleared — without it one bad
-deploy ends every later selection in the run.
+Both **refuse** a word outside their vocabulary and refuse to run with no
+`RIG_RUN_DIR`, rather than writing something the stop conditions cannot match: a
+file that looks recorded and stops nothing is worse than no file. `HEALTHY`
+exists so a regression can be cleared — without it one bad deploy ends every
+later selection in the run.
+
+Selection itself — `node .claude/scripts/queue/index.mjs next`, §0 — is what
+*reads* all four and stops on them. It is still the command you run to get work.
+
+⚠ **The kill switch is not among them.** It stays mechanical in `guard-bash`
+and scripted in preflight; `next` does not check for the flag, so **keep
+checking it between tasks** (§3, below).
 
 Four of them deserve their reasons repeated:
 
@@ -194,10 +225,13 @@ Four of them deserve their reasons repeated:
   the Agent queue can — a filed proposal goes to the Operator queue, where
   selection never looks, and an escalation leaves no mark on the queue at all,
   because a flat list has no per-item state. 🔴 **That last one is an absence,
-  not a safety.** `plan-md`'s `escalate` writes nothing, returns `ok: false`,
-  and hands back the instruction with it: move the item to the Operator queue in
-  the same edit. That move is the session's, and skipping it means the next run
-  takes the stuck item straight back.
+  not a safety.** `plan-md`'s `escalate` writes **nothing to the queue** and
+  returns `ok: false`, handing back the instruction with it: move the item to
+  the Operator queue in the same edit. That move is the session's, and skipping
+  it means the next run takes the stuck item straight back. It does still record
+  the escalation into the run state like every other adapter — the two are
+  different facts, so **call it rather than labelling by hand** (§6): the count
+  is what ends a run that has hit the same wall twice.
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
   condition that clears without anything being written**: the elevated spacing
@@ -244,14 +278,20 @@ cost column **will be believed** — by the next reader, and by the next run
 reasoning about its own budget. A field the loop cannot observe stays **visibly
 empty, never estimated.**
 
-**Where the budget lives, and what is honest about it.** `state.json` carries a
-`budget` field, and `stopConditionOf` reads `budgetExhausted` from it — so a
-declared budget survives compaction the way the escalation count does. But
-**nothing computes it for you**: the counters above are observed by the session,
-and the decision that the remaining allowance cannot fit another task is still
-yours. Recording it is what makes it re-readable; it is not what makes it
-measured, and writing a number the run cannot observe into that field would put
-a fiction where a stop condition reads.
+**Where the budget lives, and what is honest about it.** The **decision** is
+recorded, not the arithmetic:
+
+```bash
+node .claude/scripts/run-state.mjs budget exhausted
+```
+
+That sets the flag `stopConditionOf` reads, so the next selection stops with
+`queue: budget` — and it survives a compaction, which is the whole reason it is
+a file. **Nothing computes it for you**: the counters above are the ones the
+session observes, and judging that the remaining allowance cannot fit another
+task stays yours. There is deliberately no field holding a spend figure, for the
+same reason the journal has no currency column — a number the run cannot
+observe, written where a stop condition reads, is a fiction with authority.
 
 ## 5. Every task carries an outcome state
 
@@ -486,13 +526,23 @@ three poisons the only channel by which this project learns.
       "git", ["diff", "--name-only", "-z", `${merge}^1`, merge],
       { encoding: "utf8", env: withoutGitLocation() },
     ).split("\0").filter(Boolean);
-    console.log(recordCompletedTier({ changedFiles, projectRoot: process.cwd() }));
+    console.log(recordCompletedTier({
+      changedFiles,
+      projectRoot: process.cwd(),
+      runDir: process.env.RIG_RUN_DIR,
+    }));
   '
   ```
 
-  Four details in that command are load-bearing, and each one was a live defect
+  Five details in that command are load-bearing, and each one was a live defect
   before it was there:
 
+  - **`runDir`.** It is what resets the escalation streak (§3) — the close is
+    the "something landed in between" that makes "two in a row" mean two in a
+    row. Omit it and the counter only ever rises: two escalations an hour apart
+    end the run however many tasks closed between them. The parameter is
+    optional in the signature, so leaving it out fails silently and in the
+    direction of a stop nobody can clear.
   - **`<merge-sha>^1 <merge-sha>`, not `origin/<default>...<merge-sha>`.** A
     three-dot diff is `merge-base..head`, and once the remote-tracking ref
     includes the merge — which is its state at exactly the moment this step
