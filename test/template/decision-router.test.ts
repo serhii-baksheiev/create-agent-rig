@@ -174,7 +174,6 @@ describe('classifyFile — what kind of file this is', () => {
   it('calls a mechanically generated artifact derived', async () => {
     const { classifyFile } = await load();
     for (const file of [
-      '.rig-manifest.json',
       'packages/cli/dist/index.js',
       'dist/bundle.js',
       'packages/core/src/schema.generated.ts',
@@ -385,7 +384,7 @@ describe('route — the ladder in ascending order of cost', () => {
       // A status-less entry has not been measured, and unmeasured is not
       // `modified` — see the status test below.
       files: [
-        { path: '.rig-manifest.json', status: 'modified' },
+        { path: 'dist/bundle.js', status: 'modified' },
         { path: 'packages/cli/dist/index.js', status: 'modified' },
       ],
       elevatedPaths: ELEVATED,
@@ -411,9 +410,49 @@ describe('route — the ladder in ascending order of cost', () => {
 
   it('keeps derived files in the fast path when prose travels with them', async () => {
     const { route } = await load();
-    const result = route({ files: ['README.md', 'dist/bundle.js'], elevatedPaths: ELEVATED });
+    const result = route({
+      files: ['README.md', { path: 'dist/bundle.js', status: 'modified' }],
+      elevatedPaths: ELEVATED,
+    });
     expect(result.lane).toBe('fast-path');
     expect(result.reviewers).toEqual(['prose-reviewer']);
+  });
+
+  it('will not let one .md carry an untrusted derived file into the fast path', async () => {
+    const { route } = await load();
+    // 🔴 The regression this pins was introduced by the fix for the previous
+    // test's sibling: `deterministic` learned to require a trusted status, the
+    // file moved into a new counter, and `fast-path` never read it. Measured
+    // consequence — adding `src/x.generated.ts` beside one `.md` edit routed to
+    // `fast-path`, whose only reviewer is scoped to documents that instruct
+    // agents. Adding a derived-looking filename was a one-line way to drop
+    // `code-reviewer`.
+    for (const derived of [
+      { path: 'src/payments.generated.ts', status: 'added' },
+      { path: 'apps/web/dist/main.js', status: 'added' },
+      'src/payments.generated.ts', // no status at all: the `--files` form
+    ]) {
+      const result = route({ files: ['docs/notes.md', derived], elevatedPaths: ELEVATED });
+      expect(result.lane, JSON.stringify(derived)).toBe('model');
+      expect(result.reviewers).toContain('code-reviewer');
+    }
+  });
+
+  it('says WHICH count refused the cheap lane, rather than a reason that is false', async () => {
+    const { route } = await load();
+    // The gate lines are the only record of why a cheap gate declined, and for
+    // one round they said "not every changed file is a derived artifact" about
+    // a change where every file was one.
+    const result = route({
+      files: [{ path: 'dist/bundle.js', status: 'added' }],
+      elevatedPaths: ELEVATED,
+    });
+    expect(result.lane).toBe('model');
+    const declined = result.gates.find((g) => g.gate === 'deterministic');
+    expect(declined?.verdict).toBe('decline');
+    expect(declined?.why).toMatch(/status/i);
+    expect(declined?.why).not.toMatch(/not every changed file is a derived artifact/);
+    expect(result.why).toMatch(/status/i);
   });
 
   it('routes code to the model lane with the code reviewer first', async () => {
@@ -542,7 +581,36 @@ describe('an absent file list is refused, never routed', () => {
   );
 });
 
+describe('a library caller cannot reach the permissive answer the CLI refuses', () => {
+  it("refuses to route without the project's declared elevated paths", async () => {
+    const { route } = await load();
+    for (const elevatedPaths of [undefined, [], null]) {
+      const error = await refusalFrom(() =>
+        route({ files: ['README.md'], elevatedPaths } as Record<string, unknown>),
+      );
+      // With no declaration the flag is not EVALUATED, and the gate line would
+      // have read `risk-flags clear — no risk flag fired`: an absence dressed
+      // as a pass, in the file whose whole argument is that those must differ.
+      expect(error.message).toMatch(/elevated/i);
+    }
+  });
+});
+
 describe('the router does provably bounded work', () => {
+  it('splits a hundred thousand capitals without a quadratic pass', { timeout: 5000 }, async () => {
+    const { route } = await load();
+    // 🔴 The bounded-work test below fed an all-LOWERCASE path, so it never
+    // entered the acronym-splitting branch — and that branch was quadratic:
+    // 8k capitals took 93ms, 32k took 1.5s, 100k took 14s. A path component
+    // that long needs no checkout: `git mktree` puts it in a tree and
+    // `git diff --name-status` hands it back.
+    const result = route({
+      files: [`src/${'A'.repeat(100_000)}.ts`],
+      elevatedPaths: ELEVATED,
+    });
+    expect(result.lane).toBe('model');
+  });
+
   it(
     'routes five thousand files and a hundred-thousand-character path in one call',
     {

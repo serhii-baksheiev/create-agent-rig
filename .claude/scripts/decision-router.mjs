@@ -59,9 +59,13 @@
  *    auditing one must check the run declared a directory before reading
  *    absence as a gate that stopped firing.
  * 4. **Exit 1 is not a lane.** It means nothing was routed — an unreadable diff,
- *    an absent file list, a project declaring no elevated path, a `--base` or
- *    `--head` that is not a revision, or a run journal that refused the record.
- *    The caller treats it as `model`; it is never a reason to skip the gate.
+ *    an absent file list, a project declaring no elevated path, or a `--base` or
+ *    `--head` that is not a revision. The caller treats it as `model`; it is
+ *    never a reason to skip the gate. ⚠ A run journal that can no longer accept
+ *    records is deliberately NOT in that list: the trace ends, the routing does
+ *    not, so the lane still prints and the exit code stays 0 with a `run
+ *    journal:` line on stderr. A journal failure that DOES exit 1 is the
+ *    narrower one where the run pointed at a directory that is not there.
  *    ⚠ And the diff it reads is the **committed** one, `<base>...<head>`: an
  *    uncommitted edit is not routed, so commit before routing.
  * 5. **`reviewers` is a floor, not a ceiling** — and this was measured on the
@@ -140,7 +144,14 @@ const isRulebookPath = (path) => {
   return false;
 };
 
-const DERIVED_BASENAMES = new Set(['.rig-manifest.json']);
+// 🔴 Deliberately EMPTY, and it held `.rig-manifest.json` for one review round.
+// Nothing in a generated project regenerates or verifies that file — it is
+// written once at scaffold time and read by `upgrade` to decide which files are
+// locally modified. So the premise the cheap lane rests on ("a check already
+// catches its drift") is false for it, on the one file that governs what
+// `upgrade` may overwrite. A project that really does generate a fixed-name
+// artifact adds it here, next to the check that regenerates it.
+const DERIVED_BASENAMES = new Set();
 const PROSE_EXTENSIONS = new Set(['md', 'mdx', 'txt']);
 
 /**
@@ -220,6 +231,21 @@ const DEPENDENCY_FILES = new Set([
   // shape nobody here knows.
   'requirements.txt',
   'constraints.txt',
+  // Other ecosystems. These classify as `code` and so reach `model` anyway —
+  // what they buy is the `security-scanner` member of the reviewer floor, which
+  // a supply-chain edit is exactly the case for.
+  'pipfile',
+  'pipfile.lock',
+  'poetry.lock',
+  'pyproject.toml',
+  'gemfile',
+  'gemfile.lock',
+  'cargo.toml',
+  'cargo.lock',
+  'go.mod',
+  'go.sum',
+  'composer.json',
+  'composer.lock',
 ]);
 
 /**
@@ -231,11 +257,19 @@ const DEPENDENCY_FILES = new Set([
  * escalate, it actively downgrades a supply-chain edit to the prose lane.
  */
 const isDependencyPath = (segments, basename) => {
-  if (DEPENDENCY_FILES.has(basename)) return true;
-  if (!basename.endsWith('.txt')) return false;
-  if (/^(dev-)?requirements(-[a-z0-9.]+)?\.txt$/.test(basename)) return true;
+  const lower = basename.toLowerCase();
+  if (DEPENDENCY_FILES.has(lower)) return true;
+  if (!lower.endsWith('.txt')) return false;
+  // Matched on the STEM's words rather than on a shape. The shape form spelled
+  // `^(dev-)?requirements(-[a-z0-9.]+)?$` and missed `requirements_dev.txt`,
+  // `requirements-DEV.txt`, `requirements-dev-extra.txt` and
+  // `test-requirements.txt` — each of which then reached the PROSE lane, because
+  // `.txt` is the one prose extension a manifest uses.
+  for (const word of wordsOf(lower.slice(0, -4))) {
+    if (word === 'requirements' || word === 'constraints') return true;
+  }
   for (let i = 0; i < segments.length - 1; i += 1) {
-    if (segments[i] === 'requirements') return true;
+    if (segments[i].toLowerCase() === 'requirements') return true;
   }
   return false;
 };
@@ -271,7 +305,17 @@ const SECURITY_WORDS = new Set([
   'auth',
   'authn',
   'authz',
+  'authenticate',
+  'authentication',
+  'authorization',
+  'authorize',
   'oauth',
+  'oauth2',
+  'login',
+  'signin',
+  'signup',
+  'sso',
+  'saml',
   'secret',
   'secrets',
   'credential',
@@ -293,6 +337,49 @@ const SECURITY_WORDS = new Set([
   'permissions',
 ]);
 
+/**
+ * Split one path segment's stem into the words a name is made of.
+ *
+ * 🔴 **One forward pass, written by hand because the regex form was quadratic.**
+ * The obvious spelling — `replace(/([A-Z]+)([A-Z][a-z])/g, …)` to break an
+ * acronym off the word after it — backtracks the whole remaining run of capitals
+ * at every start position. Measured on a stem of N capitals reaching `route()`:
+ * 8k → 93 ms, 32k → 1.5 s, 100k → 14 s. And a 40 000-character path component
+ * needs no checkout to construct: `git mktree` puts it in a tree and
+ * `git diff --name-status` hands it straight back.
+ *
+ * This is a stall rather than a bypass — the router does not fail open, and a
+ * timeout exits 1, which the caller reads as `model`. It is fixed anyway,
+ * because `invariants.md` names this exact shape as the lesson that cost the
+ * most, and because the comment that used to sit here claimed "no backtracking
+ * regex" while pointing at one.
+ *
+ * A word boundary is a separator (`-`, `_`, `.`, space) or a camel hump: an
+ * uppercase char that either follows a non-uppercase one (`authService`) or is
+ * the last of a run before a lowercase one (`JWTVerify` → `jwt`, `verify`).
+ */
+const wordsOf = (stem) => {
+  const words = [];
+  const isUpper = (c) => c !== undefined && c >= 'A' && c <= 'Z';
+  const isLower = (c) => c !== undefined && c >= 'a' && c <= 'z';
+  let start = 0;
+  const cut = (end) => {
+    if (end > start) words.push(stem.slice(start, end).toLowerCase());
+    start = end;
+  };
+  for (let i = 0; i < stem.length; i += 1) {
+    const ch = stem[i];
+    if (ch === '-' || ch === '_' || ch === '.' || ch === ' ') {
+      cut(i);
+      start = i + 1;
+      continue;
+    }
+    if (i > start && isUpper(ch) && (!isUpper(stem[i - 1]) || isLower(stem[i + 1]))) cut(i);
+  }
+  cut(stem.length);
+  return words;
+};
+
 const isSecuritySurface = (path) => {
   const segments = segmentsOf(path);
   if (segments.length === 0) return false;
@@ -308,27 +395,38 @@ const isSecuritySurface = (path) => {
     // input is a path from a diff and its length is not ours.
     const dot = segment.lastIndexOf('.');
     const stem = dot > 0 ? segment.slice(0, dot) : segment;
-    // Two replaces, both linear and both needed: the first splits an acronym
-    // from the word after it (`JWTVerify` → `JWT-Verify`), the second an
-    // ordinary camel hump (`authService` → `auth-Service`). With only the
-    // second, `AUTHService.ts` and `JWTVerify.ts` produced no matching word.
-    const humps = stem.replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2').replace(/([a-z0-9])([A-Z])/g, '$1-$2');
-    for (const word of humps.toLowerCase().split(/[-_.]/)) {
+    for (const word of wordsOf(stem)) {
       if (SECURITY_WORDS.has(word)) return true;
     }
   }
   return false;
 };
 
+const TEST_DIRECTORIES = new Set(['test', 'tests', '__tests__', 'spec', 'specs']);
+
 const isTestPath = (path) => {
   const segments = segmentsOf(path);
   if (segments.length === 0) return false;
   const basename = segments[segments.length - 1];
   if (/\.(test|spec)\.[^.]+$/.test(basename)) return true;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    if (segments[i] === 'test' || segments[i] === 'tests' || segments[i] === '__tests__') {
-      return true;
+  // The JS-flavoured `.test.`/`.spec.` form was the only one recognised, so a
+  // deleted `critical_spec.generated.rb` reached the lane that launches no
+  // reviewer. `test_x.py`, `x_test.go` and `x_spec.rb` are tests too.
+  const dot = basename.lastIndexOf('.');
+  const stem = dot > 0 ? basename.slice(0, dot) : basename;
+  const words = wordsOf(stem);
+  // Any word, not just the first or last: `critical_spec.generated.rb` puts it
+  // in the middle, and that exact name reached the no-reviewer lane when the
+  // check looked only at the ends. `words.length > 1` keeps a file simply named
+  // `spec.ts` out of it; over-escalating a `spec-loader.ts` that was DELETED is
+  // the safe direction and costs one reviewer.
+  if (words.length > 1) {
+    for (const word of words) {
+      if (word === 'test' || word === 'tests' || word === 'spec' || word === 'specs') return true;
     }
+  }
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    if (TEST_DIRECTORIES.has(segments[i])) return true;
   }
   return false;
 };
@@ -411,13 +509,29 @@ const line = (gate, verdict, why) => ({ gate, verdict, why });
  * permissive reading here is "nothing changed, take the cheapest lane", which is
  * precisely the wrong answer written confidently.
  */
-export const route = ({ files, elevatedPaths = [] } = {}) => {
+export const route = ({ files, elevatedPaths } = {}) => {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error(
       'the decision router needs the changed file list of the change being routed ' +
         '(`git diff --name-status <base>...<head>`). An empty or missing list is an ' +
         'absence, not a cheap change, and routing on it would send an unmeasured diff ' +
         'down the lane that reviews least.',
+    );
+  }
+
+  // 🔴 The same refusal the CLI makes, made here so a library caller cannot
+  // reach the permissive answer the CLI is careful to avoid. With no
+  // declaration the `elevated-path` flag is not evaluated at all, and the gate
+  // line would then read `risk-flags clear — no risk flag fired`: an
+  // unevaluated check presenting as a pass, in the file whose whole argument is
+  // that those two must never look alike.
+  if (!Array.isArray(elevatedPaths) || elevatedPaths.length === 0) {
+    throw new Error(
+      'the decision router needs the project\'s declared elevated paths, and refuses ' +
+        'rather than routing without them: the `elevated-path` risk flag cannot be ' +
+        'evaluated against an empty declaration, and reporting that as "no risk flag ' +
+        'fired" would be an absence dressed as a pass. Read them with ' +
+        '`readDeclaredPaths(projectRoot)`.',
     );
   }
 
@@ -440,14 +554,18 @@ export const route = ({ files, elevatedPaths = [] } = {}) => {
     };
   }
 
-  // Only the two counts that can disqualify a cheap lane are kept; `derived` is
-  // the remainder, and the list is non-empty by the refusal above — so
-  // `other === 0 && prose === 0` is exactly "every file is derived".
-  // Three counts, because the two cheap lanes carry different risk. `derived`
-  // is a naming convention a hand-authored file can satisfy, so the lane that
-  // launches NO reviewer additionally requires a status saying the file was
-  // drift (`DERIVED_TRUSTED_STATUSES`). The `fast-path` lane still has a cold
-  // reader, so an unmeasured derived file may travel with prose there.
+  // Three counts, because `derived` splits. It is a naming convention a
+  // hand-authored file can satisfy, so a derived file only counts as cheap when
+  // git says it was drift (`DERIVED_TRUSTED_STATUSES`); anything else is
+  // `derivedUntrusted`.
+  //
+  // 🔴 **Both cheap lanes consult it, and for one review round only one did.**
+  // The reasoning that dropped it from `fast-path` — "that lane still has a
+  // cold reader" — was wrong about which reader: `prose-reviewer` is scoped to
+  // documents that instruct agents, not to a new `.ts` file. Measured
+  // consequence: a diff adding `src/x.generated.ts` alongside one `.md` edit
+  // routed to `fast-path` and no reviewer read the code. Adding a derived-
+  // looking filename was a one-line way to drop `code-reviewer`.
   let prose = 0;
   let derivedUntrusted = 0;
   let other = 0;
@@ -460,7 +578,9 @@ export const route = ({ files, elevatedPaths = [] } = {}) => {
 
   const clear = line('risk-flags', 'clear', 'no risk flag fired on the changed paths');
 
-  if (other === 0 && prose === 0 && derivedUntrusted === 0) {
+  const everyFileDerived = other === 0 && prose === 0;
+
+  if (everyFileDerived && derivedUntrusted === 0) {
     return {
       lane: 'deterministic',
       reviewers: [],
@@ -479,17 +599,19 @@ export const route = ({ files, elevatedPaths = [] } = {}) => {
     };
   }
 
+  // 🔴 The reason has to name which of the two disqualified the lane. A verdict
+  // saying "not every changed file is a derived artifact" about a change where
+  // every file IS one is a false line in `decisions.jsonl` — and that line is
+  // the only record of why the cheap gate refused.
   const declinedDeterministic = line(
     'deterministic',
     'decline',
-    'not every changed file is a derived artifact',
+    everyFileDerived
+      ? 'every changed file is derived, but at least one carries no status saying it was drift — an addition, a copy, a rename, or a list with no statuses at all'
+      : 'not every changed file is a derived artifact',
   );
 
-  // `prose > 0` is load-bearing, not decoration: once `deterministic` also
-  // requires a trusted status, a change of nothing but UNTRUSTED derived files
-  // reaches here with `other === 0` and no prose at all — and would collect
-  // `prose-reviewer` as the whole gate over a document that does not exist.
-  if (other === 0 && prose > 0) {
+  if (other === 0 && derivedUntrusted === 0 && prose > 0) {
     return {
       lane: 'fast-path',
       reviewers: ['prose-reviewer'],
@@ -508,15 +630,29 @@ export const route = ({ files, elevatedPaths = [] } = {}) => {
     };
   }
 
+  // Same rule one lane down: say which count sent it here. There are two
+  // reasons and they are not the same finding.
+  const reasons = [];
+  if (other > 0) reasons.push('code, a rulebook document, or a path the router could not classify');
+  if (derivedUntrusted > 0) {
+    reasons.push('a derived artifact with no status saying it was drift');
+  }
+
   return {
     lane: 'model',
     reviewers: reviewersFor(files, risks),
     risks,
-    why: 'the change carries code, a rulebook document, or a path the router could not classify',
+    why: `the change carries ${reasons.join(', and ')}`,
     gates: [
       clear,
       declinedDeterministic,
-      line('fast-path', 'decline', 'the change is not documentation-only'),
+      line(
+        'fast-path',
+        'decline',
+        prose === 0
+          ? 'the change carries no documentation for a prose reviewer to read'
+          : 'the change is not documentation-only',
+      ),
       line('model', 'route', 'the expensive path is warranted'),
     ],
   };
@@ -664,9 +800,15 @@ const gitFiles = (base, head) => {
     // child that keeps it reports the file list of ANOTHER repository — silently,
     // because the list comes back non-empty.
     env: withoutGitLocation(),
-    // git's own stderr is captured rather than inherited: it echoes the revision
-    // string and repository-supplied names straight to the terminal, and the
-    // diagnosis below is the sanitised version the caller should read.
+    // git's own stderr is captured rather than inherited, so it does not
+    // interleave with this file's output mid-run.
+    //
+    // ⚠ Stated exactly, because the first version of this comment claimed a
+    // sanitisation that does not happen: `execFileSync` folds the captured
+    // stderr into `error.message`, and the handler below prints that verbatim.
+    // So git's `fatal:` text and any repository-supplied name in it still reach
+    // the terminal — just at the end rather than streamed. Capturing buys
+    // ordering, not filtering.
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 64 * 1024 * 1024,
   });

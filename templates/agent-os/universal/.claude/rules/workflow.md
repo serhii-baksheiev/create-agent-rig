@@ -53,7 +53,7 @@ travels one path to merge, in this order:
    | lane | what reaches it | the floor it sets |
    | --- | --- | --- |
    | `deterministic` | every changed file is a derived artifact git reports as modified or removed | the checks alone; no reviewer |
-   | `fast-path` | documentation outside the rulebook | `prose-reviewer` |
+   | `fast-path` | documentation outside the rulebook, and derived files under the same status rule | `prose-reviewer` |
    | `model` | everything else, including anything unclassifiable | `code-reviewer`, **always** |
 
    `.claude/scripts/decision-router.mjs` decides this from the **committed**
@@ -62,9 +62,10 @@ travels one path to merge, in this order:
    manifest, a path naming auth or secrets or sessions, a deleted test —
    including the deletion half of a rename. Any one of them means `model`,
    however cheap the change otherwise looked. A rulebook document is code here,
-   so it never reaches the prose lane; prose and tests that provision nothing
-   are inert, so a README inside an elevated directory does not escalate on that
-   ground alone. The router **refuses** rather than routing when it cannot
+   so it never reaches the prose lane; `.md`/`.mdx` files and test paths that
+   provision nothing are inert, so a README inside an elevated directory does
+   not escalate on that ground alone. That carve-out is those two extensions
+   and test paths exactly — not the router's wider notion of prose. The router **refuses** rather than routing when it cannot
    decide, and a refusal is read as `model`, never as a reason to skip the gate.
 
    🔴 **The cheap lanes give something up, and the rule says what.** Dropping

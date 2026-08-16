@@ -45,9 +45,13 @@ blockers.
    auth, secrets, tokens, sessions or permissions, a deleted test (including the
    deletion half of a rename) — and any one of them lands the change in `model`
    however cheap it otherwise looked. The elevated-path flag has one carve-out,
-   inherited from the gate sweep rather than invented here: prose and tests that
-   provision nothing are **inert**, so `infra/README.md` does not escalate while
-   `infra/stack.ts` does. A rulebook file is never inert.
+   inherited from the gate sweep rather than invented here: `.md`/`.mdx` files
+   and test paths that provision nothing are **inert**, so `infra/README.md`
+   does not escalate while `infra/stack.ts` does. Note the mechanism is those
+   two extensions and test paths — **not** "prose", which this router defines
+   more widely (it includes `.txt`). Aligning the two would take
+   `requirements.txt` in an elevated directory out of escalation. A rulebook
+   file is never inert.
 
    🔴 **The lane is on stdout; the exit code says only that the router ran.**
    Never chain it on `&&`, and never read `0` as "cheap" — that misreading turns
@@ -62,7 +66,9 @@ blockers.
    - `deterministic` — every changed file is a derived artifact **and git says
      it was `modified` or `removed`**. Step 3 alone is the gate; no reviewer
      runs.
-   - `fast-path` — documentation outside the rulebook. `prose-reviewer`.
+   - `fast-path` — documentation outside the rulebook, plus any derived file
+     travelling with it under the same `modified`/`removed` rule.
+     `prose-reviewer`.
    - `model` — everything else, and `code-reviewer` runs on it **always**,
      with the triggers in step 4 beside it. Anything the router cannot classify
      lands here.
@@ -91,7 +97,8 @@ blockers.
 
    - `model` → launch the `code-reviewer` agent on the diff, always;
    - `fast-path` → launch `prose-reviewer`;
-   - `deterministic` → launch no reviewer; step 3 is the whole gate.
+   - `deterministic` → the lane's floor is empty. The triggers below still
+     apply: a floor of zero is not permission to skip one.
 
    **Whatever you launch, pass it the text of the queue item this branch
    implements.** A reviewer given only a diff cannot check the change against
