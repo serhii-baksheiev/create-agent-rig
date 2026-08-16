@@ -30,6 +30,9 @@ const thrownBy = (build: () => unknown): unknown => {
 
 describe('choosing the allowed origins', () => {
   it('prefers the origins passed in props over the localhost default', () => {
+    // The name claims a contrast, so both halves are pinned: what the default
+    // IS when nothing is given, and that a prop displaces it.
+    expect(originsOf({})).toEqual(['http://localhost:3000']);
     expect(originsOf({ props: { allowedOrigins: ['https://app.example.com'] } })).toEqual([
       'https://app.example.com',
     ]);

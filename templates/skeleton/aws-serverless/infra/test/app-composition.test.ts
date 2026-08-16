@@ -13,16 +13,38 @@ import { beforeAll, describe, expect, it } from 'vitest';
 // `bin/app.ts` stays broken.
 let appStackOrigins: unknown[];
 
-beforeAll(async () => {
+const originsOfComposedApp = async (): Promise<unknown[]> => {
   const { createApp } = (await import('../bin/app.js')) as { createApp: () => App };
   const app = createApp();
   const template = Template.fromStack(app.node.findChild('AppStack') as Stack);
   const apis = template.findResources('AWS::ApiGatewayV2::Api');
-  appStackOrigins = Object.values(apis).flatMap(
+  return Object.values(apis).flatMap(
     (api) =>
       (api.Properties as { CorsConfiguration?: { AllowOrigins?: unknown[] } }).CorsConfiguration
         ?.AllowOrigins ?? [],
   );
+};
+
+/**
+ * `createApp()` builds its own `App`, so `new App({ context })` is not a seam
+ * here. CDK's own is: the CLI passes `-c key=value` to a synth through
+ * `CDK_CONTEXT_JSON`, which the `App` constructor reads — so setting it around
+ * one `createApp()` call reproduces `cdk deploy -c allowedOrigins=…` exactly,
+ * without the test knowing anything about how the stacks are wired.
+ */
+const withCdkContext = async <T>(context: Record<string, unknown>, run: () => Promise<T>) => {
+  const previous = process.env.CDK_CONTEXT_JSON;
+  process.env.CDK_CONTEXT_JSON = JSON.stringify(context);
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.CDK_CONTEXT_JSON;
+    else process.env.CDK_CONTEXT_JSON = previous;
+  }
+};
+
+beforeAll(async () => {
+  appStackOrigins = await originsOfComposedApp();
 });
 
 /** What CDK emits for a cross-stack reference: a Join around an ImportValue. */
@@ -49,5 +71,26 @@ describe('the deployed app allows the origin it is actually served from', () => 
   it('carries the https scheme, without which no browser Origin header can match', () => {
     const distributionOrigin = appStackOrigins.find(referencesTheWebDistribution);
     expect(JSON.stringify(distributionOrigin)).toContain('https://');
+  });
+});
+
+// The README and `AppStackProps.allowedOrigins` both advertise
+// `-c allowedOrigins=https://…` as the way to point the API at a custom domain.
+// The entrypoint passes `allowedOrigins` unconditionally, and props win — so the
+// flag is discarded on synth with no error and no warning. The owner gets a
+// green deploy and a CORS-blocked browser, and the obvious repair for a hurried
+// reader is `allowOrigins: ['*']`: the exact regression the rest of this file
+// exists to prevent, arriving through a different door.
+describe('the documented -c escape hatch reaches the composed app', () => {
+  it('serves the origin the flag names instead of discarding it for the CloudFront import', async () => {
+    const origins = await withCdkContext({ allowedOrigins: 'https://custom.example.com' }, () =>
+      originsOfComposedApp(),
+    );
+
+    expect(origins).toContain('https://custom.example.com');
+    expect(
+      origins.some(referencesTheWebDistribution),
+      'a custom domain that still allows only the CloudFront import is a blocked browser',
+    ).toBe(false);
   });
 });

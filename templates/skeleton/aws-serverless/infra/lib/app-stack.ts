@@ -16,10 +16,12 @@ const workspaceRoot = path.resolve(here, '..', '..');
 
 export interface AppStackProps extends StackProps {
   /**
-   * Browser origins allowed to call the API. The web bundle is served from
-   * CloudFront, whose domain only exists after `WebStack` deploys — so this is
-   * yours to pass (or `-c allowedOrigins=https://…`, comma-separated) rather
-   * than something the stack can discover.
+   * Browser origins allowed to call the API.
+   *
+   * `bin/app.ts` passes the CloudFront origin from `WebStack`, so a deployed
+   * app works without configuring anything. Pass this (or
+   * `-c allowedOrigins=https://…`, comma-separated, which the entrypoint
+   * prefers when given) for a custom domain, a staging origin, or several.
    */
   allowedOrigins?: string[];
 }

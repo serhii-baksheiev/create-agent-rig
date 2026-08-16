@@ -68,6 +68,9 @@ output).
 cd infra
 npx cdk bootstrap   # first time per account/region
 npx cdk deploy AppStack WebStack --outputs-file cdk-outputs.json
+# --delete makes the bucket the bundle's territory alone, so an empty or stale
+# `out/` would empty the live site. Check before you sync, as the workflow does.
+[ -f ../apps/web/out/index.html ] || { echo "no web bundle — run pnpm build:web"; exit 1; }
 aws s3 sync ../apps/web/out "s3://$(jq -er '.WebStack.WebBucketName' cdk-outputs.json)" --delete
 # a synced bucket whose distribution still serves the old objects has not
 # deployed — invalidate, or you are looking at the previous build
@@ -115,10 +118,13 @@ previous revision (or `git revert` and redeploy) **first**, diagnose second.
   ways out are an **outbox** (write the event alongside the note, relay it
   afterwards) or DynamoDB Streams feeding the worker, which deletes the second
   write instead of coordinating it.
-- **CORS names who may call the API** — `AppStack` defaults to
-  `http://localhost:3000` and takes `allowedOrigins` (or
-  `-c allowedOrigins=https://…`). Your CloudFront domain is a `WebStack`
-  output; pass it once the web stack exists. `*` is not shipped here on
-  purpose.
+- **CORS names who may call the API, and it is wired for you.** `bin/app.ts`
+  builds `WebStack` first and passes its CloudFront origin to `AppStack`, so a
+  deployed app works with nothing to configure. For a custom domain or a second
+  origin, deploy with `-c allowedOrigins=https://app.example.com` (comma-
+  separated for several) — the entrypoint prefers the flag over the wired
+  default, and the cross-stack export disappears with it. `*` is not shipped
+  here on purpose, and an `allowedOrigins` that parses to nothing is refused at
+  synth rather than deployed as an API nobody can call.
 
 See `.claude/rules/architecture.md` for the full rules.

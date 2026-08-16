@@ -114,6 +114,31 @@ describe('POST /notes handler', () => {
     expect(JSON.parse(result.body!)).toEqual({ error: 'internal error' });
   });
 
+  // Withholding the message is not the same decision as flattening the status.
+  // 503 tells a caller to retry and 500 tells it not to bother, and that
+  // distinction is transport, not disclosure — the sibling handler pins it
+  // (`list-notes.test.ts`), and this one did not, so collapsing the status here
+  // passed the whole suite.
+  it('keeps a 5xx status the caller can act on, while still hiding the message', async () => {
+    const handler = makeCreateNoteHandler(
+      stubDeps({
+        notes: {
+          put: () =>
+            Promise.reject(
+              new AppError('table NotesTable-prod is throttling', {
+                statusCode: 503,
+                code: 'X',
+              }),
+            ),
+        },
+      }),
+    );
+    const result = asResult(await handler(event(JSON.stringify({ title: 'T' }))));
+    expect(result.statusCode).toBe(503);
+    expect(result.body).not.toContain('NotesTable-prod');
+    expect(JSON.parse(result.body!)).toEqual({ error: 'internal error' });
+  });
+
   it('logs the typed internal error it hid, so the detail is kept and not lost', async () => {
     const logs: string[] = [];
     const handler = makeCreateNoteHandler(
