@@ -46,26 +46,6 @@ content as a patch by the owner's call and stays recorded as one.
 
 ### Fixed
 
-- **`upgrade` on a manifest-less rig wrote a manifest it could not read back.**
-  Bootstrapping one, it took the project name from the directory name
-  **unslugged**, so a directory called `My App` produced a manifest the reader
-  refuses outright — and every later run then said `no manifest here (a
-pre-0.4.0 rig)` and re-detected from scratch. The directory name is now
-  slugged **only when the raw one is unreadable to the manifest**; a name the
-  reader accepts is written through untouched, so a rig generated as `my-app.`
-  keeps that name instead of becoming `my-app` and turning every substituted
-  file into a conflict.
-
-  ⚠ **What this does not fix, because the name still comes from the
-  directory:** rename or clone a rig into a differently-named directory and,
-  with no manifest to read, the upgrade bootstraps the **new** directory's
-  name. The substituted files then no longer match, so `CLAUDE.md`, `PLAN.md`,
-  the `loop` skill and `.claude/scripts/stop-flag.mjs` come back as conflicts —
-  kept, reported, never overwritten, but four documents to reconcile by hand.
-  That behaviour is unchanged from 0.4.0. The way to avoid it is the same as it
-  ever was: **commit `.claude/.rig-manifest.json`**, which records the name and
-  removes the guess entirely.
-
 - **`init --force` inside a generated project used to make `upgrade` stop
   refreshing the stack overlays — silently.** `init` rewrote the rig manifest
   as `kind: "init"`, `stacks: []`, empty `region`, and `upgrade` trusts a

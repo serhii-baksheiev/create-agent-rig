@@ -326,6 +326,75 @@ describe('a `create` rig whose own name is legal for the manifest but is not its
   });
 });
 
+// The third case, and the one that decides the rule rather than restating it:
+// `init` never keeps the raw directory name. It derives the name it substitutes
+// into the files *and* the name it records in the manifest from
+// `projectNameFor`, so for a directory the manifest reader happens to accept
+// (`my-repo.`) the raw name and the installed bytes disagree. Bootstrapping the
+// raw name there names a rig `init` never wrote, and every file carrying
+// `__PROJECT_NAME__` comes back as the user's edit.
+//
+// Read next to the two blocks above, the three are one rule: `init` always
+// follows the slug; `create` keeps its raw name whenever the reader accepts it.
+describe('an `init` rig whose directory name is legal for the manifest but is not its slug', () => {
+  let project: string;
+
+  /** The directory name — safe to substitute, and not what `init` substituted. */
+  const NAME = 'my-repo.';
+  /** The name `init` actually wrote into the files and the manifest. */
+  const SLUG = 'my-repo';
+
+  const readIn = (rel: string): Promise<string> =>
+    readFile(path.join(project, ...rel.split('/')), 'utf8');
+
+  /** Installed by `init` into `my-repo.`, and the manifest gone, as 0.3.x left it. */
+  const initThenForget = async (): Promise<void> => {
+    project = path.join(repo, NAME);
+    await mkdir(project, { recursive: true });
+    await initProject(project, {});
+
+    // The premise, asserted so a broken fixture fails as a fixture: nothing
+    // forces a slug on this directory name, and `init` slugged it anyway —
+    // both in the bytes it wrote and in the manifest it recorded.
+    expect(isSafeSubstitutionValue(NAME)).toBe(true);
+    expect(projectNameFor(project)).toBe(SLUG);
+    expect(await readIn(STOP_FLAG)).toContain(`${SLUG}-loop-STOP`);
+    expect(await readIn(STOP_FLAG)).not.toContain(`${NAME}-loop-STOP`);
+    expect((await readManifest(project))?.project.name).toBe(SLUG);
+
+    await rm(path.join(project, ...MANIFEST_REL.split('/')));
+  };
+
+  it('bootstraps the name `init` substituted, not the directory it sits in', async () => {
+    await initThenForget();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    await applyUpgrade(project, plan);
+
+    const manifest = await readManifest(project);
+    // still round-trips: the reader accepts this value either way, so reading
+    // it back is not what distinguishes the two names — which one is on disk is
+    expect(manifest).not.toBeNull();
+    expect(manifest?.project.name).toBe(SLUG);
+    expect(manifest?.project.scope).toBe(SLUG);
+  });
+
+  it('leaves the kill switch `init` generated alone instead of calling it an edit', async () => {
+    await initThenForget();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    expect(verdictFor(plan, STOP_FLAG)).toBe('unchanged');
+
+    await applyUpgrade(project, plan);
+    expect(await readIn(STOP_FLAG)).toContain(`${SLUG}-loop-STOP`);
+  });
+
+  it('reports no conflict at all in a rig nobody has edited', async () => {
+    await initThenForget();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    const conflicts = plan.actions.filter((a) => a.verdict === 'conflict').map((a) => a.rel);
+    expect(conflicts).toEqual([]);
+  });
+});
+
 // `init` is allowed to run inside a generated project — someone refreshing the
 // process layer by hand does exactly that. What it must not do is rewrite the
 // manifest's *identity*: a create rig demoted to `kind: "init"` with no stacks
