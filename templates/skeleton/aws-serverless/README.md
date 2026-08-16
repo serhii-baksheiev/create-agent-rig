@@ -45,13 +45,27 @@ do not edit the workflow:
 
 1. In AWS, create an IAM role your repo can assume via GitHub's OIDC provider
    (`token.actions.githubusercontent.com`) — a short-lived federated role, no
-   long-lived access keys anywhere.
-2. Add its ARN as the repository secret **`AWS_DEPLOY_ROLE_ARN`** (and,
-   optionally, repo variables `AWS_REGION` and `API_URL`).
+   long-lived access keys anywhere. Beyond what `cdk deploy` needs, the
+   workflow uploads the bundle itself, so the role also needs
+   **`s3:ListBucket`, `s3:PutObject`, `s3:DeleteObject`** on the web bucket and
+   **`cloudfront:CreateInvalidation`** on the distribution. A role scoped only
+   to CDK's bootstrap roles gets through the deploy and fails on the upload —
+   after both stacks are already up.
+2. Add its ARN as the repository secret **`AWS_DEPLOY_ROLE_ARN`**, and set the
+   repo variable **`API_URL`** to the deployed API's URL (the `ApiUrl` output
+   of a first deploy). It becomes `NEXT_PUBLIC_API_URL`, which Next **inlines
+   into the bundle at build time** — unset, the site calls `/notes` on its own
+   CloudFront domain, where nothing answers. `AWS_REGION` is genuinely
+   optional. The first deploy is therefore two passes: deploy, read `ApiUrl`
+   from the job's `cdk deploy` Outputs, set the variable, then re-run the
+   workflow (push, or **Run workflow** — it is `workflow_dispatch`-enabled).
 
-The workflow then assumes the role, builds the web bundle, and runs
-`cdk deploy AppStack WebStack`. The web bundle is served from S3 + CloudFront
-(the `WebUrl` output).
+The workflow then assumes the role, builds the web bundle, runs
+`cdk deploy AppStack WebStack --outputs-file`, then **uploads `apps/web/out` to
+the web bucket (`aws s3 sync --delete`) and invalidates the CloudFront cache**,
+reading both destinations from the stack outputs. You do not sync anything by
+hand on this path. The site is served from S3 + CloudFront (the `WebUrl`
+output).
 
 ### Local / manual
 
@@ -59,8 +73,26 @@ The workflow then assumes the role, builds the web bundle, and runs
 # needs AWS credentials; region comes from your profile (generator default: __REGION__)
 cd infra
 npx cdk bootstrap   # first time per account/region
-npx cdk deploy AppStack WebStack
-aws s3 sync ../apps/web/out "s3://<WebBucketName output>"
+npx cdk deploy AppStack WebStack --outputs-file cdk-outputs.json
+# --delete makes the bucket the bundle's territory alone, so a stale or missing
+# `out/` would empty the live site — or restore last month's. The workflow
+# builds two steps before its sync; by hand, build here.
+# Read the outputs into variables FIRST. `jq -er` exits non-zero on a missing
+# key, but a command substitution inside an assignment or an argument throws
+# that status away — which is how a stale outputs file becomes a bundle built
+# against `null` and an `aws s3 sync … s3://null --delete`.
+API=$(jq -er '.AppStack.ApiUrl' cdk-outputs.json) || { echo "no ApiUrl"; exit 1; }
+BUCKET=$(jq -er '.WebStack.WebBucketName' cdk-outputs.json) || { echo "no WebBucketName"; exit 1; }
+DIST=$(jq -er '.WebStack.WebDistributionId' cdk-outputs.json) || { echo "no WebDistributionId"; exit 1; }
+
+# NEXT_PUBLIC_API_URL is inlined at build time: without it the bundle calls its
+# own CloudFront domain instead of the API, and the sync below makes that live.
+(cd .. && NEXT_PUBLIC_API_URL="$API" pnpm build:web)
+[ -f ../apps/web/out/index.html ] || { echo "no web bundle — build failed"; exit 1; }
+aws s3 sync ../apps/web/out "s3://$BUCKET" --delete
+# a synced bucket whose distribution still serves the old objects has not
+# deployed — invalidate, or you are looking at the previous build
+aws cloudfront create-invalidation --paths '/*' --distribution-id "$DIST"
 ```
 
 ### Production — a human step, on purpose
@@ -76,10 +108,39 @@ your own approval — reusing the dev workflow's OIDC pattern.
 After every deploy:
 
 ```sh
+# From the deploy's outputs file — run this from `infra/`, where the manual
+# section leaves you. Deployed through CI instead? That file is written on the
+# runner and never lands here: take both values from the job's `cdk deploy`
+# Outputs, or re-run `cdk deploy … --outputs-file cdk-outputs.json` locally.
+API_URL=$(jq -er '.AppStack.ApiUrl' cdk-outputs.json)
+WEB_URL=$(jq -er '.WebStack.WebUrl' cdk-outputs.json)
+
 curl -s -X POST "$API_URL/notes" \
   -H 'content-type: application/json' \
   -d '{"title":"smoke test","tags":["deploy"]}'
 # expect: HTTP 201 with { "note": { … } }
+```
+
+**That checks the API, not the site.** The two fail independently: a bundle
+built without `NEXT_PUBLIC_API_URL` calls its own CloudFront domain, and a
+misnamed origin is refused by the browser — neither is visible to a `curl` that
+sends no `Origin` header. So also open the `WebUrl` output, create a note in
+the form, and reload:
+
+```sh
+curl -s -I "$WEB_URL" | head -1                      # the bundle is served
+
+# API Gateway answers a preflight 204 whether or not the origin matched, so the
+# status code proves nothing here. The browser gates on the echoed header —
+# that is what to look for. `content-type` is sent because the real call uses
+# it, and a non-safelisted header is what makes `allowHeaders` matter.
+curl -s -X OPTIONS "$API_URL/notes" -D - -o /dev/null \
+  -H "Origin: $WEB_URL" \
+  -H 'access-control-request-method: POST' \
+  -H 'access-control-request-headers: content-type' \
+  | grep -i '^access-control-allow-origin:'
+# expect: a line echoing $WEB_URL. No line = the browser will refuse the call,
+# whatever the status code said.
 ```
 
 Then confirm the pipeline: the worker logs `note.created processed`, and the
@@ -95,5 +156,26 @@ previous revision (or `git revert` and redeploy) **first**, diagnose second.
 - `packages/db` is the only module that touches the storage SDK.
 - A failing queue message is poison: it throws, SQS retries ×3, the DLQ alarm
   fires. Never wrap the worker in a broad catch.
+- **Creating a note is a dual write, and it is not atomic.** `create-note`
+  puts to DynamoDB and then publishes to SQS. If the publish fails, the note
+  is stored and its event never happened — the worker never runs, and nothing
+  compensates; the caller gets a 500 for a note that exists. That is a
+  deliberate simplification for a starter. When it starts to matter, the two
+  ways out are an **outbox** (write the event alongside the note, relay it
+  afterwards) or DynamoDB Streams feeding the worker, which deletes the second
+  write instead of coordinating it.
+- **CORS names who may call the API, and that half is wired for you.**
+  `bin/app.ts` builds `WebStack` first and passes its CloudFront origin to
+  `AppStack`, so the API allows the deployed site without you configuring it.
+  The other half is not automatic: the bundle has to know where the API *is*,
+  and that is `NEXT_PUBLIC_API_URL` above. For a custom domain or a second
+  origin, deploy with `-c allowedOrigins=https://app.example.com` (comma-
+  separated for several) — the entrypoint prefers the flag over the wired
+  default, and the cross-stack export disappears with it. An `allowedOrigins`
+  that parses to nothing, or an entry no browser could send, is refused at
+  synth rather than deployed as an API nobody can call. `*` is not the default
+  and never will be, but the flag does take it: you get a warning naming the
+  consequence, not a refusal, because the alternative is people editing the
+  stack.
 
 See `.claude/rules/architecture.md` for the full rules.

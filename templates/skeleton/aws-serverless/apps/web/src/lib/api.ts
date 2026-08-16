@@ -2,8 +2,15 @@
 // (the guard-web-boundary hook refuses such imports at the tool layer).
 import type { Note } from '@app/core';
 
-// Same-origin by default (the API server serves this bundle); set
-// NEXT_PUBLIC_API_URL at build time when the API lives elsewhere.
+// In THIS target the API is never same-origin: the bundle is served from
+// CloudFront and the API is API Gateway, so `NEXT_PUBLIC_API_URL` has to be set
+// at build time — Next inlines it, and an unset one leaves the empty string
+// here, which sends every call to whatever is serving this page.
+//
+// The `?? ''` is a fallback to nothing, not to a working default: there is no
+// dev proxy in this project, so `pnpm --filter @app/web dev` needs the variable
+// too. It exists only so a missing value is a relative URL rather than the
+// string "undefined" in a request path.
 const base = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 export async function createNote(input: { title: string; tags: string[] }): Promise<Note> {

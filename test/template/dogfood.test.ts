@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -270,6 +271,35 @@ describe('the secrets block the skeletons ship is live in this repository too', 
     }
     return patterns;
   };
+
+  // `cdk deploy --outputs-file cdk-outputs.json` writes it on every deploy, and
+  // an artifact that is untracked-but-committable is one `git add -A` away from
+  // being in the history — this one names buckets, distributions and endpoints.
+  // The workflow runs the deploy from `infra/`, so the pattern has to reach a
+  // nested path, not just the root.
+  it.each(['cdk-outputs.json', 'infra/cdk-outputs.json'])(
+    'the aws-serverless skeleton never lets %s be committed',
+    async (file) => {
+      const skeleton = path.join(repoRoot, 'templates', 'skeleton', 'aws-serverless');
+      const dir = await mkdtemp(path.join(tmpdir(), 'rig-skeleton-ignore-'));
+      const env = withoutGitLocation();
+      await exec('git', ['init', '-q', dir], { env });
+      await copyFile(path.join(skeleton, 'gitignore'), path.join(dir, '.gitignore'));
+
+      const { stdout } = await exec(
+        'git',
+        // an empty global excludesfile: the skeleton's own ignore has to be the
+        // one doing the work, not whatever this machine happens to exclude
+        ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-v', '--', file],
+        { cwd: dir, env },
+      ).catch(() => ({ stdout: '' }));
+
+      await rm(dir, { recursive: true, force: true });
+      expect(stdout.split('\t')[0], `${file} is not ignored by the skeleton`).toMatch(
+        /^\.gitignore:\d+:/,
+      );
+    },
+  );
 
   it('states the same secrets patterns in the root ignore and in both skeletons', async () => {
     const root = await secretsPatterns('.gitignore');
