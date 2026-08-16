@@ -479,6 +479,9 @@ Proposals in `triage`: AR-39…AR-43. ⚠ Under `plan-md`, `proposeTriage` still
 appends to THIS heading — until AR-45 lands, a proposal filed by a run lands
 here as a bullet and must be carried to Jira by hand; that is a known cost of
 the interim, not a place to leave items.
+- **proposal: Either scope the declaration so it does not reach spawned children of the test runner (declare it per-command rather than as a shell export), or have the harness strip RIG_RUN_DIR from the environment it passes to the CLI, the way withoutGitLocation() strips GIT_DIR for git spawns. Same family as the GIT_DIR incident: ambient environment reaching a child that was never meant to see it, and resolving to a wrong answer rather than an error. [triage]** — finding: journal: the queue left the file — `loop` §1 tells every run to export RIG_RUN_DIR, and the exported variable reached both the CLI a test spawns in a temp project (turning test/template/review-fixes.test.ts RED) and this run’s real decisions.jsonl, which took 14 fixture records at seq 5-18 · part: .claude/skills/loop/SKILL.md §1 (the RIG_RUN_DIR declaration) and the harness that spawns the queue CLI — the contamination path, not only the exit-1 symptom · proof: EITHER branch is checkable and the proposal is satisfied by one. STRIP: `RIG_RUN_DIR=<a real run dir> pnpm test:unit` is green AND leaves that directory unchanged — today it fails 1 of 868 (test/template/review-fixes.test.ts:494, "expected 1 to be +0") and appends 14 records. SCOPE: the skill no longer instructs a shell export, so a run following it verbatim finishes with `pnpm test:unit` green and its run directory carrying only records the run itself wrote — check the DIRECTORY, not the command, because under this branch the variable is never in the environment to begin with. Precondition for either check: `pnpm test:unit` in a shell that never exported the variable is green TODAY, so checking the bare command retires a live defect. · fingerprint: `journal-the-queue-left-the-file-loop-1-t:claude-skills-loop-skill-md-1-the-rig-ru:either-scope-the-declaration-so-it-does-` · seen ×1
+- **proposal: A third stop kind, or a qualifier on queue-empty, for the case where the configured adapter is not the one the project declares its work lives in. AR3-35 split `queue-empty` from `nothing-selectable` precisely because an operator cannot otherwise tell whether the queue needs refilling; this run hit a third case neither covers — the work exists and is unreachable — and reported it as genuinely out of work. [triage]** — finding: journal: the queue left the file — stopped at `queue-empty` with 45 issues open on the board, because the adapter that can read them is not switched yet (AR-45) · part: .claude/scripts/queue/core.mjs (stopConditionOf) + .claude/skills/loop/SKILL.md §3 · proof: A run configured with `plan-md` against a PLAN.md whose Agent queue section declares the work has moved elsewhere stops with a verdict naming the unreachable queue, not "queue empty … refilling the queue is the owner’s job". Today the two are indistinguishable from the stop line. · fingerprint: `journal-the-queue-left-the-file-stopped-:claude-scripts-queue-core-mjs-stopcondit:a-third-stop-kind-or-a-qualifier-on-queu` · seen ×1
+- **proposal: State, or handle, what dedup means once the queue a fingerprint was filed into is no longer the queue being read — `seen ×N` silently resets, so a proposal filed twenty times before the migration reappears as a fresh `seen ×1`, the failure the cap exists to prevent. Cover the second path too: the fingerprint is derived from finding/part/change, so editing any of those three in place leaves a slug that matches nothing and the next filing writes a duplicate. [triage]** — finding: journal: the queue left the file — the eight triage proposals migrated to Jira, so proposeTriage under plan-md can no longer find the fingerprints of proposals this repo has already filed; and hand-editing a filed bullet desynchronises its fingerprint from its own text, which this run did and the gate caught · part: .claude/scripts/queue/core.mjs (`duplicateOf` at :575, `fingerprintOf` at :557) as called from .claude/scripts/queue/plan-md.mjs:408 · proof: EITHER branch is checkable and the proposal is satisfied by one. HANDLE: filing a proposal whose fingerprint matches a migrated one increments a count or reports the collision instead of writing a fresh `seen ×1`; and editing a filed bullet’s prose either regenerates its fingerprint or is refused. STATE: plan-md cannot query Jira for a migrated fingerprint, so both limits are written into the dedup comment and a reader finds them there rather than inferring the reset from a count. · fingerprint: `journal-the-queue-left-the-file-the-eigh:claude-scripts-queue-core-mjs-duplicateo:state-or-handle-what-dedup-means-once-th` · seen ×1
 
 ## Journal
 
@@ -486,6 +489,105 @@ Newest first, date-free — order carries the sequence. Prune freely: this is
 operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
+
+### the queue left the file, and eight review rounds bought six of their own defects
+
+- **done** — the queue migration (#53, no `human-review` label): both queue
+  sections become a pointer to Jira `AR` / board 34, the adapter deliberately
+  NOT switched (AR-45), and the interim declared checkably — `parsePlan` → 0,
+  `queue/index.mjs next` → `queue empty` exit 0. Owner-authored text applied
+  verbatim. Five corrections were added on top, all of them review findings,
+  and the run classified each as a fact rather than a decision — that
+  classification is the run's own and is the judgement an outside reader
+  should check: the heading being load-bearing, the `AR-n` key collision, the
+  `NOTES.md` pointer, `ready` not being the selection label, and the two
+  `jira.mjs` clauses being future tense. Recorded tier `normal` (`PLAN.md`
+  is not elevated)
+- **escalated** — AR3-37 (#52), and it is a `documented-stall`, not a failure.
+  The item declared its own core an open design question reserved for the
+  owner and had no ruling-independent remainder: shape (iii) needs no path
+  extraction, so the three shapes share no core to build ahead of the ruling.
+  A run choosing one would author the standing selection rule that decides
+  what it is handed next (`loop` §8). Under `plan-md` the move to the Operator
+  queue **is** the escalation — `escalate()` returns `ok: false` and says so.
+  🔴 **The owner ruled it the same day** (`max(marker, derived)`, monotone at
+  the marker; (i) as reporting only; (iii) rejected), so the item is live again
+  as `AR-1`. Cost: one PR. Whether the escalation is what produced the
+  ruling is not something this run can observe — the two are consecutive, not
+  demonstrably causal
+- **reviewed** — `prose-reviewer` twice, **eight rounds total** (4 + 4), lane
+  `fast-path` both times with risk flags clear. Nine blocking findings, all
+  resolved. 🔴 **The measurement worth keeping: six of the nine were defects
+  created by the previous round's fix**, three on each PR — and the reviewer
+  authored one of them itself (it claimed "the string `ready` occurs once"
+  from a grep that had matched quoted forms only, the run transcribed it, and
+  the next round caught it). This is the counter-signal the review-round-cap
+  proposal describes, measured twice on documentation-only diffs. ⚠ **Which of
+  these figures has a witness, stated because this entry also argues its own
+  machine trace was contaminated:** only the `4` for #52 is machine-recorded
+  (`events.jsonl` seq 19, `reviewRounds: 4`). The second `4` and the nine
+  findings are the session's own count — neither PR carries a review or a
+  comment, so nothing outside this run can confirm them. The tier and lane
+  figures above and the check-run figures below ARE repo-verifiable; the board
+  figures say so themselves. An unmarked number would default into the
+  strongest class here. (Understated in one direction, since a reader may as
+  well know: `events.jsonl` seq 3 does witness the `documented-stall`
+  classification, and seq 19 witnesses `tier: normal` and `outcome: escalated`)
+- **🔴 one of the nine findings was not prose at all, and it was on the second
+  PR.** the board's
+  conventions named `ready` as the selection label and `elevated` as the tier
+  marker, and the `jira` adapter reads neither. Measured on the live board
+  through a Jira connection this session had, not inferred — `labels =
+  "human-review"` returns **0**, so under `jira.mjs:94` all 45 issues would
+  arrive `normal` and the elevated ration would never hold anything; and the
+  adapter's own default JQL returns **40 issues with `AR-35` second**, an
+  `operator-queue` ticket reading "Not for the loop to take without the
+  owner's tag action first". A documentation PR surfaced a defect that would
+  have shipped inside AR-45
+- **stopped at** — `queue-empty`, and ⚠ **it is the honest verdict for a queue
+  that is not actually out of work.** 45 issues are open on board 34; none is
+  reachable until AR-45 switches the adapter, and the section says so in
+  advance. The stop condition cannot distinguish "no work exists" from "the
+  work is behind an adapter this repo does not run yet", and that is a real
+  limit of the split, not a bug in this run
+- **unblocked** — **this queue has no dependency links.** `plan-md` is a flat
+  list; the question could not be asked, and "nothing was waiting" would claim
+  a look no query can perform. Under `jira` it becomes answerable
+- **queue hygiene** — reported, not corrected: the block header's path-audit
+  figures were stale before this run (26 understating, measured at 36 items,
+  against a live 33/9/24), and re-running that audit is a read of 24 items'
+  prose that nobody has done. The marker/path divergence itself is what AR-1
+  now closes. Separately, `jira.mjs:280` and `github-issues.mjs:182` both
+  describe the absence of a `ready` marker as part of what keeps a proposal
+  out of selection — looser than the mechanism, which reads it in no selection
+  path (`core.mjs:206` does read it, for the `stale-ready-label` hygiene
+  finding, and that check is worth keeping)
+- **the run journal's own leak, found by tripping it** — `loop` §1 tells every
+  run to `export RIG_RUN_DIR`, and the exported variable is then inherited by
+  every child process the tests spawn. `test/template/review-fixes.test.ts`
+  ("a missing config is still the normal state of a fresh project") went RED
+  on an unrelated diff: the CLI it spawns in a temp project has no
+  `run-journal.mjs`, so the declared-but-unusable run directory made it exit 1
+  instead of 0. Same family as the `GIT_DIR` incident — ambient environment
+  reaching a child that was never meant to see it. Deterministic, not flaky:
+  unexported, that file's 52 tests are green and `pnpm test:unit` is 868 green.
+  🔴 **And the red test was the lesser half, found only because the gate went
+  looking.** The same leaked variable pointed the tests' own fixtures at this
+  run's real journal: `.claude/runs/20260816-071059/decisions.jsonl` carries
+  **14 fabricated records at seq 5–18** — `do a thing`, `add a route`, `rotate
+  the key`, `take the elsewhere item` — written 03:18:52–03:18:56, interleaved
+  between seq 4 (the genuine AR3-38 selection) and seq 19 (the #52 merge).
+  `loop` §7 calls that file *"the evidence a reader checks those against"*, so
+  the leak did not merely break a test: it wrote test fixtures into this
+  entry's own audit trail. **The records are left in place** — deleting them
+  would be the run editing the evidence it is audited by — and are identified
+  here by seq range instead. A fix scoped to the exit-1 symptom would leave
+  the contamination path open, which is why the proposal names both
+- **cost** — 2 reviewer subagents (`prose-reviewer`, resumed across 8 rounds on
+  two PRs), plus the `check-premises` skill once — a skill, not an agent, and
+  counted separately for that reason; 2 PRs, 8 check runs consumed (4 named
+  checks × 2 PRs), 0 re-runs; 0 deploys. Token and currency figures: **not
+  observed**
 
 ### seven rounds, six routing escapes, and each one found by a different means
 
