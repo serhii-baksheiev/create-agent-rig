@@ -70,8 +70,21 @@ jobs:
       - if: steps.guard.outputs.skip != 'true'
         name: Upload the web bundle and invalidate the edge cache
         run: |
-          BUCKET=$(jq -r '.WebStack.WebBucketName' infra/cdk-outputs.json)
-          DISTRIBUTION=$(jq -r '.WebStack.WebDistributionId' infra/cdk-outputs.json)
+          # `jq -r` prints the string "null" and exits 0 for a missing key, and
+          # GitHub's shell is `bash -e` with no `-u` and no pipefail — so a
+          # renamed stack or a half-finished deploy would sync the bundle into
+          # `s3://null`, a real bucket in a global namespace someone else owns,
+          # and issue --delete against it. `-e` makes jq exit non-zero instead.
+          set -euo pipefail
+          BUCKET=$(jq -er '.WebStack.WebBucketName' infra/cdk-outputs.json)
+          DISTRIBUTION=$(jq -er '.WebStack.WebDistributionId' infra/cdk-outputs.json)
+          # An existing-but-empty bundle syncs zero objects, and --delete then
+          # empties the live site with a green checkmark.
+          [ -n "$(ls -A apps/web/out 2>/dev/null)" ] || {
+            echo "apps/web/out is empty — refusing to sync"; exit 1;
+          }
+          # --delete makes the bucket the bundle's territory alone: anything not
+          # in this build is removed from it.
           aws s3 sync apps/web/out "s3://$BUCKET" --delete
           aws cloudfront create-invalidation \
             --distribution-id "$DISTRIBUTION" --paths '/*'

@@ -45,13 +45,21 @@ do not edit the workflow:
 
 1. In AWS, create an IAM role your repo can assume via GitHub's OIDC provider
    (`token.actions.githubusercontent.com`) — a short-lived federated role, no
-   long-lived access keys anywhere.
+   long-lived access keys anywhere. Beyond what `cdk deploy` needs, the
+   workflow uploads the bundle itself, so the role also needs
+   **`s3:ListBucket`, `s3:PutObject`, `s3:DeleteObject`** on the web bucket and
+   **`cloudfront:CreateInvalidation`** on the distribution. A role scoped only
+   to CDK's bootstrap roles gets through the deploy and fails on the upload —
+   after both stacks are already up.
 2. Add its ARN as the repository secret **`AWS_DEPLOY_ROLE_ARN`** (and,
    optionally, repo variables `AWS_REGION` and `API_URL`).
 
-The workflow then assumes the role, builds the web bundle, and runs
-`cdk deploy AppStack WebStack`. The web bundle is served from S3 + CloudFront
-(the `WebUrl` output).
+The workflow then assumes the role, builds the web bundle, runs
+`cdk deploy AppStack WebStack --outputs-file`, then **uploads `apps/web/out` to
+the web bucket (`aws s3 sync --delete`) and invalidates the CloudFront cache**,
+reading both destinations from the stack outputs. You do not sync anything by
+hand on this path. The site is served from S3 + CloudFront (the `WebUrl`
+output).
 
 ### Local / manual
 
@@ -59,8 +67,12 @@ The workflow then assumes the role, builds the web bundle, and runs
 # needs AWS credentials; region comes from your profile (generator default: __REGION__)
 cd infra
 npx cdk bootstrap   # first time per account/region
-npx cdk deploy AppStack WebStack
-aws s3 sync ../apps/web/out "s3://<WebBucketName output>"
+npx cdk deploy AppStack WebStack --outputs-file cdk-outputs.json
+aws s3 sync ../apps/web/out "s3://$(jq -er '.WebStack.WebBucketName' cdk-outputs.json)" --delete
+# a synced bucket whose distribution still serves the old objects has not
+# deployed — invalidate, or you are looking at the previous build
+aws cloudfront create-invalidation --paths '/*' \
+  --distribution-id "$(jq -er '.WebStack.WebDistributionId' cdk-outputs.json)"
 ```
 
 ### Production — a human step, on purpose

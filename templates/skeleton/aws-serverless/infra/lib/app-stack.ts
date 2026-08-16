@@ -27,19 +27,47 @@ export interface AppStackProps extends StackProps {
 /** Local dev only: a real origin is a deliberate act, not a default. */
 const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000'];
 
+/**
+ * Props win, then `-c allowedOrigins=a,b`, then the local default.
+ *
+ * Anything given but unusable — an empty list, a context value that trims away
+ * to nothing, a value that is not a string — throws rather than falling back.
+ * The failure this prevents is silent: an API synthesised with an empty
+ * allow-list blocks every browser call, and the symptom appears far from the
+ * flag that caused it.
+ */
+function resolveAllowedOrigins(fromProps: string[] | undefined, fromContext: unknown): string[] {
+  if (fromProps !== undefined) {
+    if (fromProps.length === 0) {
+      throw new Error('allowedOrigins was given as an empty list — name an origin, or omit it');
+    }
+    return fromProps;
+  }
+  if (fromContext === undefined || fromContext === null) return DEFAULT_ALLOWED_ORIGINS;
+  if (typeof fromContext !== 'string') {
+    throw new Error(
+      `allowedOrigins must be a comma-separated string, got ${typeof fromContext} — ` +
+        'use -c allowedOrigins=https://example.com',
+    );
+  }
+  const origins = fromContext
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (origins.length === 0) {
+    throw new Error(`allowedOrigins parsed to no origin at all from ${JSON.stringify(fromContext)}`);
+  }
+  return origins;
+}
+
 export class AppStack extends Stack {
   constructor(scope: Construct, id: string, props?: AppStackProps) {
     super(scope, id, props);
 
-    const contextOrigins = this.node.tryGetContext('allowedOrigins') as string | undefined;
-    const allowedOrigins =
-      props?.allowedOrigins ??
-      (contextOrigins
-        ? contextOrigins
-            .split(',')
-            .map((origin) => origin.trim())
-            .filter(Boolean)
-        : DEFAULT_ALLOWED_ORIGINS);
+    const allowedOrigins = resolveAllowedOrigins(
+      props?.allowedOrigins,
+      this.node.tryGetContext('allowedOrigins'),
+    );
 
     // --- storage: one single-table DynamoDB table --------------------------
     const table = new Table(this, 'NotesTable', {

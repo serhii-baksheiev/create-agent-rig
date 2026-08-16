@@ -79,6 +79,65 @@ describe('aws-serverless deploy workflow', () => {
     }
   });
 
+  // GitHub's implicit shell is `bash -e {0}`: no `pipefail`, no `-u`. So a
+  // failing command inside a pipeline is invisible, and an unset variable
+  // expands to nothing — both of which the step below turns into an `aws s3`
+  // command aimed somewhere nobody chose.
+  describe('the upload step cannot be talked into deleting somebody else’s bucket', () => {
+    /** The `run:` body of the step that ships the bundle. */
+    const uploadScript = async (): Promise<string> => {
+      const yaml = await readFile(wf('aws-serverless', 'deploy.yml'), 'utf8');
+      const steps = yaml.split(/\n\s*- (?=if:|id:|uses:|run:|name:)/);
+      const upload = steps.filter((step) => /aws s3 sync/.test(step));
+      expect(upload.length, 'no step syncs the bundle at all').toBe(1);
+      return upload[0]!;
+    };
+
+    it('runs under -euo pipefail, not the implicit bash -e GitHub supplies', async () => {
+      expect(await uploadScript()).toMatch(/set -euo pipefail/);
+    });
+
+    it('stops when a stack output is missing, instead of resolving it to the string null', async () => {
+      // `jq -r` prints `null` and exits 0, so a renamed output becomes
+      // `aws s3 sync apps/web/out s3://null --delete` — an upload into a
+      // stranger's bucket in a global namespace, followed by deletes.
+      const script = await uploadScript();
+      // Comment lines are excluded on purpose: the step explains this very trap
+      // in prose, and a flag check that reads prose reports the explanation as
+      // the defect it warns about.
+      const jqLines = script
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('#'))
+        .filter((line) => /\bjq\b/.test(line));
+      expect(jqLines.length, 'the destination is read with jq').toBeGreaterThan(0);
+      for (const line of jqLines) {
+        const flags = line.match(/(?<=\s)--?[A-Za-z-]+/g) ?? [];
+        expect(
+          flags.some((flag) => flag === '--exit-status' || /^-[a-z]*e[a-z]*$/.test(flag)),
+          `no --exit-status on: ${line.trim()}`,
+        ).toBe(true);
+      }
+    });
+
+    it('refuses to sync a bundle directory with nothing in it', async () => {
+      // `apps/web/out` existing but empty is the ordinary shape of a failed or
+      // skipped build. Syncing it uploads zero objects, and `--delete` then
+      // removes every object already live: the site is wiped by a green run.
+      const script = await uploadScript();
+      const lines = script.split('\n');
+      const syncAt = lines.findIndex((line) => /aws s3 sync/.test(line));
+      const before = lines.slice(0, syncAt);
+      expect(
+        before.some((line) => /ls -A|find |-empty|wc -l/.test(line)),
+        'nothing checks the bundle directory has contents before the sync',
+      ).toBe(true);
+      expect(
+        before.join('\n'),
+        'an emptiness check that does not stop the step is decoration',
+      ).toMatch(/exit [1-9]/);
+    });
+  });
+
   it('has no production path (dev only — the Never tier forbids agent prod deploys)', async () => {
     yaml = await readFile(wf('aws-serverless', 'deploy.yml'), 'utf8');
     expect(yaml.toLowerCase()).not.toMatch(/environment:\s*production/);

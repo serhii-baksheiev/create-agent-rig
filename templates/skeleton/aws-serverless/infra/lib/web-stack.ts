@@ -9,6 +9,14 @@ import { BlockPublicAccess, Bucket } from 'aws-cdk-lib/aws-s3';
 import type { Construct } from 'constructs';
 
 export class WebStack extends Stack {
+  /**
+   * Where the browser loads the app from — and therefore the origin the API
+   * has to allow. A synth-time token: CDK resolves it across stacks as an
+   * `Fn::ImportValue`, so `AppStack` can name it without either stack having
+   * been deployed yet.
+   */
+  public readonly origin: string;
+
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
@@ -26,8 +34,10 @@ export class WebStack extends Stack {
       defaultRootObject: 'index.html',
     });
 
+    this.origin = `https://${distribution.domainName}`;
+
     new CfnOutput(this, 'WebBucketName', { value: bucket.bucketName });
-    new CfnOutput(this, 'WebUrl', { value: `https://${distribution.domainName}` });
+    new CfnOutput(this, 'WebUrl', { value: this.origin });
     // The upload step needs this to invalidate the edge cache: a synced bucket
     // whose distribution still serves the old objects has not deployed.
     new CfnOutput(this, 'WebDistributionId', { value: distribution.distributionId });

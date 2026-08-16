@@ -44,17 +44,23 @@ export function makeCreateNoteHandler(deps: CreateNoteDeps): Handler {
       // `AppError` defaults to 500/INTERNAL, so a table name, a host or an SDK
       // message arrives here wearing the same type as "title is required".
       // Typed does not mean safe to show — the status decides.
+      //
+      // The status itself is kept: 503 tells a caller to retry and 500 does
+      // not, and that distinction is transport, not disclosure. Only the
+      // message is withheld.
       if (error instanceof AppError && error.statusCode < 500) {
         return json(error.statusCode, { error: error.message, code: error.code });
       }
+      // Everything past here is withheld, so it has to be kept somewhere: the
+      // message AND its frames, because a message with no stack is not
+      // something anyone can debug from a log aggregator, and the request id,
+      // because a line nobody can tie to an invocation is barely a line.
       deps.log.error('unhandled error in create-note', {
-        // The whole error, not `String(error)`: a message with no frames is not
-        // something anyone can debug from a log aggregator.
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         awsRequestId: context?.awsRequestId,
       });
-      return json(500, { error: 'internal error' });
+      return json(error instanceof AppError ? error.statusCode : 500, { error: 'internal error' });
     }
   };
 }

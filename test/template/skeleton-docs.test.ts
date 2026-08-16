@@ -33,3 +33,51 @@ describe('aws-serverless is honest about the dual write in create-note', () => {
     expect(usecase).toMatch(/outbox|compensat/i);
   });
 });
+
+// The deploy workflow now ships the bundle itself. A README written before that
+// step existed describes a deploy that no longer happens, and — worse — sets up
+// a role that cannot perform the one that does.
+describe('aws-serverless deploy docs match the deploy that actually runs', () => {
+  const readme = () => read('aws-serverless', 'README.md');
+
+  it('names the extra IAM permissions the upload step needs beyond a CDK deploy role', async () => {
+    // A correctly-minimal OIDC role for `cdk deploy` has none of these, so the
+    // first real deploy fails at the upload — after both stacks are already up.
+    const content = await readme();
+    for (const permission of [
+      's3:PutObject',
+      's3:DeleteObject',
+      's3:ListBucket',
+      'cloudfront:CreateInvalidation',
+    ]) {
+      expect(content, `the README never mentions ${permission}`).toContain(permission);
+    }
+  });
+
+  it('invalidates the edge cache on the manual path too', async () => {
+    // `web-stack.ts` states it outright: "a synced bucket whose distribution
+    // still serves the old objects has not deployed". A manual path that stops
+    // at `aws s3 sync` contradicts the stack it deploys.
+    const content = await readme();
+    const manual = content.slice(content.indexOf('### Local / manual'));
+    expect(manual, 'the manual section is where the hand-run commands live').toMatch(/aws s3 sync/);
+    expect(manual).toMatch(/create-invalidation/);
+    // and against the same distribution the stack outputs, not a pasted id
+    expect(manual).toMatch(/WebDistributionId/);
+  });
+
+  it('tells the reader whether CI ships the bundle or they must sync it by hand', async () => {
+    const content = await readme();
+    const automated = content.slice(
+      content.indexOf('### Dev — automated'),
+      content.indexOf('### Local / manual'),
+    );
+    expect(automated.length, 'the automated-deploy section must exist to be read').toBeGreaterThan(
+      0,
+    );
+    expect(automated, 'the upload of the built bundle is unnamed').toMatch(
+      /uploads?|syncs?|s3 sync/i,
+    );
+    expect(automated, 'the cache invalidation is unnamed').toMatch(/invalidat/i);
+  });
+});

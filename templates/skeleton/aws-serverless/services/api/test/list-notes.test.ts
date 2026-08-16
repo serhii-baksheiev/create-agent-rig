@@ -1,4 +1,8 @@
-import type { APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+  Context,
+} from 'aws-lambda';
 import { AppError, createLogger } from '@app/shared';
 import { describe, expect, it } from 'vitest';
 import { makeListNotesHandler } from '../src/handlers/list-notes.js';
@@ -13,6 +17,10 @@ const note = {
 };
 
 const asResult = (r: unknown) => r as APIGatewayProxyStructuredResultV2;
+
+/** Lambda always passes the event and the context; this route needs no body. */
+const getEvent = () => ({ isBase64Encoded: false }) as APIGatewayProxyEventV2;
+const lambdaContext = (awsRequestId: string): Context => ({ awsRequestId }) as Context;
 
 describe('listNotesUsecase', () => {
   it('returns what the model lists', async () => {
@@ -47,5 +55,51 @@ describe('GET /notes handler', () => {
     expect(result.statusCode).toBe(500);
     expect(result.body).not.toContain('secret');
     expect(logs.join('')).toContain('secret');
+  });
+});
+
+// The same leak create-note was just fixed for. `AppError` defaults to
+// 500/INTERNAL, so a table name, a host or an SDK message arrives here wearing
+// the same type as "title is required" — and this handler forwards every one of
+// them to the caller. Typed does not mean safe to show; the status decides.
+describe('GET /notes keeps its internals to itself', () => {
+  const failWith = (error: unknown, sink: (line: string) => void = () => {}) =>
+    makeListNotesHandler({
+      notes: { list: () => Promise.reject(error) },
+      log: createLogger({}, sink),
+    });
+
+  it('hides a typed error that carries the default status behind a constant 500', async () => {
+    const handler = failWith(new AppError('table NotesTable-prod is not authorised'));
+    const result = asResult(await handler(getEvent(), lambdaContext('req-1')));
+    expect(result.statusCode).toBe(500);
+    expect(result.body).not.toContain('NotesTable-prod');
+    expect(JSON.parse(result.body!)).toEqual({ error: 'internal error' });
+  });
+
+  it('still forwards a 4xx message, which was written for the caller to read', async () => {
+    const handler = failWith(new AppError('unknown tag filter', { statusCode: 400, code: 'BAD' }));
+    const result = asResult(await handler(getEvent(), lambdaContext('req-2')));
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body!)).toEqual({ error: 'unknown tag filter', code: 'BAD' });
+  });
+
+  it('logs the internal error it hid with its stack, so the detail is kept and not lost', async () => {
+    const logs: string[] = [];
+    const boom = new AppError('table NotesTable-prod is not authorised');
+    await failWith(boom, (line) => logs.push(line))(getEvent(), lambdaContext('req-3'));
+    // `String(error)` is a message with no frames — not something anyone can
+    // debug from a log aggregator.
+    expect(JSON.parse(logs[0]!)).toMatchObject({ stack: boom.stack });
+  });
+
+  it('carries the Lambda request id into the line it logs', async () => {
+    const logs: string[] = [];
+    const handler = failWith(new AppError('table NotesTable-prod is not authorised'), (line) =>
+      logs.push(line),
+    );
+    // Without it a log line cannot be tied to the invocation that produced it.
+    await handler(getEvent(), lambdaContext('req-42'));
+    expect(JSON.parse(logs[0]!)).toMatchObject({ awsRequestId: 'req-42' });
   });
 });

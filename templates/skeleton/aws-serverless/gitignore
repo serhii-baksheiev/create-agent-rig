@@ -2,6 +2,9 @@ node_modules/
 dist/
 coverage/
 cdk.out/
+# what `cdk deploy --outputs-file` writes: bucket names, distribution ids,
+# endpoints. Harmless today, and the file that accumulates the ones that are not.
+cdk-outputs.json
 *.tsbuildinfo
 .DS_Store
 .next/
