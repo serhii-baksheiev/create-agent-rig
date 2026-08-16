@@ -2,11 +2,14 @@ import { execFile } from 'node:child_process';
 import {
   chmod,
   cp,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   realpath,
+  stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -3232,6 +3235,43 @@ const writeRunState = (runDir: string, state: Record<string, unknown>) =>
 const runStateOf = async (runDir: string): Promise<Record<string, unknown>> =>
   JSON.parse(await read(runDir, 'state.json')) as Record<string, unknown>;
 
+/**
+ * Run `body` with both standard streams captured — hand-written, like every
+ * other double here.
+ *
+ * The two streams are asserted SEPARATELY because they are not interchangeable:
+ * `queue/index.mjs next --json` writes a document to stdout, and a recorder that
+ * reported its failure there would land a stray line in the middle of the JSON
+ * its caller parses.
+ *
+ * AR-62 round 2: hoisted out of the escalation describe below, unchanged, because
+ * the run-state write path now has its own block that needs the same capture —
+ * and two copies of "how this suite captures stderr" is the drift
+ * `invariants.md` names.
+ */
+const withCapturedOutput = async <T>(
+  body: () => Promise<T>,
+): Promise<{ result: T; stderr: string; stdout: string }> => {
+  const captured = { stderr: '', stdout: '' };
+  const realErr = process.stderr.write;
+  const realOut = process.stdout.write;
+  process.stderr.write = ((chunk: unknown) => {
+    captured.stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  process.stdout.write = ((chunk: unknown) => {
+    captured.stdout += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    const result = await body();
+    return { result, ...captured };
+  } finally {
+    process.stderr.write = realErr;
+    process.stdout.write = realOut;
+  }
+};
+
 // The Proof line of the item, at the CLI, because that is where the four fields
 // have to arrive: `index.mjs next` reads the run's state and calls
 // `stopConditionOf` with real values instead of defaults.
@@ -3387,6 +3427,33 @@ describe('a run-state value the reader cannot make sense of never reads as "no s
   /** Each row: a well-formed JSON value that silently disables the stop it feeds. */
   const UNREADABLE: Array<[string, Record<string, unknown>, RegExp]> = [
     ['a count that is an object', { escalations: {} }, /escalations/],
+    // 🔴 AR-62 round 2. The five rows below are the ones `stopInputsOf`'s own
+    // comment says it refuses — "an object or a boolean cannot mean a count at
+    // all" — and which it in fact COERCES, measured:
+    //
+    //   {"escalations": true}  → consecutiveEscalations: 1   (not refused)
+    //   {"escalations": false} → 0    ← reads as "no escalations"
+    //   {"escalations": ""}    → 0    ← same
+    //   {"escalations": " "}   → 0    ← same
+    //   {"escalations": []}    → 0    ← same
+    //
+    // Four of the five are the dangerous direction exactly: a present,
+    // uninterpretable value silently disabling the stop it was written to
+    // enforce. `Number()` is not the guard here — it is the hole, because it
+    // maps four distinct kinds of nonsense onto the one value that means "carry
+    // on". The rule the fix implements: coerce where any coercion fails SAFE,
+    // refuse where it fails dangerous. `budgetExhausted: Boolean(…)` passes that
+    // test (every present value stops); a count read through `Number()` does not.
+    ['a count written as `true`', { escalations: true }, /escalations/],
+    ['a count written as `false`', { escalations: false }, /escalations/],
+    ['a count written as an empty string', { escalations: '' }, /escalations/],
+    ['a count that is nothing but whitespace', { escalations: ' ' }, /escalations/],
+    ['a count written as an empty array', { escalations: [] }, /escalations/],
+    // Not new behaviour — `count < 0` already refuses this — but an UNTESTED
+    // branch: `code-reviewer` deleted the `count < 0` half and the suite stayed
+    // green, because a negative count and a zero count agree about everything
+    // except the refusal. "A check with no test is a guess" (`invariants.md`).
+    ['a count below zero', { escalations: -1 }, /escalations/],
     [
       'a verdict that is an object',
       { lastDeployVerdict: { toString: 'REGRESSION' } },
@@ -3431,6 +3498,13 @@ describe('a run-state value the reader cannot make sense of never reads as "no s
   // cannot start. An absence is a defined state, and `null` is its honest
   // spelling — `loadState` allows exactly that for `lastCompletedTier` one file
   // over, for the same reason.
+  //
+  // The last row is the asymmetry with `escalations: false` above, and it is
+  // deliberate rather than an inconsistency to tidy away: `budgetExhausted` is a
+  // FLAG, so `false` is its honest spelling of "not exhausted" and coercing it
+  // costs nothing — every other present value still stops. `escalations` is a
+  // COUNT, and no boolean is an honest spelling of one. Same principle, opposite
+  // answer, because the safe direction differs.
   it.each([
     ['records nothing at all', {}],
     ['records a count of zero', { escalations: 0 }],
@@ -3458,6 +3532,72 @@ describe('a run-state value the reader cannot make sense of never reads as "no s
 
     expect(result.out).toMatch(kind);
     expect(result.out, 'an item was handed out').not.toMatch(/add a route/);
+  });
+});
+
+// The same decision, taken one layer down where every row is legible at once.
+// The CLI block above proves the consequence that matters (no item is handed
+// out); this one is the table of what each value MEANS, because "is `[]` a count
+// of zero, or a value nobody can read?" is a question about `stopInputsOf`, and
+// answering it through a subprocess makes the answer hard to find.
+describe('stopInputsOf decides every count deliberately, and coerces only where that is safe', () => {
+  interface StopInputs {
+    consecutiveEscalations: number;
+    lastDeployVerdict: string | null;
+    budgetExhausted: boolean;
+  }
+
+  const stopInputsOf = async (): Promise<(state?: unknown) => StopInputs> => {
+    const module = (await loadRunState()) as unknown as Record<string, unknown>;
+    const found = module['stopInputsOf'];
+    expect(found, 'run-state.mjs must export stopInputsOf').toBeTypeOf('function');
+    return found as (state?: unknown) => StopInputs;
+  };
+
+  // 🔴 Every row is a value the docstring already claims to refuse, or one whose
+  // only coercion lands on "no stop". A refusal is the whole answer: the caller
+  // turns it into a run that does not select, which is the safe half of a state
+  // file nobody can read.
+  it.each<[string, unknown]>([
+    ['a boolean true', true],
+    ['a boolean false', false],
+    ['an empty string', ''],
+    ['a string of whitespace', ' '],
+    ['an empty array', []],
+    ['an object', {}],
+    ['a negative count', -1],
+  ])('refuses an escalation count written as %s', async (_case, escalations) => {
+    const read = await stopInputsOf();
+
+    // Named, not merely refused: the operator's state file looks fine to them,
+    // so an error that does not say `escalations` sends them to the wrong file.
+    expect(() => read({ escalations })).toThrow(/escalations/);
+  });
+
+  // The bound, and it is what keeps the refusal from making a run unstartable. A
+  // guard that also refused these would be the AR-62 defect in a fix's clothes:
+  // the count would become unwritable by hand and unreadable after a hand-edit,
+  // and the operator's next move is to delete the file.
+  it.each<[string, unknown, number]>([
+    ['a plain number', 2, 2],
+    ['a hand edit that reached for a string', '5', 5],
+    ['a one-element array', [3], 3],
+    ['an explicit zero', 0, 0],
+    ['an explicit null, which is how absence is spelled', null, 0],
+  ])('reads an escalation count given as %s', async (_case, escalations, expected) => {
+    const read = await stopInputsOf();
+
+    expect(read({ escalations }).consecutiveEscalations).toBe(expected);
+  });
+
+  it('reads a state that records no count at all as none', async () => {
+    const read = await stopInputsOf();
+
+    // `null` and absent are the same fact — nothing has escalated — and that is
+    // the first second of every run. The `null` row above and this one together
+    // are the null-vs-absent decision, written down rather than inferred.
+    expect(read({}).consecutiveEscalations).toBe(0);
+    expect(read().consecutiveEscalations).toBe(0);
   });
 });
 
@@ -3803,38 +3943,6 @@ describe('an escalation is recorded rather than remembered', () => {
     }
   };
 
-  /**
-   * Run `body` with both standard streams captured — hand-written, like every
-   * other double here.
-   *
-   * The two streams are asserted SEPARATELY because they are not
-   * interchangeable: `queue/index.mjs next --json` writes a document to stdout,
-   * and a recorder that reported its failure there would land a stray line in the
-   * middle of the JSON its caller parses.
-   */
-  const withCapturedOutput = async <T>(
-    body: () => Promise<T>,
-  ): Promise<{ result: T; stderr: string; stdout: string }> => {
-    const captured = { stderr: '', stdout: '' };
-    const realErr = process.stderr.write;
-    const realOut = process.stdout.write;
-    process.stderr.write = ((chunk: unknown) => {
-      captured.stderr += String(chunk);
-      return true;
-    }) as typeof process.stderr.write;
-    process.stdout.write = ((chunk: unknown) => {
-      captured.stdout += String(chunk);
-      return true;
-    }) as typeof process.stdout.write;
-    try {
-      const result = await body();
-      return { result, ...captured };
-    } finally {
-      process.stderr.write = realErr;
-      process.stdout.write = realOut;
-    }
-  };
-
   describe('a run directory it cannot record into never undoes a tracker escalation', () => {
     it.each(ADAPTER_FILES)('%s escalates when the run directory is not there', async (file) => {
       const runDir = await newRunDir();
@@ -3918,7 +4026,15 @@ describe('an escalation is recorded rather than remembered', () => {
 
       expect(after.state).toEqual({ escalations: 1 });
       // and no half-written temp file left behind for the next reader to trip
-      // over: write-then-rename either lands whole or leaves nothing.
+      // over.
+      //
+      // ⚠ The claim this comment used to make — "write-then-rename either lands
+      // whole or leaves nothing" — is true HERE and false in general, so it has
+      // been narrowed to what this case actually shows. Under EACCES the open
+      // fails and there is nothing to clean up; when the open SUCCEEDS and the
+      // rename fails, today's code leaves the temp file behind forever. That
+      // second case is pinned in its own block below, and stating it as a general
+      // property here was cover the code never had.
       expect(after.entries).toEqual(['state.json']);
     });
   });
@@ -4012,6 +4128,289 @@ describe('an escalation is recorded rather than remembered', () => {
       // that will be wrong the day the layout moves.
       expect(source, `${file} re-derives the run state file itself`).not.toMatch(/state\.json/);
     });
+
+    // 🔴 AR-62 round 2, from `code-reviewer`'s Q5: the three adapters all follow
+    // a rule that is written down NOWHERE — **the count rises only after the
+    // tracker has been mutated; where an adapter mutates no tracker, it rises
+    // unconditionally.** It is not a style preference. `recordEscalation` is
+    // deliberately the one call in this layer that swallows a failed write, and
+    // the docstring's justification is positional: "two of the three adapters run
+    // this AFTER the tracker is already mutated". An adapter that recorded FIRST
+    // would collect the tolerance without the fact that earns it — the count
+    // would claim an escalation the tracker never received, and the run would
+    // stop two walls early on a comment that was never posted.
+    //
+    // A fourth adapter's author reads three files and copies whichever they open
+    // first. This is the rule, at the only place it can be checked.
+    const escalateBodyOf = (source: string, file: string): string => {
+      const start = source.indexOf('export const escalate');
+      expect(start, `${file} has no escalate export`).toBeGreaterThan(-1);
+      const rest = source.indexOf('\nexport ', start + 1);
+      return source.slice(start, rest === -1 ? undefined : rest);
+    };
+
+    /** How each adapter writes to its tracker — the call the count must follow. */
+    const TRACKER_WRITE: Record<string, RegExp> = {
+      'github-issues.mjs': /ghText\(/g,
+      'jira.mjs': /await (?:request|comment)\(/g,
+    };
+
+    /** The last tracker write, and the recording, by position in one function. */
+    const orderIn = (body: string, write: RegExp): { lastWrite: number; recorded: number } => ({
+      lastWrite: [...body.matchAll(write)].map((m) => m.index).at(-1) ?? -1,
+      recorded: body.indexOf('recordEscalation('),
+    });
+
+    it.each(Object.keys(TRACKER_WRITE))(
+      '%s counts the escalation only after the tracker has taken it',
+      async (file) => {
+        const body = escalateBodyOf(await read(queueDir, file), file);
+        const { lastWrite, recorded } = orderIn(body, TRACKER_WRITE[file]!);
+
+        expect(lastWrite, `${file}: no tracker write found in escalate`).toBeGreaterThan(-1);
+        expect(recorded, `${file}: escalate does not record`).toBeGreaterThan(-1);
+        expect(
+          recorded,
+          `${file} records the escalation before it reaches the tracker`,
+        ).toBeGreaterThan(lastWrite);
+      },
+    );
+
+    it('spots an adapter that records before it writes to its tracker', async () => {
+      // The check above is a source scan, and a source scan that matches nothing
+      // passes everything. So it is pointed at a body shaped like the mistake it
+      // exists to catch — `invariants.md`, "a check with no test is a guess".
+      const violating = [
+        'export const escalate = (ticket, diagnosis, { env = process.env } = {}) => {',
+        '  recordEscalation(env.RIG_RUN_DIR);',
+        "  ghText(['issue', 'comment', ticket.id, '--body', diagnosis]);",
+        '  return { ok: true };',
+        '};',
+      ].join('\n');
+
+      const { lastWrite, recorded } = orderIn(
+        escalateBodyOf(violating, 'a fourth adapter'),
+        TRACKER_WRITE['github-issues.mjs']!,
+      );
+
+      expect(recorded).toBeLessThan(lastWrite);
+    });
+
+    it('leaves plan-md recording first, because it has no tracker to write to', async () => {
+      const body = escalateBodyOf(await read(queueDir, 'plan-md.mjs'), 'plan-md.mjs');
+
+      // The other half of the rule, and the reason it is stated as "only after
+      // the tracker has been mutated" rather than "last": a flat list has no
+      // per-item state, so `plan-md.escalate` mutates nothing and there is no
+      // later fact for the count to wait on. The day it grows a write, the rule
+      // above applies to it too — this assertion is what notices.
+      expect(body, 'plan-md.escalate now writes something; it needs the order rule').not.toMatch(
+        /writeFileSync|readFileSync|await /,
+      );
+      expect(body).toMatch(/recordEscalation\(/);
+    });
+  });
+});
+
+// 🔴 AR-62 round 2. `security-scanner` reported this, the ticket's gate record
+// says the fix was taken, and the fix was NOT taken: `updateState` still writes
+// its temp file with a bare `writeFileSync(tmp, …)`, which follows a symlink.
+// Measured on this branch, with a symlink planted at the temp name:
+//
+//   decoy now: "{\n  \"escalations\": 3\n}\n"
+//   state.json is symlink: true
+//
+// Two losses in one write. The run's state is written into a file outside the run
+// directory — chosen by whoever planted the link — and the rename then makes
+// `state.json` ITSELF that symlink, so every later write in the run goes there
+// too, and every read comes back from there. A stop input that an outside file
+// can supply is a stop input that can be set to "no stop".
+//
+// The temp name is `state.json.<pid>.tmp` and this block spells it out on
+// purpose: the guarantee under test is "a path already at the temp name is never
+// written through", and a test that could not name the path could not plant one.
+// A change of convention makes these fail loudly, which is the correct outcome.
+//
+// The second half is `code-reviewer`'s A7, and it is the same call from the other
+// side: when the open SUCCEEDS and the rename fails, the temp file is left behind
+// forever. Nothing ever cleans it, and the next writer with the same pid in the
+// same run directory then finds the name occupied.
+describe('the run state never writes through a path it did not create', () => {
+  /** The path `updateState` writes before it renames. Deliberately hardcoded. */
+  const tempStatePathIn = (runDir: string) => path.join(runDir, `state.json.${process.pid}.tmp`);
+
+  /** A run directory with something already sitting at that temp name. */
+  const withOccupiedTempName = async (
+    plant: (tempPath: string) => Promise<void>,
+  ): Promise<string> => {
+    const runDir = await newRunDir();
+    await plant(tempStatePathIn(runDir));
+    return runDir;
+  };
+
+  /**
+   * Call `body` and hand back a promise either way.
+   *
+   * `updateState` is synchronous today and the interface at the top of this file
+   * deliberately does not pin that, so a bare `Promise.resolve(updateState(…))`
+   * would let a synchronous throw escape before there is a promise to reject.
+   * Nothing here should pin the Green step to one or the other.
+   */
+  const attempt = async (body: () => unknown): Promise<unknown> => body();
+
+  /** A file outside the run directory, which nothing here is allowed to touch. */
+  const decoyOutside = async (): Promise<string> => {
+    const elsewhere = await mkdtemp(path.join(tmpdir(), 'outside-'));
+    const file = path.join(elsewhere, 'not-the-run-state.json');
+    await writeFile(file, 'ORIGINAL\n');
+    return file;
+  };
+
+  it('leaves the file a planted symlink points at exactly as it was', async () => {
+    const { updateState } = await loadRunState();
+    const decoy = await decoyOutside();
+    const runDir = await withOccupiedTempName((tempPath) => symlink(decoy, tempPath));
+
+    // The write is expected to refuse; what this test is about is where the bytes
+    // did NOT go, so the refusal is caught rather than asserted here.
+    await attempt(() => updateState(runDir, { escalations: 3 })).catch(() => undefined);
+
+    expect(await read(decoy), 'the run state was written through the symlink').toBe('ORIGINAL\n');
+  });
+
+  it('never lets the state file become a symlink someone else planted', async () => {
+    const { updateState } = await loadRunState();
+    const decoy = await decoyOutside();
+    const runDir = await withOccupiedTempName((tempPath) => symlink(decoy, tempPath));
+
+    await attempt(() => updateState(runDir, { escalations: 3 })).catch(() => undefined);
+
+    // The rename is what makes this permanent: one planted link, and the run's
+    // whole state — the escalation count, the deploy verdict, the budget — lives
+    // outside the run directory for the rest of the run.
+    await expect(
+      stat(path.join(runDir, 'state.json')),
+      'a state file was created over an occupied temp name',
+    ).rejects.toThrow();
+  });
+
+  it('refuses rather than clobbering a plain file already at the temp name', async () => {
+    const { updateState } = await loadRunState();
+    const runDir = await withOccupiedTempName((tempPath) =>
+      writeFile(tempPath, 'SOMEONE ELSE WAS HERE\n'),
+    );
+
+    await attempt(() => updateState(runDir, { escalations: 3 })).catch(() => undefined);
+
+    // Existence, not symlink-ness, is the condition: a guard that only checked
+    // for a link would still race, and refusing every occupied name costs
+    // nothing in a directory that belongs to exactly one run.
+    expect(await read(tempStatePathIn(runDir))).toBe('SOMEONE ELSE WAS HERE\n');
+  });
+
+  it('reports the refusal instead of reporting a state it did not write', async () => {
+    const { updateState } = await loadRunState();
+    const runDir = await withOccupiedTempName((tempPath) => writeFile(tempPath, 'x\n'));
+
+    // `run-state.mjs`'s own rule: reading is permissive, writing refuses. A write
+    // that returned the merged object it never stored would hand the caller a
+    // count to journal that the next selection cannot see.
+    await expect(attempt(() => updateState(runDir, { escalations: 3 }))).rejects.toThrow();
+  });
+
+  it('leaves the state file readable only by the run that owns it', async () => {
+    const { updateState } = await loadRunState();
+    const runDir = await newRunDir();
+
+    await updateState(runDir, { escalations: 1 });
+
+    // The run's state names the tickets it is working and the walls it hit. On a
+    // shared host the default 0644 puts that in front of every account; the same
+    // write that stops following symlinks narrows it, and neither half is worth
+    // shipping alone.
+    const mode = (await stat(path.join(runDir, 'state.json'))).mode & 0o777;
+    expect(mode & 0o077, `state.json is mode ${mode.toString(8)}`).toBe(0);
+  });
+
+  it('is not a symlink itself once an ordinary write has landed', async () => {
+    const { updateState } = await loadRunState();
+    const runDir = await newRunDir();
+
+    await updateState(runDir, { escalations: 1 });
+
+    // The other direction of the two tests above: the ordinary path still
+    // produces a real file with the real contents, so the fix cannot be "never
+    // write anything".
+    expect((await lstat(path.join(runDir, 'state.json'))).isSymbolicLink()).toBe(false);
+    expect(await runStateOf(runDir)).toEqual({ escalations: 1 });
+  });
+
+  // --- A7: the open succeeded, the rename did not ------------------------------
+  //
+  // Forced with a DIRECTORY at `state.json`: the temp write succeeds, and
+  // `renameSync` then fails with EISDIR. That is the one ordering the EACCES case
+  // already under test cannot produce, and it is the one that leaks.
+  const withUnrenameableState = async (runDir: string) =>
+    mkdir(path.join(runDir, 'state.json'), { recursive: true });
+
+  it('leaves no temp file behind when the rename it wrote for fails', async () => {
+    const { updateState } = await loadRunState();
+    const runDir = await newRunDir();
+    await withUnrenameableState(runDir);
+
+    await attempt(() => updateState(runDir, { escalations: 1 })).catch(() => undefined);
+
+    // A leaked `state.json.<pid>.tmp` is not cosmetic here: nothing in this rig
+    // ever removes it, and the `wx` open that closes the symlink hole above turns
+    // the leftover into a run directory that can never be written to again.
+    expect(await readdir(runDir)).toEqual(['state.json']);
+  });
+
+  it('still reports the failed rename rather than returning a state it lost', async () => {
+    const { updateState } = await loadRunState();
+    const runDir = await newRunDir();
+    await withUnrenameableState(runDir);
+
+    await expect(attempt(() => updateState(runDir, { escalations: 1 }))).rejects.toThrow();
+  });
+
+  // --- and the one caller that must survive all of it --------------------------
+  //
+  // `recordEscalation` runs AFTER the tracker has been commented and labelled, so
+  // it swallows a failed write by design. These two pin that the refusals above
+  // arrive there as the tolerated case they already handle, rather than as a
+  // thrown error that turns a successful escalation into a retry — and a retry
+  // double-posts the diagnosis onto the item.
+  it('counts an escalation it could not record without throwing at the adapter', async () => {
+    const { recordEscalation } = (await loadRunState()) as unknown as {
+      recordEscalation: (runDir?: string) => number | Promise<number>;
+    };
+    const runDir = await withOccupiedTempName((tempPath) => writeFile(tempPath, 'x\n'));
+    await writeRunState(runDir, { escalations: 1 });
+
+    const { result, stderr, stdout } = await withCapturedOutput(() =>
+      attempt(() => recordEscalation(runDir)),
+    );
+
+    // The count on disk, not the count it meant to write: the caller journals
+    // this number, and a journal claiming a streak the state file does not carry
+    // is the run's own trace ceasing to be evidence.
+    expect(result).toBe(1);
+    expect(stderr, 'the failed write was swallowed silently').toMatch(/escalation/i);
+    expect(stdout, 'a caller parsing stdout would get this line in its JSON').toBe('');
+    expect(await runStateOf(runDir)).toEqual({ escalations: 1 });
+  });
+
+  it('leaves no temp file behind at the adapter either', async () => {
+    const { recordEscalation } = (await loadRunState()) as unknown as {
+      recordEscalation: (runDir?: string) => number | Promise<number>;
+    };
+    const runDir = await newRunDir();
+    await withUnrenameableState(runDir);
+
+    await withCapturedOutput(() => attempt(() => recordEscalation(runDir)));
+
+    expect(await readdir(runDir)).toEqual(['state.json']);
   });
 });
 

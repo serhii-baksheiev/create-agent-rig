@@ -69,9 +69,17 @@ been seen working at least once.
 
 ### Declare the run directory here, before the first selection
 
-The machine trace (§7) is opt-in and its first call site is **selection**, which
-runs before every task. Declared later, it misses everything that already
-happened — so it is declared in preflight or not at all:
+🔴 **This is not optional, and it is not only about the trace.** The run's
+**stop conditions** live in that directory too (§3) — the escalation streak, the
+deploy verdict, the budget flag. With `RIG_RUN_DIR` unset, every one of them is
+silently absent: escalations are counted nowhere, `next` hands out work after
+two walls in a row, and **nothing says so on stderr**. An undeclared run is
+therefore not a run with a missing journal; it is a run with no brakes, and it
+looks exactly like a healthy one.
+
+The machine trace (§7) is the other half, and its first call site is
+**selection**, which runs before every task. Declared later, it misses
+everything that already happened — so this goes in preflight or not at all:
 
 ```bash
 export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
@@ -118,12 +126,18 @@ hands it over explicitly. A `trigger-auto` item needs its trigger verified *this
 run*: unverified is not fired, and rationalising a trigger into firing builds for
 scale that does not exist.
 
-When a human declares one fired, **record it** — the declaration has to outlive
-the turn it was made in, or the next selection holds the item back again:
+**For a `trigger-auto` item, record the declaration** — it has to outlive the
+turn it was made in, or the next selection holds the item back again:
 
 ```bash
 node .claude/scripts/run-state.mjs trigger <item-id>
 ```
+
+🔴 **This does nothing for a `trigger-human` item, and the command will not tell
+you so.** Selection refuses that kind outright — it never consults the record —
+so the only thing that makes one takeable is a human changing the item's own
+marker. Recording a "declaration" against it succeeds, prints, and leaves the
+item exactly as unselectable as before.
 
 ⚠ **It is keyed by the item's id — and under `plan-md` that id is the item's
 POSITION in the list.** So a declaration made for the third bullet transfers to
@@ -154,7 +168,7 @@ for itself, which is the one thing this loop does not do (§8).
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
 reviewer verdict, a false premise in the item itself) **do not end the run**:
-escalate that item (§5) and take the next one.
+escalate that item (§6) and take the next one.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
@@ -169,18 +183,19 @@ branches held its default on every real selection: the rules were enforced by
 whichever session happened to remember them, and compaction is exactly the
 moment a long run stops remembering.
 
-**Two of the values write themselves; two you write.** The first pair needs
-nothing from you beyond using the documented calls:
+**One of the three writes itself; two you write.** The escalation count needs
+nothing from you beyond using the documented calls — but it has two writers, and
+both have to be the documented one:
 
-- the **escalation count** — every adapter's `escalate()` records it (§6), which
-  is why escalating by hand-labelling the item counts nothing;
-- the **streak reset** — the close step's `recordCompletedTier`, and **only when
+- it **rises** through every adapter's `escalate()` (§6), which is why
+  escalating by hand-labelling the item counts nothing;
+- it **resets** through the close step's `recordCompletedTier`, and **only when
   you pass it `runDir`** (§9 has the command; it is one of that call's
   load-bearing arguments, not an optional extra). Omit it and the count is
   monotonic: two escalations an hour apart end the run however many tasks
   landed in between.
 
-The other pair is yours, after the checks that produce them:
+The other two are yours, after the checks that produce them:
 
 ```bash
 # after the post-deploy check (`.claude/rules/autonomy.md`, "Post-deploy
@@ -193,12 +208,17 @@ node .claude/scripts/run-state.mjs budget exhausted
 
 Both **refuse** a word outside their vocabulary and refuse to run with no
 `RIG_RUN_DIR`, rather than writing something the stop conditions cannot match: a
-file that looks recorded and stops nothing is worse than no file. `HEALTHY`
-exists so a regression can be cleared — without it one bad deploy ends every
-later selection in the run.
+file that looks recorded and stops nothing is worse than no file.
+
+**Only the deploy verdict can be taken back**, and the asymmetry is deliberate:
+`HEALTHY` names a real later event — the revert landed — so without it one bad
+deploy would end every later selection in the run. Spend only accumulates, so
+un-exhausting a budget would name no event at all, only a decision to keep going
+taken by the run that declared the stop. A new run gets a clean state; that is
+the way back from both.
 
 Selection itself — `node .claude/scripts/queue/index.mjs next`, §0 — is what
-*reads* all four and stops on them. It is still the command you run to get work.
+*reads* these and stops on them. It is still the command you run to get work.
 
 ⚠ **The kill switch is not among them.** It stays mechanical in `guard-bash`
 and scripted in preflight; `next` does not check for the flag, so **keep
@@ -234,9 +254,12 @@ Four of them deserve their reasons repeated:
   is what ends a run that has hit the same wall twice.
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
-  condition that clears without anything being written**: the elevated spacing
-  (a normal item lands), a blocker (its item closes), in-progress (the other
-  session finishes), a trigger (a human declares it). The stop line names how
+  condition that clears when something else happens, not by refilling the
+  queue**: the elevated spacing (a normal item lands), a blocker (its item
+  closes), in-progress (the other session finishes), a trigger (a human
+  declares it — and for a `trigger-auto` item that declaration is **written**,
+  §2, so this is the one hold that needs a command rather than only time). The
+  stop line names how
   many and by which of those, because the two endings ask the owner for opposite
   things: an empty queue wants refilling, a held one wants interleaving or
   simply time. 🔴 **A parked cause outranks a holding one on the same item.** An

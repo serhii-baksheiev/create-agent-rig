@@ -126,6 +126,12 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   // `updateState` merges, so the budget and the trigger record this run has
   // accumulated survive — unlike the whole-file write above, which owns its
   // file outright.
+  //
+  // The tier goes into both files, and only one of them is read back: selection
+  // takes it from the per-checkout file above. The run-state copy is a trace of
+  // what this run closed — the item's own state shape names it — not a second
+  // input to the ration, and reading it as one would be the per-run clean slate
+  // this module exists to prevent.
   if (runDir) updateState(runDir, { lastCompletedTier: tier, escalations: 0 });
 
   return { tier, elevatedPaths: elevated };

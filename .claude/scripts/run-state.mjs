@@ -1,6 +1,9 @@
 /**
- * The run's own state — the four values `stopConditionOf` asks for and nothing
- * used to answer.
+ * The run's own state — three of the four values `stopConditionOf` asks for and
+ * nothing used to answer. The fourth, `killSwitch`, is deliberately not here:
+ * it is already mechanical in `guard-bash` and scripted in preflight, and a
+ * second answer to "is the brake on" is the disagreement `invariants.md`
+ * forbids.
  *
  * 🔴 **Why this file exists.** `core.mjs` takes `consecutiveEscalations`,
  * `lastDeployVerdict`, `budgetExhausted` and `killSwitch`, and every branch that
@@ -34,13 +37,17 @@
  * uses it verbatim, exactly as `run-journal.mjs` does. Two owners of one
  * convention disagree the first time either changes.
  *
- * ⚠ **It assumes one writer**, like the journal beside it. The merge is
- * read-then-write with no lock, so two processes sharing a run directory can
- * lose one of their patches. One run directory per run is the caller's part of
- * the contract, and the `loop` skill states it.
+ * ⚠ **It assumes one writer**, like the journal beside it — but degrades
+ * differently, and the difference is worth knowing before relying on either.
+ * The journal *detects* a collision through its sequence and refuses; this
+ * merge is read-then-write with no lock, so two processes sharing a run
+ * directory silently lose one of their patches. Measured: four processes ×
+ * 200 increments recorded 215. The loss is always downward, so the stop this
+ * file exists to fire fires **late or never** — never early. One run directory
+ * per run is the caller's part of the contract, and the `loop` skill states it.
  */
 
-import { readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -78,16 +85,21 @@ export const readState = (runDir) => {
 /**
  * Merge `patch` over what is already recorded, and return the result.
  *
- * Shallow by design: the fields are flat values plus two small objects
- * (`budget`, `triggersFired`), and a deep merge would make "clear this field"
- * unexpressible — the caller passing `{budget: {...}}` means *this budget now*,
- * not *these keys added to whatever was there*.
+ * Shallow by design: the fields are flat values plus one object
+ * (`triggersFired`), and a deep merge would make "clear this field"
+ * unexpressible — a caller passing an object means *this value now*, not
+ * *these keys added to whatever was there*. The `trigger` command therefore
+ * merges its own map before calling, where the intent is explicit.
  *
  * 🔴 **Write-then-rename, because the reader is another process.** A plain
  * write leaves a window where the file on disk is half a JSON document, and the
  * reader above turns that into `{}` — a silently forgotten escalation streak.
- * A rename within one directory is atomic on every platform this runs on, so a
- * reader sees either the old state or the new one and never a torn one.
+ * A rename within one directory is atomic on **POSIX**, so a reader sees either
+ * the old state or the new one and never a torn one. On Windows the same call
+ * goes through `MoveFileEx`, which does not guarantee atomicity when it
+ * replaces an existing file and fails outright if the destination is open — so
+ * there the failure is loud rather than torn, which is the direction to prefer
+ * if it ever has to be handled.
  */
 export const updateState = (runDir, patch) => {
   const next = { ...readState(runDir), ...patch };
@@ -96,8 +108,26 @@ export const updateState = (runDir, patch) => {
   // one's half-written file — the merge above is still unsafe under two
   // writers, but a torn read is not how it fails.
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
-  renameSync(tmp, file);
+  // `wx` refuses an existing path rather than writing through it. Without it a
+  // symlink planted at the (entirely predictable) temp name is followed, and
+  // the rename then makes `state.json` itself that symlink — so the run's stop
+  // conditions would be read from, and written to, a file somebody else chose.
+  // `0o600` narrows what the state is readable by; nothing but this run needs it.
+  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  try {
+    renameSync(tmp, file);
+  } catch (error) {
+    // A failed rename used to leave the temp file in the run directory forever,
+    // where `wx` would then refuse every later write — a run bricked by its own
+    // cleanup gap. The unlink's own failure is swallowed on purpose: the caller
+    // needs the rename's error, not this one.
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* the temp file is already gone, or unreachable for the same reason the rename was */
+    }
+    throw error;
+  }
   return next;
 };
 
@@ -110,6 +140,14 @@ export const updateState = (runDir, patch) => {
  * happens to use (`invariants.md`, "one mechanism, one implementation"). The
  * adapters own *how a tracker records an escalation*; the count of them in this
  * run is not tracker business at all.
+ *
+ * 🔴 **Where to call it from, stated because the next adapter's author cannot
+ * infer it:** the count rises **after** the tracker has been mutated, and
+ * unconditionally only where the adapter mutates no tracker at all. So
+ * `github-issues` and `jira` call this last, once the comment and the label
+ * have landed; `plan-md` calls it immediately, because a flat list has nothing
+ * to write. Called first, the count would claim an escalation the tracker never
+ * received — and it is the count, not the tracker, that ends the run.
  *
  * A run that declared no directory records nothing and **does not throw**: an
  * attended session escalating an item by hand is an ordinary thing to do, and a
@@ -180,12 +218,29 @@ export const stopInputsOf = (state = {}) => {
     );
   };
 
+  // 🔴 **Membership, not coercion — because `Number()` decides this question on
+  // the wrong axis.** The rule the three fields share is: coerce where any
+  // coercion fails safe, refuse where it fails dangerous. `Number()` gets that
+  // right for `"5"`, and wrong for everything that quietly becomes 0 or 1:
+  // measured, `true` read as one escalation, and `false`, `''`, `' '` and `[]`
+  // all read as none — a present value silently disabling the stop it was
+  // written to enforce, which is the exact case this function exists for.
+  //
+  // A hand-edit reaching for `"2"` means two; one reaching for `false` does not
+  // mean zero escalations, it means the file is not saying anything this can
+  // act on.
+  const countOf = (value) => {
+    if (value === null || value === undefined) return 0;
+    if (Array.isArray(value)) return value.length === 1 ? countOf(value[0]) : null;
+    if (typeof value === 'number') return Number.isInteger(value) && value >= 0 ? value : null;
+    if (typeof value !== 'string' || value.trim() === '') return null;
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  };
+
   const escalations = state.escalations ?? 0;
-  // A string or an array of one number compares correctly against the
-  // threshold, and a hand-edit that reaches for `"2"` means two. An object or a
-  // boolean cannot mean a count at all.
-  const count = Number(Array.isArray(escalations) ? escalations.join() : escalations);
-  if (!Number.isFinite(count) || count < 0) refuse('escalations', escalations);
+  const count = countOf(escalations);
+  if (count === null) refuse('escalations', escalations);
 
   const verdict = state.lastDeployVerdict ?? null;
   if (verdict !== null && typeof verdict !== 'string') refuse('lastDeployVerdict', verdict);
@@ -197,12 +252,18 @@ export const stopInputsOf = (state = {}) => {
     refuse('lastDeployVerdict', verdict);
   }
 
+  // `triggersFired` is deliberately absent from this, and its absence is a
+  // decision rather than an oversight: `core.mjs` compares `fired !== true`
+  // strictly, so a string, a number or a nonsense shape can only ever leave an
+  // item held back. Every misreading fails in the safe direction, which is the
+  // one case this function has nothing to add to.
   return {
     consecutiveEscalations: count,
     lastDeployVerdict: normalised,
     // Any truthy value means exhausted: the only writer stores `true`, and a
-    // hand-edit reaching for `"yes"` means yes. There is no reading of a
-    // present-but-odd value here that disables the stop, so nothing to refuse.
+    // hand-edit reaching for `"yes"` means yes. A flag has an honest `false`,
+    // unlike a count — so unlike `escalations` above, nothing here needs
+    // refusing: no present value silently disables the stop.
     budgetExhausted: Boolean(state.budgetExhausted),
   };
 };
@@ -246,15 +307,15 @@ const invokedDirectly = () => {
   return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
 };
 
-// The one-line CLI the post-deploy step calls. It exists because the verdict is
-// produced by a human-or-script judgement outside any module — and a stop
-// condition nothing can write is the state this whole file was added to end.
-//
-// 🔴 **Reading is permissive; writing refuses.** `readState` turns an absent or
-// corrupt file into `{}` because an absent stop input is a defined state. A
-// write has nowhere to go instead, and exiting 0 would tell the operator the
-// regression was filed while the next selection hands out work on top of it —
-// the one move `autonomy.md` names as never fix-forward.
+/**
+ * What each command writes, and what it refuses first.
+ *
+ * Two shapes share this table: `deploy` and `budget` take a word from a closed
+ * vocabulary, `trigger` takes an item id, which is whatever the tracker calls
+ * it — so it validates presence instead of membership (`words: null`). That
+ * sentinel leaks into three places below, which is the price of one table over
+ * two handlers; a fourth command is where that stops being worth it.
+ */
 const COMMANDS = Object.freeze({
   deploy: {
     words: DEPLOY_VERDICTS,
