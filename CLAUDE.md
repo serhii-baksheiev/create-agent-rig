@@ -56,8 +56,10 @@ them all; they are one rulebook.
 - **Gates.** Every PR is routed before it is reviewed — the
   `decision-router` picks the cheapest lane the change earns
   (`deterministic` → `fast-path` → `model`), and risk flags escalate ahead of
-  all three. `code-reviewer` runs on the `model` lane, which is where anything
-  carrying code, a rulebook document or an unclassifiable path lands;
+  all three. `code-reviewer` runs on the `model` lane, which is **everything the
+  two cheap lanes did not claim** — code, a rulebook document, an unclassifiable
+  path, a derived artifact git does not report as drift, or anything a risk flag
+  escalated;
   `security-scanner` when a change touches auth, secrets, parsing, or outbound
   calls; `prose-reviewer` when it touches the documents that instruct agents —
   rules, skills, agent specs, this file, the README. Those last two are

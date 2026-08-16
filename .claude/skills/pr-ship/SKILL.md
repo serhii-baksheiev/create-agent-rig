@@ -57,18 +57,22 @@ blockers.
    Never chain it on `&&`, and never read `0` as "cheap" — that misreading turns
    this gate into a rubber stamp. **Exit 1 is not a lane**: it means nothing was
    routed — an unreadable diff, an empty file list, a project declaring no
-   elevated path, a base or head that is not a revision, or a run journal that
-   refused the record. Treat it as `model` and fix the cause; it is never a
-   reason to skip the gate.
+   elevated path, or a base or head that is not a revision. Treat it as `model`
+   and fix the cause; it is never a reason to skip the gate.
+
+   ⚠ **A `run journal:` line on stderr is not one of those.** A journal that can
+   no longer accept records ends the *trace*, not the routing: the lane still
+   prints and the exit code stays 0. Read the lane, and start the next run in a
+   new run directory.
 
    What each lane buys:
 
    - `deterministic` — every changed file is a derived artifact **and git says
-     it was `modified` or `removed`**. Step 3 alone is the gate; no reviewer
-     runs.
+     it was `modified` or `removed`**. The lane's floor is empty; step 4's
+     triggers still apply on top of it.
    - `fast-path` — documentation outside the rulebook, plus any derived file
      travelling with it under the same `modified`/`removed` rule.
-     `prose-reviewer`.
+     `prose-reviewer` is the floor.
    - `model` — everything else, and `code-reviewer` runs on it **always**,
      with the triggers in step 4 beside it. Anything the router cannot classify
      lands here.

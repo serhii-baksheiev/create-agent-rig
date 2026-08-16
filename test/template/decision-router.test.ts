@@ -195,8 +195,49 @@ describe('classifyFile — what kind of file this is', () => {
 
   it('calls ordinary documentation prose', async () => {
     const { classifyFile } = await load();
-    for (const file of ['README.md', 'docs/notes.mdx', 'NOTES.txt', 'PLAN.md']) {
+    for (const file of ['README.md', 'NOTES.txt', 'PLAN.md']) {
       expect(classifyFile(file), file).toBe('prose');
+    }
+  });
+
+  it('calls .mdx code, because MDX compiles to a module that executes', async () => {
+    const { classifyFile } = await load();
+    // 🔴 It was `prose` for four review rounds. MDX supports `import`/`export`
+    // and evaluates every `{…}` expression, so `app/page.mdx` is a route that
+    // runs — and a one-file diff adding `import { execSync }` to one routed to
+    // `fast-path` while the router printed "the change carries no code".
+    expect(classifyFile('app/page.mdx')).toBe('code');
+    expect(classifyFile('docs/notes.mdx')).toBe('code');
+  });
+
+  it('calls a test fixture code whatever its extension', async () => {
+    const { classifyFile } = await load();
+    // The header claimed "every test file classifies as `code`, so a change
+    // containing one cannot reach a cheap lane on classification alone". It did
+    // not hold for fixtures: a deleted golden file reached `fast-path` with
+    // `prose-reviewer` as the whole gate.
+    for (const file of [
+      'test/golden/expected.txt',
+      'test/fixtures/golden.md',
+      'tests/data/case.md',
+      'e2e/flows/checkout.md',
+    ]) {
+      expect(classifyFile(file), file).toBe('code');
+    }
+  });
+
+  it('recognises a rulebook whatever the case of its name', async () => {
+    const { classifyFile } = await load();
+    // 🔴 Two commits on a case-insensitive checkout: `git mv CLAUDE.md
+    // claude.md` is accepted and recorded, and from the next commit on the
+    // rulebook sat in the prose lane forever — while `readDeclaredPaths` went on
+    // reading that same file for its `elevated-paths` block.
+    for (const file of ['claude.md', 'Claude.md', 'CLAUDE.MD', '.Claude/rules/autonomy.md']) {
+      expect(classifyFile(file), file).toBe('code');
+    }
+    // and the other vendors' conventions are rulebooks too
+    for (const file of ['AGENTS.md', 'GEMINI.md', '.github/copilot-instructions.md']) {
+      expect(classifyFile(file), file).toBe('code');
     }
   });
 
@@ -400,7 +441,7 @@ describe('route — the ladder in ascending order of cost', () => {
 
   it('routes ordinary documentation to the fast path with the prose reviewer', async () => {
     const { route } = await load();
-    const result = route({ files: ['README.md', 'docs/notes.mdx'], elevatedPaths: ELEVATED });
+    const result = route({ files: ['README.md', 'docs/guide.txt'], elevatedPaths: ELEVATED });
     expect(result.lane).toBe('fast-path');
     expect(result.reviewers).toEqual(['prose-reviewer']);
     expect(verdictOf(result, 'deterministic')).toBe('decline');
@@ -640,7 +681,7 @@ describe('the CLI prints the lane and never encodes it in the exit code', () => 
 
   it('prints the route as JSON for a cheap change', async () => {
     const dir = await temp('router-');
-    const result = await runCli(['--files', 'README.md,docs/notes.mdx', '--json'], dir, env());
+    const result = await runCli(['--files', 'README.md,docs/guide.txt', '--json'], dir, env());
 
     expect(result.code, result.out).toBe(0);
     const parsed = JSON.parse(result.stdout) as Routed;
@@ -763,7 +804,10 @@ describe('parseNameStatus — the diff format the router actually reads', () => 
       { path: 'a.ts', status: 'added' },
       { path: 'b.ts', status: 'modified' },
       { path: 'c.ts', status: 'removed' },
-      { path: 'd.ts', status: 'modified' },
+      // 🔴 `T` is a TYPE change — a file swapped for a symlink — and it used to
+      // map to `modified`, which is the one status that buys the no-reviewer
+      // lane. It is its own status now, and nothing trusts it.
+      { path: 'd.ts', status: 'type-changed' },
     ]);
   });
 
@@ -894,6 +938,65 @@ describe('the cheap lanes cannot be unlocked by choosing a filename', () => {
     }
     // and an ordinary `.txt` is still prose
     expect(riskFlagsIn(['docs/notes.txt'], { elevatedPaths: [] })).toEqual([]);
+  });
+
+  it('sees a credential named by its EXTENSION, not only by its stem', async () => {
+    const { riskFlagsIn, route } = await load();
+    // Both sides stripped the extension before matching, so `dist/local.env`
+    // and `dist/api.token` reached the lane that launches no reviewer while
+    // `dist/svc.key` was caught — only because `key` happened to be listed as
+    // an extension. That inconsistency was the finding.
+    for (const file of ['dist/local.env', 'dist/db.secret', 'dist/api.token']) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+      expect(
+        route({ files: [{ path: file, status: 'modified' }], elevatedPaths: ELEVATED }).lane,
+        file,
+      ).toBe('model');
+    }
+  });
+
+  it('keeps a derived file under a declared elevated path out of the no-reviewer lane', async () => {
+    const { route } = await load();
+    // The gate sweep drops test paths as inert, which is right for IT and wrong
+    // for the lane that launches nobody: composed with the derived carve-out it
+    // put a declared elevated path into `deterministic` with zero reviewers.
+    for (const file of [
+      'packages/db/src/tests/x.generated.ts',
+      '.github/workflows/e2e/deploy.generated.yml',
+    ]) {
+      const result = route({
+        files: [{ path: file, status: 'modified' }],
+        elevatedPaths: ELEVATED,
+      });
+      expect(result.lane, file).toBe('model');
+    }
+  });
+
+  it('does not let a type change buy the trusted status', async () => {
+    const { route } = await load();
+    // A file swapped for a symlink is not "the generator ran again".
+    expect(
+      route({ files: [{ path: 'dist/app.js', status: 'type-changed' }], elevatedPaths: ELEVATED })
+        .lane,
+    ).toBe('model');
+  });
+
+  it('catches a manifest whose stem hides its word behind a hump or a digit', async () => {
+    const { riskFlagsIn } = await load();
+    for (const file of [
+      'requirementsDev.txt',
+      'requirements2.txt',
+      'requirement-dev.txt',
+      'requirements3-dev.txt',
+    ]) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
   });
 
   it('treats a file that IS a credential as a security surface', async () => {
@@ -1116,10 +1219,22 @@ describe('the gate skill and the rules point at the router', () => {
     expect(invocation, 'the documented invocation does not pass a base').toMatch(/--base/);
   });
 
-  it('pr-ship says an exit code of 1 is not a lane', async () => {
+  it('pr-ship says an exit code of 1 is not a lane, and excludes the journal from it', async () => {
     const text = await skill();
-    expect(text).toMatch(/exit 1|exit code of 1|`1`/i);
-    expect(text).toMatch(/nothing was routed|not a lane/i);
+    // 🔴 The first version of this test matched `/exit 1|.../` and
+    // `/nothing was routed|not a lane/` — both of which the WRONG sentence
+    // satisfied, so it certified the very defect it was added to prevent: the
+    // enumeration still listed a journal refusal, which exits 0. The
+    // enumeration is asserted by its members now.
+    const flat = text.replace(/[ \t]*\n[ \t]*/g, ' ');
+    const enumeration = /\*\*Exit 1 is not a lane\*\*[^.]*\./.exec(flat)?.[0];
+    expect(enumeration, 'the skill no longer states what exit 1 means').toBeTruthy();
+    expect(enumeration).toMatch(/nothing was routed/);
+    expect(enumeration, 'a journal refusal exits 0, so it is not an exit-1 cause').not.toMatch(
+      /journal/i,
+    );
+    // …and the skill says so explicitly, rather than by omission
+    expect(flat).toMatch(/run journal:[^.]*not one of those|exit code stays 0/i);
   });
 
   it('CLAUDE.md no longer claims code-reviewer runs before every PR', async () => {

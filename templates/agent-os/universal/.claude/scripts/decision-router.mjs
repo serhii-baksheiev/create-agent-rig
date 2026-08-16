@@ -24,10 +24,16 @@
  *
  * ⚠ Read "under a declared elevated path" exactly, because it has one carve-out
  * and the carve-out is inherited rather than chosen here: `elevatedPathsIn`
- * treats prose and tests that provision nothing as **inert**, so `infra/README.md`
- * does not escalate while `infra/stack.ts` does. A rulebook file is not inert
- * wherever it sits. That is the sweep's definition and this file delegates to it
- * on purpose — two answers to "is this path elevated" would disagree.
+ * treats **`.md`/`.mdx` files and test paths** that provision nothing as inert,
+ * so `infra/README.md` does not escalate while `infra/stack.ts` does. Note that
+ * is those two extensions and test paths exactly — **not** this file's own,
+ * wider notion of prose, which also covers `.txt`; aligning the two would take
+ * `requirements.txt` in an elevated directory out of escalation. A rulebook file
+ * is not inert wherever it sits. That is the sweep's definition and this file
+ * delegates to it on purpose — two answers to "is this path elevated" would
+ * disagree. The **no-reviewer lane** does not rely on that carve-out: it tests
+ * the declared prefixes raw, so an inert-looking derived file under one cannot
+ * compose its way in.
  *
  * 🔴 **The lane is a value on stdout; the exit code says only that the router
  * ran.** `0` never means "cheap" and non-zero never means "expensive" — a caller
@@ -47,12 +53,11 @@
  *    does not announce itself in its paths should widen `elevated-paths` rather
  *    than expect this file to guess.
  * 2. **`derived` is a naming convention, not a proof.** A hand-authored
- *    `src/x.generated.ts` satisfies it, and `deterministic` is the lane that
- *    runs no reviewer. So that lane additionally requires a status saying the
- *    file was drift — `modified` or `removed`. Everything else, including an
- *    entry with **no status at all** (the `--files` string form), is refused it.
- *    A `modified` derived file is still taken on trust, and that trust rests on
- *    the project having a check that regenerates it.
+ *    `src/x.generated.ts` satisfies it. So **both cheap lanes** require a status
+ *    saying the file was drift — `modified` or `removed`; everything else,
+ *    including an entry with **no status at all** (the `--files` string form),
+ *    is refused them. A `modified` derived file is still taken on trust, and
+ *    that trust rests on the project having a check that regenerates it.
  * 3. **The journal is written only when `RIG_RUN_DIR` is declared**, and only
  *    from the CLI — `route()` used as a library writes nothing. So an absent
  *    `decisions.jsonl` is the ordinary state of an undeclared run, and a reader
@@ -136,11 +141,34 @@ const statusOf = (file) => {
 
 const segmentsOf = (path) => normalizePath(path).split('/').filter(Boolean);
 
+/**
+ * The documents that instruct agents — where the prose IS the implementation.
+ *
+ * 🔴 Matched case-INSENSITIVELY, and the reason is a two-commit attack that was
+ * reproduced end to end: on a case-insensitive checkout (macOS default)
+ * `git mv CLAUDE.md claude.md` is accepted and recorded. The rename itself is
+ * caught, because a rename keeps its source path — but from the next commit on,
+ * the rulebook is in the prose lane forever. `readDeclaredPaths` still read that
+ * same file for its `elevated-paths` block, so the router was parsing it as the
+ * rulebook and refusing to classify it as one.
+ *
+ * ⚠ Only THIS comparison folds case. `normalizePath` deliberately does not —
+ * `detect-missed-gate.mjs` states why, and folding there would create false
+ * positives on the elevated-prefix match.
+ */
+const RULEBOOK_BASENAMES = new Set([
+  'claude.md',
+  'agents.md',
+  'gemini.md',
+  'conventions.md',
+  'copilot-instructions.md',
+]);
+
 const isRulebookPath = (path) => {
   const segments = segmentsOf(path);
   if (segments.length === 0) return false;
-  if (segments[segments.length - 1] === 'CLAUDE.md') return true;
-  for (const segment of segments) if (segment === '.claude') return true;
+  if (RULEBOOK_BASENAMES.has(segments[segments.length - 1].toLowerCase())) return true;
+  for (const segment of segments) if (segment.toLowerCase() === '.claude') return true;
   return false;
 };
 
@@ -152,7 +180,15 @@ const isRulebookPath = (path) => {
 // `upgrade` may overwrite. A project that really does generate a fixed-name
 // artifact adds it here, next to the check that regenerates it.
 const DERIVED_BASENAMES = new Set();
-const PROSE_EXTENSIONS = new Set(['md', 'mdx', 'txt']);
+// 🔴 `.mdx` is NOT here, and it was for four review rounds. MDX compiles to an
+// ES module: it supports `import`/`export` and evaluates every `{…}`
+// expression, so `app/page.mdx` is a route that executes. A single-file diff
+// adding `import { execSync } …` to one routed to `fast-path`, and the router
+// printed "the change carries no code" over it. This is not limit 1 — the path
+// itself declares an executable format, and the router was reading it wrong.
+// `DOC_EXTENSIONS` still sends it to `prose-reviewer` on top of the code review.
+const PROSE_EXTENSIONS = new Set(['md', 'txt']);
+const DOC_EXTENSIONS = new Set(['md', 'mdx', 'txt']);
 
 /**
  * Does this path LOOK derived — and it is only ever a look.
@@ -210,6 +246,17 @@ export const classifyFile = (file) => {
   // whatever it is called or where it sits.
   if (isRulebookPath(path)) return CODE;
 
+  // 🔴 A test path is code too, and this line closes a claim the header used to
+  // make and the mechanism did not honour: "every test file classifies as
+  // `code`, so a change containing one cannot reach a cheap lane on
+  // classification alone". It did not hold for a fixture — `test/golden/
+  // expected.txt` and `test/fixtures/golden.md` classified as PROSE, so a
+  // deleted golden file reached `fast-path` with `prose-reviewer` as the whole
+  // gate. It also has to come before the derived look, or
+  // `packages/db/src/test/schema.generated.ts` composes two carve-outs into the
+  // lane that launches nobody.
+  if (isTestPath(path)) return CODE;
+
   if (looksDerived(segments, basename)) return DERIVED;
 
   const dot = basename.lastIndexOf('.');
@@ -265,11 +312,19 @@ const isDependencyPath = (segments, basename) => {
   // `requirements-DEV.txt`, `requirements-dev-extra.txt` and
   // `test-requirements.txt` — each of which then reached the PROSE lane, because
   // `.txt` is the one prose extension a manifest uses.
-  for (const word of wordsOf(lower.slice(0, -4))) {
-    if (word === 'requirements' || word === 'constraints') return true;
+  // 🔴 The stem keeps its ORIGINAL CASE here. Pre-lowercasing destroyed the
+  // camel boundary `wordsOf` exists for — `requirementsDev` collapsed to one
+  // word and reached the prose lane — and buys nothing, since `wordsOf`
+  // lowercases every word it emits. Prefix-matched so a digit or a singular
+  // (`requirements2`, `requirement-dev`) cannot slip past either.
+  for (const word of wordsOf(basename.slice(0, -4))) {
+    if (word.startsWith('requirement') || word.startsWith('constraint')) return true;
   }
   for (let i = 0; i < segments.length - 1; i += 1) {
-    if (segments[i].toLowerCase() === 'requirements') return true;
+    const segment = segments[i].toLowerCase();
+    if (segment === 'requirements') return true;
+    // Go's vendor manifest is `vendor/modules.txt` and names neither word.
+    if (segment === 'vendor' && lower === 'modules.txt') return true;
   }
   return false;
 };
@@ -289,7 +344,14 @@ const isSecretFile = (segments, basename) => {
   if (basename === '.env' || basename.startsWith('.env.')) return true;
   for (const segment of segments) if (segment === 'secrets' || segment === 'credentials') return true;
   const dot = basename.lastIndexOf('.');
-  return dot > 0 && SECRET_EXTENSIONS.has(basename.slice(dot + 1).toLowerCase());
+  if (dot <= 0) return false;
+  const extension = basename.slice(dot + 1).toLowerCase();
+  // The extension is tested against the security words as well, because both
+  // sides stripped it before matching: `dist/local.env`, `dist/db.secret` and
+  // `dist/api.token` reached the lane that launches no reviewer, while
+  // `dist/svc.key` was caught — only because `key` happened to be an extension
+  // in the list. That inconsistency was the finding.
+  return SECRET_EXTENSIONS.has(extension) || SECURITY_WORDS.has(extension);
 };
 
 /**
@@ -329,6 +391,28 @@ const SECURITY_WORDS = new Set([
   'jwt',
   'crypto',
   'env',
+  'passwd',
+  'creds',
+  'cookie',
+  'csrf',
+  'cors',
+  'rbac',
+  'acl',
+  'iam',
+  'hmac',
+  'nonce',
+  'cert',
+  'certs',
+  'tls',
+  'mfa',
+  'totp',
+  'otp',
+  'bearer',
+  'oidc',
+  'ldap',
+  'authorise',
+  'authorised',
+  'authorisation',
   'token',
   'tokens',
   'session',
@@ -375,6 +459,11 @@ const wordsOf = (stem) => {
       continue;
     }
     if (i > start && isUpper(ch) && (!isUpper(stem[i - 1]) || isLower(stem[i + 1]))) cut(i);
+    // A digit after a letter is a boundary too: `auth2`, `oauth2` and
+    // `requirements2` each hid a whole word behind one character.
+    else if (i > start && ch >= '0' && ch <= '9' && !(stem[i - 1] >= '0' && stem[i - 1] <= '9')) {
+      cut(i);
+    }
   }
   cut(stem.length);
   return words;
@@ -402,7 +491,17 @@ const isSecuritySurface = (path) => {
   return false;
 };
 
-const TEST_DIRECTORIES = new Set(['test', 'tests', '__tests__', 'spec', 'specs']);
+const TEST_DIRECTORIES = new Set([
+  'test',
+  'tests',
+  '__tests__',
+  'spec',
+  'specs',
+  'e2e',
+  'integration',
+  'cypress',
+  'features',
+]);
 
 const isTestPath = (path) => {
   const segments = segmentsOf(path);
@@ -566,14 +665,29 @@ export const route = ({ files, elevatedPaths } = {}) => {
   // consequence: a diff adding `src/x.generated.ts` alongside one `.md` edit
   // routed to `fast-path` and no reviewer read the code. Adding a derived-
   // looking filename was a one-line way to drop `code-reviewer`.
+  // The raw prefix test, deliberately NOT the inert-aware one. `elevatedPathsIn`
+  // drops prose and test paths as inert, which is right for the gate sweep and
+  // wrong for the lane that launches nobody: composing that carve-out with the
+  // derived one put `packages/db/src/test/x.generated.ts` — a declared elevated
+  // path — into `deterministic` with zero reviewers. Each half is documented;
+  // the composition was not, and it contradicted this file's own headline.
+  const prefixes = elevatedPaths.map(normalizePath);
+  const underDeclaredPath = (path) => {
+    const normalized = normalizePath(path);
+    return prefixes.some((prefix) => normalized.startsWith(prefix));
+  };
+
   let prose = 0;
   let derivedUntrusted = 0;
   let other = 0;
   for (const file of files) {
-    const kind = classifyFile(pathOf(file));
+    const path = pathOf(file);
+    const kind = classifyFile(path);
     if (kind === PROSE) prose += 1;
     else if (kind !== DERIVED) other += 1; // code and unknown alike: the expensive answer
-    else if (!DERIVED_TRUSTED_STATUSES.has(statusOf(file))) derivedUntrusted += 1;
+    else if (!DERIVED_TRUSTED_STATUSES.has(statusOf(file)) || underDeclaredPath(path)) {
+      derivedUntrusted += 1;
+    }
   }
 
   const clear = line('risk-flags', 'clear', 'no risk flag fired on the changed paths');
@@ -616,14 +730,14 @@ export const route = ({ files, elevatedPaths } = {}) => {
       lane: 'fast-path',
       reviewers: ['prose-reviewer'],
       risks,
-      why: 'the change is documentation outside the rulebook, so the reviewer that reads prose is the whole gate',
+      why: 'the change is documentation outside the rulebook, with any derived file travelling with it reported as drift',
       gates: [
         clear,
         declinedDeterministic,
         line(
           'fast-path',
           'route',
-          'the change carries no code and no rulebook document — `code-reviewer` would have nothing to read',
+          'nothing in the change classifies as code or as a rulebook document — `code-reviewer` has nothing to read',
         ),
         line('model', 'skipped', 'not evaluated — a cheaper gate claimed the change'),
       ],
@@ -650,7 +764,7 @@ export const route = ({ files, elevatedPaths } = {}) => {
         'fast-path',
         'decline',
         prose === 0
-          ? 'the change carries no documentation for a prose reviewer to read'
+          ? 'nothing in the change classifies as documentation, which is what this lane admits'
           : 'the change is not documentation-only',
       ),
       line('model', 'route', 'the expensive path is warranted'),
@@ -669,7 +783,13 @@ const reviewersFor = (files, risks) => {
   for (const file of files) {
     const path = pathOf(file);
     if (path === '') continue;
-    if (classifyFile(path) === PROSE || isRulebookPath(path)) {
+    // `DOC_EXTENSIONS` rather than the PROSE classification: `.mdx` is code to
+    // the lane logic and a document to a reader, and both are true.
+    const segments = segmentsOf(path);
+    const basename = segments[segments.length - 1] ?? '';
+    const dot = basename.lastIndexOf('.');
+    const extension = dot > 0 ? basename.slice(dot + 1).toLowerCase() : '';
+    if (DOC_EXTENSIONS.has(extension) || isRulebookPath(path)) {
       wantsProse = true;
       break;
     }
@@ -710,7 +830,10 @@ const STATUS_LETTERS = Object.freeze({
   D: 'removed',
   M: 'modified',
   R: 'renamed',
-  T: 'modified',
+  // 🔴 NOT `modified`. A type change swaps a file for a symlink (or back), which
+  // is not "the generator ran again" — so it must not buy the trusted status
+  // that unlocks the lane with no reviewer.
+  T: 'type-changed',
 });
 
 /**
