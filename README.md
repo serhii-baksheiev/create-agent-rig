@@ -95,10 +95,10 @@ never inflated). The hooks live in `.claude/hooks/` and are wired in
 - **`gate-stop-dod`** — refuses to end the session while a Definition-of-Done
   check is red; it fails open (a missing or corrupt config never makes the
   session unquittable) and never blocks twice in a row;
-- **`inject-rules`** — re-injects the parts of the autonomy rules a run cannot
-  work without — the tiers and the stop rules — at session start, so they
-  survive compaction and resumes. The rest of the file is not injected; the
-  injection says so and names the file.
+- **`inject-rules`** — re-injects the autonomy rules at session start, so they
+  survive compaction and resumes: the whole file, minus the regions the file
+  itself marks as reference. What is left out is a decision written in
+  `autonomy.md` on the line above it, not one this hook infers.
 
 **A brake that is a real file.** `touch ~/.claude/<project>-loop-STOP` and no
 merge lands until it is removed — enforced at the tool layer, so it holds even if

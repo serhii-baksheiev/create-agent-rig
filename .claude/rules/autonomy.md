@@ -43,15 +43,17 @@ paths that exist only in its shape. A path declared in none of them is a path
 nothing checks.
 
 <!-- inject:skip -->
-<!-- What `inject-rules` puts into a session's context is: this file's preamble,
-     the whole of `## Tiers`, and the whole of `## Stop rules` — MINUS anything
-     between these markers. Two consequences for whoever edits this file:
-     a rule written into any other `##` section (post-deploy verification, the
-     escalation format) is NOT injected and is read only when someone opens the
-     file; and a rule written between these markers is not injected either. The
-     marked region is long-form procedure — including one rule, "never run it as
-     a step inside a session", which is stated here because it is about the
-     procedure rather than about the run. Adding to it: outside the markers. -->
+<!-- `inject-rules` puts this WHOLE FILE into every session's context, minus
+     the regions between markers like these. So the only thing an editor has to
+     know is the one thing these markers say: text in here is not carried by a
+     run, it is read when someone opens the file. Write a rule anywhere else and
+     it reaches every session by default.
+
+     This region is the audit procedure — long-form, and about the sweep rather
+     than about the run. It does contain rules ("never run it as a step inside a
+     session", "a miss that turned out harmless is still recorded"); they are
+     rules for whoever performs the sweep, which is not the run. If that stops
+     being true, move them out rather than arguing with the marker. -->
 
 #### The gate is swept from outside, because a run cannot report this on itself
 
@@ -121,6 +123,11 @@ these lines is the failure mode:
   there anymore.
 
 <!-- inject:skip -->
+<!-- Not carried into a session's context (see the note on the first marked
+     region). Both sections below are read at the moment they are needed — after
+     a deploy, and when writing an escalation — and both are cited by file and
+     section name from the `loop` skill, which is where a run meets them. A rule
+     that a run must carry unprompted does not belong below this line. -->
 
 ## Post-deploy verification
 

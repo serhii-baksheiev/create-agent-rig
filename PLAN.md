@@ -124,7 +124,7 @@ This split is what makes `agent-rig init` (§6) safe — it installs only the pr
   - `guard-bash` (PreToolUse) — the part of the Never tier a text scan can
     decide, plus the kill switch; the file states exactly what it does not see;
   - `gate-stop-dod` (Stop) — refuses to end the session while a DoD check fails (anti-loop via `stop_hook_active`, fails open);
-  - `inject-rules` (SessionStart) — re-injects the part of `autonomy.md` a run cannot work without (the preamble tie-break, the tiers, the stop rules) so it survives compaction/resume; the rest of the file is not injected and the injection says which parts and where they live.
+  - `inject-rules` (SessionStart) — re-injects `autonomy.md` so the rules survive compaction/resume, minus the regions that file marks `inject:skip`; it reads no headings, so what is left out is authored in the rule file rather than inferred here.
 - **Skills** — `pr-ship` (pre-merge gate → SHIP/HOLD), `loop` (unattended driver
   over the queue adapter; "queue empty → end, do not invent work"),
   `worktree-task` (isolation when a second session may run), `new-invariant`
