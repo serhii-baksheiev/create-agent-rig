@@ -454,7 +454,7 @@ measured on; v2's 🔴 rule stands unchanged — **nothing brings a Flowa copy o
 **Completeness:** nothing was dropped — 34 agent items → AR-1…AR-34 and
 AR-44; the Operator queue's live entries → AR-35…AR-38; its eight triage
 proposals → AR-39…AR-43 (grouped by part where two findings share a file;
-fingerprints preserved verbatim so `file-triage` dedup still matches); the
+fingerprints preserved verbatim so `duplicateOf` (`core.mjs`) still matches); the
 adapter switch itself → AR-45. Rulings already taken (AR2-1 = NULL under
 plan-md, jsdom = no rule, the AR3-37 shape, the AR3-36 state file) live in the
 tickets they govern; the crossed-out history that used to sit here is git
