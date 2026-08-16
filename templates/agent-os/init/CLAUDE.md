@@ -53,10 +53,19 @@ it a hook via the `new-invariant` skill.
   `.claude/rules/workflow.md` ("Branches and commits", "PR flow"). When another
   session may touch this repo at the same time, the branch lives in its own
   worktree — the `worktree-task` skill has the lifecycle and the cleanup.
-- **Gates.** `code-reviewer` before every PR; `security-scanner` when a change
-  touches auth, secrets, parsing, or outbound calls; `prose-reviewer` when it
-  touches the documents that instruct agents — rules, skills, agent specs, this
-  file, the README. Blocking findings are resolved, not argued with, and the
+- **Gates.** Every PR is routed before it is reviewed — the
+  `decision-router` picks the cheapest lane the change earns
+  (`deterministic` → `fast-path` → `model`), and risk flags escalate ahead of
+  all three. `code-reviewer` runs on the `model` lane, which is **everything the
+  two cheap lanes did not claim** — code, a rulebook document, an unclassifiable
+  path, a derived artifact git does not report as drift, or anything a risk flag
+  escalated;
+  `security-scanner` when a change touches auth, secrets, parsing, or outbound
+  calls; `prose-reviewer` when it touches the documents that instruct agents —
+  rules, skills, agent specs, this file, the README. Those last two are
+  **lane-independent and may only add** — the lane is a floor, never a ceiling.
+  `.claude/rules/workflow.md` carries the ladder and what the cheap lanes give
+  up. Blocking findings are resolved, not argued with, and the
   `pr-ship` skill drives the fan-out. **No hook launches them** — a gate here is
   a session following a written rule, so "the gate ran" is a claim, not a
   guarantee. That is the honest reading of every gate in this file.

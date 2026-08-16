@@ -187,6 +187,7 @@ describe('every authored git spawn passes an explicit environment', () => {
     'packages/cli/test/create.test.ts',
     'scripts/prepare.mjs',
     'templates/agent-os/universal/.claude/scripts/preflight.mjs',
+    'templates/agent-os/universal/.claude/scripts/decision-router.mjs',
     'templates/agent-os/universal/.claude/hooks/gate-stop-dod.mjs',
     'templates/agent-os/universal/.claude/scripts/queue/checkout.mjs',
     'test/template/hooks.test.ts',
@@ -206,7 +207,7 @@ describe('every authored git spawn passes an explicit environment', () => {
     expect(offences, `${rel}: git spawned with the inherited environment`).toEqual([]);
   });
 
-  // 🔴 The sweep above reads eight SOURCE files, and a rule layer's commands do
+  // 🔴 The sweep above reads the SOURCE files listed there, and a rule layer's commands do
   // not all live in source. The `recordCompletedTier` snippet in the loop skill
   // is executed verbatim by every session that closes an item — from a shell
   // whose `GIT_DIR` is whatever fired it — and it shipped, in the very branch
