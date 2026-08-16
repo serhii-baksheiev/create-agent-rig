@@ -379,7 +379,11 @@ attempt budget, an invariant conflict, a blocking reviewer verdict, or a
 `documented-stall` (§5), and its diagnosis is already written: what the item
 claimed, what the code says, and the citation:
 
-1. Comment the diagnosis on the queue item: what fails, what was tried, the
+1. Comment the diagnosis on the queue item, in the shape
+   `.claude/rules/autonomy.md` ("Escalation format") sets — **cite it rather
+   than working from this list**, which is a reminder and drops its
+   load-bearing clause: what was *observed*, verbatim errors rather than
+   summaries. So: what fails, what was tried, the
    current hypothesis, and links to the PR and the failing run where they exist
    — a premise stop has neither, and its citation stands in for both. **Name the outcome
    state in the same comment** — `incomplete` if the diagnosis cannot say which

@@ -73,8 +73,8 @@ it a hook via the `new-invariant` skill.
   `guard-bash` refuses the "Never" tier — force-pushing a shared branch, a
   production deploy, a filesystem wipe — and carries the kill switch;
   `gate-stop-dod` refuses to end the session while a Definition-of-Done check
-  fails; `inject-rules` puts the autonomy rules back in front of the agent at
-  the start of every session. If a hook blocks you, fix the cause; never route
+  fails; `inject-rules` puts the tiers and the stop rules back in front of the
+  agent at the start of every session — those two sections, not the whole file. If a hook blocks you, fix the cause; never route
   around a hook.
 - **Enforcement is a pattern you can apply again.** Each of those hooks is one
   stated invariant + one mechanical check + one test — the pattern is written

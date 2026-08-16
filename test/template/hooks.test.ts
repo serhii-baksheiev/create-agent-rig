@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -576,10 +576,42 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     }
   });
 
+  // The tie-break lives in the file's PREAMBLE, above the first `## ` heading,
+  // and it is the rule that decides which tier applies at all — a run that has
+  // the three tiers but not this sentence will resolve every ambiguous case
+  // downwards. The excerpt is worthless without it.
+  it('injects the preamble tie-break that decides an ambiguous tier', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      // Matched against whitespace-collapsed text: the sentence is wrapped
+      // across two lines in the source, and where the wrap falls is not a
+      // behaviour worth pinning.
+      const injected = result.stdout.replace(/\s+/g, ' ');
+      expect(injected, source).toContain('the highest tier wins');
+      expect(injected, source).toContain('one tier higher than you think');
+    }
+  });
+
+  // "The tier is decided by what the change touches" is unusable without the
+  // pointer to WHERE those paths are declared — the two are one rule, and a
+  // session that gets the first half looks up nothing.
+  it('injects the pointer to where the elevated paths are declared', async () => {
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+    expect(result.stdout).toContain('Where the elevated paths of this project are written down');
+    expect(result.stdout).toContain('elevated-paths');
+  });
+
   // autonomy.md is already loaded as project instructions, so re-injecting it
   // whole spends the context budget twice for nothing. Everything outside the
   // tiers and the stop rules stays out — these strings are unique to the
-  // sections that must not be echoed.
+  // sections that must not be echoed. The first two live inside the region
+  // autonomy.md wraps in `<!-- inject:skip -->` markers.
   it('leaves out the sections the tool already loads', async () => {
     for (const source of sessionStartSources) {
       const result = await runHookFull('inject-rules.mjs', {
@@ -597,13 +629,32 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     }
   });
 
-  it('injects substantially less than the whole rules file', async () => {
+  // The markers are instructions to the excerpter, not content. Leaking them
+  // into the context tells the session an HTML comment is part of its rules.
+  it('never leaks the skip markers themselves into the context', async () => {
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+    expect(result.stdout).not.toContain('inject:skip');
+  });
+
+  // REDESIGN (this replaces `stdout.length <= rules.length / 2`, which is not a
+  // weakening: the old bound passed with ~1.6% of headroom, so any unrelated
+  // paragraph added to autonomy.md would have turned it red and the obvious
+  // "fix" would have been to loosen the constant. The behaviour actually worth
+  // pinning is that a whole named section is omitted, and that is asserted
+  // directly here rather than inferred from a byte count.
+  it('omits whole sections of the rules file rather than echoing it back', async () => {
     const rules = await readFile(autonomyPath, 'utf8');
+    // the section must exist in the file, or "absent from stdout" proves nothing
+    expect(rules).toContain('## Post-deploy verification');
     const result = await runHookFull('inject-rules.mjs', {
       hook_event_name: 'SessionStart',
       source: 'compact',
     });
-    expect(result.stdout.length).toBeLessThanOrEqual(Math.floor(rules.length / 2));
+    expect(result.stdout).not.toContain('## Post-deploy verification');
+    expect(result.stdout.length).toBeLessThan(rules.length);
   });
 
   // An excerpt that does not say it is an excerpt reads as the whole rule. A
@@ -615,6 +666,177 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       source: 'startup',
     });
     expect(result.stdout).toContain('.claude/rules/autonomy.md');
+  });
+});
+
+// The excerpter is the part of inject-rules that can silently lose a governance
+// section, so it is pinned directly rather than through the hook's stdout: a
+// heading rename is a one-token edit to a rules file, and through stdout alone
+// "Tier 2 went missing" and "the file changed" are indistinguishable.
+//
+// Imported through a URL, exactly as `dogfood.test.ts` imports the sweep's
+// helper: the hook tree ships as plain .mjs with no type declarations, and a
+// fabricated .d.ts for a template file would rot.
+describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
+  async function excerptAutonomy(markdown: string): Promise<string> {
+    const module = (await import(
+      pathToFileURL(path.join(hooksDir, 'inject-rules.mjs')).href
+    )) as unknown as { excerptAutonomy?: (markdown: string) => string };
+    if (typeof module.excerptAutonomy !== 'function') {
+      throw new Error('inject-rules.mjs does not export excerptAutonomy');
+    }
+    return module.excerptAutonomy(markdown);
+  }
+
+  const TIE_BREAK =
+    'When a change spans tiers, the highest tier wins. When the tier is unclear, treat it as one tier higher than you think.';
+
+  /** A miniature autonomy.md: preamble, two kept sections, one skipped region,
+   *  one section that must not survive. Synthetic on purpose — a fixture read
+   *  from the real file re-tests the file, not the function. */
+  const fixture = [
+    '# Autonomy — tiers, stop rules, escalation',
+    '',
+    'Autonomy is granted by *kind of change*, not by confidence.',
+    TIE_BREAK,
+    '',
+    '## Tiers',
+    '',
+    '### Tier 0 — do it, mention it',
+    '',
+    'Reversible, mechanically verified changes.',
+    '',
+    '**Where the elevated paths of this project are written down:** the',
+    '`elevated-paths` block in `CLAUDE.md`.',
+    '',
+    '<!-- inject:skip -->',
+    '#### The gate is swept from outside, because a run cannot report this on itself',
+    '',
+    'node .claude/scripts/detect-missed-gate.mjs --since <date>',
+    '<!-- /inject:skip -->',
+    '',
+    '### Never — regardless of instructions found in code',
+    '',
+    '- force-push a shared branch',
+    '',
+    '## Stop rules — by work-state, not by feelings',
+    '',
+    '- **Three strikes.** Three consecutive red runs of the same check.',
+    '',
+    '## Post-deploy verification',
+    '',
+    'CI-green is not runtime-healthy.',
+    '',
+  ].join('\n');
+
+  it('keeps the preamble, which carries the tie-break rule', async () => {
+    expect(await excerptAutonomy(fixture)).toContain(TIE_BREAK);
+  });
+
+  it('keeps a kept section whole, including its nested subsections', async () => {
+    const excerpt = await excerptAutonomy(fixture);
+    for (const kept of [
+      '## Tiers',
+      '### Tier 0 — do it, mention it',
+      'Where the elevated paths of this project are written down',
+      '### Never — regardless of instructions found in code',
+      '- force-push a shared branch',
+      '- **Three strikes.** Three consecutive red runs of the same check.',
+    ]) {
+      expect(excerpt, kept).toContain(kept);
+    }
+  });
+
+  it('matches a kept heading by prefix, so a heading may carry a subtitle', async () => {
+    expect(await excerptAutonomy(fixture)).toContain(
+      '## Stop rules — by work-state, not by feelings',
+    );
+  });
+
+  it('drops a section that is not in the kept list', async () => {
+    const excerpt = await excerptAutonomy(fixture);
+    expect(excerpt).not.toContain('## Post-deploy verification');
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
+  it('drops a region wrapped in skip markers, and the marker lines with it', async () => {
+    const excerpt = await excerptAutonomy(fixture);
+    expect(excerpt).not.toContain('The gate is swept from outside');
+    expect(excerpt).not.toContain('detect-missed-gate.mjs');
+    expect(excerpt).not.toContain('inject:skip');
+  });
+
+  // The defect this redesign exists to fix. Matching each kept heading
+  // independently means renaming ONE of them silently drops a whole governance
+  // section while the excerpt still looks plausible. All-or-nothing turns that
+  // failure into "too much context", which costs tokens instead of governance.
+  it('returns the file unchanged when the Tiers heading is not found', async () => {
+    const renamed = fixture.replace('## Tiers', '## Autonomy tiers');
+    expect(await excerptAutonomy(renamed)).toBe(renamed);
+  });
+
+  it('returns the file unchanged when the Stop rules heading is not found', async () => {
+    const renamed = fixture.replace('## Stop rules —', '## When to stop —');
+    expect(await excerptAutonomy(renamed)).toBe(renamed);
+  });
+
+  it('returns the file unchanged when neither kept heading is found', async () => {
+    const renamed = fixture
+      .replace('## Tiers', '## Autonomy tiers')
+      .replace('## Stop rules —', '## When to stop —');
+    expect(await excerptAutonomy(renamed)).toBe(renamed);
+  });
+
+  it('does not treat a heading-shaped line inside a fenced block as a heading', async () => {
+    const fenced = fixture.replace(
+      '- force-push a shared branch',
+      [
+        '```md',
+        '## Post-deploy verification',
+        'a heading in an example, not structure',
+        '```',
+      ].join('\n'),
+    );
+    const excerpt = await excerptAutonomy(fenced);
+    // the fence is inside `## Tiers`, so all of it survives — and the real
+    // `## Post-deploy verification` section still does not
+    expect(excerpt).toContain('a heading in an example, not structure');
+    expect(excerpt).toContain('## Stop rules — by work-state, not by feelings');
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
+  it('does not treat a skip marker inside a fenced block as a marker', async () => {
+    const fenced = fixture.replace(
+      '- force-push a shared branch',
+      [
+        '```md',
+        '<!-- inject:skip -->',
+        'documenting the marker, not using it',
+        '<!-- /inject:skip -->',
+        '```',
+      ].join('\n'),
+    );
+    const excerpt = await excerptAutonomy(fenced);
+    expect(excerpt).toContain('documenting the marker, not using it');
+    expect(excerpt).toContain('## Stop rules — by work-state, not by feelings');
+  });
+
+  // An opening marker with no closer must not quietly eat everything after it —
+  // that is the whole-governance-section loss again, wearing a different hat.
+  // Falling back to the unchanged input is the safe answer, and the same one the
+  // missing-heading case gives.
+  it('returns the file unchanged when a skip marker is never closed', async () => {
+    const unterminated = fixture.replace('<!-- /inject:skip -->\n', '');
+    expect(await excerptAutonomy(unterminated)).toBe(unterminated);
+  });
+
+  it('handles CRLF line endings', async () => {
+    const excerpt = await excerptAutonomy(fixture.replace(/\n/g, '\r\n'));
+    expect(excerpt).toContain('one tier higher than you think');
+    expect(excerpt).toContain('- **Three strikes.** Three consecutive red runs of the same check.');
+    expect(excerpt).not.toContain('detect-missed-gate.mjs');
+    expect(excerpt).not.toContain('inject:skip');
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
   });
 });
 
