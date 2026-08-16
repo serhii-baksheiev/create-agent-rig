@@ -669,6 +669,101 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     });
     expect(result.stdout).toContain('.claude/rules/autonomy.md');
   });
+
+  /** Everything the hook prints ahead of the excerpt — the excerpt begins at the
+   *  rules file's own first line, so the split is derived from the file rather
+   *  than from a count of banner lines that any edit would invalidate. */
+  function bannerOf(stdout: string, rules: string): string {
+    const firstLine = rules.split('\n')[0] ?? '';
+    const start = stdout.indexOf(firstLine);
+    expect(
+      start,
+      'the excerpt must appear in stdout for the banner to be split off',
+    ).toBeGreaterThan(0);
+    return stdout.slice(0, start);
+  }
+
+  /** A `## ` heading reduced to the words that identify it: the text before the
+   *  em-dash subtitle, lowercased. Loose on purpose — the banner is prose and
+   *  should not have to quote a heading verbatim. */
+  const topicOf = (heading: string) =>
+    (heading.replace(/^##\s+/, '').split(/\s+[—–-]\s+/)[0] ?? '')
+      .split(',')[0]!
+      .trim()
+      .toLowerCase();
+
+  // The banner tells the session which topics it did NOT get, and that list is
+  // written by hand while the omissions are authored in autonomy.md's markers.
+  // Nothing today notices when the two disagree: mark one more section and the
+  // banner keeps naming the old four, so a run is told it has rules it does not
+  // have. Derived from the file so that adding a marked region turns this red.
+  it('names, in the banner, every section it left out', async () => {
+    const rules = await readFile(autonomyPath, 'utf8');
+    const headings = rules.split('\n').filter((line) => /^##\s+\S/.test(line));
+    expect(headings.length, 'autonomy.md must have `## ` sections to reason about').toBeGreaterThan(
+      0,
+    );
+
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'compact',
+    });
+    expect(result.code).toBe(0);
+
+    const omitted = headings.filter((heading) => !result.stdout.includes(heading));
+    // Without this the whole test passes vacuously the day the excerpter stops
+    // omitting anything at all — which is exactly the regression that would
+    // make the banner's claim false in the other direction.
+    expect(omitted, 'at least one section must be omitted, or this proves nothing').not.toEqual([]);
+
+    const banner = bannerOf(result.stdout, rules).replace(/\s+/g, ' ').toLowerCase();
+    for (const heading of omitted) {
+      expect(banner, `banner must name the omitted section: ${heading}`).toContain(
+        topicOf(heading),
+      );
+    }
+  });
+
+  // "Regression → revert first, diagnose second" is a rule a run must carry
+  // unprompted: the moment it applies is the moment the run is mid-incident and
+  // least likely to go and read a file. It now lives inside a marked region, so
+  // a compacted session is governed without it. The fix is a one-line pointer at
+  // the end of `## Stop rules`, outside the markers, carrying the verdict itself.
+  it('injects the revert-first verdict, which lives in an omitted section', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.code, source).toBe(0);
+      // Matched against whitespace-collapsed text with emphasis stripped: the
+      // rule wraps across lines in the source and carries markdown bold, and
+      // neither the wrap point nor the styling is a behaviour worth pinning.
+      const injected = result.stdout.replace(/[*`]/g, '').replace(/\s+/g, ' ').toLowerCase();
+      expect(injected, source).toContain('revert first');
+      expect(injected, source).toContain('diagnose second');
+    }
+  });
+
+  // …and carrying the verdict must not mean dragging the section back in. The
+  // pointer is the verdict plus a citation; the procedure — its heading, its
+  // reasoning, the escalation section beside it — stays in the file.
+  //
+  // Deliberately NOT asserted here: that `run-state.mjs` is absent. The command
+  // names the mechanism the verdict is recorded by, so it can legitimately
+  // appear in a one-line pointer as well as in the section, which makes it
+  // unable to tell "the section came back" from "the pointer names the
+  // mechanism". The strings below can only come from the section itself.
+  it('carries the verdict without re-injecting the procedure it came from', async () => {
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'compact',
+    });
+    expect(result.stdout).not.toContain('Post-deploy verification');
+    expect(result.stdout).not.toContain('CI-green ≠ runtime-healthy');
+    expect(result.stdout).not.toContain('there is no run for the verdict to belong to');
+    expect(result.stdout).not.toContain('Escalation format');
+  });
 });
 
 // The hook only does anything when its main-guard decides it was invoked
@@ -1030,6 +1125,74 @@ describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
     expect(excerpt).toContain('documenting the marker in a nested fence, not using it');
     expect(excerpt).not.toContain('detect-missed-gate.mjs');
     expect(excerpt).not.toBe(fenced);
+  });
+
+  // ── The stated limit, from both sides ──────────────────────────────────────
+  // A marker is recognised as the FIRST non-whitespace text on its own line, and
+  // nothing else about the line matters. The three tests below pin what that
+  // buys and what it costs. All three describe CURRENT behaviour and are being
+  // documented, not changed: the implementation step restores the limits
+  // sentence in the docstring, and these are what that sentence must be true of.
+
+  // The cost, edge one: an indented code block is not a fence, so markers shown
+  // as a four-space example are structure. A doc that demonstrates the markers
+  // this way silently loses its middle lines — quietly, with no fallback, which
+  // is the part worth knowing before you write such a doc.
+  it('obeys a balanced marker pair inside an indented code block', async () => {
+    const indented = inTiers([
+      'Marked regions look like this:',
+      '',
+      `    ${SKIP_OPEN}`,
+      '    the middle lines of the example',
+      `    ${SKIP_CLOSE}`,
+      '',
+      'and that is all there is to them.',
+    ]);
+    const excerpt = await excerptAutonomy(indented);
+    // the example's own middle lines are gone — the pair was obeyed, not shown
+    expect(excerpt).not.toContain('the middle lines of the example');
+    // and it is not the malformed-input fallback doing this: the surrounding
+    // prose survives and the file's real marked region went too
+    expect(excerpt).toContain('Marked regions look like this:');
+    expect(excerpt).toContain('and that is all there is to them.');
+    expect(excerpt).not.toContain('detect-missed-gate.mjs');
+    expect(excerpt).not.toBe(indented);
+  });
+
+  // The cost, edge two: an HTML comment is not a fence either, so a marker pair
+  // wrapped in one is obeyed rather than quoted. Same shape, same silence.
+  it('obeys a balanced marker pair inside a surrounding HTML comment', async () => {
+    const commented = inTiers([
+      '<!--',
+      SKIP_OPEN,
+      'the middle lines of the commented-out example',
+      SKIP_CLOSE,
+      '-->',
+    ]);
+    const excerpt = await excerptAutonomy(commented);
+    expect(excerpt).not.toContain('the middle lines of the commented-out example');
+    expect(excerpt).not.toContain('detect-missed-gate.mjs');
+    expect(excerpt).not.toBe(commented);
+  });
+
+  // What the limit buys, and the other edge of the same rule: text BEFORE the
+  // marker on its line means it is not a marker at all. A blockquoted pair opens
+  // and closes nothing, so the lines it wraps survive — and so, literally, does
+  // the marker text, which is the honest consequence of quoting it that way.
+  it('does not treat a marker with leading text on its line as a marker', async () => {
+    const quoted = inTiers([
+      `> ${SKIP_OPEN}`,
+      '> a marker quoted in a blockquote is text, not structure',
+      `> ${SKIP_CLOSE}`,
+    ]);
+    const excerpt = await excerptAutonomy(quoted);
+    expect(excerpt).toContain(`> ${SKIP_OPEN}`);
+    expect(excerpt).toContain('> a marker quoted in a blockquote is text, not structure');
+    expect(excerpt).toContain(`> ${SKIP_CLOSE}`);
+    // the pair opened no region, so nothing pairs up wrongly either: the file's
+    // own marked region is still removed and this is not the fallback
+    expect(excerpt).not.toContain('detect-missed-gate.mjs');
+    expect(excerpt).not.toBe(quoted);
   });
 
   // Malformed markup is answered with the whole file, every time. Over-

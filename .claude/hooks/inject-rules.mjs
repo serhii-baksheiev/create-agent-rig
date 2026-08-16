@@ -76,8 +76,13 @@ function fenceRun(line) {
  * because a governance section can go missing with nothing to notice it; a run
  * that gets the whole file has only paid twice.
  *
- * The one limit worth stating: a marker is recognised only as the first
- * non-whitespace text on its own line.
+ * The limits, so nobody relies on cover that is not here. A marker is
+ * recognised only as the first non-whitespace text on its own line — so one
+ * inside a blockquote is not a marker, and its text reaches the context. And
+ * fence-awareness is the only structure it knows: a BALANCED marker pair
+ * written inside an indented code block or an HTML comment is obeyed, so a
+ * document that demonstrates the markers loses the lines between them. Show
+ * them inside a fence.
  */
 export function excerptAutonomy(markdown) {
   const lines = markdown.split('\n');
@@ -148,19 +153,33 @@ function main() {
   }
   if (input.hook_event_name !== 'SessionStart') return 0;
 
+  let rules;
   try {
-    const rules = readFileSync(new URL('../rules/autonomy.md', import.meta.url), 'utf8');
-    process.stdout.write(
-      '[agent-os] Autonomy rules refresh — in force regardless of compaction.\n' +
-        'This is `.claude/rules/autonomy.md` with the sections it marks as ' +
-        'reference removed — read the file itself for those: how the Tier-2 ' +
-        'gate is swept from outside, how external work is reconciled, ' +
-        'post-deploy verification, and the escalation format.\n\n' +
-        `${excerptAutonomy(rules)}\n`,
-    );
+    rules = readFileSync(new URL('../rules/autonomy.md', import.meta.url), 'utf8');
   } catch {
     // no rules file — nothing to inject, never an error
+    return 0;
   }
+
+  // The cut is the only thing allowed to fail here, and its failure resolves
+  // the way every other ambiguity in this file does: inject more. Leaving it
+  // inside the read's catch meant a throw in the excerpter printed NOTHING and
+  // exited 0 — the rules gone, and the session looking healthy.
+  let body;
+  try {
+    body = excerptAutonomy(rules);
+  } catch {
+    body = rules;
+  }
+
+  process.stdout.write(
+    '[agent-os] Autonomy rules refresh — in force regardless of compaction.\n' +
+      'This is `.claude/rules/autonomy.md` with the sections it marks as ' +
+      'reference removed — read the file itself for those: how the Tier-2 ' +
+      'gate is swept from outside, how external work is reconciled, ' +
+      'post-deploy verification, and the escalation format.\n\n' +
+      `${body}\n`,
+  );
   return 0;
 }
 
