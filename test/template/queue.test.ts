@@ -129,16 +129,24 @@ const TIMED_CALLS = 9;
  *   real bound is `SAMPLE_BUDGET_MS` plus up to two full calls at this size. For
  *   a defect worse than quadratic those two calls are themselves unbounded, and
  *   `catastropheMs` cannot help — it reads a number the warm call has already
- *   paid for. What actually keeps such a defect legible is `testTimeout` on the
- *   two tests below, which reports a timeout instead of a ratio; that is a worse
- *   message, and it is the honest ceiling of this design.
+ *   paid for. **And nothing else in this process bounds it either** — the
+ *   `timeout` on the two tests below is not a ceiling and must not be read as
+ *   one. Vitest cannot preempt a synchronously blocking body, and these bodies
+ *   are one `await load(…)` followed by an unbroken synchronous stretch, so the
+ *   timer fires only once that stretch has finished: measured, a 3,000 ms busy
+ *   loop under `{ timeout: 300 }` ran the full 3.00 s and *then* reported the
+ *   timeout. The overrun scales with the defect, not with the number. What the
+ *   timeout buys is that an eventual return is reported as a named failure
+ *   rather than a mystery — and it costs the ratio, which is lost the moment the
+ *   deadline decides the message. The real wall-clock ceiling here is the CI
+ *   job's.
  */
 const SAMPLE_BUDGET_MS = 2_000;
 
 /**
  * The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`.
  *
- * Floored at one 1 µs tick: a reading of exactly 0 would make every ratio
+ * Floored at one microsecond — a reading of exactly 0 would make every ratio
  * `Infinity` and print a failure message carrying no measurement at all. Not
  * reachable at today's costs — the smallest measured call is 22 µs — so this is
  * insurance against a future subject cheap enough to disappear into the timer.
@@ -363,7 +371,9 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
   // these sizes fires on a quadratic term ~35× smaller than the retired 250 ms
   // budget caught at 20k on this same shape. What it costs is the tail — a
   // defect that only turns superlinear ABOVE 32k is now invisible here, and the
-  // reproduced link defect measures 16.07× at these sizes, so nothing known
+  // reproduced link defect measures 16.07× at these sizes — a second, separate
+  // run of the same reproduction as the 16.05× above, not a different
+  // measurement — so nothing known
   // lives in that gap.
   it('stays linear on a body as it grows', { timeout: 60_000 }, async () => {
     const { hygieneOf } = await load('core.mjs');
