@@ -705,6 +705,16 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
   // is headed `#### `, so a scan limited to two hashes left half the banner's
   // list unpinned — the sweep section could be re-titled or dropped while the
   // banner went on citing it, and nothing here would have noticed.
+  //
+  // REPAIR (of this same branch's test, not of an established one): `omitted`
+  // is derived from the BODY, never from the whole of stdout. Asking stdout
+  // whether a heading survived asks the banner too, so the day the banner
+  // quotes a heading verbatim with its hashes — the most natural way to make
+  // this test green, and the spelling the hook's own comments already use for
+  // `## Post-deploy verification` — that heading silently leaves `omitted` and
+  // its assertion disappears with nothing turning red. The non-vacuity guard
+  // below does not catch that: it only requires the set to be non-empty, so
+  // blinding it one heading at a time passes.
   it('names, in the banner, every section it left out', async () => {
     const rules = await readFile(autonomyPath, 'utf8');
     const headings = rules.split('\n').filter((line) => /^#{2,}\s+\S/.test(line));
@@ -718,13 +728,15 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     });
     expect(result.code).toBe(0);
 
-    const omitted = headings.filter((heading) => !result.stdout.includes(heading));
+    const bannerText = bannerOf(result.stdout, rules);
+    const body = result.stdout.slice(bannerText.length);
+    const omitted = headings.filter((heading) => !body.includes(heading));
     // Without this the whole test passes vacuously the day the excerpter stops
     // omitting anything at all — which is exactly the regression that would
     // make the banner's claim false in the other direction.
     expect(omitted, 'at least one section must be omitted, or this proves nothing').not.toEqual([]);
 
-    const banner = bannerOf(result.stdout, rules).replace(/\s+/g, ' ').toLowerCase();
+    const banner = bannerText.replace(/\s+/g, ' ').toLowerCase();
     for (const heading of omitted) {
       expect(banner, `banner must name the omitted section: ${heading}`).toContain(
         topicOf(heading),
@@ -844,30 +856,20 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     expect(omitted, 'the omitted procedure must spell the same invocation').toContain(invocation!);
   });
 
-  // The banner is printed unconditionally, but the excerpt is not: on malformed
-  // markup `excerptAutonomy` hands the WHOLE file back. The session then reads a
-  // banner telling it that post-deploy verification and the escalation format
-  // were removed and must be looked up — about text sitting directly underneath
-  // it. A run that believes it is missing rules it actually has is the same
-  // defect as one missing rules it believes it has, pointed the other way.
-  it('does not claim sections were removed when the whole file was injected', async () => {
-    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-fallback-'));
+  /** Run the hook against a rules file of the test's choosing. The hook reads
+   *  `../rules/autonomy.md` relative to its OWN location, so the only way to
+   *  hand it a different rules file is to hand it a different tree — hence the
+   *  planted `.claude/{hooks,rules}` pair rather than an env var. */
+  async function runAgainstPlantedRules(rules: string): Promise<HookResult> {
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-planted-'));
     try {
       await fsp.mkdir(path.join(planted, '.claude', 'hooks'), { recursive: true });
       await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
       const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
       await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.writeFile(path.join(planted, '.claude', 'rules', 'autonomy.md'), rules);
 
-      // Malformed on purpose, in the cheapest way a real edit produces: one
-      // closing marker deleted. Every documented malformed shape lands on the
-      // same fallback, so one is enough to reach it.
-      const rules = await readFile(autonomyPath, 'utf8');
-      const malformed = rules.replace('<!-- /inject:skip -->\n', '');
-      expect(malformed, 'the fixture must actually differ from the file').not.toBe(rules);
-      const rulesPath = path.join(planted, '.claude', 'rules', 'autonomy.md');
-      await fsp.writeFile(rulesPath, malformed);
-
-      const result = await new Promise<HookResult>((resolve, reject) => {
+      return await new Promise<HookResult>((resolve, reject) => {
         const child = execFile(process.execPath, [hookPath], (error, stdout, stderr) => {
           resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr, stdout });
         });
@@ -875,22 +877,79 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
         child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }));
         child.stdin.end();
       });
-      expect(result.code).toBe(0);
-
-      const banner = bannerOf(result.stdout, malformed);
-      const body = result.stdout.slice(banner.length);
-      // the premise: this really is the fallback, not an excerpt
-      expect(body.trim(), 'malformed markup must inject the whole file').toBe(malformed.trim());
-
-      // …so nothing was omitted, and the banner may not say otherwise about a
-      // section the session is holding.
-      const claim = banner.replace(/\s+/g, ' ').toLowerCase();
-      for (const present of ['post-deploy verification', 'escalation format']) {
-        expect(body.toLowerCase(), `precondition: ${present} is in the body`).toContain(present);
-        expect(claim, `banner must not report ${present} as removed`).not.toContain(present);
-      }
     } finally {
       await fsp.rm(planted, { force: true, recursive: true });
+    }
+  }
+
+  // The banner is printed unconditionally, but the excerpt is not: on malformed
+  // markup `excerptAutonomy` hands the WHOLE file back. The session then reads a
+  // banner telling it that post-deploy verification and the escalation format
+  // were removed and must be looked up — about text sitting directly underneath
+  // it. A run that believes it is missing rules it actually has is the same
+  // defect as one missing rules it believes it has, pointed the other way.
+  it('does not claim sections were removed when the whole file was injected', async () => {
+    // Malformed on purpose, in the cheapest way a real edit produces: one
+    // closing marker deleted. Every documented malformed shape lands on the
+    // same fallback, so one is enough to reach it.
+    const rules = await readFile(autonomyPath, 'utf8');
+    const malformed = rules.replace('<!-- /inject:skip -->\n', '');
+    expect(malformed, 'the fixture must actually differ from the file').not.toBe(rules);
+
+    const result = await runAgainstPlantedRules(malformed);
+    expect(result.code).toBe(0);
+
+    const banner = bannerOf(result.stdout, malformed);
+    const body = result.stdout.slice(banner.length);
+    // the premise: this really is the fallback, not an excerpt
+    expect(body.trim(), 'malformed markup must inject the whole file').toBe(malformed.trim());
+
+    // …so nothing was omitted, and the banner may not say otherwise about a
+    // section the session is holding.
+    const claim = banner.replace(/\s+/g, ' ').toLowerCase();
+    for (const present of ['post-deploy verification', 'escalation format']) {
+      expect(body.toLowerCase(), `precondition: ${present} is in the body`).toContain(present);
+      expect(claim, `banner must not report ${present} as removed`).not.toContain(present);
+    }
+  });
+
+  // The same false report, reached by the path a downstream project takes rather
+  // than by a typo. `invariants.md` tells a generated project to re-scope the
+  // rules it inherited, and a project whose autonomy.md marks NOTHING is the
+  // ordinary result: no markers, no omission, the file injected whole. The
+  // banner still announces four withheld sections, every session, for the life
+  // of that project — and this repository would never see it, because the file
+  // it ships happens to carry two balanced pairs.
+  //
+  // The trailing newline is what makes the marker-less file take the wrong
+  // branch, so it is a stated precondition rather than an accident of the
+  // fixture: the excerpter trims, the whole-file predicate compares for
+  // equality, and the two disagree by exactly that byte.
+  it('does not claim sections were removed when the rules file marks nothing', async () => {
+    const rules = await readFile(autonomyPath, 'utf8');
+    const markerless = rules
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('<!-- inject:skip -->'))
+      .filter((line) => !line.trim().startsWith('<!-- /inject:skip -->'))
+      .join('\n');
+    expect(markerless, 'the fixture must mark nothing at all').not.toContain('inject:skip');
+    expect(markerless.endsWith('\n'), 'the fixture must end with a newline, as files do').toBe(
+      true,
+    );
+
+    const result = await runAgainstPlantedRules(markerless);
+    expect(result.code).toBe(0);
+
+    const banner = bannerOf(result.stdout, markerless);
+    const body = result.stdout.slice(banner.length);
+    // the premise: with nothing marked, every line of the file is injected
+    expect(body.trim(), 'a file marking nothing must be injected whole').toBe(markerless.trim());
+
+    // …so the banner may not name a topic the session is holding in full.
+    const claim = banner.replace(/\s+/g, ' ').toLowerCase();
+    for (const present of ['post-deploy verification', 'escalation format']) {
+      expect(body.toLowerCase(), `precondition: ${present} is in the body`).toContain(present);
+      expect(claim, `banner must not report ${present} as removed`).not.toContain(present);
     }
   });
 });

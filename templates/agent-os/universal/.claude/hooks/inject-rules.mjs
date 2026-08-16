@@ -181,8 +181,12 @@ function main() {
   // on the fallback path nothing was removed, and telling a session to go read
   // four sections it is already holding is the same kind of false report the
   // cut itself is built to avoid.
+  // Compared trimmed, because the two paths differ by a trailing newline that
+  // is not a removal: the excerpt is trimmed and the fallback is not. A rules
+  // file that marks nothing would otherwise be announced as an excerpt — which
+  // is the case a project re-scoping its own rulebook lands in, every session.
   const notice =
-    body === rules
+    body.trim() === rules.trim()
       ? 'This is `.claude/rules/autonomy.md` in full.\n\n'
       : 'This is `.claude/rules/autonomy.md` with the sections it marks as ' +
         'reference removed — read the file itself for those: how the Tier-2 ' +
