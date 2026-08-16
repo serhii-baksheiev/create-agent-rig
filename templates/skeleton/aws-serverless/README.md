@@ -95,5 +95,18 @@ previous revision (or `git revert` and redeploy) **first**, diagnose second.
 - `packages/db` is the only module that touches the storage SDK.
 - A failing queue message is poison: it throws, SQS retries ×3, the DLQ alarm
   fires. Never wrap the worker in a broad catch.
+- **Creating a note is a dual write, and it is not atomic.** `create-note`
+  puts to DynamoDB and then publishes to SQS. If the publish fails, the note
+  is stored and its event never happened — the worker never runs, and nothing
+  compensates; the caller gets a 500 for a note that exists. That is a
+  deliberate simplification for a starter. When it starts to matter, the two
+  ways out are an **outbox** (write the event alongside the note, relay it
+  afterwards) or DynamoDB Streams feeding the worker, which deletes the second
+  write instead of coordinating it.
+- **CORS names who may call the API** — `AppStack` defaults to
+  `http://localhost:3000` and takes `allowedOrigins` (or
+  `-c allowedOrigins=https://…`). Your CloudFront domain is a `WebStack`
+  output; pass it once the web stack exists. `*` is not shipped here on
+  purpose.
 
 See `.claude/rules/architecture.md` for the full rules.

@@ -1,4 +1,8 @@
-import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+  Context,
+} from 'aws-lambda';
 import { AppError, createLogger } from '@app/shared';
 import { describe, expect, it } from 'vitest';
 import { makeCreateNoteHandler } from '../src/handlers/create-note.js';
@@ -6,6 +10,9 @@ import type { CreateNoteDeps } from '../src/usecases/create-note.js';
 
 const event = (body: string): APIGatewayProxyEventV2 =>
   ({ body, isBase64Encoded: false }) as APIGatewayProxyEventV2;
+
+/** Lambda always passes a context; the handler only ever needs the request id. */
+const lambdaContext = (awsRequestId: string): Context => ({ awsRequestId }) as Context;
 
 function stubDeps(overrides: Partial<CreateNoteDeps> = {}) {
   const deps: CreateNoteDeps = {
@@ -88,5 +95,64 @@ describe('POST /notes handler', () => {
     expect(result.statusCode).toBe(500);
     expect(result.body).not.toContain('secret detail');
     expect(logs.join('\n')).toContain('secret detail');
+  });
+
+  // AppError defaults to statusCode 500 / code INTERNAL, so "typed" does not
+  // mean "safe to show": a table name, a host, an SDK message all arrive this
+  // way. Only a 4xx AppError is a message the caller was meant to read.
+  it('hides a typed error that carries the default status behind the same constant 500', async () => {
+    const handler = makeCreateNoteHandler(
+      stubDeps({
+        notes: {
+          put: () => Promise.reject(new AppError('table NotesTable-prod is not authorised')),
+        },
+      }),
+    );
+    const result = asResult(await handler(event(JSON.stringify({ title: 'T' }))));
+    expect(result.statusCode).toBe(500);
+    expect(result.body).not.toContain('NotesTable-prod');
+    expect(JSON.parse(result.body!)).toEqual({ error: 'internal error' });
+  });
+
+  it('logs the typed internal error it hid, so the detail is kept and not lost', async () => {
+    const logs: string[] = [];
+    const handler = makeCreateNoteHandler(
+      stubDeps({
+        notes: {
+          put: () => Promise.reject(new AppError('table NotesTable-prod is not authorised')),
+        },
+        log: createLogger({}, (line) => logs.push(line)),
+      }),
+    );
+    await handler(event(JSON.stringify({ title: 'T' })));
+    expect(logs.join('\n')).toContain('NotesTable-prod');
+  });
+
+  it('logs the failure with its stack, not only its message', async () => {
+    const logs: string[] = [];
+    const boom = new Error('secret detail');
+    const handler = makeCreateNoteHandler(
+      stubDeps({
+        notes: { put: () => Promise.reject(boom) },
+        log: createLogger({}, (line) => logs.push(line)),
+      }),
+    );
+    await handler(event(JSON.stringify({ title: 'T' })));
+    // `String(error)` is "Error: secret detail" — a message with no frames is
+    // not something anyone can debug from CloudWatch.
+    expect(JSON.parse(logs[0]!)).toMatchObject({ stack: boom.stack });
+  });
+
+  it('carries the Lambda request id into the line it logs', async () => {
+    const logs: string[] = [];
+    const handler = makeCreateNoteHandler(
+      stubDeps({
+        notes: { put: () => Promise.reject(new Error('secret detail')) },
+        log: createLogger({}, (line) => logs.push(line)),
+      }),
+    );
+    // Without it a log line cannot be tied to the invocation that produced it.
+    await handler(event(JSON.stringify({ title: 'T' })), lambdaContext('req-42'));
+    expect(JSON.parse(logs[0]!)).toMatchObject({ awsRequestId: 'req-42' });
   });
 });

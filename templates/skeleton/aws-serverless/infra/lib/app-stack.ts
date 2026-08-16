@@ -14,9 +14,32 @@ import type { Construct } from 'constructs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(here, '..', '..');
 
+export interface AppStackProps extends StackProps {
+  /**
+   * Browser origins allowed to call the API. The web bundle is served from
+   * CloudFront, whose domain only exists after `WebStack` deploys — so this is
+   * yours to pass (or `-c allowedOrigins=https://…`, comma-separated) rather
+   * than something the stack can discover.
+   */
+  allowedOrigins?: string[];
+}
+
+/** Local dev only: a real origin is a deliberate act, not a default. */
+const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000'];
+
 export class AppStack extends Stack {
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props?: AppStackProps) {
     super(scope, id, props);
+
+    const contextOrigins = this.node.tryGetContext('allowedOrigins') as string | undefined;
+    const allowedOrigins =
+      props?.allowedOrigins ??
+      (contextOrigins
+        ? contextOrigins
+            .split(',')
+            .map((origin) => origin.trim())
+            .filter(Boolean)
+        : DEFAULT_ALLOWED_ORIGINS);
 
     // --- storage: one single-table DynamoDB table --------------------------
     const table = new Table(this, 'NotesTable', {
@@ -91,10 +114,13 @@ export class AppStack extends Stack {
     table.grantReadData(listFunction); // the lister only reads
 
     // --- the HTTP routes ---------------------------------------------------
-    // CORS: the web bundle is served from another origin (CloudFront).
+    // CORS: the web bundle is served from another origin (CloudFront), so the
+    // API has to name who may call it. `*` is not that name — a starter
+    // multiplies whatever it ships, and a wildcard here becomes the default of
+    // every project generated from it.
     const httpApi = new HttpApi(this, 'NotesApi', {
       corsPreflight: {
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         allowMethods: [CorsHttpMethod.GET, CorsHttpMethod.POST],
         allowHeaders: ['content-type'],
       },

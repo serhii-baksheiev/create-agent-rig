@@ -53,5 +53,25 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || '__REGION__' }}
 
+      # `--require-approval never` is deliberate and dev-only: this workflow has
+      # no production path at all (see the header), so the approval prompt would
+      # only ever block an unattended dev deploy on a change nobody is watching.
       - if: steps.guard.outputs.skip != 'true'
-        run: pnpm --filter @app/infra exec cdk deploy AppStack WebStack --require-approval never
+        run: >
+          pnpm --filter @app/infra exec cdk deploy AppStack WebStack
+          --require-approval never --outputs-file cdk-outputs.json
+
+      # The bundle is built above and the bucket is created by the deploy — but
+      # nothing puts one into the other, so without this step CloudFront keeps
+      # serving whatever was uploaded by hand, last time somebody remembered.
+      # `web-stack.ts` deliberately does not use BucketDeployment (synth must
+      # never depend on `next build` having run), which is why the upload lives
+      # here rather than in the stack.
+      - if: steps.guard.outputs.skip != 'true'
+        name: Upload the web bundle and invalidate the edge cache
+        run: |
+          BUCKET=$(jq -r '.WebStack.WebBucketName' infra/cdk-outputs.json)
+          DISTRIBUTION=$(jq -r '.WebStack.WebDistributionId' infra/cdk-outputs.json)
+          aws s3 sync apps/web/out "s3://$BUCKET" --delete
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION" --paths '/*'

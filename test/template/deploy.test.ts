@@ -45,6 +45,40 @@ describe('aws-serverless deploy workflow', () => {
     expect(yaml).toMatch(/secrets\.AWS_DEPLOY_ROLE_ARN/);
   });
 
+  // A deploy that builds a bundle and never ships it is worse than no deploy:
+  // CloudFront keeps serving the previous one, and the green run says it went
+  // fine. WebStack deliberately has no BucketDeployment (synth must not depend
+  // on `next build` having run), so delivery is the workflow's job.
+  it('uploads the built web bundle and invalidates the edge cache', async () => {
+    yaml = await readFile(wf('aws-serverless', 'deploy.yml'), 'utf8');
+    expect(yaml).toMatch(/aws s3 sync/);
+    expect(yaml).toMatch(/apps\/web\/out/);
+    expect(yaml).toMatch(/create-invalidation/);
+  });
+
+  it('uploads the bundle after building it, never before', async () => {
+    yaml = await readFile(wf('aws-serverless', 'deploy.yml'), 'utf8');
+    // steps run top to bottom, so file order is execution order
+    expect(yaml.indexOf('build:web')).toBeLessThan(yaml.indexOf('aws s3 sync'));
+  });
+
+  it('reads the destination from the stack outputs, never a baked-in bucket name', async () => {
+    yaml = await readFile(wf('aws-serverless', 'deploy.yml'), 'utf8');
+    expect(yaml).toMatch(/WebBucketName/);
+    expect(yaml).toMatch(/outputs-file|describe-stacks/);
+  });
+
+  it('gates the upload on the same credentials guard as every other step', async () => {
+    yaml = await readFile(wf('aws-serverless', 'deploy.yml'), 'utf8');
+    const steps = yaml.split(/\n\s*- (?=if:|id:|uses:|run:|name:)/);
+    const upload = steps.filter((step) => /aws s3 sync|create-invalidation/.test(step));
+    expect(upload.length).toBeGreaterThan(0);
+    for (const step of upload) {
+      // an ungated step turns "skips cleanly with no credentials" into a red X
+      expect(step, step.split('\n')[0]).toMatch(/steps\.\w+\.outputs\.skip/);
+    }
+  });
+
   it('has no production path (dev only — the Never tier forbids agent prod deploys)', async () => {
     yaml = await readFile(wf('aws-serverless', 'deploy.yml'), 'utf8');
     expect(yaml.toLowerCase()).not.toMatch(/environment:\s*production/);

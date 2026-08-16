@@ -80,6 +80,20 @@ describe('functions and routes', () => {
       }),
     });
   });
+
+  it('never allows every origin: the api names who may call it', () => {
+    const apis = template.findResources('AWS::ApiGatewayV2::Api');
+    const origins = Object.values(apis).flatMap(
+      (api) =>
+        (api.Properties as { CorsConfiguration?: { AllowOrigins?: unknown[] } }).CorsConfiguration
+          ?.AllowOrigins ?? [],
+    );
+
+    // A starter multiplies whatever it ships: `*` here becomes the default of
+    // every project generated from it. The web bundle has a known origin.
+    expect(origins.length).toBeGreaterThan(0);
+    expect(origins).not.toContain('*');
+  });
 });
 
 describe('least-privilege IAM', () => {

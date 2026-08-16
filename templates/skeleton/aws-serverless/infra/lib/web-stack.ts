@@ -28,5 +28,8 @@ export class WebStack extends Stack {
 
     new CfnOutput(this, 'WebBucketName', { value: bucket.bucketName });
     new CfnOutput(this, 'WebUrl', { value: `https://${distribution.domainName}` });
+    // The upload step needs this to invalidate the edge cache: a synced bucket
+    // whose distribution still serves the old objects has not deployed.
+    new CfnOutput(this, 'WebDistributionId', { value: distribution.distributionId });
   }
 }
