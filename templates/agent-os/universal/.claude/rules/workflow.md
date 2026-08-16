@@ -65,7 +65,9 @@ travels one path to merge, in this order:
    so it never reaches the prose lane; `.md`/`.mdx` files and test paths that
    provision nothing are inert, so a README inside an elevated directory does
    not escalate on that ground alone. That carve-out is those two extensions
-   and test paths exactly — not the router's wider notion of prose. The router **refuses** rather than routing when it cannot
+   and test paths exactly — not the router's own notion of prose, which is
+   `.md`/`.txt`; neither set contains the other, and both differences are
+   deliberate. The router **refuses** rather than routing when it cannot
    decide, and a refusal is read as `model`, never as a reason to skip the gate.
 
    🔴 **The cheap lanes give something up, and the rule says what.** Dropping

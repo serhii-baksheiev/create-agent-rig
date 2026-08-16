@@ -48,10 +48,12 @@ blockers.
    inherited from the gate sweep rather than invented here: `.md`/`.mdx` files
    and test paths that provision nothing are **inert**, so `infra/README.md`
    does not escalate while `infra/stack.ts` does. Note the mechanism is those
-   two extensions and test paths — **not** "prose", which this router defines
-   more widely (it includes `.txt`). Aligning the two would take
-   `requirements.txt` in an elevated directory out of escalation. A rulebook
-   file is never inert.
+   two extensions and test paths — **not** this router's own notion of prose,
+   which is `.md`/`.txt`. Neither set contains the other, and both differences
+   are deliberate: aligning the sweep to the router takes `requirements.txt` in
+   an elevated directory out of escalation, and aligning the router to the
+   sweep puts executable `.mdx` back on the prose lane. A rulebook file is
+   never inert.
 
    🔴 **The lane is on stdout; the exit code says only that the router ran.**
    Never chain it on `&&`, and never read `0` as "cheap" — that misreading turns

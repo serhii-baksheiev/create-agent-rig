@@ -1064,13 +1064,51 @@ describe('the cheap lanes cannot be unlocked by choosing a filename', () => {
     }
   });
 
-  it('leaves the documentation directory names out of the test set', async () => {
-    const { classifyFile } = await load();
-    // A router that escalates everything routes nothing: `features/` and
-    // `integration/` are test conventions AND ordinary doc directories.
-    for (const file of ['docs/features/login.md', 'docs/integration/stripe.md']) {
+  it('resolves the ambiguous test directories by extension, not by picking a side', async () => {
+    const { classifyFile, riskFlagsIn } = await load();
+    // 🔴 Both sides were picked in this branch and both were wrong. As test
+    // roots, `docs/features/login.md` became code and narrowed the lane this
+    // module exists to open. Removed, `integration/fixtures/expected.txt`
+    // (deleted) went back to the prose lane and `integration/schema.generated.ts`
+    // into the lane that launches nobody. The extension decides.
+    for (const file of ['docs/features/guide.md', 'docs/integration/stripe.md']) {
       expect(classifyFile(file), file).toBe('prose');
     }
+    for (const file of [
+      'integration/fixtures/expected.txt',
+      'integration/schema.generated.ts',
+      'features/checkout.feature',
+    ]) {
+      expect(classifyFile(file), file).toBe('code');
+    }
+    // and a deleted fixture under one still raises the flag
+    expect(
+      riskFlagsIn([{ path: 'integration/fixtures/expected.txt', status: 'removed' }], {
+        elevatedPaths: [],
+      }).map((f) => f.flag),
+    ).toEqual(['test-removed']);
+  });
+
+  it("folds case in the router's own elevated-prefix test, which can only escalate", async () => {
+    const { route } = await load();
+    // 🔴 `elevatedPathsIn` preserves case on purpose, so a repo that spells a
+    // directory differently from its declaration — no rename needed — put a
+    // derived file into `deterministic` with ZERO reviewers. This test is the
+    // opposite direction from the sweep's: folding here only ever moves a file
+    // OUT of a cheap lane.
+    for (const file of ['Scripts/y.generated.ts', 'Scripts/dist/app.js']) {
+      expect(
+        route({ files: [{ path: file, status: 'modified' }], elevatedPaths: ['scripts/'] }).lane,
+        file,
+      ).toBe('model');
+    }
+    // and an unrelated directory still reaches the cheap lane
+    expect(
+      route({
+        files: [{ path: 'build/dist/app.js', status: 'modified' }],
+        elevatedPaths: ['scripts/'],
+      }).lane,
+    ).toBe('deterministic');
   });
 
   it('does not let a type change buy the trusted status', async () => {
@@ -1182,6 +1220,39 @@ describe('the CLI runs when it is reached through a symlink', () => {
 
   it('compares realpaths, the same way every sibling CLI in this directory does', async () => {
     expect(await source()).toMatch(/realpathSync/);
+  });
+});
+
+describe('the CLI refuses an argument it does not understand', () => {
+  it('names the first offender and routes nothing', async () => {
+    const dir = await temp('router-flag-');
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+    const result = await runCli(['--file', 'README.md', '--json'], dir, env);
+    // 🔴 An unrecognised flag was silently ignored, so `--file README.md` routed
+    // the WHOLE branch diff at exit 0 — a different change than the caller asked
+    // about, reported as if it were theirs.
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/--file/);
+  });
+
+  it('is not defeated by an empty argv token', async () => {
+    const dir = await temp('router-flag-');
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+    // 🔴 The guard stored the first offender and the caller tested it for
+    // TRUTHINESS. An empty token — one unset variable in a wrapper script — is
+    // a valid unrecognised token, is falsy, and took the slot: the refusal
+    // stopped firing and the whole branch diff routed at exit 0 again.
+    const result = await runCli(['', '--file', 'README.md', '--json'], dir, env);
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stdout).toBe('');
+    // 🔴 Asserted on the REFUSAL, not on the exit code: this runs in a temp
+    // directory with no git repository, so `gitFiles` fails and exits 1 anyway.
+    // The first version of this test asserted the code alone and passed under
+    // the very mutation it was written to catch.
+    expect(result.stderr, 'the router fell through to the git path').toMatch(/not a flag/);
   });
 });
 

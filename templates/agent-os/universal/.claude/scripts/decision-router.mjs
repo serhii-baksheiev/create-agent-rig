@@ -29,10 +29,14 @@
  * halves are the SWEEP's definitions and neither matches this file's: its inert
  * test paths are `test|tests|__tests__` directories and `.test.`/`.spec.`
  * JS-flavoured names, while `isTestPath` here is wider; and its inert
- * extensions are `.md`/`.mdx` while `PROSE_EXTENSIONS` here also covers `.txt`.
- * Aligning either would loosen the sweep — `requirements.txt` and a Go test in
- * an elevated directory would stop escalating — so they stay apart on purpose,
- * and the difference is written here rather than discovered. A rulebook file
+ * extensions are `.md`/`.mdx` while `PROSE_EXTENSIONS` here is `.md`/`.txt` —
+ * **neither set contains the other**, and the difference on `.mdx` is
+ * deliberate (MDX executes, see `PROSE_EXTENSIONS`). Aligning either way would
+ * do harm: widening the sweep stops `requirements.txt` in an elevated directory
+ * from escalating, and copying the sweep's `.mdx` back into this file's prose
+ * set reinstates a defect a 🔴 below spends a paragraph closing. They stay
+ * apart on purpose, and the difference is written here rather than discovered.
+ * A rulebook file
  * is not inert wherever it sits. That is the sweep's definition and this file
  * delegates to it on purpose — two answers to "is this path elevated" would
  * disagree. **Neither cheap lane relies on that carve-out for a derived file:**
@@ -85,14 +89,17 @@
  *    printed, read it; if stdout is empty, treat the change as `model`.**
  *    ⚠ And the diff it reads is the **committed** one, `<base>...<head>`: an
  *    uncommitted edit is not routed, so commit before routing.
- * 5. **The case fold is basename-only, and the residual is real.** A rulebook
- *    file is recognised whatever the case of its NAME, but the elevated-prefix
- *    match is case-sensitive on purpose (`normalizePath` explains why), so a
- *    renamed elevated DIRECTORY — `Scripts/notes.txt` against a declared
- *    `scripts/` — stops escalating. The rename itself is caught, because a
- *    rename records its source; a `.md` under such a directory is inert in both
- *    renderings, and code still classifies as code, so what actually moves is a
- *    `.txt`. Narrow, but it is a residual rather than a closed case.
+ * 5. **Case folding is deliberately asymmetric, and the residual is named.**
+ *    A rulebook file is recognised whatever the case of its name, and the
+ *    router's own cheap-lane prefix test folds case too — both directions that
+ *    can only ESCALATE. The gate sweep's `elevatedPathsIn` does not fold, on
+ *    purpose (`normalizePath` explains why), so what remains is the
+ *    `elevated-path` **flag**: against a declared `scripts/`, a file under
+ *    `Scripts/` does not raise it. That costs the flag and its trace line; it
+ *    no longer costs the lane, because the cheap lanes stopped relying on the
+ *    sweep's answer. This limit was written the other way round for one round —
+ *    it claimed the residual was a stray `.txt`, while a derived file under the
+ *    mismatched directory was reaching the lane with no reviewer at all.
  * 6. **`reviewers` is a floor, not a ceiling** — and this was measured on the
  *    router's own first run, not predicted. It returned `code-reviewer` and
  *    `prose-reviewer` for a diff that parses untrusted argv and git output,
@@ -534,11 +541,27 @@ const TEST_DIRECTORIES = new Set([
   'e2e',
   'cypress',
 ]);
-// ⚠ `integration/` and `features/` are deliberately NOT here. They are test
-// conventions AND ordinary documentation directory names, and `docs/features/
-// login.md` classifying as code narrows the very lane this module exists to
-// open — "a router that escalates everything routes nothing". A test inside one
-// is still caught by the stem rules below (`x_test.go`, `login.spec.rb`).
+
+/**
+ * Directory names that are a test root in one ecosystem and a documentation
+ * directory in another — resolved by the EXTENSION rather than by picking a
+ * side, because picking a side oscillates.
+ *
+ * 🔴 Both choices were made in this branch and both were wrong. Treating them
+ * as test roots made `docs/features/login.md` code, narrowing the very lane
+ * this module exists to open. Removing them put `integration/fixtures/
+ * expected.txt` (deleted) back on the prose lane and
+ * `integration/schema.generated.ts` into the lane that launches nobody — giving
+ * back, for two directory names, exactly the coverage the fixture fix had won.
+ *
+ * A `.md`/`.mdx` file under one of these is documentation; anything else is a
+ * test artifact. Those two extensions and no more, deliberately: `.txt` under
+ * `integration/` is a golden file far more often than it is prose, and it was
+ * the `.txt` fixture that broke. The pair matches the gate sweep's own inert
+ * extensions, which is the one other place this distinction is drawn.
+ */
+const AMBIGUOUS_TEST_DIRECTORIES = new Set(['integration', 'features']);
+const DOC_ONLY_EXTENSIONS = new Set(['md', 'mdx']);
 
 const isTestPath = (path) => {
   const segments = segmentsOf(path);
@@ -550,6 +573,7 @@ const isTestPath = (path) => {
   // reviewer. `test_x.py`, `x_test.go` and `x_spec.rb` are tests too.
   const dot = basename.lastIndexOf('.');
   const stem = dot > 0 ? basename.slice(0, dot) : basename;
+  const extension = dot > 0 ? basename.slice(dot + 1).toLowerCase() : '';
   const words = wordsOf(stem);
   // Any word, not just the first or last: `critical_spec.generated.rb` puts it
   // in the middle, and that exact name reached the no-reviewer lane when the
@@ -566,7 +590,9 @@ const isTestPath = (path) => {
     // `Spec/` are the ordinary conventions in .NET, Java and Swift, and on a
     // case-insensitive checkout `git mv test Test` also survives — unlike the
     // rulebook rename, silently, because test runners glob.
-    if (TEST_DIRECTORIES.has(segments[i].toLowerCase())) return true;
+    const segment = segments[i].toLowerCase();
+    if (TEST_DIRECTORIES.has(segment)) return true;
+    if (AMBIGUOUS_TEST_DIRECTORIES.has(segment) && !DOC_ONLY_EXTENSIONS.has(extension)) return true;
   }
   return false;
 };
@@ -712,9 +738,18 @@ export const route = ({ files, elevatedPaths } = {}) => {
   // derived one put `packages/db/src/test/x.generated.ts` — a declared elevated
   // path — into `deterministic` with zero reviewers. Each half is documented;
   // the composition was not, and it contradicted this file's own headline.
-  const prefixes = elevatedPaths.map(normalizePath);
+  //
+  // 🔴 Folded to lower case, and ONLY here. `normalizePath` preserves case on
+  // purpose — folding it would create false positives in the gate sweep's
+  // escalation decision. This test is the opposite direction: it can only move
+  // a file OUT of a cheap lane, so folding costs a few extra reviews and closes
+  // a real hole. Measured: with a declared `scripts/`, a case-mismatched
+  // `Scripts/y.generated.ts` reported `M` reached `deterministic` with ZERO
+  // reviewers — and no rename is needed, a repo that simply spells the
+  // directory differently from its declaration has it from day one.
+  const prefixes = elevatedPaths.map((prefix) => normalizePath(prefix).toLowerCase());
   const underDeclaredPath = (path) => {
-    const normalized = normalizePath(path);
+    const normalized = normalizePath(path).toLowerCase();
     return prefixes.some((prefix) => normalized.startsWith(prefix));
   };
 
@@ -800,6 +835,8 @@ export const route = ({ files, elevatedPaths } = {}) => {
   if (derivedUnderDeclaredPath > 0) {
     reasons.push('a derived artifact under a path this project declares elevated');
   }
+  // Strictly greater, so a single file tripping BOTH is reported once by its
+  // sharper reason rather than twice. A diff carrying one of each names both.
   if (derivedUntrusted > derivedUnderDeclaredPath) {
     reasons.push('a derived artifact with no status saying it was drift');
   }
@@ -1032,11 +1069,12 @@ const invokedDirectly = () => {
 
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
-  if (args.bad) {
+  if (args.bad !== null) {
     process.stderr.write(
-      `decision-router: ${args.bad} is not a flag this router understands, or was given a ` +
-        'value starting with "-" that git would read as an option rather than a revision. ' +
-        'Nothing was routed — treat this as the expensive lane.\n',
+      `decision-router: ${args.bad === '' ? '""' : args.bad} is not a flag this router ` +
+        'understands, or was given a value starting with "-" that git would read as an ' +
+        'option rather than a revision. Nothing was routed — treat this as the expensive ' +
+        'lane.\n',
     );
     process.exit(1);
   }
