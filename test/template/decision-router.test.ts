@@ -178,12 +178,20 @@ describe('classifyFile — what kind of file this is', () => {
       'packages/cli/dist/index.js',
       'dist/bundle.js',
       'packages/core/src/schema.generated.ts',
-      'test/__snapshots__/render.test.ts.snap',
     ]) {
       // Its drift is already caught by a check that costs nothing, so paying a
       // model for it buys no information.
       expect(classifyFile(file), file).toBe('derived');
     }
+  });
+
+  it('does NOT call a test snapshot derived — a snapshot is the behaviour claim', async () => {
+    const { classifyFile } = await load();
+    // 🔴 It was `derived` for one review round, which put a snapshot rewrite on
+    // the lane that launches no reviewer. A snapshot is not generator output
+    // whose drift a check catches: it is rewritten by the test run that then
+    // passes by construction, so routing it cheaply is weakening a test.
+    expect(classifyFile('test/__snapshots__/render.test.ts.snap')).toBe('code');
   });
 
   it('calls ordinary documentation prose', async () => {
@@ -373,7 +381,13 @@ describe('route — the ladder in ascending order of cost', () => {
   it('routes a change that only touches derived artifacts to the deterministic lane', async () => {
     const { route } = await load();
     const result = route({
-      files: ['.rig-manifest.json', 'packages/cli/dist/index.js'],
+      // The lane that launches NO reviewer needs git to say the file was drift.
+      // A status-less entry has not been measured, and unmeasured is not
+      // `modified` — see the status test below.
+      files: [
+        { path: '.rig-manifest.json', status: 'modified' },
+        { path: 'packages/cli/dist/index.js', status: 'modified' },
+      ],
       elevatedPaths: ELEVATED,
     });
     expect(result.lane).toBe('deterministic');
@@ -765,16 +779,21 @@ describe('the cheap lanes cannot be unlocked by choosing a filename', () => {
         elevatedPaths: ELEVATED,
       }).lane,
     ).toBe('model');
-    expect(
-      route({ files: [{ path: 'dist/bundle.js', status: 'added' }], elevatedPaths: ELEVATED }).lane,
-    ).toBe('model');
+    for (const status of ['added', 'copied', 'renamed']) {
+      expect(
+        route({ files: [{ path: 'dist/bundle.js', status }], elevatedPaths: ELEVATED }).lane,
+        status,
+      ).toBe('model');
+    }
+    // and a status-less entry is unmeasured, which is not the same as `modified`
+    expect(route({ files: ['dist/bundle.js'], elevatedPaths: ELEVATED }).lane).toBe('model');
     // a MODIFIED one still reaches it — the cheap lane is narrowed, not deleted
-    expect(
-      route({
-        files: [{ path: 'dist/bundle.js', status: 'modified' }],
-        elevatedPaths: ELEVATED,
-      }).lane,
-    ).toBe('deterministic');
+    for (const status of ['modified', 'removed']) {
+      expect(
+        route({ files: [{ path: 'dist/bundle.js', status }], elevatedPaths: ELEVATED }).lane,
+        status,
+      ).toBe('deterministic');
+    }
   });
 
   it('treats a dependency manifest from any ecosystem as a security surface', async () => {
@@ -782,6 +801,56 @@ describe('the cheap lanes cannot be unlocked by choosing a filename', () => {
     // `init` installs this layer into a repo whose shape is unknown, and `.txt`
     // is otherwise prose — so this one is downgraded rather than merely missed.
     for (const file of ['requirements.txt', 'constraints.txt']) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+  });
+
+  it('catches the dependency-manifest names an exact set cannot hold', async () => {
+    const { riskFlagsIn } = await load();
+    // Same defect class as `requirements.txt`, one round later: `.txt` is the
+    // only prose extension a manifest uses, so a miss here does not merely fail
+    // to escalate — it downgrades a supply-chain edit to the prose lane.
+    for (const file of [
+      'requirements-dev.txt',
+      'dev-requirements.txt',
+      'requirements/base.txt',
+      'deploy/requirements/prod.txt',
+    ]) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+    // and an ordinary `.txt` is still prose
+    expect(riskFlagsIn(['docs/notes.txt'], { elevatedPaths: [] })).toEqual([]);
+  });
+
+  it('treats a file that IS a credential as a security surface', async () => {
+    const { riskFlagsIn } = await load();
+    for (const file of [
+      '.env',
+      '.env.production',
+      'certs/server.pem',
+      'certs/tls.key',
+      '.npmrc',
+      '.netrc',
+      'infra/id_rsa',
+    ]) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+  });
+
+  it('splits an all-caps acronym as well as an ordinary camel hump', async () => {
+    const { riskFlagsIn } = await load();
+    // `([a-z0-9])([A-Z])` alone needs a lowercase char first, so `JWTVerify`
+    // produced no word at all while `authService` did.
+    for (const file of ['src/AUTHService.ts', 'src/JWTVerify.ts', 'src/OAuthClient.ts']) {
       expect(
         riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
         file,
@@ -847,6 +916,23 @@ describe('the CLI runs when it is reached through a symlink', () => {
   });
 });
 
+describe('a revision the router will not hand to git', () => {
+  it('refuses a base or head that git would read as an option', async () => {
+    const dir = await temp('router-rev-');
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+    for (const flag of ['--base', '--head']) {
+      // `${base}...${head}` is one argv element with no `--` ahead of it, so a
+      // leading `-` is parsed by git as an option: `--base --output=/tmp/x`
+      // really does make git write a file.
+      const result = await runCli([flag, '--output=/tmp/router-should-not-exist'], dir, env);
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/revision/i);
+    }
+  });
+});
+
 describe('a project that declares no elevated path is refused, never routed', () => {
   it('exits non-zero with a diagnosis rather than reporting the flag as clear', async () => {
     // 🔴 The trace said `risk-flags clear — no risk flag fired` for a project
@@ -905,27 +991,30 @@ describe('the gate skill and the rules point at the router', () => {
 
   it('pr-ship still runs code-reviewer whenever the lane is model', async () => {
     const text = await skill();
-    // 🔴 This replaces a version that split on paragraphs and asked whether ANY
-    // block mentioned both words — which the change's own meta-commentary
-    // satisfied. A reviewer deleted both real instructions and it still passed.
-    // Both instructions are now asserted separately, each anchored to the thing
-    // that carries it, so deleting either one is red.
+    // 🔴 Twice now this test has been weaker than its own comment. Round 1 split
+    // on paragraphs and asked whether ANY block mentioned both words, which the
+    // change's own commentary satisfied. Round 2 anchored on the first
+    // ``model``-prefixed fragment — which fell through to the launch bullet, so
+    // deleting the lane-table entry stayed green while the comment claimed
+    // otherwise. Each assertion is now anchored to a DISTINCT bullet, and the
+    // count is asserted, so a fall-through cannot satisfy both.
     const flat = text.replace(/[ \t]*\n[ \t]*/g, ' ');
+    const bullets = flat.split(/\s-\s/);
 
-    // (a) the lane list entry: the `model` bullet names the reviewer it costs
-    const laneBullet = flat.split(/\s-\s/).find((part) => part.trimStart().startsWith('`model`'));
-    expect(laneBullet, 'the skill lists no `model` lane').toBeTruthy();
-    expect(laneBullet, 'the `model` lane entry does not name code-reviewer').toMatch(
+    // (a) the lane-table entry: `— everything else` is the em-dash description
+    // form the table uses, and the launch bullet uses `→` instead.
+    const laneEntry = bullets.filter((part) => /^`model`\s*—/.test(part.trimStart()));
+    expect(laneEntry, 'the skill lists no `model` lane entry').toHaveLength(1);
+    expect(laneEntry[0], 'the `model` lane entry does not name code-reviewer').toMatch(
       /code-reviewer/,
     );
-    expect(laneBullet).toMatch(/always/i);
+    expect(laneEntry[0]).toMatch(/always/i);
 
-    // (b) the launch instruction: the fan-out step ties the lane to the agent
-    const launch = flat
-      .split(/\s-\s/)
-      .find((part) => /`model`\s*(→|->)/.test(part) && /launch/i.test(part));
-    expect(launch, 'no launch instruction names the `model` lane').toBeTruthy();
-    expect(launch).toMatch(/code-reviewer/);
+    // (b) the launch instruction, a different bullet using the arrow form
+    const launch = bullets.filter((part) => /^`model`\s*(→|->)/.test(part.trimStart()));
+    expect(launch, 'no launch instruction names the `model` lane').toHaveLength(1);
+    expect(launch[0]).toMatch(/code-reviewer/);
+    expect(launch[0]).toMatch(/launch/i);
   });
 
   it('pr-ship keeps the conditional triggers lane-independent', async () => {

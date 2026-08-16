@@ -18,9 +18,16 @@
  * is made in the safe one.** Routing an expensive change into a cheap lane loses
  * the review — silently, and exactly on the diff that needed it. Routing a cheap
  * change into the expensive lane costs tokens. So: an unclassifiable path, a
- * rulebook document, a dependency manifest, anything under a declared elevated
+ * rulebook document, a dependency manifest, a file under a declared elevated
  * path, and an absent file list all resolve to the **expensive** answer. The
  * cheap lanes are narrow on purpose and are meant to stay that way.
+ *
+ * ⚠ Read "under a declared elevated path" exactly, because it has one carve-out
+ * and the carve-out is inherited rather than chosen here: `elevatedPathsIn`
+ * treats prose and tests that provision nothing as **inert**, so `infra/README.md`
+ * does not escalate while `infra/stack.ts` does. A rulebook file is not inert
+ * wherever it sits. That is the sweep's definition and this file delegates to it
+ * on purpose — two answers to "is this path elevated" would disagree.
  *
  * 🔴 **The lane is a value on stdout; the exit code says only that the router
  * ran.** `0` never means "cheap" and non-zero never means "expensive" — a caller
@@ -41,18 +48,22 @@
  *    than expect this file to guess.
  * 2. **`derived` is a naming convention, not a proof.** A hand-authored
  *    `src/x.generated.ts` satisfies it, and `deterministic` is the lane that
- *    runs no reviewer. `route` refuses that lane to an ADDED derived file for
- *    exactly this reason — an addition cannot be drift — but a MODIFIED one is
- *    taken on trust, and that trust rests on the project having a check that
- *    regenerates it.
+ *    runs no reviewer. So that lane additionally requires a status saying the
+ *    file was drift — `modified` or `removed`. Everything else, including an
+ *    entry with **no status at all** (the `--files` string form), is refused it.
+ *    A `modified` derived file is still taken on trust, and that trust rests on
+ *    the project having a check that regenerates it.
  * 3. **The journal is written only when `RIG_RUN_DIR` is declared**, and only
  *    from the CLI — `route()` used as a library writes nothing. So an absent
  *    `decisions.jsonl` is the ordinary state of an undeclared run, and a reader
  *    auditing one must check the run declared a directory before reading
  *    absence as a gate that stopped firing.
  * 4. **Exit 1 is not a lane.** It means nothing was routed — an unreadable diff,
- *    an absent file list, a project declaring no elevated path. The caller
- *    treats it as `model`; it is never a reason to skip the gate.
+ *    an absent file list, a project declaring no elevated path, a `--base` or
+ *    `--head` that is not a revision, or a run journal that refused the record.
+ *    The caller treats it as `model`; it is never a reason to skip the gate.
+ *    ⚠ And the diff it reads is the **committed** one, `<base>...<head>`: an
+ *    uncommitted edit is not routed, so commit before routing.
  * 5. **`reviewers` is a floor, not a ceiling** — and this was measured on the
  *    router's own first run, not predicted. It returned `code-reviewer` and
  *    `prose-reviewer` for a diff that parses untrusted argv and git output,
@@ -146,9 +157,25 @@ const PROSE_EXTENSIONS = new Set(['md', 'mdx', 'txt']);
 const looksDerived = (segments, basename) => {
   if (DERIVED_BASENAMES.has(basename)) return true;
   for (const segment of segments) if (segment === 'dist') return true;
-  if (basename.endsWith('.snap')) return true;
+  // 🔴 A test SNAPSHOT is deliberately not here, and it was, for one review
+  // round. A snapshot is not output whose drift a generator check catches — it
+  // IS the behaviour claim, rewritten by the test run that then passes by
+  // construction. Routing one to the lane that launches no reviewer is
+  // "weaken a test to get to green" with a dispatcher doing the weakening.
   return /\.generated\.[^.]+$/.test(basename);
 };
+
+/**
+ * The statuses under which a derived file may reach the **no-reviewer** lane.
+ *
+ * Deliberately narrow, and the narrowness is the whole guard. `deterministic`
+ * rests on one claim — this file is generator output, so a check already catches
+ * its drift — and that claim needs a prior output to have drifted from. An
+ * `added` or `copied` file has none. A `renamed` one is new content at that
+ * path. And a status-less entry (the `--files` string form) has not been
+ * measured at all, which is not the same as measuring `modified`.
+ */
+const DERIVED_TRUSTED_STATUSES = new Set(['modified', 'removed']);
 
 /**
  * What kind of file this is — the only judgement the cheap lanes are allowed to
@@ -196,6 +223,42 @@ const DEPENDENCY_FILES = new Set([
 ]);
 
 /**
+ * The same manifests, in the forms a name-exact set cannot hold.
+ *
+ * `requirements-dev.txt`, `dev-requirements.txt` and `requirements/base.txt` are
+ * the shapes that actually appear, and each of them is `.txt` — the one prose
+ * extension a dependency manifest uses, so missing them does not merely fail to
+ * escalate, it actively downgrades a supply-chain edit to the prose lane.
+ */
+const isDependencyPath = (segments, basename) => {
+  if (DEPENDENCY_FILES.has(basename)) return true;
+  if (!basename.endsWith('.txt')) return false;
+  if (/^(dev-)?requirements(-[a-z0-9.]+)?\.txt$/.test(basename)) return true;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    if (segments[i] === 'requirements') return true;
+  }
+  return false;
+};
+
+/**
+ * Files that ARE credentials, rather than files whose name mentions one.
+ *
+ * These reach `model` on classification anyway; what they buy is the
+ * `security-scanner` member of the reviewer floor, which the flag's own `why`
+ * already claims to cover.
+ */
+const SECRET_EXTENSIONS = new Set(['pem', 'key', 'p12', 'pfx', 'keystore', 'jks']);
+const SECRET_BASENAMES = new Set(['.npmrc', '.netrc', '.pgpass', 'id_rsa', 'id_ed25519']);
+
+const isSecretFile = (segments, basename) => {
+  if (SECRET_BASENAMES.has(basename)) return true;
+  if (basename === '.env' || basename.startsWith('.env.')) return true;
+  for (const segment of segments) if (segment === 'secrets' || segment === 'credentials') return true;
+  const dot = basename.lastIndexOf('.');
+  return dot > 0 && SECRET_EXTENSIONS.has(basename.slice(dot + 1).toLowerCase());
+};
+
+/**
  * The words that make a path a security surface, matched as whole name-parts.
  *
  * Substring matching was the obvious form and it is wrong in the expensive
@@ -221,6 +284,7 @@ const SECURITY_WORDS = new Set([
   'apikeys',
   'jwt',
   'crypto',
+  'env',
   'token',
   'tokens',
   'session',
@@ -232,7 +296,9 @@ const SECURITY_WORDS = new Set([
 const isSecuritySurface = (path) => {
   const segments = segmentsOf(path);
   if (segments.length === 0) return false;
-  if (DEPENDENCY_FILES.has(segments[segments.length - 1])) return true;
+  const basename = segments[segments.length - 1];
+  if (isDependencyPath(segments, basename)) return true;
+  if (isSecretFile(segments, basename)) return true;
 
   for (const segment of segments) {
     // One forward pass per segment: strip the extension, then split the stem on
@@ -242,7 +308,12 @@ const isSecuritySurface = (path) => {
     // input is a path from a diff and its length is not ours.
     const dot = segment.lastIndexOf('.');
     const stem = dot > 0 ? segment.slice(0, dot) : segment;
-    for (const word of stem.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().split(/[-_.]/)) {
+    // Two replaces, both linear and both needed: the first splits an acronym
+    // from the word after it (`JWTVerify` → `JWT-Verify`), the second an
+    // ordinary camel hump (`authService` → `auth-Service`). With only the
+    // second, `AUTHService.ts` and `JWTVerify.ts` produced no matching word.
+    const humps = stem.replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2').replace(/([a-z0-9])([A-Z])/g, '$1-$2');
+    for (const word of humps.toLowerCase().split(/[-_.]/)) {
       if (SECURITY_WORDS.has(word)) return true;
     }
   }
@@ -316,7 +387,8 @@ export const riskFlagsIn = (files, { elevatedPaths = [] } = {}) => {
     flags.push({
       flag: 'test-removed',
       files: removedTests,
-      why: 'a test file was deleted, and deleting a test to reach green is on the Never tier',
+      why:
+        'a test file left its path — deleted outright, or renamed away, which the diff \nreports the same way. Deleting a test to reach green is on the Never tier',
     });
   }
   return flags;
@@ -371,23 +443,24 @@ export const route = ({ files, elevatedPaths = [] } = {}) => {
   // Only the two counts that can disqualify a cheap lane are kept; `derived` is
   // the remainder, and the list is non-empty by the refusal above — so
   // `other === 0 && prose === 0` is exactly "every file is derived".
+  // Three counts, because the two cheap lanes carry different risk. `derived`
+  // is a naming convention a hand-authored file can satisfy, so the lane that
+  // launches NO reviewer additionally requires a status saying the file was
+  // drift (`DERIVED_TRUSTED_STATUSES`). The `fast-path` lane still has a cold
+  // reader, so an unmeasured derived file may travel with prose there.
   let prose = 0;
+  let derivedUntrusted = 0;
   let other = 0;
   for (const file of files) {
     const kind = classifyFile(pathOf(file));
     if (kind === PROSE) prose += 1;
     else if (kind !== DERIVED) other += 1; // code and unknown alike: the expensive answer
-    // 🔴 `derived` is a naming convention, and the lane it unlocks runs NO
-    // reviewer — so the one case where the convention cannot be true is refused
-    // here: an ADDED file has no prior generator output to be drift against, so
-    // "a check already catches its drift" is an assertion about a file that
-    // never existed. Modified derived output still reaches the cheap lane.
-    else if (statusOf(file) === 'added') other += 1;
+    else if (!DERIVED_TRUSTED_STATUSES.has(statusOf(file))) derivedUntrusted += 1;
   }
 
   const clear = line('risk-flags', 'clear', 'no risk flag fired on the changed paths');
 
-  if (other === 0 && prose === 0) {
+  if (other === 0 && prose === 0 && derivedUntrusted === 0) {
     return {
       lane: 'deterministic',
       reviewers: [],
@@ -412,7 +485,11 @@ export const route = ({ files, elevatedPaths = [] } = {}) => {
     'not every changed file is a derived artifact',
   );
 
-  if (other === 0) {
+  // `prose > 0` is load-bearing, not decoration: once `deterministic` also
+  // requires a trusted status, a change of nothing but UNTRUSTED derived files
+  // reaches here with `other === 0` and no prose at all — and would collect
+  // `prose-reviewer` as the whole gate over a document that does not exist.
+  if (other === 0 && prose > 0) {
     return {
       lane: 'fast-path',
       reviewers: ['prose-reviewer'],
@@ -544,14 +621,30 @@ export const parseNameStatus = (raw) => {
   return files;
 };
 
+/**
+ * A revision this file is willing to hand to git.
+ *
+ * `${base}...${head}` is one argv element with no `--` separator ahead of it, so
+ * a value starting with `-` is read by git as an OPTION rather than a revision —
+ * `--base '--output=/tmp/x'` really does make git write a file. There is no
+ * shell here and the caller already owns the process, so this is hardening
+ * rather than a hole; it is refused because the module treats its argv as
+ * untrusted everywhere else and a half-guarded input is the one people rely on.
+ */
+const revisionOrNull = (value) =>
+  typeof value === 'string' && value !== '' && !value.startsWith('-') ? value : null;
+
 const parseArgs = (argv) => {
-  const args = { base: 'origin/HEAD', head: 'HEAD', files: null, json: false };
+  const args = { base: 'origin/HEAD', head: 'HEAD', files: null, json: false, bad: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
-    else if (arg === '--base') args.base = argv[++i] ?? args.base;
-    else if (arg === '--head') args.head = argv[++i] ?? args.head;
-    else if (arg === '--files') args.files = argv[++i] ?? '';
+    else if (arg === '--base' || arg === '--head') {
+      const key = arg.slice(2);
+      const value = revisionOrNull(argv[++i]);
+      if (value === null) args.bad = arg;
+      else args[key] = value;
+    } else if (arg === '--files') args.files = argv[++i] ?? '';
   }
   return args;
 };
@@ -571,6 +664,10 @@ const gitFiles = (base, head) => {
     // child that keeps it reports the file list of ANOTHER repository — silently,
     // because the list comes back non-empty.
     env: withoutGitLocation(),
+    // git's own stderr is captured rather than inherited: it echoes the revision
+    // string and repository-supplied names straight to the terminal, and the
+    // diagnosis below is the sanitised version the caller should read.
+    stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 64 * 1024 * 1024,
   });
   return parseNameStatus(raw);
@@ -601,6 +698,14 @@ const invokedDirectly = () => {
 
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
+  if (args.bad) {
+    process.stderr.write(
+      `decision-router: ${args.bad} needs a revision, and a value starting with "-" is read ` +
+        'by git as an option rather than one. Nothing was routed — treat this as the ' +
+        'expensive lane.\n',
+    );
+    process.exit(1);
+  }
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
   let files;

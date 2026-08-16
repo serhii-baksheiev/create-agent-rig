@@ -32,28 +32,36 @@ blockers.
    `git clone` sets and `git init` + `git remote add` does not — and a base that
    is merely *different* rather than missing does not fail at all: the router
    routes a narrower file set than the one this gate reviews, and the narrower
-   set is the one that can lose a risk flag. If this gate was invoked on a PR
-   that is not checked out, check it out first; the router always reads the
-   working tree.
+   set is the one that can lose a risk flag.
+
+   ⚠ **It routes the committed diff, `<base>...<head>` — never the working
+   tree.** An uncommitted edit is invisible to it, including reviewer fixes you
+   have applied but not committed, so commit before routing. If this gate was
+   invoked on a PR that is not checked out, check it out first.
 
    `decision-router` reads the changed paths and returns the lane plus the
    reviewers that lane requires. **Risk flags escalate ahead of all three** — a
    file under a declared elevated path, a dependency manifest or a path naming
    auth, secrets, tokens, sessions or permissions, a deleted test (including the
    deletion half of a rename) — and any one of them lands the change in `model`
-   however cheap it otherwise looked.
+   however cheap it otherwise looked. The elevated-path flag has one carve-out,
+   inherited from the gate sweep rather than invented here: prose and tests that
+   provision nothing are **inert**, so `infra/README.md` does not escalate while
+   `infra/stack.ts` does. A rulebook file is never inert.
 
    🔴 **The lane is on stdout; the exit code says only that the router ran.**
    Never chain it on `&&`, and never read `0` as "cheap" — that misreading turns
    this gate into a rubber stamp. **Exit 1 is not a lane**: it means nothing was
-   routed (an unreadable diff, an empty file list, a project declaring no
-   elevated path). Treat it as `model` and fix the cause; it is never a reason
-   to skip the gate.
+   routed — an unreadable diff, an empty file list, a project declaring no
+   elevated path, a base or head that is not a revision, or a run journal that
+   refused the record. Treat it as `model` and fix the cause; it is never a
+   reason to skip the gate.
 
    What each lane buys:
 
-   - `deterministic` — every changed file is a derived artifact, and none of
-     them was *added*. Step 3 alone is the gate; no reviewer runs.
+   - `deterministic` — every changed file is a derived artifact **and git says
+     it was `modified` or `removed`**. Step 3 alone is the gate; no reviewer
+     runs.
    - `fast-path` — documentation outside the rulebook. `prose-reviewer`.
    - `model` — everything else, and `code-reviewer` runs on it **always**,
      with the triggers in step 4 beside it. Anything the router cannot classify
@@ -63,11 +71,15 @@ blockers.
    Dropping `code-reviewer` drops two of its checklist items that are *not*
    about code — contract drift, and "contradicts the item it claims to
    implement". Neither is decidable from paths. So the cheap lanes carry the
-   item text to whatever cold reader they do launch (step 4), and the
-   `deterministic` lane — which launches none — is available only because a
-   diff that is *entirely* regenerated output has no behaviour claim of its own
-   to contradict: the moment anything else travels with it, the change is not
-   all-derived and the router routes it elsewhere.
+   item text to whatever cold reader they do launch (step 4).
+
+   The `deterministic` lane launches none, and that rests on one claim: a file
+   is generator output, so a check already catches its drift. The claim needs a
+   prior output to have drifted **from** — which is why an added, copied,
+   renamed or status-less entry is refused the lane, and why a **test snapshot
+   is not a derived artifact here at all**. A snapshot is the behaviour claim,
+   rewritten by the run that then passes by construction; routing one to a lane
+   with no reviewer would be weakening a test with a dispatcher.
 
    If you disagree with a lane, run the expensive one — never argue a diff
    downward.

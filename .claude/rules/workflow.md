@@ -52,31 +52,34 @@ travels one path to merge, in this order:
 
    | lane | what reaches it | the floor it sets |
    | --- | --- | --- |
-   | `deterministic` | every changed file is a derived artifact, none of them added | the checks alone; no reviewer |
+   | `deterministic` | every changed file is a derived artifact git reports as modified or removed | the checks alone; no reviewer |
    | `fast-path` | documentation outside the rulebook | `prose-reviewer` |
-   | `model` | everything else, including anything unclassifiable | `code-reviewer` |
+   | `model` | everything else, including anything unclassifiable | `code-reviewer`, **always** |
 
-   `.claude/scripts/decision-router.mjs` decides this from the changed paths,
-   and **risk flags escalate ahead of all three**: a file under a declared
-   elevated path, a dependency manifest, a path naming auth or secrets or
-   sessions, a deleted test — including the deletion half of a rename. Any one
-   of them means `model`, however cheap the change otherwise looked. A rulebook
-   document is code here, so it never reaches the prose lane. The router
-   **refuses** rather than routing when it cannot decide, and a refusal is read
-   as `model`, never as a reason to skip the gate.
+   `.claude/scripts/decision-router.mjs` decides this from the **committed**
+   diff's paths — an uncommitted edit is not routed — and **risk flags escalate
+   ahead of all three**: a file under a declared elevated path, a dependency
+   manifest, a path naming auth or secrets or sessions, a deleted test —
+   including the deletion half of a rename. Any one of them means `model`,
+   however cheap the change otherwise looked. A rulebook document is code here,
+   so it never reaches the prose lane; prose and tests that provision nothing
+   are inert, so a README inside an elevated directory does not escalate on that
+   ground alone. The router **refuses** rather than routing when it cannot
+   decide, and a refusal is read as `model`, never as a reason to skip the gate.
 
    🔴 **The cheap lanes give something up, and the rule says what.** Dropping
    `code-reviewer` drops two of its checks that are not about code — contract
    drift, and "contradicts the item it claims to implement". So every lane
-   passes the queue item's text to whatever cold reader it launches, and the
-   `deterministic` lane launches none only because a wholly-regenerated diff has
-   no behaviour claim of its own to contradict.
+   passes the queue item's text to whatever cold reader it launches. The
+   `deterministic` lane launches none, which rests on the file being generator
+   output that a check regenerates — so an added, copied, renamed or
+   status-less entry is refused it, and a test snapshot is not a derived
+   artifact at all: it *is* the behaviour claim.
 
-   The lane is a **floor, not a ceiling**: it reads paths, while the triggers
+   The lane is a **floor, not a ceiling**. It reads paths, while the triggers
    below read what the code *does*, and a path cannot say that a module parses
-   untrusted input. **The triggers apply on every lane and may only add** — a
+   untrusted input. **These triggers are lane-independent and may only add** — a
    documentation-only diff still reaches `security-scanner` when it trips one:
-   - `code-reviewer` on the `model` lane, **always**;
    - `security-scanner` when it touches auth, secrets/configuration, input
      parsing, file handling, or outbound calls;
    - `prose-reviewer` when it touches the documents that instruct agents — a
