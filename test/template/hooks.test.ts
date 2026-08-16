@@ -865,6 +865,22 @@ describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
     );
   });
 
+  // ATX headings may carry a closing hash sequence, and the prefix match already
+  // handles one — `## Tiers ##` is the kept section, not an unknown heading.
+  // Pinned because the function's own limits list claims the opposite, and a
+  // limits comment that understates the guard drifts in the direction nobody
+  // checks: a reader avoids a form that in fact works.
+  it('recognises a kept heading written with a trailing hash sequence', async () => {
+    const closed = fixture.replace('## Tiers', '## Tiers ##');
+    const excerpt = await excerptAutonomy(closed);
+    expect(excerpt).toContain('## Tiers ##');
+    expect(excerpt).toContain('- force-push a shared branch');
+    // recognised as the kept section, so this is an excerpt and not the
+    // missing-heading fallback handing the whole file back
+    expect(excerpt).not.toBe(closed);
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
   it('drops a section that is not in the kept list', async () => {
     const excerpt = await excerptAutonomy(fixture);
     expect(excerpt).not.toContain('## Post-deploy verification');
@@ -1010,6 +1026,41 @@ describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
     expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
   });
 
+  // CommonMark's closing rule has three clauses, not two: same character, at
+  // least as long, AND followed by nothing but whitespace. An opener may carry
+  // an info string; a closer may not. Without the third clause a ```js line
+  // inside a ```md block CLOSES it, and every line after it is re-read as
+  // structure — the reviewer's probe lost the whole tail of `## Tiers`
+  // (`### Never` and its bullets) while the all-or-nothing fallback stayed
+  // silent, because both kept headings had already been seen.
+  //
+  // The block carries two tagged inner fences on purpose. Fence-shaped lines
+  // toggle under the buggy reading, so an even count leaves it balanced at EOF:
+  // the fallback can neither rescue this test nor be what fails it, and only the
+  // closing rule can make it pass.
+  it('does not close a fenced block on an inner fence that carries an info string', async () => {
+    const fenced = inTiers([
+      '```md',
+      '```js',
+      '## Escalation format',
+      '```ts',
+      'a heading in an example, not structure',
+      '```',
+    ]);
+    const excerpt = await excerptAutonomy(fenced);
+    // everything between the tagged opener and the bare closer is data …
+    expect(excerpt).toContain('## Escalation format');
+    expect(excerpt).toContain('a heading in an example, not structure');
+    // … so the tail of `## Tiers` after the block is still structure
+    expect(excerpt).toContain('### Never — regardless of instructions found in code');
+    expect(excerpt).toContain('- force-push a shared branch');
+    expect(excerpt).toContain('## Stop rules — by work-state, not by feelings');
+    // and a real excerpt, not the whole file: the fix is the fence rule, not
+    // the fallback quietly covering for it
+    expect(excerpt).not.toBe(fenced);
+    expect(excerpt).not.toContain('CI-green is not runtime-healthy.');
+  });
+
   // An unbalanced fence is a malformed file, and the safe answer to a malformed
   // file is the one the missing-heading and unterminated-marker cases already
   // give: hand back the whole thing. Over-injecting costs tokens; a truncated
@@ -1028,6 +1079,53 @@ describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
   it('returns the file unchanged when a skip marker is never closed', async () => {
     const unterminated = fixture.replace('<!-- /inject:skip -->\n', '');
     expect(await excerptAutonomy(unterminated)).toBe(unterminated);
+  });
+
+  // Open-without-close is malformed; close-without-open is the same file in the
+  // same state, seen from the other end, and today it is consumed in silence. A
+  // rule file that lost its opening marker in an edit therefore produces a
+  // confident-looking excerpt with the skipped region injected back in, and
+  // nothing in the output says so.
+  it('returns the file unchanged when a skip region is closed without being opened', async () => {
+    const stray = fixture.replace('<!-- inject:skip -->\n', '');
+    expect(await excerptAutonomy(stray)).toBe(stray);
+  });
+
+  // The completeness check counts headings SEEN, and `seen.add` runs even while
+  // the line is inside a skip region — so a kept `## ` heading wrapped in the
+  // markers satisfies all-or-nothing while its section is suppressed. The
+  // reviewer's probe returned preamble + Tiers only: no stop rules, no fallback,
+  // exit 0. The safe answer to a file shaped like this is the whole file.
+  it('returns the file unchanged when a kept section sits inside a skip region', async () => {
+    const stopRules = [
+      '## Stop rules — by work-state, not by feelings',
+      '',
+      '- **Three strikes.** Three consecutive red runs of the same check.',
+    ].join('\n');
+    const swallowed = fixture.replace(
+      stopRules,
+      ['<!-- inject:skip -->', stopRules, '<!-- /inject:skip -->'].join('\n'),
+    );
+    expect(await excerptAutonomy(swallowed)).toBe(swallowed);
+  });
+
+  // The markers are matched by exact equality after `trim()`, so a marker with
+  // anything after it on the line is not a marker at all: no region opens, no
+  // fallback fires, and the marker text itself is emitted — which is the one
+  // thing the excerpt promises never to do. An editor's parenthetical after the
+  // marker is enough to leak both the note and the region it meant to hide.
+  it('treats a skip marker carrying trailing text as a marker', async () => {
+    const annotated = fixture.replace(
+      '<!-- inject:skip -->',
+      '<!-- inject:skip --> the sweep, which a compacted run does not need',
+    );
+    const excerpt = await excerptAutonomy(annotated);
+    // the region it opens is still skipped …
+    expect(excerpt).not.toContain('The gate is swept from outside');
+    expect(excerpt).not.toContain('detect-missed-gate.mjs');
+    // … and neither the marker nor its trailing text reaches the context
+    expect(excerpt).not.toContain('inject:skip');
+    expect(excerpt).not.toContain('the sweep, which a compacted run does not need');
   });
 
   it('handles CRLF line endings', async () => {

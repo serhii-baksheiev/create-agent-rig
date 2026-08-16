@@ -48,15 +48,19 @@ function fenceRun(line) {
   if (char !== '`' && char !== '~') return null;
   let length = 0;
   while (trimmed[length] === char) length += 1;
-  return length >= 3 ? { char, length } : null;
+  if (length < 3) return null;
+  // `bare` is what separates a closer from an opener: an opener may carry an
+  // info string (```sh), a closer may not.
+  return { char, length, bare: trimmed.slice(length).trim() === '' };
 }
 
 /**
  * The excerpt: the preamble, plus each kept `## ` section whole, minus any
  * explicitly skip-marked region. Fenced code is data, not structure, so a
  * heading or a marker inside a fence is left alone — both fence characters,
- * with the CommonMark closing rule (same character, at least as long), because
- * a rules file quotes shell and markdown at each other.
+ * with the CommonMark closing rule (same character, at least as long, nothing
+ * but whitespace after it), because a rules file quotes shell and markdown at
+ * each other.
  *
  * It returns the input UNCHANGED — injecting everything — whenever the file
  * does not look the way this function expects: a kept heading missing, a skip
@@ -65,9 +69,9 @@ function fenceRun(line) {
  * that gets the whole file has only paid twice.
  *
  * The limits, stated so nobody relies on cover that is not here: it reads
- * headings by prefix, so `## Tiers of anything` satisfies the check; it does
- * not understand indented code blocks, HTML blocks, or a heading written with
- * trailing `#`s.
+ * headings by prefix, so `## Tiers of anything` satisfies the check; a skip
+ * marker is recognised only at the start of its own line; and it does not
+ * understand indented code blocks or HTML blocks.
  */
 export function excerptAutonomy(markdown) {
   const lines = markdown.split('\n');
@@ -77,37 +81,52 @@ export function excerptAutonomy(markdown) {
   let skipping = false;
   let fence = null;
 
+  let strayClose = false;
+
   for (const line of lines) {
     const run = fenceRun(line);
     if (fence) {
-      // Only a run of the same character, at least as long, closes it.
-      if (run && run.char === fence.char && run.length >= fence.length) fence = null;
+      // A closer is the same character, at least as long, and carries nothing
+      // but whitespace after it. That last clause is not pedantry: an opener
+      // MAY carry an info string, so without it a ```js line inside an open
+      // ```md block reads as the end of the block, and everything past it is
+      // parsed as structure again.
+      if (run && run.char === fence.char && run.length >= fence.length && run.bare) fence = null;
     } else if (run) {
       fence = run;
     } else {
       const trimmed = line.trim();
-      if (trimmed === SKIP_OPEN) {
+      // Matched by prefix: a marker with something after it is still a marker,
+      // and the whole line goes. Requiring the line to be exactly the marker
+      // would let `<!-- inject:skip --> note` open nothing and then print
+      // itself into the context.
+      if (trimmed.startsWith(SKIP_OPEN)) {
         skipping = true;
         continue;
       }
-      if (trimmed === SKIP_CLOSE) {
+      if (trimmed.startsWith(SKIP_CLOSE)) {
+        strayClose ||= !skipping;
         skipping = false;
         continue;
       }
       if (line.startsWith('## ')) {
         const heading = KEPT_SECTIONS.find((candidate) => line.startsWith(candidate));
-        if (heading) seen.add(heading);
+        // Counted only when the section actually reaches the output. Counting
+        // it while skipping would let a kept section be suppressed by a skip
+        // region while the completeness check below still read as satisfied.
+        if (heading && !skipping) seen.add(heading);
         keeping = Boolean(heading);
       }
     }
     if (keeping && !skipping) kept.push(line);
   }
 
-  // A fence left open, a skip region left open, or a heading that is not where
-  // it should be: the file is not the one this function knows how to cut, so
-  // it is not cut. Rescanning to "recover" would put a heading that sits inside
-  // a code block back into the structure, which is the same defect wearing a fix.
-  if (fence || skipping || seen.size !== KEPT_SECTIONS.length) return markdown;
+  // A fence left open, a skip region left open or closed without being opened,
+  // or a kept section that never reached the output: the file is not the one
+  // this function knows how to cut, so it is not cut. Rescanning to "recover"
+  // would put a heading that sits inside a code block back into the structure,
+  // which is the same defect wearing a fix.
+  if (fence || skipping || strayClose || seen.size !== KEPT_SECTIONS.length) return markdown;
   return kept.join('\n').trim();
 }
 
