@@ -111,23 +111,29 @@ function compose() {
   );
   // Repo-specific override, same class as the one above: this repo's queue lives
   // on a Jira board, while a generated project must stay on the zero-setup
-  // `plan-md` default — it has no Jira, no credentials and no AR board.
+  // `plan-md` default — it has no Jira, no credentials and no board of ours.
   //
   // Why an override rather than editing the file in place: `.claude/queue.json`
   // is COMPOSED from the template, so an in-place edit is drift and `--check`
   // fails. And why not exempt the file from composition instead — the obvious
   // alternative: an exempted file is one the drift check stops reading, which is
-  // precisely the silent divergence `--check` exists to catch. Overriding keeps
-  // the value generated, verified, and stated in one place.
+  // precisely the silent divergence `--check` exists to catch.
   //
-  // The credentials this adapter needs are NOT here and never will be: it reads
-  // JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN from the environment, and the
-  // local recommendation is a file outside the repository read per-invocation
-  // (`node --env-file`), never an exported variable — an export is inherited by
-  // every child process, which this project has already measured going wrong.
+  // It DERIVES rather than replaces: the two keys this repo decides are set over
+  // whatever the template ships, so a key added there later (a schema version, a
+  // state-file path, new default options) reaches this repo on the next sync
+  // instead of being silently dropped by a literal.
   out.set(
     '.claude/queue.json',
-    JSON.stringify({ adapter: 'jira', options: { project: 'AR' } }, null, 2) + '\n',
+    JSON.stringify(
+      {
+        ...JSON.parse(out.get('.claude/queue.json')),
+        adapter: 'jira',
+        options: { project: 'AR' },
+      },
+      null,
+      2,
+    ) + '\n',
   );
   return out;
 }

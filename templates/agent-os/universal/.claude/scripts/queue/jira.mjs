@@ -115,17 +115,22 @@ export const toTicket = (issue) => {
 };
 
 /**
- * The selection query.
+ * The lanes selection never takes, named once so the query and the post-filter
+ * below cannot drift apart (`invariants.md`: one mechanism, one implementation).
  *
- * Two lanes are excluded here, by label, in the adapter's own filter rather than
- * in an `options.jql` a reinstall would drop:
- *
- * - `triage` is belt and braces, and it is deliberate: excluding a proposal only
- *   by the absence of a ready marker means one careless hand adding that marker
- *   closes the loop's feedback path into its own input. Excluded explicitly, an
- *   item carrying BOTH markers is still unselectable.
+ * - `triage` is the loop's own filed proposals. Excluding them only by the
+ *   absence of a ready marker means one careless hand adding that marker closes
+ *   the loop's feedback path into its own input.
  * - `operator-queue` is the owner's lane. An item sitting there is work a HUMAN
  *   has taken, so the loop picking one up is two sessions on one task.
+ */
+export const EXCLUDED_LABELS = ['triage', 'operator-queue'];
+
+/**
+ * The selection query.
+ *
+ * Both lanes are excluded here by label, in the adapter's own filter rather than
+ * in an `options.jql` a reinstall would drop.
  *
  * ⚠ JQL gotcha that makes the parenthesised form necessary: `labels != x` does
  * **not** match issues whose labels field is empty. Without `OR labels IS EMPTY`
@@ -134,11 +139,13 @@ export const toTicket = (issue) => {
  * exclusion anywhere in the query reintroduces the hole while still reading right.
  *
  * ⚠ And the group stays FLAT — `labels != a AND labels != b OR labels IS EMPTY`,
- * not `labels NOT IN (a, b) OR …`. The `NOT IN` form is valid JQL and was
- * measured working against the live instance, but its nested parentheses hide the
- * `IS EMPTY` guard from any reader — human or test — that matches innermost
- * groups. `AND` binds tighter than `OR` in JQL, so the flat form is `(a AND b) OR
- * empty`, which is the intent.
+ * not `labels NOT IN (a, b) OR …`. Both forms are valid JQL and both were run
+ * against a live Jira, returning identical result sets — so this is a
+ * readability choice with no behaviour attached, and switching back would be
+ * behaviour-neutral. Flat wins because the `NOT IN` form's nested parentheses
+ * hide the `IS EMPTY` guard from any reader — human or test — that matches
+ * innermost groups. `AND` binds tighter than `OR` in JQL, so the flat form means
+ * `(a AND b) OR empty`, which is the intent.
  */
 export const buildJql = ({ project = null, jql = null } = {}) => {
   if (jql) return jql;
@@ -149,9 +156,10 @@ export const buildJql = ({ project = null, jql = null } = {}) => {
         'is worse than refusing to start.',
     );
   }
+  const excluded = EXCLUDED_LABELS.map((label) => `labels != "${label}"`).join(' AND ');
   return (
     `project = ${project} AND statusCategory != Done ` +
-    'AND (labels != triage AND labels != "operator-queue" OR labels IS EMPTY) ' +
+    `AND (${excluded} OR labels IS EMPTY) ` +
     'ORDER BY priority DESC, created ASC'
   );
 };
@@ -201,9 +209,10 @@ const request = async (route, { method = 'GET', body = null, env = process.env }
 // stop filed a fresh issue instead of incrementing the one already there.
 //
 // A LIST, not a comma-joined string: the replacement endpoint takes its arguments
-// in a JSON body, where `fields` is an array. The joined form the retired query
-// parameter wanted is accepted there as a single field NAME, so it fails by
-// returning issues with no fields rather than by erroring.
+// in a JSON body, where `fields` is an array. Measured, because the failure mode
+// decides how hard this is to notice: sending the joined form the retired query
+// parameter wanted answers `400 Invalid request payload`, not a 200 with empty
+// fields. It fails loudly, so a wrong value here cannot sit undetected.
 const FIELDS = ['summary', 'status', 'labels', 'priority', 'created', 'issuelinks', 'description'];
 
 // --- the adapter contract ------------------------------------------------------
@@ -223,23 +232,32 @@ export const listEligible = async ({
   // `issues` is the offline seam: the mapping is pure, so every shape it has to
   // handle is testable without a network or a credential.
   const response = issues ? { issues } : await search({ project, jql, limit, env });
-  return response.issues
-    .map(toTicket)
-    .filter((ticket) => ticket.state !== 'closed')
-    .filter((ticket) => !ticket.labels.includes('operator-queue'));
+  return (
+    response.issues
+      .map(toTicket)
+      .filter((ticket) => ticket.state !== 'closed')
+      // Deliberately a SECOND enforcement of the same list the query already
+      // carries, and only here: `core.mjs` drops `triage` itself, with its own
+      // stated reason, but nothing downstream knows about `operator-queue`. This
+      // filter is what still holds when the query is bypassed — an `options.jql`
+      // override, or a board whose labels were renamed. Both read EXCLUDED_LABELS,
+      // so the two can disagree only by someone editing one of them.
+      .filter((ticket) => !ticket.labels.some((label) => EXCLUDED_LABELS.includes(label)))
+  );
 };
 
 /**
  * 🔴 `POST /rest/api/3/search/jql`, never `GET /rest/api/3/search` — the latter
- * was retired and answers `410 Gone`. Measured on this instance, with the same
- * credential answering `200` on `/rest/api/3/myself`, so it is the path and not
- * the auth. Both searching call sites (`listEligible` and the `proposeTriage`
- * dedupe) come through here, which is why one fix covers both.
+ * was retired by Atlassian and answers `410 Gone`. Measured against a live Jira,
+ * with the same credential answering `200` on `/rest/api/3/myself`, so it is the
+ * path and not the auth. Both searching call sites (`listEligible` and the
+ * `proposeTriage` dedupe) come through here, which is why one fix covers both.
  *
  * Not handled here on purpose: the response also carries `nextPageToken` for
  * cursor pagination, so a board with more open issues than `limit` still loses
- * its tail. That is AR-54's scope, and inventing half of it here would leave a
- * pagination interface nothing tests.
+ * its tail — as does a retry policy and a request timeout. Those belong together
+ * in one change; half a pagination interface with nothing testing it is worse
+ * than none.
  */
 export const search = async ({ project = null, jql = null, limit = 100, env = process.env } = {}) =>
   request('/rest/api/3/search/jql', {

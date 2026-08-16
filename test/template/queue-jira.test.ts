@@ -1,11 +1,7 @@
-import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
-const exec = promisify(execFile);
 
 // Extraction brief §6.6: the second adapter, whose only job is to prove the seam
 // holds. If adding it needed a change above the seam, the seam was in the wrong
@@ -239,10 +235,23 @@ describe('the JQL it builds', () => {
     for (const label of ['triage', 'operator-queue']) {
       // belt and braces: an item carrying BOTH ready and the label stays unselectable
       expect(jql, label).toContain(label);
+      const group = guardedGroups(jql).find((candidate) => candidate.includes(label));
       expect(
-        guardedGroups(jql).some((group) => group.includes(label)),
+        group,
         `${label} is excluded outside a group carrying "labels IS EMPTY"`,
-      ).toBe(true);
+      ).toBeDefined();
+
+      // 🔴 The OPERATOR, not merely the label's presence. `labels = triage` sits
+      // in the same guarded group, reads almost identically, and selects exactly
+      // the two lanes this clause exists to keep out — the loop's own proposals
+      // and the owner's queue. Asserting only that the label appears somewhere
+      // lets that inversion through, which is how this test was weakened once.
+      expect(group!, `${label} must be excluded with !=`).toMatch(
+        new RegExp(String.raw`labels\s*!=\s*"?${label}"?`, 'i'),
+      );
+      expect(group!, `${label} must never be REQUIRED`).not.toMatch(
+        new RegExp(String.raw`labels\s*=\s*"?${label}"?`, 'i'),
+      );
     }
 
     // and nothing excludes either label a second time, unguarded, elsewhere in
@@ -356,6 +365,33 @@ describe('the search endpoint it calls', () => {
     expect(fields as string[]).toEqual(
       expect.arrayContaining(['summary', 'status', 'labels', 'issuelinks', 'description']),
     );
+  });
+
+  // The file claims it reports "the status alone; never echo the response body,
+  // which can carry the token back in an error envelope". That claim got more
+  // load-bearing with this change — the query it must not echo now travels in a
+  // body the same function serialises — and a claim with no test is a guess.
+  it('reports the status alone, never the response body nor the query it sent', async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        json: () => Promise.resolve({ errorMessages: ['token tok_SENTINEL rejected'] }),
+        text: () => Promise.resolve('token tok_SENTINEL rejected'),
+      })) as unknown as typeof globalThis.fetch;
+
+    const { search } = await load('jira.mjs');
+    const error = await search({ project: 'AR', env: CREDENTIALS }).then(
+      () => new Error('the request resolved; it was supposed to reject'),
+      (thrown: unknown) => thrown as Error,
+    );
+
+    expect(error.message).toMatch(/401 Unauthorized/);
+    expect(error.message, 'the error envelope reached the message').not.toMatch(/SENTINEL/);
+    expect(error.message, 'the query reached the message').not.toMatch(/project = AR/);
+    // the credential is never in the URL either, so it cannot reach a proxy log
+    expect(error.message).not.toMatch(new RegExp(CREDENTIALS.JIRA_API_TOKEN));
   });
 
   it('never requests the retired search path, whichever operation does the searching', async () => {
@@ -487,10 +523,20 @@ describe('the queue this repository reads, and the one a generated project gets'
     expect(JSON.stringify(template)).not.toMatch(/jira|"AR"/i);
   });
 
-  it('keeps the composed config free of drift, so the value is verified and not exempted', async () => {
-    await expect(
-      exec(process.execPath, [path.join(repoRoot, 'scripts', 'sync-agent-os.mjs'), '--check']),
-    ).resolves.toBeTruthy();
+  // The drift check itself is NOT re-run here: `dogfood.test.ts` already spawns
+  // `sync-agent-os.mjs --check` under the same suite, and a second spawn buys the
+  // same answer at the same cost. What this file owns is the pair of values that
+  // check would let through either way — the two assertions above.
+  it('carries every key the template ships, so the override derives rather than replaces', async () => {
+    const template = await jsonAt('templates', 'agent-os', 'universal', '.claude', 'queue.json');
+    const mine = await jsonAt('.claude', 'queue.json');
+    // `adapter` and `options` are this repo's to decide; anything else the
+    // template grows later must arrive here on the next sync rather than being
+    // dropped by a literal that only knew about today's two keys.
+    for (const key of Object.keys(template)) {
+      if (key === 'adapter' || key === 'options') continue;
+      expect(mine, `template key "${key}" was dropped by the override`).toHaveProperty(key);
+    }
   });
 });
 

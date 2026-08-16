@@ -11,6 +11,35 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## Unreleased
+
+### Fixed
+
+- **The `jira` queue adapter was calling an endpoint Atlassian removed.** Both
+  selection and the triage dedupe went through `GET /rest/api/3/search`, which
+  answers `410 Gone`; the adapter threw on the status line and the loop read
+  that as an unreadable queue. It now uses `POST /rest/api/3/search/jql`. If
+  your rig is on the `jira` adapter, this is the difference between a loop that
+  works and one that reports an empty board. Cursor pagination
+  (`nextPageToken`) is **not** implemented yet, so a board with more open issues
+  than `limit` (default 100) still loses its tail.
+
+### Changed — action needed if your board uses the `jira` adapter
+
+- 🔴 **The elevated-tier marker on Jira is now the `elevated` label, not
+  `human-review`.** A board that marked elevated work with `human-review` will,
+  after this upgrade, hand every item to the loop as `normal` — the
+  elevated-spacing ration silently stops holding anything back. **Relabel those
+  issues to `elevated` before running the loop again.** The change is
+  deliberate: on a Jira board `human-review` reads as "a human is looking at
+  it", which is a different claim from "this change is expensive to reverse".
+  The `github-issues` adapter is unaffected and still reads `human-review`,
+  where it does mean a human reviewed the diff.
+- **Selection now excludes the `operator-queue` label as well as `triage`.** An
+  item in the owner's lane is work a human has taken, so the loop no longer
+  picks one up. If you used `operator-queue` for something else, rename it
+  first.
+
 ## 0.4.0
 
 Upgrading is a command now: **`npx create-agent-rig@0.4.0 upgrade`** (`@latest`
