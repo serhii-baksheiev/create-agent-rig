@@ -508,8 +508,8 @@ Decisions and Tier-2 work waiting on a human. State what is needed, not what to 
 - **proposal: the queue-unreadable branch at index.mjs exits before the journal block, so the run stop that most needs evidence leaves none. Either record it before exiting — accepting that the journal write may itself fail while the queue is unreadable, so the branch needs its own guard — or state in §0 that this stop is journalled by the session only, so nobody looks for a machine record that was never written [triage]** — finding: journal: post-merge health check — `queue-unreadable` is the stop condition most worth a trace and is the one the journal never records · part: .claude/scripts/queue/index.mjs (the queue-unreadable branch) + .claude/skills/loop/SKILL.md §0 · proof: with RIG_RUN_DIR declared and a queue the adapter cannot read, `queue/index.mjs next` leaves a decisions.jsonl carrying a queue-unreadable verdict — today the file does not exist · fingerprint: `journal-post-merge-health-check-queue-un:claude-scripts-queue-index-mjs-the-queue:the-queue-unreadable-branch-at-index-mjs` · seen ×1
 - **proposal: assert on the CLI having RUN — an exit code of 0 and a line matching the selection shape — never on output being non-empty. A crash writes to stderr, so `it printed something` is satisfied by the failure it is meant to exclude; this branch repaired the fixture but left the assertion as it was [triage]** — finding: journal: code-reviewer on #48 — the gate-scripts symlink fixture asserted `out.trim() !== ""`, which a Node stack trace satisfies, so it passed for weeks while the CLI it claimed to exercise never loaded · part: test/template/gate-scripts.test.ts (the symlink fixture) and any sibling asserting on output presence · proof: delete a module the fixture copies and the test goes RED; today it stays green because the stack trace is output · fingerprint: `journal-code-reviewer-on-48-the-gate-scr:test-template-gate-scripts-test-ts-the-s:assert-on-the-cli-having-run-an-exit-cod` · seen ×1
 - **proposal: the first says the call must sit `inside a block a run can run` but accepts any fenced block anywhere in the file; the second is titled `declares the run directory` and passes on a bare mention of RIG_RUN_DIR with no export. Either tighten them to assert placement (the block under the stop step; an `export` in the preflight section) or reword the comments to claim only what they check — a test whose comment overstates it is the same defect as prose overstating a mechanism [triage]** — finding: journal: code-reviewer on #48 — both skill-correspondence tests added by AR3-4 are looser than the comments above them claim · part: test/template/run-journal.test.ts (the two tests under `the skill that drives a run carries the calls the journal needs`) · proof: move the endRun block into an unrelated section, or replace the preflight export with a passing mention, and the tests go RED; today both stay green · fingerprint: `journal-code-reviewer-on-48-both-skill-c:test-template-run-journal-test-ts-the-tw:the-first-says-the-call-must-sit-inside-` · seen ×1
-- **proposal: State a review-round bound and what happens at it. `pr-ship` says only that the gate runs again from step 1 after fixes — no cap — and the budget stop rule reads as "many attempts, NO PROGRESS", which is false when every round finds real defects. Proposed: after the third round on one item, the run either merges with the residual filed as a triage finding, or escalates the design question to the owner; it does not open a fourth. Add the counter-signal too — three consecutive rounds where the run OWN previous fix produced the next blocker is the systemic-wall shape, not diligence. [triage]** — finding: journal: seven rounds, six routing escapes — the review gate has no round cap, and the budget stop rule never fired because every round found real defects · part: .claude/skills/pr-ship/SKILL.md (the Verdict section) + .claude/rules/autonomy.md (Stop rules) · proof: a run that reaches a third HOLD on one queue item either files a proposal and merges, or escalates, and the journal entry names which. Today a seventh round is reachable with nothing in either document objecting to it. · fingerprint: `journal-seven-rounds-six-routing-escapes:claude-skills-pr-ship-skill-md-the-verdi:state-a-review-round-bound-and-what-happ` · seen ×1
-- **proposal: Require that a test added for a GUARD is verified by deleting the guard and watching it go red, and that the verification is recorded. Two failure shapes to name, both observed here: an assertion satisfied by a different mechanism than the one under test (a path that classifies as code before the derived branch is reached, so the derived guard was never exercised), and an assertion satisfied by an unrelated failure (a CLI test in a temp directory with no git repo, where exit 1 arrives from the git path rather than from the refusal — anchor on the diagnosis text, never on the exit code alone). [triage]** — finding: journal: seven rounds — three round-four guards had no test that would notice their removal, and two of the four tests written to fix that were themselves vacuous · part: .claude/agents/test-writer.md (or .claude/rules/workflow.md, "Tests are load-bearing") · proof: a PR adding a guard states the mutation it ran and its result, and a reviewer re-running that mutation gets red. Today three guards shipped whose deletion left the suite green, and the fix for that shipped two more. · fingerprint: `journal-seven-rounds-three-round-four-gu:claude-agents-test-writer-md-or-claude-r:require-that-a-test-added-for-a-guard-is` · seen ×1
+- **proposal: State a review-round bound and what happens at it. `pr-ship` says only that the gate runs again from step 1 after fixes — no cap — and the budget stop rule reads as "many attempts, NO PROGRESS", which is false when every round finds real defects. Proposed: after the third round on one item, the run either merges with the residual filed as a triage finding, or escalates the design question to the owner; it does not open a fourth. Add the counter-signal too — three consecutive rounds where the run's own previous fix produced the next blocker is the systemic-wall shape, not diligence — measured at FIVE consecutive rounds on the run that filed this. [triage]** — finding: journal: seven rounds, six routing escapes — the review gate has no round cap, and the budget stop rule never fired because every round found real defects · part: .claude/skills/pr-ship/SKILL.md (the Verdict section) + .claude/rules/autonomy.md (Stop rules) · proof: a run that reaches a third HOLD on one queue item either files a proposal and merges, or escalates, and the journal entry names which. Today a seventh round is reachable with nothing in either document objecting to it. · fingerprint: `journal-seven-rounds-six-routing-escapes:claude-skills-pr-ship-skill-md-the-verdi:state-a-review-round-bound-and-what-happ` · seen ×1
+- **proposal: Require that a test added for a GUARD is verified by deleting the guard and watching it go red, and that the verification is recorded. Two failure shapes to name, both observed here: an assertion satisfied by a different mechanism than the one under test (a path that classifies as code before the derived branch is reached, so the derived guard was never exercised), and an assertion satisfied by an unrelated failure (a CLI test in a temp directory with no git repo, where exit 1 arrives from the git path rather than from the refusal — anchor on the diagnosis text, never on the exit code alone). [triage]** — finding: journal: seven rounds — three round-four guards had no test that would notice their removal, and one of the four tests written to fix that was itself vacuous, and a second was nearly misdiagnosed as vacuous by a mutation that did not remove the behaviour · part: .claude/agents/test-writer.md (or .claude/rules/workflow.md, "Tests are load-bearing") · proof: a PR adding a guard states the mutation it ran and its result, and a reviewer re-running that mutation gets red. Today three guards shipped whose deletion left the suite green, and the fix for that shipped two more. · fingerprint: `journal-seven-rounds-three-round-four-gu:claude-agents-test-writer-md-or-claude-r:require-that-a-test-added-for-a-guard-is` · seen ×1
 - **proposal: Record the shape as a design property rather than a backlog, and set the rule for extending it: a new entry in PROSE_EXTENSIONS, DERIVED_BASENAMES, TEST_DIRECTORIES or SECURITY_WORDS must state which of the six known escapes it is adjacent to, and carry a test in BOTH directions — the case it opens and the case it must not close. Two of the six escapes were reopenings of a defect an earlier round had declared closed, both at the boundary between two entries. [triage]** — finding: journal: seven rounds — a path-based classifier for review depth has an unbounded tail of special cases, and each fix opens a seam where it meets the previous one · part: .claude/scripts/decision-router.mjs (the limits block), and the decision of whether to keep extending it · proof: the next change to one of those four sets carries a two-direction test and a named adjacency; today `integration/` was moved in and then out across two rounds with neither. · fingerprint: `journal-seven-rounds-a-path-based-classi:claude-scripts-decision-router-mjs-the-l:record-the-shape-as-a-design-property-ra` · seen ×1
 
 ## Journal
@@ -529,35 +529,57 @@ operational memory, not an archive. Fields per the template in
   whether the expensive path is warranted, which is the thing that did not
   exist — a typo fix in a README bought the same fan-out as a rewrite of the
   storage layer
-- **reviewed** — **seven rounds, twenty-one reviewer passes, thirty-five
-  blocking findings.** Every gate returned HOLD in every round but the last.
-  Six of the findings were **routing escapes** — a change reaching a lane
-  cheaper than its content deserved — and the shape worth keeping is that
-  **each was found by a different means, and none was found twice**: reading
-  the diff (a rename dropped its source path, defeating all three risk flags at
-  once); running the mechanism (`.mdx` compiles to an ES module, so a one-file
-  diff adding `import { execSync }` routed to `fast-path` while the router
-  printed "the change carries no code"); fuzzing 41,496 single-file routes;
-  differentially routing 1.3M cases against the previous commit; executing a
-  prose claim rather than reading it (`test/golden/expected.txt` classified as
-  prose, so a deleted golden file got `prose-reviewer` as the whole gate); and
-  a test going red while I fixed something else
+- **reviewed** — **seven rounds, twenty-one reviewer passes.** Not every gate
+  held every round: `security-scanner` cleared its items in round two and
+  returned "ship it, the rest is tail" in round six, and the *last* round is the
+  one where all three converged on a single finding — which was mine.
+  ⚠ **The blocking-findings count is deliberately not given as one number.**
+  Two honest tallies of the commit messages disagree (33 counting only bullets
+  labelled blocking; 36 taking PR #50's own "thirty-one" for five rounds and
+  adding rounds six and seven), and the machine trace this run wrote
+  (`.claude/runs/20260816-044453/`, 18 records, gitignored) records **routing
+  verdicts, not review rounds** — so it cannot settle it. A number nothing
+  observed does not go in
+- 🔴 **Six of the findings were routing escapes** — a change reaching a lane
+  cheaper than its content deserved — and the shape worth keeping is **how they
+  were found**: reading the diff (a rename dropped its source path, defeating
+  all three risk flags at once); running the mechanism (`.mdx` compiles to an ES
+  module, so a one-file diff adding `import { execSync }` routed to `fast-path`
+  while the router printed "the change carries no code"; and separately
+  `git mv CLAUDE.md claude.md` put the rulebook in the prose lane for good);
+  executing a prose claim rather than reading it (`test/golden/expected.txt`
+  classified as prose, so a deleted golden file got `prose-reviewer` as the
+  whole gate); differentially routing against the previous commit (74,151 pairs
+  in round five, 586,000 cases in round six — the second caught a lane I had
+  given back); and a test going red while I fixed something else
+- 🔴 **And the lens that found nothing is itself the finding: fuzzing 41,496
+  single-file routes plus this repo's own 299 tracked files caught zero
+  escapes**, in the same round two other lenses caught three. Breadth over one
+  input shape does not probe a classifier whose defects live at the boundary
+  between two rules
 - 🔴 **the shape worth keeping** — **my own fixes opened the next round's
-  defect, three times running.** Round two's fix caused round three's blocker
-  (`deterministic` learned to require a status, the file moved to a new counter,
-  and `fast-path` never read it — so adding a `.generated.` filename beside one
-  `.md` edit was a one-line way to drop `code-reviewer`). Round four's caused
-  round five's. Round five's caused round six's — `integration/` was moved out
-  of the test directories to stop over-escalating docs, and took the fixture fix
-  with it. **Both sides of that choice were made in this branch and both were
-  wrong**, which is what finally produced the right answer: the extension
-  decides, not the directory name
+  defect in five consecutive rounds**: 2→3, 3→4, 4→5, 5→6 and 6→7. Round two's
+  fix caused round three's blocker (`deterministic` learned to require a status,
+  the file moved to a new counter, and `fast-path` never read it — so adding a
+  `.generated.` filename beside one `.md` edit was a one-line way to drop
+  `code-reviewer`). Round three's landed in the module and not in the twin
+  document, twice. Round five's moved `integration/` out of the test directories
+  to stop over-escalating docs and took the fixture fix with it — **both sides
+  of that choice were made in this branch and both were wrong**, which is what
+  finally produced the right answer: the extension decides, not the directory
+  name. And round six's rewrite of limit 5 fixed the half it had missed by
+  deleting the half it had right, which is the single finding all three gates
+  converged on in round seven
 - 🔴 **and I wrote vacuous tests twice, while fixing vacuous tests.** A reviewer
   proved three round-four guards had no test that would notice their removal —
   deleting each left 88 tests green. Two of the four tests I then wrote for
-  round six were themselves vacuous: the empty-argv-token test ran in a temp
-  directory with no git repository, so `gitFiles` failed and exit 1 arrived for
-  the wrong reason — it passed under the very mutation it was written to catch.
+  round six went wrong, and precisely one was vacuous: the empty-argv-token test
+  ran in a temp directory with no git repository, so `gitFiles` failed and exit 1
+  arrived for the wrong reason — it passed under the very mutation it was
+  written to catch. The other was **real, and I nearly recorded it as vacuous**,
+  because my first mutation of it unfolded only one of the two sides it guards.
+  Both errors point the same way: a mutation that does not actually remove the
+  behaviour proves nothing, in either direction.
   **Every guard in the final state is mutation-verified red**, in both
   directions where the choice has two
 - **escalated** — nothing
@@ -589,16 +611,16 @@ operational memory, not an archive. Fields per the template in
   artifact the next reader can check, so it is named as what it is rather than
   dressed up as a label. `detect-missed-gate` will flag this merge and the
   finding is correct
-- ⚠ **and the last two commits were not re-reviewed by a cold context.** The
-  final round's single blocking finding was fixed after the reviewers reported,
-  and verified by me — mutation, full suite, CI — rather than by a fresh
-  reader. That is a real gap in the isolation `workflow.md` calls load-bearing,
+- ⚠ **and the last commit was not re-reviewed by a cold context.** The final
+  round's single blocking finding was fixed after the reviewers reported, and
+  `5bebae4` was verified by me — mutation, full suite, CI — rather than by a
+  fresh reader. That is a real gap in the isolation `workflow.md` calls load-bearing,
   stated rather than glossed
 - **proposals filed** — three, into the Operator queue
 - **cost** — 21 reviewer subagents (7 code, 7 prose, 7 security), 1 test-writer,
-  1 check-premises; **7 pushed SHAs, each carrying the full check set** (`ci`,
-  two template jobs, one scanner) — 7 `ci` runs, 28 check runs, 0 re-runs; 0
-  deploys
+  1 check-premises; **8 pushed SHAs carrying the full check set** (`ci`, two
+  template jobs, one scanner) — 8 `ci` runs, 32 check runs, **0 re-runs**; 0
+  deploys. The docs branch closing this item adds one more of each
 - **the honest note** — the finding that outlasts the PR is a design property,
   not a bug backlog: **a path-based classifier for how much review a change
   deserves has an unbounded tail of special cases**, and each fix opens a seam
