@@ -8,7 +8,7 @@ import type { InstalledFile } from '../lib/install-set.js';
 import { listTree } from '../lib/copy-tree.js';
 import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
-import { resolveInside } from '../lib/safe-path.js';
+import { isSafeSubstitutionValue, resolveInside } from '../lib/safe-path.js';
 import { detokenizeContent, substituteFileName } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { TARGETS } from '../lib/targets.js';
@@ -223,11 +223,38 @@ export async function planUpgrade(
       ? await detectInstall(repoDir)
       : { kind: manifest.kind, stacks: manifest.stacks, region: manifest.project.region };
   const kind = manifest?.kind ?? detected.kind;
-  const name = path.basename(path.resolve(repoDir));
-  // `init` slugs the directory name into something an operator can type (it
-  // ends up in the kill-switch filename); `create` validated it as an npm name
-  // at generation time, so there the basename is already the project name.
-  const bootstrapName = kind === 'init' ? projectNameFor(repoDir) : name;
+  // With no manifest to read, guess the name the rig's own files were written
+  // with — and each command wrote them differently, so the guess branches the
+  // same way:
+  //
+  // - `init` substitutes the **slug** and records the slug (`init.ts`,
+  //   `projectNameFor` in both places), so for an init rig the slug is not an
+  //   approximation, it is the value;
+  // - `create` substitutes the name it was **given**, having validated it — and
+  //   that validation accepts a trailing `-` or `.`, which `projectNameFor`
+  //   strips. So slugging a create rig renames it: `my-app.` became `my-app`,
+  //   stopped matching its own installed files, and returned four of them as
+  //   conflicts.
+  //
+  // The one case where the raw name cannot be kept is a directory the manifest
+  // reader would refuse — `My App` produced `{"name":"My App"}`, which
+  // `parseManifest` voids, so the manifest this command exists to write was
+  // written and immediately unreadable and every later run reported "no
+  // manifest here (a pre-0.4.0 rig)". The condition is that reader's own
+  // exported predicate, not a second copy of its rule.
+  //
+  // 🔴 All three branches were bought by a defect, and two of those defects
+  // were introduced by fixing the other — the mirror is easy to miss, because
+  // each fix looks total until the other kind is tried. Change nothing here
+  // without running the three sibling cases in `upgrade.test.ts`.
+  //
+  // ⚠ It is still the *directory's* name, so a renamed or cloned rig with no
+  // manifest bootstraps the new name and its substituted files come back as
+  // conflicts — kept and reported, never overwritten. Committing the manifest
+  // is what removes the guess, and that is unchanged from 0.4.0.
+  const rawName = path.basename(path.resolve(repoDir));
+  const bootstrapName =
+    kind === 'init' || !isSafeSubstitutionValue(rawName) ? projectNameFor(repoDir) : rawName;
   const project: RigProject = manifest?.project ?? {
     name: bootstrapName,
     scope: bootstrapName,

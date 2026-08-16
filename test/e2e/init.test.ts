@@ -95,3 +95,85 @@ describe('create-agent-rig init (into an existing repo)', () => {
     expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules');
   });
 });
+
+// Running `init` inside a rig `create` produced is legitimate — someone
+// refreshing the process layer by hand does exactly that — but `init` is not
+// the command that maintains that rig: it installs the process layer only and
+// keeps every file it did not write, so the stack overlays and the
+// architecture rules are untouched by design. A run that reports nothing but
+// "Installed N files" reads as a full refresh, and the operator walks away
+// believing their rig is current when only part of it is. `upgrade` is the
+// command that brings the whole install set forward.
+describe('create-agent-rig init (inside a rig that came from `create`)', () => {
+  const runCliIn = async (
+    cwd: string,
+    args: string[],
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    try {
+      const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], { cwd });
+      return { code: 0, stdout, stderr };
+    } catch (error) {
+      const e = error as { code?: number; stdout?: string; stderr?: string };
+      return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
+  };
+
+  /** Every output line that carries the advisory — it is meant to be one. */
+  const advisoryLines = (stdout: string): string[] =>
+    stdout.split('\n').filter((line) => /created by create-agent-rig/i.test(line));
+
+  /** A generated project, as `create` leaves it. */
+  const generate = async (): Promise<string> => {
+    const result = await runCliIn(repo, ['my-app', '--target', 'node-service', '--no-git']);
+    expect(result.code, result.stderr).toBe(0);
+    return path.join(repo, 'my-app');
+  };
+
+  it('points the operator at `upgrade` when it re-installs over a created rig', async () => {
+    const project = await generate();
+    // --force is the only way in: plain `init` refuses the generated CLAUDE.md.
+    const forced = await runCliIn(project, ['init', '--force']);
+    expect(forced.code, forced.stderr).toBe(0);
+
+    // the fixture really is a create rig that init has just run inside
+    const manifest = JSON.parse(
+      await readFile(path.join(project, '.claude', '.rig-manifest.json'), 'utf8'),
+    ) as { kind: string };
+    expect(manifest.kind).toBe('create');
+    expect(forced.stdout).toMatch(/Installed \d+ files/);
+
+    const advisory = advisoryLines(forced.stdout);
+    expect(advisory).toHaveLength(1);
+    expect(advisory[0]).toMatch(/only fills gaps/i);
+    expect(advisory[0]).toMatch(/upgrade/);
+  });
+
+  it('says nothing of the sort in a repo that has no rig at all', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const result = await runCliIn(repo, ['init']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/Installed \d+ files/);
+    expect(advisoryLines(result.stdout)).toEqual([]);
+    expect(result.stdout).not.toMatch(/use `?upgrade`? to refresh/i);
+  });
+
+  // The two tests above pin "never" and "over a create rig", which a condition
+  // of merely `manifest !== null` also satisfies — and that condition would tell
+  // every re-`init`ed rig it came from `create`. This is the case that separates
+  // them.
+  it('stays quiet when it re-installs over a rig `init` itself put there', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const first = await runCliIn(repo, ['init']);
+    expect(first.code, first.stderr).toBe(0);
+
+    const second = await runCliIn(repo, ['init', '--force']);
+    expect(second.code, second.stderr).toBe(0);
+
+    // the fixture is what the test claims: a manifest exists, and it says `init`
+    const manifest = JSON.parse(
+      await readFile(path.join(repo, '.claude', '.rig-manifest.json'), 'utf8'),
+    ) as { kind: string };
+    expect(manifest.kind).toBe('init');
+    expect(advisoryLines(second.stdout)).toEqual([]);
+  });
+});

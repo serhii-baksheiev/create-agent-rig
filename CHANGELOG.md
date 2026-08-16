@@ -13,7 +13,66 @@ content as a patch by the owner's call and stays recorded as one.
 
 ## Unreleased
 
+### Security
+
+- 🔴 **A committed `.claude/.rig-manifest.json` could run code on the machine
+  of whoever upgraded the rig.** `project.name`, `project.scope`,
+  `project.region` and `stacks` were each validated — but only as _path_
+  segments, a predicate that asks whether a value can steer a write. Two of
+  them are also substituted into installed **files**:
+  `.claude/scripts/stop-flag.mjs` embeds the name inside a single-quoted
+  JavaScript string literal that `guard-bash` imports on every Bash call. A
+  value closing that quote steers no path at all and passed — it executed in
+  the hook process, **and** moved the kill switch's path off
+  `~/.claude/<name>-loop-STOP`, so the brake read as installed while doing
+  nothing. The manifest travels in pull requests, so the delivery was an
+  ordinary PR plus an `upgrade`. All four are now held to the shape the rig
+  actually produces (`^[a-z0-9_][a-z0-9._-]*$`), and a manifest carrying
+  anything else is void as a whole rather than corrected.
+
+  **Checking a rig you upgraded from a manifest you did not write — three
+  places, because the name is not the only value that travelled.**
+  `.claude/scripts/stop-flag.mjs` is the executable sink: its kill-switch line
+  must read your own project name. `region` lands in
+  `.claude/skills/ro-debug/SKILL.md` as `export AWS_REGION=…` on rigs carrying
+  the `aws-cdk` overlay — and a manifest also declares `stacks`, so it can
+  request that overlay on a rig that never had it. The name is substituted into
+  the documents the agent obeys as well (`CLAUDE.md`, `PLAN.md`, the `loop`
+  skill), where a hostile value arrives as injected text rather than as code.
+
+  Nothing `create` or `init` writes is rejected by the new rule — including an
+  empty `region` and a name with a leading underscore, which
+  `projectNameFor` really can produce.
+
 ### Fixed
+
+- **`init --force` inside a generated project used to make `upgrade` stop
+  refreshing the stack overlays — silently.** `init` rewrote the rig manifest
+  as `kind: "init"`, `stacks: []`, empty `region`, and `upgrade` trusts a
+  manifest wholesale rather than re-detecting: the stack files simply left the
+  plan, reported neither as deleted nor as a conflict, and `CLAUDE.md` came
+  back in the `init` flavour. `init` now carries the `kind`, `project` and
+  `stacks` it found in the manifest through unchanged, and adds an entry for
+  each file it wrote without dropping the entries already there. It also says,
+  before writing anything, that this rig came from `create` and `upgrade` is
+  the command that refreshes it.
+
+  ⚠ **Both halves read the manifest, so a rig that has none — anything
+  installed before 0.4.0 — is not covered.** There `init` still writes
+  `kind: "init"`, `stacks: []`, empty `region`, and prints no advisory; worse,
+  such a rig could previously be recovered by `upgrade`, which re-detects the
+  install from the files on disk **only when there is no manifest at all**, and
+  the one `init` writes takes that route away. On a pre-0.4.0 rig, run
+  `upgrade` before `init`.
+
+  **Recovering a rig whose manifest was already flattened:** delete
+  `.claude/.rig-manifest.json` and run `upgrade` — the detection restores
+  `kind`, `stacks` and `region` from the files themselves; hand-writing the
+  manifest is not needed and `parseManifest` rejects the whole file on any
+  malformed field. What that does **not** repair is `CLAUDE.md`: the flattening
+  `init` overwrote it with the `init` flavour, so `upgrade` reports it as
+  `conflict` ("not a version this rig ever released — treated as yours") and
+  the create flavour has to be merged back by hand.
 
 - **The `jira` queue adapter was calling an endpoint Atlassian removed.** Both
   selection and the triage dedupe went through `GET /rest/api/3/search`, which
