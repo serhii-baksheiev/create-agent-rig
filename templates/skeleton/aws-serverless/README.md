@@ -51,8 +51,13 @@ do not edit the workflow:
    **`cloudfront:CreateInvalidation`** on the distribution. A role scoped only
    to CDK's bootstrap roles gets through the deploy and fails on the upload —
    after both stacks are already up.
-2. Add its ARN as the repository secret **`AWS_DEPLOY_ROLE_ARN`** (and,
-   optionally, repo variables `AWS_REGION` and `API_URL`).
+2. Add its ARN as the repository secret **`AWS_DEPLOY_ROLE_ARN`**, and set the
+   repo variable **`API_URL`** to the deployed API's URL (the `ApiUrl` output
+   of a first deploy). It becomes `NEXT_PUBLIC_API_URL`, which Next **inlines
+   into the bundle at build time** — unset, the site calls `/notes` on its own
+   CloudFront domain, where nothing answers. `AWS_REGION` is genuinely
+   optional. The first deploy is therefore two passes: deploy, read `ApiUrl`,
+   set the variable, deploy again.
 
 The workflow then assumes the role, builds the web bundle, runs
 `cdk deploy AppStack WebStack --outputs-file`, then **uploads `apps/web/out` to
@@ -71,7 +76,9 @@ npx cdk deploy AppStack WebStack --outputs-file cdk-outputs.json
 # --delete makes the bucket the bundle's territory alone, so a stale or missing
 # `out/` would empty the live site — or restore last month's. The workflow
 # builds two steps before its sync; by hand, build here.
-(cd .. && pnpm build:web)
+# NEXT_PUBLIC_API_URL is inlined at build time: without it the bundle calls its
+# own CloudFront domain instead of the API, and the sync below makes that live.
+(cd .. && NEXT_PUBLIC_API_URL="$(jq -er '.AppStack.ApiUrl' infra/cdk-outputs.json)" pnpm build:web)
 [ -f ../apps/web/out/index.html ] || { echo "no web bundle — build failed"; exit 1; }
 aws s3 sync ../apps/web/out "s3://$(jq -er '.WebStack.WebBucketName' cdk-outputs.json)" --delete
 # a synced bucket whose distribution still serves the old objects has not
@@ -99,6 +106,19 @@ curl -s -X POST "$API_URL/notes" \
 # expect: HTTP 201 with { "note": { … } }
 ```
 
+**That checks the API, not the site.** The two fail independently: a bundle
+built without `NEXT_PUBLIC_API_URL` calls its own CloudFront domain, and a
+misnamed origin is refused by the browser — neither is visible to a `curl` that
+sends no `Origin` header. So also open the `WebUrl` output, create a note in
+the form, and reload:
+
+```sh
+curl -s -I "$WEB_URL" | head -1                      # the bundle is served
+curl -s -X OPTIONS "$API_URL/notes" -o /dev/null -w '%{http_code}\n' \
+  -H "Origin: $WEB_URL" -H 'access-control-request-method: POST'
+# expect: 204 — the API allows the origin the site is actually served from
+```
+
 Then confirm the pipeline: the worker logs `note.created processed`, and the
 **DLQ alarm stays quiet**. If the smoke test regresses: `npx cdk deploy` the
 previous revision (or `git revert` and redeploy) **first**, diagnose second.
@@ -120,13 +140,18 @@ previous revision (or `git revert` and redeploy) **first**, diagnose second.
   ways out are an **outbox** (write the event alongside the note, relay it
   afterwards) or DynamoDB Streams feeding the worker, which deletes the second
   write instead of coordinating it.
-- **CORS names who may call the API, and it is wired for you.** `bin/app.ts`
-  builds `WebStack` first and passes its CloudFront origin to `AppStack`, so a
-  deployed app works with nothing to configure. For a custom domain or a second
+- **CORS names who may call the API, and that half is wired for you.**
+  `bin/app.ts` builds `WebStack` first and passes its CloudFront origin to
+  `AppStack`, so the API allows the deployed site without you configuring it.
+  The other half is not automatic: the bundle has to know where the API *is*,
+  and that is `NEXT_PUBLIC_API_URL` above. For a custom domain or a second
   origin, deploy with `-c allowedOrigins=https://app.example.com` (comma-
   separated for several) — the entrypoint prefers the flag over the wired
-  default, and the cross-stack export disappears with it. `*` is not shipped
-  here on purpose, and an `allowedOrigins` that parses to nothing is refused at
-  synth rather than deployed as an API nobody can call.
+  default, and the cross-stack export disappears with it. An `allowedOrigins`
+  that parses to nothing, or an entry no browser could send, is refused at
+  synth rather than deployed as an API nobody can call. `*` is not the default
+  and never will be, but the flag does take it: you get a warning naming the
+  consequence, not a refusal, because the alternative is people editing the
+  stack.
 
 See `.claude/rules/architecture.md` for the full rules.

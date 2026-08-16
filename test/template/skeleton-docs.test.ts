@@ -79,6 +79,38 @@ describe('aws-serverless deploy docs match the deploy that actually runs', () =>
     );
   });
 
+  it('names the build-time API URL the bundle needs, on both the CI and the hand path', async () => {
+    // `apps/web/src/lib/api.ts` reads `process.env.NEXT_PUBLIC_API_URL ?? ''`,
+    // inlined at build time, and `web-stack.ts` gives the distribution exactly
+    // one behaviour — the S3 origin. So an unset variable ships a bundle that
+    // POSTs `/notes` at its own CDN and never reaches API Gateway. The README's
+    // health check curls the API directly, so it reports healthy over a dead
+    // site: this is the failure mode a doc has to name, because nothing else does.
+    const content = await readme();
+    expect(
+      content,
+      'the variable the bundle is compiled against is never named, so "nothing to configure" is unverifiable',
+    ).toContain('NEXT_PUBLIC_API_URL');
+
+    const automated = content.slice(
+      content.indexOf('### Dev — automated'),
+      content.indexOf('### Local / manual'),
+    );
+    expect(automated, 'the CI path feeds it from the API_URL repo variable').toContain('API_URL');
+
+    // The hand path builds with `pnpm build:web` and then `--delete`-syncs the
+    // result over what was live, so a bare build is not a missing convenience:
+    // it replaces a working site with one whose API base is the empty string.
+    const manual = content.slice(content.indexOf('### Local / manual'));
+    expect(manual, 'the manual build runs bare, with no API base to compile in').toContain(
+      'NEXT_PUBLIC_API_URL',
+    );
+    expect(
+      manual.indexOf('NEXT_PUBLIC_API_URL'),
+      'it has to be set no later than the build that inlines it',
+    ).toBeLessThan(manual.indexOf('build:web'));
+  });
+
   it('tells the reader whether CI ships the bundle or they must sync it by hand', async () => {
     const content = await readme();
     const automated = content.slice(

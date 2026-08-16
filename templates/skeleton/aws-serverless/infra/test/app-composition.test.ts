@@ -91,11 +91,12 @@ describe('the deployed app allows the origin it is actually served from', () => 
 
 // The README and `AppStackProps.allowedOrigins` both advertise
 // `-c allowedOrigins=https://…` as the way to point the API at a custom domain.
-// The entrypoint passes `allowedOrigins` unconditionally, and props win — so the
-// flag is discarded on synth with no error and no warning. The owner gets a
-// green deploy and a CORS-blocked browser, and the obvious repair for a hurried
-// reader is `allowOrigins: ['*']`: the exact regression the rest of this file
-// exists to prevent, arriving through a different door.
+// It once did not work: the entrypoint passed `allowedOrigins` unconditionally
+// and props win, so the flag was discarded on synth with no error and no
+// warning — a green deploy, a CORS-blocked browser, and `allowOrigins: ['*']`
+// as the obvious repair for a hurried reader. That is the regression the rest
+// of this file exists to prevent, arriving through a different door, which is
+// why the door is pinned here.
 describe('the documented -c escape hatch reaches the composed app', () => {
   it('serves the origin the flag names instead of discarding it for the CloudFront import', async () => {
     const origins = await withCdkContext({ allowedOrigins: 'https://custom.example.com' }, () =>
@@ -110,14 +111,14 @@ describe('the documented -c escape hatch reaches the composed app', () => {
   });
 });
 
-// Two files read the same context key and disagree by one value. The entrypoint
-// asks `override === undefined` before wiring the CloudFront origin, while
-// `resolveAllowedOrigins` treats `undefined` OR `null` as "nothing given". A
-// `null` — writable in `cdk.json`, `cdk.context.json` or `CDK_CONTEXT_JSON`,
-// though never producible by the `-c` flag — therefore lands in the gap: the
-// entrypoint drops the wired origin as if an override existed, and the stack
-// falls back to a localhost no deploy is served from. Synth stays green and the
-// browser is blocked, which is this branch's whole failure class.
+// Two files read the same context key, and they once disagreed by one value:
+// the entrypoint asked `override === undefined` while `resolveAllowedOrigins`
+// treated `undefined` OR `null` as "nothing given". A `null` — writable in
+// `cdk.json`, `cdk.context.json` or `CDK_CONTEXT_JSON`, though never producible
+// by the `-c` flag — landed in the gap, and the entrypoint dropped the wired
+// origin as if an override existed while the stack fell back to a localhost no
+// deploy is served from. Green synth, blocked browser: this branch's whole
+// failure class. One predicate now, imported; this pins that it stays one.
 describe('a context that names no origin is not an override', () => {
   it('keeps the wired CloudFront origin when allowedOrigins is present but null', async () => {
     const origins = await withCdkContext({ allowedOrigins: null }, () => originsOfComposedApp());

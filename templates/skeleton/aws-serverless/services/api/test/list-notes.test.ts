@@ -58,10 +58,11 @@ describe('GET /notes handler', () => {
   });
 });
 
-// The same leak create-note was just fixed for. `AppError` defaults to
-// 500/INTERNAL, so a table name, a host or an SDK message arrives here wearing
-// the same type as "title is required" — and this handler forwards every one of
-// them to the caller. Typed does not mean safe to show; the status decides.
+// The same leak create-note was fixed for, and this handler had it too:
+// `AppError` defaults to 500/INTERNAL, so a table name, a host or an SDK
+// message arrives wearing the same type as "title is required", and every one
+// of them used to reach the caller. Typed does not mean safe to show — the
+// status decides, and these pin that both handlers decide it the same way.
 describe('GET /notes keeps its internals to itself', () => {
   const failWith = (error: unknown, sink: (line: string) => void = () => {}) =>
     makeListNotesHandler({

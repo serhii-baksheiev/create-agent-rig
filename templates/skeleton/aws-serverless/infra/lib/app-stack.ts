@@ -45,6 +45,11 @@ const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000'];
  * The failure this prevents is silent: an API synthesised with an empty
  * allow-list blocks every browser call, and the symptom appears far from the
  * flag that caused it.
+ *
+ * Exported for the tests, and only for them — nothing else imports it. The
+ * alternative was a case per branch built on its own `AppStack`, which cost a
+ * full synth and three Lambda bundles each and put the generated project's
+ * suite over its hook timeout.
  */
 export function resolveAllowedOrigins(fromProps: string[] | undefined, fromContext: unknown): string[] {
   if (fromProps !== undefined) {
