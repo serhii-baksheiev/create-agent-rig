@@ -20,3 +20,23 @@ templates/skeleton/*/apps/web/out/
 # on every gate and collide across concurrent sessions. Unlike a committed
 # evidence directory, this one is per-run and stays out of the repository.
 .claude/runs/
+
+# secrets — never commit these. The generated projects already had this block
+# (templates/skeleton/*/gitignore); this repository did not, and it runs the
+# loop against a Jira adapter that reads JIRA_API_TOKEN from the environment.
+#
+# 🔴 These five lines now exist in THREE files, which is the shape
+# `invariants.md` warns about — gitignore has no import, so the duplication is
+# forced rather than chosen, and the copy nobody looks at is the one that will
+# be wrong. What ties them together is a test: `dogfood.test.ts` extracts the
+# patterns from all three and fails when they diverge.
+#
+# Order is load-bearing: `!.env.example` must stay BELOW `.env.*`, or the
+# negation stops re-including it. And per the note at the top of this file,
+# these patterns reach `templates/skeleton/**` too — a skeleton that ever needs
+# to ship a fixture named `*.key` would find it untrackable with no error.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
