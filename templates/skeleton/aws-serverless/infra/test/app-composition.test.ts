@@ -1,6 +1,7 @@
 import type { App, Stack } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
+import { resolveAllowedOrigins } from '../lib/app-stack.js';
 
 // `bin/app.ts` is what every `cdk deploy` and every CI run actually builds, so
 // the CORS allow-list has to be correct THERE — a stack that can be handed the
@@ -127,6 +128,10 @@ describe('a context that names no origin is not an override', () => {
       origins.some(referencesTheWebDistribution),
       'a null context must compose exactly like no context at all',
     ).toBe(true);
-    expect(origins).not.toContain('http://localhost:3000');
+    // Asked of the resolver rather than spelled out: a literal copy of the
+    // localhost default passes vacuously the moment the default changes — it
+    // then forbids an origin nothing could have produced, and the leak this
+    // line exists to catch walks straight through.
+    expect(origins).not.toContain(resolveAllowedOrigins(undefined, undefined)[0]);
   });
 });

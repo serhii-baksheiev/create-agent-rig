@@ -34,8 +34,14 @@ export interface AppStackProps extends StackProps {
   allowedOrigins?: string[];
 }
 
-/** Local dev only: a real origin is a deliberate act, not a default. */
-const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000'];
+/**
+ * Local dev only: a real origin is a deliberate act, not a default.
+ *
+ * The port belongs to `apps/web`'s `dev` script — that is the source of truth,
+ * and a test reads it from there rather than restating it. A default naming a
+ * port nothing serves is worse than no default: it looks configured.
+ */
+const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3001'];
 
 /**
  * Props win, then `-c allowedOrigins=a,b`, then the local default.

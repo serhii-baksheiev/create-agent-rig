@@ -56,8 +56,9 @@ do not edit the workflow:
    of a first deploy). It becomes `NEXT_PUBLIC_API_URL`, which Next **inlines
    into the bundle at build time** — unset, the site calls `/notes` on its own
    CloudFront domain, where nothing answers. `AWS_REGION` is genuinely
-   optional. The first deploy is therefore two passes: deploy, read `ApiUrl`,
-   set the variable, deploy again.
+   optional. The first deploy is therefore two passes: deploy, read `ApiUrl`
+   from the job's `cdk deploy` Outputs, set the variable, then re-run the
+   workflow (push, or **Run workflow** — it is `workflow_dispatch`-enabled).
 
 The workflow then assumes the role, builds the web bundle, runs
 `cdk deploy AppStack WebStack --outputs-file`, then **uploads `apps/web/out` to
@@ -76,15 +77,22 @@ npx cdk deploy AppStack WebStack --outputs-file cdk-outputs.json
 # --delete makes the bucket the bundle's territory alone, so a stale or missing
 # `out/` would empty the live site — or restore last month's. The workflow
 # builds two steps before its sync; by hand, build here.
+# Read the outputs into variables FIRST. `jq -er` exits non-zero on a missing
+# key, but a command substitution inside an assignment or an argument throws
+# that status away — which is how a stale outputs file becomes a bundle built
+# against `null` and an `aws s3 sync … s3://null --delete`.
+API=$(jq -er '.AppStack.ApiUrl' cdk-outputs.json) || { echo "no ApiUrl"; exit 1; }
+BUCKET=$(jq -er '.WebStack.WebBucketName' cdk-outputs.json) || { echo "no WebBucketName"; exit 1; }
+DIST=$(jq -er '.WebStack.WebDistributionId' cdk-outputs.json) || { echo "no WebDistributionId"; exit 1; }
+
 # NEXT_PUBLIC_API_URL is inlined at build time: without it the bundle calls its
 # own CloudFront domain instead of the API, and the sync below makes that live.
-(cd .. && NEXT_PUBLIC_API_URL="$(jq -er '.AppStack.ApiUrl' infra/cdk-outputs.json)" pnpm build:web)
+(cd .. && NEXT_PUBLIC_API_URL="$API" pnpm build:web)
 [ -f ../apps/web/out/index.html ] || { echo "no web bundle — build failed"; exit 1; }
-aws s3 sync ../apps/web/out "s3://$(jq -er '.WebStack.WebBucketName' cdk-outputs.json)" --delete
+aws s3 sync ../apps/web/out "s3://$BUCKET" --delete
 # a synced bucket whose distribution still serves the old objects has not
 # deployed — invalidate, or you are looking at the previous build
-aws cloudfront create-invalidation --paths '/*' \
-  --distribution-id "$(jq -er '.WebStack.WebDistributionId' cdk-outputs.json)"
+aws cloudfront create-invalidation --paths '/*' --distribution-id "$DIST"
 ```
 
 ### Production — a human step, on purpose
@@ -100,9 +108,12 @@ your own approval — reusing the dev workflow's OIDC pattern.
 After every deploy:
 
 ```sh
-# both come from the deploy's outputs file (see Local / manual above)
-API_URL=$(jq -er '.AppStack.ApiUrl' infra/cdk-outputs.json)
-WEB_URL=$(jq -er '.WebStack.WebUrl' infra/cdk-outputs.json)
+# From the deploy's outputs file — run this from `infra/`, where the manual
+# section leaves you. Deployed through CI instead? That file is written on the
+# runner and never lands here: take both values from the job's `cdk deploy`
+# Outputs, or re-run `cdk deploy … --outputs-file cdk-outputs.json` locally.
+API_URL=$(jq -er '.AppStack.ApiUrl' cdk-outputs.json)
+WEB_URL=$(jq -er '.WebStack.WebUrl' cdk-outputs.json)
 
 curl -s -X POST "$API_URL/notes" \
   -H 'content-type: application/json' \
@@ -118,9 +129,18 @@ the form, and reload:
 
 ```sh
 curl -s -I "$WEB_URL" | head -1                      # the bundle is served
-curl -s -X OPTIONS "$API_URL/notes" -o /dev/null -w '%{http_code}\n' \
-  -H "Origin: $WEB_URL" -H 'access-control-request-method: POST'
-# expect: 204 — the API allows the origin the site is actually served from
+
+# API Gateway answers a preflight 204 whether or not the origin matched, so the
+# status code proves nothing here. The browser gates on the echoed header —
+# that is what to look for. `content-type` is sent because the real call uses
+# it, and a non-safelisted header is what makes `allowHeaders` matter.
+curl -s -X OPTIONS "$API_URL/notes" -D - -o /dev/null \
+  -H "Origin: $WEB_URL" \
+  -H 'access-control-request-method: POST' \
+  -H 'access-control-request-headers: content-type' \
+  | grep -i '^access-control-allow-origin:'
+# expect: a line echoing $WEB_URL. No line = the browser will refuse the call,
+# whatever the status code said.
 ```
 
 Then confirm the pipeline: the worker logs `note.created processed`, and the

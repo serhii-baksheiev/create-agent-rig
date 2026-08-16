@@ -74,8 +74,17 @@ describe('aws-serverless deploy docs match the deploy that actually runs', () =>
     const content = await readme();
     const manual = content.slice(content.indexOf('### Local / manual'));
     expect(manual, 'the manual path never builds what it is about to sync').toMatch(/build:web/);
-    expect(manual.indexOf('build:web'), 'it builds before it syncs').toBeLessThan(
-      manual.indexOf('aws s3 sync'),
+    // Ordering is measured over COMMANDS, not over the section text: the block
+    // explains the `s3://null` trap in prose, and a substring search finds the
+    // explanation before the command it warns about.
+    const commands = manual
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'));
+    const commandIndex = (needle: string) => commands.findIndex((line) => line.includes(needle));
+    expect(commandIndex('build:web'), 'the build is a command, not only prose').toBeGreaterThan(-1);
+    expect(commandIndex('build:web'), 'it builds before it syncs').toBeLessThan(
+      commandIndex('aws s3 sync'),
     );
   });
 
@@ -109,6 +118,36 @@ describe('aws-serverless deploy docs match the deploy that actually runs', () =>
       manual.indexOf('NEXT_PUBLIC_API_URL'),
       'it has to be set no later than the build that inlines it',
     ).toBeLessThan(manual.indexOf('build:web'));
+  });
+
+  it('verifies CORS by the response header, since API Gateway answers 204 either way', async () => {
+    // A preflight against a CORS-configured HTTP API returns 204 whether or not
+    // the Origin matched `allowOrigins` — what differs is the presence of the
+    // `access-control-allow-origin` response header, which is the thing the
+    // browser actually gates on. A check that reads only `%{http_code}` throws
+    // that away and reports green on the exact misconfiguration it exists to
+    // catch. And `apps/web/src/lib/api.ts` sends `content-type: application/json`,
+    // a non-safelisted header, so a real preflight carries it — a command that
+    // omits it never exercises `allowHeaders`.
+    const content = await readme();
+    const start = content.indexOf('## Verify runtime health');
+    expect(start, 'the health-check section must exist to be read').toBeGreaterThan(-1);
+    const nextHeading = content.indexOf('\n## ', start + 1);
+    const section = content.slice(start, nextHeading === -1 ? undefined : nextHeading);
+
+    expect(
+      section,
+      'the check reads only the status code, so a refused origin still reports green',
+    ).toMatch(/access-control-allow-origin/i);
+
+    // Scope to the preflight itself: the POST smoke test above it already sends
+    // a `content-type` header, and that one proves nothing about `allowHeaders`.
+    const preflight = section.split(/(?=\bcurl\b)/).find((command) => /-X\s+OPTIONS/.test(command));
+    expect(preflight, 'the section must still contain a preflight to verify').toBeDefined();
+    expect(
+      preflight,
+      'the preflight omits the non-safelisted header the real call sends, so allowHeaders is never exercised',
+    ).toMatch(/access-control-request-headers|content-type/i);
   });
 
   it('tells the reader whether CI ships the bundle or they must sync it by hand', async () => {

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Annotations as CdkAnnotations, App } from 'aws-cdk-lib';
 import { Annotations, Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
@@ -31,6 +34,38 @@ const thrownBy = (run: () => unknown): unknown => {
   return undefined;
 };
 
+const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * The port `apps/web` is actually started on, read from the script that starts it.
+ *
+ * The localhost default in `app-stack.ts` is a restated copy of a number owned
+ * by another file, and a restated constant drifts: it shipped `:3000` while the
+ * only dev server in this repository has always been launched with
+ * `--port 3001`, so the default named an origin nothing here ever sends —
+ * configured-looking, and working for nobody. Reading the source of truth is
+ * what stops that happening a second time.
+ *
+ * The read is deliberately loud. A `dev` script this cannot parse fails the
+ * suite rather than falling back to a port of its own, because a correspondence
+ * test that quietly supplies both sides of the correspondence checks nothing.
+ */
+const webDevServerPort = (): string => {
+  const manifest = path.join(workspaceRoot, 'apps', 'web', 'package.json');
+  const scripts = (JSON.parse(readFileSync(manifest, 'utf8')) as { scripts?: Record<string, string> })
+    .scripts;
+  const dev = scripts?.dev;
+  expect(dev, 'apps/web/package.json has no dev script to take the origin port from').toBeTypeOf(
+    'string',
+  );
+  const port = /--port[=\s]+(\d+)/.exec(dev as string)?.[1];
+  expect(
+    port,
+    `the dev script ${JSON.stringify(dev)} names no --port, so nothing pins the default to it`,
+  ).toBeTypeOf('string');
+  return port as string;
+};
+
 /** Every refusal must name the flag that carried the bad value, and be an Error. */
 const refusalFrom = (run: () => unknown): Error => {
   const error = thrownBy(run);
@@ -44,7 +79,14 @@ const refusalFrom = (run: () => unknown): Error => {
 
 describe('choosing the allowed origins', () => {
   it('falls back to localhost only when nothing at all was given', () => {
-    expect(resolved()).toEqual(['http://localhost:3000']);
+    expect(resolved()).toEqual(['http://localhost:3001']);
+  });
+
+  it('defaults to the port the web dev server is actually started on', () => {
+    // The correspondence, not a second copy of the number. `apps/web` owns the
+    // port; a default that restates it is only correct until somebody changes
+    // one of the two, which is exactly how it came to name :3000.
+    expect(resolved()).toEqual([`http://localhost:${webDevServerPort()}`]);
   });
 
   it('prefers the origins passed in props over the localhost default', () => {
@@ -73,7 +115,7 @@ describe('choosing the allowed origins', () => {
     // localhost no deploy is served from — green synth, blocked browser.
     expect(nothingGiven(null)).toBe(true);
     expect(nothingGiven(undefined)).toBe(true);
-    expect(resolved({ context: null })).toEqual(['http://localhost:3000']);
+    expect(resolved({ context: null })).toEqual(['http://localhost:3001']);
   });
 });
 
@@ -127,9 +169,13 @@ describe('an origin no browser could ever send is refused at synth', () => {
 
   it('accepts the origins a browser can actually send', () => {
     // The refusal above must stay narrow: a real deploy origin and the local
-    // dev one are the two shapes this project is built around.
+    // dev one are the two shapes this project is built around. The second is
+    // spelled as THIS project's dev origin on purpose — an arbitrary port would
+    // prove the same thing about the parser while quietly reading as "the dev
+    // origin" to the next person, which is the confusion that produced the
+    // :3000 default in the first place.
     expect(resolved({ context: 'https://a.example.com' })).toEqual(['https://a.example.com']);
-    expect(resolved({ context: 'http://localhost:3000' })).toEqual(['http://localhost:3000']);
+    expect(resolved({ context: 'http://localhost:3001' })).toEqual(['http://localhost:3001']);
   });
 });
 
