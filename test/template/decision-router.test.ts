@@ -1,5 +1,15 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -648,6 +658,237 @@ describe('the router writes one journal line per gate verdict', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Review round 1 — every block below reproduces a finding from the gate fan-out
+// on this branch. Each one is a bug the module shipped with, written as the test
+// that fails against it.
+// ---------------------------------------------------------------------------
+
+describe('parseNameStatus — the diff format the router actually reads', () => {
+  interface Parsed {
+    path: string;
+    status: string;
+  }
+  const parse = async (raw: string): Promise<Parsed[]> => {
+    const { parseNameStatus } = (await import(pathToFileURL(modulePath).href)) as unknown as {
+      parseNameStatus: (raw: string) => Parsed[];
+    };
+    return parseNameStatus(raw);
+  };
+
+  it('maps every status letter git emits', async () => {
+    expect(await parse('A\0a.ts\0M\0b.ts\0D\0c.ts\0T\0d.ts\0')).toEqual([
+      { path: 'a.ts', status: 'added' },
+      { path: 'b.ts', status: 'modified' },
+      { path: 'c.ts', status: 'removed' },
+      { path: 'd.ts', status: 'modified' },
+    ]);
+  });
+
+  it('splits on NUL, so a path containing a newline stays one path', async () => {
+    // Without `-z` and a NUL split this arrives as two junk paths, and an
+    // elevated file stops looking elevated. Same defect `-z` exists to prevent
+    // for octal-escaped non-ASCII names.
+    expect(await parse('M\0src/we\nird.ts\0')).toEqual([
+      { path: 'src/we\nird.ts', status: 'modified' },
+    ]);
+  });
+
+  it('records BOTH halves of a rename, because the source is a deletion', async () => {
+    // 🔴 The finding, in one line: `R100\0from\0to\0` and the parser kept only
+    // `to`. The source path of a rename IS a deletion and it is the only place
+    // that deletion appears in the diff — so a rename could carry a test out of
+    // the suite and a hook out of `.claude/` with nothing left for any flag to
+    // see.
+    expect(await parse('R100\0test/foo.test.ts\0docs/foo.md\0')).toEqual([
+      { path: 'test/foo.test.ts', status: 'removed' },
+      { path: 'docs/foo.md', status: 'renamed' },
+    ]);
+  });
+
+  it('records only the destination of a copy, because a copy deletes nothing', async () => {
+    expect(await parse('C100\0src/a.ts\0src/b.ts\0')).toEqual([
+      { path: 'src/b.ts', status: 'copied' },
+    ]);
+  });
+
+  it('always advances, so a truncated or malformed record cannot hang it', async () => {
+    // A truncated rename keeps the half it DID read, as the removal it is —
+    // dropping it would be the permissive answer on malformed input, which is
+    // the direction this module refuses everywhere else.
+    expect(await parse('R100\0only-one-field\0')).toEqual([
+      { path: 'only-one-field', status: 'removed' },
+    ]);
+    expect(await parse('\0\0\0')).toEqual([]);
+    expect(await parse('')).toEqual([]);
+    expect(await parse('M\0')).toEqual([]);
+  });
+});
+
+describe('a rename cannot smuggle a change past the risk flags', () => {
+  it('fires test-removed when a rename carries a test out of the suite', async () => {
+    const { riskFlagsIn, route } = await load();
+    const renamed = [
+      { path: 'packages/core/test/note.test.ts', status: 'removed' },
+      { path: 'docs/note.md', status: 'renamed' },
+    ];
+    expect(riskFlagsIn(renamed, { elevatedPaths: ELEVATED }).map((f) => f.flag)).toEqual([
+      'test-removed',
+    ]);
+    expect(route({ files: renamed, elevatedPaths: ELEVATED }).lane).toBe('model');
+  });
+
+  it('fires elevated-path when a rename carries a hook out of an elevated directory', async () => {
+    const { route } = await load();
+    const result = route({
+      files: [
+        { path: '.claude/hooks/guard-bash.mjs', status: 'removed' },
+        { path: 'docs/guard.md', status: 'renamed' },
+      ],
+      elevatedPaths: ELEVATED,
+    });
+    expect(result.risks.map((r) => r.flag)).toContain('elevated-path');
+    expect(result.lane).toBe('model');
+  });
+});
+
+describe('the cheap lanes cannot be unlocked by choosing a filename', () => {
+  it('refuses the deterministic lane to a derived-looking file that was ADDED', async () => {
+    const { route } = await load();
+    // A derived artifact earns the no-reviewer lane because a check catches its
+    // drift against a generator. An ADDED one has no prior output to have
+    // drifted from, so the justification does not hold and the name alone is
+    // the author's choice.
+    expect(
+      route({
+        files: [{ path: 'src/payments.generated.ts', status: 'added' }],
+        elevatedPaths: ELEVATED,
+      }).lane,
+    ).toBe('model');
+    expect(
+      route({ files: [{ path: 'dist/bundle.js', status: 'added' }], elevatedPaths: ELEVATED }).lane,
+    ).toBe('model');
+    // a MODIFIED one still reaches it — the cheap lane is narrowed, not deleted
+    expect(
+      route({
+        files: [{ path: 'dist/bundle.js', status: 'modified' }],
+        elevatedPaths: ELEVATED,
+      }).lane,
+    ).toBe('deterministic');
+  });
+
+  it('treats a dependency manifest from any ecosystem as a security surface', async () => {
+    const { riskFlagsIn } = await load();
+    // `init` installs this layer into a repo whose shape is unknown, and `.txt`
+    // is otherwise prose — so this one is downgraded rather than merely missed.
+    for (const file of ['requirements.txt', 'constraints.txt']) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+  });
+
+  it('names more of the words a security-relevant path uses', async () => {
+    const { riskFlagsIn } = await load();
+    for (const file of [
+      'src/api-keys.ts',
+      'src/password-reset.ts',
+      'packages/shared/src/jwt.ts',
+      'src/oauth/callback.ts',
+      'src/crypto.ts',
+    ]) {
+      expect(
+        riskFlagsIn([file], { elevatedPaths: [] }).map((f) => f.flag),
+        file,
+      ).toEqual(['security-surface']);
+    }
+    // and still not on a word that merely starts with those letters
+    expect(riskFlagsIn(['packages/core/src/tokenizer.ts'], { elevatedPaths: [] })).toEqual([]);
+    expect(riskFlagsIn(['src/keyboard.ts'], { elevatedPaths: [] })).toEqual([]);
+  });
+});
+
+describe('the CLI runs when it is reached through a symlink', () => {
+  it('prints the route instead of exiting 0 having printed nothing', async () => {
+    const dir = await temp('router-link-');
+    const link = path.join(dir, 'router-link.mjs');
+    await symlink(modulePath, link);
+
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+    const result = await new Promise<CliResult>((resolve) => {
+      execFile(
+        process.execPath,
+        [link, '--files', 'README.md', '--json'],
+        { cwd: dir, env },
+        (error, stdout, stderr) => {
+          resolve({
+            code: error ? ((error as { code?: number }).code ?? 1) : 0,
+            stdout,
+            stderr,
+            out: stdout + stderr,
+          });
+        },
+      );
+    });
+
+    // 🔴 The failure this replaces is the worst shape available for this file:
+    // exit 0 with empty stdout is indistinguishable from a router that ran, and
+    // the gate reads the lane off stdout. Every sibling CLI in this directory
+    // compares realpaths for exactly this reason.
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout, 'the CLI produced no output through a symlink').not.toBe('');
+    expect((JSON.parse(result.stdout) as Routed).lane).toBe('fast-path');
+  });
+
+  it('compares realpaths, the same way every sibling CLI in this directory does', async () => {
+    expect(await source()).toMatch(/realpathSync/);
+  });
+});
+
+describe('a project that declares no elevated path is refused, never routed', () => {
+  it('exits non-zero with a diagnosis rather than reporting the flag as clear', async () => {
+    // 🔴 The trace said `risk-flags clear — no risk flag fired` for a project
+    // where `elevated-path` was never evaluated at all. An unknown that reads as
+    // a pass is the one failure a gate's own journal must not produce.
+    const project = await temp('router-nodecl-');
+    const scripts = path.join(project, '.claude', 'scripts');
+    await mkdir(scripts, { recursive: true });
+    for (const name of [
+      'decision-router.mjs',
+      'detect-missed-gate.mjs',
+      'git-env.mjs',
+      'run-journal.mjs',
+    ]) {
+      await copyFile(path.join(scriptsDir, name), path.join(scripts, name));
+    }
+    await writeFile(path.join(project, 'CLAUDE.md'), '# a project that declares nothing\n');
+
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+    const result = await new Promise<CliResult>((resolve) => {
+      execFile(
+        process.execPath,
+        [path.join(scripts, 'decision-router.mjs'), '--files', 'README.md', '--json'],
+        { cwd: project, env },
+        (error, stdout, stderr) => {
+          resolve({
+            code: error ? ((error as { code?: number }).code ?? 1) : 0,
+            stdout,
+            stderr,
+            out: stdout + stderr,
+          });
+        },
+      );
+    });
+
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/elevated/i);
+  });
+});
+
 // A router with no call site routes nothing. These are the correspondence tests
 // the rulebook requires when one fact lives in two artifacts.
 describe('the gate skill and the rules point at the router', () => {
@@ -664,12 +905,80 @@ describe('the gate skill and the rules point at the router', () => {
 
   it('pr-ship still runs code-reviewer whenever the lane is model', async () => {
     const text = await skill();
-    // The cheap lanes are an addition, never a subtraction from the expensive one:
-    // the sentence that ties `model` to `code-reviewer` has to survive the change.
-    const tied = text
-      .split(/\n\s*\n/)
-      .some((block) => /\bmodel\b/.test(block) && /code-reviewer/.test(block));
-    expect(tied, 'no passage ties the model lane to the code-reviewer gate').toBe(true);
+    // 🔴 This replaces a version that split on paragraphs and asked whether ANY
+    // block mentioned both words — which the change's own meta-commentary
+    // satisfied. A reviewer deleted both real instructions and it still passed.
+    // Both instructions are now asserted separately, each anchored to the thing
+    // that carries it, so deleting either one is red.
+    const flat = text.replace(/[ \t]*\n[ \t]*/g, ' ');
+
+    // (a) the lane list entry: the `model` bullet names the reviewer it costs
+    const laneBullet = flat.split(/\s-\s/).find((part) => part.trimStart().startsWith('`model`'));
+    expect(laneBullet, 'the skill lists no `model` lane').toBeTruthy();
+    expect(laneBullet, 'the `model` lane entry does not name code-reviewer').toMatch(
+      /code-reviewer/,
+    );
+    expect(laneBullet).toMatch(/always/i);
+
+    // (b) the launch instruction: the fan-out step ties the lane to the agent
+    const launch = flat
+      .split(/\s-\s/)
+      .find((part) => /`model`\s*(→|->)/.test(part) && /launch/i.test(part));
+    expect(launch, 'no launch instruction names the `model` lane').toBeTruthy();
+    expect(launch).toMatch(/code-reviewer/);
+  });
+
+  it('pr-ship keeps the conditional triggers lane-independent', async () => {
+    const text = await skill();
+    // The narrowing that nearly shipped: scoping step 4's body to `model` made
+    // `security-scanner` unreachable on every cheap lane — including on the
+    // router's own stated blind spot, a secret pasted into a `.md`.
+    expect(text).toMatch(/lane-independent/i);
+    expect(text).toMatch(/may only ADD|may only \*ADD\*|may only \*\*ADD\*\*|may only add/i);
+    expect(text).toMatch(/security-scanner/);
+  });
+
+  it('pr-ship names what the cheap lanes give up', async () => {
+    const text = await skill();
+    // A narrowing the document does not mention is the false-confidence failure
+    // this layer names for itself. `code-reviewer` carries two checks that are
+    // not about code, and dropping it drops them.
+    expect(text).toMatch(/give up|gives up|gave up/i);
+    expect(text).toMatch(/contradicts the item|contract drift/i);
+  });
+
+  it('pr-ship passes the base it resolved, rather than trusting origin/HEAD', async () => {
+    const text = await skill();
+    // `origin/HEAD` is set by `git clone` and not by `git init` + `git remote
+    // add` — the shape `init/` targets. Worse than failing: a base that is
+    // merely different routes a narrower file set than the gate reviews.
+    const invocation = text
+      .split('\n')
+      .find((l) => l.includes('decision-router.mjs') && l.includes('node '));
+    expect(invocation, 'the skill never shows how to run the router').toBeTruthy();
+    expect(invocation, 'the documented invocation does not pass a base').toMatch(/--base/);
+  });
+
+  it('pr-ship says an exit code of 1 is not a lane', async () => {
+    const text = await skill();
+    expect(text).toMatch(/exit 1|exit code of 1|`1`/i);
+    expect(text).toMatch(/nothing was routed|not a lane/i);
+  });
+
+  it('CLAUDE.md no longer claims code-reviewer runs before every PR', async () => {
+    // The map is the document a session reads first, and it was the one artifact
+    // still stating the pre-router rule — two answers to one question, with the
+    // wrong one in the more prominent place.
+    for (const layer of ['universal', 'init']) {
+      const text = await readFile(
+        path.join(repoRoot, 'templates', 'agent-os', layer, 'CLAUDE.md'),
+        'utf8',
+      );
+      expect(text, `${layer}/CLAUDE.md still says "before every PR"`).not.toMatch(
+        /code-reviewer` before every PR/,
+      );
+      expect(text, `${layer}/CLAUDE.md never mentions the router`).toMatch(/decision-router/);
+    }
   });
 
   it('pr-ship spells the ladder with the same lane names the router exports', async () => {

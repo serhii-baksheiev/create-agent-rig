@@ -50,28 +50,33 @@ travels one path to merge, in this order:
 2. **Reviewer fan-out**, by what the change touches — and *how much* fan-out is
    decided first, in ascending order of cost:
 
-   | lane | what reaches it | what it costs |
+   | lane | what reaches it | the floor it sets |
    | --- | --- | --- |
-   | `deterministic` | every changed file is a derived artifact | the checks alone; no reviewer |
-   | `fast-path` | documentation outside the rulebook | `prose-reviewer` alone |
-   | `model` | everything else | the full fan-out below |
+   | `deterministic` | every changed file is a derived artifact, none of them added | the checks alone; no reviewer |
+   | `fast-path` | documentation outside the rulebook | `prose-reviewer` |
+   | `model` | everything else, including anything unclassifiable | `code-reviewer` |
 
    `.claude/scripts/decision-router.mjs` decides this from the changed paths,
    and **risk flags escalate ahead of all three**: a file under a declared
    elevated path, a dependency manifest, a path naming auth or secrets or
-   sessions, a deleted test. Any one of them means `model`, however cheap the
-   change otherwise looked, and a path the router cannot classify means `model`
-   too. The cheap lanes are an addition to this gate, never a subtraction from
-   it — `code-reviewer` was "always" because every change was assumed to carry
-   code, and the router decides that question mechanically instead of assuming
-   it. A rulebook document is code here, so it never reaches the prose lane.
+   sessions, a deleted test — including the deletion half of a rename. Any one
+   of them means `model`, however cheap the change otherwise looked. A rulebook
+   document is code here, so it never reaches the prose lane. The router
+   **refuses** rather than routing when it cannot decide, and a refusal is read
+   as `model`, never as a reason to skip the gate.
 
-   The reviewer list the router returns is a **floor, not a ceiling**: it reads
-   paths, while the triggers below read what the code *does*, and a path cannot
-   say that a module parses untrusted input. The triggers may only add.
+   🔴 **The cheap lanes give something up, and the rule says what.** Dropping
+   `code-reviewer` drops two of its checks that are not about code — contract
+   drift, and "contradicts the item it claims to implement". So every lane
+   passes the queue item's text to whatever cold reader it launches, and the
+   `deterministic` lane launches none only because a wholly-regenerated diff has
+   no behaviour claim of its own to contradict.
 
-   On the `model` lane:
-   - the `code-reviewer` agent **always**;
+   The lane is a **floor, not a ceiling**: it reads paths, while the triggers
+   below read what the code *does*, and a path cannot say that a module parses
+   untrusted input. **The triggers apply on every lane and may only add** — a
+   documentation-only diff still reaches `security-scanner` when it trips one:
+   - `code-reviewer` on the `model` lane, **always**;
    - `security-scanner` when it touches auth, secrets/configuration, input
      parsing, file handling, or outbound calls;
    - `prose-reviewer` when it touches the documents that instruct agents — a

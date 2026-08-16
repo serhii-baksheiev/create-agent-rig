@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Reviews a completed change against the checklist before a PR is opened or merged. Use after any non-trivial implementation work, and always before opening a PR. Blocking findings must be resolved, not argued with.
+description: Reviews a completed change against the checklist before a PR is opened or merged. Use after any non-trivial implementation work, and always before opening a PR that carries code, a rulebook document, or a path the decision-router could not classify — that is its `model` lane. Blocking findings must be resolved, not argued with.
 tools: Read, Grep, Glob, Bash
 ---
 

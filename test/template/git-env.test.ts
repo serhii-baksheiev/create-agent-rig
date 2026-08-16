@@ -187,6 +187,7 @@ describe('every authored git spawn passes an explicit environment', () => {
     'packages/cli/test/create.test.ts',
     'scripts/prepare.mjs',
     'templates/agent-os/universal/.claude/scripts/preflight.mjs',
+    'templates/agent-os/universal/.claude/scripts/decision-router.mjs',
     'templates/agent-os/universal/.claude/hooks/gate-stop-dod.mjs',
     'templates/agent-os/universal/.claude/scripts/queue/checkout.mjs',
     'test/template/hooks.test.ts',

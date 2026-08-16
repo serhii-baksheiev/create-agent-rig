@@ -30,24 +30,42 @@
  * **What it deliberately does not do:** decide whether a review PASSED (that is
  * the gate's job), run any reviewer, or write anything except journal records.
  *
- * ⚠ **The limits, stated rather than implied.** The router sees *paths*, never
- * content: a diff that guts a function inside `docs/` is invisible to it, and so
- * is a secret pasted into a `.md`. It classifies by name because that is what a
- * dispatcher can do in milliseconds before any expensive work starts — the
- * layers behind it (the suite, the reviewers, CI) are what read content. A
- * project whose risky code does not announce itself in its paths should widen
- * `elevated-paths` rather than expect this file to guess.
+ * ⚠ **The limits, stated rather than implied — all five of them.**
  *
- * ⚠ **`reviewers` is a floor, not a ceiling** — and this was measured on the
- * router's own first run, not predicted. It returned `code-reviewer` and
- * `prose-reviewer` for a diff that parses untrusted argv and git output, which
- * `pr-ship`'s own trigger list calls a `security-scanner` case. Paths cannot see
- * what code does. The gate's triggers still apply on top and may only add.
+ * 1. **It sees paths, never content.** A diff that guts a function inside
+ *    `docs/` is invisible to it, and so is a secret pasted into a `.md`. It
+ *    classifies by name because that is what a dispatcher can do in
+ *    milliseconds before any expensive work starts; the layers behind it (the
+ *    suite, the reviewers, CI) are what read content. A project whose risky code
+ *    does not announce itself in its paths should widen `elevated-paths` rather
+ *    than expect this file to guess.
+ * 2. **`derived` is a naming convention, not a proof.** A hand-authored
+ *    `src/x.generated.ts` satisfies it, and `deterministic` is the lane that
+ *    runs no reviewer. `route` refuses that lane to an ADDED derived file for
+ *    exactly this reason — an addition cannot be drift — but a MODIFIED one is
+ *    taken on trust, and that trust rests on the project having a check that
+ *    regenerates it.
+ * 3. **The journal is written only when `RIG_RUN_DIR` is declared**, and only
+ *    from the CLI — `route()` used as a library writes nothing. So an absent
+ *    `decisions.jsonl` is the ordinary state of an undeclared run, and a reader
+ *    auditing one must check the run declared a directory before reading
+ *    absence as a gate that stopped firing.
+ * 4. **Exit 1 is not a lane.** It means nothing was routed — an unreadable diff,
+ *    an absent file list, a project declaring no elevated path. The caller
+ *    treats it as `model`; it is never a reason to skip the gate.
+ * 5. **`reviewers` is a floor, not a ceiling** — and this was measured on the
+ *    router's own first run, not predicted. It returned `code-reviewer` and
+ *    `prose-reviewer` for a diff that parses untrusted argv and git output,
+ *    which `pr-ship`'s own trigger list calls a `security-scanner` case. Paths
+ *    cannot see what code does. The gate's triggers apply on every lane and may
+ *    only add.
+ *
  */
 
 import { execFileSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { elevatedPathsIn, normalizePath, readDeclaredPaths } from './detect-missed-gate.mjs';
 import { withoutGitLocation } from './git-env.mjs';
@@ -115,6 +133,24 @@ const DERIVED_BASENAMES = new Set(['.rig-manifest.json']);
 const PROSE_EXTENSIONS = new Set(['md', 'mdx', 'txt']);
 
 /**
+ * Does this path LOOK derived — and it is only ever a look.
+ *
+ * ⚠ Nothing here verifies that the file is actually generator output; the
+ * classification is a naming convention, and a hand-authored file can satisfy
+ * it. That matters more than usual because `deterministic` is the lane that runs
+ * **no reviewer at all**, so the check on it is `route`'s status guard rather
+ * than this predicate: a derived-looking file that was ADDED cannot be drift
+ * against a generator, because there is no prior output for it to have drifted
+ * from.
+ */
+const looksDerived = (segments, basename) => {
+  if (DERIVED_BASENAMES.has(basename)) return true;
+  for (const segment of segments) if (segment === 'dist') return true;
+  if (basename.endsWith('.snap')) return true;
+  return /\.generated\.[^.]+$/.test(basename);
+};
+
+/**
  * What kind of file this is — the only judgement the cheap lanes are allowed to
  * rest on.
  *
@@ -136,10 +172,7 @@ export const classifyFile = (file) => {
   // whatever it is called or where it sits.
   if (isRulebookPath(path)) return CODE;
 
-  if (DERIVED_BASENAMES.has(basename)) return DERIVED;
-  for (const segment of segments) if (segment === 'dist') return DERIVED;
-  if (basename.endsWith('.snap')) return DERIVED;
-  if (/\.generated\.[^.]+$/.test(basename)) return DERIVED;
+  if (looksDerived(segments, basename)) return DERIVED;
 
   const dot = basename.lastIndexOf('.');
   const extension = dot > 0 ? basename.slice(dot + 1).toLowerCase() : '';
@@ -155,6 +188,11 @@ const DEPENDENCY_FILES = new Set([
   'package-lock.json',
   'yarn.lock',
   'npm-shrinkwrap.json',
+  // `.txt` is otherwise prose, so these two are actively DOWNGRADED rather than
+  // merely missed — and this layer is what `init` installs into a repo whose
+  // shape nobody here knows.
+  'requirements.txt',
+  'constraints.txt',
 ]);
 
 /**
@@ -170,10 +208,19 @@ const SECURITY_WORDS = new Set([
   'auth',
   'authn',
   'authz',
+  'oauth',
   'secret',
   'secrets',
   'credential',
   'credentials',
+  'password',
+  'passwords',
+  'key',
+  'keys',
+  'apikey',
+  'apikeys',
+  'jwt',
+  'crypto',
   'token',
   'tokens',
   'session',
@@ -189,11 +236,13 @@ const isSecuritySurface = (path) => {
 
   for (const segment of segments) {
     // One forward pass per segment: strip the extension, then split the stem on
-    // the separators a filename actually uses. No rescanning, no backtracking
-    // regex — the input is a path from a diff and its length is not ours.
+    // the separators a filename actually uses — including a camelCase boundary,
+    // because `authService.ts` is the same file as `auth-service.ts` and only
+    // one of them was being seen. No rescanning, no backtracking regex — the
+    // input is a path from a diff and its length is not ours.
     const dot = segment.lastIndexOf('.');
     const stem = dot > 0 ? segment.slice(0, dot) : segment;
-    for (const word of stem.toLowerCase().split(/[-_.]/)) {
+    for (const word of stem.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().split(/[-_.]/)) {
       if (SECURITY_WORDS.has(word)) return true;
     }
   }
@@ -328,6 +377,12 @@ export const route = ({ files, elevatedPaths = [] } = {}) => {
     const kind = classifyFile(pathOf(file));
     if (kind === PROSE) prose += 1;
     else if (kind !== DERIVED) other += 1; // code and unknown alike: the expensive answer
+    // 🔴 `derived` is a naming convention, and the lane it unlocks runs NO
+    // reviewer — so the one case where the convention cannot be true is refused
+    // here: an ADDED file has no prior generator output to be drift against, so
+    // "a check already catches its drift" is an assertion about a file that
+    // never existed. Modified derived output still reaches the cheap lane.
+    else if (statusOf(file) === 'added') other += 1;
   }
 
   const clear = line('risk-flags', 'clear', 'no risk flag fired on the changed paths');
@@ -468,7 +523,16 @@ export const parseNameStatus = (raw) => {
     const letter = code[0];
     const status = STATUS_LETTERS[letter] ?? 'modified';
     if (letter === 'R' || letter === 'C') {
+      const from = fields[i + 1];
       const to = fields[i + 2];
+      // 🔴 A rename DELETES its source, and the source path is the only place
+      // that deletion appears in the diff. Keeping just the destination let a
+      // rename carry a test out of the suite and a hook out of `.claude/` with
+      // nothing left for any flag to see — measured, not predicted: a diff
+      // renaming `test/foo.test.ts` and `.claude/hooks/guard-bash.mjs` into
+      // `docs/` routed to `fast-path` with `prose-reviewer` as the whole gate.
+      // A COPY leaves its source in place, so only a rename records one.
+      if (from && letter === 'R') files.push({ path: from, status: 'removed' });
       if (to) files.push({ path: to, status });
       i += 3;
     } else {
@@ -512,8 +576,28 @@ const gitFiles = (base, head) => {
   return parseNameStatus(raw);
 };
 
-const invokedDirectly = () =>
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+/**
+ * Was this file invoked directly?
+ *
+ * Compared by REALPATH on both sides, the same way every sibling CLI in this
+ * directory does it. ESM resolves `import.meta.url` through symlinks while
+ * `process.argv[1]` keeps the path as typed, so a checkout behind a link — a
+ * macOS temp dir, a symlinked home — fails a naive equality check and the script
+ * exits 0 having printed nothing. For this file that is the worst shape
+ * available: the gate reads the lane off stdout, and empty stdout with exit 0 is
+ * indistinguishable from a router that ran.
+ */
+const invokedDirectly = () => {
+  if (!process.argv[1]) return false;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
+};
 
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
@@ -537,13 +621,25 @@ if (invokedDirectly()) {
     process.exit(1);
   }
 
+  // 🔴 A project that declares no elevated path cannot have the `elevated-path`
+  // flag EVALUATED — and degrading that to an empty declaration made the trace
+  // say `risk-flags clear — no risk flag fired`, which is an unevaluated check
+  // reading as a pass. That is the one thing a gate's own journal must never
+  // produce, so this refuses instead, exactly as `recordCompletedTier` does.
+  const declared = readDeclaredPaths(projectRoot);
+  if (!declared || declared.length === 0) {
+    process.stderr.write(
+      'decision-router: nothing in this project declares an elevated path, so the ' +
+        '`elevated-path` risk flag cannot be evaluated and no lane can be trusted. Add an ' +
+        '`elevated-paths` block to CLAUDE.md or a rule file. Nothing was routed — treat ' +
+        'this as the expensive lane, never as a cheap one.\n',
+    );
+    process.exit(1);
+  }
+
   let result;
   try {
-    // A project that declares no elevated path at all cannot have the
-    // `elevated-path` flag evaluated. That is reported by `detect-missed-gate`
-    // as its own finding; here it degrades to an empty declaration, and the
-    // other two flags plus the classification still decide the lane.
-    result = route({ files, elevatedPaths: readDeclaredPaths(projectRoot) ?? [] });
+    result = route({ files, elevatedPaths: declared });
   } catch (error) {
     // The refusal, as a diagnosis rather than a stack dump: a caller reading a
     // node trace on stderr learns nothing about why its change was not routed.
@@ -552,8 +648,15 @@ if (invokedDirectly()) {
   }
 
   // 🔴 A router with no journal line is a decision nobody can retrace. One
-  // record per gate — including the skipped ones, because "no line" is exactly
-  // how a gate that silently stopped matching looks.
+  // record per gate — including the skipped ones, because within a run that
+  // declared a directory, "no line" is exactly how a gate that silently stopped
+  // matching looks.
+  //
+  // ⚠ Read that condition exactly, because the two absences are different
+  // facts: this writes ONLY when the run declared `RIG_RUN_DIR`, so an empty
+  // `decisions.jsonl` across an undeclared run is the ordinary state and says
+  // nothing about the gates. Inventing a directory here would make this CLI a
+  // second owner of the `.claude/runs/<run-id>/` convention.
   const runDir = process.env.RIG_RUN_DIR;
   if (runDir) {
     let journal = null;
