@@ -2,7 +2,7 @@
 // configured) serving the built web bundle. No second runtime for the
 // frontend — the same process serves the static export.
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import type { CreateNoteDeps } from './usecases/create-note.js';
@@ -88,10 +88,16 @@ export function makeServer(deps: ServerDeps, options: ServerOptions = {}): Serve
       // The rejection handler is the point: without it a throw in here is an
       // unhandled rejection, which ends the process on one malformed request.
       void serveStatic(options.staticDir, request.url ?? '/', response, notFound, badRequest).catch(
-        () => {
-          if (!response.headersSent) {
-            respond({ statusCode: 500, body: JSON.stringify({ error: 'internal error' }) });
+        (error: unknown) => {
+          // Say nothing to the client beyond the code, but never swallow it —
+          // a static path that fails silently is a blind spot in every
+          // generated project.
+          deps.log.error('static serve failed', { url: request.url, error: String(error) });
+          if (response.headersSent) {
+            response.destroy();
+            return;
           }
+          respond({ statusCode: 500, body: JSON.stringify({ error: 'internal error' }) });
         },
       );
       return;
@@ -122,17 +128,44 @@ async function serveStatic(
   const root = path.resolve(staticDir);
   const resolved = path.resolve(root, `.${path.sep}${relative}`);
   // Path-traversal guard: whatever the URL said, we never leave staticDir.
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+  // The string test is only half of it — it says where the path points, not
+  // what the filesystem will open, and stat/open both follow symlinks.
+  if (!within(root, resolved)) {
     return notFound();
   }
+  let file: string;
   try {
-    const stats = await stat(resolved);
+    // …so ask the filesystem too, and test the answer the same way. A missing
+    // file throws here, which is the 404 we would give it anyway.
+    file = await realpath(resolved);
+    if (!within(await realpath(root), file)) return notFound();
+    const stats = await stat(file);
     if (!stats.isFile()) return notFound();
   } catch {
     return notFound();
   }
-  response.writeHead(200, {
-    'content-type': CONTENT_TYPES[path.extname(resolved)] ?? 'application/octet-stream',
+  // Open before the headers go out: a file that passes stat can still fail to
+  // open (EACCES, or it is gone by now), and after writeHead(200) there is no
+  // way left to say so — which is one GET away from an unhandled stream error.
+  const stream = createReadStream(file);
+  await new Promise<void>((resolve, reject) => {
+    stream.once('error', reject);
+    stream.once('open', () => {
+      stream.removeListener('error', reject);
+      response.writeHead(200, {
+        'content-type': CONTENT_TYPES[path.extname(file)] ?? 'application/octet-stream',
+      });
+      // Past the headers the only honest answer to a read failure is to cut
+      // the response short, so the client sees a truncated body rather than a
+      // complete one.
+      stream.once('error', () => response.destroy());
+      stream.pipe(response);
+      resolve();
+    });
   });
-  createReadStream(resolved).pipe(response);
+}
+
+/** Whether `candidate` is `root` itself or sits underneath it. */
+function within(root: string, candidate: string): boolean {
+  return candidate === root || candidate.startsWith(root + path.sep);
 }

@@ -88,11 +88,16 @@ diagnose second.
 - `packages/core` is pure — the `guard-core-purity` hook refuses I/O, clock,
   randomness, and environment access at the tool layer.
 - `packages/db` is the only module that touches the stored data. It is a
-  **single-writer store**: writes serialise inside one `JsonFileNoteStore`, and
-  that is all — two processes writing the same file still need a real lock.
-- The API buffers at most **1 MB** of request body and answers `413` past that.
-  Raise it in `services/api/src/server.ts` if your payloads are bigger; do not
-  remove it.
+  **single-instance store**: writes serialise inside one `JsonFileNoteStore`
+  object, and that is the whole of it. Two stores over the same file lose
+  notes to each other whether they sit in one process or two — share the one
+  instance, and reach for a real lock before you share the file.
+  A hard kill between the temp write and the rename leaves a `*.tmp` file
+  behind; nothing sweeps them.
+- `POST /notes` buffers at most **1 MB** of request body and answers `413` past
+  that. The cap lives in that route, not in the shell: a new route that reads a
+  body adds its own. Raise it in `services/api/src/server.ts` if your payloads
+  are bigger; do not remove it.
 - A failing queue message is poison: it throws, the spool retries ×3, then the
   DLQ gets it and the ALARM line fires. Never wrap the worker in a broad catch.
 

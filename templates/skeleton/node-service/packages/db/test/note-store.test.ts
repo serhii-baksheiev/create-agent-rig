@@ -40,6 +40,17 @@ describe('JsonFileNoteStore', () => {
     await expect(store.put(note)).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it('a rejected write does not block the writes queued behind it', async () => {
+    // The 409 above cannot see this: a poisoned write chain rejects the next
+    // put() with the very same AppError the duplicate would have raised.
+    const store = new JsonFileNoteStore(file);
+    await store.put(note);
+    await expect(store.put(note)).rejects.toThrow(AppError);
+
+    await expect(store.put({ ...note, id: 'n2' })).resolves.toBeUndefined();
+    expect((await store.list()).map((n) => n.id).sort()).toEqual(['n1', 'n2']);
+  });
+
   it('throws NotFoundError on a miss', async () => {
     await expect(new JsonFileNoteStore(file).get('nope')).rejects.toThrow(NotFoundError);
   });

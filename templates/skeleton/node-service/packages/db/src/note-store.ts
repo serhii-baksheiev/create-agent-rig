@@ -11,10 +11,13 @@ type NoteTable = Record<string, unknown>;
 
 export class JsonFileNoteStore {
   /**
-   * Writes run one at a time. A write is load → mutate → save, which is not
-   * atomic: two concurrent `put()`s would both read the same table and the
-   * second save would drop the first note. Serialising is enough here because
-   * one process owns the file; a second writing process needs a real lock.
+   * Writes run one at a time — **per instance, which is the whole extent of
+   * it**. A write is load → mutate → save, and that is not atomic: two
+   * concurrent `put()`s would both read the same table and the second save
+   * would drop the first note. This chain serialises the ones going through
+   * *this* object. Two `JsonFileNoteStore`s over the same file lose notes to
+   * each other exactly as before — in one process as readily as in two — so
+   * share the instance, and reach for a real lock before sharing the file.
    */
   private writes: Promise<unknown> = Promise.resolve();
 
@@ -51,9 +54,10 @@ export class JsonFileNoteStore {
 
   /** Queues `work` behind the writes already in flight on this instance. */
   private serialised<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.writes.then(work, work);
-    // The chain itself must never settle rejected, or one failed write would
-    // reject every write queued after it.
+    const result = this.writes.then(work);
+    // The caller gets the rejection; the chain gets a settled promise. Without
+    // this line one failed write (a 409, say) would reject every write queued
+    // behind it, and the store would stay broken for the life of the process.
     this.writes = result.then(
       () => undefined,
       () => undefined,
@@ -86,7 +90,9 @@ export class JsonFileNoteStore {
       await writeFile(tmp, JSON.stringify(table, null, 2));
       await rename(tmp, this.file);
     } catch (error) {
-      await rm(tmp, { force: true });
+      // Best-effort tidy-up: a failure to remove the temp file must not
+      // replace the failure that actually matters.
+      await rm(tmp, { force: true }).catch(() => undefined);
       throw error;
     }
   }

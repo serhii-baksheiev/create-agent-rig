@@ -1,6 +1,6 @@
 // Integration: the real HTTP server over a real socket, with real file
 // storage and a real spool directory — the whole request path at once.
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -106,6 +106,12 @@ async function startStaticServer(staticDir: string): Promise<{ server: Server; b
   return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 
+// Windows has no POSIX mode bits, and root reads a 0o000 file regardless — in
+// both cases the "unreadable file" this test needs cannot be built at all.
+const cannotMakeFileUnreadable = process.platform === 'win32' || process.getuid?.() === 0;
+// Creating a symlink on Windows needs a privilege the test runner may not hold.
+const cannotSymlink = process.platform === 'win32';
+
 describe('static serving (the built web bundle)', () => {
   let staticServer: Server;
   let staticBase: string;
@@ -150,6 +156,41 @@ describe('static serving (the built web bundle)', () => {
     const afterwards = await fetch(staticBase + '/');
     expect(afterwards.status).toBe(200);
     expect(await afterwards.text()).toContain('web shell');
+  });
+
+  it.skipIf(cannotMakeFileUnreadable)(
+    'answers a file it cannot open and keeps serving afterwards',
+    async () => {
+      // A file that passes stat() but fails open() (EACCES here; in production
+      // the stat/open race gives ENOENT). The read stream's error reaches no
+      // handler, so it is the process that pays for one unreadable file.
+      const locked = path.join(dir, 'static', 'locked.txt');
+      await writeFile(locked, 'unreadable');
+      await chmod(locked, 0o000);
+      try {
+        const response = await fetch(staticBase + '/locked.txt', {
+          signal: AbortSignal.timeout(5000),
+        });
+        expect(response.status).toBe(500);
+
+        const afterwards = await fetch(staticBase + '/');
+        expect(afterwards.status).toBe(200);
+        expect(await afterwards.text()).toContain('web shell');
+      } finally {
+        // Restore before afterEach removes the temp dir.
+        await chmod(locked, 0o600);
+      }
+    },
+  );
+
+  it.skipIf(cannotSymlink)('refuses a symlink that escapes the static dir', async () => {
+    // The lexical guard only inspects the resolved string; stat and the read
+    // stream then follow the link wherever it points.
+    await writeFile(path.join(dir, 'secret-target.txt'), 'nope');
+    await symlink(path.join(dir, 'secret-target.txt'), path.join(dir, 'static', 'escape.txt'));
+
+    const response = await fetch(staticBase + '/escape.txt');
+    expect(response.status).toBe(404);
   });
 
   it('serves the bundle when the configured static dir has a trailing separator', async () => {
