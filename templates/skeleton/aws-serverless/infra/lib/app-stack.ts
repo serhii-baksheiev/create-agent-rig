@@ -46,7 +46,7 @@ const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000'];
  * allow-list blocks every browser call, and the symptom appears far from the
  * flag that caused it.
  */
-function resolveAllowedOrigins(fromProps: string[] | undefined, fromContext: unknown): string[] {
+export function resolveAllowedOrigins(fromProps: string[] | undefined, fromContext: unknown): string[] {
   if (fromProps !== undefined) {
     if (fromProps.length === 0) {
       throw new Error('allowedOrigins was given as an empty list — name an origin, or omit it');
@@ -71,7 +71,7 @@ function resolveAllowedOrigins(fromProps: string[] | undefined, fromContext: unk
 }
 
 /**
- * Whether the caller supplied nothing. Exported-in-spirit: `bin/app.ts` decides
+ * Whether the caller supplied nothing. Exported because `bin/app.ts` decides
  * the same question about the same value, and two spellings of "nothing given"
  * is how a `null` in `cdk.json` ends up meaning "the operator chose an origin"
  * in one file and "use the default" in the other.
@@ -104,11 +104,12 @@ function checkedOrigin(origin: string): string {
     );
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(
-      `allowedOrigins entry ${JSON.stringify(origin)} is not an http(s) origin`,
-    );
+    throw new Error(`allowedOrigins entry ${JSON.stringify(origin)} is not an http(s) origin`);
   }
-  return origin;
+  // The NORMALISED form, not what was typed: a trailing slash, an uppercase
+  // scheme, a path, a unicode host or a redundant :443 all synthesise green and
+  // then match no Origin header a browser sends.
+  return parsed.origin;
 }
 
 export class AppStack extends Stack {
@@ -125,7 +126,11 @@ export class AppStack extends Stack {
     // does not get to be quiet about it: the whole point of not shipping the
     // wildcard is that reaching for it should be a visible act.
     if (allowedOrigins.includes('*')) {
-      Annotations.of(this).addWarning(
+      // V2 because it can be acknowledged: `addWarning` hard-blocks
+      // `cdk synth --strict`, which would turn "loud" into "refused" for an
+      // operator who chose the wildcard deliberately.
+      Annotations.of(this).addWarningV2(
+        '@app/allowed-origins:wildcard',
         'allowedOrigins includes "*": every site may call this API from a browser. ' +
           'Name the origins instead unless this is a throwaway environment.',
       );

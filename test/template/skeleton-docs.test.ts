@@ -66,6 +66,19 @@ describe('aws-serverless deploy docs match the deploy that actually runs', () =>
     expect(manual).toMatch(/WebDistributionId/);
   });
 
+  it('builds the bundle in the manual path, since --delete makes a stale one destructive', async () => {
+    // The workflow builds two steps before its sync and so cannot be stale; a
+    // hand-run is exactly where a month-old `out/` sits, and `--delete` then
+    // removes every newer object from the live bucket. Checking for the bundle
+    // is not enough — the check passes on the stale one.
+    const content = await readme();
+    const manual = content.slice(content.indexOf('### Local / manual'));
+    expect(manual, 'the manual path never builds what it is about to sync').toMatch(/build:web/);
+    expect(manual.indexOf('build:web'), 'it builds before it syncs').toBeLessThan(
+      manual.indexOf('aws s3 sync'),
+    );
+  });
+
   it('tells the reader whether CI ships the bundle or they must sync it by hand', async () => {
     const content = await readme();
     const automated = content.slice(

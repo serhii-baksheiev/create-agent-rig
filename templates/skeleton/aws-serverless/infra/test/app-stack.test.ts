@@ -1,38 +1,40 @@
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { AppStack } from '../lib/app-stack.js';
 
-// Template.fromStack bundles the Lambda entries with esbuild — slow-ish, run once.
-let template: Template;
-
-beforeAll(() => {
-  const app = new App();
-  template = Template.fromStack(new AppStack(app, 'TestStack'));
-});
+// `Template.fromStack` bundles the Lambda entries with esbuild — slow-ish, so
+// it runs once and is shared. Deliberately not in `beforeAll`: this project's
+// `vitest.config.ts` raises `testTimeout` for exactly this cost and leaves
+// `hookTimeout` at vitest's 10s default, so the same work in a hook runs on a
+// much shorter fuse — and it is contended, because sibling workers are
+// bundling too.
+let synthesised: Template | undefined;
+const template = (): Template =>
+  (synthesised ??= Template.fromStack(new AppStack(new App(), 'TestStack')));
 
 describe('storage', () => {
   it('creates the single table with pk/sk and on-demand billing', () => {
-    template.hasResourceProperties('AWS::DynamoDB::Table', {
+    template().hasResourceProperties('AWS::DynamoDB::Table', {
       KeySchema: [
         { AttributeName: 'pk', KeyType: 'HASH' },
         { AttributeName: 'sk', KeyType: 'RANGE' },
       ],
       BillingMode: 'PAY_PER_REQUEST',
     });
-    template.resourceCountIs('AWS::DynamoDB::Table', 1);
+    template().resourceCountIs('AWS::DynamoDB::Table', 1);
   });
 });
 
 describe('queue discipline', () => {
   it('wires the DLQ with maxReceiveCount 3', () => {
-    template.hasResourceProperties('AWS::SQS::Queue', {
+    template().hasResourceProperties('AWS::SQS::Queue', {
       RedrivePolicy: Match.objectLike({ maxReceiveCount: 3 }),
     });
   });
 
   it('alarms as soon as one message reaches the DLQ', () => {
-    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+    template().hasResourceProperties('AWS::CloudWatch::Alarm', {
       MetricName: 'ApproximateNumberOfMessagesVisible',
       Threshold: 1,
       EvaluationPeriods: 1,
@@ -41,7 +43,7 @@ describe('queue discipline', () => {
   });
 
   it('feeds the worker one message at a time', () => {
-    template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+    template().hasResourceProperties('AWS::Lambda::EventSourceMapping', {
       BatchSize: 1,
     });
   });
@@ -49,11 +51,11 @@ describe('queue discipline', () => {
 
 describe('functions and routes', () => {
   it('deploys exactly the create, list and worker functions — one purpose each', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 3);
+    template().resourceCountIs('AWS::Lambda::Function', 3);
   });
 
   it('passes table and queue to the api via environment', () => {
-    template.hasResourceProperties('AWS::Lambda::Function', {
+    template().hasResourceProperties('AWS::Lambda::Function', {
       Environment: {
         Variables: Match.objectLike({
           TABLE_NAME: Match.anyValue(),
@@ -64,17 +66,17 @@ describe('functions and routes', () => {
   });
 
   it('exposes exactly two routes: POST /notes and GET /notes', () => {
-    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+    template().hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'POST /notes',
     });
-    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+    template().hasResourceProperties('AWS::ApiGatewayV2::Route', {
       RouteKey: 'GET /notes',
     });
-    template.resourceCountIs('AWS::ApiGatewayV2::Route', 2);
+    template().resourceCountIs('AWS::ApiGatewayV2::Route', 2);
   });
 
   it('allows the browser origin in: CORS is configured', () => {
-    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+    template().hasResourceProperties('AWS::ApiGatewayV2::Api', {
       CorsConfiguration: Match.objectLike({
         AllowMethods: Match.arrayWith(['GET', 'POST']),
       }),
@@ -82,7 +84,7 @@ describe('functions and routes', () => {
   });
 
   it('never allows every origin: the api names who may call it', () => {
-    const apis = template.findResources('AWS::ApiGatewayV2::Api');
+    const apis = template().findResources('AWS::ApiGatewayV2::Api');
     const origins = Object.values(apis).flatMap(
       (api) =>
         (api.Properties as { CorsConfiguration?: { AllowOrigins?: unknown[] } }).CorsConfiguration
@@ -98,7 +100,7 @@ describe('functions and routes', () => {
 
 describe('least-privilege IAM', () => {
   it('grants writes to the creator, reads to the lister, queue send — nothing broad', () => {
-    const policies = template.findResources('AWS::IAM::Policy');
+    const policies = template().findResources('AWS::IAM::Policy');
     const statements = Object.values(policies).flatMap(
       (policy) =>
         (policy.Properties as { PolicyDocument: { Statement: Array<Record<string, unknown>> } })

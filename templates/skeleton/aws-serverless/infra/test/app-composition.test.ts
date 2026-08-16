@@ -1,6 +1,6 @@
 import type { App, Stack } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 // `bin/app.ts` is what every `cdk deploy` and every CI run actually builds, so
 // the CORS allow-list has to be correct THERE — a stack that can be handed the
@@ -11,7 +11,6 @@ import { beforeAll, describe, expect, it } from 'vitest';
 // The composition is exercised through the entrypoint rather than rebuilt here:
 // a test that re-wires the stacks itself passes just as happily while
 // `bin/app.ts` stays broken.
-let appStackOrigins: unknown[];
 
 const originsOfComposedApp = async (): Promise<unknown[]> => {
   const { createApp } = (await import('../bin/app.js')) as { createApp: () => App };
@@ -47,9 +46,18 @@ const withCdkContext = async <T>(context: Record<string, unknown>, run: () => Pr
   }
 };
 
-beforeAll(async () => {
-  appStackOrigins = await originsOfComposedApp();
-});
+/**
+ * The default composition is synthesised once and shared — but deliberately
+ * NOT from `beforeAll`. This project's `vitest.config.ts` raises `testTimeout`
+ * for exactly this cost and leaves `hookTimeout` at vitest's 10s default, so
+ * work put in a hook runs on a fuse a quarter the length of the one the config
+ * meant to give it. Synthesising here bundles three Lambdas with esbuild while
+ * sibling workers do the same; that contention is what made this suite fail
+ * intermittently with `Hook timed out in 10000ms`.
+ */
+let defaultComposition: Promise<unknown[]> | undefined;
+const defaultComposedOrigins = (): Promise<unknown[]> =>
+  (defaultComposition ??= originsOfComposedApp());
 
 /** What CDK emits for a cross-stack reference: a Join around an ImportValue. */
 const referencesTheWebDistribution = (origin: unknown): boolean => {
@@ -59,20 +67,23 @@ const referencesTheWebDistribution = (origin: unknown): boolean => {
 };
 
 describe('the deployed app allows the origin it is actually served from', () => {
-  it('takes its allowed origin from the web distribution, not from a localhost no deploy uses', () => {
+  it('takes its allowed origin from the web distribution, not from a localhost no deploy uses', async () => {
     // `distributionDomainName` is a synth-time token; CDK resolves it across
     // stacks as an `Fn::ImportValue`, and `AllowOrigins` accepts it. So the
     // entrypoint has no excuse to leave the two stacks unwired.
+    const appStackOrigins = await defaultComposedOrigins();
     expect(appStackOrigins.length).toBeGreaterThan(0);
     expect(appStackOrigins.some(referencesTheWebDistribution)).toBe(true);
   });
 
-  it('still names who may call it: no wildcard reaches the composed app', () => {
+  it('still names who may call it: no wildcard reaches the composed app', async () => {
+    const appStackOrigins = await defaultComposedOrigins();
     expect(appStackOrigins).not.toContain('*');
     expect(JSON.stringify(appStackOrigins)).not.toContain('"*"');
   });
 
-  it('carries the https scheme, without which no browser Origin header can match', () => {
+  it('carries the https scheme, without which no browser Origin header can match', async () => {
+    const appStackOrigins = await defaultComposedOrigins();
     const distributionOrigin = appStackOrigins.find(referencesTheWebDistribution);
     expect(JSON.stringify(distributionOrigin)).toContain('https://');
   });
