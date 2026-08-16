@@ -1,7 +1,11 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+const exec = promisify(execFile);
 
 // Extraction brief §6.6: the second adapter, whose only job is to prove the seam
 // holds. If adding it needed a change above the seam, the seam was in the wrong
@@ -103,12 +107,26 @@ describe('jira → the neutral ticket shape', () => {
   it('derives tier, trigger and triage from labels', async () => {
     const { toTicket } = await load('jira.mjs');
     const withLabels = (labels: string[]) => toTicket(issue({ fields: { labels } })) as Ticket;
-    expect(withLabels(['human-review']).tier).toBe('elevated');
+    expect(withLabels(['elevated']).tier).toBe('elevated');
     expect(withLabels(['trigger-auto']).trigger).toBe('auto');
     expect(withLabels(['trigger-human']).trigger).toBe('human');
     expect(withLabels(['triage']).triage).toBe(true);
     expect(withLabels([]).tier).toBe('normal');
     expect(withLabels([]).trigger).toBeNull();
+  });
+
+  // AR-45, owner ruling: `human-review` is a GitHub word. On this board it is a
+  // workflow label meaning "a human is looking at it" — nothing to do with the
+  // autonomy tier — so reading it as `elevated` rations the queue on a signal
+  // that means something else, and rations it against items nobody marked.
+  // `elevated` is the marker on both adapters; the plan-md side already spells
+  // it `[elevated]`.
+  it('reads the elevated tier from an elevated label and not from human-review', async () => {
+    const { toTicket } = await load('jira.mjs');
+    const tierOf = (labels: string[]) => (toTicket(issue({ fields: { labels } })) as Ticket).tier;
+    expect(tierOf(['elevated'])).toBe('elevated');
+    // the old marker is now an ordinary label: it must not ration anything
+    expect(tierOf(['human-review'])).toBe('normal');
   });
 
   it('🔴 reads blockers from ISSUE LINKS and each blocker’s own status', async () => {
@@ -196,13 +214,54 @@ describe('jira → the neutral ticket shape', () => {
 });
 
 describe('the JQL it builds', () => {
-  it('excludes triage explicitly, not merely by the absence of a marker', async () => {
+  /**
+   * The parenthesised groups that carry the `labels IS EMPTY` escape hatch.
+   *
+   * ⚠ The JQL gotcha the adapter already documents: `labels != x` does **not**
+   * match an issue whose labels field is empty. An exclusion outside such a group
+   * therefore hides every unlabelled item — which is most of them — so this is
+   * how a new exclusion clause reintroduces the hole while still reading right.
+   */
+  const guardedGroups = (jql: string): string[] =>
+    [...jql.matchAll(/\(([^()]*)\)/g)]
+      .map((match) => match[1]!)
+      .filter((group) => /labels IS EMPTY/i.test(group));
+
+  // AR-45: `triage` is the loop's own proposals; `operator-queue` is the owner's
+  // lane, and an item there is work a HUMAN has taken. The loop picking one up is
+  // two sessions on one task. The exclusion belongs in the adapter's own filter,
+  // not in a hand-written `options.jql` a reinstall would drop.
+  it('excludes triage and the operator queue explicitly, not merely by a missing marker', async () => {
     const { buildJql } = await load('jira.mjs');
     const jql = buildJql({ project: 'ABC' }) as string;
     expect(jql).toContain('project = ABC');
-    expect(jql).toMatch(/labels\s*!=\s*triage|labels NOT IN \(triage\)/i);
-    // belt and braces: an item carrying BOTH ready and triage must stay unselectable
-    expect(jql).toMatch(/labels IS EMPTY|OR labels is empty/i);
+
+    for (const label of ['triage', 'operator-queue']) {
+      // belt and braces: an item carrying BOTH ready and the label stays unselectable
+      expect(jql, label).toContain(label);
+      expect(
+        guardedGroups(jql).some((group) => group.includes(label)),
+        `${label} is excluded outside a group carrying "labels IS EMPTY"`,
+      ).toBe(true);
+    }
+
+    // and nothing excludes either label a second time, unguarded, elsewhere in
+    // the query — one such clause is enough to drop every unlabelled item
+    const outsideTheGroups = jql.replace(/\([^()]*labels IS EMPTY[^()]*\)/gi, '');
+    expect(outsideTheGroups).not.toMatch(/triage|operator-queue/i);
+  });
+
+  it('drops an item parked in the operator queue and takes the same item without that label', async () => {
+    const { listEligible } = await load('jira.mjs');
+    const idsFor = async (labels: string[]) =>
+      (
+        (await listEligible({ issues: [issue({ key: 'AR-9', fields: { labels } })] })) as Ticket[]
+      ).map((ticket) => ticket.id);
+
+    // the offline seam skips the query, so the filter has to hold in the adapter
+    // too — a board reached by an `options.jql` override answers otherwise
+    await expect(idsFor(['ready', 'operator-queue'])).resolves.toEqual([]);
+    await expect(idsFor(['ready'])).resolves.toEqual(['AR-9']);
   });
 
   it('an explicit jql in the config wins over the built one', async () => {
@@ -213,6 +272,111 @@ describe('the JQL it builds', () => {
   it('refuses to guess when neither a project nor a jql is configured', async () => {
     const { buildJql } = await load('jira.mjs');
     expect(() => buildJql({})).toThrow(/project|jql/i);
+  });
+});
+
+// AR-45, measured on the live instance rather than inferred from a changelog:
+//
+//     GET  /rest/api/3/search      → 410 Gone
+//     POST /rest/api/3/search/jql  → 200
+//
+// So every selection this adapter has run since the removal threw on the status
+// line, and the loop read it as "the queue is unreadable" — the queue was fine.
+//
+// The replacement is NOT a URL swap: it takes its arguments in a JSON body and
+// `fields` is an ARRAY there, not the comma-joined string the query parameter
+// took. It also paginates by `nextPageToken`/`isLast` instead of
+// `startAt`/`total` — deliberately NOT pinned here: cursor pagination is AR-54's
+// scope, and a test written for it in this PR would pin an interface this change
+// does not own.
+describe('the search endpoint it calls', () => {
+  const CREDENTIALS = {
+    JIRA_BASE_URL: 'https://example.invalid',
+    JIRA_EMAIL: 'a@b.c',
+    JIRA_API_TOKEN: 'x',
+  };
+
+  interface Call {
+    url: string;
+    method: string;
+    body: Record<string, unknown> | null;
+  }
+
+  const calls: Call[] = [];
+  let realFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    calls.length = 0;
+    realFetch = globalThis.fetch;
+    // A hand-written structural stub, per the stack rules — no mocking framework
+    // and no patching of module internals.
+    globalThis.fetch = ((input: unknown, init: { method?: string; body?: string } = {}) => {
+      calls.push({
+        url: String(input),
+        method: String(init.method ?? 'GET'),
+        body: init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null,
+      });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ issues: [] }),
+      });
+    }) as unknown as typeof globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('asks the JQL search endpoint, passing the query in a JSON body', async () => {
+    const { search } = await load('jira.mjs');
+    await search({ project: 'AR', limit: 25, env: CREDENTIALS });
+
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    expect(call.method).toBe('POST');
+    expect(new URL(call.url).pathname).toBe('/rest/api/3/search/jql');
+    expect(new URL(call.url).search).toBe('');
+    expect(call.body).toMatchObject({ maxResults: 25 });
+    expect(String((call.body as { jql: unknown }).jql)).toContain('project = AR');
+  });
+
+  it('names the fields it wants as a list, because the body will not take a joined string', async () => {
+    const { search } = await load('jira.mjs');
+    await search({ project: 'AR', env: CREDENTIALS });
+
+    expect(calls[0]!.body, 'the query travelled in the URL, so there is no body to read').not.toBe(
+      null,
+    );
+    const fields = (calls[0]!.body as { fields: unknown }).fields;
+    expect(Array.isArray(fields), `fields was ${JSON.stringify(fields)}`).toBe(true);
+    // `description` is the one whose absence is silent: the triage dedupe reads
+    // the fingerprint out of it, and without it every stop files a fresh issue.
+    expect(fields as string[]).toEqual(
+      expect.arrayContaining(['summary', 'status', 'labels', 'issuelinks', 'description']),
+    );
+  });
+
+  it('never requests the retired search path, whichever operation does the searching', async () => {
+    const { search, proposeTriage } = await load('jira.mjs');
+    await search({ project: 'AR', env: CREDENTIALS });
+    await proposeTriage(
+      {
+        finding: 'queue empty twenty times',
+        part: 'PLAN.md',
+        change: 'seed the queue',
+        proof: 'the next run has work',
+      },
+      { project: 'AR', env: CREDENTIALS },
+    );
+
+    expect(calls.length).toBeGreaterThan(1);
+    for (const call of calls) {
+      // the exact path, and the query-parameter form — both answer 410 Gone
+      expect(new URL(call.url).pathname, call.url).not.toBe('/rest/api/3/search');
+      expect(call.url, 'the retired query-parameter form').not.toMatch(/\/rest\/api\/3\/search\?/);
+    }
   });
 });
 
@@ -259,6 +423,74 @@ describe('credentials and the operations that write', () => {
     const adapter = await load('jira.mjs');
     expect(Object.keys(adapter)).not.toContain('create');
     expect(Object.keys(adapter)).not.toContain('createTicket');
+  });
+});
+
+// AR-45: the tier marker is the one fact a work item carries across trackers, and
+// the ration in `core.mjs` reads it by that one name. Two adapters that spell it
+// differently mean an item rationed on one board and waved through on the other —
+// and moving this repo's queue from PLAN.md to Jira is exactly that migration.
+describe('the same work item reads the same on both adapters', () => {
+  it('gives a plan-md [elevated] item and a jira elevated-labelled issue one tier', async () => {
+    const { parsePlan } = await load('plan-md.mjs');
+    const { toTicket } = await load('jira.mjs');
+
+    const [fromPlan] = parsePlan(
+      '# P\n\n## Agent queue\n\n- rotate the signing key [elevated]\n\n## Journal\n',
+    ) as Ticket[];
+    const fromJira = toTicket(
+      issue({ fields: { summary: 'rotate the signing key', labels: ['elevated'] } }),
+    ) as Ticket;
+
+    expect(fromJira.tier).toBe(fromPlan!.tier);
+    expect(fromJira.tier).toBe('elevated');
+  });
+
+  it('gives an unmarked item the normal tier on both, so the ration is not held by default', async () => {
+    const { parsePlan } = await load('plan-md.mjs');
+    const { toTicket } = await load('jira.mjs');
+
+    const [fromPlan] = parsePlan(
+      '# P\n\n## Agent queue\n\n- rotate the signing key\n\n## Journal\n',
+    ) as Ticket[];
+    const fromJira = toTicket(
+      issue({ fields: { summary: 'rotate the signing key', labels: [] } }),
+    ) as Ticket;
+
+    expect(fromJira.tier).toBe(fromPlan!.tier);
+    expect(fromJira.tier).toBe('normal');
+  });
+});
+
+// AR-45: which queue this repository reads is a fact about THIS repository, and
+// `.claude/queue.json` is a GENERATED file — composed from the template and
+// checked by `sync-agent-os.mjs --check`. So the value lands as a repo-specific
+// override inside `compose()`, the same class as the `.claude/hooks/dod-checks.json`
+// override that is already there. Editing the template instead would hand this
+// repo's board to every generated project; exempting the file from composition
+// would make the drift check stop verifying it at all.
+describe('the queue this repository reads, and the one a generated project gets', () => {
+  const jsonAt = async (...parts: string[]): Promise<Record<string, unknown>> =>
+    JSON.parse(await readFile(path.join(repoRoot, ...parts), 'utf8')) as Record<string, unknown>;
+
+  it('reads its own board through the jira adapter', async () => {
+    expect(await jsonAt('.claude', 'queue.json')).toMatchObject({
+      adapter: 'jira',
+      options: { project: 'AR' },
+    });
+  });
+
+  it('leaves a generated project on the zero-setup default rather than this repo’s board', async () => {
+    const template = await jsonAt('templates', 'agent-os', 'universal', '.claude', 'queue.json');
+    expect(template.adapter).toBe('plan-md');
+    // a fresh project has no Jira, no credentials and certainly no AR board
+    expect(JSON.stringify(template)).not.toMatch(/jira|"AR"/i);
+  });
+
+  it('keeps the composed config free of drift, so the value is verified and not exempted', async () => {
+    await expect(
+      exec(process.execPath, [path.join(repoRoot, 'scripts', 'sync-agent-os.mjs'), '--check']),
+    ).resolves.toBeTruthy();
   });
 });
 

@@ -1,3 +1,6 @@
 {
-  "adapter": "plan-md"
+  "adapter": "jira",
+  "options": {
+    "project": "AR"
+  }
 }
