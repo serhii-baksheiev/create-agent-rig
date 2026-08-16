@@ -144,24 +144,56 @@ const TIMED_CALLS = 9;
 const SAMPLE_BUDGET_MS = 2_000;
 
 /**
- * The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`.
+ * How much work one timed sample must contain, in milliseconds.
+ *
+ * 🔴 **The fix for a flake this file's own guard produced.** "Fastest of nine"
+ * defeats a pause that lands in *some* samples; it cannot defeat a scheduler
+ * quantum that covers *all* of them, and at 21 µs per call all nine fit inside
+ * one. Measured on the cheapest shape (`hygieneOf` on an unterminated link):
+ * healthy growth is 3.84–3.95 over twelve isolated repeats, but under the full
+ * 38-file parallel suite one run in roughly seven read `n = 0.024 ms,
+ * 4n = 0.207 ms` — a ratio of **8.73** against a bound of 8, with `n` normal
+ * and only the second reading inflated. Nothing was wrong with the code.
+ *
+ * Raising the bound would have been the wrong repair: it treats a measurement
+ * defect as a tolerance. The measurement is what was too small, so a sample now
+ * batches enough calls to be worth about a millisecond, and a quantum can no
+ * longer swallow one whole. The per-call cost is the batch divided by its size,
+ * so the ratio still compares like with like even though the two sizes need
+ * different batches.
+ */
+const SAMPLE_TARGET_MS = 1;
+
+/** Ceiling on batch size, so a subject that is cheap AND slow cannot run away. */
+const MAX_BATCH = 4_096;
+
+/**
+ * The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`
+ * batches, divided by the batch size.
  *
  * Floored at one microsecond — a reading of exactly 0 would make every ratio
- * `Infinity` and print a failure message carrying no measurement at all. Not
- * reachable at today's costs — the smallest measured call is 22 µs — so this is
- * insurance against a future subject cheap enough to disappear into the timer.
+ * `Infinity` and print a failure message carrying no measurement at all. With
+ * batching this is now unreachable by construction rather than by luck of the
+ * subject's cost.
  */
 const millisPerCall = (call: () => void): number => {
   call(); // warm the JIT and compile any lazily-built regex, untimed
+
+  // Calibrate: one probe says how many calls make a sample worth measuring.
+  const probeStart = performance.now();
+  call();
+  const probe = Math.max(performance.now() - probeStart, 0.0005);
+  const batch = Math.min(MAX_BATCH, Math.max(1, Math.ceil(SAMPLE_TARGET_MS / probe)));
+
   let fastest = Infinity;
   const deadline = performance.now() + SAMPLE_BUDGET_MS;
   for (let i = 0; i < TIMED_CALLS; i += 1) {
     const started = performance.now();
-    call();
+    for (let k = 0; k < batch; k += 1) call();
     fastest = Math.min(fastest, performance.now() - started);
     if (performance.now() >= deadline) break;
   }
-  return Math.max(fastest, 0.001);
+  return Math.max(fastest / batch, 0.000001);
 };
 
 interface ScalingBounds {
