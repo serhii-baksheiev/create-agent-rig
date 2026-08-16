@@ -31,6 +31,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { elevatedPathsIn, readDeclaredPaths } from '../detect-missed-gate.mjs';
+import { updateState } from '../run-state.mjs';
 import { mainCheckoutRoot } from './checkout.mjs';
 
 
@@ -64,7 +65,7 @@ import { mainCheckoutRoot } from './checkout.mjs';
  * cases: `execFileSync`, which the documented snippet uses, throws `ENOBUFS`
  * rather than returning a short string — measured, so it fails loudly.)
  */
-export const recordCompletedTier = ({ changedFiles, projectRoot, statePath } = {}) => {
+export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runDir } = {}) => {
   // 🔴 An absent file list is NOT a normal change. A zero and an unknown look
   // identical in a count and mean opposite things, and guessing `normal` here
   // would rebuild the exact blind spot this module closes: the permissive
@@ -110,6 +111,36 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath } = {
   // outlives the task.
   const file = statePath ?? join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');
   writeFileSync(file, `${JSON.stringify({ lastCompletedTier: tier }, null, 2)}\n`);
+
+  // The run's own state, when the run declared a directory. Two files because
+  // the two values have different lifetimes: the tier rations ACROSS runs and
+  // belongs to the checkout, while the escalation streak means "twice in a row
+  // in THIS run" — see `run-state.mjs`. Writing either into the other's file
+  // silently breaks the rule it exists for.
+  //
+  // 🔴 A close BREAKS the streak, and that is the point of writing it here.
+  // "Two escalations in a row" ends when something lands in between; a counter
+  // nothing resets turns the second escalation of a long, otherwise healthy run
+  // into a permanent stop.
+  //
+  // `updateState` merges, so the budget and the trigger record this run has
+  // accumulated survive — unlike the whole-file write above, which owns its
+  // file outright.
+  //
+  // The tier goes into both files, and only one of them is read back: selection
+  // takes it from the per-checkout file above. The run-state copy is a trace of
+  // what this run closed — the item's own state shape names it — not a second
+  // input to the ration, and reading it as one would be the per-run clean slate
+  // this module exists to prevent.
+  //
+  // ⚠ **Deliberately untried, unlike the same call inside `recordEscalation`.**
+  // There the caller has already mutated a tracker, so a throw would report a
+  // successful escalation as a failure and invite a double-posted comment. Here
+  // the durable half — the tier the ration reads — is already on disk one line
+  // above, and the half that can still fail is the streak reset, whose loss
+  // stops the run EARLIER than it needed to. A failure that errs toward
+  // stopping is one to hear about, not one to swallow.
+  if (runDir) updateState(runDir, { lastCompletedTier: tier, escalations: 0 });
 
   return { tier, elevatedPaths: elevated };
 };

@@ -77,7 +77,8 @@ export const SKIP_CAUSES = Object.freeze([
   'triage',
   'escalated',
   'blocked',
-  'trigger',
+  'trigger-auto',
+  'trigger-human',
   'spacing',
 ]);
 
@@ -85,8 +86,14 @@ export const SKIP_CAUSES = Object.freeze([
  * The causes that hold a takeable item back — and the reason the stop conditions
  * cannot treat "something was skipped" as one thing.
  *
- * Each of these clears WITHOUT new work being written: a normal item lands, a
- * blocker closes, another session finishes, a human declares the window. The
+ * Each of these clears without the QUEUE being refilled: a normal item lands, a
+ * blocker closes, another session finishes, a human declares the window. Two of
+ * them do need something written, and the distinction cost three rewrites of the
+ * stop line to get right — a `trigger-auto` item stays held until the
+ * declaration is recorded in the run state, and a `trigger-human` item is freed
+ * only by a human editing the item's own marker. They are separate tags for
+ * that reason: one tag standing for two remedies makes every sentence about it
+ * wrong for one of them. The
  * three causes NOT in this list — `closed`, `triage`, `escalated` — are items
  * out of play, waiting on a human. On a tracker-backed adapter they accumulate:
  * an escalated issue stays open and merely gains a label, and a proposal the
@@ -107,7 +114,13 @@ export const SKIP_CAUSES = Object.freeze([
  * edit — because if that move is not made, the next run picks the item straight
  * back up.
  */
-export const HOLDING_CAUSES = Object.freeze(['blocked', 'in-progress', 'spacing', 'trigger']);
+export const HOLDING_CAUSES = Object.freeze([
+  'blocked',
+  'in-progress',
+  'spacing',
+  'trigger-auto',
+  'trigger-human',
+]);
 
 /**
  * Is this item takeable, and if not, why not?
@@ -160,18 +173,26 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
 
   // No trigger label means unconditional, not missing data. Work that is
   // genuinely conditional says so.
+  // ⚠ **The markers are resolved by the adapter, `auto` first**, so an item
+  // carrying BOTH reaches here as `auto` and one recorded declaration takes it.
+  // Nothing refuses that combination and no hygiene check reports it — so this
+  // branch describes the item as the adapter classified it, and claims nothing
+  // about what the item's author wrote. "Never self-taken" would be exactly
+  // that claim, and it would be false for the item most likely to carry both:
+  // one an owner tightened from auto-gated to human-gated without deleting the
+  // old marker, where the silent resolution goes to the LESS restrictive gate.
   if (ticket.trigger === 'human') {
     reject(
-      'trigger',
+      'trigger-human',
       'trigger-human: a window, a demand or a "pass" is a human declaration — ' +
-        'never self-taken, only handed over explicitly',
+        'handed over explicitly, never taken on this marker alone',
     );
   }
   if (ticket.trigger === 'auto') {
     const fired = triggersFired?.[ticket.id];
     if (fired !== true) {
       reject(
-        'trigger',
+        'trigger-auto',
         fired === undefined
           ? 'trigger-auto with no verification of the trigger this run — ' +
             'unverified is not fired'
@@ -452,6 +473,45 @@ const parkedNote = (parked) =>
       'time.';
 
 /**
+ * The trigger remedies, composed from the tags actually present.
+ *
+ * 🔴 **Why this is a function and not a sentence.** The two trigger kinds hold an
+ * item back through different mechanisms and are freed by different acts: an
+ * `auto` item waits for a declaration to be RECORDED, a `human` item is never
+ * self-taken at all and only a human editing the item's own marker frees it.
+ * When one cause tag stood for both, every fixed sentence keyed off it was
+ * wrong for one kind — the clause was rewritten three times, each revision
+ * repairing one sub-case and leaving the other, until the tags were split. So
+ * the remedy now follows the pile: unreachable unless the tag that earns it is
+ * in it, which makes a one-sided line structurally unavailable rather than
+ * merely discouraged.
+ *
+ * The cost of getting this wrong is not a confusing sentence. Told to record a
+ * declaration for a `human` item, an operator runs a command that reports
+ * success, changes nothing, and — under an adapter whose ids are list positions
+ * — leaves a live record that arms whatever occupies that slot next.
+ */
+const triggerNote = (held) => {
+  const auto = held.includes('trigger-auto');
+  const human = held.includes('trigger-human');
+  if (!auto && !human) return '';
+  return (
+    ' A trigger is the exception, and the two kinds are freed differently:' +
+    (auto
+      ? ' a trigger-auto item waits for the declaration to be RECORDED — ' +
+        '`node .claude/scripts/run-state.mjs trigger <item-id>` — so waiting it ' +
+        'out waits forever;'
+      : '') +
+    (human
+      ? ' an item held as trigger-human is not freed by recording a declaration ' +
+        "— that does nothing here; only a human changing the item's own marker " +
+        'frees it;'
+      : '') +
+    ' both are declarations, not delays.'
+  );
+};
+
+/**
  * Should the whole run stop? Checked in severity order, because a regression must
  * not be reported as an empty queue.
  *
@@ -529,8 +589,8 @@ export const stopConditionOf = ({
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
-          'session finishes, a trigger when a human declares it — so the action is ' +
-          'to interleave or to wait, never to refill and never to invent work.',
+          `session finishes.${triggerNote(held)} Otherwise the action is to ` +
+          'interleave or to wait, never to refill and never to invent work.',
       };
     }
     return {

@@ -13,6 +13,7 @@
 // (`github-issues`). Ordering the list by hand is not a dependency graph.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
 
@@ -196,14 +197,21 @@ export const comment = (ticket, body) => ({
   why: 'PLAN.md has no comment thread: write it as a journal entry in the same file.',
 });
 
-export const escalate = (ticket, diagnosis) => ({
-  ok: false,
-  journalInstead: `escalated ${ticket.id}: ${diagnosis}`,
-  why:
-    'PLAN.md has no per-item state, so an escalated item cannot be marked ' +
-    'unselectable. Move it to the Operator queue in the same edit, or the next ' +
-    'run picks it straight back up.',
-});
+export const escalate = (ticket, diagnosis, { env = process.env } = {}) => {
+  // The count is recorded even though this adapter cannot mark the item: the two
+  // are different facts. "This queue has no per-item state" is a plan-md limit;
+  // "two tasks in a row hit a wall" is about the run, and it must stop the run
+  // whichever tracker it is reading.
+  recordEscalation(env.RIG_RUN_DIR);
+  return {
+    ok: false,
+    journalInstead: `escalated ${ticket.id}: ${diagnosis}`,
+    why:
+      'PLAN.md has no per-item state, so an escalated item cannot be marked ' +
+      'unselectable. Move it to the Operator queue in the same edit, or the next ' +
+      'run picks it straight back up.',
+  };
+};
 
 /**
  * A proposal, forced into triage.

@@ -69,9 +69,18 @@ been seen working at least once.
 
 ### Declare the run directory here, before the first selection
 
-The machine trace (§7) is opt-in and its first call site is **selection**, which
-runs before every task. Declared later, it misses everything that already
-happened — so it is declared in preflight or not at all:
+🔴 **This is not optional, and it is not only about the trace.** The run's
+**stop conditions** live in that directory too (§3) — the escalation streak, the
+deploy verdict, the budget flag. With `RIG_RUN_DIR` unset the two you write
+refuse loudly, so you find out; **the escalation count does not.** It is
+recorded nowhere, silently, and `next` then hands out work after two walls in a
+row with nothing on stderr to say why. An undeclared run is therefore not a run
+with a missing journal; it is a run whose main brake is off and which looks
+exactly like a healthy one.
+
+The machine trace (§7) is the other half, and its first call site is
+**selection**, which runs before every task. Declared later, it misses
+everything that already happened — so this goes in preflight or not at all:
 
 ```bash
 export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
@@ -113,10 +122,39 @@ metadata destroys the evidence that the metadata is unreliable.
 
 🔴 **A missing trigger marker means unconditional, not missing data.** Work that is
 genuinely conditional says so. A `trigger-human` item — a "security pass", a
-"window", "user demand" without a named metric — is **never self-taken**; the human
-hands it over explicitly. A `trigger-auto` item needs its trigger verified *this
-run*: unverified is not fired, and rationalising a trigger into firing builds for
-scale that does not exist.
+"window", "user demand" without a named metric — is **never taken on that marker
+alone**; the human hands it over explicitly. A `trigger-auto` item needs its
+trigger verified *this run*: unverified is not fired, and rationalising a
+trigger into firing builds for scale that does not exist.
+
+⚠ **An item carrying BOTH markers is taken as `trigger-auto`.** Every adapter
+resolves `auto` first, nothing refuses the combination, and no hygiene check
+reports it — so one recorded declaration takes an item whose author also marked
+it human-gated. The reachable path is an owner tightening an auto-gated item and
+not deleting the old marker, and the silent resolution goes to the **less**
+restrictive gate. Until that is fixed, treat a double-marked item as
+human-gated by hand.
+
+**For a `trigger-auto` item, record the declaration** — it has to outlive the
+turn it was made in, or the next selection holds the item back again:
+
+```bash
+node .claude/scripts/run-state.mjs trigger <item-id>
+```
+
+🔴 **This does nothing for a `trigger-human` item, and the command will not tell
+you so.** Selection refuses that kind outright — it never consults the record —
+so the only thing that makes one takeable is a human changing the item's own
+marker. Recording a "declaration" against it succeeds, prints, and leaves the
+item exactly as unselectable as before.
+
+⚠ **It is keyed by the item's id — and under `plan-md` that id is the item's
+POSITION in the list.** So a declaration made for the third bullet transfers to
+whatever occupies the third slot after someone edits `PLAN.md`, for the rest of
+the run. Re-check the item the declaration names before acting on it, or use an
+adapter whose ids are stable (`github-issues`, `jira`). There is no un-fire
+word: a new run starts with a clean state, which is the same remedy the budget
+stop relies on.
 
 **The elevated tier is rationed by spacing, not by counting** — a per-run count is
 meaningless when the run has no end. Never two elevated items back to back: land a
@@ -139,12 +177,61 @@ for itself, which is the one thing this loop does not do (§8).
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
 reviewer verdict, a false premise in the item itself) **do not end the run**:
-escalate that item (§5) and take the next one.
+escalate that item (§6) and take the next one.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
 **two escalations in a row** · **budget** · **nothing selectable** · **queue
 empty**.
+
+🔴 **Their inputs come from a file, not from your memory — and that is why they
+fire at all.** `escalations` and `lastDeployVerdict` live in
+`<RIG_RUN_DIR>/state.json`, written by `run-state.mjs`. Before this existed the
+CLI called `stopConditionOf` with the queue counts alone, so every one of those
+branches held its default on every real selection: the rules were enforced by
+whichever session happened to remember them, and compaction is exactly the
+moment a long run stops remembering.
+
+**One of the three writes itself; two you write.** The escalation count needs
+nothing from you beyond using the documented calls — but it has two writers, and
+both have to be the documented one:
+
+- it **rises** through every adapter's `escalate()` (§6), which is why
+  escalating by hand-labelling the item counts nothing;
+- it **resets** through the close step's `recordCompletedTier`, and **only when
+  you pass it `runDir`** (§9 has the command; it is one of that call's
+  load-bearing arguments, not an optional extra). Omit it and the count is
+  monotonic: two escalations an hour apart end the run however many tasks
+  landed in between.
+
+The other two are yours, after the checks that produce them:
+
+```bash
+# after the post-deploy check (`.claude/rules/autonomy.md`, "Post-deploy
+# verification") — REGRESSION stops the next selection, HEALTHY clears it
+node .claude/scripts/run-state.mjs deploy REGRESSION
+
+# when the declared budget (§4) cannot fit another task
+node .claude/scripts/run-state.mjs budget exhausted
+```
+
+Both **refuse** a word outside their vocabulary and refuse to run with no
+`RIG_RUN_DIR`, rather than writing something the stop conditions cannot match: a
+file that looks recorded and stops nothing is worse than no file.
+
+**Only the deploy verdict can be taken back**, and the asymmetry is deliberate:
+`HEALTHY` names a real later event — the revert landed — so without it one bad
+deploy would end every later selection in the run. Spend only accumulates, so
+un-exhausting a budget would name no event at all, only a decision to keep going
+taken by the run that declared the stop. A new run gets a clean state; that is
+the way back from both.
+
+Selection itself — `node .claude/scripts/queue/index.mjs next`, §0 — is what
+*reads* these and stops on them. It is still the command you run to get work.
+
+⚠ **The kill switch is not among them.** It stays mechanical in `guard-bash`
+and scripted in preflight; `next` does not check for the flag, so **keep
+checking it between tasks** — the brake block later in this section says how.
 
 Four of them deserve their reasons repeated:
 
@@ -167,15 +254,21 @@ Four of them deserve their reasons repeated:
   the Agent queue can — a filed proposal goes to the Operator queue, where
   selection never looks, and an escalation leaves no mark on the queue at all,
   because a flat list has no per-item state. 🔴 **That last one is an absence,
-  not a safety.** `plan-md`'s `escalate` writes nothing, returns `ok: false`,
-  and hands back the instruction with it: move the item to the Operator queue in
-  the same edit. That move is the session's, and skipping it means the next run
-  takes the stuck item straight back.
+  not a safety.** `plan-md`'s `escalate` writes **nothing to the queue** and
+  returns `ok: false`, handing back the instruction with it: move the item to
+  the Operator queue in the same edit. That move is the session's, and skipping
+  it means the next run takes the stuck item straight back. It does still record
+  the escalation into the run state like every other adapter — the two are
+  different facts, so **call it rather than labelling by hand** (§6): the count
+  is what ends a run that has hit the same wall twice.
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
-  condition that clears without anything being written**: the elevated spacing
-  (a normal item lands), a blocker (its item closes), in-progress (the other
-  session finishes), a trigger (a human declares it). The stop line names how
+  condition that clears when something else happens, not by refilling the
+  queue**: the elevated spacing (a normal item lands), a blocker (its item
+  closes), in-progress (the other session finishes), a trigger (a human
+  declares it — and for a `trigger-auto` item that declaration is **written**,
+  §2, so this is the one hold that needs a command rather than only time). The
+  stop line names how
   many and by which of those, because the two endings ask the owner for opposite
   things: an empty queue wants refilling, a held one wants interleaving or
   simply time. 🔴 **A parked cause outranks a holding one on the same item.** An
@@ -216,6 +309,21 @@ reliably expose per-subagent accounting to the agent, and a plausible number in 
 cost column **will be believed** — by the next reader, and by the next run
 reasoning about its own budget. A field the loop cannot observe stays **visibly
 empty, never estimated.**
+
+**Where the budget lives, and what is honest about it.** The **decision** is
+recorded, not the arithmetic:
+
+```bash
+node .claude/scripts/run-state.mjs budget exhausted
+```
+
+That sets the flag `stopConditionOf` reads, so the next selection stops with
+`queue: budget` — and it survives a compaction, which is the whole reason it is
+a file. **Nothing computes it for you**: the counters above are the ones the
+session observes, and judging that the remaining allowance cannot fit another
+task stays yours. There is deliberately no field holding a spend figure, for the
+same reason the journal has no currency column — a number the run cannot
+observe, written where a stop condition reads, is a fiction with authority.
 
 ## 5. Every task carries an outcome state
 
@@ -282,6 +390,15 @@ claimed, what the code says, and the citation:
 3. Journal it. 4. **Take the next item.** One stuck task does not end a run; two
    in a row does (§3).
 
+🔴 **Escalate through the adapter, never by hand-labelling the item.** Every
+adapter's `escalate()` counts the escalation into the run state as it marks the
+item, which is what makes "two in a row" a condition the next selection can
+check rather than one you have to remember across a compaction. Adding the
+label yourself marks the item and counts nothing — and the run then grinds past
+the wall this rule exists to stop it at. (`plan-md` still returns `ok: false`,
+because a flat list has no per-item state to mark; the count is recorded all the
+same, and moving the item to the Operator queue is still yours.)
+
 **Run-scoped — the run itself is broken, and it ends.** A runtime regression, two
 escalations in a row, a systemic wall, a queue-data anomaly: open an escalation
 issue with the diagnosis and links, notify the owner if the harness can, and write
@@ -301,8 +418,11 @@ everything else to `events.jsonl`, both append-only, inside the run directory
 declared in §1. Five things about it are worth knowing before relying on it:
 
 - **The run declares the directory; nothing invents one.** With `RIG_RUN_DIR`
-  unset, every call site stays silent — the trace is opt-in, and a run that never
-  declared one has no journal rather than a journal in a guessed place.
+  unset, every call site stays silent — the *trace* is opt-in, and a run that
+  never declared one has no journal rather than a journal in a guessed place.
+  🔴 **The stop conditions in the same directory are not opt-in** (§1): an
+  undeclared run also stops counting escalations, and that half is silent too.
+  Read "opt-in" as describing this file, never the declaration.
 - **It answers *what the run decided and on what basis*, never *was that
   right*.** It replaces neither `## Journal` above nor `PLAN.md`; it is the
   evidence a reader checks those against.
@@ -441,13 +561,23 @@ three poisons the only channel by which this project learns.
       "git", ["diff", "--name-only", "-z", `${merge}^1`, merge],
       { encoding: "utf8", env: withoutGitLocation() },
     ).split("\0").filter(Boolean);
-    console.log(recordCompletedTier({ changedFiles, projectRoot: process.cwd() }));
+    console.log(recordCompletedTier({
+      changedFiles,
+      projectRoot: process.cwd(),
+      runDir: process.env.RIG_RUN_DIR,
+    }));
   '
   ```
 
-  Four details in that command are load-bearing, and each one was a live defect
+  Five details in that command are load-bearing, and each one was a live defect
   before it was there:
 
+  - **`runDir`.** It is what resets the escalation streak (§3) — the close is
+    the "something landed in between" that makes "two in a row" mean two in a
+    row. Omit it and the counter only ever rises: two escalations an hour apart
+    end the run however many tasks closed between them. The parameter is
+    optional in the signature, so leaving it out fails silently and in the
+    direction of a stop nobody can clear.
   - **`<merge-sha>^1 <merge-sha>`, not `origin/<default>...<merge-sha>`.** A
     three-dot diff is `merge-base..head`, and once the remote-tracking ref
     includes the merge — which is its state at exactly the moment this step

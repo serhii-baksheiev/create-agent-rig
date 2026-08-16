@@ -841,29 +841,109 @@ describe('an untrusted item title cannot forge a journal record', () => {
   });
 });
 
+/**
+ * An installed rig under `dir` that is missing EXACTLY the module named, and the
+ * CLI path inside it. The shape `upgrade` leaves when one file does not land
+ * beside a new caller.
+ *
+ * 🔴 **Why the sibling module is copied in.** The CLI imports `run-journal.mjs`
+ * and `run-state.mjs` dynamically, on the same path — the one a declared run
+ * directory takes. Each refusal below is about ONE of them, so with both absent
+ * the CLI refuses on whichever import it reaches first and the other test
+ * silently becomes a second copy of that one. Deleting the `present` copy here
+ * does not fail anything loudly; it just re-aims a test at a different refusal.
+ */
+const rigWithout = async (
+  dir: string,
+  missing: 'run-journal.mjs' | 'run-state.mjs',
+): Promise<string> => {
+  const scripts = path.join(dir, '.claude', 'scripts');
+  await mkdir(scripts, { recursive: true });
+  await cp(path.join(scriptsDir, 'queue'), path.join(scripts, 'queue'), { recursive: true });
+  await copyFile(path.join(scriptsDir, 'git-env.mjs'), path.join(scripts, 'git-env.mjs'));
+  const present = missing === 'run-journal.mjs' ? 'run-state.mjs' : 'run-journal.mjs';
+  await copyFile(path.join(scriptsDir, present), path.join(scripts, present));
+  return path.join(scripts, 'queue', 'index.mjs');
+};
+
 describe('the journal module travels with the CLI that imports it', () => {
   it('refuses when a run directory is declared and the journal module is missing', async () => {
     const dir = await project();
-    const scripts = path.join(dir, '.claude', 'scripts');
-    await mkdir(scripts, { recursive: true });
-    await cp(path.join(scriptsDir, 'queue'), path.join(scripts, 'queue'), { recursive: true });
-    await copyFile(path.join(scriptsDir, 'git-env.mjs'), path.join(scripts, 'git-env.mjs'));
-    // `run-journal.mjs` is deliberately NOT copied. This is an installed rig that
-    // is missing a file its CLI imports dynamically — and a dynamic import only
-    // fails on the path that takes it, so the gap is invisible until a run
-    // declares a directory. Anything short of a hard refusal here means the rig
-    // records nothing for the rest of the session and says so once, quietly.
+    // `run-journal.mjs` is deliberately NOT copied. A dynamic import only fails
+    // on the path that takes it, so the gap is invisible until a run declares a
+    // directory. Anything short of a hard refusal here means the rig records
+    // nothing for the rest of the session and says so once, quietly.
+    const cli = await rigWithout(dir, 'run-journal.mjs');
     const runDir = await newRunDir();
 
-    const result = await runCli(path.join(scripts, 'queue', 'index.mjs'), ['next', '--json'], dir, {
+    const result = await runCli(cli, ['next', '--json'], dir, {
       ...withoutGitLocation(),
       RIG_RUN_DIR: runDir,
     });
 
     expect(result.code, result.out).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toMatch(/run.?journal/i);
+    // 🔴 The CLI's OWN label, at the head of a line — not `/run.?journal/i`,
+    // which the module path inside a raw `Cannot find module
+    // '…/run-journal.mjs'` satisfies just as well. That looser form could not
+    // tell this refusal apart from the unhandled resolution error it exists to
+    // replace, so it would keep passing if the handler around the import went
+    // away. (Here the handler IS reached today; the assertion is what could not
+    // prove it.)
+    expect(result.stderr).toMatch(/^run journal: /m);
     // nothing was written where the run was told to write
+    expect(await readdir(runDir)).toEqual([]);
+  });
+});
+
+// The mirror of the describe above, for the other module the CLI loads the same
+// way. It is a harder refusal to argue for, so the reasoning is written down: a
+// missing module is NOT read as "no state". `readState` swallows an absent or a
+// corrupt `state.json` into `{}` on purpose — an unrecorded value is a defined
+// state — but a module that will not load answers NOTHING, and the values it
+// would have answered are the escalation streak and the deploy verdict: the two
+// conditions that exist to STOP the run. Read as `{}` they read as "nothing is
+// wrong", so a run that has escalated twice or deployed a regression would take
+// its next item on top of it. That failure is silent and this one is not.
+describe('the run-state module travels with the CLI that imports it', () => {
+  it('refuses when a run directory is declared and the state module is missing', async () => {
+    const dir = await project();
+    const cli = await rigWithout(dir, 'run-state.mjs');
+    const runDir = await newRunDir();
+
+    const result = await runCli(cli, ['next', '--json'], dir, {
+      ...withoutGitLocation(),
+      RIG_RUN_DIR: runDir,
+    });
+
+    expect(result.code, result.out).toBe(1);
+    // No selection, on either stream: a caller that reads a ticket here has taken
+    // work under stop conditions the run could not check.
+    expect(result.stdout).toBe('');
+    // 🔴 The CLI's own diagnostic, not a substring a stack trace shares with it.
+    // `/run.?state/i` passed against the raw
+    // `Cannot find module '…/run-state.mjs' imported from '…/queue/plan-md.mjs'`
+    // — the words are in the FILENAME. Every adapter imports `run-state.mjs`
+    // statically, so a rig missing it dies inside `resolveAdapter`, and the
+    // refusal below never runs. Anchoring the CLI's own label to the head of a
+    // line is what the loader's message cannot forge.
+    expect(result.stderr).toMatch(/^run state: /m);
+    // and the sentence that follows it, which is the whole reason this stops the
+    // run rather than continuing with `{}`: the two values it could not read are
+    // the stop conditions, so no work may be selected on top of them. A refusal
+    // that named the module but not this would leave the operator reading a
+    // missing file as a missing file, not as an unchecked stop.
+    expect(result.stderr).toMatch(/escalation/i);
+    expect(result.stderr).toMatch(/deploy verdict/i);
+    expect(result.stderr).toMatch(/stop condition/i);
+    expect(result.stderr).toMatch(/must not select work/i);
+    // Named as the state failure and not as the journal's — the two refusals are
+    // one dynamic import apart, and an operator who reads the wrong one goes
+    // looking for the wrong missing file.
+    expect(result.stderr).not.toMatch(/run.?journal/i);
+    // Nothing was written where the run was told to write. The stop is decided
+    // before the queue is read and before the journal is loaded, so this run
+    // never got as far as having anything to record.
     expect(await readdir(runDir)).toEqual([]);
   });
 });

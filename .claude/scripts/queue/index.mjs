@@ -209,6 +209,37 @@ if (invokedDirectly()) {
     process.exit(1);
   }
 
+  // A missing module is NOT read as "no state". A run that could not read its
+  // state would silently lose the escalation streak and the regression verdict
+  // — the two conditions that exist to stop it — so this fails closed, into a
+  // message the operator can act on.
+  //
+  // 🔴 **Loaded unconditionally, and ahead of the adapter, because the adapters
+  // import it statically.** An earlier version loaded it dynamically and only
+  // behind `RIG_RUN_DIR`, reasoning that a rig carrying an older
+  // `.claude/scripts/` should still get a readable message. That reasoning was
+  // sound and the code did not deliver it: all three adapters now
+  // `import { recordEscalation } from '../run-state.mjs'`, so a rig missing the
+  // module died inside `resolveAdapter` below and the operator saw a raw
+  // `Cannot find module` naming an adapter. The refusal was unreachable — and
+  // its test passed anyway, because the module's own filename satisfied the
+  // pattern it matched on. The load lives here; the READ stays behind the
+  // declaration, because a session with no run directory has no state to read
+  // and must keep working exactly as before.
+  let readState;
+  let stopInputsOf;
+  try {
+    ({ readState, stopInputsOf } = await import('../run-state.mjs'));
+  } catch (error) {
+    process.stderr.write(
+      `run state: ${error.message}\n` +
+        '  the run state module could not be loaded, so the escalation streak and the ' +
+        'deploy verdict cannot be read. Those are stop conditions, and a run that ' +
+        'cannot read them must not select work.\n',
+    );
+    process.exit(1);
+  }
+
   let config;
   let state;
   let adapter;
@@ -228,6 +259,58 @@ if (invokedDirectly()) {
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exit(1);
+  }
+
+  // 🔴 The run-level stop is decided BEFORE the queue is read, because those
+  // conditions are not about the queue. A run that has escalated twice in a row
+  // has hit a systemic wall, and a run that deployed a regression must start no
+  // new work on top of it — asking the tracker first would spend a network call
+  // and, worse, would report `queue-unreadable` for an unreachable tracker when
+  // the truthful answer is that this run was already over.
+  //
+  // The values come from the run's own state file rather than from the
+  // session's memory, which is what three of `stopConditionOf`'s parameters
+  // were waiting for: every branch was live, and nothing ever supplied them.
+  //
+  // The fourth, `killSwitch`, is still not passed here and that is deliberate —
+  // `guard-bash` denies the merge at the tool layer and preflight reads the flag,
+  // so a second answer to "is the brake on" would be the disagreement
+  // `invariants.md` forbids. Selection therefore does NOT stop on the brake, and
+  // the `loop` skill tells the run to keep checking it between tasks.
+  //
+  const runState = process.env.RIG_RUN_DIR ? readState(process.env.RIG_RUN_DIR) : {};
+  let stopInputs;
+  try {
+    // Read through the module that owns the vocabulary, never field by field
+    // here: a value the reader cannot interpret must not arrive as "no stop",
+    // and deciding that at the call site is how the two halves drift.
+    stopInputs = stopInputsOf(runState);
+  } catch (error) {
+    process.stderr.write(
+      `${error.message}\n  the run declared a state file this cannot act on, so no ` +
+        'item is selected. Stop conditions read from it, and an unreadable one is ' +
+        'not the same as an absent one.\n',
+    );
+    process.exit(1);
+  }
+  const runStop = stopConditionOf({
+    // `candidates: 1` says "not the empty-queue case" — the queue has not been
+    // read yet and must not be reported on here. Only the conditions that
+    // outrank it can fire from this call.
+    candidates: 1,
+    ...stopInputs,
+  });
+  if (runStop) {
+    // `renderNext`, not a second copy of its format — an operator reading two
+    // differently-worded stop lines has no way to know they came from one rule.
+    process.stdout.write(
+      args.json ? `${JSON.stringify({ stop: runStop }, null, 2)}\n` : renderNext(null, runStop),
+    );
+    // The exit code follows `stop.success`, exactly as the empty-queue path
+    // does. A budget stop is a clean end of session — reporting it as a failure
+    // would tell a wrapper that the run broke, and `--json` already says
+    // `"success": true` right beside the code that contradicted it.
+    process.exit(runStop.success ? 0 : 1);
   }
 
   let tickets;
@@ -263,7 +346,21 @@ if (invokedDirectly()) {
     // the config is a hand-written hint at best, and it is the composed file, so
     // it cannot be the live value.
     lastCompletedTier: state.lastCompletedTier ?? config.lastCompletedTier ?? null,
-    triggersFired: config.triggersFired ?? null,
+    // Same precedence, for the same reason as the tier above: `queue.json` is
+    // composed by the sync script and drift-checked, so declaring a trigger
+    // fired there means editing a generated file — and the declaration is a
+    // fact about THIS run, not about the rig's configuration.
+    //
+    // The config keeps working as a fallback rather than being dropped: nothing
+    // in this repository or its templates ever writes the key, but a rig owner
+    // who hand-added one would otherwise find their auto-trigger items silently
+    // unselectable, and an item that stops being offered announces itself
+    // nowhere.
+    //
+    // Replacement, not a merge: a per-key merge would make a stale config entry
+    // impossible to retract, so "not this time" would again require editing the
+    // generated file this move exists to get out of.
+    triggersFired: runState.triggersFired ?? config.triggersFired ?? null,
   });
   // The skipped records travel with the count: without them "nothing left" and
   // "everything left is held back" both print as an empty queue, and only one of
