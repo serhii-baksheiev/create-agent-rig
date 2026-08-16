@@ -12,22 +12,24 @@
 // or SHAs here would lie). And it is only the load-bearing part, not the
 // whole rulebook.
 //
-// What "the load-bearing part" means here, exactly: the preamble (which
-// carries the tie-break — round the tier UP when it is unclear), the tiers,
-// and the stop rules. What it drops is reference a session reads when it needs
-// it, and the banner names the file so a run knows where to look.
+// Which part is load-bearing is not this hook's judgment to make: the rule
+// file marks what it does not need injected, and everything else goes. That
+// division of labour is the whole design, and it was arrived at the expensive
+// way. An earlier version of this file selected `## ` sections from a kept
+// list — and four review rounds each found a different way for that selection
+// to return a silently truncated excerpt: a heading inside a code fence, a
+// heading inside a skipped region, a section whose heading and body fell on
+// opposite sides of a marker, a heading inside an HTML block. Each fix closed
+// one spelling and the next round found another, because a parser that infers
+// structure has no bottom. This one does not parse structure at all.
 //
 // ⚠ The saving rests on an assumption this repository cannot enforce: that the
 // tool already loads `.claude/rules/*.md` as project instructions, so injecting
 // the whole file pays for it twice. That is harness behaviour, observable but
-// not pinned here. Where it does not hold, this excerpt is a plain subtraction
-// — which is why the cut keeps whole sections and errs toward injecting more.
+// not pinned here. Where it does not hold, this is a plain subtraction — which
+// is why every ambiguity resolves toward injecting more.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-
-// The `## ` sections a compacted run cannot work without, matched as a prefix
-// so a heading may carry a subtitle ("## Stop rules — by work-state, …").
-const KEPT_SECTIONS = ['## Tiers', '## Stop rules'];
 
 // Regions the rule file marks as not worth injecting. The marker is explicit
 // and lives in the rule file itself, where the person editing it can see it —
@@ -55,42 +57,38 @@ function fenceRun(line) {
 }
 
 /**
- * The excerpt: the preamble, plus each kept `## ` section whole, minus any
- * explicitly skip-marked region. Fenced code is data, not structure, so a
- * heading or a marker inside a fence is left alone — both fence characters,
- * with the CommonMark closing rule (same character, at least as long, nothing
- * but whitespace after it), because a rules file quotes shell and markdown at
- * each other.
+ * The whole file, minus every region the file itself marks with
+ * `<!-- inject:skip -->` … `<!-- /inject:skip -->`. That is the entire
+ * operation: nothing here reads a heading, so no arrangement of headings —
+ * indented, inside an HTML block, split across a marker — can change what
+ * survives. What is omitted is a decision made in the rule file, by whoever
+ * writes the rule, and visible on the line above it.
  *
- * It returns the input UNCHANGED — injecting everything — whenever the file
- * does not look the way this function expects: a kept heading missing, a skip
- * region left open, a fence left open. Partial output is the dangerous answer,
+ * Fenced code is data, not structure, so a marker inside a fence is content.
+ * Both fence characters, with the CommonMark closing rule (same character, at
+ * least as long, nothing but whitespace after it) — a rules file quotes shell
+ * and markdown at each other, and an opener may carry an info string where a
+ * closer may not.
+ *
+ * It returns the input UNCHANGED whenever the markup is malformed: a skip
+ * region left open, one closed without being opened, one nested inside
+ * another, or a fence left open. Partial output is the dangerous answer,
  * because a governance section can go missing with nothing to notice it; a run
  * that gets the whole file has only paid twice.
  *
- * The limits, stated so nobody relies on cover that is not here: it reads
- * headings by prefix, so `## Tiers of anything` satisfies the check; a skip
- * marker is recognised only at the start of its own line; and it does not
- * understand indented code blocks or HTML blocks.
+ * The one limit worth stating: a marker is recognised only as the first
+ * non-whitespace text on its own line.
  */
 export function excerptAutonomy(markdown) {
   const lines = markdown.split('\n');
   const kept = [];
-  const seen = new Set();
-  let keeping = true; // the preamble, until the first `## `
   let skipping = false;
   let fence = null;
-
-  let strayClose = false;
+  let malformed = false;
 
   for (const line of lines) {
     const run = fenceRun(line);
     if (fence) {
-      // A closer is the same character, at least as long, and carries nothing
-      // but whitespace after it. That last clause is not pedantry: an opener
-      // MAY carry an info string, so without it a ```js line inside an open
-      // ```md block reads as the end of the block, and everything past it is
-      // parsed as structure again.
       if (run && run.char === fence.char && run.length >= fence.length && run.bare) fence = null;
     } else if (run) {
       fence = run;
@@ -101,32 +99,22 @@ export function excerptAutonomy(markdown) {
       // would let `<!-- inject:skip --> note` open nothing and then print
       // itself into the context.
       if (trimmed.startsWith(SKIP_OPEN)) {
+        // A second open inside a region is as much a mistake as a stray close,
+        // and the two are the same signal: the markers do not pair up.
+        malformed ||= skipping;
         skipping = true;
         continue;
       }
       if (trimmed.startsWith(SKIP_CLOSE)) {
-        strayClose ||= !skipping;
+        malformed ||= !skipping;
         skipping = false;
         continue;
       }
-      if (line.startsWith('## ')) {
-        const heading = KEPT_SECTIONS.find((candidate) => line.startsWith(candidate));
-        // Counted only when the section actually reaches the output. Counting
-        // it while skipping would let a kept section be suppressed by a skip
-        // region while the completeness check below still read as satisfied.
-        if (heading && !skipping) seen.add(heading);
-        keeping = Boolean(heading);
-      }
     }
-    if (keeping && !skipping) kept.push(line);
+    if (!skipping) kept.push(line);
   }
 
-  // A fence left open, a skip region left open or closed without being opened,
-  // or a kept section that never reached the output: the file is not the one
-  // this function knows how to cut, so it is not cut. Rescanning to "recover"
-  // would put a heading that sits inside a code block back into the structure,
-  // which is the same defect wearing a fix.
-  if (fence || skipping || strayClose || seen.size !== KEPT_SECTIONS.length) return markdown;
+  if (fence || skipping || malformed) return markdown;
   return kept.join('\n').trim();
 }
 
@@ -164,10 +152,10 @@ function main() {
     const rules = readFileSync(new URL('../rules/autonomy.md', import.meta.url), 'utf8');
     process.stdout.write(
       '[agent-os] Autonomy rules refresh — in force regardless of compaction.\n' +
-        'Below: the tiers and the stop rules. NOT below, and at ' +
-        '`.claude/rules/autonomy.md` when you need them: how the Tier-2 gate is ' +
-        'swept from outside, post-deploy verification, and the escalation ' +
-        'format.\n\n' +
+        'This is `.claude/rules/autonomy.md` with the sections it marks as ' +
+        'reference removed — read the file itself for those: how the Tier-2 ' +
+        'gate is swept from outside, how external work is reconciled, ' +
+        'post-deploy verification, and the escalation format.\n\n' +
         `${excerptAutonomy(rules)}\n`,
     );
   } catch {

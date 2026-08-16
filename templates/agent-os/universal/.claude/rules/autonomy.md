@@ -120,6 +120,8 @@ these lines is the failure mode:
   the summary. Resuming a stale session is how agents edit files that are not
   there anymore.
 
+<!-- inject:skip -->
+
 ## Post-deploy verification
 
 **CI-green ≠ runtime-healthy.** After a deploy, verify runtime health by
@@ -149,3 +151,5 @@ correct: there is no run for the verdict to belong to.
 When stopping, report: what was attempted, what was observed (verbatim errors,
 not summaries), current hypothesis, and the single question whose answer
 unblocks the work.
+
+<!-- /inject:skip -->
