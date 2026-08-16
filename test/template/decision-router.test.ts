@@ -1111,6 +1111,28 @@ describe('the cheap lanes cannot be unlocked by choosing a filename', () => {
     ).toBe('deterministic');
   });
 
+  it('routes a case-mismatched declared directory to the SAME lane, flag aside', async () => {
+    const { route } = await load();
+    // 🔴 The derived half of this was closed one round before the prose half,
+    // and the fix for the first claimed the second was closed too:
+    // `Scripts/notes.txt` reached `fast-path` with `prose-reviewer` as the whole
+    // gate while `scripts/notes.txt` reached `model`. The lane must not depend
+    // on how the directory is spelled.
+    const lane = (path: string): string =>
+      route({ files: [{ path, status: 'modified' }], elevatedPaths: ['scripts/'] }).lane;
+    for (const [declared, mismatched] of [
+      ['scripts/notes.txt', 'Scripts/notes.txt'],
+      ['scripts/y.generated.ts', 'Scripts/y.generated.ts'],
+      // …and the inert case stays cheap in BOTH spellings, which is what makes
+      // this consistent rather than merely stricter
+      ['scripts/README.md', 'Scripts/README.md'],
+    ]) {
+      expect(lane(mismatched!), `${mismatched} vs ${declared}`).toBe(lane(declared!));
+    }
+    expect(lane('scripts/README.md')).toBe('fast-path');
+    expect(lane('scripts/notes.txt')).toBe('model');
+  });
+
   it('does not let a type change buy the trusted status', async () => {
     const { route } = await load();
     // A file swapped for a symlink is not "the generator ran again".

@@ -89,17 +89,29 @@
  *    printed, read it; if stdout is empty, treat the change as `model`.**
  *    ⚠ And the diff it reads is the **committed** one, `<base>...<head>`: an
  *    uncommitted edit is not routed, so commit before routing.
- * 5. **Case folding is deliberately asymmetric, and the residual is named.**
- *    A rulebook file is recognised whatever the case of its name, and the
- *    router's own cheap-lane prefix test folds case too — both directions that
+ * 5. **Case folding is deliberately asymmetric, and the residual is the FLAG,
+ *    not the lane.** A rulebook file is recognised whatever the case of its
+ *    name, and this file's own cheap-lane tests fold too — both directions that
  *    can only ESCALATE. The gate sweep's `elevatedPathsIn` does not fold, on
- *    purpose (`normalizePath` explains why), so what remains is the
- *    `elevated-path` **flag**: against a declared `scripts/`, a file under
- *    `Scripts/` does not raise it. That costs the flag and its trace line; it
- *    no longer costs the lane, because the cheap lanes stopped relying on the
- *    sweep's answer. This limit was written the other way round for one round —
- *    it claimed the residual was a stray `.txt`, while a derived file under the
- *    mismatched directory was reaching the lane with no reviewer at all.
+ *    purpose (`normalizePath` explains why). So against a declared `scripts/`,
+ *    a file under `Scripts/` **routes to the same lane** as the correctly-cased
+ *    path — `caseOnlyElevated` in `route` sees to that, and it inherits the
+ *    sweep's inertness so `Scripts/README.md` stays as cheap as
+ *    `scripts/README.md` — but `risks` comes back empty, so the trace does not
+ *    say *why* it was expensive.
+ *
+ *    🔴 This limit has now been wrong in **both** directions, which is why it
+ *    is spelled out rather than summarised. It first claimed the residual was a
+ *    stray `.txt` while a *derived* file under the mismatched directory reached
+ *    the lane with no reviewer at all; the fix for that then claimed the lane
+ *    was safe while a `.txt` still lost `code-reviewer`. Both are closed now,
+ *    in code rather than in prose.
+ *
+ *    ⚠ One genuine false negative survives, and ASCII is not where it lives:
+ *    Unicode lowercasing is not prefix-preserving at a Greek final sigma, so a
+ *    declared prefix ending mid-segment on `Σ` can fail to fold-match. It needs
+ *    a declaration without a trailing slash, a path inert to the sweep, a
+ *    derived-looking name and a trusted status all at once.
  * 6. **`reviewers` is a floor, not a ceiling** — and this was measured on the
  *    router's own first run, not predicted. It returned `code-reviewer` and
  *    `prose-reviewer` for a diff that parses untrusted argv and git output,
@@ -179,9 +191,12 @@ const segmentsOf = (path) => normalizePath(path).split('/').filter(Boolean);
  * same file for its `elevated-paths` block, so the router was parsing it as the
  * rulebook and refusing to classify it as one.
  *
- * ⚠ Only THIS comparison folds case. `normalizePath` deliberately does not —
- * `detect-missed-gate.mjs` states why, and folding there would create false
- * positives on the elevated-prefix match.
+ * ⚠ Case folding in this file is a whitelist, not a single site: this check,
+ * `isTestPath`'s directory scan, and `route`'s own prefix tests all fold —
+ * every one of them a direction that can only ESCALATE. What must NOT fold is
+ * `normalizePath`, and therefore `elevatedPathsIn`: that one decides the gate
+ * sweep's escalation, where folding creates false positives.
+ * `detect-missed-gate.mjs` states why.
  */
 const RULEBOOK_BASENAMES = new Set([
   'claude.md',
@@ -554,8 +569,10 @@ const TEST_DIRECTORIES = new Set([
  * `integration/schema.generated.ts` into the lane that launches nobody — giving
  * back, for two directory names, exactly the coverage the fixture fix had won.
  *
- * A `.md`/`.mdx` file under one of these is documentation; anything else is a
- * test artifact. Those two extensions and no more, deliberately: `.txt` under
+ * A `.md`/`.mdx` file under one of these is treated as documentation BY THIS
+ * PREDICATE; anything else is a test artifact. ⚠ That is not the same as
+ * reaching the prose lane — `.mdx` is code to the ladder (see
+ * `PROSE_EXTENSIONS`), so `integration/x.mdx` still routes `model`. Those two extensions and no more, deliberately: `.txt` under
  * `integration/` is a golden file far more often than it is prose, and it was
  * the `.txt` fixture that broke. The pair matches the gate sweep's own inert
  * extensions, which is the one other place this distinction is drawn.
@@ -739,19 +756,45 @@ export const route = ({ files, elevatedPaths } = {}) => {
   // path — into `deterministic` with zero reviewers. Each half is documented;
   // the composition was not, and it contradicted this file's own headline.
   //
-  // 🔴 Folded to lower case, and ONLY here. `normalizePath` preserves case on
-  // purpose — folding it would create false positives in the gate sweep's
-  // escalation decision. This test is the opposite direction: it can only move
-  // a file OUT of a cheap lane, so folding costs a few extra reviews and closes
-  // a real hole. Measured: with a declared `scripts/`, a case-mismatched
+  // 🔴 Folded to lower case. `normalizePath` preserves case on purpose —
+  // folding THERE would create false positives in the gate sweep's escalation
+  // decision. These tests are the opposite direction: they can only move a file
+  // OUT of a cheap lane, so folding costs a few extra reviews and closes a real
+  // hole. Measured: with a declared `scripts/`, a case-mismatched
   // `Scripts/y.generated.ts` reported `M` reached `deterministic` with ZERO
   // reviewers — and no rename is needed, a repo that simply spells the
   // directory differently from its declaration has it from day one.
-  const prefixes = elevatedPaths.map((prefix) => normalizePath(prefix).toLowerCase());
+  const declared = elevatedPaths.map(normalizePath);
+  const folded = declared.map((prefix) => prefix.toLowerCase());
   const underDeclaredPath = (path) => {
     const normalized = normalizePath(path).toLowerCase();
-    return prefixes.some((prefix) => normalized.startsWith(prefix));
+    return folded.some((prefix) => normalized.startsWith(prefix));
   };
+
+  /**
+   * A file the sweep WOULD have called elevated if the case had matched.
+   *
+   * 🔴 This closes the residual rather than documenting it, and the shape
+   * matters: it asks `elevatedPathsIn` the same question twice, once folded and
+   * once not, so it inherits the sweep's inertness in BOTH answers. That is
+   * what keeps it consistent instead of merely stricter — `Scripts/notes.txt`
+   * now routes exactly where `scripts/notes.txt` routes (`model`, because
+   * `.txt` is not inert), and `Scripts/README.md` routes exactly where
+   * `scripts/README.md` routes (`fast-path`, because `.md` is).
+   *
+   * The measured hole: with a declared `scripts/`, `Scripts/notes.txt` reached
+   * `fast-path` with `prose-reviewer` as the whole gate while the same file
+   * spelled `scripts/` reached `model`. No rename is needed — a repo that
+   * spells the directory differently from its declaration has it from day one.
+   *
+   * What remains after this is the **flag**, not the lane: the change routes
+   * expensively, and `risks` stays empty because `elevatedPathsIn` is the
+   * sweep's answer and the sweep does not fold. That is limit 5, and it is now
+   * the whole of it.
+   */
+  const caseOnlyElevated = (path) =>
+    elevatedPathsIn([path.toLowerCase()], folded).length > 0 &&
+    elevatedPathsIn([path], declared).length === 0;
 
   let prose = 0;
   let derivedUntrusted = 0;
@@ -760,7 +803,11 @@ export const route = ({ files, elevatedPaths } = {}) => {
   for (const file of files) {
     const path = pathOf(file);
     const kind = classifyFile(path);
-    if (kind === PROSE) prose += 1;
+    // Ahead of the classification, because it disqualifies every kind: a file
+    // whose only escape from the declaration is how its directory is spelled
+    // must not reach a cheap lane on being prose either.
+    if (caseOnlyElevated(path)) other += 1;
+    else if (kind === PROSE) prose += 1;
     else if (kind !== DERIVED) other += 1; // code and unknown alike: the expensive answer
     else if (underDeclaredPath(path)) {
       // Counted apart from the status case so the gate line can name WHICH of
