@@ -40,6 +40,17 @@ describe('JsonFileNoteStore', () => {
     await expect(store.put(note)).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it('a rejected write does not block the writes queued behind it', async () => {
+    // The 409 above cannot see this: a poisoned write chain rejects the next
+    // put() with the very same AppError the duplicate would have raised.
+    const store = new JsonFileNoteStore(file);
+    await store.put(note);
+    await expect(store.put(note)).rejects.toThrow(AppError);
+
+    await expect(store.put({ ...note, id: 'n2' })).resolves.toBeUndefined();
+    expect((await store.list()).map((n) => n.id).sort()).toEqual(['n1', 'n2']);
+  });
+
   it('throws NotFoundError on a miss', async () => {
     await expect(new JsonFileNoteStore(file).get('nope')).rejects.toThrow(NotFoundError);
   });
@@ -67,6 +78,15 @@ describe('JsonFileNoteStore', () => {
     await store.put({ ...note, id: 'b', createdAt: '2024-02-01T00:00:00.000Z' });
     const listed = await store.list();
     expect(listed.map((n) => n.id)).toEqual(['b', 'a']);
+  });
+
+  it('keeps every concurrently written note (no lost update)', async () => {
+    const store = new JsonFileNoteStore(file);
+    const ids = Array.from({ length: 20 }, (_, i) => `n${i}`);
+    await Promise.all(ids.map((id) => store.put({ ...note, id })));
+
+    expect((await store.list()).map((n) => n.id).sort()).toEqual([...ids].sort());
+    expect(Object.keys(JSON.parse(await readFile(file, 'utf8'))).sort()).toEqual([...ids].sort());
   });
 
   it('refuses to list corrupt entries instead of skipping them silently', async () => {
