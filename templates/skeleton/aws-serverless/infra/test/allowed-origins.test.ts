@@ -1,5 +1,5 @@
 import { App } from 'aws-cdk-lib';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Annotations, Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { AppStack, type AppStackProps } from '../lib/app-stack.js';
 
@@ -79,5 +79,64 @@ describe('an allow-list that names nobody is a broken deploy, not a default', ()
       (error as Error).message,
       'a TypeError from .split is a crash, not a refusal',
     ).not.toMatch(/is not a function/);
+  });
+});
+
+// A browser's `Origin` header is always `scheme://host[:port]` — so an entry
+// without a scheme cannot match one, ever. Today any non-empty scrap survives
+// the trim and synthesises into the allow-list, and the failure surfaces in a
+// browser console days later, far from the flag that caused it.
+describe('an origin no browser could ever send is refused at synth', () => {
+  it.each([
+    // The likeliest operator typo: the host as it appears in the address bar.
+    ['a host with the scheme left off', 'app.example.com'],
+    // `-c allowedOrigins=null` is a string; the JSON null this branch also
+    // handles goes through a different path entirely.
+    ['the literal string null', 'null'],
+    // A quoting artifact from a shell or a CI variable: non-empty after trim,
+    // and meaningless as an origin.
+    ['a quoting artifact left over from the shell', '" "'],
+  ])('refuses %s and names the flag that carried it', (_case, value) => {
+    const error = thrownBy(() => buildAppStack({ context: { allowedOrigins: value } }));
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/allowedOrigins/);
+  });
+
+  it('accepts the origins a browser can actually send', () => {
+    // The refusal above must stay narrow: a real deploy origin and the local
+    // dev one are the two shapes this project is built around.
+    expect(originsOf({ context: { allowedOrigins: 'https://a.example.com' } })).toEqual([
+      'https://a.example.com',
+    ]);
+    expect(originsOf({ context: { allowedOrigins: 'http://localhost:3000' } })).toEqual([
+      'http://localhost:3000',
+    ]);
+  });
+});
+
+// `*` is a decision, not a defect: an operator who types it into a flag has
+// chosen it, and refusing outright would push people to edit the stack instead
+// — a worse outcome, invisible to this test file. So it is accepted AND it is
+// loud. The composition test only pins the absence of a wildcard when no
+// context is set, so today a one-line `cdk.json` edit ships wildcard CORS past
+// synth, the suite and CI without a word.
+describe('a wildcard allow-list is honoured, but never silently', () => {
+  const namesTheWildcardRisk = Match.stringLikeRegexp('allowedOrigins');
+
+  it('keeps the wildcard the operator asked for', () => {
+    expect(originsOf({ context: { allowedOrigins: '*' } })).toEqual(['*']);
+  });
+
+  it('warns on the stack when the allow-list is a wildcard', () => {
+    const stack = buildAppStack({ context: { allowedOrigins: '*' } });
+    Annotations.fromStack(stack).hasWarning('*', namesTheWildcardRisk);
+  });
+
+  it('warns just the same when the wildcard is hidden among real origins', () => {
+    // `https://a.example.com,*` reads like an allow-list; the `*` makes every
+    // other entry decorative, which is exactly why it must not slip past.
+    const context = { allowedOrigins: 'https://a.example.com,*' };
+    expect(originsOf({ context })).toEqual(['https://a.example.com', '*']);
+    Annotations.fromStack(buildAppStack({ context })).hasWarning('*', namesTheWildcardRisk);
   });
 });

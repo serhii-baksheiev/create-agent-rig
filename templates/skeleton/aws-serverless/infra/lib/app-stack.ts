@@ -1,6 +1,14 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import {
+  Annotations,
+  CfnOutput,
+  Duration,
+  RemovalPolicy,
+  Stack,
+  Token,
+  type StackProps,
+} from 'aws-cdk-lib';
 import { CorsHttpMethod, HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
@@ -43,9 +51,9 @@ function resolveAllowedOrigins(fromProps: string[] | undefined, fromContext: unk
     if (fromProps.length === 0) {
       throw new Error('allowedOrigins was given as an empty list — name an origin, or omit it');
     }
-    return fromProps;
+    return fromProps.map(checkedOrigin);
   }
-  if (fromContext === undefined || fromContext === null) return DEFAULT_ALLOWED_ORIGINS;
+  if (nothingGiven(fromContext)) return DEFAULT_ALLOWED_ORIGINS;
   if (typeof fromContext !== 'string') {
     throw new Error(
       `allowedOrigins must be a comma-separated string, got ${typeof fromContext} — ` +
@@ -59,7 +67,48 @@ function resolveAllowedOrigins(fromProps: string[] | undefined, fromContext: unk
   if (origins.length === 0) {
     throw new Error(`allowedOrigins parsed to no origin at all from ${JSON.stringify(fromContext)}`);
   }
-  return origins;
+  return origins.map(checkedOrigin);
+}
+
+/**
+ * Whether the caller supplied nothing. Exported-in-spirit: `bin/app.ts` decides
+ * the same question about the same value, and two spellings of "nothing given"
+ * is how a `null` in `cdk.json` ends up meaning "the operator chose an origin"
+ * in one file and "use the default" in the other.
+ */
+export function nothingGiven(contextValue: unknown): boolean {
+  return contextValue === undefined || contextValue === null;
+}
+
+/**
+ * An origin a browser could actually send: `*`, or a scheme plus a host.
+ *
+ * The check exists because the near-misses synthesise green and fail in the
+ * browser, far from the flag that caused them — `app.example.com` with the
+ * scheme left off is the likeliest of them, since an `Origin` header always
+ * carries one.
+ */
+function checkedOrigin(origin: string): string {
+  if (origin === '*') return origin;
+  // A cross-stack origin is a token here and a domain only at deploy time —
+  // there is nothing to parse yet, and refusing it would refuse the wiring
+  // this stack ships with.
+  if (Token.isUnresolved(origin)) return origin;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new Error(
+      `allowedOrigins entry ${JSON.stringify(origin)} is not an origin — ` +
+        'a browser sends scheme://host[:port], as in https://app.example.com',
+    );
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `allowedOrigins entry ${JSON.stringify(origin)} is not an http(s) origin`,
+    );
+  }
+  return origin;
 }
 
 export class AppStack extends Stack {
@@ -70,6 +119,17 @@ export class AppStack extends Stack {
       props?.allowedOrigins,
       this.node.tryGetContext('allowedOrigins'),
     );
+
+    // `*` is honoured — an operator who typed it into a flag has chosen it, and
+    // refusing would push them to edit this stack instead, which is worse. It
+    // does not get to be quiet about it: the whole point of not shipping the
+    // wildcard is that reaching for it should be a visible act.
+    if (allowedOrigins.includes('*')) {
+      Annotations.of(this).addWarning(
+        'allowedOrigins includes "*": every site may call this API from a browser. ' +
+          'Name the origins instead unless this is a throwaway environment.',
+      );
+    }
 
     // --- storage: one single-table DynamoDB table --------------------------
     const table = new Table(this, 'NotesTable', {

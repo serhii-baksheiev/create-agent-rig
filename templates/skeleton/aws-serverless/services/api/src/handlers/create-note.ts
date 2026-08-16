@@ -58,6 +58,9 @@ export function makeCreateNoteHandler(deps: CreateNoteDeps): Handler {
       deps.log.error('unhandled error in create-note', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
+        // The one field of a withheld AppError worth keeping: it says WHICH
+        // internal failure this was, and it never reaches the caller.
+        code: error instanceof AppError ? error.code : undefined,
         awsRequestId: context?.awsRequestId,
       });
       return json(error instanceof AppError ? error.statusCode : 500, { error: 'internal error' });

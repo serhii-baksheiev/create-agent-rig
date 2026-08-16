@@ -68,9 +68,11 @@ output).
 cd infra
 npx cdk bootstrap   # first time per account/region
 npx cdk deploy AppStack WebStack --outputs-file cdk-outputs.json
-# --delete makes the bucket the bundle's territory alone, so an empty or stale
-# `out/` would empty the live site. Check before you sync, as the workflow does.
-[ -f ../apps/web/out/index.html ] || { echo "no web bundle — run pnpm build:web"; exit 1; }
+# --delete makes the bucket the bundle's territory alone, so a stale or missing
+# `out/` would empty the live site — or restore last month's. The workflow
+# builds two steps before its sync; by hand, build here.
+(cd .. && pnpm build:web)
+[ -f ../apps/web/out/index.html ] || { echo "no web bundle — build failed"; exit 1; }
 aws s3 sync ../apps/web/out "s3://$(jq -er '.WebStack.WebBucketName' cdk-outputs.json)" --delete
 # a synced bucket whose distribution still serves the old objects has not
 # deployed — invalidate, or you are looking at the previous build

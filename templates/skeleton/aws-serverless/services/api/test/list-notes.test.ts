@@ -93,6 +93,22 @@ describe('GET /notes keeps its internals to itself', () => {
     expect(JSON.parse(logs[0]!)).toMatchObject({ stack: boom.stack });
   });
 
+  // Same contract as create-note: the response withholds everything about a 5xx
+  // AppError, so the log line is the only place that can still say WHICH
+  // internal failure it was, and `code` is the one field safe to keep verbatim.
+  // The body assertion stays beside it so the two halves cannot drift apart.
+  it('logs the code of the internal error it withheld, and still keeps it out of the response', async () => {
+    const logs: string[] = [];
+    const handler = failWith(
+      new AppError('table NotesTable-prod returned a torn item', { code: 'DATA_CORRUPT' }),
+      (line) => logs.push(line),
+    );
+    const result = asResult(await handler(getEvent(), lambdaContext('req-4')));
+    expect(JSON.parse(logs[0]!)).toMatchObject({ code: 'DATA_CORRUPT' });
+    expect(result.body).not.toContain('DATA_CORRUPT');
+    expect(JSON.parse(result.body!)).toEqual({ error: 'internal error' });
+  });
+
   it('carries the Lambda request id into the line it logs', async () => {
     const logs: string[] = [];
     const handler = failWith(new AppError('table NotesTable-prod is not authorised'), (line) =>

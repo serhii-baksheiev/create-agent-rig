@@ -168,6 +168,34 @@ describe('POST /notes handler', () => {
     expect(JSON.parse(logs[0]!)).toMatchObject({ stack: boom.stack });
   });
 
+  // The response withholds everything about a 5xx AppError, so the log line is
+  // the only place left that can say WHICH internal failure it was — and `code`
+  // is the one field of that error which is safe to keep verbatim. Losing it
+  // flattens DATA_CORRUPT, INTERNAL and every future code into one shape nobody
+  // can triage. The body assertion lives here on purpose: the two halves of the
+  // contract ("kept in the log", "still absent from the response") must not
+  // drift apart.
+  it('logs the code of the internal error it withheld, and still keeps it out of the response', async () => {
+    const logs: string[] = [];
+    const handler = makeCreateNoteHandler(
+      stubDeps({
+        notes: {
+          put: () =>
+            Promise.reject(
+              new AppError('table NotesTable-prod returned a torn item', {
+                code: 'DATA_CORRUPT',
+              }),
+            ),
+        },
+        log: createLogger({}, (line) => logs.push(line)),
+      }),
+    );
+    const result = asResult(await handler(event(JSON.stringify({ title: 'T' }))));
+    expect(JSON.parse(logs[0]!)).toMatchObject({ code: 'DATA_CORRUPT' });
+    expect(result.body).not.toContain('DATA_CORRUPT');
+    expect(JSON.parse(result.body!)).toEqual({ error: 'internal error' });
+  });
+
   it('carries the Lambda request id into the line it logs', async () => {
     const logs: string[] = [];
     const handler = makeCreateNoteHandler(

@@ -31,6 +31,10 @@ const originsOfComposedApp = async (): Promise<unknown[]> => {
  * `CDK_CONTEXT_JSON`, which the `App` constructor reads — so setting it around
  * one `createApp()` call reproduces `cdk deploy -c allowedOrigins=…` exactly,
  * without the test knowing anything about how the stacks are wired.
+ *
+ * `process.env` is process-global, so this seam is not concurrency-safe: an
+ * `it.concurrent` in this file would have one case's context leak into
+ * another's synth. Keep these cases sequential.
  */
 const withCdkContext = async <T>(context: Record<string, unknown>, run: () => Promise<T>) => {
   const previous = process.env.CDK_CONTEXT_JSON;
@@ -92,5 +96,25 @@ describe('the documented -c escape hatch reaches the composed app', () => {
       origins.some(referencesTheWebDistribution),
       'a custom domain that still allows only the CloudFront import is a blocked browser',
     ).toBe(false);
+  });
+});
+
+// Two files read the same context key and disagree by one value. The entrypoint
+// asks `override === undefined` before wiring the CloudFront origin, while
+// `resolveAllowedOrigins` treats `undefined` OR `null` as "nothing given". A
+// `null` — writable in `cdk.json`, `cdk.context.json` or `CDK_CONTEXT_JSON`,
+// though never producible by the `-c` flag — therefore lands in the gap: the
+// entrypoint drops the wired origin as if an override existed, and the stack
+// falls back to a localhost no deploy is served from. Synth stays green and the
+// browser is blocked, which is this branch's whole failure class.
+describe('a context that names no origin is not an override', () => {
+  it('keeps the wired CloudFront origin when allowedOrigins is present but null', async () => {
+    const origins = await withCdkContext({ allowedOrigins: null }, () => originsOfComposedApp());
+
+    expect(
+      origins.some(referencesTheWebDistribution),
+      'a null context must compose exactly like no context at all',
+    ).toBe(true);
+    expect(origins).not.toContain('http://localhost:3000');
   });
 });
