@@ -526,6 +526,76 @@ operational memory, not an archive. Fields per the template in
 `templates/agent-os/universal/PLAN.md`; a field the session cannot observe stays
 **visibly empty, never estimated**.
 
+### the adapter was calling a removed endpoint, and the gate caught two claims I had written myself
+
+- **item** — AR-45, the adapter switch. **Not selected by the loop**, and it
+  could not have been: it carries `operator-queue`, which this very PR taught
+  selection to exclude. The owner selected it by hand and directed the run to
+  it. Recorded because provenance that is not written down gets read as
+  adapter selection by the next person
+- **premises** — `PREMISES HOLD`. `check-premises` correctly reported the 410
+  as **unverifiable from inside the repository** — no file can confirm a claim
+  about Atlassian's live API — and named the one thing that would settle it.
+  That thing was then run: `GET /rest/api/3/search` → **410 Gone**, with
+  `GET /rest/api/3/myself` → 200 on the same credential, so the path is retired
+  rather than the token being bad
+- **the defect, and why 912 green checks never saw it** — one retired endpoint
+  fed **both** critical operations, `listEligible` and the `proposeTriage`
+  dedupe, so the loop reported `queue empty` against a board holding 70 open
+  issues. Not one test in this repo touches Jira; a retired endpoint is
+  invisible to every one of them. The lesson is the evidence class, not the
+  coverage number
+- **🔴 the gate found three real defects and two were mine** — (1)
+  `code-reviewer` proved by **mutation** that the rewritten JQL test was
+  *weaker* than the one it replaced: inverting `!=` to `=`, so selection takes
+  *only* the loop's own proposals and the owner's lane, left all 32 tests in
+  the file green. Re-pinned in both directions, and the same mutation was
+  re-run to confirm the fix now fails 1 test. (2) A comment of mine claimed a
+  joined `fields` string is accepted as one field name and fails **silently**;
+  measured, it answers `400 Invalid request payload` — it fails **loudly**. The
+  comment was wrong in the direction that costs most, because it told the next
+  editor which symptom to stop looking for. (3) This repo's ticket key `AR-54`
+  had leaked into `templates/agent-os/universal/`, which ships verbatim to
+  every generated project — written while looking at the synced copy, where it
+  is perfectly at home
+- **a measured form rejected on readability** — `labels NOT IN (a, b)` is valid
+  JQL and was confirmed live. It was not shipped: its nested parentheses hide
+  the `OR labels IS EMPTY` guard from anything matching innermost groups. Both
+  forms were then run against the live board and returned **identical sets**,
+  so the choice carries no behaviour. Measuring the equivalence is what made it
+  a readability decision instead of a guess
+- **the board changed under the run, and the fresh-query rule earned its keep** —
+  two counts of the same query disagreed (59/53 vs 56). Treated as a possible
+  defect in the new query and diffed issue by issue; the cause was external:
+  **AR-68, AR-69 and AR-70 were created at 10:43**, after this run's first
+  query at 10:38. A run working from a cached list would have selected against
+  a board that no longer existed and never known
+- **🔴 a gap in the gate's own integrity, found by declining to exploit it** —
+  `autonomy.md` rests the Tier-2 sweep on the `human-review` label because
+  "applying one needs repository permission, whereas the PR body is written by
+  whoever opened the PR". In this repository **the agent has that permission**:
+  `gh pr edit --add-label` was available and would have worked. The label was
+  left for the owner, who applied it. As it stands the label is no stronger
+  evidence than the body it is supposed to outrank, and the difference is held
+  by discipline rather than by a mechanism
+- **left undone, named so it is not mistaken for done** — `operator-queue` has
+  no `SKIP_CAUSES` entry, so the loop can no longer report "N items sit in the
+  owner's lane": the filter drops them before the skip report is built. Fixing
+  it reaches `core.mjs` and therefore every adapter, which is more than this
+  item bought
+- **unblocked** — AR-54 (`Blocks` link, resolved by this merge). Asked and
+  answered from the links, not from labels: the post-change `next` run printed
+  AR-54's blocker by name. Three other items remain blocked by tickets this
+  change did not touch (AR-51←AR-70, AR-69←AR-62, AR-65←AR-63)
+- **outcome** — `clean-pass`. Every stage produced its artifact from documented
+  inputs; 889/889 local, all four CI checks green on the head SHA, and the
+  end-to-end claim verified by running the real CLI against the real board
+- **cost** — 4 subagents (`test-writer`, `code-reviewer`, `security-scanner`,
+  `prose-reviewer`) plus the `check-premises` skill once — a skill, not an
+  agent, counted separately for that reason; 1 PR, 8 check runs consumed
+  (4 named checks × 2 commits), 0 re-runs; 0 deploys. Token and currency
+  figures: **not observed**
+
 ### the queue left the file, and eight review rounds bought six of their own defects
 
 - **done** — the queue migration (#53, no `human-review` label): both queue
