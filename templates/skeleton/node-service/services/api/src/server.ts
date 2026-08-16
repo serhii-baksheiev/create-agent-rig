@@ -19,9 +19,10 @@ export interface ServerOptions {
 }
 
 /**
- * Largest request body the transport will buffer. A note is a title and some
- * tags; anything past this is a mistake or an attack, and either way the
- * process must not hold it in memory.
+ * Largest request body `POST /notes` will buffer — that route and no other:
+ * the cap is applied where the body is read, so a second route that reads one
+ * brings its own. A note is a title and some tags; anything past this is a
+ * mistake or an attack, and either way the process must not hold it in memory.
  */
 const MAX_BODY_BYTES = 1024 * 1024;
 

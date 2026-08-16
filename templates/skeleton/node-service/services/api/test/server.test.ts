@@ -162,8 +162,9 @@ describe('static serving (the built web bundle)', () => {
     'answers a file it cannot open and keeps serving afterwards',
     async () => {
       // A file that passes stat() but fails open() (EACCES here; in production
-      // the stat/open race gives ENOENT). The read stream's error reaches no
-      // handler, so it is the process that pays for one unreadable file.
+      // the stat/open race gives ENOENT). Before the headers are held back
+      // until the stream opens, that error reached no handler at all and the
+      // process paid for one unreadable file.
       const locked = path.join(dir, 'static', 'locked.txt');
       await writeFile(locked, 'unreadable');
       await chmod(locked, 0o000);
@@ -184,8 +185,9 @@ describe('static serving (the built web bundle)', () => {
   );
 
   it.skipIf(cannotSymlink)('refuses a symlink that escapes the static dir', async () => {
-    // The lexical guard only inspects the resolved string; stat and the read
-    // stream then follow the link wherever it points.
+    // A lexical guard inspects only the resolved string, while stat and the
+    // read stream follow the link wherever it points — which is why the guard
+    // asks realpath as well.
     await writeFile(path.join(dir, 'secret-target.txt'), 'nope');
     await symlink(path.join(dir, 'secret-target.txt'), path.join(dir, 'static', 'escape.txt'));
 

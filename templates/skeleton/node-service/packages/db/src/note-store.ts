@@ -57,7 +57,8 @@ export class JsonFileNoteStore {
     const result = this.writes.then(work);
     // The caller gets the rejection; the chain gets a settled promise. Without
     // this line one failed write (a 409, say) would reject every write queued
-    // behind it, and the store would stay broken for the life of the process.
+    // behind it, and this store object would stay broken for as long as it is
+    // held — the chain is per instance, so a fresh store would still work.
     this.writes = result.then(
       () => undefined,
       () => undefined,
