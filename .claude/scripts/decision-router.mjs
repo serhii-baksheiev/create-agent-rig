@@ -1210,9 +1210,7 @@ if (invokedDirectly()) {
           // Only on the lane that was actually taken: the set belongs to the
           // route, not to the gates that declined it. Recorded because it
           // cannot be recomputed afterwards — it is a floor `pr-ship` may add
-          // to, so paths alone do not reproduce it, and without it "every
-          // reviewer this route asked for answered" is not a question anything
-          // downstream can put.
+          // to (line 115), so paths alone do not reproduce it.
           ...(gate.verdict === 'route' ? { reviewers: result.reviewers } : {}),
           now: new Date().toISOString(),
         });
