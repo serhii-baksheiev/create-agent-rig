@@ -350,6 +350,56 @@ interface ScalingBounds {
   catastropheMs: number;
 }
 
+/** How many small/large pairs `scalingRatio` measures before taking the cheapest. */
+const RATIO_PAIRS = 3;
+
+/**
+ * The cost ratio between `prepare(n)` and `prepare(n * 4)`: the **cheapest of
+ * `RATIO_PAIRS` interleaved pairs**, with the winning pair's figures returned
+ * for the failure message.
+ *
+ * 🔴 **Interleaved, and that is the whole repair.** The previous version measured
+ * the small side to completion and then the large side, which makes the ratio a
+ * comparison between *two different machines* whenever load arrives in between —
+ * on a shared runner, routinely. Min-of-N inside each side cannot see it: once a
+ * neighbour job starts, every sample of the large side is dear, so the minimum is
+ * dear too. That is CI run 32004364990 — `8.07×` on code whose honest ratio is 4,
+ * measured at 3.95–4.01 across 30 local pairs under six saturating processes.
+ *
+ * Pairing puts the two measurements next to each other in time, so load that
+ * covers a whole pair divides out of that pair's ratio, and taking the **minimum
+ * across pairs** discards the pairs a burst straddled. Both directions matter and
+ * both are pinned by tests: a linear subject under arriving load reads linear, a
+ * quadratic subject still reads quadratic.
+ *
+ * What it does NOT fix: load that arrives inside every pair, or a machine so
+ * contended that no pair is clean. Those read as a wide ratio and fail the bound
+ * — loudly, which is the right direction for a guard, and the reason this is a
+ * minimum rather than an average.
+ */
+export const scalingRatio = (prepare: (size: number) => () => void, n: number): number =>
+  scalingMeasurement(prepare, n).ratio;
+
+const scalingMeasurement = (
+  prepare: (size: number) => () => void,
+  n: number,
+): {
+  ratio: number;
+  small: { perCall: number; sampleCalls: number; samples: number };
+  large: { perCall: number; sampleCalls: number; samples: number };
+} => {
+  let best: ReturnType<typeof scalingMeasurement> | null = null;
+  for (let pair = 0; pair < RATIO_PAIRS; pair += 1) {
+    const small = millisPerCall(prepare(n));
+    const large = millisPerCall(prepare(n * 4));
+    const ratio = large.perCall / small.perCall;
+    if (best === null || ratio < best.ratio) best = { ratio, small, large };
+  }
+  // `RATIO_PAIRS` is a positive constant, so the loop always runs; the assertion
+  // is for the type, not for a case that can occur.
+  return best as ReturnType<typeof scalingMeasurement>;
+};
+
 /**
  * Assert that `prepare(size)`'s call costs at most `maxRatio`× as much on 4× the
  * input — one mechanism for both subjects, per `invariants.md`.
@@ -367,30 +417,32 @@ const staysLinear = (
   prepare: (size: number) => () => void,
   { n, maxRatio, catastropheMs }: ScalingBounds,
 ): void => {
-  const small = millisPerCall(prepare(n));
+  const probe = millisPerCall(prepare(n));
   expect(
-    small.perCall,
-    `${what}: ${n} characters cost ${small.perCall.toFixed(4)}ms per call — the ` +
-      `fastest of ${small.samples} samples of ${small.sampleCalls} calls each — ` +
+    probe.perCall,
+    `${what}: ${n} characters cost ${probe.perCall.toFixed(4)}ms per call — the ` +
+      `fastest of ${probe.samples} samples of ${probe.sampleCalls} calls each — ` +
       `over the ${catastropheMs}ms catastrophe ceiling. That is far past ` +
       `anything a pause explains, so the ${n * 4}-character measurement is ` +
       'skipped rather than left to run for minutes.',
   ).toBeLessThan(catastropheMs);
 
-  const large = millisPerCall(prepare(n * 4));
-  const ratio = large.perCall / small.perCall;
+  const { ratio, small, large } = scalingMeasurement(prepare, n);
   // 🔴 The sample sizes are in the message on purpose. They are the one number
   // that separates a real regression from an undersized measurement, and the
   // flake this batching fixed was diagnosed from the figures in this string.
   // A sample of 1 on the cheap side means the probe mis-sized it and the
-  // reading is noise, not evidence.
+  // reading is noise, not evidence. The figures are the WINNING pair's — the
+  // one the ratio came from — so the message describes the measurement that
+  // decided the result rather than an average of several.
   expect(
     ratio,
     `${what}: 4× the input cost ${ratio.toFixed(2)}× the time — ` +
       `${large.perCall.toFixed(4)}ms/call at ${n * 4} characters ` +
       `(${large.samples} samples × ${large.sampleCalls} calls) against ` +
       `${small.perCall.toFixed(4)}ms/call at ${n} ` +
-      `(${small.samples} × ${small.sampleCalls}). Expected under ` +
+      `(${small.samples} × ${small.sampleCalls}), the cheapest of ` +
+      `${RATIO_PAIRS} interleaved pairs. Expected under ` +
       `${maxRatio}×: linear work cannot exceed 4×, and the quadratic whitespace ` +
       'shape this guards against measures ~16×.',
   ).toBeLessThan(maxRatio);
@@ -528,6 +580,66 @@ describe('the scaling harness sizes its own samples', () => {
       expect(size, `${probe} → ${size}`).toBeGreaterThanOrEqual(1);
       expect(size, `${probe} → ${size}`).toBeLessThanOrEqual(2_048);
     }
+  });
+
+  // 🔴 The third failure of this apparatus, and the first one whose cause is a
+  // property of the METHOD rather than of a number in it.
+  //
+  // CI run 32004364990 on master: `8.07×` against a bound of 8, on a tree that
+  // had passed the identical measurement twice on the same PR and five times
+  // locally. The bound was not too tight — min-of-9 within each side already
+  // rejects a scheduler quantum. What it cannot reject is load that arrives
+  // BETWEEN the two sides: `small` is measured to completion, then `large` is,
+  // and on a shared runner the machine those two measurements ran on is not the
+  // same machine. Every sample of `large` is then dear, so the min does not
+  // help, and a ratio of 4 reads as 8.
+  //
+  // Measured locally, 30 pairs under six saturating processes: 3.95–4.01. The
+  // spread is not the problem; the ORDER is. So the fix is interleaving, not a
+  // wider ceiling — the ceiling stays at 8, the quadratic shape still measures
+  // ~16, and what changes is that each ratio now comes from a small and a large
+  // measured next to each other, with the run's answer the cheapest of them.
+  const iterate = (iterations: number): number => {
+    let sum = 0;
+    for (let i = 0; i < iterations; i += 1) sum += i % 7;
+    return sum;
+  };
+
+  it('ignores load that arrives after the first measurement', () => {
+    // The CI incident, modelled exactly: the subject is honestly linear, and
+    // something else on the machine starts competing once the small side is
+    // done. `prepare` is called once per measurement, so "after the first" is
+    // the same boundary the old two-measurement method straddled.
+    let prepared = 0;
+    const underLoad = (size: number) => {
+      prepared += 1;
+      const loaded = prepared > 1;
+      return () => {
+        iterate(size);
+        if (loaded) iterate(240_000); // the neighbour job, not this subject
+      };
+    };
+
+    // Read straight through, this is 16× — the quadratic reading, on linear
+    // code. Interleaved, the pairs after the first see the load on BOTH sides
+    // and divide it out.
+    expect(scalingRatio(underLoad, 20_000)).toBeLessThan(8);
+  });
+
+  it('still reads a quadratic subject as quadratic', () => {
+    // The other direction, so "survives load" cannot be satisfied by a method
+    // that survives everything. 4× the input, 16× the work — no load anywhere.
+    const quadratic = (size: number) => () => iterate((size * size) / 20_000);
+
+    expect(scalingRatio(quadratic, 20_000)).toBeGreaterThan(8);
+  });
+
+  it('reads an honestly linear subject as linear', () => {
+    const linear = (size: number) => () => iterate(size);
+
+    const ratio = scalingRatio(linear, 20_000);
+    expect(ratio).toBeGreaterThan(2);
+    expect(ratio).toBeLessThan(8);
   });
 });
 
