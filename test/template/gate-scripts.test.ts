@@ -44,7 +44,10 @@ function run(script: string, args: string[], cwd?: string): Promise<{ code: numb
     execFile(
       process.execPath,
       [scriptPath(script), ...args],
-      { cwd: cwd ?? repoRoot },
+      // Hermetic here too, though neither sweep reads the environment today:
+      // pinning it means a case later routed through this helper cannot
+      // silently reopen the ambient-run defect.
+      { cwd: cwd ?? repoRoot, env: hermeticEnv() },
       (error, stdout, stderr) => {
         resolve({
           code: error ? ((error as { code?: number }).code ?? 1) : 0,
@@ -371,7 +374,7 @@ describe('detect-missed-gate CLI', () => {
       execFile(
         process.execPath,
         [path.join(dir, '.claude', 'scripts', script), ...args],
-        { cwd: dir },
+        { cwd: dir, env: hermeticEnv() },
         (error, stdout, stderr) => {
           resolve({
             code: error ? ((error as { code?: number }).code ?? 1) : 0,
@@ -512,6 +515,33 @@ describe('reconcile-external-prs — the lane the journal never sees', () => {
 });
 
 /**
+ * The child's environment, minus `RIG_RUN_DIR` — the one ambient variable that
+ * can change these scripts' EXIT CODE.
+ *
+ * 🔴 `queue/index.mjs` exits at `process.exit(runStop.success ? 0 : 1)`, and
+ * `runStop` is computed from the run state under `RIG_RUN_DIR`. A session that
+ * has declared one — every unattended run does — and whose state carries a
+ * `REGRESSION` verdict, two consecutive escalations, or a field
+ * `stopInputsOf` refuses, makes this fixture fail while the script is working
+ * perfectly, and the message blames a symlink defect that does not exist. It
+ * also let the old fixture append to the operator's real run journal.
+ *
+ * The criterion for what belongs here, so the next reader is not left to
+ * guess: a variable qualifies only if it can flip the exit code or the matched
+ * shape. Others are deliberately kept. `AGENT_LOOP_STOP` and `$HOME` do change
+ * what `preflight.mjs` does — they decide the kill-switch check — but they move
+ * the VERDICT, and the shape admits `GO|CAUTION|STOP` while that script has no
+ * `process.exit` at all. `GIT_DIR` and friends are stripped inside the scripts
+ * by `withoutGitLocation()`. A failing `gh` lands in a catch and yields
+ * `unknown`, still exit 0.
+ */
+const hermeticEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  delete env.RIG_RUN_DIR;
+  return env;
+};
+
+/**
  * What each CLI prints when it has really run — never merely "something", and
  * never a string its own crash could also produce.
  *
@@ -526,22 +556,6 @@ describe('reconcile-external-prs — the lane the journal never sees', () => {
  * `toMatch(undefined)` PASSES silently in vitest — a `!` assertion is erased at
  * runtime and throws nothing.
  */
-/**
- * The child's environment, minus the variables that change what these CLIs DO.
- *
- * 🔴 `queue/index.mjs` ends in `process.exit(runStop.success ? 0 : 1)`, and
- * `runStop` is computed from the run state under `RIG_RUN_DIR`. A session that
- * has declared one — every unattended run does — and whose state carries a
- * `REGRESSION` verdict or two consecutive escalations makes this fixture fail
- * while the script is working perfectly, and the message blames a symlink
- * defect that does not exist. The suite must not read the ambient run.
- */
-const hermeticEnv = (): NodeJS.ProcessEnv => {
-  const env = { ...process.env };
-  delete env.RIG_RUN_DIR;
-  return env;
-};
-
 const SYMLINK_OUTPUT_SHAPE = {
   'detect-missed-gate.mjs': /^missed-gate sweep:/m,
   'reconcile-external-prs.mjs': /^\*\*external lane\*\*/m,
