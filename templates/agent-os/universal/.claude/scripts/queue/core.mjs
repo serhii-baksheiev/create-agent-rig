@@ -350,12 +350,46 @@ export const sortCandidates = (tickets) =>
   });
 
 /**
+ * The tiers a close can record that leave the next elevated item selectable.
+ *
+ * `normal` is the obvious one. `elevated-prose` is the narrowing: an elevated
+ * change every one of whose elevated paths is a document (`state.mjs` decides
+ * this from the diff, never from the item's marker). It is still elevated for
+ * review — model lane, cold readers, the `human-review` label, the gate sweep —
+ * and it does not space the next item, because the ration buys protection from
+ * *unreviewed changes compounding overnight* and a document does not run.
+ */
+const CLEARS_SPACING = new Set(['normal', 'elevated-prose']);
+
+/**
+ * Does the last recorded tier leave the elevated ration open?
+ *
+ * 🔴 **Unknown means the RESTRICTIVE reading, never the permissive one.** Absent
+ * is not unknown: `null`/`undefined` is the honest statement that nothing has
+ * closed yet — what a fresh checkout with no state file says — and refusing it
+ * would make a clone unable to take its first item. Everything else outside the
+ * vocabulary holds: the legacy `'elevated'` an older state file still carries, a
+ * word in the wrong case, a value that is not a string at all. An `===`
+ * comparison against `'elevated-mechanism'` would read every one of those as
+ * "nothing elevated closed" and hand out the next elevated item — un-rationing
+ * the queue silently, which is the exact failure this seam exists to end.
+ *
+ * The CLI refuses an out-of-vocabulary tier before selection ever runs
+ * (`index.mjs`), so this is the second of two layers rather than the only one —
+ * and it is the layer that holds when `selectNext` is called directly.
+ */
+const clearsSpacing = (lastCompletedTier) =>
+  lastCompletedTier === null ||
+  lastCompletedTier === undefined ||
+  CLEARS_SPACING.has(lastCompletedTier);
+
+/**
  * Pick the next item, or explain why nothing was taken.
  *
  * The elevated tier is rationed by **spacing, not counting**: a per-run count is
- * meaningless when the run has no end. Never two elevated items back to back —
- * one unreviewed schema or permissions change is recoverable; a chain of them
- * compounding overnight is not.
+ * meaningless when the run has no end. Never two mechanism-touching elevated
+ * items back to back — one unreviewed schema or permissions change is
+ * recoverable; a chain of them compounding overnight is not.
  */
 export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = null } = {}) => {
   const skipped = [];
@@ -371,12 +405,13 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
       });
       continue;
     }
-    if (ticket.tier === 'elevated' && lastCompletedTier === 'elevated') {
+    if (ticket.tier === 'elevated' && !clearsSpacing(lastCompletedTier)) {
       skipped.push({
         id: ticket.id,
         reason:
-          'elevated, and the last completed item was elevated too — never two back ' +
-          'to back. Land a normal item on a healthy runtime first.',
+          `elevated, and the last completed change (${JSON.stringify(lastCompletedTier)}) ` +
+          'did not clear the ration — never two back to back. Land a normal item, or ' +
+          'an elevated change that is only prose, on a healthy runtime first.',
         causes: ['spacing'],
       });
       continue;

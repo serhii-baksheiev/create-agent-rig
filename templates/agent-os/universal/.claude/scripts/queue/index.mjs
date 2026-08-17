@@ -76,6 +76,19 @@ export const loadConfig = (configPath) => {
 export const statePathFor = (configPath) => configPath.replace(/(\.json)?$/, '.state.json');
 
 /**
+ * Every tier a state file may carry, and the reason there are four.
+ *
+ * `state.mjs` writes three of them: `normal`, and the elevated tier split into
+ * `elevated-prose` and `elevated-mechanism` — only the last of which spaces the
+ * next item (`core.mjs`). The fourth, the bare `elevated`, is what a state file
+ * written before that split still holds; it stays **readable** because a
+ * checkout that upgrades mid-run would otherwise refuse to select at all, and
+ * `core.mjs` reads it restrictively, so the legacy value rations exactly as it
+ * did when it was written.
+ */
+const KNOWN_TIERS = ['normal', 'elevated', 'elevated-prose', 'elevated-mechanism'];
+
+/**
  * Per-checkout state, kept OUT of the composed config.
  *
  * The config is a template-layer file: a runtime value written into it is drift
@@ -122,14 +135,19 @@ export const loadState = (statePath) => {
   }
 
   // Syntax is not shape. `"elevated"`, `["elevated"]`, `123` and `"Elevated"` all
-  // parse, and `core.mjs` compares with `===` — so every one of them missed and
-  // handed out a second elevated item while looking like a working state file.
-  // A top-level `null` was worse: it parsed, then threw a raw TypeError from the
-  // dereference, past the message that tells you the file is safe to delete.
+  // parse, and a state file shaped like any of them carries no tier at all — the
+  // dereference below answers `undefined`, which reads as "nothing has closed
+  // yet" and hands out an elevated item while the file looks like a working one.
+  // (`core.mjs` now holds on an unrecognised tier rather than shrugging, but a
+  // top-level array or number never reaches it as a tier in the first place.)
+  // A top-level `null` was worse still: it parsed, then threw a raw TypeError
+  // from the dereference, past the message that says the file is safe to delete.
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(
       `${statePath} is valid JSON but not a state object, so the last completed tier ` +
-        'cannot be read. Expected `{ "lastCompletedTier": "elevated" | "normal" }`. ' +
+        'cannot be read. Expected `{ "lastCompletedTier": "normal" | "elevated-prose" ' +
+        '| "elevated-mechanism" }` — the legacy `"elevated"` is still accepted, and ' +
+        'held. ' +
         'Delete the file if you are unsure — an absent state means "nothing has ' +
         'closed yet", which is safe.',
     );
@@ -139,12 +157,13 @@ export const loadState = (statePath) => {
   // closed yet. It is the honest spelling of an absence, and refusing it would
   // protect nothing — deleting the file has the identical effect.
   const tier = parsed.lastCompletedTier;
-  if (tier !== undefined && tier !== null && tier !== 'elevated' && tier !== 'normal') {
+  if (tier !== undefined && tier !== null && !KNOWN_TIERS.includes(tier)) {
     throw new Error(
       `${statePath} carries lastCompletedTier: ${JSON.stringify(tier)}, which is not ` +
-        'one of "elevated" | "normal". A tier outside the vocabulary matches nothing ' +
-        'and rations nothing, so it would disable the elevated spacing while looking ' +
-        'like a working state file. Delete the file if you are unsure.',
+        `one of ${KNOWN_TIERS.map((t) => `"${t}"`).join(' | ')}. A tier outside the ` +
+        'vocabulary rations on a value nobody wrote, so it would report a working ' +
+        'state file while the spacing rule ran on a guess. Delete the file if you ' +
+        'are unsure.',
     );
   }
 

@@ -149,9 +149,42 @@ const isRulebook = (path) =>
   // not so that it stops being reviewed like the rule it explains.
   isDecisionRecord(path);
 
+/**
+ * A document, for the sweep's question: *does this need a reviewer?* Both
+ * markdown flavours qualify — an `.mdx` page still needs no gate.
+ */
+const isDocument = (path) => /\.mdx?$/.test(path);
+
+/**
+ * A file that **executes nothing**, for the ration's question: *can a merge of
+ * this compound into a broken runtime overnight?* (`queue/state.mjs`, and
+ * `docs/decisions/spacing-rations-mechanisms.md` for why the ration asks that
+ * question at all.)
+ *
+ * 🔴 **It is `.md` only, and the missing `x` is the whole point.** MDX carries
+ * components and imports: it is a program that renders, not a document that is
+ * read — which is exactly why `decision-router.mjs` sends `.mdx` down the code
+ * lane (`docs/decisions/review-lanes.md`). A ration that called it prose would
+ * clear the spacing hold on a file this same rig treats as a program, and it
+ * would do so on the permissive side, which is the one direction that costs
+ * something.
+ *
+ * So **this file** carries two markdown predicates on purpose, side by side so
+ * they cannot drift apart, answering questions that genuinely differ: *needs no
+ * reviewer* is not *executes nothing*.
+ *
+ * ⚠ That is a statement about this file, **not** about the rig. Other markdown
+ * sets exist deliberately and must stay where they are — `decision-router.mjs`
+ * keeps its own, and `docs/decisions/review-lanes.md` exists precisely to stop
+ * someone consolidating them. Read that record before adding a fourth or
+ * "tidying" any of them: each mechanism's question is different, and every
+ * consolidation attempted so far would have silently downgraded a real review.
+ */
+export const executesNothing = (path) => /\.md$/.test(path);
+
 const isInert = (path) =>
   !isRulebook(path) &&
-  (/\.mdx?$/.test(path) ||
+  (isDocument(path) ||
   /(^|\/)(test|tests|__tests__)\//.test(path) ||
   /\.(test|spec)\.[cm]?[jt]sx?$/.test(path));
 

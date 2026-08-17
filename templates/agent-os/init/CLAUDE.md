@@ -123,7 +123,9 @@ All three are one-liners, and all three are inert until you do them.
    when the file lands in a commit.
 
    The first one matters more than it looks. It is how the loop rations the
-   elevated tier — never two elevated items back to back — and it is
+   elevated tier — never two elevated items back to back, where the tier that
+   spaces is the one that EXECUTES (a close whose elevated paths are all
+   documents records `elevated-prose` and clears the ration) — and it is
    **per-checkout state, not shared configuration**. Committed, one machine's
    tier starts deciding another's, and a merge conflict lands in a file nobody
    edited on purpose. `.claude/queue.json` is the opposite: that one is

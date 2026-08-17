@@ -3,7 +3,11 @@
  * the loop closed.
  *
  * 🔴 **Why this file exists at all.** `selectNext` rations the elevated tier by
- * spacing: never two elevated items back to back. It reads
+ * spacing: never two elevated items back to back — where the FIRST one is the
+ * half of the tier that executes (`tierOf` below), and the second is still any
+ * item whose marker says `elevated`. The asymmetry is not an oversight: a
+ * candidate has no diff yet, so there is nothing to classify it from, while a
+ * close does. It reads
  * `config.lastCompletedTier` — and nothing anywhere wrote it, so the filter was
  * called with `null` on every selection and **the ration never fired between
  * tasks**. The rule was upheld by whichever session happened to read it, which
@@ -30,10 +34,53 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { elevatedPathsIn, readDeclaredPaths } from '../detect-missed-gate.mjs';
+import { elevatedPathsIn, executesNothing, readDeclaredPaths } from '../detect-missed-gate.mjs';
 import { updateState } from '../run-state.mjs';
 import { mainCheckoutRoot } from './checkout.mjs';
 
+
+/**
+ * The tier of a close, from the elevated paths the change crossed.
+ *
+ * 🔴 **The elevated tier splits in two, and only the ration reads the split.**
+ * `elevated-prose` is still an elevated change everywhere it is REVIEWED — the
+ * model lane, the cold readers, the `human-review` label, the gate sweep. It
+ * simply does not space the next item, because the rule's own stated purpose is
+ * about what compounds: *"one **unreviewed** schema or permissions change is
+ * recoverable; a chain of them compounding overnight is not"*. A rule file
+ * cannot compound into a broken runtime overnight, because nothing executes it —
+ * and in a repository whose rulebook lives under a declared path, spacing on the
+ * undivided word halts the queue rather than pacing it.
+ *
+ * A mixed diff is `elevated-mechanism`: the half that runs decides. Reading the
+ * tier off the first path, or off "most of them are documents", would ship a
+ * ration any diff can opt out of by also touching a `.md`.
+ *
+ * The predicate is `executesNothing` — **`.md` only, not `.mdx`** — imported
+ * from `detect-missed-gate.mjs` so it sits beside the sweep's own markdown test
+ * rather than drifting from it. The two are deliberately different and the
+ * difference is the ration's whole subject: the sweep asks *does this need a
+ * reviewer*, this asks *can it compound overnight*, and MDX is a program that
+ * renders (`docs/decisions/review-lanes.md`).
+ *
+ * ⚠ **The limit worth knowing before trusting this:** a skill's `SKILL.md` is
+ * prose by this test, and some of them carry shell snippets an agent copies and
+ * runs. The owner's ruling is that skills stay prose for rationing — they are
+ * reviewed like the rules they are, and rewriting a procedure is not the chain
+ * of unreviewed compounding changes the ration was bought to stop. It is,
+ * however, the weakest ground the "no runtime executes it" justification stands
+ * on, and the place to look first if the ration ever turns out too loose.
+ *
+ * ⚠ Two more limits, both erring toward holding: the test is case-sensitive, so
+ * `RULES.MD` records `elevated-mechanism`; and only paths `elevatedPathsIn`
+ * already returned reach here, so a non-rulebook `.md` was dropped as inert long
+ * before and records `normal` — which clears the ration outright rather than as
+ * prose (`docs/decisions/review-lanes.md`).
+ */
+const tierOf = (elevated) => {
+  if (elevated.length === 0) return 'normal';
+  return elevated.every(executesNothing) ? 'elevated-prose' : 'elevated-mechanism';
+};
 
 /**
  * Record the tier of the change that just closed an item.
@@ -44,7 +91,11 @@ import { mainCheckoutRoot } from './checkout.mjs';
  *
  * Returns `{ tier, elevatedPaths }`: the value written, and the files that
  * earned it, so the close step can journal *why* rather than just *what*.
- * `elevatedPaths` is always an array — empty on a normal change, never absent.
+ * `elevatedPaths` is always an array — empty on a normal change, never absent,
+ * and **unaffected by the prose/mechanism split above**. `elevatedPaths` answers
+ * "what did this change cross", which is the gate's question and not the
+ * ration's: a prose merge that stopped listing its rulebook files would look
+ * clean to the sweep that exists to catch exactly those merges.
  *
  * 🔴 **It writes a state file BESIDE the queue config, never into it — and that
  * is not a preference.** `.claude/queue.json` is composed from the rig's
@@ -94,7 +145,7 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   }
 
   const elevated = elevatedPathsIn(changedFiles, declared);
-  const tier = elevated.length > 0 ? 'elevated' : 'normal';
+  const tier = tierOf(elevated);
 
   // State only. It deliberately does NOT carry `adapter` or `options`: two files
   // answering "which queue is this" is two answers with no rule for which wins,
