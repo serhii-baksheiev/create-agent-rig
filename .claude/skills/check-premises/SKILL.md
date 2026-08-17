@@ -19,12 +19,9 @@ This skill checks the premises. It writes nothing, and it has **two entry points
 | after the work, **before the gate** | your own, in the rulebook prose the diff touches — and in the PR description if one exists yet | your diff | `PREMISES HOLD` / `UNVERIFIABLE` / `UNMEASURED` |
 
 🔴 **Why the second one exists.** A claim you wrote about a mechanism you did not run
-is the cheapest kind of blocking finding to produce and one of the more expensive to
-find: `prose-reviewer` reaches it only after loading the whole diff, and the fix is
-usually one sentence. Same machinery, same question — *is this claim true?* — pointed
-at the text the run wrote instead of the text it was handed. This repository's journal
-records the counts, run by run; they are not quoted here, because a figure in a
-template file is exactly the kind of claim this entry point exists to catch.
+is cheap to write and expensive to find: `prose-reviewer` reaches it only after loading
+the whole diff, and the fix is an edit to one sentence. Same machinery, same question — *is this claim true?* — pointed
+at the text the run wrote instead of the text it was handed.
 
 The rest of this skill is written for the first entry point. The second one runs the
 same four steps with the diff as the code, and §4 carries what is different.
@@ -103,27 +100,28 @@ test's *name* stand in for what the code does; §4 says which artifacts count.
 | `UNVERIFIABLE` | a load-bearing claim could not be decided from the code | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
 | `UNMEASURED` | **second entry point only:** a sentence you wrote asserts behaviour, and nothing you can point at backs it | **delete the sentence, or turn it into a pointer to the test that proves it** — before the gate |
 
-🔴 **The edit belongs to the calling session, not to this skill** — it reads, greps
-and reports, and has no tools to write. The verdict names the sentence and which exit
-it needs; the caller performs it before the gate.
+🔴 **The edit belongs to the calling session, not to this skill.** It reports; the
+caller performs the exit before the gate. (The rule is the one at the top of this
+file — it writes nothing — not a property of its tool grant.)
 
 🔴 **`UNMEASURED` has exactly two exits, and "reword it" is not one of them.** A
 behaviour claim is either backed or it is not; softening the wording keeps an
 unbacked claim in a document agents follow literally. So either the sentence goes,
-or it becomes `see gate-rounds.test.ts › "exits 2 — and only 2"` — a pointer a
-reader can open. `invariants.md` ("State the limits") states the norm this verdict
+or it becomes `see guard-invariant.example.test.mjs › "blocks the violation"` — a
+pointer this project carries, so the reader can open it. `invariants.md` ("State the limits") states the norm this verdict
 enforces.
 
-What counts as backing: a test you can name, a command whose output you have in front
-of you, a citation to code that does the thing, or — for a claim about *this
-project's own history* rather than about code — the journal entry that recorded it,
-cited by heading. What does not: the queue item said so (the item is a claim too —
-that is what the first entry point is for), it was true of the previous design, or it
-is obviously right.
+What counts as backing — the same three forms `invariants.md` names and
+`prose-reviewer` item 5 checks: a test you can name, a command whose output you have
+in front of you, or a citation to code that does the thing. What does not: the queue
+item said so (the item is a claim too — that is what the first entry point is for), it
+was true of the previous design, or it is obviously right.
 
-⚠ The journal form has a limit worth knowing before leaning on it: the journal does
-not travel with the rulebook, so a claim backed that way must not be written into a
-file that ships to other projects. There it has no backing at all.
+⚠ **A measurement of this project's own history fits none of the three**, and that is
+a real gap rather than an oversight: the run that produced it is not in the repository,
+and a journal entry does not travel with a rulebook that ships. So a figure about past
+runs belongs in the journal and **not** in a file other projects receive — where it
+would arrive with no backing at all. Say it qualitatively there, or not at all.
 
 🔴 **On `PREMISE FALSE` the answer is stop and report — never quietly work around
 the false premise by building something adjacent that seems useful.** Write what

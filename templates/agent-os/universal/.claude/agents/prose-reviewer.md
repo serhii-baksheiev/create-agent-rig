@@ -68,8 +68,9 @@ about it here, so the two gates never file competing opinions on one paragraph.
    right because both can reach one sentence: **item 4 is for a limit you checked
    against the mechanism and found wrong or missing; item 5 is for a claim you did
    not have to check, because nothing is offered as backing.** If you opened the
-   hook, file item 4 and quote the line. If there was nothing to open, file item 5.
-   One sentence, one item. And it is not an attack on rationale — "we chose X
+   hook and it disagrees with the text, file item 4 and quote the line. If there was
+   nothing offered to open, file item 5. If you opened it and the claim was right,
+   there is no finding. One sentence, one item. And it is not an attack on rationale — "we chose X
    because Y" needs no test. The target is a **factual assertion about behaviour**:
    a number, a rate, a limit, a "measured" anything.
 

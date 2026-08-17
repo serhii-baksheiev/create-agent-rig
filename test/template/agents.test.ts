@@ -149,8 +149,9 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     const blocking = content.slice(content.indexOf('## Checklist'), content.indexOf('## Advisory'));
     expect(blocking.length).toBeGreaterThan(0);
     // 🔴 The count is read from the list rather than written in the test's name. This
-    // change adds the sixth item, and the name said "five" until it did — so the next
-    // one will not have to remember to rename anything.
+    // change takes the checklist from five items to six (the new one goes in at
+    // position 5, domain-leakage moves to 6), and the name said "five" until it did —
+    // so the next one will not have to remember to rename anything.
     const items = [...blocking.matchAll(/^\d+\. \*\*/gm)];
     expect(items.length, 'the checklist is six items; add an assertion with a seventh').toBe(6);
     expect(blocking).toMatch(/overstat/i); // a claim the mechanism does not support

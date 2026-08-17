@@ -38,10 +38,9 @@ describe('rules/invariants.md — the pattern, stated once', () => {
 
   // 🔴 AR-68: the norm behind `check-premises`'s `UNMEASURED` verdict. This section
   // already tells a guard to state its limits; what it did not say is what a limits
-  // sentence has to be BACKED by, and the gap showed up as the largest single class
-  // of gate blocker in this repository — a run's own prose about a mechanism. The
-  // counts are in `docs/decisions/unbacked-prose-is-a-blocker.md`, which this rule
-  // must cite, since a record no rule points at is a dump.
+  // sentence has to be BACKED by. The motive is in the rule itself and needs no
+  // figure: prose has nothing checking it, so it drifts in both directions, while a
+  // pointer cannot — a renamed test turns it into a dead reference someone trips over.
   it('requires a limits claim to be generated or a pointer to its test', async () => {
     const content = await rule();
     // 🔴 `/generated/i` alone was true before this norm existed — the word appears
