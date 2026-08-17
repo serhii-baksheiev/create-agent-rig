@@ -72,12 +72,10 @@ been seen working at least once.
 
 🔴 **This is not optional, and it is not only about the trace.** The run's
 **stop conditions** live in that directory too (§3) — the escalation streak, the
-deploy verdict, the budget flag. With `RIG_RUN_DIR` unset the two you write
-refuse loudly, so you find out; **the escalation count does not.** It is
-recorded nowhere, silently, and `next` then hands out work after two walls in a
-row with nothing on stderr to say why. An undeclared run is therefore not a run
-with a missing journal; it is a run whose main brake is off and which looks
-exactly like a healthy one.
+deploy verdict, the budget flag. With `RIG_RUN_DIR` unset the escalation count
+is recorded nowhere, silently, so an undeclared run is not a run with a missing
+journal: it is a run whose main brake is off and which looks exactly like a
+healthy one (`docs/decisions/run-directory.md`).
 
 The machine trace (§7) is the other half, and its first call site is
 **selection**, which runs before every task. Declared later, it misses
@@ -89,19 +87,11 @@ mkdir -p "$RIG_RUN_DIR"
 ```
 
 🔴 **One directory per run, never shared and never reused — and the journal
-cannot enforce this for you.** Stated precisely, because the difference decides
-whether you get a warning or a lie:
-
-- **What it catches.** Two writers landing on the same sequence number, and a
-  directory that already carries its run-end marker. Both are refused, the
-  selection still works and says so on stderr, and that run's trace ends there —
-  loudly.
-- **What it cannot catch.** Two runs whose records happen not to collide. A run
-  that died before writing its marker (§7 — dying unexpectedly is exactly the
-  case the checkpoint discipline exists for) leaves an intact sequence, and the
-  next run pointed at that directory **continues it in silence**: one seamless
-  trace of two runs, with nothing in the file able to say so. A fresh directory
-  per run is the only thing that prevents it, and it is yours to do.
+cannot enforce this for you.** A collision or an already-ended directory is
+refused loudly; two runs whose records merely do not collide are merged into one
+seamless trace with nothing able to say so. A fresh directory per run is the
+only thing that prevents it, and it is yours to do — the exact boundary is in
+`docs/decisions/run-directory.md`.
 
 ## 2. Selection — filters in order, then the sort
 
@@ -187,11 +177,9 @@ empty**.
 
 🔴 **Their inputs come from a file, not from your memory — and that is why they
 fire at all.** `escalations` and `lastDeployVerdict` live in
-`<RIG_RUN_DIR>/state.json`, written by `run-state.mjs`. Before this existed the
-CLI called `stopConditionOf` with the queue counts alone, so every one of those
-branches held its default on every real selection: the rules were enforced by
-whichever session happened to remember them, and compaction is exactly the
-moment a long run stops remembering.
+`<RIG_RUN_DIR>/state.json`, written by `run-state.mjs`. A stop condition held in
+a session's memory is absent exactly when it is needed, because compaction is
+what a long run does (`docs/decisions/stop-conditions-in-a-file.md`).
 
 **One of the three writes itself; two you write.** The escalation count needs
 nothing from you beyond using the documented calls — but it has two writers, and
@@ -221,11 +209,10 @@ Both **refuse** a word outside their vocabulary and refuse to run with no
 file that looks recorded and stops nothing is worse than no file.
 
 **Only the deploy verdict can be taken back**, and the asymmetry is deliberate:
-`HEALTHY` names a real later event — the revert landed — so without it one bad
-deploy would end every later selection in the run. Spend only accumulates, so
-un-exhausting a budget would name no event at all, only a decision to keep going
-taken by the run that declared the stop. A new run gets a clean state; that is
-the way back from both.
+`HEALTHY` names a real later event — the revert landed — while un-exhausting a
+budget would name only a decision taken by the run that declared the stop
+(`docs/decisions/stop-conditions-in-a-file.md`). A new run gets a clean state;
+that is the way back from both.
 
 Selection itself — `node .claude/scripts/queue/index.mjs next`, §0 — is what
 *reads* these and stops on them. It is still the command you run to get work.
@@ -246,22 +233,12 @@ Four of them deserve their reasons repeated:
   legitimate, successful end of session; refilling it is the owner's job.
   **Expect this to be the most common ending** — the queue is finite and the loop
   drains it. That is the system working. The stop line also names the **parked**
-  pile if there is one, by cause and count: items that are out of play and wait
-  on a human. They are reported next to the verdict rather than swept into it —
-  they are not work this run can take, and they are not why the queue is empty.
-  How that pile grows is the adapter's business and the line does not guess at
-  it: on a tracker-backed adapter an escalated item and a filed proposal both
-  stay open and land there. Under `plan-md` only a `[triage]` line sitting in
-  the Agent queue can — a filed proposal goes to the Operator queue, where
-  selection never looks, and an escalation leaves no mark on the queue at all,
-  because a flat list has no per-item state. 🔴 **That last one is an absence,
-  not a safety.** `plan-md`'s `escalate` writes **nothing to the queue** and
-  returns `ok: false`, handing back the instruction with it: move the item to
-  the Operator queue in the same edit. That move is the session's, and skipping
-  it means the next run takes the stuck item straight back. It does still record
-  the escalation into the run state like every other adapter — the two are
-  different facts, so **call it rather than labelling by hand** (§6): the count
-  is what ends a run that has hit the same wall twice.
+  pile if there is one, by cause and count: items out of play, waiting on a
+  human. They are reported next to the verdict, never swept into it. 🔴 Under
+  `plan-md` an escalation leaves no mark on the queue at all — `escalate`
+  returns `ok: false` with the instruction to move the item to the Operator
+  queue **in the same edit**, and skipping that move means the next run takes
+  the stuck item straight back.
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
   condition that clears when something else happens, not by refilling the
@@ -269,17 +246,13 @@ Four of them deserve their reasons repeated:
   closes), in-progress (the other session finishes), a trigger (a human
   declares it — and for a `trigger-auto` item that declaration is **written**,
   §2, so this is the one hold that needs a command rather than only time). The
-  stop line names how
-  many and by which of those, because the two endings ask the owner for opposite
-  things: an empty queue wants refilling, a held one wants interleaving or
-  simply time. 🔴 **A parked cause outranks a holding one on the same item.** An
-  escalated item is left claimed on purpose, so it arrives carrying
-  `in-progress` as well — and reading that as held would report "another session
-  will finish it" about an item no session is on, and make the empty verdict
-  unreachable from the first escalation onward. Reporting a working queue as
-  empty is the defect this kind exists to prevent, and reporting a parked one as
-  working is the same defect reversed — **and refilling is still not this run's
-  job, nor is inventing work.**
+  stop line names how many and by which, because the two endings ask the owner
+  for opposite things: an empty queue wants refilling, a held one wants
+  interleaving or simply time. 🔴 **A parked cause outranks a holding one on the
+  same item** — an escalated item is left claimed on purpose, so it arrives
+  carrying `in-progress` too. **Neither ending is an invitation to refill the
+  queue or invent work.** Why the two are split, and how the parked pile grows
+  per adapter: `docs/decisions/two-empty-endings.md`.
 
 🔴 **The kill switch is a real file, not an intention:**
 
@@ -577,35 +550,18 @@ three poisons the only channel by which this project learns.
   '
   ```
 
-  Five details in that command are load-bearing, and each one was a live defect
-  before it was there:
+  Five details in that command are load-bearing — copy it, do not re-derive it:
 
-  - **`runDir`.** It is what resets the escalation streak (§3) — the close is
-    the "something landed in between" that makes "two in a row" mean two in a
-    row. Omit it and the counter only ever rises: two escalations an hour apart
-    end the run however many tasks closed between them. The parameter is
-    optional in the signature, so leaving it out fails silently and in the
-    direction of a stop nobody can clear.
-  - **`<merge-sha>^1 <merge-sha>`, not `origin/<default>...<merge-sha>`.** A
-    three-dot diff is `merge-base..head`, and once the remote-tracking ref
-    includes the merge — which is its state at exactly the moment this step
-    runs — the merge base *is* the merge, so the list comes back **empty** and
-    the call refuses. The old form worked only while the local ref happened to
-    be stale, i.e. by accident of ordering.
-  - **`-z`, and split on `\0`.** With `core.quotePath` on (the default) a path
-    with a non-ASCII byte arrives quoted and octal-escaped — `".claude/caf\303\251.mjs"`
-    — which matches no declared prefix, so an elevated change records as
-    `normal`. A name containing a newline splits into two junk paths. `-z`
-    removes both.
-  - **`execFileSync` with an argument array**, not a shell string. Nothing is
-    interpolated into a shell today, and the point is that the next session
-    cannot start.
-  - **`env: withoutGitLocation()`.** Run under a git hook, this command inherits
-    `GIT_DIR` — absolute, when the hook fired in a worktree — and then computes
-    the diff of **another repository**, recording a tier from it. Silently: the
-    list comes back non-empty, so nothing refuses. The source sweep in
-    `test/template/git-env.test.ts` cannot read markdown, so this line is guarded
-    by a sweep over the fenced blocks in these documents instead.
+  - **`runDir`**, or the escalation streak (§3) never resets;
+  - **`<merge-sha>^1 <merge-sha>`**, never `origin/<default>...<merge-sha>`;
+  - **`-z`, and split on `\0`**, or a quoted path records the wrong tier;
+  - **`execFileSync` with an argument array**, never a shell string;
+  - **`env: withoutGitLocation()`**, or under a git hook it diffs another repo.
+
+  🔴 Four of the five fail **silently and permissively** — they return a
+  plausible answer rather than an error. What each one was, and why it is
+  pinned here rather than left to judgement, is in
+  `docs/decisions/closing-a-task.md`.
 
   🔴 **The tier comes from the diff, never from the item's marker.** The marker
   is a pre-filter (§2); `autonomy.md` decides the tier by what the change

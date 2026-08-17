@@ -65,12 +65,11 @@ travels one path to merge, in this order:
    so it never reaches the prose lane; `.md`/`.mdx` files and test paths that
    provision nothing are inert, so a README inside an elevated directory does
    not escalate on that ground alone. That carve-out is those two extensions
-   and test paths exactly — not the router's own notion of prose, which is
-   `.md`/`.txt`. Neither set contains the other, and both differences earn their
-   keep: widening the sweep to `.txt` would stop `requirements.txt` in an
-   elevated directory from escalating, and copying the sweep's `.mdx` into the
-   router's prose set would put executable MDX back on the prose lane. The router **refuses** rather than routing when it cannot
-   decide, and a refusal is read as `model`, never as a reason to skip the gate.
+   and test paths exactly — **not** the router's own notion of prose, which is
+   `.md`/`.txt`. Neither set contains the other, and reconciling them breaks a
+   gate in either direction: `docs/decisions/review-lanes.md`. The router
+   **refuses** rather than routing when it cannot decide, and a refusal is read
+   as `model`, never as a reason to skip the gate.
 
    🔴 **The cheap lanes give something up, and the rule says what.** Dropping
    `code-reviewer` drops two of its checks that are not about code — contract

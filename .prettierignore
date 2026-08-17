@@ -10,7 +10,10 @@ PLAN.md
 # composed verbatim into CLAUDE.md, so it must not be reformatted either)
 CLAUDE.md
 .claude/
-# ...and since AR-64 the synced set reaches outside .claude/: this one file is
-# composed from templates/agent-os/universal/journal/README.md, which is itself
-# ignored above. The month files next to it are this repo's own and ARE formatted.
+# ...and the synced set reaches outside .claude/ in two places, both composed
+# from templates/agent-os/universal/ (itself ignored above): journal/README.md
+# since AR-64, and docs/decisions/ since AR-63. The month files next to the
+# first are this repo's own and ARE formatted; there is nothing of this repo's
+# own next to the second yet, so the whole directory is the synced payload.
 journal/README.md
+docs/decisions/
