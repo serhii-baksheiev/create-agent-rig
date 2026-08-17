@@ -503,6 +503,61 @@ describe('`init` inside a rig that came from `create`, reached by a deleted CLAU
   });
 });
 
+// The recorded hash proves the rig wrote these bytes. It does not prove the
+// install set this run computed is the same one that wrote them — `kind` does,
+// and `kind` is a field in a committed file that any earlier version, any merge
+// or any hand-edit can have demoted. A `create` rig whose manifest says `init`
+// therefore reaches the recorded-hash arm with the *narrowed* wiring in hand:
+// replacing settings.json there deletes the entries for two hooks that are
+// still sitting on disk, which is the exact harm `init-settings.ts` names —
+// "the hooks sit on disk, the rules claim they are enforced, and nothing ever
+// calls them". A replacement that would unwire an installed hook is not an
+// upgrade, whatever the manifest says.
+describe('a rig running wiring wider than the flavour its manifest claims', () => {
+  let project: string;
+
+  const GUARD = '.claude/hooks/guard-core-purity.mjs';
+
+  const readIn = (rel: string): Promise<string> =>
+    readFile(path.join(project, ...rel.split('/')), 'utf8');
+
+  /** A generated project whose manifest has been demoted to `kind: "init"`. */
+  const generateThenDemoteTheKind = async (): Promise<void> => {
+    project = path.join(repo, 'my-app');
+    await createProject('my-app', { cwd: repo, target: 'aws-serverless', git: false });
+
+    // The premise, asserted so a broken fixture fails as a fixture: `create`
+    // wired the architecture hooks, installed them, and the manifest vouches
+    // for exactly the bytes on disk. Only `kind` changes below.
+    const manifest = await readManifest(project);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    expect(await readIn(SETTINGS)).toContain('guard-core-purity.mjs');
+    expect(manifest.files[SETTINGS]).toBe(sha256(await readIn(SETTINGS)));
+    expect(manifest.kind).toBe('create');
+
+    manifest.kind = 'init';
+    await writeManifest(project, manifest);
+  };
+
+  it('hands the wiring over rather than replacing it with the narrower flavour', async () => {
+    await generateThenDemoteTheKind();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    expect(verdictFor(plan, SETTINGS)).toBe('wiring');
+    expect(plan.wiring).not.toBeNull();
+  });
+
+  it('leaves a hook still on disk wired after the upgrade', async () => {
+    await generateThenDemoteTheKind();
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    await applyUpgrade(project, plan);
+
+    // The verdict above is the mechanism; this is the harm. Read the file:
+    // the hook is on disk, so settings.json must still call it.
+    await expect(readIn(GUARD)).resolves.toBeTruthy();
+    expect(await readIn(SETTINGS)).toContain('guard-core-purity.mjs');
+  });
+});
+
 // The manifest is meant to be committed, so it travels in pull requests: it is
 // input from whoever wrote it, not from the rig. Its values reach `path.join`.
 describe('a manifest is evidence, not an instruction to write anywhere', () => {
@@ -616,11 +671,14 @@ describe('bootstrap — a rig installed before the manifest existed', () => {
     expect(await read(STOP_FLAG)).not.toContain('olderPaths');
   });
 
-  it('replaces a settings.json recognised from the released hashes alone', async () => {
-    // The rigs this fallback exists for have no manifest entry for anything,
-    // settings.json included — recognised bytes are the whole of the evidence
-    // there. Excusing this one file from the fallback is excusing exactly the
-    // rig the fallback was written for.
+  it('hands over the wiring for a settings.json only the released hashes recognise', async () => {
+    // The manifest's recorded hash is the one arm that vouches for *these*
+    // bytes in *this* rig. The released-hash table is weaker evidence: it says
+    // some release wrote these bytes, not which flavour of the wiring this rig
+    // is entitled to — and a rig with no manifest is exactly the one whose
+    // flavour cannot be established. Recognition there is grounds to report,
+    // never to overwrite; the file this command must not get wrong is the one
+    // that decides which hooks run at all.
     await installRig();
     const released = await read(SETTINGS);
     const older = released.replace('guard-bash.mjs', 'older-guard-bash.mjs');
@@ -630,11 +688,11 @@ describe('bootstrap — a rig installed before the manifest existed', () => {
 
     const plan = await planUpgrade(repo, { history: historyFor(SETTINGS, older) });
     expect(plan.bootstrapped).toBe(true);
-    expect(verdictFor(plan, SETTINGS)).toBe('update');
+    expect(verdictFor(plan, SETTINGS)).toBe('wiring');
+    expect(plan.wiring).toContain('hooks');
 
     await applyUpgrade(repo, plan);
-    expect(await read(SETTINGS)).toBe(released);
-    expect(await read(SETTINGS)).not.toContain('older-guard-bash.mjs');
+    expect(await read(SETTINGS)).toBe(older);
   });
 
   it('keeps a deletion it has no manifest for, and still delivers what is new', async () => {

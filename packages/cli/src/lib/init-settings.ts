@@ -15,6 +15,19 @@
 /** Matches the hook file a wired command runs, e.g. `.claude/hooks/guard-bash.mjs`. */
 const HOOK_REFERENCE = /\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/;
 
+/**
+ * Every hook file some command in this settings text would run.
+ *
+ * Deliberately a scan of the raw text rather than a walk of the parsed shape:
+ * the caller compares two settings files to ask whether one stops calling a
+ * hook the other called, and a shape this module does not understand must not
+ * make that question answer "nothing was wired". The same expression decides
+ * both, so the filter and the comparison cannot drift apart.
+ */
+export function hookFilesReferencedIn(settingsText: string): Set<string> {
+  return new Set(settingsText.match(new RegExp(HOOK_REFERENCE, 'g')) ?? []);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

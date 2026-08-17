@@ -13,6 +13,40 @@ content as a patch by the owner's call and stays recorded as one.
 
 ## Unreleased
 
+### Changed
+
+- **`upgrade` now replaces `.claude/settings.json` when the manifest proves you
+  never touched it** — closing the decision 0.4.0's notes left open below. The
+  case it exists for is a release that adds a hook: the hook file arrived and
+  the wiring that calls it did not, so the guard sat on disk doing nothing. When
+  the on-disk bytes hash-match the entry the manifest recorded for the installed
+  release, they are provably the rig's own and the release's version is written.
+
+  **Three limits, and each is there because removing it was tried and produced a
+  reproducible regression.**
+
+  1. **The released-hash fallback does not apply to this file.** Every other
+     file the rig installed can be recognised by matching a tagged release even
+     with no manifest entry. This one cannot: a rig with no manifest that has
+     run `init` is recorded as `kind: "init"`, and the wiring that flavour
+     writes deliberately omits the hooks `init` does not install.
+  2. **A replacement that would stop calling a hook still present in
+     `.claude/hooks/` is handed over instead**, whatever the manifest says. This
+     is the guard that does not depend on getting `kind` right — a manifest
+     saying `init` on a rig `create` produced reaches the same wrong wiring
+     through the hash arm alone.
+  3. **Anything else is unchanged:** the new entries are printed for you to
+     merge, and nothing is written.
+
+- **`init --force` is deprecated.** It refuses, names `upgrade` as the command
+  that refreshes a rig, and writes nothing. It only ever replaced `CLAUDE.md`,
+  which `upgrade` now does per file and with the manifest behind it. **The flag
+  is removed in 0.6** — this release is the one warning you get.
+
+  The way into a `create` rig that `--force` used to provide is a deleted
+  `CLAUDE.md`; that is what `init`'s refusal is actually about, and it is the
+  case the manifest-preserving fix below was written for.
+
 ### Security
 
 - 🔴 **A committed `.claude/.rig-manifest.json` could run code on the machine
@@ -47,7 +81,11 @@ content as a patch by the owner's call and stays recorded as one.
 ### Fixed
 
 - **`init --force` inside a generated project used to make `upgrade` stop
-  refreshing the stack overlays — silently.** `init` rewrote the rig manifest
+  refreshing the stack overlays — silently.** ⚠ Read this next to the
+  deprecation above: `--force` is refused in this same unreleased version, so
+  the route described here is gone. The fix is not idle — the manifest is
+  preserved on **every** `init` over a `create` rig, and the remaining route in
+  is a deleted `CLAUDE.md`. `init` rewrote the rig manifest
   as `kind: "init"`, `stacks: []`, empty `region`, and `upgrade` trusts a
   manifest wholesale rather than re-detecting: the stack files simply left the
   plan, reported neither as deleted nor as a conflict, and `CLAUDE.md` came

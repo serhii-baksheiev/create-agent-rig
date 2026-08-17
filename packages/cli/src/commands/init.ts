@@ -20,8 +20,10 @@ export interface InitOptions {
   /** Report the plan, write nothing. */
   dryRun?: boolean;
   /**
-   * Deprecated: refused, and removed in 0.6 (AR-36). It only ever replaced
-   * `CLAUDE.md`; `upgrade` refreshes a rig file by file.
+   * @deprecated Refused since 0.5 and removed in 0.6. It only ever replaced
+   * `CLAUDE.md`; `upgrade` refreshes a rig file by file. It stays in the type
+   * so `index.ts` can pass the flag through and get the refusal, rather than an
+   * unknown-option parse error that names nothing.
    */
   force?: boolean;
 }
