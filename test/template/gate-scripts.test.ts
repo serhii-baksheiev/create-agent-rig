@@ -526,6 +526,22 @@ describe('reconcile-external-prs — the lane the journal never sees', () => {
  * `toMatch(undefined)` PASSES silently in vitest — a `!` assertion is erased at
  * runtime and throws nothing.
  */
+/**
+ * The child's environment, minus the variables that change what these CLIs DO.
+ *
+ * 🔴 `queue/index.mjs` ends in `process.exit(runStop.success ? 0 : 1)`, and
+ * `runStop` is computed from the run state under `RIG_RUN_DIR`. A session that
+ * has declared one — every unattended run does — and whose state carries a
+ * `REGRESSION` verdict or two consecutive escalations makes this fixture fail
+ * while the script is working perfectly, and the message blames a symlink
+ * defect that does not exist. The suite must not read the ambient run.
+ */
+const hermeticEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  delete env.RIG_RUN_DIR;
+  return env;
+};
+
 const SYMLINK_OUTPUT_SHAPE = {
   'detect-missed-gate.mjs': /^missed-gate sweep:/m,
   'reconcile-external-prs.mjs': /^\*\*external lane\*\*/m,
@@ -569,7 +585,8 @@ describe('the CLI entrypoint survives a symlinked path', () => {
       // `ERR_MODULE_NOT_FOUND` written to stderr, never reaching the symlinked
       // `isMain` guard it exists to exercise.
       //
-      // `git-env.mjs` (from `queue/checkout.mjs`) and `run-state.mjs` (from every
+      // `git-env.mjs` (from `queue/checkout.mjs` AND `preflight.mjs` directly) and
+      // `run-state.mjs` (from every
       // adapter) are static, so the CLI does not load at all without them;
       // `run-journal.mjs` is a dynamic import taken only when a run directory is
       // declared, so it fails only for a real rig.
@@ -597,7 +614,7 @@ describe('the CLI entrypoint survives a symlinked path', () => {
         execFile(
           process.execPath,
           [path.join(link, '.claude', 'scripts', script), ...args],
-          { cwd: link },
+          { cwd: link, env: hermeticEnv() },
           (error, stdout, stderr) => {
             resolve({
               code: error ? ((error as { code?: number }).code ?? 1) : 0,
@@ -611,11 +628,14 @@ describe('the CLI entrypoint survives a symlinked path', () => {
       // it did, for weeks, while the CLI this fixture exists to exercise never
       // loaded at all. The assertion has to be that the script RAN: a clean exit,
       // and a line only its own output shape produces.
-      // All four report through stdout and none of them calls `process.exit`,
-      // so a clean exit is the cheapest available signal that the script ran to
-      // completion rather than dying on an import. (An earlier revision skipped
-      // this on the belief that `preflight.mjs` exits non-zero on a STOP
-      // verdict. It does not — it has no `process.exit` at all.)
+      // A clean exit is the cheapest signal that the script ran to completion
+      // rather than dying on an import — but it is only safe to assert because
+      // the child's environment is hermetic. Three of the four DO call
+      // `process.exit` (only `preflight.mjs` does not), and `queue/index.mjs`
+      // exits on the ambient run state; see `hermeticEnv`. An earlier revision
+      // dropped this assertion instead, on the belief that `preflight.mjs`
+      // exits non-zero on a STOP verdict — it does not, and the cheapest check
+      // was discarded for a reason that did not exist.
       expect(result.code, `${script} exited non-zero through a symlink:\n${result.out}`).toBe(0);
       expect(
         result.out,
