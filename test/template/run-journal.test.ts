@@ -973,6 +973,12 @@ describe('the skill that drives a run carries the calls the journal needs', () =
     // which is all this asserted until AR-42. The marker closes the journal to
     // further records, so WHERE the call is documented is the load-bearing
     // part: under the stop step, never beside a checkpoint.
+    // Bounded at BOTH ends. "Anywhere after section 7 begins" is not "under the
+    // stop step": section 8 is "What the loop does NOT do", so a block that
+    // drifted there would document the exact opposite and keep this green.
+    const nextSection = source.indexOf('\n## 8.');
+    expect(nextSection, 'section 8 bounds the stop step').toBeGreaterThan(journalSection);
+
     const blocks = [...source.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].filter((match) =>
       (match[1] ?? '').includes('endRun('),
     );
@@ -980,8 +986,12 @@ describe('the skill that drives a run carries the calls the journal needs', () =
     for (const block of blocks) {
       expect(
         block.index,
-        `an endRun( block sits outside the stop step (offset ${block.index}, section ${journalSection})`,
+        `an endRun( block sits before the stop step (offset ${block.index}, section 7 at ${journalSection})`,
       ).toBeGreaterThan(journalSection);
+      expect(
+        block.index,
+        `an endRun( block sits after the stop step (offset ${block.index}, section 8 at ${nextSection})`,
+      ).toBeLessThan(nextSection);
     }
   });
 
