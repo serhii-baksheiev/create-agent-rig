@@ -1679,6 +1679,83 @@ describe('plan-md adapter — the zero-setup default', () => {
     // and closing the first one leaves the second
     expect(closeInPlan(plan, '1') as string).toContain('- remove me');
   });
+
+  // 🔴 AR-67, the half that must NOT change. The CLI is about to stop handing the
+  // adapter a bare `'PLAN.md'` and start passing a path derived from the config it
+  // found — but the adapter's own default stays what it is, because a library
+  // caller that has already `cd`-ed to a project root is the case it was written
+  // for, and there is no config in that call at all.
+  //
+  // Without these two the next refactor takes the default away for free: moving
+  // the resolution INTO the adapter (resolving from the module's own location, the
+  // way `index.mjs` resolves its config) makes every CLI test above pass and
+  // silently repoints every direct import at whichever checkout the script happens
+  // to live in.
+  describe('called as a library, its default plan path belongs to the caller', () => {
+    /**
+     * `listEligible` with no options, in a child process whose cwd is `cwd`.
+     *
+     * A child rather than a direct import because the working directory IS the
+     * behaviour under test and vitest's own cannot be moved. This repository's
+     * `## Agent queue` is deliberately empty (`PLAN.md`: "`parsePlan` must return
+     * zero from it"), so an in-process call would resolve to that file and return
+     * nothing — failing both tests below for a reason that has nothing to do with
+     * where the path was resolved from.
+     */
+    const listEligibleTitlesFrom = (cwd: string): Promise<{ code: number; out: string }> =>
+      new Promise((resolve) => {
+        execFile(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `const { listEligible } = await import(${JSON.stringify(
+              pathToFileURL(path.join(queueDir, 'plan-md.mjs')).href,
+            )});\n` + 'process.stdout.write(JSON.stringify(listEligible().map((t) => t.title)));',
+          ],
+          { cwd, env: withoutGitLocation() },
+          (error, stdout, stderr) => {
+            resolve({
+              code: error ? ((error as { code?: number }).code ?? 1) : 0,
+              out: stdout + stderr,
+            });
+          },
+        );
+      });
+
+    /** A project root and a directory inside it that is not the root. */
+    const projectWithSubdirectory = async (): Promise<{ dir: string; subdir: string }> => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'queue-lib-'));
+      await writeFile(
+        path.join(dir, 'PLAN.md'),
+        '# P\n\n## Agent queue\n\n- add a route\n\n## Journal\n',
+      );
+      const subdir = path.join(dir, 'packages', 'core', 'src');
+      await mkdir(subdir, { recursive: true });
+      return { dir, subdir };
+    };
+
+    it('reads the plan beside the working directory it was called from', async () => {
+      const { dir } = await projectWithSubdirectory();
+
+      const result = await listEligibleTitlesFrom(dir);
+
+      expect(result.code, result.out).toBe(0);
+      expect(JSON.parse(result.out)).toEqual(['add a route']);
+    });
+
+    it('never resolves that default from its own location on disk', async () => {
+      const { subdir } = await projectWithSubdirectory();
+
+      // The other direction, and it is the one that pins the contract: one
+      // directory deeper there is no plan, and the adapter says so rather than
+      // reaching back up to the project it happens to be installed in.
+      const result = await listEligibleTitlesFrom(subdir);
+
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out).toMatch(/ENOENT[\s\S]*PLAN\.md/);
+    });
+  });
 });
 
 describe('plan-md files a triage proposal instead of instructing a human to file it', () => {
@@ -2435,7 +2512,53 @@ describe('the queue CLI', () => {
       path.join(dir, 'PLAN.md'),
       '# P\n\n## Agent queue\n\n- add a route\n- rotate the key [elevated]\n\n## Journal\n',
     );
-    const result = await run(['next', '--json'], dir);
+    // The `--config` names a path where NOTHING is written: `loadConfig` reads an
+    // absent file as `{}`, so no queue configuration reaches the CLI and the title
+    // still holds. What the flag supplies is the one thing the harness cannot
+    // otherwise say — which directory is the project. In production the CLI
+    // answers that from its own location (`import.meta.url`), but under test it
+    // runs out of the template tree, which is itself a project with its own
+    // PLAN.md, so an unaided run reads the template's queue rather than this
+    // fixture's.
+    //
+    // 🔴 The flag is not otherwise inert, and it is the opposite of neutral:
+    // `index.mjs` branches on it, not on the file, so the state file and the
+    // gate-round counter move beside the config. That ISOLATES this run. Without
+    // the flag the default resolves through `mainCheckoutRoot` to this
+    // repository's own `.claude/queue.state.json`, which exists on any machine
+    // that has run the loop and carries a real `lastCompletedTier` — so an
+    // unflagged fixture would be rationed by developer-local state. Here the
+    // flagged locations are absent and `loadState` returns `{}`, which is what
+    // this test wants; a test that depends on the default location cannot borrow
+    // this line unchanged.
+    //
+    // Before the plan path was anchored, this test passed by accident: the
+    // adapter resolved a bare `'PLAN.md'` against cwd. That coupling is the
+    // defect — it made `cd packages/cli && node …/queue/index.mjs next` report
+    // `queue-unreadable` — so the fixture now names the project instead of
+    // relying on where the command was typed. The assertion is unchanged.
+    const absentConfig = path.join(dir, '.claude', 'queue.json');
+    const result = await run(['next', '--json', '--config', absentConfig], dir);
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
+    expect(parsed.ticket?.title).toBe('add a route');
+  });
+
+  it('still reads a plan beside the caller when the config names no project', async () => {
+    // The other half of the rule above, pinned so a later refactor cannot quietly
+    // make the anchor unconditional: a `--config` that is not inside a `.claude`
+    // directory implies no project root, so `plan-md` keeps its own cwd-relative
+    // default — which is what a direct library import depends on.
+    const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
+    await writeFile(
+      path.join(dir, 'PLAN.md'),
+      '# P\n\n## Agent queue\n\n- add a route\n\n## Journal\n',
+    );
+    const configPath = path.join(dir, 'loose-queue.json');
+    await writeFile(configPath, JSON.stringify({ adapter: 'plan-md' }));
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
     expect(result.code, result.out).toBe(0);
     const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
     expect(parsed.ticket?.title).toBe('add a route');
@@ -2444,7 +2567,12 @@ describe('the queue CLI', () => {
   it('says the queue is empty in a way that reads as success', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
     await writeFile(path.join(dir, 'PLAN.md'), '# P\n\n## Agent queue\n\n## Journal\n');
-    const result = await run(['next'], dir);
+    // Named for the same reason as above. Without it this run reads the template
+    // tree's PLAN.md and its own fixture stops participating — it would stay green
+    // with a real item written here, and go red the day someone adds one to the
+    // shipped template. An empty-queue assertion that cannot see its own queue is
+    // the emptiest kind of green.
+    const result = await run(['next', '--config', path.join(dir, '.claude', 'queue.json')], dir);
     expect(result.code).toBe(0);
     expect(result.out).toMatch(/queue empty/i);
     expect(result.out).toMatch(/do not invent|not an invitation|never invent/i);
@@ -2761,6 +2889,97 @@ describe('the queue CLI', () => {
     const result = await run(['next', '--config', path.join(dir, '.claude-queue.json')], dir);
     expect(result.code).toBe(1);
     expect(result.out).toMatch(/unknown queue adapter/i);
+  });
+
+  // 🔴 AR-67 — the two halves of one lookup disagree about where the project is.
+  //
+  // The config is found from the script's OWN location (`projectRoot`, derived
+  // from `import.meta.url`), so it is found no matter where the caller stands.
+  // The plan is then read through the adapter's cwd-relative `'PLAN.md'` default,
+  // because the CLI passes `config.options` through untouched. From the project
+  // root the two agree by coincidence; from one directory deeper the run finds
+  // its adapter and then cannot find its queue.
+  //
+  // What that costs is not a stack trace, it is a wrong diagnosis:
+  // `queue-unreadable` is the vocabulary for "the tracker is down — stop and say
+  // so", and a session standing in `packages/core` gets it for a queue that is
+  // sitting there intact.
+  describe('the directory it is called from is not the directory it reads from', () => {
+    /** One takeable item, and somewhere to stand that is not the project root. */
+    const projectWithSubdirectory = async (
+      config: Record<string, unknown> = { adapter: 'plan-md' },
+    ): Promise<{ dir: string; configPath: string; subdir: string }> => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'queue-cwd-'));
+      await mkdir(path.join(dir, '.claude'), { recursive: true });
+      await writeFile(
+        path.join(dir, 'PLAN.md'),
+        '# P\n\n## Agent queue\n\n- add a route\n\n## Journal\n',
+      );
+      const configPath = path.join(dir, '.claude', 'queue.json');
+      await writeFile(configPath, JSON.stringify(config));
+      // Three levels down, so no fixed `..` count in the implementation can pass
+      // by arithmetic luck — the plan is found relative to the CONFIG or not at all.
+      const subdir = path.join(dir, 'packages', 'core', 'src');
+      await mkdir(subdir, { recursive: true });
+      return { dir, configPath, subdir };
+    };
+
+    it('selects the queue item when it is called from a subdirectory of the project', async () => {
+      const { configPath, subdir } = await projectWithSubdirectory();
+
+      const result = await run(['next', '--json', '--config', configPath], subdir);
+
+      const parsed = JSON.parse(result.out) as {
+        ticket: Ticket | null;
+        stop: { kind: string } | null;
+        error?: string;
+      };
+      // Named, so a regression here stays distinguishable from any other red:
+      // today this is `queue-unreadable` carrying
+      // `ENOENT: no such file or directory, open 'PLAN.md'`, which is the CLI
+      // reporting an unreachable tracker for a queue that is on disk and fine.
+      expect(parsed.stop?.kind, result.out).not.toBe('queue-unreadable');
+      expect(parsed.error, result.out).toBeUndefined();
+      expect(result.code, result.out).toBe(0);
+      expect(parsed.ticket?.title).toBe('add a route');
+    });
+
+    it('selects that same item when it is called from the project root', async () => {
+      const { dir, configPath } = await projectWithSubdirectory();
+
+      // The guard against a fix that only moves the breakage: the root is the
+      // cwd every existing test above uses, and it must keep answering.
+      const result = await run(['next', '--json', '--config', configPath], dir);
+
+      expect(result.code, result.out).toBe(0);
+      const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
+      expect(parsed.ticket?.title).toBe('add a route');
+    });
+
+    it('lets a plan path written in the config outrank the one it derives', async () => {
+      const { dir, subdir, configPath } = await projectWithSubdirectory();
+      // The decoy is at the project root — exactly where a derived default looks —
+      // so a fix that overwrites the configured path selects `add a route` here
+      // and a fix that respects it selects the item from `docs/QUEUE.md`.
+      await mkdir(path.join(dir, 'docs'), { recursive: true });
+      await writeFile(
+        path.join(dir, 'docs', 'QUEUE.md'),
+        '# P\n\n## Agent queue\n\n- take the elsewhere item\n\n## Journal\n',
+      );
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          adapter: 'plan-md',
+          options: { planPath: path.join(dir, 'docs', 'QUEUE.md') },
+        }),
+      );
+
+      const result = await run(['next', '--json', '--config', configPath], subdir);
+
+      expect(result.code, result.out).toBe(0);
+      const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
+      expect(parsed.ticket?.title).toBe('take the elsewhere item');
+    });
   });
 });
 
