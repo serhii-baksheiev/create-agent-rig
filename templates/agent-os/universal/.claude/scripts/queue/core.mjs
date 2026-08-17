@@ -386,17 +386,17 @@ const clearsSpacing = (lastCompletedTier) =>
 /**
  * How many times one branch may enter the review gate before the item stops.
  *
- * 🔴 **Measured, and it is why this exists at all.** Gate rounds per item over the
- * last five single-item runs: **5, 4, 2, 7, 8**. Nothing bounded them. The
- * three-strikes rule in `autonomy.md` counts red *check* runs, and every check was
- * green in all five — so a PR loops through `pr-ship` indefinitely while the suite
- * passes, and the `budget` stop fires (by its own journal entry) "later than it
- * should have". Round N+1 also re-launches the whole fan-out over the whole diff,
- * so the eighth round of a one-file change costs what the first one did.
+ * 🔴 **Why a cap exists.** Every other stop in `autonomy.md` has something red
+ * behind it — a failing check, a conflicting rule, a false premise. A gate that
+ * keeps finding fixable prose has nothing red at all, so three strikes never fires
+ * and the run has no reason to stop re-entering it. This repository's journal
+ * records multi-round gates on single items with the whole suite green throughout,
+ * and the `budget` stop arriving "later than it should have"; the counts there are
+ * partly the sessions' own and are read as history, not as a measurement.
  *
- * Two is the cap because the second round is the one that verifies the first
- * round's fixes. A third round means the fixes did not converge, and that is a
- * diagnosis to hand a human — not another pass to buy.
+ * Two is the cap because the second round is what verifies the first round's fixes.
+ * A third means they are not converging, which is a diagnosis for a human rather
+ * than another pass to buy.
  */
 export const DEFAULT_MAX_GATE_ROUNDS = 2;
 

@@ -5,6 +5,7 @@
 //   node .claude/scripts/queue/index.mjs next --json
 //   node .claude/scripts/queue/index.mjs list            # every item, with skip reasons
 //   node .claude/scripts/queue/index.mjs hygiene         # stale labels and link anomalies
+//   node .claude/scripts/queue/index.mjs gate-round --branch <b>   # count a gate round
 //
 // The adapter comes from `.claude/queue.json` (`{"adapter": "plan-md"}`) and
 // defaults to `plan-md`, which is the only adapter that works in a freshly
@@ -237,19 +238,25 @@ if (invokedDirectly()) {
   // a local file and a local config; a Jira outage must not hand a run unlimited
   // rounds.
   if (args.command === 'gate-round') {
-    const { gateRoundVerdict } = await import('./core.mjs');
-    const { recordGateRound } = await import('./state.mjs');
     try {
+      // 🔴 Inside the `try`, and a review round is why. Left outside it, a rig whose
+      // `.claude/scripts/` predates this CLI printed a raw `ERR_MODULE_NOT_FOUND`
+      // and exited 1 — which `pr-ship` step 0 would have read as "rounds
+      // exhausted" and escalated a healthy item on. This file already records that
+      // exact lesson about `resolveAdapter` fifty lines below; the reason it
+      // repeated is that the lesson was written as prose and not as a test.
+      const { gateRoundVerdict } = await import('./core.mjs');
+      const { recordGateRound, gateRoundsPathFor } = await import('./gate-rounds.mjs');
+
       const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
       const config = loadConfig(configPath);
-      // Same rule the selection path uses: an explicit `--config` keeps its state
-      // beside it, otherwise the state belongs to the checkout that outlives the
-      // worktree a task may be running in.
-      const statePath = args.config
-        ? statePathFor(configPath)
-        : join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');
+      // An explicit `--config` keeps its counter beside it, so a run pointed at a
+      // temp config never touches this checkout's real counts.
+      const roundsPath = args.config
+        ? configPath.replace(/(\.json)?$/, '.gate-rounds.json')
+        : gateRoundsPathFor(projectRoot);
 
-      const { rounds } = recordGateRound({ branch: args.branch, statePath });
+      const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
       const verdict = gateRoundVerdict(rounds, config.options?.maxGateRounds);
 
       if (!verdict.exceeded) {
@@ -266,17 +273,24 @@ if (invokedDirectly()) {
       process.stderr.write(
         `GATE ROUNDS EXHAUSTED — ${verdict.rounds} rounds on ${args.branch}, cap is ` +
           `${verdict.max}: ${verdict.stop}.\n` +
-          '  Do not run another round. Escalate the item with the last HOLD\'s ' +
-          "blockers as the diagnosis, per `documented-stall`: the fixes are not " +
-          'converging, and a third pass buys a full reviewer fan-out to find that ' +
-          'out again.\n' +
-          '  Raise `options.maxGateRounds` in .claude/queue.json only if the cap ' +
-          'itself is wrong for this project — never to get one more pass on this ' +
-          'item.\n',
+          '  Do not run another round. The item stops here and goes back to a human ' +
+          'with the round count and whatever the last gate reported — the fixes are ' +
+          'not converging, and another pass buys a full reviewer fan-out to discover ' +
+          'that again.\n' +
+          '  Raising the cap to get one more pass on THIS item is the move this ' +
+          'refusal exists to prevent.\n',
       );
       process.exit(2);
     } catch (error) {
-      process.stderr.write(`gate-round: ${error.message}\n`);
+      // 🔴 Exit 1, never 2, and the message says so. Exit 2 means one thing only —
+      // the rounds are spent — because `pr-ship` acts on it by ending the task. A
+      // broken config, an unreadable counter or a detached checkout must not be
+      // read as a converging-failure stall.
+      process.stderr.write(
+        `gate-round could not run: ${error.message}\n` +
+          '  This is NOT an exhausted cap (that is exit 2). Fix the cause and run the ' +
+          'gate; nothing was counted if the failure was before the write.\n',
+      );
       process.exit(1);
     }
   }

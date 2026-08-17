@@ -11,28 +11,31 @@ blockers.
 
 ## Steps
 
-0. **Count this round before you spend on it — and stop if it is the third.**
+0. **Count this round before you spend on it.** Run it on the branch **under
+   review** — check the PR out first if it is not, per step 1; on a detached
+   checkout the command refuses rather than counting under `HEAD`:
 
    ```sh
    node .claude/scripts/queue/index.mjs gate-round --branch "$(git rev-parse --abbrev-ref HEAD)"
    ```
 
-   A non-zero exit means **this branch has used its rounds**. Do not run the gate
-   again. Escalate the item with the last HOLD's blockers as the diagnosis
-   (`documented-stall`) and stop — the fixes are not converging, and another pass
-   buys a full reviewer fan-out to discover that a third time.
+   **Read the exit code, not just its sign.**
 
-   🔴 **Why a counter exists at all.** Measured gate rounds per item over five
-   single-item runs: **5, 4, 2, 7, 8**. Nothing bounded them, because the
-   three-strikes rule in `autonomy.md` counts red *check* runs and every check was
-   green — so the loop was in a gate that could not fail and could not finish. The
-   count lives in `.claude/queue.state.json` per branch, so a fresh session, a
-   compaction, or a new run cannot restart it. The cap is 2 and is configurable as
-   `options.maxGateRounds` in `.claude/queue.json`.
+   - **0** — proceed to step 1.
+   - **2** — the rounds are spent. Return `VERDICT: HOLD` with one blocker:
+     *gate rounds exhausted*, quoting the round count. Do not run the fan-out.
+   - **1** — the command itself failed (unreadable config, unreadable counter,
+     detached checkout). This is **not** an exhausted cap: fix the cause and run
+     step 0 again. Treating it as exhaustion escalates a healthy item.
 
-   Raise the cap only if it is wrong **for the project**, never to buy one more
-   pass on the item in front of you. That is the move this counter exists to
-   refuse.
+   The cap is 2, from `options.maxGateRounds` in `.claude/queue.json`. Rounds are
+   counted per branch in `.claude/gate-rounds.json`, so the count outlives the
+   session that spent them.
+
+   ⚠ **Nothing forces this call.** No hook launches the gate, so step 0 holds
+   because it is written here — the same standing as every other step. What it
+   removes is the honest failure mode, a run that keeps re-reviewing because no
+   check ever went red; it does not stop a session that skips it.
 
 1. **The diff first.** Establish what is actually shipping: fetch, then diff
    against the **remote** default branch (`origin/<default>`), not a local

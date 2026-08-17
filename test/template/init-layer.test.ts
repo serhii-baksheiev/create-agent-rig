@@ -20,6 +20,9 @@ const DOCUMENTED_ABSENT: Record<string, string> = {
   '.claude/queue.state.json':
     'runtime state, written by the first close and gitignored — shipping one would ' +
     'commit a tier from whoever built the template',
+  '.claude/gate-rounds.json':
+    'runtime state, written by the first gate round and gitignored — shipping one ' +
+    'would start every branch mid-cap',
 };
 
 async function installed(): Promise<Map<string, string>> {
