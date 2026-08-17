@@ -375,20 +375,23 @@ describe('pr-ship skill (universal)', () => {
     ).not.toHaveLength(0);
   });
 
-  it('never reads a command-line argument as `process.argv[0]`', async () => {
+  it('never reads a command-line argument as `process.argv[0]` in a command', async () => {
     // 🔴 A command in a skill is run verbatim by a session that trusts it, so an
     // off-by-one here does not fail — it records the path to the node binary
     // where a commit SHA belongs, and shifts every other argument by one. The
     // first argument after the script is `argv[1]`; `argv[0]` is the executable.
-    // Measured against this file's own working snippet, which uses `argv[1]`.
+    //
+    // Scoped to the fenced commands on purpose. `slice(1)` is not checked at
+    // all: under `node -e` it IS the whole argument list, so forbidding it would
+    // refuse a correct snippet that takes only a list — and a text-level check
+    // over the whole file would refuse this comment for naming the thing it
+    // warns about.
     const content = await readGateSpec('pr-ship');
+    const commands = [...content.matchAll(/```(?:sh|bash)\n([\s\S]*?)```/g)].map((m) => m[1] ?? '');
+    expect(commands, 'pr-ship shows no shell command at all').not.toHaveLength(0);
     expect(
-      [...content.matchAll(/process\.argv\[0\]/g)],
-      '`process.argv[0]` is the node binary, never the first argument passed after the script',
-    ).toHaveLength(0);
-    expect(
-      [...content.matchAll(/process\.argv\.slice\(1\)/g)],
-      '`process.argv.slice(1)` keeps the first argument, which is rarely one of a list',
+      commands.filter((command) => command.includes('process.argv[0]')),
+      'a command reads `process.argv[0]`, which is the node binary and never the first argument',
     ).toHaveLength(0);
   });
 

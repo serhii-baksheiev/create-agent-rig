@@ -193,12 +193,15 @@ blockers.
        if (!journal.isTraceExhausted?.(error)) throw error;
        process.stderr.write(`run journal: ${error.message}\n  the fan-out above was NOT recorded.\n`);
      }
-   ' "$(git rev-parse HEAD)" <the reviewers you launched>
+   ' "$(git rev-parse HEAD)" <reviewer> <reviewer> …
    ```
 
    Substitute the reviewers you actually started — the point of the record is
    that it is not derivable from the lane, so a list copied from this example
-   records somebody else's fan-out.
+   records somebody else's fan-out. **One argument each**, unquoted: the names
+   are matched against the `gate` of the verdicts that come back, and a single
+   quoted string arrives as one reviewer called `code-reviewer prose-reviewer`,
+   which matches nothing and is accepted without complaint.
 
    **Launched is not answered, and the difference is the point.** The records
    below are written per verdict that *parsed* — so a reviewer whose report came
