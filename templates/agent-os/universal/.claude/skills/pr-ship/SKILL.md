@@ -168,6 +168,38 @@ blockers.
    session that wrote the code (see `.claude/rules/workflow.md`,
    "Review-context isolation").
 
+   🔴 **Record the set you launched, as you launch it.** The router journals the
+   set it *routed*; the triggers above may only add, so what you actually
+   launched is a different list and this is the only place that knows it:
+
+   ```sh
+   node --input-type=module -e '
+     const runDir = process.env.RIG_RUN_DIR;
+     if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+     const journal = await import("./.claude/scripts/run-journal.mjs");
+     try {
+       console.log(journal.recordDecision({
+         runDir,
+         gate:      "reviewer-fan-out",
+         verdict:   "launched",
+         reviewers: process.argv.slice(1),   // every reviewer you just started
+         headSha:   process.argv[0],
+         now:       new Date().toISOString(),
+       }));
+     } catch (error) {
+       if (!journal.isTraceExhausted?.(error)) throw error;
+       process.stderr.write(`run journal: ${error.message}\n  the fan-out above was NOT recorded.\n`);
+     }
+   ' "$(git rev-parse HEAD)" code-reviewer security-scanner
+   ```
+
+   **Launched is not answered, and the difference is the point.** The records
+   below are written per verdict that *parsed* — so a reviewer whose report came
+   back `incomplete` produced no record at all, and without this one nothing
+   afterwards can tell "that reviewer was never launched" from "it was launched
+   and did not answer". Those need opposite responses, and the round that has to
+   tell them apart is the one reading this trace after a compaction.
+
    🔴 **Check each reviewer's answer before you believe it.** Every gate spec
    ends in one fenced `json` block; save what each subagent returned and run
 
