@@ -12,9 +12,19 @@
  * second elevated item straight through. A lost round costs one extra review; a lost
  * tier disables the ration the queue is spaced by.
  *
- * Two files, one writer each. The counter cannot damage the ration, `state.mjs` goes
- * back to owning its file outright, and the whole subject of interleaved writes,
- * merge order and lost fields disappears rather than being described in a comment.
+ * Two files, one writer each. The counter cannot damage the ration and `state.mjs`
+ * goes back to owning its file outright — so a lost round is now the worst this
+ * mechanism can do, where before it could lose the tier.
+ *
+ * ⚠ **What that does NOT fix, measured rather than reasoned:** `recordGateRound` is
+ * read-modify-write with no lock. Eight concurrent calls on one counter recorded
+ * **four** rounds — the file is shared across every worktree of a repo by design
+ * (`gateRoundsPathFor`), so this is reachable whenever two loops run in one
+ * repository at once, not only in one directory. Each lost increment buys one extra
+ * allowed round. A lock is not worth it for that: the loop is sequential per task,
+ * and the failure is bounded and in the generous direction. What was worth fixing is
+ * the crash it came with — a fixed temp filename made the losers of that race fail
+ * with `ENOENT` on rename, reporting "could not run" for a condition nothing named.
  */
 
 import { renameSync, readFileSync, writeFileSync } from 'node:fs';
@@ -45,7 +55,7 @@ const readRounds = (file) => {
   try {
     raw = readFileSync(file, 'utf8');
   } catch (error) {
-    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return {};
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return Object.create(null);
     throw new Error(
       `${file} exists but could not be read (${error?.code ?? 'unknown error'}), so the ` +
         'gate rounds for this branch are unknown. Refusing rather than starting the ' +
@@ -75,7 +85,13 @@ const readRounds = (file) => {
 
   // A single malformed entry is dropped rather than refused: one bad key costs that
   // branch a fresh cap, while refusing would block every branch in the checkout.
-  const clean = {};
+  //
+  // 🔴 `Object.create(null)`, not `{}`. A branch named `__proto__` or `constructor`
+  // otherwise resolves to an inherited value rather than a count, so the increment
+  // produced `"[object Object]1"` — a string, which every numeric comparison against
+  // the cap answers `false`, i.e. unlimited rounds. Absurd branch name, real class of
+  // defect, and the failure was silent.
+  const clean = Object.create(null);
   for (const [branch, count] of Object.entries(parsed)) {
     if (Number.isInteger(count) && count > 0) clean[branch] = count;
   }
@@ -119,6 +135,12 @@ export const gateRoundsFor = ({ branch, projectRoot, roundsPath } = {}) =>
  * half a JSON document — and the reader above refuses such a file, which would turn
  * a crash mid-write into a gate nobody can run. `run-state.mjs` reached the same
  * conclusion about the same class of file.
+ *
+ * The temp name carries the pid. A fixed `${file}.tmp` was measured failing: under
+ * concurrent calls the first rename consumed the shared temp file and the rest died
+ * with `ENOENT` on rename, which this command reports as "could not run" — a
+ * diagnosis for a cause nothing named. Per-pid temps make a concurrent loser lose
+ * only its increment, which is the bounded failure the docblock above states.
  */
 export const recordGateRound = ({ branch, projectRoot, roundsPath } = {}) => {
   const key = requireBranch(branch);
@@ -126,8 +148,12 @@ export const recordGateRound = ({ branch, projectRoot, roundsPath } = {}) => {
   const rounds = readRounds(file);
   const next = (rounds[key] ?? 0) + 1;
 
-  const temp = `${file}.tmp`;
-  writeFileSync(temp, `${JSON.stringify({ ...rounds, [key]: next }, null, 2)}\n`);
+  // Spread into a null-prototype object for the same reason `readRounds` builds one:
+  // `{ ...rounds }` would give the result a prototype again, and `JSON.stringify`
+  // then writes a `__proto__` key that the next read cannot see as its own.
+  const updated = Object.assign(Object.create(null), rounds, { [key]: next });
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(updated, null, 2)}\n`);
   renameSync(temp, file);
 
   return { rounds: next };

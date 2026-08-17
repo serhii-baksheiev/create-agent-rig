@@ -256,8 +256,18 @@ if (invokedDirectly()) {
         ? configPath.replace(/(\.json)?$/, '.gate-rounds.json')
         : gateRoundsPathFor(projectRoot);
 
+      // 🔴 Validate the cap BEFORE counting. A review round measured what the other
+      // order costs: with `maxGateRounds: 0` every attempt recorded a round and then
+      // exited 1, while this command's own message told the caller to fix the cause
+      // and run step 0 again — so three attempts at a broken config left the branch
+      // at three rounds and the next honest call refused a healthy item. A failed
+      // run must not spend budget, and the message below must not have to lie about
+      // whether it did.
+      const verdictFor = (rounds) => gateRoundVerdict(rounds, config.options?.maxGateRounds);
+      verdictFor(0);
+
       const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
-      const verdict = gateRoundVerdict(rounds, config.options?.maxGateRounds);
+      const verdict = verdictFor(rounds);
 
       if (!verdict.exceeded) {
         process.stdout.write(
@@ -288,8 +298,9 @@ if (invokedDirectly()) {
       // read as a converging-failure stall.
       process.stderr.write(
         `gate-round could not run: ${error.message}\n` +
-          '  This is NOT an exhausted cap (that is exit 2). Fix the cause and run the ' +
-          'gate; nothing was counted if the failure was before the write.\n',
+          '  This is NOT an exhausted cap (that is exit 2). Fix the cause and run step ' +
+          '0 again: a bad config, a bad cap or a detached checkout is refused before ' +
+          'any round is counted, so retrying costs nothing.\n',
       );
       process.exit(1);
     }

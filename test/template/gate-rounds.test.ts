@@ -99,6 +99,21 @@ describe('the count is on disk, so a fresh session cannot restart it', () => {
     }
   });
 
+  // 🔴 A branch named `__proto__` resolved to an inherited value rather than a count,
+  // so the increment produced the string `"[object Object]1"` — and every numeric
+  // comparison against the cap answers false, which is unlimited rounds. Silent.
+  it('counts a branch named after an Object prototype key like any other', async () => {
+    const { recordGateRound, gateRoundsFor } = await load('gate-rounds.mjs');
+    const roundsPath = await roundsFile();
+    for (const hostile of ['__proto__', 'constructor', 'toString']) {
+      expect(recordGateRound({ roundsPath, branch: hostile }).rounds, hostile).toBe(1);
+      expect(recordGateRound({ roundsPath, branch: hostile }).rounds, hostile).toBe(2);
+      expect(gateRoundsFor({ roundsPath, branch: hostile }), hostile).toBe(2);
+    }
+    // and the file it wrote is readable as plain data, not as a prototype trick
+    expect(JSON.parse(await readFile(roundsPath, 'utf8'))).toMatchObject({ constructor: 2 });
+  });
+
   it('leaves no temp file behind, so the reader never meets a half-written one', async () => {
     const { recordGateRound } = await load('gate-rounds.mjs');
     const roundsPath = await roundsFile();

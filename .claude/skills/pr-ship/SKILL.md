@@ -12,8 +12,9 @@ blockers.
 ## Steps
 
 0. **Count this round before you spend on it.** Run it on the branch **under
-   review** — check the PR out first if it is not, per step 1; on a detached
-   checkout the command refuses rather than counting under `HEAD`:
+   review** — if the PR is not checked out, do that first (step 2's warning covers
+   why); on a detached checkout the command refuses rather than counting under
+   `HEAD`:
 
    ```sh
    node .claude/scripts/queue/index.mjs gate-round --branch "$(git rev-parse --abbrev-ref HEAD)"
@@ -28,9 +29,12 @@ blockers.
      detached checkout). This is **not** an exhausted cap: fix the cause and run
      step 0 again. Treating it as exhaustion escalates a healthy item.
 
-   The cap is 2, from `options.maxGateRounds` in `.claude/queue.json`. Rounds are
-   counted per branch in `.claude/gate-rounds.json`, so the count outlives the
-   session that spent them.
+   The cap is **2 by default**, and no shipped `.claude/queue.json` carries the key
+   — the default lives in `core.mjs` as `DEFAULT_MAX_GATE_ROUNDS`. A project that
+   wants a different cap sets `options.maxGateRounds` there, which in a rig whose
+   `queue.json` is composed means changing what composes it, not editing the file.
+   Rounds are counted per branch in `.claude/gate-rounds.json`, so the count outlives
+   the session that spent them.
 
    ⚠ **Nothing forces this call.** No hook launches the gate, so step 0 holds
    because it is written here — the same standing as every other step. What it

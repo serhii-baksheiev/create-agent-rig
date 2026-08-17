@@ -389,10 +389,10 @@ const clearsSpacing = (lastCompletedTier) =>
  * 🔴 **Why a cap exists.** Every other stop in `autonomy.md` has something red
  * behind it — a failing check, a conflicting rule, a false premise. A gate that
  * keeps finding fixable prose has nothing red at all, so three strikes never fires
- * and the run has no reason to stop re-entering it. This repository's journal
- * records multi-round gates on single items with the whole suite green throughout,
- * and the `budget` stop arriving "later than it should have"; the counts there are
- * partly the sessions' own and are read as history, not as a measurement.
+ * and the run has no reason to stop re-entering it. That is not hypothetical: the
+ * repository this rulebook was extracted from journalled multi-round gates on single
+ * items with the whole suite green throughout, and its `budget` stop arriving "later
+ * than it should have".
  *
  * Two is the cap because the second round is what verifies the first round's fixes.
  * A third means they are not converging, which is a diagnosis for a human rather
@@ -405,15 +405,19 @@ export const DEFAULT_MAX_GATE_ROUNDS = 2;
  *
  * Pure, and separate from the counter on disk, because the rule and the storage
  * fail differently: a wrong count is a bug in one file, a wrong rule is a bug in
- * every caller. `state.mjs` owns the count; this owns the verdict.
+ * every caller. `gate-rounds.mjs` owns the count; this owns the verdict.
  *
  * `rounds` is the number of rounds **including the one about to run**, so a cap of
  * 2 allows rounds 1 and 2 and refuses 3.
  *
- * The refusal is `documented-stall` — an escalation with the last HOLD's blockers
- * as its diagnosis. It is deliberately NOT in `SKIP_CAUSES`: those are reasons an
- * item was passed over during selection, and this is a reason a task ends. One
- * vocabulary holding both would make every sentence about either one wrong.
+ * The refusal is `documented-stall`, and what its diagnosis can contain is narrower
+ * than the name suggests: the previous rounds' blockers are not persisted anywhere, so
+ * what survives a compaction is the round count. The `loop` skill states the gap; do
+ * not write this as if the blockers were available.
+ *
+ * It is deliberately NOT in `SKIP_CAUSES`: those are reasons an item was passed over
+ * during selection, and this is a reason a task ends. One vocabulary holding both
+ * would make every sentence about either one wrong.
  */
 export const gateRoundVerdict = (rounds, max = DEFAULT_MAX_GATE_ROUNDS) => {
   // A cap under 1 refuses the FIRST round, which turns the gate off rather than
