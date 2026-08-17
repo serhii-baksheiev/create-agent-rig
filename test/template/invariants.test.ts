@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,20 @@ const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const skillDir = path.join(universal, '.claude', 'skills', 'new-invariant');
 
 const read = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
+
+/** The first file with this basename anywhere under `dir`, or null. */
+async function find(dir: string, basename: string): Promise<string | null> {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const hit = await find(full, basename);
+      if (hit) return hit;
+    } else if (entry.name === basename) {
+      return full;
+    }
+  }
+  return null;
+}
 
 function node(args: string[], cwd: string): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
@@ -51,6 +65,42 @@ describe('rules/invariants.md — the pattern, stated once', () => {
     expect(content).toContain('UNMEASURED');
     // and the norm states its own missing part, rather than reading as enforcement
     expect(content).toMatch(/parts 1 and 3|not part 2|no hook refuses/i);
+  });
+
+  // 🔴 The exemplar pointer in this norm has been wrong THREE times — twice naming a
+  // test that does not exist, once naming a suite generated rigs do not carry — while
+  // the sentence four lines below it claims a pointer "cannot quietly drift, because a
+  // renamed test makes it a dead reference". Nothing checked the target, so the claim
+  // was true of the pattern and false of this instance. This is that check: every
+  // `see <file> › "<name>"` citation in the shipped rulebook must resolve to a file in
+  // the layer AND to that exact test name inside it.
+  it('resolves every pointer it uses as the example of a backed claim', async () => {
+    const universalDir = path.join(universal);
+    const cited = new Set<string>();
+    for (const file of ['.claude/rules/invariants.md', '.claude/skills/check-premises/SKILL.md']) {
+      const content = await read(universalDir, ...file.split('/'));
+      for (const m of content.matchAll(/see ([\w.-]+\.m?[jt]s) › "([^"]+)"/g)) {
+        // markdown wraps, so the quoted name may carry newlines the test's own name
+        // does not. Whitespace is normalised on both sides before comparing.
+        cited.add(`${m[1]}\u0000${m[2]!.replace(/\s+/g, ' ')}`);
+      }
+    }
+    expect(cited.size, 'the norm must demonstrate the form it requires').toBeGreaterThan(0);
+
+    const failures: string[] = [];
+    for (const entry of cited) {
+      const [fileName, testName] = entry.split('\u0000') as [string, string];
+      const found = await find(universalDir, fileName);
+      if (!found) {
+        failures.push(`${fileName} is cited but does not travel with the universal layer`);
+        continue;
+      }
+      const body = (await readFile(found, 'utf8')).replace(/\s+/g, ' ');
+      if (!body.includes(testName)) {
+        failures.push(`${fileName} carries no test named ${JSON.stringify(testName)}`);
+      }
+    }
+    expect(failures).toEqual([]);
   });
 
   it('states what makes an invariant hookable at all', async () => {

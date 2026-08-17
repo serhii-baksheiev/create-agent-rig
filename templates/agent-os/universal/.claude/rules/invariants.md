@@ -109,8 +109,9 @@ file, within one review cycle.
 
 **A sentence describing what a mechanism does or does not do is either generated
 from the thing it describes, or a pointer to the test that proves it** — the form is
-`see guard-invariant.example.test.mjs › "blocks the violation"`, a test name a
-reader can grep — in a file they have. Free-standing prose about a mechanism's behaviour is a
+`see guard-invariant.example.test.mjs › "blocks the violation, and the reason names
+what to do instead"` — the test's whole name, so one grep lands on it, in a file the
+reader has. Free-standing prose about a mechanism's behaviour is a
 `prose-reviewer` blocker **by rule** (its checklist item 5), which means the finding
 is the absence of backing; nobody has to prove the claim wrong first.
 

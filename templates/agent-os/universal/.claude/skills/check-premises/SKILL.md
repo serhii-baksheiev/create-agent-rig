@@ -107,21 +107,41 @@ file — it writes nothing — not a property of its tool grant.)
 🔴 **`UNMEASURED` has exactly two exits, and "reword it" is not one of them.** A
 behaviour claim is either backed or it is not; softening the wording keeps an
 unbacked claim in a document agents follow literally. So either the sentence goes,
-or it becomes `see guard-invariant.example.test.mjs › "blocks the violation"` — a
-pointer this project carries, so the reader can open it. `invariants.md` ("State the limits") states the norm this verdict
+or it becomes `see guard-invariant.example.test.mjs › "blocks the violation, and the
+reason names what to do instead"` — the test's whole name, in a file this project
+carries, so one grep lands on it. `invariants.md` ("State the limits") states the norm this verdict
 enforces.
 
-What counts as backing — the same three forms `invariants.md` names and
-`prose-reviewer` item 5 checks: a test you can name, a command whose output you have
-in front of you, or a citation to code that does the thing. What does not: the queue
-item said so (the item is a claim too — that is what the first entry point is for), it
-was true of the previous design, or it is obviously right.
+**Two questions, and they have different answers — conflating them is how an unbacked
+sentence survives this check.**
+
+*Is the claim founded?* A test you can name, a command whose output is in front of
+you, or a citation to code that does the thing. What does not count: the queue item
+said so (the item is a claim too — that is what the first entry point is for), it was
+true of the previous design, or it is obviously right.
+
+*May it stay in the file as written?* Only the two forms `invariants.md` requires —
+**generated** from what it describes, or a **pointer** to the test. A command's output
+is not one of them: you saw it, the reader cannot, so a sentence resting on it is still
+`UNMEASURED` however sure you are. Point at the test that runs that command, or say
+something the reader can check.
 
 ⚠ **A measurement of this project's own history fits none of the three**, and that is
 a real gap rather than an oversight: the run that produced it is not in the repository,
 and a journal entry does not travel with a rulebook that ships. So a figure about past
 runs belongs in the journal and **not** in a file other projects receive — where it
-would arrive with no backing at all. Say it qualitatively there, or not at all.
+would arrive with no backing at all.
+
+A sentence is qualitative when it names **no quantity a reader could check** — not a
+count, not a share, not a duration. "This has happened here before" qualifies; "this
+happened twice last month" does not, and moves to the journal.
+
+That is not a third exit from `UNMEASURED`. The two exits apply to **the sentence in
+front of you**: it goes, or it becomes a pointer. Writing a different sentence — one
+that claims no measurement, and so needs none — is the first exit followed by an
+unrelated edit, not a softened version of the same claim. `invariants.md` has a
+worked instance: "Both have happened here, in the same file, within one review
+cycle." No figure, no measurement claimed, and it ships.
 
 🔴 **On `PREMISE FALSE` the answer is stop and report — never quietly work around
 the false premise by building something adjacent that seems useful.** Write what
