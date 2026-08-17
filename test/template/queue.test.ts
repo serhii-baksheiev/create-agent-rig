@@ -75,33 +75,57 @@ const ticket = (over: Partial<Ticket> = {}): Ticket => ({
   ...over,
 });
 
-// --- measuring SCALING, because a wall-clock budget measures the runner ---------
+// --- measuring COST, and why the estimator matters more than the bound ---------
 //
 // 🔴 Two tests below guard the same defect — the quadratic whitespace shape this
-// queue layer has now grown four times — and both of them used to assert an
-// ABSOLUTE budget over ONE untimed sample: `expect(elapsed).toBeLessThan(250)`.
-// That is not a measurement of the code, and CI proved it. Run 31956613905 failed
-// the fold test with `run 1: expected 328.73197700000014 to be less than 250` on
-// an implementation that was, and still is, correct: the real work is **~0.1 ms**
-// per call, so ~99.9% of that 328 ms was a scheduler or GC pause landing inside
-// the single sample the test happened to take. Its sibling case on the same
-// runner passed. A budget 800× the real cost sounds generous and is in fact a
-// coin toss, because the thing it is really bounding is how busy the machine is.
+// queue layer has now grown four times — and the bound over them has been wrong
+// three times. The history is the argument, so it is kept:
 //
-// What these tests actually claim is a claim about GROWTH, so that is what is
-// asserted now: cost at 4× the input, over cost at the input. Linear work cannot
-// exceed 4×; the quadratic spelling measures ~16× (verified below, against a
-// deliberately reintroduced defect). Two sizes, one ratio, no clock budget.
+//  1. **An absolute budget over ONE untimed sample**: `expect(elapsed)
+//     .toBeLessThan(250)`. CI run 31956613905 failed the fold test at
+//     `328.73ms` on an implementation that was, and still is, correct — the real
+//     work is ~0.1 ms per call, so ~99.9% of that reading was a scheduler or GC
+//     pause landing inside the single sample the test happened to take. A budget
+//     800× the real cost sounds generous and is a coin toss, because what it
+//     bounds is how busy the machine is.
+//  2. **A growth ratio over two sizes**, `cost(4n) / cost(n)`, bounded at 8.
+//     That failed the other way, on CI run 32004364990: load arriving between the
+//     two measurements makes every sample of the `4n` side dear, so an honest 4×
+//     read as 8.07× and the default branch went red on code nobody had touched.
+//     The repair attempted for it — interleaving the sides, taking the cheapest
+//     of three pairs — was measured against a genuinely quadratic subject and let
+//     it pass at **2.15×** against the same bound of 8, because noise in a
+//     denominator shrinks a ratio and a minimum then selects exactly the pair
+//     where the defect is masked. A median gives 2.21×. Precision about which
+//     mechanism failed which way, because the file's own history is evidence:
+//     the shipped sequential ratio was only ever shown to fail LOUDLY (false
+//     red); the silent false green belongs to the interleaved repair, which never
+//     shipped. The ratio is retired for the false red plus the absence of a
+//     repair that does not introduce a worse failure — not because the shipped
+//     form was caught lying quietly.
+//  3. **What is asserted now** is the cost of one call at one size, against a
+//     ceiling set per shape from that shape's own measured cost. See `costsUnder`.
 //
-// **The statistic is the FASTEST call, not the average or the median**, and that
-// is the load-bearing choice. Timing noise is one-sided — a pause can only ever
-// add — so the fastest of several calls is the closest reading of the code's own
-// cost, while a mean is a reading of the runner's mood. It is not a stylistic
-// preference: replaying this exact procedure 200 times under a 16-way CPU
-// saturation, a median of 5 produced a ratio of **129** on healthy code (three
-// paused samples are enough to move a median), where the fastest of 9 stayed at
-// **1.39** for the fold and **4.32** for the hygiene checks across 450 saturated
-// measurements each.
+// **The statistic is the FASTEST sample, not the average or the median**, and
+// that is the load-bearing choice. Timing noise is one-sided — a pause can only
+// ever add — so the fastest of several samples is the closest reading of the
+// code's own cost, while a mean is a reading of the runner's mood. Measured, on
+// the mechanism of the day: replaying that procedure 200 times under a 16-way CPU
+// saturation, a median of 5 read 129× on healthy code where the fastest of 9
+// stayed at 1.39× and 4.32×. Those figures are ratios, from the mechanism above;
+// the choice of statistic outlived it, the numbers illustrate it.
+//
+// 🔴 **Batching is what makes the statistic tight, and it is reported rather than
+// required.** `min`-of-N over raw single calls cannot defeat a quantum that lands
+// in all N; over samples of many calls each, a quantum is a fraction of one
+// sample. That is why `SAMPLE_TARGET_MS` is what it is. What it is NOT is a
+// precondition the ceiling depends on — a previous version of this file refused a
+// collapsed batch outright, and since a batch is `ceil(target / per-call)`, that
+// refused exactly the readings a real defect produces. Noise reads one-sided, so
+// an unbatched reading under the ceiling is still sound; `costsUnder` says the
+// batch collapsed and lets the cost decide. A review round separately found this
+// file crediting batching for a stability figure measured on the one shape dear
+// enough that its batch was 1.
 
 /** Timed calls per size. Only the fastest counts; the rest buy the odds. */
 const TIMED_CALLS = 9;
@@ -117,17 +141,18 @@ const TIMED_CALLS = 9;
  * 🔴 **Two limits, because `invariants.md` asks a guard to state what it cannot
  * do rather than let a reader infer cover that is not there.**
  *
- * - **Truncation is not uniformly safe.** Cutting the sample set short can only
- *   raise the fastest reading. On the `4n` side that raises the ratio, toward a
- *   false red, which is the harmless direction. On the `n` side it *lowers* the
- *   ratio — toward a MISSED defect. The window is narrower than it was: the
+ * - **Truncation raises the reading, which with one size is the safe
+ *   direction.** Cutting the sample set short can only raise the fastest
+ *   reading, and a raised reading moves toward a false red rather than a missed
+ *   defect — the asymmetry the two-size version had to warn about went with the
+ *   second size. The window is narrow anyway: the
  *   deadline now cuts a SAMPLE rather than a call, and an adaptive sample is
  *   held near `SAMPLE_TARGET_MS`, so reaching the budget at all takes a subject
  *   whose cost changes mid-run. It is also mostly moot now — a cut sample is
  *   discarded rather than divided, and a run with none left reports `Infinity`
- *   rather than a low number. Written down because narrow is not absent, and
- *   because the earlier version of this sentence measured the threshold in
- *   calls, which stopped being the unit.
+ *   rather than a low number, which fails a ceiling loudly. Written down because
+ *   narrow is not absent, and because the earlier version of this sentence
+ *   measured the threshold in calls, which stopped being the unit.
  * - **It bounds sampling, not the test.** The untimed warm call and the probe
  *   are outside the budget, so the real bound is `SAMPLE_BUDGET_MS` plus those
  *   four calls, plus up to `CLOCK_EVERY` calls of whichever sample was running
@@ -143,8 +168,8 @@ const TIMED_CALLS = 9;
  *   rather than either figure, since a wall-clock number is a property of the
  *   subject that produced it. For
  *   a defect worse than quadratic those calls are themselves unbounded, and
- *   `catastropheMs` cannot help — it reads a number the warm call has already
- *   paid for. **And nothing else in this process bounds it either** — the
+ *   nothing inside the sampler helps — the warm call has already paid for the
+ *   figure. **And nothing else in this process bounds it either** — the
  *   `timeout` on the two tests below is not a ceiling and must not be read as
  *   one. Vitest cannot preempt a synchronously blocking body, and these bodies
  *   are one `await load(…)` followed by an unbroken synchronous stretch, so the
@@ -152,9 +177,9 @@ const TIMED_CALLS = 9;
  *   loop under `{ timeout: 300 }` ran the full 3.00 s and *then* reported the
  *   timeout. The overrun scales with the defect, not with the number. What the
  *   timeout buys is that an eventual return is reported as a named failure
- *   rather than a mystery — and it costs the ratio, which is lost the moment the
- *   deadline decides the message. The real wall-clock ceiling here is the CI
- *   job's.
+ *   rather than a mystery — and it costs the measurement, which is lost the
+ *   moment the deadline decides the message. The real wall-clock ceiling here is
+ *   the CI job's.
  */
 const SAMPLE_BUDGET_MS = 2_000;
 
@@ -165,19 +190,32 @@ const SAMPLE_BUDGET_MS = 2_000;
  * defeats a pause that lands in *some* samples; it cannot defeat a scheduler
  * quantum that covers *all* of them, and at 21 µs per call all nine fit inside
  * one. Measured on the cheapest shape (`hygieneOf` on an unterminated link):
- * healthy growth is 3.84–3.95 over twelve isolated repeats, but under the full
+ * healthy growth was 3.84–3.95 over twelve isolated repeats, but under the full
  * 38-file parallel suite one run in roughly seven read `n = 0.024 ms,
- * 4n = 0.207 ms` — a ratio of **8.73** against a bound of 8, with `n` normal
- * and only the second reading inflated. Nothing was wrong with the code.
+ * 4n = 0.207 ms` — a ratio of **8.73** against a bound of 8, with `n` normal and
+ * only the second reading inflated. Nothing was wrong with the code.
  *
  * Raising the bound would have been the wrong repair: it treats a measurement
- * defect as a tolerance. The measurement is what was too small, so a sample now
- * batches enough calls to be worth about a millisecond, and a quantum can no
- * longer swallow one whole. The per-call cost is the batch divided by its size,
- * so the ratio still compares like with like even though the two sizes need
- * different batches.
+ * defect as a tolerance. The measurement is what was too small, so a sample
+ * batches enough calls to be worth this many milliseconds, and a quantum can no
+ * longer swallow one whole.
+ *
+ * 🔴 **Why 100 and not the 1 it was.** A batch is `ceil(target / per-call)`, so a
+ * target of 1 ms gives a batch of **1** to any call dearer than a millisecond —
+ * batching switches itself off exactly where the calls are dear enough to need
+ * it. That is not hypothetical: `hygieneOf` on a 32k bracket run costs ~9.6 ms
+ * per call, so it sampled one raw call nine times, and a review round then
+ * produced a **false red on unmodified code** — 462 ms measured against a 250 ms
+ * ceiling under heavy contention, from a mechanism the file claimed was protected
+ * by batching. At 100 ms that shape batches ~11 calls and a 10 ms quantum is a
+ * tenth of one sample rather than the whole of it.
+ *
+ * The cost of the change is bounded and worth stating: nine samples of ~100 ms is
+ * ~0.9 s per shape, so the two guards below cost ~5 s in total where they cost
+ * ~0.65 s at a 1 ms target. `SAMPLE_BUDGET_MS` still bounds a subject that
+ * cannot reach nine.
  */
-const SAMPLE_TARGET_MS = 1;
+const SAMPLE_TARGET_MS = 100;
 
 /**
  * Ceiling on sample size, and the ONLY thing that bounds it.
@@ -246,8 +284,8 @@ export const resizedSample = (firstMs: number, sampleCalls: number): number => {
  * The cost of one `call()` in milliseconds — the fastest of `TIMED_CALLS`
  * samples, divided by the number of calls in a sample.
  *
- * Floored at one nanosecond so a zero reading cannot make every ratio
- * `Infinity` and print a failure message carrying no measurement at all.
+ * Floored at one nanosecond so a zero reading cannot turn a per-call cost into
+ * a meaningless figure in a failure message.
  * Batching makes zero far less likely — it no longer follows from a subject
  * merely being cheap — but **not impossible**: a call the JIT elides entirely
  * costs nothing however many times it is repeated. The floor is insurance, not
@@ -319,14 +357,14 @@ export const millisPerCall = (
   // The first attempt here returned `SAMPLE_BUDGET_MS / sampleCalls` — which
   // reads as a cost and is not one. Measured on a subject at ~8 ms per call
   // whose probe was free: the sample was cut at 260 of 2,048 calls and this
-  // reported 0.98 ms/call, eight times UNDER the truth. Under-reading the `n`
-  // side lowers the ratio, toward a missed defect, and `catastropheMs` cannot
-  // catch it because 0.98 is comfortably under the ceiling. A number invented
-  // where a measurement failed is worse than no number at all.
+  // reported 0.98 ms/call, eight times UNDER the truth. Under-reading a cost
+  // hides a defect, and no ceiling catches it because 0.98 is comfortably under
+  // every one of them. A number invented where a measurement failed is worse
+  // than no number at all.
   //
-  // `Infinity` trips the catastrophe ceiling on the `n` side and makes the ratio
-  // `Infinity` on the `4n` side. Both are loud, and `samples: 0` in the message
-  // says which of the two happened.
+  // `Infinity` fails every ceiling, which is loud, and `samples: 0` in the
+  // message says the measurement never completed rather than that the code is
+  // slow.
   if (taken === 0) return { perCall: Infinity, sampleCalls, samples: 0 };
   return { perCall: Math.max(fastest / sampleCalls, 1e-6), sampleCalls, samples: taken };
 };
@@ -335,10 +373,14 @@ interface CostBound {
   /** The input size, in characters, the subject is measured at. */
   size: number;
   /**
-   * The most one call may cost at `size`. A **catastrophe ceiling**, not a
-   * budget: it is set from the measured cost of the dearest healthy shape times a
-   * wide margin, so it separates "this code is quadratic" from "this runner is
-   * busy" without needing to tell 4× from 8×.
+   * The most one call may cost at `size`, **for this shape**.
+   *
+   * 🔴 Per shape, not per subject, and the reason is measured: at 32k the two
+   * whitespace shapes of `hygieneOf` cost 0.09 ms per call while its bracket run
+   * costs 10.17 ms — 110× apart, linear in both cases. One bound over both is
+   * either loose enough to hide a defect in the cheap shapes or tight enough to
+   * fire on the dear one. A review round produced exactly the second failure with
+   * a shared 250 ms bound: 462 ms on unmodified code under heavy contention.
    */
   ceilingMs: number;
 }
@@ -350,54 +392,82 @@ interface CostBound {
  * `prepare` builds the input OUTSIDE the timed call, so `' '.repeat(size)` is
  * never charged to the code under test.
  *
- * 🔴 **Why this is absolute again, having twice been a ratio.** The ratio was
- * introduced because an absolute budget failed on healthy code — 328 ms against
- * ~0.1 ms of real work. That reading came from ONE untimed call, so a single
- * scheduler quantum was the whole measurement. Since batching landed,
- * `millisPerCall` is the min of nine batched samples, and that estimator is
- * stable in a way the ratio never was — measured on this subject: 9.57–9.59 ms
- * idle against 10.17 ms under ten saturating processes, a spread of **1.06×**.
+ * 🔴 **Why an absolute cost, after two attempts at a growth ratio.** The full
+ * history is at the top of this file; the short form is that the ratio failed
+ * loudly (load between its two measurements read as growth, and the default
+ * branch went red on untouched code) and every repair for that introduced a
+ * silent failure instead. A single reading has no denominator to poison.
  *
- * The ratio, by contrast, divides two independently noisy estimates, and it
- * failed in BOTH directions:
+ * What keeps a false RED rare here is that `millisPerCall` returns the fastest of
+ * nine BATCHED samples. Measured on `hygieneOf`'s bracket shape once
+ * `SAMPLE_TARGET_MS` was raised so the batch is real: 9.57 ms idle against
+ * 10.17 ms under ten saturating processes, a spread of 1.06×. The version of this
+ * file that first claimed that figure was measuring a shape whose batch had
+ * collapsed to a single call, so the batch size is now printed in every failure.
  *
- * - **False red**, CI run 32004364990: load arriving between the two sides made
- *   every sample of the large side dear, so 4× read as 8.07× and `master` went
- *   red on code nobody had changed.
- * - **False green**, measured while repairing that: interleaving the sides and
- *   taking the cheapest ratio — the obvious fix — lets a genuinely QUADRATIC
- *   subject pass at 2.15× against a bound of 8, because noise in the denominator
- *   shrinks a ratio and a minimum then selects exactly the pair where the defect
- *   is masked. A median does no better (2.21×). That direction is silent, which
- *   makes it worse than the failure it replaced.
+ * What keeps a false GREEN out is separate, and weaker in appearance but stronger
+ * in kind: noise is one-sided. A pause can only add time, so a reading UNDER the
+ * ceiling bounds the truth whatever the sample looked like. That asymmetry is why
+ * the collapsed batch is diagnosed rather than refused — see `costsUnder`.
  *
- * So the ratio is gone rather than tuned — `invariants.md` prefers deleting a
- * rule to adding one, and this rule had two ways of lying.
- *
- * ⚠ **What the ceiling does NOT detect**, stated because a guard's limits are
- * part of its contract: a term that is superlinear but cheap. At these sizes it
- * admits anything under ~2,700× the healthy cost of the pure subject, so `n log n`
- * and `n^1.5` pass silently. The ratio nominally caught those and in practice
- * could not be trusted to; what both catch, and what has actually happened here
- * twice, is the catastrophic shape — the reproduced defect measures 1,685 ms
- * against a 0.09 ms healthy cost, four orders of magnitude clear of the noise.
+ * ⚠ **What a ceiling does NOT detect**, stated because a guard's limits are part
+ * of its contract: a term that is superlinear but cheap. Against the cheap shapes
+ * the margin is ~270×, so `n log n` and `n^1.5` pass silently, and a synthetic
+ * quadratic term 250× smaller than the real defect passes where the retired ratio
+ * would have fired. What is NOT lost is this defect class: every regex mutation
+ * measured on these two functions is either linear (~4× growth, ≤10 ms) or
+ * catastrophic (1,349–2,299 ms) — backtracking here is bimodal, and only a
+ * hand-written nested loop would land in the gap.
  */
 const costsUnder = (
   what: string,
   prepare: (size: number) => () => void,
   { size, ceilingMs }: CostBound,
+  budgetMs: number = SAMPLE_BUDGET_MS,
 ): void => {
-  const { perCall, sampleCalls, samples } = millisPerCall(prepare(size));
+  const { perCall, sampleCalls, samples } = millisPerCall(prepare(size), budgetMs);
+
+  // 🔴 A collapsed batch is REPORTED, not asserted on — and the difference was
+  // paid for. The previous version refused a `sampleCalls === 1` reading before
+  // judging the cost, on the ground that min-of-N over raw calls cannot defeat a
+  // scheduler quantum. Two things were wrong with that, and both showed up the
+  // first time the guarded defect was put back:
+  //
+  // - A batch is `ceil(SAMPLE_TARGET_MS / per-call)`, so a defect dearer than the
+  //   target collapses the batch BY CONSTRUCTION. Both guards below then failed on
+  //   the precondition rather than the ceiling, at 1,695 ms against 25 ms.
+  // - The refusal bought nothing it did not already have. Timing noise is
+  //   one-sided, so an unbatched reading can only read HIGH: a reading under the
+  //   ceiling is therefore trustworthy however small the batch, and a reading over
+  //   it is a false red the refusal converted into a differently-worded red rather
+  //   than prevented.
+  //
+  // What the batch state is genuinely good for is diagnosis, so it goes in the
+  // message — without the "raise SAMPLE_TARGET_MS" advice the old one carried,
+  // which on a real defect is this item's forbidden bump arriving through a
+  // failure message instead of a constant.
+  const batch =
+    sampleCalls === 1
+      ? 'The sample collapsed to ONE call, so no quantum is averaged out of this ' +
+        'reading — but noise only ever reads HIGH, so suspect contention only if ' +
+        'the cost is NEAR the ceiling rather than orders over it. '
+      : '';
+
   // 🔴 The sample sizes stay in the message. They are the one number that
   // separates a real regression from an undersized measurement, and both of this
   // apparatus's past repairs were diagnosed from the figures in this string.
+  //
+  // What the message must NOT do is name the cause. An earlier version ended
+  // "so this is a quadratic shape rather than a busy runner" — and a busy runner
+  // printed it, verbatim, on unmodified code. A message that rules out the true
+  // cause is worse than a bare number.
   expect(
     perCall,
     `${what}: ${size} characters cost ${perCall.toFixed(4)}ms per call — the ` +
-      `fastest of ${samples} samples of ${sampleCalls} calls each — over the ` +
-      `${ceilingMs}ms ceiling. The ceiling is ~24× the dearest healthy shape ` +
-      'measured under CPU saturation, so this is a quadratic shape rather than a ' +
-      'busy runner; the reproduced defect of this class measures ~1,685ms.',
+      `fastest of ${samples} samples of ${sampleCalls} calls each — over this ` +
+      `shape's ${ceilingMs}ms ceiling. ${batch}The ceiling is set from this ` +
+      "shape's own measured cost with a wide margin; the defects of this class " +
+      'measure 1,349–2,299ms. Check contention before concluding either.',
   ).toBeLessThan(ceilingMs);
 };
 
@@ -410,12 +480,17 @@ const costsUnder = (
 // comment. This is the reasoning as an assertion.
 describe('the scaling harness sizes its own samples', () => {
   it('asks for more calls the cheaper the call is', () => {
-    // the shape that flaked: 21 µs per call needs ~48 of them to be worth 1 ms
-    expect(sampleSizeFor(0.021)).toBe(48);
-    expect(sampleSizeFor(0.5)).toBe(2);
+    // 🔴 Expressed through the constant rather than against frozen numbers: these
+    // expectations were literals when the target was 1 ms, and raising it to 100
+    // — the repair for a batch that collapsed to a single call — would have made
+    // every one of them a false failure about arithmetic rather than behaviour.
+    expect(sampleSizeFor(SAMPLE_TARGET_MS / 48)).toBe(48);
+    expect(sampleSizeFor(SAMPLE_TARGET_MS / 2)).toBe(2);
     // a call already at or over target is measured on its own
-    expect(sampleSizeFor(1)).toBe(1);
-    expect(sampleSizeFor(2.4)).toBe(1);
+    expect(sampleSizeFor(SAMPLE_TARGET_MS)).toBe(1);
+    expect(sampleSizeFor(SAMPLE_TARGET_MS * 2.4)).toBe(1);
+    // and the historical shape that flaked: 21 µs per call, now batched to the cap
+    expect(sampleSizeFor(0.021)).toBe(MAX_SAMPLE_CALLS);
   });
 
   it('caps the sample, and the cap is the only bound that can bind', () => {
@@ -466,12 +541,17 @@ describe('the scaling harness sizes its own samples', () => {
     expect(resizedSample(SAMPLE_TARGET_MS, 4)).toBe(4);
     expect(resizedSample(SAMPLE_TARGET_MS * 4, 4)).toBe(4);
     expect(resizedSample(SAMPLE_TARGET_MS / 4, 4)).toBe(4);
-    // far over: the probe under-read the call, so fewer calls per sample
-    expect(resizedSample(60_000, 2_048)).toBe(1);
+    // far over: the probe under-read the call, so fewer calls per sample —
+    // through the constant, since the exact count is arithmetic on the target
+    expect(resizedSample(60_000, 2_048)).toBe(Math.ceil(SAMPLE_TARGET_MS / (60_000 / 2_048)));
     // far under: the probe over-read it — this is the JIT-tiering case, where
     // min-of-3 measured 0.161ms against a true 0.021ms and only the resize
-    // recovered the run
-    expect(resizedSample(0.18, 7)).toBe(39);
+    // recovered the run. Through the constant, for the reason the sizing test
+    // above states.
+    const perCall = SAMPLE_TARGET_MS / 555 / 7;
+    expect(resizedSample(SAMPLE_TARGET_MS / 555, 7)).toBe(
+      Math.min(MAX_SAMPLE_CALLS, Math.ceil(SAMPLE_TARGET_MS / perCall)),
+    );
   });
 
   it('reports no measurement rather than a cheap one when the budget runs out', () => {
@@ -566,7 +646,7 @@ describe('the scaling harness sizes its own samples', () => {
     // 4 ms per call against a 1 ms ceiling: no plausible amount of runner noise
     // makes a cheap call read this way, which is the property the ceiling rests on.
     expect(() => costsUnder('a dear subject', () => burnFor(4), { size: 1, ceilingMs: 1 })).toThrow(
-      /over the 1ms ceiling/,
+      /over this shape's 1ms ceiling/,
     );
   });
 
@@ -578,19 +658,62 @@ describe('the scaling harness sizes its own samples', () => {
     ).not.toThrow();
   });
 
-  it('is not fooled by load that arrives mid-measurement', () => {
-    // The failure that killed the ratio, replayed against the ceiling: the subject
-    // is cheap and something else starts competing partway through. A ratio read
-    // this as growth; a ceiling reads it as what it is — still far under.
-    let calls = 0;
-    const cheapThenLoaded = () => () => {
-      calls += 1;
-      burnFor(0.05)();
-      if (calls > 20) burnFor(0.6)(); // the neighbour job, 12× the subject
+  // 🔴 The diagnosis this apparatus gave on the one input it exists to catch.
+  //
+  // A batch is `ceil(SAMPLE_TARGET_MS / per-call)`, so ANY call dearer than the
+  // target batches to one — and a defect of this class is dearer than the target
+  // by construction: the restored quadratic link shape measures ~1,695 ms per
+  // call. Measured with both defects put back, the two guards below failed not on
+  // their ceilings but on a `sampleCalls > 1` precondition, printing "the sample
+  // collapsed to one call … raise SAMPLE_TARGET_MS above its per-call cost" at
+  // 1,695 ms against a 25 ms ceiling.
+  //
+  // Both halves of that are wrong on a defect. The reading is not untrustworthy:
+  // timing noise is one-sided, so an unbatched reading can only be too HIGH, and
+  // 68× over the ceiling is not a scheduler quantum. And the advice — widen the
+  // measurement until the cost fits — is the ratio bump this item's own text
+  // forbids, arriving through the failure message instead of the constant.
+  it('names the ceiling, not the measurement, when a dear call collapses the batch', () => {
+    // The budget is passed at 50 ms so this costs one sample rather than nine —
+    // the reason `millisPerCall`'s own budget test gives, and for the same reason:
+    // a test that saturates the CPU manufactures the contention this file guards.
+    expect(() =>
+      costsUnder(
+        'a dear subject whose batch collapsed',
+        () => burnFor(SAMPLE_TARGET_MS + 20),
+        { size: 1, ceilingMs: 1 },
+        50,
+      ),
+    ).toThrow(/over this shape's 1ms ceiling/);
+  });
+
+  it('reads the fastest sample, so a burst in some samples does not decide the verdict', () => {
+    // 🔴 This is the property the ceiling actually rests on, and the previous
+    // version of this test did not measure it: it asserted 0.65 ms against a
+    // 50 ms ceiling, which passes for a mean, a max, or no statistic at all.
+    //
+    // Here the ceiling sits BETWEEN the cheap truth and the mean, so only a
+    // fastest-of-N estimator passes: roughly half the samples are 6× dearer, so
+    // the mean lands near 1.75 ms and the max near 3 ms, while the fastest stays
+    // near 0.5 ms. A ceiling of 1 ms therefore fails for any estimator that lets
+    // a paused sample count.
+    let sample = 0;
+    const burstsHalfTheTime = () => {
+      // one call per batch entry; the burst is per SAMPLE, which is what a
+      // scheduler quantum looks like from inside this harness
+      const burst = Math.floor(sample / 8) % 2 === 1;
+      sample += 1;
+      const until = performance.now() + (burst ? 3 : 0.5) / 8;
+      while (performance.now() < until) {
+        /* burn */
+      }
     };
 
     expect(() =>
-      costsUnder('a cheap subject', cheapThenLoaded, { size: 1, ceilingMs: 50 }),
+      costsUnder('a subject whose samples burst', () => burstsHalfTheTime, {
+        size: 1,
+        ceilingMs: 1,
+      }),
     ).not.toThrow();
   });
 });
@@ -735,11 +858,14 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
   // ceiling is trustworthy now that the estimator is min-of-nine batched samples.
   //
   // The numbers here are this subject's own, measured rather than borrowed:
-  // healthy cost at 32k is 0.084 ms idle and 0.090 ms under ten saturating
-  // processes for the two whitespace shapes, and 9.57 ms / 10.17 ms for the
-  // bracket run, which is linear with a large constant rather than a defect. The
-  // ceiling is 250 ms — ~24× the dearest of those under saturation — and the
-  // reproduced link defect measures 1,685 ms at the same size.
+  // healthy cost at 32k is 0.084–0.087 ms idle and 0.090–0.092 ms under ten
+  // saturating processes for the two whitespace shapes, and 9.57 / 10.17 ms for
+  // the bracket run, which is linear with a large constant rather than a defect.
+  // Hence two ceilings — 25 ms for the whitespace shapes (~270×) and 1,000 ms for
+  // the bracket run (~98×) — where a single shared 250 ms bound fired on
+  // unmodified code at 462 ms under heavy contention. The restored link defect
+  // measures 1,678 ms idle and 2,299 ms saturated at this size, so it clears both
+  // ceilings by nearly two orders of magnitude.
   //
   // 🔴 The size is 32k, where the old fixture was 65k — so this does NOT measure
   // a body at the tracker's 64k cap, and the name says 'costs a bounded amount'
@@ -750,22 +876,25 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
   // the ceiling at 32k.
   it('costs a bounded amount per call on a large body', { timeout: 60_000 }, async () => {
     const { hygieneOf } = await load('core.mjs');
-    const shapes: Array<[string, (size: number) => string]> = [
+    // Each shape carries its own ceiling, derived from its own measured cost —
+    // see `CostBound`. The bracket run is linear with a constant 110× the other
+    // two, so a shared bound could only be wrong for one of them.
+    const shapes: Array<[string, (size: number) => string, number]> = [
       // the unterminated link is the quadratic shape, and it goes first so a
       // regression is reported before the slower shapes are measured
-      ['an unterminated link', (size) => `[x](${' '.repeat(size)}`],
-      ['a dependency line before a run of spaces', (size) => `blocked by${' '.repeat(size)}`],
-      ['a run of open brackets', (size) => `${'['.repeat(size)}x`],
+      ['an unterminated link', (size) => `[x](${' '.repeat(size)}`, 25],
+      ['a dependency line before a run of spaces', (size) => `blocked by${' '.repeat(size)}`, 25],
+      ['a run of open brackets', (size) => `${'['.repeat(size)}x`, 1_000],
     ];
 
-    for (const [shape, body] of shapes) {
+    for (const [shape, body, ceilingMs] of shapes) {
       costsUnder(
         `hygieneOf on ${shape}`,
         (size) => {
           const item = ticket({ body: body(size) });
           return () => hygieneOf(item);
         },
-        { size: 32_768, ceilingMs: 250 },
+        { size: 32_768, ceilingMs },
       );
     }
   });
@@ -2598,11 +2727,21 @@ describe('plan-md files a triage proposal instead of instructing a human to file
   // hold then: the estimator is the min of nine batched samples, whose spread
   // under ten saturating processes measures 1.06× on the sibling subject.
   //
-  // Measured here, worst of three runs under that saturation, at 16k: 0.27 ms for
-  // the space run, 0.40 ms for the tabs, 0.50 ms for the newline shape. The
-  // fixture is 32k, where the defect above — quadratic — extrapolates to ~1,600 ms
-  // from its 6,659 ms at 65k, so a 250 ms ceiling sits two orders of magnitude
-  // over healthy and six times under the defect.
+  // Measured AT THE FIXTURE'S OWN SIZE, 32k, worst of three runs under ten
+  // saturating processes: 0.267–0.325 ms per call across the three shapes. (An
+  // earlier version of this comment quoted 16k figures beside a 32k fixture — the
+  // number rode through the size change unmeasured, in the very comment block that
+  // warns about exactly that.) The ceiling is 25 ms, ~78× over healthy, and the
+  // restored defect measures 1,684 ms here — 67× the other way.
+  //
+  // 🔴 **Count two detectors here, not three**, and this survives the move to a
+  // single size unchanged. The trailing-newline shape CANNOT fail on the defect
+  // described above: a newline after the run is what makes that spelling fast, so
+  // with the defect restored the three shapes measure 2,173 ms, 2,181 ms and
+  // **0.34 ms** respectively. Against the known defect the third contributes
+  // nothing; it is kept as a detector of the opposite polarity — a future defect
+  // that is slow precisely WHEN a line terminator follows the run. Stated rather
+  // than left for a reader to count coverage they do not have.
   //
   // 🔴 The measurement bias that came with sharing one plan file is GONE, and
   // this is where a stale comment would have survived: the three shapes appended
@@ -2638,7 +2777,7 @@ describe('plan-md files a triage proposal instead of instructing a human to file
             if (!result.filed) throw new Error('deduped, so nothing was folded');
           };
         },
-        { size: 32_768, ceilingMs: 250 },
+        { size: 32_768, ceilingMs: 25 },
       );
     }
   });
