@@ -358,9 +358,9 @@ mechanises fully (`missed`, `.claude/rules/autonomy.md`) needs no self-report.
 ## 6. Escalation — two channels, by scope
 
 **Task-scoped — the item is the home, and the loop continues.** Three strikes, the
-attempt budget, an invariant conflict, a blocking reviewer verdict, or a
-`PREMISE FALSE` verdict from `check-premises` — the last one is a
-`documented-stall` (§5), and its diagnosis is already written: what the item
+attempt budget, an invariant conflict, a blocking reviewer verdict, an **exhausted
+gate-round cap**, or a `PREMISE FALSE` verdict from `check-premises` — the last two
+are a `documented-stall` (§5), and their diagnosis is already written: what the item
 claimed, what the code says, and the citation:
 
 1. Comment the diagnosis on the queue item, in the shape
@@ -377,6 +377,16 @@ claimed, what the code says, and the citation:
    or the next query picks it up and works it twice.
 3. Journal it. 4. **Take the next item.** One stuck task does not end a run; two
    in a row does (§3).
+
+🔴 **The gate-round cap is the one of these that a run will not notice on its
+own, so it is mechanical.** `pr-ship` step 0 counts the round per branch into
+`.claude/queue.state.json` and exits non-zero past the cap (2 by default,
+`options.maxGateRounds` in `.claude/queue.json`). Measured rounds per item before
+it existed: **5, 4, 2, 7, 8** — and every check was green throughout, so three
+strikes never fired and the attempt budget fired late by its own journal entry. A
+run inside a gate that cannot fail has no reason to stop, which is why the reason
+comes from outside it. The escalation is `documented-stall`, and the diagnosis is
+the last HOLD's blockers — already written, so no new analysis is owed.
 
 🔴 **Escalate through the adapter, never by hand-labelling the item.** Every
 adapter's `escalate()` counts the escalation into the run state as it marks the

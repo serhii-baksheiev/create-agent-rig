@@ -38,7 +38,7 @@ export const resolveAdapter = async (adapterName) => {
   return import(new URL(modulePath, import.meta.url).href);
 };
 
-export const COMMANDS = ['next', 'list', 'hygiene'];
+export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round'];
 
 /**
  * A missing config is the normal state of a fresh project. A config that exists
@@ -171,10 +171,11 @@ export const loadState = (statePath) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { command: argv[0] ?? 'next', json: false, config: null };
+  const args = { command: argv[0] ?? 'next', json: false, config: null, branch: null };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--config') args.config = argv[++i];
+    else if (argv[i] === '--branch') args.branch = argv[++i];
   }
   return args;
 };
@@ -226,6 +227,58 @@ if (invokedDirectly()) {
         "the adapter's own API — import the adapter module rather than this CLI.\n",
     );
     process.exit(1);
+  }
+
+  // 🔴 **`gate-round` returns before the tracker is ever touched, and that is
+  // load-bearing rather than an optimisation.** `pr-ship` calls this once per
+  // round, and every other command below reaches the adapter — so routing this one
+  // through the normal path would spend a network call per gate round and, worse,
+  // would refuse to count a round while the tracker is unreachable. The counter is
+  // a local file and a local config; a Jira outage must not hand a run unlimited
+  // rounds.
+  if (args.command === 'gate-round') {
+    const { gateRoundVerdict } = await import('./core.mjs');
+    const { recordGateRound } = await import('./state.mjs');
+    try {
+      const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
+      const config = loadConfig(configPath);
+      // Same rule the selection path uses: an explicit `--config` keeps its state
+      // beside it, otherwise the state belongs to the checkout that outlives the
+      // worktree a task may be running in.
+      const statePath = args.config
+        ? statePathFor(configPath)
+        : join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');
+
+      const { rounds } = recordGateRound({ branch: args.branch, statePath });
+      const verdict = gateRoundVerdict(rounds, config.options?.maxGateRounds);
+
+      if (!verdict.exceeded) {
+        process.stdout.write(
+          `gate round ${verdict.rounds} of ${verdict.max} on ${args.branch}.\n` +
+            (verdict.rounds === verdict.max
+              ? '  This is the last round this branch gets. If it holds again, the item ' +
+                'is escalated rather than re-reviewed.\n'
+              : ''),
+        );
+        process.exit(0);
+      }
+
+      process.stderr.write(
+        `GATE ROUNDS EXHAUSTED — ${verdict.rounds} rounds on ${args.branch}, cap is ` +
+          `${verdict.max}: ${verdict.stop}.\n` +
+          '  Do not run another round. Escalate the item with the last HOLD\'s ' +
+          "blockers as the diagnosis, per `documented-stall`: the fixes are not " +
+          'converging, and a third pass buys a full reviewer fan-out to find that ' +
+          'out again.\n' +
+          '  Raise `options.maxGateRounds` in .claude/queue.json only if the cap ' +
+          'itself is wrong for this project — never to get one more pass on this ' +
+          'item.\n',
+      );
+      process.exit(2);
+    } catch (error) {
+      process.stderr.write(`gate-round: ${error.message}\n`);
+      process.exit(1);
+    }
   }
 
   // A missing module is NOT read as "no state". A run that could not read its

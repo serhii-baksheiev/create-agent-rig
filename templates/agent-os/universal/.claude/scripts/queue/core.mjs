@@ -384,6 +384,53 @@ const clearsSpacing = (lastCompletedTier) =>
   CLEARS_SPACING.has(lastCompletedTier);
 
 /**
+ * How many times one branch may enter the review gate before the item stops.
+ *
+ * 🔴 **Measured, and it is why this exists at all.** Gate rounds per item over the
+ * last five single-item runs: **5, 4, 2, 7, 8**. Nothing bounded them. The
+ * three-strikes rule in `autonomy.md` counts red *check* runs, and every check was
+ * green in all five — so a PR loops through `pr-ship` indefinitely while the suite
+ * passes, and the `budget` stop fires (by its own journal entry) "later than it
+ * should have". Round N+1 also re-launches the whole fan-out over the whole diff,
+ * so the eighth round of a one-file change costs what the first one did.
+ *
+ * Two is the cap because the second round is the one that verifies the first
+ * round's fixes. A third round means the fixes did not converge, and that is a
+ * diagnosis to hand a human — not another pass to buy.
+ */
+export const DEFAULT_MAX_GATE_ROUNDS = 2;
+
+/**
+ * Is this round allowed, and if not, what stops?
+ *
+ * Pure, and separate from the counter on disk, because the rule and the storage
+ * fail differently: a wrong count is a bug in one file, a wrong rule is a bug in
+ * every caller. `state.mjs` owns the count; this owns the verdict.
+ *
+ * `rounds` is the number of rounds **including the one about to run**, so a cap of
+ * 2 allows rounds 1 and 2 and refuses 3.
+ *
+ * The refusal is `documented-stall` — an escalation with the last HOLD's blockers
+ * as its diagnosis. It is deliberately NOT in `SKIP_CAUSES`: those are reasons an
+ * item was passed over during selection, and this is a reason a task ends. One
+ * vocabulary holding both would make every sentence about either one wrong.
+ */
+export const gateRoundVerdict = (rounds, max = DEFAULT_MAX_GATE_ROUNDS) => {
+  // A cap under 1 refuses the FIRST round, which turns the gate off rather than
+  // bounding it — the opposite of what this is for. Fail loudly on the
+  // configuration rather than quietly on every PR.
+  if (!Number.isInteger(max) || max < 1) {
+    throw new Error(
+      `maxGateRounds must be an integer of at least 1, got ${JSON.stringify(max)}. ` +
+        'A cap below 1 would refuse the first gate round, which disables the gate ' +
+        'instead of bounding it.',
+    );
+  }
+  const exceeded = rounds > max;
+  return { rounds, max, exceeded, stop: exceeded ? 'documented-stall' : null };
+};
+
+/**
  * Pick the next item, or explain why nothing was taken.
  *
  * The elevated tier is rationed by **spacing, not counting**: a per-run count is

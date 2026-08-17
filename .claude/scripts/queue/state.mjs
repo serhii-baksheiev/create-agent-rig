@@ -31,12 +31,109 @@
  * and the one nobody is looking at would be the wrong one.
  */
 
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { elevatedPathsIn, executesNothing, readDeclaredPaths } from '../detect-missed-gate.mjs';
 import { updateState } from '../run-state.mjs';
 import { mainCheckoutRoot } from './checkout.mjs';
+
+/** Where the per-checkout state lives, unless a caller names the file. */
+const stateFileFor = (statePath, projectRoot) =>
+  statePath ?? join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');
+
+/**
+ * The state file as an object, or `{}` when it is absent or unusable.
+ *
+ * Deliberately forgiving, and deliberately different from the reader in
+ * `index.mjs`. That one REFUSES a malformed tier, because rationing on a value
+ * nobody wrote is the defect it was built for. This one is the writers' side: its
+ * job is to not lose the fields it is not writing, and a file it cannot parse has
+ * no fields to lose. Refusing here would make a corrupt state file unrecoverable
+ * by the very command that would overwrite it.
+ */
+const readStateFile = (file) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return {};
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  return parsed;
+};
+
+/**
+ * The round counts, keyed by branch, with anything malformed dropped.
+ *
+ * Syntax is not shape (the same lesson `index.mjs` records about the tier): a
+ * `gateRounds` of `42`, `"two"`, `["fix/a"]` or `{ "fix/a": -1 }` all parse and
+ * carry no count. Every one of them reads as "no rounds yet" — which is the safe
+ * direction here, because it costs one extra allowed round rather than refusing a
+ * gate nobody has run.
+ */
+const roundsIn = (state) => {
+  const map = state.gateRounds;
+  if (map === null || typeof map !== 'object' || Array.isArray(map)) return {};
+  const clean = {};
+  for (const [branch, count] of Object.entries(map)) {
+    if (Number.isInteger(count) && count > 0) clean[branch] = count;
+  }
+  return clean;
+};
+
+const requireBranch = (branch) => {
+  if (typeof branch !== 'string' || branch.trim() === '') {
+    throw new Error(
+      `a gate round is counted per branch, and the branch was ${JSON.stringify(branch)}. ` +
+        'Pass `git rev-parse --abbrev-ref HEAD`; a missing branch would share one ' +
+        'counter across every task in the checkout.',
+    );
+  }
+  return branch;
+};
+
+/** How many gate rounds this branch has already recorded. Zero when unknown. */
+export const gateRoundsFor = ({ branch, projectRoot, statePath } = {}) =>
+  roundsIn(readStateFile(stateFileFor(statePath, projectRoot)))[requireBranch(branch)] ?? 0;
+
+/**
+ * Count one gate round for this branch and return the new total.
+ *
+ * 🔴 **It merges, and so does `recordCompletedTier` now — this is the part the
+ * item that asked for the cap got wrong.** That function used to write this file
+ * with a whole-file `writeFileSync`, and its own comment said it "owns its file
+ * outright". True while the file held one field; the moment a second writer
+ * appears, the first close of any item would have silently deleted the round count
+ * of every branch still in gate. Both writers read-modify-write now, and the test
+ * that pins it asserts both directions.
+ *
+ * ⚠ The limit, since two writers on one file invites the question: this is
+ * read-modify-write with no lock, so two processes racing on the SAME checkout can
+ * lose one increment. The loop is single-threaded per checkout by construction
+ * (concurrent tasks get their own worktree, and `mainCheckoutRoot` sends the state
+ * to the checkout that outlives them), so the race needs two loops in one
+ * directory — which is the case `worktree-task` exists to prevent. A lost
+ * increment costs one extra allowed round, never a missed refusal of a later one.
+ *
+ * ⚠ Nothing prunes the map. One key per branch that ever entered the gate, in a
+ * per-checkout file that is gitignored; a merged branch's key is dead weight of a
+ * few bytes. Pruning would need to ask git which branches still exist, and a
+ * wrong answer there deletes a live counter — which is the failure this cap
+ * exists to prevent, so the dead weight is the cheaper mistake.
+ */
+export const recordGateRound = ({ branch, projectRoot, statePath } = {}) => {
+  requireBranch(branch);
+  const file = stateFileFor(statePath, projectRoot);
+  const state = readStateFile(file);
+  const rounds = roundsIn(state);
+  const next = (rounds[branch] ?? 0) + 1;
+  writeFileSync(
+    file,
+    `${JSON.stringify({ ...state, gateRounds: { ...rounds, [branch]: next } }, null, 2)}\n`,
+  );
+  return { rounds: next };
+};
 
 
 /**
@@ -160,8 +257,14 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   // given `projectRoot` (the worktree's own `CLAUDE.md` is the rulebook the
   // change was written against), while the STATE goes to the checkout that
   // outlives the task.
-  const file = statePath ?? join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');
-  writeFileSync(file, `${JSON.stringify({ lastCompletedTier: tier }, null, 2)}\n`);
+  const file = stateFileFor(statePath, projectRoot);
+  // 🔴 Read-modify-write, not a whole-file write. This line used to own the file
+  // outright, which was correct while `lastCompletedTier` was its only field —
+  // and became a silent deletion the moment `gateRounds` joined it: the first
+  // close of any item would have wiped the round count of every branch still in
+  // gate, handing back the unbounded rounds the cap exists to stop.
+  const existing = readStateFile(file);
+  writeFileSync(file, `${JSON.stringify({ ...existing, lastCompletedTier: tier }, null, 2)}\n`);
 
   // The run's own state, when the run declared a directory. Two files because
   // the two values have different lifetimes: the tier rations ACROSS runs and

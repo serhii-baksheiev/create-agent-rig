@@ -11,6 +11,29 @@ blockers.
 
 ## Steps
 
+0. **Count this round before you spend on it — and stop if it is the third.**
+
+   ```sh
+   node .claude/scripts/queue/index.mjs gate-round --branch "$(git rev-parse --abbrev-ref HEAD)"
+   ```
+
+   A non-zero exit means **this branch has used its rounds**. Do not run the gate
+   again. Escalate the item with the last HOLD's blockers as the diagnosis
+   (`documented-stall`) and stop — the fixes are not converging, and another pass
+   buys a full reviewer fan-out to discover that a third time.
+
+   🔴 **Why a counter exists at all.** Measured gate rounds per item over five
+   single-item runs: **5, 4, 2, 7, 8**. Nothing bounded them, because the
+   three-strikes rule in `autonomy.md` counts red *check* runs and every check was
+   green — so the loop was in a gate that could not fail and could not finish. The
+   count lives in `.claude/queue.state.json` per branch, so a fresh session, a
+   compaction, or a new run cannot restart it. The cap is 2 and is configurable as
+   `options.maxGateRounds` in `.claude/queue.json`.
+
+   Raise the cap only if it is wrong **for the project**, never to buy one more
+   pass on the item in front of you. That is the move this counter exists to
+   refuse.
+
 1. **The diff first.** Establish what is actually shipping: fetch, then diff
    against the **remote** default branch (`origin/<default>`), not a local
    copy that may be behind — diagnosing from stale local code produces
@@ -155,7 +178,9 @@ blockers.
 - `VERDICT: HOLD` — list every blocker: the failing check by name, the
   reviewer finding with its file:line, or the DoD item that does not hold.
   Blocking findings are resolved, not argued with; after fixes, the gate runs
-  again from step 1.
+  again from **step 0** — which counts the new round and is what makes "again"
+  finite. Re-entering at step 1 skips the counter, and the unbounded rounds this
+  gate measured are exactly what that produces.
 
 ## Boundaries
 
