@@ -714,6 +714,15 @@ const project = async (item = 'add a route'): Promise<string> => {
   return dir;
 };
 
+// 🔴 A path where NOTHING is written. `loadConfig` reads an absent file as `{}`,
+// so every run below is still the zero-configuration case; what the flag supplies
+// is the one thing the harness cannot otherwise say — which directory is the
+// project. In production the CLI answers that from its own location
+// (`import.meta.url`); under test it runs out of the template tree, which is
+// itself a complete project carrying its own PLAN.md, so an unaided run would
+// select from the template's queue instead of the fixture's.
+const planConfig = (dir: string): string => path.join(dir, '.claude', 'queue.json');
+
 // A journal nothing calls records nothing. This is the caller the item requires,
 // and it is also where the boundary above is paid for: the CLI declares the run
 // directory, the module writes into it, and neither invents one.
@@ -722,7 +731,7 @@ describe('the queue CLI records its selection when a run directory is declared',
     const dir = await project();
     const runDir = await newRunDir();
 
-    const result = await run(['next', '--json'], dir, {
+    const result = await run(['next', '--json', '--config', planConfig(dir)], dir, {
       ...withoutGitLocation(),
       RIG_RUN_DIR: runDir,
     });
@@ -738,7 +747,7 @@ describe('the queue CLI records its selection when a run directory is declared',
     const env = withoutGitLocation();
     delete env.RIG_RUN_DIR;
 
-    const result = await run(['next', '--json'], dir, env);
+    const result = await run(['next', '--json', '--config', planConfig(dir)], dir, env);
 
     expect(result.code, result.out).toBe(0);
     // Not "no journal in the temp project" alone: the CLI resolves a project root
@@ -773,7 +782,7 @@ describe('an unusable journal does not take the queue selection with it', () => 
       { seq: 1, at: T1, gate: 'item-selection', verdict: 'taken 1' },
     ]);
 
-    const result = await run(['next', '--json'], dir, envFor(runDir));
+    const result = await run(['next', '--json', '--config', planConfig(dir)], dir, envFor(runDir));
 
     expect(result.code, result.out).toBe(0);
     expect(JSON.parse(result.stdout).ticket).toMatchObject({ id: '1' });
@@ -797,7 +806,7 @@ describe('an unusable journal does not take the queue selection with it', () => 
     // refusal currently decides what the QUEUE does.
     await endRun({ runDir, stop: 'queue-empty', now: T0 });
 
-    const result = await run(['next', '--json'], dir, envFor(runDir));
+    const result = await run(['next', '--json', '--config', planConfig(dir)], dir, envFor(runDir));
 
     expect(result.code, result.out).toBe(0);
     expect(JSON.parse(result.stdout).ticket).toMatchObject({ id: '1' });
@@ -847,7 +856,7 @@ describe('a journal that cannot be written to loses the trace, not the work', ()
       const runDir = await newRunDir();
       await chmod(runDir, 0o555);
 
-      const result = await run(['next', '--json'], dir, {
+      const result = await run(['next', '--json', '--config', planConfig(dir)], dir, {
         ...withoutGitLocation(),
         RIG_RUN_DIR: runDir,
       });
@@ -879,10 +888,15 @@ describe('a run journal too old to classify its own failures does not crash the 
       'export const recordDecision = () => { throw new Error("stale journal"); };\n',
     );
 
-    const result = await runCli(path.join(scripts, 'queue', 'index.mjs'), ['next', '--json'], dir, {
-      ...withoutGitLocation(),
-      RIG_RUN_DIR: runDir,
-    });
+    const result = await runCli(
+      path.join(scripts, 'queue', 'index.mjs'),
+      ['next', '--json', '--config', planConfig(dir)],
+      dir,
+      {
+        ...withoutGitLocation(),
+        RIG_RUN_DIR: runDir,
+      },
+    );
 
     expect(result.stderr).not.toMatch(/is not a function/);
     expect(result.code, result.out).toBe(1);
@@ -895,7 +909,7 @@ describe('a mis-declared run directory stops the selection instead', () => {
     const dir = await project();
     const runDir = await missingRunDir();
 
-    const result = await run(['next', '--json'], dir, {
+    const result = await run(['next', '--json', '--config', planConfig(dir)], dir, {
       ...withoutGitLocation(),
       RIG_RUN_DIR: runDir,
     });
@@ -927,7 +941,7 @@ describe('an untrusted item title cannot forge a journal record', () => {
     const dir = await project(String.raw`add a route\n` + forged);
     const runDir = await newRunDir();
 
-    const result = await run(['next', '--json'], dir, {
+    const result = await run(['next', '--json', '--config', planConfig(dir)], dir, {
       ...withoutGitLocation(),
       RIG_RUN_DIR: runDir,
     });

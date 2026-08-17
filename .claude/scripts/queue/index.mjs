@@ -13,7 +13,7 @@
 // that silently reads the wrong queue is worse than one that refuses to start.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { hygieneOf, selectNext, stopConditionOf } from './core.mjs';
 // One resolver, imported rather than re-derived: writer and reader disagreeing
 // about which checkout they are in is the whole of the worktree defect. It lives
@@ -75,6 +75,50 @@ export const loadConfig = (configPath) => {
  * unrelated checkout decide its selection.
  */
 export const statePathFor = (configPath) => configPath.replace(/(\.json)?$/, '.state.json');
+
+/**
+ * The project root a config path implies, or `null` when it implies none.
+ *
+ * A config inside a directory named `.claude` names a project: the rig puts it
+ * there, so its parent is the root. Anything else — `--config /tmp/x.json`, a
+ * config nested for a test fixture — is a bare file with no project around it,
+ * and this returns `null` so the caller keeps whatever default it had.
+ *
+ * 🔴 Deliberately NOT `join(dirname(configPath), '..')`. That was the shape the
+ * queue item prescribed, and it assumes every config sits in a `.claude`
+ * directory: pointed at `<dir>/.claude-queue.json` it climbs a level out of the
+ * project and looks for the plan in the parent. Measured, not predicted — it
+ * turned two passing tests red on the first run.
+ */
+export const projectRootOfConfig = (configPath) => {
+  const dir = dirname(configPath);
+  return basename(dir) === '.claude' ? dirname(dir) : null;
+};
+
+/**
+ * The adapter options the CLI hands down, with a plan path that does not depend
+ * on the directory the command was typed in.
+ *
+ * 🔴 The asymmetry this closes, because it made the queue unreadable rather than
+ * merely awkward: this file resolves its config from `import.meta.url`, so the
+ * config is found from any directory — while `plan-md`'s default is the bare
+ * relative `'PLAN.md'`, resolved against `cwd`. So `cd packages/cli && node
+ * ../../.claude/scripts/queue/index.mjs next` found the adapter and then reported
+ * `queue-unreadable` on `ENOENT: … open 'PLAN.md'`. A run in a worktree
+ * subdirectory read that as a broken queue, which is the one thing a queue reader
+ * must never guess at.
+ *
+ * Two things are left exactly as they were, and both are load-bearing. An
+ * explicit `options.planPath` still wins. And when the config implies no project
+ * root, nothing is injected — so `plan-md`'s own `'PLAN.md'` still resolves
+ * against the caller's cwd, which is the right answer when it is imported as a
+ * library (the `loop` skill reaches `close` and `proposeTriage` that way).
+ */
+export const optionsWithPlanPath = (options, configPath) => {
+  const root = projectRootOfConfig(configPath);
+  if (options?.planPath || root === null) return { ...options };
+  return { ...options, planPath: join(root, 'PLAN.md') };
+};
 
 /**
  * Every tier a state file may carry, and the reason there are four.
@@ -340,8 +384,10 @@ if (invokedDirectly()) {
   let config;
   let state;
   let adapter;
+  // Declared out here because the plan path is derived from it further down.
+  let configPath;
   try {
-    const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
+    configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
     config = loadConfig(configPath);
     // An explicit `--config` keeps its own state beside it, verbatim: a run
     // pointed at a temp config must not pick up this checkout's real tier.
@@ -414,7 +460,7 @@ if (invokedDirectly()) {
   try {
     // Awaited so an adapter may be async (jira) or plain (plan-md, github-issues)
     // without the CLI caring which.
-    tickets = await adapter.listEligible(config.options ?? {});
+    tickets = await adapter.listEligible(optionsWithPlanPath(config.options, configPath));
   } catch (error) {
     // Never fall back to memory or to a stale copy for a queue.
     const stop = stopConditionOf({ queueReadable: false });
