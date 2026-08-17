@@ -321,6 +321,19 @@ perfectly good reason having produced something nobody should build on.
 | `documented-stall` | it stopped at a real wall, and the diagnosis names **which stage needed what, and which upstream stage should have supplied it** |
 | `incomplete` | it stopped and the record does not explain where or why |
 
+🔴 **What `documented-stall` requires is the STAGE and the wall, not a full
+inventory of findings** — and this had to be settled, because the two readings
+disagreed the first time a stop arrived without an inventory. An exhausted
+gate-round cap names its stage (the gate) and its wall (two rounds of fixes did not
+converge), while the individual blockers behind it are not persisted anywhere until
+per-round verdicts exist. That is a `documented-stall`: the record locates the wall
+and the next reader knows where to look.
+
+`incomplete` is for a record that cannot say **where** it stopped — not for one that
+can say where but not everything about it. Widening `incomplete` to cover a thin
+diagnosis would make it the common case, and it is meant to be the rare one: it is
+the only failing state, and a state that fires on honest stops stops being read.
+
 🔴 **`documented-stall` is a success, and reading it as a failure is how this stops
 working.** A stall that names its under-supply is the most useful thing an
 unattended run produces: it converts a vague gap into a located, fixable defect.
@@ -372,8 +385,9 @@ Both then follow the same three steps:
    single question whose answer unblocks the work. So: what fails, what was tried, the
    current hypothesis, and links to the PR and the failing run where they exist
    — a premise stop has neither, and its citation stands in for both. **Name the outcome
-   state in the same comment** — `incomplete` if the diagnosis cannot say which
-   stage needed what. Writing `incomplete` on your own task is uncomfortable and
+   state in the same comment** — `incomplete` if the diagnosis cannot say **where** it
+   stopped (§5: a thin diagnosis that still locates the wall is a `documented-stall`).
+   Writing `incomplete` on your own task is uncomfortable and
    is the point: the run that produced it is the only witness.
 2. Mark it `escalated` and leave it claimed — **not** back to a selectable state,
    or the next query picks it up and works it twice.
