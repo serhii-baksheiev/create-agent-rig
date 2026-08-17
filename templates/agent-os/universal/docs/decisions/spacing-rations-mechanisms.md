@@ -26,7 +26,9 @@ facts — the second is the mechanism's own report, the first is not:
 - The `loop` run of 2026-08-17 hit `nothing-selectable` with **56 takeable items
   held, 53 of them by spacing** — the count `queue/index.mjs next` printed, so
   this one is the ration speaking. It holds on the item's **marker**, which is
-  what those 53 carried.
+  what those 53 carried. ⚠ Not reproducible from this repository: the queue is
+  tracker-backed and the run's own record is under the gitignored
+  `.claude/runs/`, so this figure is a report, not a check anyone can re-run.
 - Earlier, the AR-63 run recorded (journal, 2026-08) that of 58 selectable items
   **56 were elevated in fact — by declared path** — 31 of them marked so and 25
   marked `normal` while their own bodies named an elevated path. That is a
@@ -46,6 +48,14 @@ was indistinguishable from the rule working.
 | any elevated path is not | `elevated-mechanism` | spaces it |
 | no elevated path at all | `normal` | clears the ration |
 
+⚠ **"Elevated path" is the sweep's answer, not the diff's.** `elevatedPathsIn`
+drops inert paths *before* this classification runs, and a non-rulebook `.md` is
+inert — so `scripts/notes.md` under a declared directory records `normal`, not
+`elevated-prose`. In practice the only markdown that ever reaches the split is
+**rulebook** markdown: `CLAUDE.md` anywhere, everything under `.claude/`, and the
+decision records. That is pre-existing sweep behaviour, restated here because the
+table above reads more broadly than the code behaves.
+
 The predicate is `executesNothing` — **`.md` only** — and it lives in
 `detect-missed-gate.mjs` beside the sweep's own markdown test so the two cannot
 drift apart.
@@ -56,9 +66,12 @@ asks *can a merge of this compound overnight*, and MDX carries components and
 imports — it is a program that renders, not a document that is read, which is why
 `decision-router.mjs` already sends it down the code lane
 (`review-lanes.md`). Calling it prose here would clear the spacing hold on a file
-this same rig treats as a program, on the permissive side. Two questions, two
-predicates, one file. A third one written somewhere else is the
-two-implementations defect `invariants.md` names.
+this same rig treats as a program, on the permissive side.
+
+Two questions, two predicates, **one file** — that pairing is why they cannot
+drift. It is not a rule that every markdown test in the rig belongs there:
+`decision-router.mjs` keeps its own sets on purpose, and `review-lanes.md` — now
+with a row for this ration — exists to stop anyone consolidating them.
 
 **The known soft spot: a skill's `SKILL.md` is prose by this test**, and some
 skills carry shell snippets an agent copies and runs. The ruling is that skills
@@ -98,10 +111,10 @@ a checkout that upgrades mid-run still has one on disk, and refusing it outright
 would exit 1 on the next selection. `loadState` accepts four words and refuses
 the rest — **for the state file only**. Selection falls back to a tier left in
 `queue.json`, and `loadConfig` validates nothing but JSON syntax, so a word like
-`banana` in the config reaches `selectNext` unrefused (measured: the CLI exits 0
-and selects). It holds there, because `core.mjs` is the layer that reads every
-unrecognised value restrictively — the same layer that holds when `selectNext`
-is called directly.
+`banana` in the config reaches `selectNext` unrefused — measured: the CLI exits 0
+with no refusal, and then **holds** the elevated item with `causes: ["spacing"]`.
+It holds because `core.mjs` is the layer that reads every unrecognised value
+restrictively — the same layer that holds when `selectNext` is called directly.
 
 ## What this does not fix
 

@@ -169,10 +169,16 @@ const isDocument = (path) => /\.mdx?$/.test(path);
  * would do so on the permissive side, which is the one direction that costs
  * something.
  *
- * So this repository now has two markdown predicates on purpose, in one file so
+ * So **this file** carries two markdown predicates on purpose, side by side so
  * they cannot drift apart, answering questions that genuinely differ: *needs no
- * reviewer* is not *executes nothing*. Adding a third somewhere else is the
- * defect `invariants.md` names — put it here, next to these two, or reuse one.
+ * reviewer* is not *executes nothing*.
+ *
+ * ⚠ That is a statement about this file, **not** about the rig. Other markdown
+ * sets exist deliberately and must stay where they are — `decision-router.mjs`
+ * keeps its own, and `docs/decisions/review-lanes.md` exists precisely to stop
+ * someone consolidating them. Read that record before adding a fourth or
+ * "tidying" any of them: each mechanism's question is different, and every
+ * consolidation attempted so far would have silently downgraded a real review.
  */
 export const executesNothing = (path) => /\.md$/.test(path);
 

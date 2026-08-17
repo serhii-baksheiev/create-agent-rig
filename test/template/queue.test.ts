@@ -3180,10 +3180,14 @@ describe('reading the state — only a truly absent file means "nothing has clos
   });
 
   // 🔴 The shape check belongs to the reader as well as to the selector, and the
-  // two answer different questions. `core.mjs` now HOLDS on every value below —
-  // safe, but silent, and a run held by a typo looks exactly like a run held by
-  // the rule. A tier that cannot be trusted has to stop the run and name the
-  // file, exactly as an unparseable one does.
+  // two answer different questions. `core.mjs` holds on every value below that
+  // reaches it AS A TIER — safe, but silent, and a run held by a typo looks
+  // exactly like a run held by the rule. The rows that are not objects never get
+  // that far: a bare string, an array, a number or a top-level `null` leaves the
+  // tier simply absent, which `core.mjs` reads as "nothing has closed yet" and
+  // releases. So the reader is the only layer covering those, and a tier it
+  // cannot trust has to stop the run and name the file, exactly as an
+  // unparseable one does.
   const REFUSED: Array<[string, string]> = [
     ['a tier in the wrong case', '{"lastCompletedTier":"Elevated"}'],
     ['a tier outside the closed vocabulary', '{"lastCompletedTier":"tier-2"}'],

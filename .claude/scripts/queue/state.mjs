@@ -3,8 +3,11 @@
  * the loop closed.
  *
  * 🔴 **Why this file exists at all.** `selectNext` rations the elevated tier by
- * spacing: never two elevated items back to back, where "elevated" now means the
- * half of the tier that EXECUTES — see `tierOf` below. It reads
+ * spacing: never two elevated items back to back — where the FIRST one is the
+ * half of the tier that executes (`tierOf` below), and the second is still any
+ * item whose marker says `elevated`. The asymmetry is not an oversight: a
+ * candidate has no diff yet, so there is nothing to classify it from, while a
+ * close does. It reads
  * `config.lastCompletedTier` — and nothing anywhere wrote it, so the filter was
  * called with `null` on every selection and **the ration never fired between
  * tasks**. The rule was upheld by whichever session happened to read it, which
@@ -67,6 +70,12 @@ import { mainCheckoutRoot } from './checkout.mjs';
  * of unreviewed compounding changes the ration was bought to stop. It is,
  * however, the weakest ground the "no runtime executes it" justification stands
  * on, and the place to look first if the ration ever turns out too loose.
+ *
+ * ⚠ Two more limits, both erring toward holding: the test is case-sensitive, so
+ * `RULES.MD` records `elevated-mechanism`; and only paths `elevatedPathsIn`
+ * already returned reach here, so a non-rulebook `.md` was dropped as inert long
+ * before and records `normal` — which clears the ration outright rather than as
+ * prose (`docs/decisions/review-lanes.md`).
  */
 const tierOf = (elevated) => {
   if (elevated.length === 0) return 'normal';
