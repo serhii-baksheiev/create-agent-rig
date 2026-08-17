@@ -42,10 +42,13 @@ them all; they are one rulebook.
 
 - **TDD, without exception.** The failing test comes first — use the
   `test-writer` agent for it. See `.claude/rules/workflow.md`.
-- **Check the task's premises before the test.** A queue item is a claim about
-  the code, and nothing downstream re-reads the file it was wrong about — the
-  `check-premises` skill runs between taking the item and the failing test, and
-  a false load-bearing claim stops the task instead of quietly re-aiming it.
+- **Check the premises at both ends.** A queue item is a claim about the code, and
+  nothing downstream re-reads the file it was wrong about — the `check-premises`
+  skill runs between taking the item and the failing test, and a false load-bearing
+  claim stops the task instead of quietly re-aiming it. It runs **again before the
+  gate**, on the prose the task itself wrote: a behaviour claim with nothing behind
+  it is `UNMEASURED`, and it is deleted or turned into a pointer to its test rather
+  than left for a reviewer to find.
 - **One task, one branch — and merge via PR.** Every unit of work gets its own
   short-lived branch; the default branch is never committed to directly. Once
   the project has a remote and CI, changes reach it through the PR flow (local

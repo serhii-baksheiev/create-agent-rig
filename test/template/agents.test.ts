@@ -123,12 +123,10 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
   });
 
   // 🔴 AR-68: the norm that turns the most common blocker class into a rule.
-  // The counts and their limits live in the decision record this norm cites —
-  // `docs/decisions/unbacked-prose-is-a-blocker.md`. The short form: on the PR that
-  // produced the norm, the run's own unbacked prose was the largest class of blocking
-  // finding, each item decidable from the diff and each costing a reviewer round. So
-  // it is a blocker BY RULE, which is what lets `check-premises` catch it before this
-  // agent is ever launched.
+  // An unbacked behaviour claim is a blocker BY RULE — the finding is the absence of
+  // backing, not a disproof — which is what lets `check-premises` catch it before this
+  // agent is ever launched. The norm is `.claude/rules/invariants.md`, "State the
+  // limits".
   it('blocks an unbacked behaviour claim by rule, and says what backing looks like', async () => {
     const content = await read();
     expect(content).toMatch(/unbacked|nothing backs it|no test behind it/i);
@@ -150,12 +148,11 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     // the checklist and keeping the narrative, must fail this
     const blocking = content.slice(content.indexOf('## Checklist'), content.indexOf('## Advisory'));
     expect(blocking.length).toBeGreaterThan(0);
-    // 🔴 The count is asserted, because the name of this test was "five" while the
-    // checklist had six — the exact drift class the new item 5 is about, sitting in
-    // the test that guards it. A numbered list and a prose count in the same repo
-    // disagree eventually; here the list wins and the test reads it.
+    // 🔴 The count is read from the list rather than written in the test's name. This
+    // change adds the sixth item, and the name said "five" until it did — so the next
+    // one will not have to remember to rename anything.
     const items = [...blocking.matchAll(/^\d+\. \*\*/gm)];
-    expect(items.length, 'one assertion below per checklist item').toBe(6);
+    expect(items.length, 'the checklist is six items; add an assertion with a seventh').toBe(6);
     expect(blocking).toMatch(/overstat/i); // a claim the mechanism does not support
     expect(blocking).toMatch(/dead (reference|link)|no longer exists/i);
     expect(blocking).toMatch(/contradict/i); // two rule files disagreeing

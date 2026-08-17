@@ -1,9 +1,9 @@
 ---
 name: check-premises
-description: Check a queue item's claims about the code before building on them. Use immediately after taking an item and before the failing test — whenever the item asserts that something exists, is missing, is broken, or works a particular way.
+description: Check claims about the code before building on them, or before shipping them. Use after taking a queue item and before the failing test — whenever the item asserts something exists, is missing, is broken, or works a particular way. Use again before the gate, on the run's own prose, where a behaviour claim nothing backs is UNMEASURED.
 context: fork
 allowed-tools: Read, Grep, Glob, Bash
-argument-hint: <the queue item's text>
+argument-hint: <the queue item's text, or the diff and prose to check>
 ---
 
 A queue item is a **claim about the code**, written by someone who was not
@@ -16,17 +16,31 @@ This skill checks the premises. It writes nothing, and it has **two entry points
 | entry point | the claims are | the code is | verdicts |
 | --- | --- | --- | --- |
 | after selection, **before the Red step** | the queue item's, about code it did not read | the repository | `PREMISES HOLD` / `PREMISE FALSE` / `UNVERIFIABLE` |
-| after the work, **before the gate** | your own, in the PR description and any rulebook prose you touched | your diff | the same, plus `UNMEASURED` |
+| after the work, **before the gate** | your own, in the rulebook prose the diff touches — and in the PR description if one exists yet | your diff | `PREMISES HOLD` / `UNVERIFIABLE` / `UNMEASURED` |
 
-🔴 **Why the second one exists.** On the PR that produced it, the run's own prose
-about mechanisms was the largest class of blocking finding — every one decidable from
-the diff before the gate ran, and every one costing a reviewer round to discover
-(`docs/decisions/unbacked-prose-is-a-blocker.md` has the counts and what they were).
-Same machinery, same question — *is this claim true?* — pointed at the text the run
-wrote instead of the text it was handed.
+🔴 **Why the second one exists.** A claim you wrote about a mechanism you did not run
+is the cheapest kind of blocking finding to produce and one of the more expensive to
+find: `prose-reviewer` reaches it only after loading the whole diff, and the fix is
+usually one sentence. Same machinery, same question — *is this claim true?* — pointed
+at the text the run wrote instead of the text it was handed. This repository's journal
+records the counts, run by run; they are not quoted here, because a figure in a
+template file is exactly the kind of claim this entry point exists to catch.
 
 The rest of this skill is written for the first entry point. The second one runs the
 same four steps with the diff as the code, and §4 carries what is different.
+
+**What "rulebook prose" means here is not a new list** — it is the set
+`.claude/rules/workflow.md` already uses for the `prose-reviewer` trigger: a rule
+file, a skill, an agent spec, a decision record, `CLAUDE.md`, the README. Where a
+rulebook file exists twice (a template source and a generated copy), check the
+**source**; the copy is composed from it. A comment in a test or a hook is in scope
+too when it asserts behaviour — the file it lives in does not change what a claim is.
+
+🔴 **`PREMISE FALSE` belongs to the first entry point only.** At the second one the
+claims are your own and the remedy is an edit, so a false one is not an escalation:
+it is `UNMEASURED`'s neighbour — delete or correct the sentence and carry on. Reading
+it as the escalation `loop` §6 defines would send a finished branch back to the queue
+over one sentence.
 
 ## Why it sits here and not in review
 
@@ -76,6 +90,10 @@ Read the code. Not the tests, not the docs, not another queue item — those are
 claims too. Each verified premise gets a `file:line` citation; a premise you
 believe but cannot cite is not verified, it is remembered.
 
+At the **second** entry point this inverts for one case: a test is exactly what backs
+a behaviour claim, so reading it is the point. The rule above is about not letting a
+test's *name* stand in for what the code does; §4 says which artifacts count.
+
 ## 4. The verdict
 
 | Verdict | When | What happens next |
@@ -85,6 +103,10 @@ believe but cannot cite is not verified, it is remembered.
 | `UNVERIFIABLE` | a load-bearing claim could not be decided from the code | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
 | `UNMEASURED` | **second entry point only:** a sentence you wrote asserts behaviour, and nothing you can point at backs it | **delete the sentence, or turn it into a pointer to the test that proves it** — before the gate |
 
+🔴 **The edit belongs to the calling session, not to this skill** — it reads, greps
+and reports, and has no tools to write. The verdict names the sentence and which exit
+it needs; the caller performs it before the gate.
+
 🔴 **`UNMEASURED` has exactly two exits, and "reword it" is not one of them.** A
 behaviour claim is either backed or it is not; softening the wording keeps an
 unbacked claim in a document agents follow literally. So either the sentence goes,
@@ -92,10 +114,16 @@ or it becomes `see gate-rounds.test.ts › "exits 2 — and only 2"` — a point
 reader can open. `invariants.md` ("State the limits") states the norm this verdict
 enforces.
 
-What counts as backing: a test you can name, a command whose output you have in
-front of you, or a citation to code that does the thing. What does not: the queue
-item said so (the item is a claim too — that is what the first entry point is for),
-it was true of the previous design, or it is obviously right.
+What counts as backing: a test you can name, a command whose output you have in front
+of you, a citation to code that does the thing, or — for a claim about *this
+project's own history* rather than about code — the journal entry that recorded it,
+cited by heading. What does not: the queue item said so (the item is a claim too —
+that is what the first entry point is for), it was true of the previous design, or it
+is obviously right.
+
+⚠ The journal form has a limit worth knowing before leaning on it: the journal does
+not travel with the rulebook, so a claim backed that way must not be written into a
+file that ships to other projects. There it has no backing at all.
 
 🔴 **On `PREMISE FALSE` the answer is stop and report — never quietly work around
 the false premise by building something adjacent that seems useful.** Write what
@@ -137,9 +165,10 @@ is invisible to every gate downstream.
   about runtime behaviour ("this times out in production"), about intent, or
   about a system this repository does not contain is `UNVERIFIABLE` here, not
   false — say so rather than guessing.
-- **It is one pass, before the work.** A premise that becomes false while the
-  task runs (a merge lands, a dependency moves) is a staleness stop rule
-  (`.claude/rules/autonomy.md`), not this skill.
+- **Each entry point is one pass, at its own end of the task.** A premise that goes
+  false *between* them — a merge lands, a dependency moves — is a staleness stop rule
+  (`.claude/rules/autonomy.md`), not this skill. Neither pass watches the other's
+  claims.
 - **It has no opinion on whether the task is worth doing.** True premises and a
   pointless task is a perfectly consistent state, and it belongs to whoever fills
   the queue.

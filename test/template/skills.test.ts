@@ -225,13 +225,12 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
   });
 
   // 🔴 AR-68: the second entry point, and the measurement that bought it. Two cold
-  // readers over two gate rounds returned 24 blocking findings, and the run's own
-  // prose about mechanisms was the largest class of them — figures it had not measured,
-  // limits wider than the code, a claim of enforcement with no hook behind it. Each
-  // cost a gate round (`docs/decisions/unbacked-prose-is-a-blocker.md` for the split).
-  // The claims are checkable BEFORE the gate by exactly the machinery that already
-  // checks an item's claims, so this skill gains a second use rather than the repo
-  // gaining a second skill.
+  // A claim the run wrote about a mechanism it did not run is cheap to produce and
+  // expensive to find: a cold reader reaches it only after loading the whole diff, and
+  // the fix is usually one sentence. Same machinery, same question, so the skill gains
+  // a second use rather than the repo gaining a second skill. (The counts, run by run,
+  // are in this repository's journal — deliberately not in the template files, since a
+  // figure there is the kind of claim this entry point exists to catch.)
   it("runs on the run's own prose too, before the gate, with its own verdict", async () => {
     const content = await read();
     // the second entry point is named as such, not implied
@@ -275,9 +274,19 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
   // exists to save.
   it('is called a second time before the gate, on the prose the task itself wrote', async () => {
     const loop = await readLoop();
+    // 🔴 Each assertion here has to be FALSE on the version before this change, or it
+    // pins nothing. The first draft matched `check-premises … pr-ship` inside 400
+    // characters — true on master already, because the one-line procedure names both.
+    // So: the procedure must name the second pass as its own step, and the paragraph
+    // must carry the verdict and the ordering together.
+    expect(loop).toMatch(/check-premises\b[^\n]{0,60}again/i);
     expect(loop).toMatch(/UNMEASURED/);
-    const beforeGate = /check-premises[\s\S]{0,400}(pr-ship|the gate)/;
-    expect(beforeGate.test(loop), 'the driver must run it before the gate').toBe(true);
+    const paragraph = /task itself wrote[\s\S]{0,700}UNMEASURED/;
+    expect(paragraph.test(loop), 'the verdict must be stated where the pass is').toBe(true);
+    const beforeGate = /before .{0,20}(the gate|`pr-ship`)/;
+    expect(beforeGate.test(loop), 'and the ordering must be explicit').toBe(true);
+    // and the escalation must NOT follow from the second pass
+    expect(loop).toMatch(/PREMISE FALSE[\s\S]{0,200}(queue\s+item|first pass)/);
   });
 
   // The loop delegates to §6 for what happens next, so §6 has to recognise it.

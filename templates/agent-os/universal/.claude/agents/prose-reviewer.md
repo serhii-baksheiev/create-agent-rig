@@ -54,14 +54,22 @@ about it here, so the two gates never file competing opinions on one paragraph.
    much something costs, or how often it happens, and **nothing backs it**: no
    test you can name, no command output, no citation to the code. Per
    `.claude/rules/invariants.md` ("State the limits") such a sentence must be
-   **generated** from what it describes or be a **pointer to a test** —
-   `see gate-rounds.test.ts › "exits 2 — and only 2"`. This is a blocker **by
-   rule**, so you do not have to prove the claim wrong; an unbacked claim about
-   behaviour is the finding.
+   **generated** from what it describes or be a **pointer to a test** — the form is
+   `see <test file> › "<test name>"`, and the name has to be greppable in a file the
+   reader has. This is a blocker **by rule**, so you do not have to prove the claim
+   wrong; an unbacked claim about behaviour is the finding.
 
-   🔴 Two things this is not. It is not item 1: that one is about enforcement the
+   ⚠ A pointer into a test suite the reader's project does not carry is item 2, not
+   backing. In a generated rig the generator's own `test/` is not there.
+
+   🔴 Three things this is not. It is not item 1: that one is about enforcement the
    mechanism does not provide, this one is about any claim with nothing behind it,
-   including a true one. And it is not an attack on rationale — "we chose X
+   including a true one. It is not item 4 either, and the split is worth getting
+   right because both can reach one sentence: **item 4 is for a limit you checked
+   against the mechanism and found wrong or missing; item 5 is for a claim you did
+   not have to check, because nothing is offered as backing.** If you opened the
+   hook, file item 4 and quote the line. If there was nothing to open, file item 5.
+   One sentence, one item. And it is not an attack on rationale — "we chose X
    because Y" needs no test. The target is a **factual assertion about behaviour**:
    a number, a rate, a limit, a "measured" anything.
 

@@ -44,12 +44,14 @@ describe('rules/invariants.md — the pattern, stated once', () => {
   // must cite, since a record no rule points at is a dump.
   it('requires a limits claim to be generated or a pointer to its test', async () => {
     const content = await rule();
-    expect(content).toMatch(/generated/i);
-    expect(content).toMatch(/pointer to (a|the) test/i);
-    // and it names the consequence, so the norm is enforceable rather than advisory
-    expect(content).toMatch(/by rule|blocker by rule/i);
-    // the check that catches it before a reviewer does
-    expect(content).toMatch(/UNMEASURED|check-premises/);
+    // 🔴 `/generated/i` alone was true before this norm existed — the word appears
+    // three times in the file for other reasons. The assertion has to be the two forms
+    // TOGETHER, as the alternatives of one sentence, or it pins nothing.
+    expect(content).toMatch(/generated[\s\S]{0,200}pointer to the test/i);
+    expect(content).toMatch(/blocker \*\*by\s+rule\*\*|by rule/i);
+    expect(content).toContain('UNMEASURED');
+    // and the norm states its own missing part, rather than reading as enforcement
+    expect(content).toMatch(/parts 1 and 3|not part 2|no hook refuses/i);
   });
 
   it('states what makes an invariant hookable at all', async () => {

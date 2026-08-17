@@ -107,32 +107,29 @@ rely on cover that is not there) or into staleness (limits listed that were
 fixed long ago, understating the guard). Both have happened here, in the same
 file, within one review cycle.
 
-### A limits claim is generated, or it points at its test
+**A sentence describing what a mechanism does or does not do is either generated
+from the thing it describes, or a pointer to the test that proves it** — the form is
+`see guard-invariant.example.test.mjs › "refuses the violation"`, a test name a
+reader can grep. Free-standing prose about a mechanism's behaviour is a
+`prose-reviewer` blocker **by rule** (its checklist item 5), which means the finding
+is the absence of backing; nobody has to prove the claim wrong first.
 
-🔴 **A sentence describing what a mechanism does or does not do is either (a)
-generated from the thing it describes, or (b) a pointer to the test that proves it
-— `see guard-hardening.test.ts › "not caught: brace expansion"`. Free-standing
-prose about a mechanism's behaviour is a `prose-reviewer` blocker BY RULE, not by
-discovery.**
+Why by rule rather than by discovery: it moves the check earlier. `check-premises`
+has a second entry point on the run's own prose, and it returns `UNMEASURED` for a
+claim with nothing behind it — before the gate, instead of after a cold reader has
+read the whole diff.
 
-The reason is a measurement, not a preference: unbacked behaviour prose was the
-largest single class of blocking finding on the PR that produced this norm — the
-counts, what the findings were, and the limits on reading them are in
-`docs/decisions/unbacked-prose-is-a-blocker.md`.
-
-By rule rather than by discovery matters, because it changes who pays. A rule can
-be checked before the gate: `check-premises` runs a second time on the run's own
-prose and returns `UNMEASURED` for a claim with nothing behind it. Discovery
-happens after a cold reader has read the whole diff, which costs a round.
-
-Two exits from `UNMEASURED`, and rewording is not one of them — **delete the
-sentence, or make it a pointer**. Softening the wording leaves an unbacked claim in
+Two exits from `UNMEASURED`, and rewording is not one of them: **delete the
+sentence, or make it a pointer.** Softening the wording leaves an unbacked claim in
 a document agents follow literally, which is the failure this whole section is
-about.
+about. A pointer also cannot quietly drift, because a renamed test makes it a dead
+reference — item 2 of the same checklist.
 
-The pointer form has a second payoff: it fails loudly. A renamed or deleted test
-turns the citation into a dead reference the next reader trips over, where prose
-just quietly becomes wrong.
+⚠ **This norm has parts 1 and 3 of the pattern above, and not part 2.** No hook
+refuses an unbacked sentence; the check is a skill a session is told to run and the
+backstop is a reviewer nothing launches. By this file's own standard that makes it a
+rule with a reader behind it rather than a mechanism — stated here so the next
+reader does not infer cover that is not there.
 
 Two rules that follow from it:
 

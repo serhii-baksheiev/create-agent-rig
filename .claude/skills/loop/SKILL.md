@@ -176,13 +176,15 @@ not repaired in place: a run that silently re-aims its own task has authored wor
 for itself, which is the one thing this loop does not do (§8).
 
 🔴 **And again at the other end, before `pr-ship`: `check-premises` on the prose the
-task itself wrote** — the PR description, and any rule, skill or limits comment the
-diff touches. Unbacked prose about mechanisms is the largest class of blocking finding
-this pattern has produced (`docs/decisions/unbacked-prose-is-a-blocker.md`), and each
-one costs a reviewer round to discover. The verdict is `UNMEASURED`, with two exits:
+task itself wrote** — the rulebook prose the diff touches (the skill defines that set,
+and it is the one `workflow.md` already uses for the `prose-reviewer` trigger), plus
+the PR description once one exists. The verdict is `UNMEASURED`, with two exits:
 delete the sentence, or make it a pointer to the test that proves it. Run it before
-the gate, because a reviewer reporting an unbacked claim has already spent the round
-this saves.
+the gate: a reviewer reaches the same sentence only after loading the whole diff, and
+that is a round spent on what an edit would have fixed.
+
+`PREMISE FALSE` stays with the first pass. At the second one the claims are your own
+and the remedy is an edit, so nothing escalates.
 
 ## 3. What keeps the loop running, and what stops it
 
@@ -382,7 +384,8 @@ mechanises fully (`missed`, `.claude/rules/autonomy.md`) needs no self-report.
 
 **Task-scoped — the item is the home, and the loop continues.** Three strikes, the
 attempt budget, an invariant conflict, a blocking reviewer verdict, an **exhausted
-gate-round cap**, or a `PREMISE FALSE` verdict from `check-premises`. The last two are
+gate-round cap**, or a `PREMISE FALSE` verdict from `check-premises` **on the queue
+item**. The last two are
 a `documented-stall` (§5) and their diagnoses differ, so take the one that matches the
 stop: a false premise writes what the item claimed, what the code says, and the
 citation; an exhausted cap writes the round count and what the last gate reported.
