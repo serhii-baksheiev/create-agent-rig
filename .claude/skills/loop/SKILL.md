@@ -11,9 +11,10 @@ one file per month, newest-on-top; `PLAN.md` holds state and standing
 decisions. This skill is the driver in between: what gets picked,
 what keeps the loop going, what stops it, and where the report goes.
 
-Per-task procedure is unchanged: (worktree if another session may run) →
-`check-premises` → failing test first → implement → `pr-ship` → merge on the
-named criterion → verify the deployed surface if one changed.
+Per-task procedure: (worktree if another session may run) → `check-premises` on the
+item → failing test first → implement → **`check-premises` again, on your own prose**
+→ `pr-ship` → merge on the named criterion → verify the deployed surface if one
+changed.
 
 ## 0. The queue is behind an adapter
 
@@ -173,6 +174,15 @@ test, the implementation, the reviewer comparing diff to item — inherits its
 claims rather than checking them. On `PREMISE FALSE` the item is escalated (§6),
 not repaired in place: a run that silently re-aims its own task has authored work
 for itself, which is the one thing this loop does not do (§8).
+
+🔴 **And again at the other end, before `pr-ship`: `check-premises` on the prose the
+task itself wrote** — the PR description, and any rule, skill or limits comment the
+diff touches. Unbacked prose about mechanisms is the largest class of blocking finding
+this pattern has produced (`docs/decisions/unbacked-prose-is-a-blocker.md`), and each
+one costs a reviewer round to discover. The verdict is `UNMEASURED`, with two exits:
+delete the sentence, or make it a pointer to the test that proves it. Run it before
+the gate, because a reviewer reporting an unbacked claim has already spent the round
+this saves.
 
 ## 3. What keeps the loop running, and what stops it
 

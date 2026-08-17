@@ -11,8 +11,22 @@ reading the code at the time. "The retry path swallows the error", "there is no
 validation on that field", "the worker never gets the second message" — each of
 those is a premise, and the work that follows is only worth doing if it is true.
 
-This skill checks the premises. It runs **after selection, before the Red step**,
-and it produces one of three verdicts. It writes nothing.
+This skill checks the premises. It writes nothing, and it has **two entry points**.
+
+| entry point | the claims are | the code is | verdicts |
+| --- | --- | --- | --- |
+| after selection, **before the Red step** | the queue item's, about code it did not read | the repository | `PREMISES HOLD` / `PREMISE FALSE` / `UNVERIFIABLE` |
+| after the work, **before the gate** | your own, in the PR description and any rulebook prose you touched | your diff | the same, plus `UNMEASURED` |
+
+🔴 **Why the second one exists.** On the PR that produced it, the run's own prose
+about mechanisms was the largest class of blocking finding — every one decidable from
+the diff before the gate ran, and every one costing a reviewer round to discover
+(`docs/decisions/unbacked-prose-is-a-blocker.md` has the counts and what they were).
+Same machinery, same question — *is this claim true?* — pointed at the text the run
+wrote instead of the text it was handed.
+
+The rest of this skill is written for the first entry point. The second one runs the
+same four steps with the diff as the code, and §4 carries what is different.
 
 ## Why it sits here and not in review
 
@@ -69,6 +83,19 @@ believe but cannot cite is not verified, it is remembered.
 | `PREMISES HOLD` | every load-bearing claim checked out, or there were none | proceed to the Red step |
 | `PREMISE FALSE` | a load-bearing claim is contradicted by the code | **stop and report** |
 | `UNVERIFIABLE` | a load-bearing claim could not be decided from the code | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
+| `UNMEASURED` | **second entry point only:** a sentence you wrote asserts behaviour, and nothing you can point at backs it | **delete the sentence, or turn it into a pointer to the test that proves it** — before the gate |
+
+🔴 **`UNMEASURED` has exactly two exits, and "reword it" is not one of them.** A
+behaviour claim is either backed or it is not; softening the wording keeps an
+unbacked claim in a document agents follow literally. So either the sentence goes,
+or it becomes `see gate-rounds.test.ts › "exits 2 — and only 2"` — a pointer a
+reader can open. `invariants.md` ("State the limits") states the norm this verdict
+enforces.
+
+What counts as backing: a test you can name, a command whose output you have in
+front of you, or a citation to code that does the thing. What does not: the queue
+item said so (the item is a claim too — that is what the first entry point is for),
+it was true of the previous design, or it is obviously right.
 
 🔴 **On `PREMISE FALSE` the answer is stop and report — never quietly work around
 the false premise by building something adjacent that seems useful.** Write what

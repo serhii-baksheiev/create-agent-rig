@@ -50,7 +50,25 @@ about it here, so the two gates never file competing opinions on one paragraph.
    two bypasses, sells cover it does not have. Both are blocking, and both are
    found the same way: read the mechanism, then read what the text claims about
    it.
-5. **Domain that must not travel.** In a layer meant to be neutral: a provider or
+5. **An unbacked behaviour claim.** A sentence asserts what a mechanism does, how
+   much something costs, or how often it happens, and **nothing backs it**: no
+   test you can name, no command output, no citation to the code. Per
+   `.claude/rules/invariants.md` ("State the limits") such a sentence must be
+   **generated** from what it describes or be a **pointer to a test** —
+   `see gate-rounds.test.ts › "exits 2 — and only 2"`. This is a blocker **by
+   rule**, so you do not have to prove the claim wrong; an unbacked claim about
+   behaviour is the finding.
+
+   🔴 Two things this is not. It is not item 1: that one is about enforcement the
+   mechanism does not provide, this one is about any claim with nothing behind it,
+   including a true one. And it is not an attack on rationale — "we chose X
+   because Y" needs no test. The target is a **factual assertion about behaviour**:
+   a number, a rate, a limit, a "measured" anything.
+
+   The remedy has two forms and rewording is neither: the sentence goes, or it
+   becomes a pointer. Say which you would expect, and where the test lives if one
+   exists.
+6. **Domain that must not travel.** In a layer meant to be neutral: a provider or
    vendor name, a host-specific absolute path, a tracker key, a company or
    product name, credentials or personal data in an example. State which layer
    the file belongs to and why the mention breaks it.

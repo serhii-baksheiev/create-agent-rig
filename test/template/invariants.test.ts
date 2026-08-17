@@ -36,6 +36,22 @@ describe('rules/invariants.md — the pattern, stated once', () => {
     expect(content).toMatch(/all three|three parts/i);
   });
 
+  // 🔴 AR-68: the norm behind `check-premises`'s `UNMEASURED` verdict. This section
+  // already tells a guard to state its limits; what it did not say is what a limits
+  // sentence has to be BACKED by, and the gap showed up as the largest single class
+  // of gate blocker in this repository — a run's own prose about a mechanism. The
+  // counts are in `docs/decisions/unbacked-prose-is-a-blocker.md`, which this rule
+  // must cite, since a record no rule points at is a dump.
+  it('requires a limits claim to be generated or a pointer to its test', async () => {
+    const content = await rule();
+    expect(content).toMatch(/generated/i);
+    expect(content).toMatch(/pointer to (a|the) test/i);
+    // and it names the consequence, so the norm is enforceable rather than advisory
+    expect(content).toMatch(/by rule|blocker by rule/i);
+    // the check that catches it before a reviewer does
+    expect(content).toMatch(/UNMEASURED|check-premises/);
+  });
+
   it('states what makes an invariant hookable at all', async () => {
     const content = await rule();
     // decidable from the text of one edit, with no network and no whole-repo scan

@@ -107,6 +107,33 @@ rely on cover that is not there) or into staleness (limits listed that were
 fixed long ago, understating the guard). Both have happened here, in the same
 file, within one review cycle.
 
+### A limits claim is generated, or it points at its test
+
+🔴 **A sentence describing what a mechanism does or does not do is either (a)
+generated from the thing it describes, or (b) a pointer to the test that proves it
+— `see guard-hardening.test.ts › "not caught: brace expansion"`. Free-standing
+prose about a mechanism's behaviour is a `prose-reviewer` blocker BY RULE, not by
+discovery.**
+
+The reason is a measurement, not a preference: unbacked behaviour prose was the
+largest single class of blocking finding on the PR that produced this norm — the
+counts, what the findings were, and the limits on reading them are in
+`docs/decisions/unbacked-prose-is-a-blocker.md`.
+
+By rule rather than by discovery matters, because it changes who pays. A rule can
+be checked before the gate: `check-premises` runs a second time on the run's own
+prose and returns `UNMEASURED` for a claim with nothing behind it. Discovery
+happens after a cold reader has read the whole diff, which costs a round.
+
+Two exits from `UNMEASURED`, and rewording is not one of them — **delete the
+sentence, or make it a pointer**. Softening the wording leaves an unbacked claim in
+a document agents follow literally, which is the failure this whole section is
+about.
+
+The pointer form has a second payoff: it fails loudly. A renamed or deleted test
+turns the citation into a dead reference the next reader trips over, where prose
+just quietly becomes wrong.
+
 Two rules that follow from it:
 
 - **Match a rule's precision to the cost of a false positive.** Where a false
