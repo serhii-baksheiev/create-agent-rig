@@ -141,16 +141,42 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     await expect(read(STOP_FLAG)).rejects.toThrow();
   });
 
-  it('never replaces settings.json — it hands over the wiring instead', async () => {
+  // `settings.json` is a merge target rather than a payload — but only while
+  // the bytes on disk are somebody's own. When the manifest's recorded hash
+  // matches them they are provably the rig's, and handing the wiring over by
+  // hand for a file nobody touched leaves every unmodified rig's hooks a
+  // release behind. So the exemption is the hash, not the filename: same rule
+  // and same code path as every other manifest-tracked file.
+  it('replaces a settings.json the user never touched', async () => {
     await installRig();
+    const released = await read(SETTINGS); // the wiring this version installs
     await pretendInstalled(SETTINGS, '{\n  "hooks": {}\n}\n');
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, SETTINGS)).toBe('update');
+    // replaced *instead of* being handed over, not as well as: the report's
+    // "never replaced — merge these by hand" block would contradict the write
+    expect(plan.wiring).toBeNull();
+
+    await applyUpgrade(repo, plan);
+    expect(await read(SETTINGS)).toBe(released);
+    expect(await read(SETTINGS)).toContain('guard-bash.mjs');
+    expect((await readManifest(repo))?.files[SETTINGS]).toBe(sha256(released));
+  });
+
+  it('hands over the wiring for a settings.json the user edited, and writes none of it', async () => {
+    await installRig();
+    // the manifest still holds the hash `init` recorded, so these bytes are
+    // provably not the rig's — the user's own hooks may be among them
+    const mine = '{\n  "hooks": {}\n}\n';
+    await write(SETTINGS, mine);
 
     const plan = await planUpgrade(repo, { history: emptyHistory });
     expect(verdictFor(plan, SETTINGS)).toBe('wiring');
     expect(plan.wiring).toContain('hooks');
 
     await applyUpgrade(repo, plan);
-    expect(await read(SETTINGS)).toBe('{\n  "hooks": {}\n}\n');
+    expect(await read(SETTINGS)).toBe(mine);
   });
 
   it('a dry run writes nothing at all', async () => {
@@ -410,8 +436,14 @@ describe('`init --force` inside a rig that came from `create`', () => {
   const generateThenInit = async (): Promise<void> => {
     project = path.join(repo, 'my-app');
     await createProject('my-app', { cwd: repo, target: 'aws-serverless', git: false });
-    // --force is the only way in: plain `init` refuses the existing CLAUDE.md.
-    await initProject(project, { force: true });
+    // The way in is a deleted CLAUDE.md, which is what lifts `init`'s refusal —
+    // and it is the case `recordInstall`'s own docstring names as the gap it
+    // exists to make safe. `--force` used to be the other way in and is now
+    // refused outright, but what these tests pin is unchanged by that: whatever
+    // route reaches `recordInstall`, it must not re-describe how the rig was
+    // installed.
+    await rm(path.join(project, 'CLAUDE.md'));
+    await initProject(project, {});
   };
 
   it('leaves the manifest still saying the rig came from `create`', async () => {
@@ -565,6 +597,27 @@ describe('bootstrap — a rig installed before the manifest existed', () => {
     await applyUpgrade(repo, plan);
     expect(await read(STOP_FLAG)).toContain(`${name}-loop-STOP`);
     expect(await read(STOP_FLAG)).not.toContain('olderPaths');
+  });
+
+  it('replaces a settings.json recognised from the released hashes alone', async () => {
+    // The rigs this fallback exists for have no manifest entry for anything,
+    // settings.json included — recognised bytes are the whole of the evidence
+    // there. Excusing this one file from the fallback is excusing exactly the
+    // rig the fallback was written for.
+    await installRig();
+    const released = await read(SETTINGS);
+    const older = released.replace('guard-bash.mjs', 'older-guard-bash.mjs');
+    expect(older).not.toBe(released);
+    await write(SETTINGS, older);
+    await rm(abs(MANIFEST_REL));
+
+    const plan = await planUpgrade(repo, { history: historyFor(SETTINGS, older) });
+    expect(plan.bootstrapped).toBe(true);
+    expect(verdictFor(plan, SETTINGS)).toBe('update');
+
+    await applyUpgrade(repo, plan);
+    expect(await read(SETTINGS)).toBe(released);
+    expect(await read(SETTINGS)).not.toContain('older-guard-bash.mjs');
   });
 
   it('keeps a deletion it has no manifest for, and still delivers what is new', async () => {

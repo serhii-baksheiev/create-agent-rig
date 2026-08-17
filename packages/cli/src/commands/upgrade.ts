@@ -28,7 +28,7 @@ export type UpgradeVerdict =
   | 'conflict'
   /** The manifest says we installed it; the user removed it. Stays removed. */
   | 'deleted'
-  /** `settings.json`: never replaced, its new entries are handed over. */
+  /** `settings.json` the manifest does not vouch for: its new entries are handed over. */
   | 'wiring';
 
 export interface UpgradeAction {
@@ -308,24 +308,6 @@ export async function planUpgrade(
       continue;
     }
 
-    if (file.rel === SETTINGS) {
-      if (current === file.content) {
-        actions.push({ rel: file.rel, verdict: 'unchanged' });
-        nextFiles[file.rel] = sha256(file.content);
-      } else {
-        // Same special case `init` makes: this file is a merge target, not a
-        // payload — replacing it can unwire hooks the user added themselves.
-        wiring = file.content;
-        actions.push({
-          rel: file.rel,
-          verdict: 'wiring',
-          reason: 'never replaced — merge the entries below by hand',
-        });
-        if (recorded !== undefined) nextFiles[file.rel] = recorded;
-      }
-      continue;
-    }
-
     if (current === file.content) {
       actions.push({ rel: file.rel, verdict: 'unchanged' });
       nextFiles[file.rel] = sha256(file.content);
@@ -335,6 +317,18 @@ export async function planUpgrade(
     } else if (isReleasedVersion(history, file.rel, current, ctx)) {
       actions.push({ rel: file.rel, verdict: 'update', templatePath: file.source });
       nextFiles[file.rel] = sha256(file.content);
+    } else if (file.rel === SETTINGS) {
+      // The two arms above have already failed, so nothing vouches for these
+      // bytes: the user's own hooks may be in them. This is the one file whose
+      // conflict is a merge rather than a choice — replacing it can unwire what
+      // they added — so the new entries are handed over instead of written.
+      wiring = file.content;
+      actions.push({
+        rel: file.rel,
+        verdict: 'wiring',
+        reason: 'edited since it was installed — merge the entries below by hand',
+      });
+      if (recorded !== undefined) nextFiles[file.rel] = recorded;
     } else {
       actions.push({
         rel: file.rel,

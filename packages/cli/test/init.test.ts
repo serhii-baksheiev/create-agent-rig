@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -187,6 +187,39 @@ describe('initProject — the map describes THIS repo, not the generated shape',
     await initProject(repo, {});
     const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
     expect(claudeMd).toContain('dod-checks.json');
+  });
+});
+
+// `--force` never meant what it read as. It replaced `CLAUDE.md` and nothing
+// else — every other pre-existing file was kept regardless of the flag — so a
+// run that looked like "re-install the rig over this repo" refreshed one
+// document and left the rules, the hooks and the wiring at whatever version
+// they were. `upgrade` is the command that refreshes a rig, and this release
+// says so instead. (Removing the flag is a later release; refusing it is this
+// one.)
+//
+// Refusal is an `InitError`, which is what makes the two halves of the ruling
+// the CLI is responsible for true: `index.ts` prints an `InitError`'s message
+// as-is and exits 1.
+describe('initProject — `--force` is deprecated, not a smaller upgrade', () => {
+  const DEPRECATION =
+    'deprecated — init --force replaced only CLAUDE.md; run create-agent-rig upgrade instead';
+
+  it('refuses the run before it installs anything', async () => {
+    await expect(initProject(repo, { force: true })).rejects.toThrow(InitError);
+    expect(await readdir(repo)).toEqual([]);
+  });
+
+  it('leaves alone the CLAUDE.md it used to be the only way to replace', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
+    await expect(initProject(repo, { force: true })).rejects.toThrow(InitError);
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# mine');
+    // nothing else appeared either — not the rules, not the wiring, not the manifest
+    expect(await readdir(repo)).toEqual(['CLAUDE.md']);
+  });
+
+  it('names the command that does refresh a rig', async () => {
+    await expect(initProject(repo, { force: true })).rejects.toThrow(DEPRECATION);
   });
 });
 
