@@ -330,11 +330,30 @@ const append = (runDir, file, fields, now) => {
  * never passed the field never made it. Writing one in would let a later reader
  * conclude a gate ruled clean from a record whose writer said nothing at all.
  */
-export const recordDecision = ({ runDir, gate, verdict, why = null, blockers, now } = {}) => {
+export const recordDecision = ({
+  runDir,
+  gate,
+  verdict,
+  why = null,
+  blockers,
+  headSha,
+  now,
+} = {}) => {
   requireField('gate', gate);
   requireField('verdict', verdict);
 
   const fields = { gate, verdict, why };
+  if (headSha !== undefined) {
+    if (typeof headSha !== 'string' || headSha.trim() === '') {
+      throw new RunJournalError(
+        'field-invalid',
+        'the run journal takes `headSha` as the commit the gate answered for. Absent is the ' +
+          'honest answer when the gate did not say which one; a blank stands in for a commit ' +
+          'and names none.',
+      );
+    }
+    fields.headSha = headSha;
+  }
   if (blockers !== undefined) {
     if (!Array.isArray(blockers)) {
       throw new RunJournalError(

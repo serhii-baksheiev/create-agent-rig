@@ -32,6 +32,8 @@ interface Verdict {
   blockers: unknown[];
   advisories: unknown[];
   evidence: unknown[];
+  /** Optional (AR-101): the commit the gate answered for, when it said. */
+  headSha?: string;
 }
 
 type ParseResult =
@@ -477,6 +479,85 @@ describe('the optional lists arrive as lists or not at all', () => {
   it('refuses advisories that are not a list', async () => {
     const problems = problemsOf(await parse(answer(ship({ advisories: 'nothing major' }))));
     expect(problems.join('\n')).toMatch(/advisor/i);
+  });
+});
+
+// 🔴 AR-101: a verdict cannot say which commit it answers for. A SHIP captured
+// before the last two pushes is indistinguishable from one captured after them,
+// so a reviewer's pass silently covers code no reviewer read. The gate may now
+// name the commit — optionally, because every report written before this change
+// still has to parse.
+describe('a verdict may name the commit it answered for', () => {
+  const HEAD_SHA = '9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70';
+
+  it('carries the commit through to the verdict the caller reads', async () => {
+    // The whole shape, not a subset: an accepted key that the returned object
+    // does not carry is the worse half of this defect — the gate said which
+    // commit it answered for, the parse agreed, and the caller acting on the
+    // verdict never sees it.
+    expect(acceptedVerdict(await parse(answer(ship({ headSha: HEAD_SHA }))))).toEqual({
+      gate: 'code-reviewer',
+      verdict: 'SHIP',
+      blockers: [],
+      advisories: [],
+      evidence: [],
+      headSha: HEAD_SHA,
+    });
+  });
+
+  it('accepts a headSha this repository could never resolve to a commit', async () => {
+    // The permissiveness is the decision, and it is the same one limit 1 makes
+    // about an unknown gate name: this module decides whether a verdict is
+    // WELL-FORMED, and it has no repository to resolve a commit against. A
+    // caller that needs the SHA to be real checks that itself.
+    expect(acceptedVerdict(await parse(answer(ship({ headSha: 'not-a-commit' })))).headSha).toBe(
+      'not-a-commit',
+    );
+  });
+
+  it('leaves the key off the verdict entirely when the block names no commit', async () => {
+    // Omitted is not empty, the same way it is not for a blocker list: `''` or
+    // `null` would be a CLAIM about which commit was reviewed, made by a report
+    // that said nothing at all. Every report written before this key existed
+    // takes this path.
+    const verdict = acceptedVerdict(await parse(answer(ship())));
+    expect('headSha' in verdict).toBe(false);
+  });
+
+  it.each([
+    ['a number', 7],
+    ['an empty string', ''],
+    ['blank space', '   '],
+  ])('refuses a headSha that is %s rather than text, naming the key', async (_label, headSha) => {
+    const problems = problemsOf(await parse(answer(ship({ headSha }))));
+    expect(problems.join('\n')).toMatch(/head\s*sha/i);
+    // and it is refused for its SHAPE, not as a key the block may not carry —
+    // otherwise this test is green today, on the sentence that says the schema
+    // has never heard of the key, and would say nothing about the new one.
+    expect(problems.join('\n')).not.toMatch(/does not define/i);
+  });
+
+  it('still refuses a neighbouring key this shape does not define', async () => {
+    // The regression guard on the widening itself: one more permitted key must
+    // not turn the shape into "anything that looks commit-ish". `sha` is the
+    // near-miss a reviewer writes, and dropping it silently is a reviewer
+    // believing it named a commit that nothing recorded.
+    const problems = problemsOf(await parse(answer(ship({ sha: HEAD_SHA }))));
+    expect(problems.join('\n')).toContain('sha');
+  });
+
+  it('states what an absent headSha means as a limit in the module', async () => {
+    // `invariants.md` ("State the limits — and test them"): the list heading
+    // claims to be exhaustive, so a reader finding no entry for this key
+    // concludes a verdict without one was answered for the commit they are
+    // looking at. The behaviour above and this sentence ship together.
+    const source = await readFile(modulePath, 'utf8');
+    const limits = source.split('The limits, stated rather than implied.')[1]?.split('*/')[0] ?? '';
+    expect(limits, 'the module lists no limits at all').not.toBe('');
+    expect(limits, 'no limit mentions `headSha`').toMatch(/headSha/);
+    expect(limits, 'no limit says what an ABSENT headSha means').toMatch(
+      /absent|omitted|does not name|did not name|says nothing/i,
+    );
   });
 });
 

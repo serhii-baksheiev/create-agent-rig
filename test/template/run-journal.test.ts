@@ -667,6 +667,85 @@ describe('a recorded verdict may carry the blockers it named', () => {
   });
 });
 
+// AR-101: the trace records WHAT a gate decided and never WHICH COMMIT it
+// decided it about. A run that pushes twice after a SHIP leaves a decisions file
+// that reads exactly like one that pushed nothing — so the record may now name
+// the head it answered for, optionally, because every journal written before
+// this change still has to be a valid one.
+describe('a recorded verdict may name the commit it answered for', () => {
+  const HEAD_SHA = '9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70';
+
+  it('writes the head sha it was handed', async () => {
+    const { recordDecision } = await load();
+    const runDir = await newRunDir();
+
+    const record = await recordDecision({
+      runDir,
+      gate: 'code-reviewer',
+      verdict: 'SHIP',
+      headSha: HEAD_SHA,
+      now: T0,
+    });
+
+    expect(record['headSha']).toBe(HEAD_SHA);
+    expect((await linesIn(runDir, 'decisions.jsonl'))[0]?.['headSha']).toBe(HEAD_SHA);
+  });
+
+  it('writes no headSha field at all when the caller named no commit', async () => {
+    const { recordDecision } = await load();
+    const runDir = await newRunDir();
+
+    const record = await recordDecision({
+      runDir,
+      gate: 'item-selection',
+      verdict: 'taken',
+      now: T0,
+    });
+
+    // 🔴 Absent, exactly as `blockers` is absent: a written-in `''` or `null` is
+    // a claim about which commit was under review, made by a caller that never
+    // said. Every record written before this field existed reads this way.
+    expect('headSha' in record).toBe(false);
+    expect(await linesIn(runDir, 'decisions.jsonl')).toEqual([record]);
+  });
+
+  it.each([
+    ['a number', 7],
+    ['an empty string', ''],
+    ['blank space', '   '],
+    ['a list', ['9c1f0a7']],
+  ])('refuses a headSha that is %s rather than text', async (_label, headSha) => {
+    const { recordDecision } = await load();
+    const runDir = await newRunDir();
+
+    const error = await refusalFrom(() =>
+      recordDecision({ runDir, gate: 'code-reviewer', verdict: 'SHIP', headSha, now: T0 }),
+    );
+    expect(error.message).toMatch(/head\s*sha/i);
+
+    // and it refused before writing, so the sequence has no hole to explain
+    expect(await linesIn(runDir, 'decisions.jsonl')).toEqual([]);
+  });
+
+  it('answers that refusal as `field-invalid`, and not as an exhausted trace', async () => {
+    // Same reasoning as the blockers refusal above: the failure KIND is the
+    // contract, and a caller reading a mis-declared field as an exhausted trace
+    // would abandon a journal that is perfectly fine.
+    const { recordDecision, isTraceExhausted } = (await load()) as unknown as {
+      recordDecision: (input: Input) => unknown;
+      isTraceExhausted: (error: unknown) => boolean;
+    };
+    const runDir = await newRunDir();
+
+    const error = (await refusalFrom(() =>
+      recordDecision({ runDir, gate: 'code-reviewer', verdict: 'SHIP', headSha: 7, now: T0 }),
+    )) as Error & { failure?: unknown };
+
+    expect(error.failure).toBe('field-invalid');
+    expect(isTraceExhausted(error)).toBe(false);
+  });
+});
+
 interface CliResult {
   code: number;
   stdout: string;
