@@ -83,7 +83,8 @@ make it do unbounded work at all"**. In practice:
   then spread;
 - one forward pass; no rescanning, no loop that re-copies the whole string;
 - when a bound is hit, fail **closed** or keep the input intact — never silently
-  drop part of it, which is how one of those bypasses hid whole commands.
+  drop part of it, which is how one past bypass hid whole commands from the
+  guard while it reported that it had looked.
 
 And the corollary that follows from all of it: **prefer deleting a rule to adding
 one.** Subtraction cannot introduce this class of defect; addition routinely

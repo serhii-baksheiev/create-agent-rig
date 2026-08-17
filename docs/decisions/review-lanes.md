@@ -9,10 +9,17 @@ nobody "tidies" the two sets into agreement. It is not loaded into any session.
 Two different mechanisms each carry their own notion of "this file is only
 words":
 
-| mechanism             | what it treats as inert                              | what it does with it                                |
-| --------------------- | ---------------------------------------------------- | --------------------------------------------------- |
-| the Tier-2 gate sweep | `.md`, `.mdx`, and test paths that provision nothing | does not escalate on the elevated-path ground alone |
-| `decision-router.mjs` | `.md`, `.txt`                                        | may route to the `fast-path` prose lane             |
+| mechanism             | what it treats as inert                                                       | what it does with it                                |
+| --------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------- |
+| the Tier-2 gate sweep | `.md`, `.mdx` and non-provisioning test paths — **unless the path is rulebook** | does not escalate on the elevated-path ground alone |
+| `decision-router.mjs` | `.md`, `.txt`                                                                 | may route to the `fast-path` prose lane             |
+
+The sweep's rulebook exception is load-bearing and is **not** a third set to
+reconcile: `isRulebook` in `detect-missed-gate.mjs` covers `CLAUDE.md` anywhere
+and everything under a `.claude/` directory, so a merged PR rewriting the
+autonomy tiers or the Never list still escalates. Without it, declaring
+`.claude/` elevated was a no-op for every `.md` under it — which is the defect
+that put the exception there.
 
 Neither set contains the other. That is deliberate, and both differences earn
 their keep.

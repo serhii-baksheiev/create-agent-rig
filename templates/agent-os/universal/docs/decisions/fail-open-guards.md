@@ -1,8 +1,9 @@
 # Why a fail-open guard must do provably bounded work
 
 The rule this record explains lives in `.claude/rules/invariants.md`, under
-"State the limits". This file is the evidence behind it, and it is not loaded
-into any session — read it when the rule looks like an over-reaction.
+"What the enforcement actually is — stated exactly". This file is the evidence
+behind it, and it is not loaded into any session — read it when the rule looks
+like an over-reaction.
 
 ## The trap
 

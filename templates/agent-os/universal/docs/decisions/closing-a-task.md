@@ -3,8 +3,19 @@
 The rule lives in the `loop` skill, section 9 ("State updates bracket the task").
 This file is the evidence behind each argument in the `recordCompletedTier`
 call, and it is not loaded into any session. Read it before "simplifying" that
-command — every one of the five arguments below was a live defect before it was
-there, and four of the five failed **silently**, in the permissive direction.
+command.
+
+Four of the five were live defects; the fifth (`execFileSync` with an argument
+array) is prophylaxis. They do **not** fail the same way, and the difference is
+the whole reason each is pinned rather than left to judgement:
+
+| argument | how it fails when wrong |
+| --- | --- |
+| `-z` | silently, **permissively** — records `normal` for an elevated change |
+| `env: withoutGitLocation()` | silently, **permissively** — records a tier from another repository |
+| `runDir` | silently, but toward a **stop** nobody can clear |
+| the diff form | **loudly** — the call refuses on an empty file list |
+| `execFileSync` array | it does not; nothing is interpolated into a shell today |
 
 ## `runDir`
 
@@ -51,9 +62,14 @@ The source sweep in `test/template/git-env.test.ts` cannot read markdown, so
 this particular line is guarded by a sweep over the fenced code blocks in the
 rulebook documents instead.
 
-## The shape all five share
+## The shape the dangerous ones share
 
-None of them announced itself. Four returned a plausible answer — an empty file
-list, a tier of `normal`, a diff of the wrong repository, a counter that only
-rises — and a plausible answer is what a run acts on. That is why they are
-pinned in the command rather than left to judgement at the call site.
+The two that matter most — `-z` and `withoutGitLocation()` — never announced
+themselves. Each returned a plausible answer: a tier of `normal`, a diff of the
+wrong repository. A plausible answer is what a run acts on, and neither leaves
+anything behind to say it was never measured.
+
+The empty-file-list case is the deliberate counter-example: `recordCompletedTier`
+**throws** rather than guessing `normal`, because an absence and a zero look
+identical in a count and mean opposite things. That refusal is the behaviour the
+loop skill relies on — do not soften it into a default.
