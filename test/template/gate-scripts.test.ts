@@ -44,7 +44,10 @@ function run(script: string, args: string[], cwd?: string): Promise<{ code: numb
     execFile(
       process.execPath,
       [scriptPath(script), ...args],
-      { cwd: cwd ?? repoRoot },
+      // Hermetic here too, though neither sweep reads the environment today:
+      // pinning it means a case later routed through this helper cannot
+      // silently reopen the ambient-run defect.
+      { cwd: cwd ?? repoRoot, env: hermeticEnv() },
       (error, stdout, stderr) => {
         resolve({
           code: error ? ((error as { code?: number }).code ?? 1) : 0,
@@ -371,7 +374,7 @@ describe('detect-missed-gate CLI', () => {
       execFile(
         process.execPath,
         [path.join(dir, '.claude', 'scripts', script), ...args],
-        { cwd: dir },
+        { cwd: dir, env: hermeticEnv() },
         (error, stdout, stderr) => {
           resolve({
             code: error ? ((error as { code?: number }).code ?? 1) : 0,
@@ -511,80 +514,153 @@ describe('reconcile-external-prs — the lane the journal never sees', () => {
   });
 });
 
+/**
+ * The child's environment, minus `RIG_RUN_DIR` — the one ambient variable that
+ * can change these scripts' EXIT CODE.
+ *
+ * 🔴 `queue/index.mjs` exits at `process.exit(runStop.success ? 0 : 1)`, and
+ * `runStop` is computed from the run state under `RIG_RUN_DIR`. A session that
+ * has declared one — every unattended run does — and whose state carries a
+ * `REGRESSION` verdict, two consecutive escalations, or a field
+ * `stopInputsOf` refuses, makes this fixture fail while the script is working
+ * perfectly, and the message blames a symlink defect that does not exist. It
+ * also let the old fixture append to the operator's real run journal.
+ *
+ * The criterion for what belongs here, so the next reader is not left to
+ * guess: a variable qualifies only if it can flip the exit code or the matched
+ * shape. Others are deliberately kept. `AGENT_LOOP_STOP` and `$HOME` do change
+ * what `preflight.mjs` does — they decide the kill-switch check — but they move
+ * the VERDICT, and the shape admits `GO|CAUTION|STOP` while that script has no
+ * `process.exit` at all. `GIT_DIR` and friends are stripped inside the scripts
+ * by `withoutGitLocation()`. A failing `gh` lands in a catch and yields
+ * `unknown`, still exit 0.
+ */
+const hermeticEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  delete env.RIG_RUN_DIR;
+  return env;
+};
+
+/**
+ * What each CLI prints when it has really run — never merely "something", and
+ * never a string its own crash could also produce.
+ *
+ * 🔴 Every pattern is anchored to the START OF A LINE and matches the shape of
+ * the report, not the script's name. The first version matched `/preflight/i`
+ * and friends — and a Node stack trace names the file it failed in, so three of
+ * the four patterns matched their own crash output. That is the vacuity this
+ * file exists to remove, re-created inside the fix for it.
+ *
+ * This map is also the MATRIX: the cases iterate its entries, so a script can
+ * never be tested without a shape. Two parallel lists would let one drift, and
+ * `toMatch(undefined)` PASSES silently in vitest — a `!` assertion is erased at
+ * runtime and throws nothing.
+ */
+const SYMLINK_OUTPUT_SHAPE = {
+  'detect-missed-gate.mjs': /^missed-gate sweep:/m,
+  'reconcile-external-prs.mjs': /^\*\*external lane\*\*/m,
+  'preflight.mjs': /^\*\*preflight\*\* — verdict: (GO|CAUTION|STOP)/m,
+  'queue/index.mjs': /^(next|queue):/m,
+} as const satisfies Record<string, RegExp>;
+
 describe('the CLI entrypoint survives a symlinked path', () => {
   // Found while testing: macOS `tmpdir()` is a symlink (/var → /private/var), and
   // an `isMain` guard that compares the module's REALPATH against the raw argv
   // never matches there. The script then exits 0 having printed nothing — which
   // reads as "no findings", the worst possible failure for a safety sweep. Any
   // project living under a symlinked path hits this.
-  it.each([
-    'detect-missed-gate.mjs',
-    'reconcile-external-prs.mjs',
-    'preflight.mjs',
-    'queue/index.mjs',
-  ])('%s produces output when invoked through a symlink', async (script) => {
-    const { mkdir, symlink, copyFile, cp } = await import('node:fs/promises');
-    const real = await mkdtemp(path.join(tmpdir(), 'realdir-'));
-    const project = path.join(real, 'project');
-    await mkdir(path.join(project, '.claude', 'scripts'), { recursive: true });
-    await copyFile(
-      scriptPath('detect-missed-gate.mjs'),
-      path.join(project, '.claude', 'scripts', 'detect-missed-gate.mjs'),
-    );
-    await copyFile(
-      scriptPath('reconcile-external-prs.mjs'),
-      path.join(project, '.claude', 'scripts', 'reconcile-external-prs.mjs'),
-    );
-    await copyFile(
-      scriptPath('preflight.mjs'),
-      path.join(project, '.claude', 'scripts', 'preflight.mjs'),
-    );
-    await cp(path.join(scriptsDir, 'queue'), path.join(project, '.claude', 'scripts', 'queue'), {
-      recursive: true,
-    });
-    // The queue CLI reaches OUTSIDE `queue/` for three modules, and a fixture that
-    // copies only the directory gets a run that fails on the missing import while
-    // still printing something — which is all this test asserts, so the gap hid.
-    // It hid TWICE: `run-state.mjs` joined the list as a static import of all
-    // three adapters, and this fixture went on passing on an
-    // `ERR_MODULE_NOT_FOUND` written to stderr, never reaching the symlinked
-    // `isMain` guard it exists to exercise.
-    //
-    // `git-env.mjs` (from `queue/checkout.mjs`) and `run-state.mjs` (from every
-    // adapter) are static, so the CLI does not load at all without them;
-    // `run-journal.mjs` is a dynamic import taken only when a run directory is
-    // declared, so it fails only for a real rig.
-    for (const sibling of ['git-env.mjs', 'run-state.mjs', 'run-journal.mjs']) {
-      await copyFile(scriptPath(sibling), path.join(project, '.claude', 'scripts', sibling));
-    }
-    await writeFile(path.join(project, 'PLAN.md'), '# P\n\n## Agent queue\n\n- do a thing\n');
-    await writeFile(path.join(project, 'prs.json'), '[]');
-
-    const link = path.join(real, 'via-symlink');
-    await symlink(project, link);
-
-    const args =
-      script.startsWith('detect') || script.startsWith('reconcile')
-        ? ['--input', path.join(link, 'prs.json')]
-        : script.startsWith('queue')
-          ? ['next']
-          : [];
-    const result = await new Promise<{ code: number; out: string }>((resolve) => {
-      execFile(
-        process.execPath,
-        [path.join(link, '.claude', 'scripts', script), ...args],
-        { cwd: link },
-        (error, stdout, stderr) => {
-          resolve({
-            code: error ? ((error as { code?: number }).code ?? 1) : 0,
-            out: stdout + stderr,
-          });
-        },
+  it.each(Object.entries(SYMLINK_OUTPUT_SHAPE))(
+    '%s actually runs when invoked through a symlink',
+    async (script, shape) => {
+      const { mkdir, symlink, copyFile, cp } = await import('node:fs/promises');
+      const real = await mkdtemp(path.join(tmpdir(), 'realdir-'));
+      const project = path.join(real, 'project');
+      await mkdir(path.join(project, '.claude', 'scripts'), { recursive: true });
+      await copyFile(
+        scriptPath('detect-missed-gate.mjs'),
+        path.join(project, '.claude', 'scripts', 'detect-missed-gate.mjs'),
       );
-    });
-    // The assertion is simply: it ran. Silence here is the bug.
-    expect(result.out.trim(), `${script} printed nothing through a symlink`).not.toBe('');
-  });
+      await copyFile(
+        scriptPath('reconcile-external-prs.mjs'),
+        path.join(project, '.claude', 'scripts', 'reconcile-external-prs.mjs'),
+      );
+      await copyFile(
+        scriptPath('preflight.mjs'),
+        path.join(project, '.claude', 'scripts', 'preflight.mjs'),
+      );
+      await cp(path.join(scriptsDir, 'queue'), path.join(project, '.claude', 'scripts', 'queue'), {
+        recursive: true,
+      });
+      // The queue CLI reaches OUTSIDE `queue/` for three modules, and a fixture that
+      // copies only the directory gets a run that fails on the missing import while
+      // still printing something — which is all this test asserts, so the gap hid.
+      // It hid TWICE: `run-state.mjs` joined the list as a static import of all
+      // three adapters, and this fixture went on passing on an
+      // `ERR_MODULE_NOT_FOUND` written to stderr, never reaching the symlinked
+      // `isMain` guard it exists to exercise.
+      //
+      // `git-env.mjs` (from `queue/checkout.mjs` AND `preflight.mjs` directly) and
+      // `run-state.mjs` (from every
+      // adapter) are static, so the CLI does not load at all without them;
+      // `run-journal.mjs` is a dynamic import taken only when a run directory is
+      // declared, so it fails only for a real rig.
+      // `stop-flag.mjs` joined this list when the assertion was tightened (AR-42):
+      // `preflight.mjs` imports it statically, so until then preflight had NEVER
+      // run in this fixture — it died on ERR_MODULE_NOT_FOUND every time, and the
+      // old "output is non-empty" assertion was satisfied by the stack trace.
+      // Third time this exact gap hid here; the shape assertion is what closes it.
+      for (const sibling of ['git-env.mjs', 'run-state.mjs', 'run-journal.mjs', 'stop-flag.mjs']) {
+        await copyFile(scriptPath(sibling), path.join(project, '.claude', 'scripts', sibling));
+      }
+      await writeFile(path.join(project, 'PLAN.md'), '# P\n\n## Agent queue\n\n- do a thing\n');
+      await writeFile(path.join(project, 'prs.json'), '[]');
+
+      const link = path.join(real, 'via-symlink');
+      await symlink(project, link);
+
+      const args =
+        script.startsWith('detect') || script.startsWith('reconcile')
+          ? ['--input', path.join(link, 'prs.json')]
+          : script.startsWith('queue')
+            ? ['next']
+            : [];
+      const result = await new Promise<{ code: number; out: string }>((resolve) => {
+        execFile(
+          process.execPath,
+          [path.join(link, '.claude', 'scripts', script), ...args],
+          { cwd: link, env: hermeticEnv() },
+          (error, stdout, stderr) => {
+            resolve({
+              code: error ? ((error as { code?: number }).code ?? 1) : 0,
+              out: stdout + stderr,
+            });
+          },
+        );
+      });
+      // 🔴 NOT "it printed something". `out` is stdout+stderr, so an
+      // `ERR_MODULE_NOT_FOUND` stack trace satisfies a non-empty assertion — and
+      // it did, for weeks, while the CLI this fixture exists to exercise never
+      // loaded at all. The assertion has to be that the script RAN: a clean exit,
+      // and a line only its own output shape produces.
+      // A clean exit is the cheapest signal that the script ran to completion
+      // rather than dying on an import — but it is only safe to assert because
+      // the child's environment is hermetic. Three of the four DO call
+      // `process.exit` (only `preflight.mjs` does not), and `queue/index.mjs`
+      // exits on the ambient run state; see `hermeticEnv`. An earlier revision
+      // dropped this assertion instead, on the belief that `preflight.mjs`
+      // exits non-zero on a STOP verdict — it does not, and the cheapest check
+      // was discarded for a reason that did not exist.
+      expect(result.code, `${script} exited non-zero through a symlink:\n${result.out}`).toBe(0);
+      expect(
+        result.out,
+        `${script} crashed instead of running through a symlink:\n${result.out}`,
+      ).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find (module|package)|at file:\/\/|node:internal/);
+      expect(
+        result.out,
+        `${script} produced no recognisable output through a symlink:\n${result.out}`,
+      ).toMatch(shape);
+    },
+  );
 });
 
 describe('a sweep that could not run says so in one line', () => {
