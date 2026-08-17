@@ -15,11 +15,17 @@ words":
 | `decision-router.mjs` | `.md`, `.txt`                                                                 | may route to the `fast-path` prose lane             |
 
 The sweep's rulebook exception is load-bearing and is **not** a third set to
-reconcile: `isRulebook` in `detect-missed-gate.mjs` covers `CLAUDE.md` anywhere
-and everything under a `.claude/` directory, so a merged PR rewriting the
-autonomy tiers or the Never list still escalates. Without it, declaring
-`.claude/` elevated was a no-op for every `.md` under it — which is the defect
-that put the exception there.
+reconcile: `isRulebook` in `detect-missed-gate.mjs` covers `CLAUDE.md` anywhere,
+everything under a `.claude/` directory, and — since these records were
+extracted — everything under `docs/decisions/`. So a merged PR rewriting the
+autonomy tiers, the Never list, or the reasoning behind either still escalates.
+Without the exception, declaring a path elevated was a no-op for every `.md`
+under it, which is the defect that put it there.
+
+That is also why moving this rationale out of `.claude/` needed a code change
+rather than only a declaration: the declaration alone would have reported clean
+over every record, because `isInert` is consulted first.
+
 
 Neither set contains the other. That is deliberate, and both differences earn
 their keep.

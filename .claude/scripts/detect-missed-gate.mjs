@@ -119,11 +119,30 @@ export const parseElevatedPaths = (markdown) => {
  * reason alone. Any repository that vendors, templates or nests a rig has the
  * same shape.
  */
+/**
+ * A decision record: `docs/decisions/<name>` at any depth, so both the root
+ * copy and the vendored template source match.
+ *
+ * Exported because `decision-router.mjs` needs the same notion, and two regexes
+ * for one invariant is the case `invariants.md` legislates against — the copy
+ * nobody is looking at is the one that goes wrong.
+ *
+ * `decisions` is matched as a whole path SEGMENT under a `docs` segment, never
+ * as a substring: `docs/decisions-overview.md` is ordinary documentation and
+ * must keep the cheap lane. Widening this to a substring would quietly pull
+ * every `docs/decisions*` name into the expensive gate.
+ */
+export const isDecisionRecord = (path) => /(^|\/)docs\/decisions\/[^/]/.test(path);
+
 const isRulebook = (path) =>
   path === 'CLAUDE.md' ||
   path.endsWith('/CLAUDE.md') ||
   path.startsWith('.claude/') ||
-  path.includes('/.claude/');
+  path.includes('/.claude/') ||
+  // The rationale extracted out of the rulebook is still rulebook. It left
+  // `.claude/` for `docs/decisions/` so that sessions stop paying to load it —
+  // not so that it stops being reviewed like the rule it explains.
+  isDecisionRecord(path);
 
 const isInert = (path) =>
   !isRulebook(path) &&

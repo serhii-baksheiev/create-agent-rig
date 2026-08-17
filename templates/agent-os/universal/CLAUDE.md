@@ -104,6 +104,7 @@ is a path the gate sweep cannot see.
 ```elevated-paths
 packages/db/src/
 .claude/
+docs/decisions/
 .github/workflows/
 ```
 

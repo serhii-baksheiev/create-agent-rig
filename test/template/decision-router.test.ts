@@ -257,6 +257,32 @@ describe('classifyFile — what kind of file this is', () => {
     }
   });
 
+  it('calls a decision record code — the rationale it carries is still rulebook', async () => {
+    const { classifyFile } = await load();
+    // 🔴 AR-63 cut the defect history and the rationale out of `.claude/rules/*`
+    // and the `loop` skill into `docs/decisions/*.md`. Under `.claude/` that text
+    // routed to `model` with `code-reviewer`; the same sentences one directory
+    // move later classify as prose and can reach `fast-path`. The move was meant
+    // to relocate the words, not to downgrade the gate over them.
+    for (const file of [
+      'docs/decisions/review-lanes.md',
+      'docs/decisions/fail-open-guards.md',
+      // the vendored form — this repository ships the records inside the layer
+      'templates/agent-os/universal/docs/decisions/run-directory.md',
+    ]) {
+      expect(classifyFile(file), file).toBe('code');
+    }
+  });
+
+  it('still calls documentation outside decisions/ prose', async () => {
+    const { classifyFile } = await load();
+    // The widening is narrow: `docs/` is ordinary documentation too, and calling
+    // all of it code would put every README edit back on the expensive lane.
+    for (const file of ['docs/guide.md', 'docs/decisions-overview.md', 'docs/api/notes.txt']) {
+      expect(classifyFile(file), file).toBe('prose');
+    }
+  });
+
   it('calls every source, config and test file code', async () => {
     const { classifyFile } = await load();
     for (const file of [
@@ -524,6 +550,24 @@ describe('route — the ladder in ascending order of cost', () => {
     expect(result.risks).toEqual([]);
     expect(result.lane).toBe('model');
     expect(result.reviewers).toEqual(['code-reviewer', 'prose-reviewer']);
+  });
+
+  it('never gives a decision record the prose fast lane', async () => {
+    const { route } = await load();
+    // `docs/decisions/` is under no declared elevated prefix here, so nothing
+    // escalates it — it must reach the model lane on its CLASSIFICATION alone,
+    // exactly as the rule file the rationale was cut out of did.
+    const result = route({ files: ['docs/decisions/review-lanes.md'], elevatedPaths: ELEVATED });
+    expect(result.risks).toEqual([]);
+    expect(result.lane).toBe('model');
+    expect(result.reviewers).toEqual(['code-reviewer', 'prose-reviewer']);
+  });
+
+  it('leaves documentation outside decisions/ on the fast path', async () => {
+    const { route } = await load();
+    const result = route({ files: ['docs/guide.md'], elevatedPaths: ELEVATED });
+    expect(result.lane).toBe('fast-path');
+    expect(result.reviewers).toEqual(['prose-reviewer']);
   });
 
   it('sends a file it could not classify to the model lane', async () => {

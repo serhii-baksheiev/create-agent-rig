@@ -64,7 +64,10 @@ travels one path to merge, in this order:
    however cheap the change otherwise looked. A rulebook document is code here,
    so it never reaches the prose lane; `.md`/`.mdx` files and test paths that
    provision nothing are inert, so a README inside an elevated directory does
-   not escalate on that ground alone. That carve-out is those two extensions
+   not escalate on that ground alone. **Rulebook paths are exempt from that
+   carve-out** — `CLAUDE.md`, anything under `.claude/`, and the decision
+   records under `docs/decisions/`, which are extracted rationale and reviewed
+   like the rules they explain. The inert set is otherwise those two extensions
    and test paths exactly — **not** the router's own notion of prose, which is
    `.md`/`.txt`. Neither set contains the other, and reconciling them breaks a
    gate in either direction: `docs/decisions/review-lanes.md`. The router
