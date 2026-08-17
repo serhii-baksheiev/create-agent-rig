@@ -27,7 +27,7 @@
 
 import { readFileSync } from 'node:fs';
 
-import { parseVerdict } from './lib/verdict.mjs';
+import { parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
 
 const USAGE =
   'usage: node .claude/scripts/verdict.mjs check <file> [gate]   ' +
@@ -78,8 +78,9 @@ if (!result.ok) {
 
 if (expectedGate !== undefined && result.verdict.gate !== expectedGate) {
   refuse(
-    `verdict: the report at ${source} was checked as \`${expectedGate}\`, and the block ` +
-      `it ends with answers for \`${result.verdict.gate}\`. One capture holding two gates' ` +
+    `verdict: the report at ${source} was checked as ` +
+      `\`${safeForDiagnosis(expectedGate)}\`, and the block it ends with answers for ` +
+      `\`${safeForDiagnosis(result.verdict.gate)}\`. One capture holding two gates' ` +
       "answers says only what the second one said, so the first one's verdict — a stop, " +
       'as often as not — would go unread. Check each report on its own.\n',
   );

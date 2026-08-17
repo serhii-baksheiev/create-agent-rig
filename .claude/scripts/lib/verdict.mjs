@@ -125,6 +125,48 @@ const SHAPE_KEYS = Object.freeze(['gate', 'verdict', 'blockers', 'advisories', '
 
 const FENCE = '```json';
 
+/** How much of one reviewer-written value a diagnosis will carry. */
+const DIAGNOSIS_LIMIT = 120;
+
+/**
+ * One reviewer-written value, made safe to print in a diagnosis.
+ *
+ * 🔴 **Every message below that quotes the report interpolates through this**, and
+ * there is exactly one of it. The values are written by a subagent and read by a
+ * human in a terminal: a `gate` carrying `ESC[2K ESC[1A … ESC[0m` erases the line
+ * above and repaints a refusal as a pass for whoever is watching the scrollback. The
+ * exit code and the empty stdout are unaffected — the target is the person, not the
+ * caller — which is exactly why it is the person's copy that has to be cleaned.
+ *
+ * It strips what a terminal *acts on* (C0, DEL, C1) rather than what it shows, so
+ * the text the operator has to read survives: a repainting payload arrives as its
+ * own visible words. Long values are cut to `DIAGNOSIS_LIMIT` with a `…`, so one
+ * field cannot push the rest of the diagnosis off the screen.
+ *
+ * It never throws — it is called only where something has already gone wrong, and a
+ * sanitiser that throws there turns a diagnosis into a crash the caller reads as
+ * "the gate did not answer".
+ */
+export const safeForDiagnosis = (value) => {
+  let text;
+  try {
+    text = typeof value === 'string' ? value : String(value);
+  } catch {
+    return '<unprintable>';
+  }
+
+  let cleaned = '';
+  // One forward pass, capped: the input is unbounded and arrives from a subagent,
+  // and nothing here needs to see past what it will print.
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) continue;
+    cleaned += character;
+    if (cleaned.length > DIAGNOSIS_LIMIT) return `${cleaned.slice(0, DIAGNOSIS_LIMIT - 1)}…`;
+  }
+  return cleaned;
+};
+
 const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -250,7 +292,8 @@ export function parseVerdict(text) {
   for (const key of Object.keys(parsed)) {
     if (!SHAPE_KEYS.includes(key)) {
       problems.push(
-        `the block carries \`${key}\`, which this shape does not define. Refused rather ` +
+        `the block carries \`${safeForDiagnosis(key)}\`, which this shape does not define. ` +
+          'Refused rather ' +
           'than dropped: a silently ignored field is one the reviewer believes it reported.',
       );
     }
@@ -265,14 +308,15 @@ export function parseVerdict(text) {
   const known = typeof verdict === 'string' && VERDICT_WORDS.includes(verdict);
   if (!known) {
     problems.push(
-      `\`${String(verdict)}\` is not a verdict any gate in this rulebook returns ` +
+      `\`${safeForDiagnosis(verdict)}\` is not a verdict any gate in this rulebook returns ` +
         `(${VERDICT_WORDS.join(', ')}).`,
     );
   } else if (isText(gate) && Object.hasOwn(GATE_VOCABULARY, gate)) {
     const allowed = GATE_VOCABULARY[gate];
     if (!allowed.includes(verdict)) {
       problems.push(
-        `${gate} cannot return ${verdict} — that word belongs to another gate. It returns ` +
+        `${safeForDiagnosis(gate)} cannot return ${verdict} — that word belongs to another ` +
+          'gate. It returns ' +
           `one of: ${allowed.join(', ')}.`,
       );
     }

@@ -43,6 +43,8 @@ interface VerdictModule {
   GATE_VOCABULARY: Readonly<Record<string, readonly string[]>>;
   BLOCKING_VERDICTS: readonly string[];
   parseVerdict(text: string): ParseResult;
+  /** The one sanitiser every operator-facing diagnosis interpolates through. */
+  safeForDiagnosis(value: unknown): string;
 }
 
 const load = async (): Promise<VerdictModule> =>
@@ -536,6 +538,152 @@ describe('nothing in the block is quietly ignored', () => {
   });
 });
 
+// 🔴 AR-65 gate round 2, `security-scanner`: reviewer-controlled text is
+// interpolated verbatim into operator-facing diagnoses. `isText` accepts any
+// non-empty string, so a `gate` of ESC[2K ESC[1A …"All clear"… ESC[0m erases the
+// line above and repaints a refusal as a pass for the human reading the
+// scrollback. Exit code and empty stdout are unaffected — an automated caller is
+// not fooled, and the target is the operator, which is exactly the reader every
+// diagnosis in these two files is written for.
+//
+// One helper is the answer (`invariants.md`, "one mechanism, one implementation"):
+// `safeForDiagnosis(value)` in `lib/verdict.mjs`, and every interpolation site in
+// both files goes through it.
+
+/** Every character a terminal acts on rather than shows: C0, DEL, and the C1 range. */
+const controlCharsIn = (text: string): string[] =>
+  [...text].filter((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+  });
+
+/**
+ * The sanitiser, or a refusal that names what is missing — a bare
+ * `undefined is not a function` says nothing about the contract being pinned.
+ */
+const sanitiser = async (): Promise<VerdictModule['safeForDiagnosis']> => {
+  const safeForDiagnosis = (await load()).safeForDiagnosis;
+  if (typeof safeForDiagnosis !== 'function') {
+    throw new Error(
+      '`lib/verdict.mjs` exports no `safeForDiagnosis(value)` — the one sanitiser every ' +
+        'operator-facing diagnosis in this pair of files interpolates through.',
+    );
+  }
+  return safeForDiagnosis;
+};
+
+/**
+ * ESC, built rather than typed: a raw escape byte in a source file is a byte the
+ * next reader of this test cannot see.
+ */
+const ESC = String.fromCharCode(0x1b);
+
+/**
+ * What a reviewer writes to repaint a refusal as a pass, in one field: erase the
+ * line, move the cursor up one, print a reassuring sentence, reset.
+ */
+const REPAINT = `${ESC}[2K${ESC}[1Acode-reviewer: All clear${ESC}[0m`;
+
+describe('a diagnosis carries the text a reviewer wrote, never the codes it wrote', () => {
+  it('strips every control character out of a value bound for a diagnosis', async () => {
+    const safeForDiagnosis = await sanitiser();
+    for (const raw of [
+      `${ESC}[0m`,
+      'a\rb',
+      'a\nb',
+      'a\tb',
+      `a${String.fromCharCode(0x00)}b`,
+      `a${String.fromCharCode(0x9b)}b`,
+    ]) {
+      expect(controlCharsIn(safeForDiagnosis(raw)), JSON.stringify(raw)).toEqual([]);
+    }
+  });
+
+  it('keeps the text an operator has to read out of a repainting payload', async () => {
+    // Removing the escape is only half the job: the operator still has to see
+    // what the reviewer claimed, or the fix trades one unreadable diagnosis for
+    // another.
+    const safe = (await sanitiser())(REPAINT);
+    expect(controlCharsIn(safe)).toEqual([]);
+    expect(safe).toContain('code-reviewer');
+    expect(safe).toContain('All clear');
+  });
+
+  it('caps a long value so one field cannot push the rest of the diagnosis off screen', async () => {
+    // The bound is 120 characters, and the marker for a cut value is a trailing
+    // `…` — asserted as the marker rather than as a phrase, so the wording of
+    // the message stays the implementation's to choose.
+    const safe = (await sanitiser())('x'.repeat(4000));
+    expect(safe.length).toBeLessThanOrEqual(120);
+    expect(safe.endsWith('…')).toBe(true);
+  });
+
+  it('hands back an ordinary value exactly as it was given', async () => {
+    // The case that stops the fix from becoming noise: every gate name this
+    // rulebook ships travels through the same helper, and a refusal that has
+    // rewritten `code-reviewer` on its way out is a refusal nobody can grep for.
+    const safeForDiagnosis = await sanitiser();
+    for (const value of [
+      'code-reviewer',
+      'pr-ship',
+      'post-deploy-verify',
+      'check-premises',
+      'security-scanner',
+      'a gate named with spaces and a hyphen - like this',
+      'severity',
+      'LGTM',
+    ]) {
+      expect(safeForDiagnosis(value), value).toBe(value);
+    }
+  });
+
+  it('never throws, whatever it is handed on the refusal path', async () => {
+    // It is called only where something has already gone wrong. A sanitiser
+    // that throws there turns a diagnosis into a crash, and `pr-ship` reads a
+    // crash as `incomplete` — the gate did not answer.
+    const safeForDiagnosis = await sanitiser();
+    const cases: [string, unknown][] = [
+      ['undefined', undefined],
+      ['null', null],
+      ['a number', 7],
+      ['an object', { gate: 'code-reviewer' }],
+      ['a list', []],
+      ['a very long string', 'x'.repeat(100_000)],
+    ];
+    for (const [label, value] of cases) {
+      expect(() => safeForDiagnosis(value), label).not.toThrow();
+      expect(typeof safeForDiagnosis(value), label).toBe('string');
+    }
+  });
+});
+
+describe('the problems a refused parse reports carry no control characters', () => {
+  // Asserted per problem, never on the joined string: a caller joining them with
+  // `\n` puts control characters BETWEEN problems legitimately, and an assertion
+  // over the join would either pass on nothing or fail on the join.
+  const noControlCharacters = (problems: string[]): void => {
+    for (const problem of problems) expect(controlCharsIn(problem), problem).toEqual([]);
+  };
+
+  it('reports a key the shape does not define without repeating its escape codes', async () => {
+    noControlCharacters(problemsOf(await parse(answer(ship({ [REPAINT]: 'high' })))));
+  });
+
+  it('reports a word no gate returns without repeating its escape codes', async () => {
+    noControlCharacters(problemsOf(await parse(answer(ship({ verdict: REPAINT })))));
+  });
+
+  it('reports a gate it cannot place without repeating its escape codes', async () => {
+    // A gate name reaches an operator through the CLI's mismatch refusal below;
+    // no problem in the module interpolates one today. This pins the module
+    // side anyway, because the fix puts a sanitiser at every site and the next
+    // message added here is the one that would reintroduce the defect.
+    noControlCharacters(
+      problemsOf(await parse(answer({ gate: REPAINT, verdict: 'LGTM', blockers: [] }))),
+    );
+  });
+});
+
 interface CliResult {
   code: number;
   stdout: string;
@@ -736,5 +884,69 @@ describe('an accepted verdict does not crash the CLI on the way out', () => {
     // question nobody asked.
     expect(result.stderr).not.toMatch(/node:internal|at ModuleJob|at async|RangeError/);
     expect(result.stderr).toContain(file);
+  });
+});
+
+// 🔴 The gate-mismatch refusal is the site with reviewer-controlled text on BOTH
+// sides — the gate the caller asked for (argv) and the gate the block answered
+// for (the report). It is also the refusal an operator is most likely to be
+// watching live, since it is what `pr-ship` hits mid fan-out.
+describe('the CLI refuses on a stream the reviewer cannot paint on', () => {
+  /**
+   * Newlines are the message's own — it writes several — so they come out first
+   * and every remaining control character is one the refusal did not intend.
+   */
+  const paintableCharsIn = (stderr: string): string[] =>
+    controlCharsIn(stderr.split('\n').join(''));
+
+  it('names a gate carrying escape codes without letting them reach the terminal', async () => {
+    const file = await reportFile({ gate: REPAINT, verdict: 'SHIP', blockers: [] });
+    const result = await runCli(['check', file, 'code-reviewer']);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(paintableCharsIn(result.stderr)).toEqual([]);
+    // and the operator still learns which gate they asked for
+    expect(result.stderr).toContain('code-reviewer');
+  });
+
+  it('echoes an expected gate carrying escape codes without letting them through either', async () => {
+    // The other direction: the argument comes from the caller's argv, which on a
+    // fan-out is composed from whatever named the reviewer.
+    const result = await runCli(['check', await reportFile(ship()), REPAINT]);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(paintableCharsIn(result.stderr)).toEqual([]);
+    expect(result.stderr).toContain('code-reviewer');
+  });
+});
+
+// `invariants.md`, "one mechanism, one implementation": two files sanitising
+// separately will disagree, and the one nobody is looking at is the one that is
+// wrong. Asserted on the source because the behaviour tests above cannot see a
+// site that has no test of its own yet — the next message someone adds.
+describe('every diagnosis in both files goes through the one sanitiser', () => {
+  /**
+   * The narrowest thing that is not brittle: the raw interpolation FORMS are
+   * gone. Wrapping ahead of the message (`const safeGate = safeForDiagnosis(gate)`
+   * then `${safeGate}`) passes, which is the point — this pins that the value
+   * was sanitised, not where. It cannot see a site that renames the variable AND
+   * skips the helper; the behaviour tests above cover the sites that exist today.
+   */
+  it.each([
+    ['lib/verdict.mjs', () => modulePath, ['${key}', '${gate}', '${String(verdict)}']],
+    ['verdict.mjs', () => cliPath, ['${expectedGate}', '${result.verdict.gate}']],
+  ])('interpolates no reviewer-controlled value raw in %s', async (_label, file, raws) => {
+    const source = await readFile(file(), 'utf8');
+    expect(source).toContain('safeForDiagnosis');
+    for (const raw of raws) {
+      expect(source, `${raw} reaches a diagnosis unsanitised`).not.toContain(raw);
+    }
+  });
+
+  it('imports the sanitiser into the CLI rather than keeping a second copy of it', async () => {
+    const source = await readFile(cliPath, 'utf8');
+    expect(source).toMatch(
+      /import\s*\{[^}]*safeForDiagnosis[^}]*\}\s*from\s*'\.\/lib\/verdict\.mjs'/,
+    );
   });
 });
