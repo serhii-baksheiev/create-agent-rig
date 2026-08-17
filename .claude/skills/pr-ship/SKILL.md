@@ -11,6 +11,36 @@ blockers.
 
 ## Steps
 
+0. **Count this round before you spend on it.** Run it on the branch **under
+   review** — if the PR is not checked out, do that first (step 2's warning covers
+   why); on a detached checkout the command refuses rather than counting under
+   `HEAD`:
+
+   ```sh
+   node .claude/scripts/queue/index.mjs gate-round --branch "$(git rev-parse --abbrev-ref HEAD)"
+   ```
+
+   **Read the exit code, not just its sign.**
+
+   - **0** — proceed to step 1.
+   - **2** — the rounds are spent. Return `VERDICT: HOLD` with one blocker:
+     *gate rounds exhausted*, quoting the round count. Do not run the fan-out.
+   - **1** — the command itself failed (unreadable config, unreadable counter,
+     detached checkout). This is **not** an exhausted cap: fix the cause and run
+     step 0 again. Treating it as exhaustion escalates a healthy item.
+
+   The cap is **2 by default**, and no shipped `.claude/queue.json` carries the key
+   — the default lives in `core.mjs` as `DEFAULT_MAX_GATE_ROUNDS`. A project that
+   wants a different cap sets `options.maxGateRounds` there, which in a rig whose
+   `queue.json` is composed means changing what composes it, not editing the file.
+   Rounds are counted per branch in `.claude/gate-rounds.json`, so the count outlives
+   the session that spent them.
+
+   ⚠ **Nothing forces this call.** No hook launches the gate, so step 0 holds
+   because it is written here — the same standing as every other step. What it
+   removes is the honest failure mode, a run that keeps re-reviewing because no
+   check ever went red; it does not stop a session that skips it.
+
 1. **The diff first.** Establish what is actually shipping: fetch, then diff
    against the **remote** default branch (`origin/<default>`), not a local
    copy that may be behind — diagnosing from stale local code produces
@@ -155,7 +185,9 @@ blockers.
 - `VERDICT: HOLD` — list every blocker: the failing check by name, the
   reviewer finding with its file:line, or the DoD item that does not hold.
   Blocking findings are resolved, not argued with; after fixes, the gate runs
-  again from step 1.
+  again from **step 0** — which counts the new round and is what makes "again"
+  finite. Re-entering at step 1 skips the counter, and the unbounded rounds this
+  gate measured are exactly what that produces.
 
 ## Boundaries
 

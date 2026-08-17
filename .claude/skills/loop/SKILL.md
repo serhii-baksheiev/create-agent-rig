@@ -177,8 +177,8 @@ for itself, which is the one thing this loop does not do (§8).
 ## 3. What keeps the loop running, and what stops it
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
-reviewer verdict, a false premise in the item itself) **do not end the run**:
-escalate that item (§6) and take the next one.
+reviewer verdict, an exhausted gate-round cap, a false premise in the item itself)
+**do not end the run**: escalate that item (§6) and take the next one.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
@@ -321,6 +321,19 @@ perfectly good reason having produced something nobody should build on.
 | `documented-stall` | it stopped at a real wall, and the diagnosis names **which stage needed what, and which upstream stage should have supplied it** |
 | `incomplete` | it stopped and the record does not explain where or why |
 
+🔴 **What `documented-stall` requires is the STAGE and the wall, not a full
+inventory of findings** — and this had to be settled, because the two readings
+disagreed the first time a stop arrived without an inventory. An exhausted
+gate-round cap names its stage (the gate) and its wall (two rounds of fixes did not
+converge), while the individual blockers behind it are not persisted anywhere until
+per-round verdicts exist. That is a `documented-stall`: the record locates the wall
+and the next reader knows where to look.
+
+`incomplete` is for a record that cannot say **where** it stopped — not for one that
+can say where but not everything about it. Widening `incomplete` to cover a thin
+diagnosis would make it the common case, and it is meant to be the rare one: it is
+the only failing state, and a state that fires on honest stops stops being read.
+
 🔴 **`documented-stall` is a success, and reading it as a failure is how this stops
 working.** A stall that names its under-supply is the most useful thing an
 unattended run produces: it converts a vague gap into a located, fixable defect.
@@ -358,10 +371,12 @@ mechanises fully (`missed`, `.claude/rules/autonomy.md`) needs no self-report.
 ## 6. Escalation — two channels, by scope
 
 **Task-scoped — the item is the home, and the loop continues.** Three strikes, the
-attempt budget, an invariant conflict, a blocking reviewer verdict, or a
-`PREMISE FALSE` verdict from `check-premises` — the last one is a
-`documented-stall` (§5), and its diagnosis is already written: what the item
-claimed, what the code says, and the citation:
+attempt budget, an invariant conflict, a blocking reviewer verdict, an **exhausted
+gate-round cap**, or a `PREMISE FALSE` verdict from `check-premises`. The last two are
+a `documented-stall` (§5) and their diagnoses differ, so take the one that matches the
+stop: a false premise writes what the item claimed, what the code says, and the
+citation; an exhausted cap writes the round count and what the last gate reported.
+Both then follow the same three steps:
 
 1. Comment the diagnosis on the queue item, in the shape
    `.claude/rules/autonomy.md` ("Escalation format") sets — **cite it rather
@@ -370,13 +385,28 @@ claimed, what the code says, and the citation:
    single question whose answer unblocks the work. So: what fails, what was tried, the
    current hypothesis, and links to the PR and the failing run where they exist
    — a premise stop has neither, and its citation stands in for both. **Name the outcome
-   state in the same comment** — `incomplete` if the diagnosis cannot say which
-   stage needed what. Writing `incomplete` on your own task is uncomfortable and
+   state in the same comment** — `incomplete` if the diagnosis cannot say **where** it
+   stopped (§5: a thin diagnosis that still locates the wall is a `documented-stall`).
+   Writing `incomplete` on your own task is uncomfortable and
    is the point: the run that produced it is the only witness.
 2. Mark it `escalated` and leave it claimed — **not** back to a selectable state,
    or the next query picks it up and works it twice.
 3. Journal it. 4. **Take the next item.** One stuck task does not end a run; two
    in a row does (§3).
+
+🔴 **The gate-round cap is the stop a run will not reach on its own.** Every other
+stop here has a red thing behind it; a gate that keeps finding fixable prose is all
+green, so three strikes never fires and the run has no reason to stop re-entering it.
+`pr-ship` step 0 counts the round per branch in `.claude/gate-rounds.json` and exits 2
+past the cap. The count outlives the session, which is the point — a counter held in
+context is one the next context does not have.
+
+⚠ **What the cap does not carry, stated because the gap decides what you can write in
+the escalation:** the last gate's blockers are not persisted anywhere. Per-round
+verdicts are a separate item (the verdict schema), so the diagnosis a stalled item
+gets is the round count plus whatever this session still holds — and after a
+compaction, that is the round count alone. Say so in the comment rather than
+reconstructing findings from memory.
 
 🔴 **Escalate through the adapter, never by hand-labelling the item.** Every
 adapter's `escalate()` counts the escalation into the run state as it marks the

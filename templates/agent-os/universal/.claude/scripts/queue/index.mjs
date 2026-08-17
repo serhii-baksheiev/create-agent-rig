@@ -5,6 +5,7 @@
 //   node .claude/scripts/queue/index.mjs next --json
 //   node .claude/scripts/queue/index.mjs list            # every item, with skip reasons
 //   node .claude/scripts/queue/index.mjs hygiene         # stale labels and link anomalies
+//   node .claude/scripts/queue/index.mjs gate-round --branch <b>   # count a gate round
 //
 // The adapter comes from `.claude/queue.json` (`{"adapter": "plan-md"}`) and
 // defaults to `plan-md`, which is the only adapter that works in a freshly
@@ -38,7 +39,7 @@ export const resolveAdapter = async (adapterName) => {
   return import(new URL(modulePath, import.meta.url).href);
 };
 
-export const COMMANDS = ['next', 'list', 'hygiene'];
+export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round'];
 
 /**
  * A missing config is the normal state of a fresh project. A config that exists
@@ -171,10 +172,11 @@ export const loadState = (statePath) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { command: argv[0] ?? 'next', json: false, config: null };
+  const args = { command: argv[0] ?? 'next', json: false, config: null, branch: null };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--config') args.config = argv[++i];
+    else if (argv[i] === '--branch') args.branch = argv[++i];
   }
   return args;
 };
@@ -226,6 +228,82 @@ if (invokedDirectly()) {
         "the adapter's own API — import the adapter module rather than this CLI.\n",
     );
     process.exit(1);
+  }
+
+  // 🔴 **`gate-round` returns before the tracker is ever touched, and that is
+  // load-bearing rather than an optimisation.** `pr-ship` calls this once per
+  // round, and every other command below reaches the adapter — so routing this one
+  // through the normal path would spend a network call per gate round and, worse,
+  // would refuse to count a round while the tracker is unreachable. The counter is
+  // a local file and a local config; a Jira outage must not hand a run unlimited
+  // rounds.
+  if (args.command === 'gate-round') {
+    try {
+      // 🔴 Inside the `try`, and a review round is why. Left outside it, a rig whose
+      // `.claude/scripts/` predates this CLI printed a raw `ERR_MODULE_NOT_FOUND`
+      // and exited 1 — which `pr-ship` step 0 would have read as "rounds
+      // exhausted" and escalated a healthy item on. This file already records that
+      // exact lesson about `resolveAdapter` fifty lines below; the reason it
+      // repeated is that the lesson was written as prose and not as a test.
+      const { gateRoundVerdict } = await import('./core.mjs');
+      const { recordGateRound, gateRoundsPathFor } = await import('./gate-rounds.mjs');
+
+      const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
+      const config = loadConfig(configPath);
+      // An explicit `--config` keeps its counter beside it, so a run pointed at a
+      // temp config never touches this checkout's real counts.
+      const roundsPath = args.config
+        ? configPath.replace(/(\.json)?$/, '.gate-rounds.json')
+        : gateRoundsPathFor(projectRoot);
+
+      // 🔴 Validate the cap BEFORE counting. A review round measured what the other
+      // order costs: with `maxGateRounds: 0` every attempt recorded a round and then
+      // exited 1, while this command's own message told the caller to fix the cause
+      // and run step 0 again — so three attempts at a broken config left the branch
+      // at three rounds and the next honest call refused a healthy item. A failed
+      // run must not spend budget, and the message below must not have to lie about
+      // whether it did.
+      const verdictFor = (rounds) => gateRoundVerdict(rounds, config.options?.maxGateRounds);
+      verdictFor(0);
+
+      const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
+      const verdict = verdictFor(rounds);
+
+      if (!verdict.exceeded) {
+        process.stdout.write(
+          `gate round ${verdict.rounds} of ${verdict.max} on ${args.branch}.\n` +
+            (verdict.rounds === verdict.max
+              ? '  This is the last round this branch gets. If it holds again, the item ' +
+                'is escalated rather than re-reviewed.\n'
+              : ''),
+        );
+        process.exit(0);
+      }
+
+      process.stderr.write(
+        `GATE ROUNDS EXHAUSTED — ${verdict.rounds} rounds on ${args.branch}, cap is ` +
+          `${verdict.max}: ${verdict.stop}.\n` +
+          '  Do not run another round. The item stops here and goes back to a human ' +
+          'with the round count and whatever the last gate reported — the fixes are ' +
+          'not converging, and another pass buys a full reviewer fan-out to discover ' +
+          'that again.\n' +
+          '  Raising the cap to get one more pass on THIS item is the move this ' +
+          'refusal exists to prevent.\n',
+      );
+      process.exit(2);
+    } catch (error) {
+      // 🔴 Exit 1, never 2, and the message says so. Exit 2 means one thing only —
+      // the rounds are spent — because `pr-ship` acts on it by ending the task. A
+      // broken config, an unreadable counter or a detached checkout must not be
+      // read as a converging-failure stall.
+      process.stderr.write(
+        `gate-round could not run: ${error.message}\n` +
+          '  This is NOT an exhausted cap (that is exit 2). Fix the cause and run step ' +
+          '0 again: a bad config, a bad cap or a detached checkout is refused before ' +
+          'any round is counted, so retrying costs nothing.\n',
+      );
+      process.exit(1);
+    }
   }
 
   // A missing module is NOT read as "no state". A run that could not read its
