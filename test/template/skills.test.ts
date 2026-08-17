@@ -213,15 +213,35 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
 
   // The verdict vocabulary IS the contract: the loop hardcodes one of these
   // words. Renaming a verdict here must not leave the suite green.
-  it('names its three verdicts, and an unverifiable premise is not a pass', async () => {
+  it('names its four verdicts, and an unverifiable premise is not a pass', async () => {
     const content = await read();
-    for (const verdict of ['PREMISES HOLD', 'PREMISE FALSE', 'UNVERIFIABLE']) {
+    for (const verdict of ['PREMISES HOLD', 'PREMISE FALSE', 'UNVERIFIABLE', 'UNMEASURED']) {
       expect(content, verdict).toContain(verdict);
     }
     expect(content).toMatch(/not a soft pass|is not a pass/i);
     // the limit this rulebook keeps insisting on: nobody observes the verdict
     expect(content).toMatch(/Limits/);
     expect(content).toMatch(/self-report|reporting on itself/i);
+  });
+
+  // 🔴 AR-68: the second entry point, and the measurement that bought it. Two cold
+  // A claim the run wrote about a mechanism it did not run is cheap to produce and
+  // expensive to find: a cold reader reaches it only after loading the whole diff, and
+  // the fix is usually one sentence. Same machinery, same question, so the skill gains
+  // a second use rather than the repo gaining a second skill. (The counts, run by run,
+  // are in this repository's journal — deliberately not in the template files, since a
+  // figure there is the kind of claim this entry point exists to catch.)
+  it("runs on the run's own prose too, before the gate, with its own verdict", async () => {
+    const content = await read();
+    // the second entry point is named as such, not implied
+    expect(content).toMatch(/two entry points|second entry point|entry points/i);
+    // and it is ordered: before the gate, not after a reviewer found it
+    expect(content).toMatch(/before .{0,40}(gate|pr-ship)/i);
+    // the verdict for a behaviour claim with nothing behind it
+    expect(content).toContain('UNMEASURED');
+    // and the only two exits from it — the claim goes, or it becomes a pointer
+    expect(content).toMatch(/delete/i);
+    expect(content).toMatch(/pointer to (a|the) test|pointer to the test/i);
   });
 
   it('carries worked examples, and no tracker key travels with them', async () => {
@@ -247,6 +267,26 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
     expect(procedure.test(loop), 'the per-task procedure must run it before Red').toBe(true);
     // and the loop must speak the skill's own vocabulary
     expect(loop).toContain('PREMISE FALSE');
+  });
+
+  // The second call site has to be in the driver, because the fix belongs to the
+  // author: a reviewer reporting unbacked prose has already cost the round this
+  // exists to save.
+  it('is called a second time before the gate, on the prose the task itself wrote', async () => {
+    const loop = await readLoop();
+    // 🔴 Each assertion here has to be FALSE on the version before this change, or it
+    // pins nothing. The first draft matched `check-premises … pr-ship` inside 400
+    // characters — true on master already, because the one-line procedure names both.
+    // So: the procedure must name the second pass as its own step, and the paragraph
+    // must carry the verdict and the ordering together.
+    expect(loop).toMatch(/check-premises\b[^\n]{0,60}again/i);
+    expect(loop).toMatch(/UNMEASURED/);
+    const paragraph = /task itself wrote[\s\S]{0,700}UNMEASURED/;
+    expect(paragraph.test(loop), 'the verdict must be stated where the pass is').toBe(true);
+    const beforeGate = /before .{0,20}(the gate|`pr-ship`)/;
+    expect(beforeGate.test(loop), 'and the ordering must be explicit').toBe(true);
+    // and the escalation must NOT follow from the second pass
+    expect(loop).toMatch(/PREMISE FALSE[\s\S]{0,200}(queue\s+item|first pass)/);
   });
 
   // The loop delegates to §6 for what happens next, so §6 has to recognise it.

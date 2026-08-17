@@ -107,6 +107,31 @@ rely on cover that is not there) or into staleness (limits listed that were
 fixed long ago, understating the guard). Both have happened here, in the same
 file, within one review cycle.
 
+**A sentence describing what a mechanism does or does not do is either generated
+from the thing it describes, or a pointer to the test that proves it** — the form is
+`see guard-invariant.example.test.mjs › "blocks the violation, and the reason names
+what to do instead"` — the test's whole name, so one grep lands on it, in a file the
+reader has. Free-standing prose about a mechanism's behaviour is a
+`prose-reviewer` blocker **by rule** (its checklist item 5), which means the finding
+is the absence of backing; nobody has to prove the claim wrong first.
+
+Why by rule rather than by discovery: it moves the check earlier. `check-premises`
+has a second entry point on the run's own prose, and it returns `UNMEASURED` for a
+claim with nothing behind it — before the gate, instead of after a cold reader has
+read the whole diff.
+
+Two exits from `UNMEASURED`, and rewording is not one of them: **delete the
+sentence, or make it a pointer.** Softening the wording leaves an unbacked claim in
+a document agents follow literally, which is the failure this whole section is
+about. A pointer also cannot quietly drift, because a renamed test makes it a dead
+reference — item 2 of the same checklist.
+
+⚠ **This norm has parts 1 and 3 of the pattern above, and not part 2.** No hook
+refuses an unbacked sentence; the check is a skill a session is told to run and the
+backstop is a reviewer nothing launches. By this file's own standard that makes it a
+rule with a reader behind it rather than a mechanism — stated here so the next
+reader does not infer cover that is not there.
+
 Two rules that follow from it:
 
 - **Match a rule's precision to the cost of a false positive.** Where a false

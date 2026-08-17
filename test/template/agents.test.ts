@@ -122,6 +122,19 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     expect(content).toMatch(/BLOCKER/i);
   });
 
+  // 🔴 AR-68: the norm that turns the most common blocker class into a rule.
+  // An unbacked behaviour claim is a blocker BY RULE — the finding is the absence of
+  // backing, not a disproof — which is what lets `check-premises` catch it before this
+  // agent is ever launched. The norm is `.claude/rules/invariants.md`, "State the
+  // limits".
+  it('blocks an unbacked behaviour claim by rule, and says what backing looks like', async () => {
+    const content = await read();
+    expect(content).toMatch(/unbacked|nothing backs it|no test behind it/i);
+    // the two acceptable forms, per invariants.md "State the limits"
+    expect(content).toMatch(/generated/i);
+    expect(content).toMatch(/pointer to (a|the) test/i);
+  });
+
   it('states the boundary that keeps it from becoming a style gate', async () => {
     const content = await read();
     expect(content).toMatch(/not a (literary|copy) editor/i);
@@ -129,12 +142,18 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     expect(content).toMatch(/clumsy|awkward|inelegant/i);
   });
 
-  it('blocks on the five failures that make a rulebook lie', async () => {
+  it('blocks on the six failures that make a rulebook lie', async () => {
     const content = await read();
     // scoped to the blocking section: demoting an item to advisory, or losing
     // the checklist and keeping the narrative, must fail this
     const blocking = content.slice(content.indexOf('## Checklist'), content.indexOf('## Advisory'));
     expect(blocking.length).toBeGreaterThan(0);
+    // 🔴 The count is read from the list rather than written in the test's name. This
+    // change takes the checklist from five items to six (the new one goes in at
+    // position 5, domain-leakage moves to 6), and the name said "five" until it did —
+    // so the next one will not have to remember to rename anything.
+    const items = [...blocking.matchAll(/^\d+\. \*\*/gm)];
+    expect(items.length, 'the checklist is six items; add an assertion with a seventh').toBe(6);
     expect(blocking).toMatch(/overstat/i); // a claim the mechanism does not support
     expect(blocking).toMatch(/dead (reference|link)|no longer exists/i);
     expect(blocking).toMatch(/contradict/i); // two rule files disagreeing
@@ -142,6 +161,9 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     // and the one the release note forgot it had: domain leaking into a layer
     // that claims to be neutral
     expect(blocking).toMatch(/must not travel|vendor|tracker key/i);
+    // the newest: a factual claim about behaviour with nothing behind it
+    expect(blocking).toMatch(/unbacked/i);
+    expect(blocking).toMatch(/by\s+\*\*rule\*\*|blocker \*\*by\s+rule\*\*|by rule/i);
   });
 
   // The failure this agent is most likely to cause itself: a confident BLOCKER
