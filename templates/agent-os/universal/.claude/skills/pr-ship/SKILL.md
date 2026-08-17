@@ -127,8 +127,9 @@ blockers.
    - `security-scanner` when the diff touches auth, secrets or configuration,
      input parsing, file handling, new outbound calls, dependency changes;
    - `prose-reviewer` when the diff touches a rule file, a skill, an agent spec,
-     `CLAUDE.md` or the README — a rulebook that overstates its own enforcement
-     fails silently and in the direction of false confidence;
+     a decision record under `docs/decisions/`, `CLAUDE.md` or the README — a
+     rulebook that overstates its own enforcement fails silently and in the
+     direction of false confidence;
    - an infrastructure review when it touches infrastructure (the stack layer
      names the agent).
 

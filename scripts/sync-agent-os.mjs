@@ -51,6 +51,14 @@ const ELEVATED_PATHS = [
   // half of what it needs: `.md` is inert to the sweep unless the path counts
   // as rulebook, so `isDecisionRecord` in `detect-missed-gate.mjs` is the other
   // half, and a declaration without it reports clean over every record.
+  //
+  // BOTH the source and the synced copy, which departs from the convention of
+  // the lines above (`.claude/` and the root `CLAUDE.md` are synced too, and
+  // only their sources are declared). The reason is the reader, not the sweep:
+  // `elevatedPathsIn` compares with a start-anchored `startsWith`, so neither
+  // path covers the other, and a decision record is the one synced artifact a
+  // human is expected to open at its root path — a finding naming only the
+  // template source would send them to the file they were not reading.
   'templates/agent-os/universal/docs/decisions/',
   'docs/decisions/',
   // Same categories, one layer down: a stack layer's gates and DoD config are

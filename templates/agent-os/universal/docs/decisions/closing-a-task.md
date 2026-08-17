@@ -12,10 +12,13 @@ the whole reason each is pinned rather than left to judgement:
 | argument | how it fails when wrong |
 | --- | --- |
 | `-z` | silently, **permissively** — records `normal` for an elevated change |
-| `env: withoutGitLocation()` | silently, **permissively** — records a tier from another repository |
 | `runDir` | silently, but toward a **stop** nobody can clear |
 | the diff form | **loudly** — the call refuses on an empty file list |
+| `env: withoutGitLocation()` | loudly, for the sha-to-sha form pinned here; it is prophylaxis for this call and load-bearing for every symbolic-ref spawn |
 | `execFileSync` array | it does not; nothing is interpolated into a shell today |
+
+Exactly one of the five fails silently in the permissive direction. Do not
+round that up.
 
 ## `runDir`
 
@@ -54,20 +57,39 @@ to be the one already written down, or it will not be the one copied.
 ## `env: withoutGitLocation()`
 
 Run under a git hook, this command inherits `GIT_DIR` — absolute, when the hook
-fired in a worktree — and then computes the diff of **another repository**,
-recording a tier from it. Silently: the file list comes back non-empty, so
-nothing refuses and nothing looks wrong.
+fired in a worktree — and then resolves against **another repository**.
+
+Measured, from repository A with `GIT_DIR` pointing at an unrelated B:
+
+| form | result |
+| --- | --- |
+| `<sha>^1 <sha>` — the form pinned above | `fatal: ambiguous argument … unknown revision`, so `execFileSync` throws |
+| `HEAD^1 HEAD`, or any `origin/<default>…` form | B's file list, exit 0, nothing wrong-looking |
+
+So for this call, as written, the redirect fails loudly: a sha-to-sha diff is an
+object-database lookup, and B either lacks the object (fatal) or shares it and
+answers identically. The silent wrong answer needs a **ref that resolves
+differently in the other repo** — which is the diff form this record rejects
+two sections above.
+
+That is why the argument stays anyway. It costs nothing, it is the same line
+every other script here uses, and the moment someone "simplifies" the diff back
+to a symbolic ref it becomes the only thing standing between a git hook and a
+tier recorded from somebody else's repository.
 
 The source sweep in `test/template/git-env.test.ts` cannot read markdown, so
 this particular line is guarded by a sweep over the fenced code blocks in the
 rulebook documents instead.
 
-## The shape the dangerous ones share
+## The shape the dangerous one has
 
-The two that matter most — `-z` and `withoutGitLocation()` — never announced
-themselves. Each returned a plausible answer: a tier of `normal`, a diff of the
-wrong repository. A plausible answer is what a run acts on, and neither leaves
-anything behind to say it was never measured.
+`-z` is the one that never announced itself: it returned a plausible answer — a
+tier of `normal` — and a plausible answer is what a run acts on, with nothing
+left behind to say it was never measured.
+
+The others are pinned because they are cheap to keep and expensive to
+rediscover, not because they all failed the same way. Reading the list as five
+silent bypasses is how the one that really is silent stops standing out.
 
 The empty-file-list case is the deliberate counter-example: `recordCompletedTier`
 **throws** rather than guessing `normal`, because an absence and a zero look

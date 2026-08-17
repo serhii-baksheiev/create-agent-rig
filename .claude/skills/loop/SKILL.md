@@ -558,11 +558,10 @@ three poisons the only channel by which this project learns.
   - **`execFileSync` with an argument array**, never a shell string;
   - **`env: withoutGitLocation()`**, or under a git hook it diffs another repo.
 
-  🔴 Two of them — `-z` and `withoutGitLocation()` — fail **silently and
-  permissively**: they record a tier from a plausible wrong answer rather than
-  refusing. The wrong diff form refuses loudly, and omitting `runDir` fails
-  quietly toward a stop nobody can clear. Which is which, and why each is
-  pinned here rather than left to judgement, is in
+  🔴 One of them — `-z` — fails **silently and permissively**: it records
+  `normal` for an elevated change rather than refusing. The wrong diff form
+  refuses loudly, and omitting `runDir` fails quietly toward a stop nobody can
+  clear. Which fails which way, measured rather than assumed, is in
   `docs/decisions/closing-a-task.md`.
 
   🔴 **The tier comes from the diff, never from the item's marker.** The marker

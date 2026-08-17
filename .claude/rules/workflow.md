@@ -90,9 +90,10 @@ travels one path to merge, in this order:
    - `security-scanner` when it touches auth, secrets/configuration, input
      parsing, file handling, or outbound calls;
    - `prose-reviewer` when it touches the documents that instruct agents — a
-     rule file, a skill, an agent spec, `CLAUDE.md`, the README. In this layer
-     the prose *is* the implementation, and it fails the same way code does:
-     silently, in the direction of false confidence;
+     rule file, a skill, an agent spec, a decision record under
+     `docs/decisions/`, `CLAUDE.md`, the README. In this layer the prose *is*
+     the implementation, and it fails the same way code does: silently, in the
+     direction of false confidence;
    - an infrastructure review when it touches infrastructure (the stack layer
      names the reviewing agent for the target).
 

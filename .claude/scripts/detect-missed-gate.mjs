@@ -105,6 +105,26 @@ export const parseElevatedPaths = (markdown) => {
 };
 
 /**
+ * A decision record: `docs/decisions/<name>` at any depth, so both the root
+ * copy and the vendored template source match.
+ *
+ * Exported because `decision-router.mjs` needs the same notion, and two regexes
+ * for one invariant is the case `invariants.md` legislates against — the copy
+ * nobody is looking at is the one that goes wrong.
+ *
+ * `decisions` is matched as a whole path SEGMENT under a `docs` segment, never
+ * as a substring: `docs/decisions-overview.md` is ordinary documentation and
+ * must keep the cheap lane. Widening this to a substring would quietly pull
+ * every `docs/decisions*` name into the expensive gate.
+ *
+ * 🔴 Case-SENSITIVE, deliberately, and the caller decides. `normalizePath` in
+ * this file does not fold either — a sweep that folded would report a path the
+ * repository does not have. `decision-router.mjs` folds before calling this,
+ * because there folding can only escalate; here it could only mislabel.
+ */
+export const isDecisionRecord = (path) => /(^|\/)docs\/decisions\/[^/]/.test(path);
+
+/**
  * Paths that provision nothing and configure nothing, whatever directory they sit
  * in — EXCEPT the rulebook itself. Declaring `.claude/` as elevated was a no-op
  * for every `.md` under it, so a merged PR rewriting the autonomy tiers or the
@@ -119,21 +139,6 @@ export const parseElevatedPaths = (markdown) => {
  * reason alone. Any repository that vendors, templates or nests a rig has the
  * same shape.
  */
-/**
- * A decision record: `docs/decisions/<name>` at any depth, so both the root
- * copy and the vendored template source match.
- *
- * Exported because `decision-router.mjs` needs the same notion, and two regexes
- * for one invariant is the case `invariants.md` legislates against — the copy
- * nobody is looking at is the one that goes wrong.
- *
- * `decisions` is matched as a whole path SEGMENT under a `docs` segment, never
- * as a substring: `docs/decisions-overview.md` is ordinary documentation and
- * must keep the cheap lane. Widening this to a substring would quietly pull
- * every `docs/decisions*` name into the expensive gate.
- */
-export const isDecisionRecord = (path) => /(^|\/)docs\/decisions\/[^/]/.test(path);
-
 const isRulebook = (path) =>
   path === 'CLAUDE.md' ||
   path.endsWith('/CLAUDE.md') ||
