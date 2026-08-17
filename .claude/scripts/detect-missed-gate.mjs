@@ -149,9 +149,22 @@ const isRulebook = (path) =>
   // not so that it stops being reviewed like the rule it explains.
   isDecisionRecord(path);
 
+/**
+ * A document: something a reader reads, that no runtime executes.
+ *
+ * Exported because a **second** consumer rations on it — `queue/state.mjs`
+ * splits an elevated close into `elevated-prose` and `elevated-mechanism`, and
+ * that split has to mean the same two extensions this sweep already calls inert.
+ * Two files answering "is this a document" is the defect `invariants.md` names:
+ * they disagree, and the one nobody is looking at is the one that is wrong. Note
+ * the difference in what each caller does with the answer — the sweep drops an
+ * inert path from review, the ration keeps it and only declines to space on it.
+ */
+export const isDocument = (path) => /\.mdx?$/.test(path);
+
 const isInert = (path) =>
   !isRulebook(path) &&
-  (/\.mdx?$/.test(path) ||
+  (isDocument(path) ||
   /(^|\/)(test|tests|__tests__)\//.test(path) ||
   /\.(test|spec)\.[cm]?[jt]sx?$/.test(path));
 

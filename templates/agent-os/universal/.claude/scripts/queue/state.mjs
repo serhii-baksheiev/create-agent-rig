@@ -30,10 +30,37 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { elevatedPathsIn, readDeclaredPaths } from '../detect-missed-gate.mjs';
+import { elevatedPathsIn, isDocument, readDeclaredPaths } from '../detect-missed-gate.mjs';
 import { updateState } from '../run-state.mjs';
 import { mainCheckoutRoot } from './checkout.mjs';
 
+
+/**
+ * The tier of a close, from the elevated paths the change crossed.
+ *
+ * 🔴 **The elevated tier splits in two, and only the ration reads the split.**
+ * `elevated-prose` is still an elevated change everywhere it is REVIEWED — the
+ * model lane, the cold readers, the `human-review` label, the gate sweep. It
+ * simply does not space the next item, because the rule's own stated purpose is
+ * about what compounds: *"one **unreviewed** schema or permissions change is
+ * recoverable; a chain of them compounding overnight is not"*. A rule file
+ * cannot compound into a broken runtime overnight, because nothing executes it —
+ * and in a repository whose rulebook lives under a declared path, spacing on the
+ * undivided word halts the queue rather than pacing it.
+ *
+ * A mixed diff is `elevated-mechanism`: the half that runs decides. Reading the
+ * tier off the first path, or off "most of them are documents", would ship a
+ * ration any diff can opt out of by also touching a `.md`.
+ *
+ * `isDocument` is the sweep's own predicate, imported rather than restated —
+ * two notions of "document" is the two-implementations defect `invariants.md`
+ * names, with the copy nobody looks at rationing on a rule the other one does
+ * not have.
+ */
+const tierOf = (elevated) => {
+  if (elevated.length === 0) return 'normal';
+  return elevated.every(isDocument) ? 'elevated-prose' : 'elevated-mechanism';
+};
 
 /**
  * Record the tier of the change that just closed an item.
@@ -44,7 +71,11 @@ import { mainCheckoutRoot } from './checkout.mjs';
  *
  * Returns `{ tier, elevatedPaths }`: the value written, and the files that
  * earned it, so the close step can journal *why* rather than just *what*.
- * `elevatedPaths` is always an array — empty on a normal change, never absent.
+ * `elevatedPaths` is always an array — empty on a normal change, never absent,
+ * and **unaffected by the prose/mechanism split above**. `elevatedPaths` answers
+ * "what did this change cross", which is the gate's question and not the
+ * ration's: a prose merge that stopped listing its rulebook files would look
+ * clean to the sweep that exists to catch exactly those merges.
  *
  * 🔴 **It writes a state file BESIDE the queue config, never into it — and that
  * is not a preference.** `.claude/queue.json` is composed from the rig's
@@ -94,7 +125,7 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   }
 
   const elevated = elevatedPathsIn(changedFiles, declared);
-  const tier = elevated.length > 0 ? 'elevated' : 'normal';
+  const tier = tierOf(elevated);
 
   // State only. It deliberately does NOT carry `adapter` or `options`: two files
   // answering "which queue is this" is two answers with no rule for which wins,

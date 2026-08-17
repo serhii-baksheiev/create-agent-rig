@@ -40,6 +40,7 @@
     "docs/decisions/closing-a-task.md",
     "docs/decisions/review-lanes.md",
     "docs/decisions/run-directory.md",
+    "docs/decisions/spacing-rations-mechanisms.md",
     "docs/decisions/stop-conditions-in-a-file.md",
     "docs/decisions/two-empty-endings.md"
   ],

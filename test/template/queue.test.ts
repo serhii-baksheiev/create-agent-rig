@@ -956,6 +956,79 @@ describe('the elevated tier is rationed by spacing, not by a count', () => {
     expect(skipped.map((s) => s.causes)).toEqual([['triage'], ['blocked']]);
     for (const skip of skipped) expect(skip.reason, skip.id).toBeTruthy();
   });
+
+  // 🔴 The ration is narrowed to what EXECUTES, and the reason is the rule's own
+  // stated purpose: "one **unreviewed** schema or permissions change is
+  // recoverable; a chain of them compounding overnight is not." Nothing merged
+  // here is unreviewed — every elevated merge takes the model lane, two cold
+  // readers, a `human-review` label and green CI — and in this repository nearly
+  // every queue item is elevated by path, so spacing on the old vocabulary halts
+  // the project permanently rather than pacing it.
+  //
+  // Prose keeps its tier for REVIEW and loses it for RATIONING: a rule file
+  // cannot compound into a broken runtime overnight, because it does not run.
+  // So the vocabulary is `normal` | `elevated-prose` | `elevated-mechanism`, and
+  // only the last of those spaces the next item.
+  it('still refuses an elevated item after a change that altered a mechanism', async () => {
+    const { selectNext } = await load('core.mjs');
+    const result = selectNext([ticket({ id: 'e2', tier: 'elevated' })], {
+      lastCompletedTier: 'elevated-mechanism',
+    });
+    expect(result.ticket).toBeNull();
+    expect(result.skipped[0].reason).toMatch(/back to back|consecutive|spacing/i);
+  });
+
+  it('lets an elevated item through after an elevated change that was only prose', async () => {
+    const { selectNext } = await load('core.mjs');
+    const result = selectNext([ticket({ id: 'e2', tier: 'elevated' })], {
+      lastCompletedTier: 'elevated-prose',
+    });
+    expect(result.ticket?.id).toBe('e2');
+    expect(result.skipped).toEqual([]);
+  });
+
+  // 🔴 The case that decides whether narrowing the ration is safe at all. A
+  // `state.json` written before this change carries the literal `'elevated'`, and
+  // the vocabulary no longer contains it — so an `=== 'elevated-mechanism'`
+  // comparison reads every one of these as "nothing elevated closed" and hands
+  // out the next elevated item. Unknown means the RESTRICTIVE reading, never the
+  // permissive one; getting it wrong un-rations the queue silently, which is the
+  // exact failure the whole seam exists to end.
+  const UNKNOWN_TIERS: Array<[string, unknown]> = [
+    ['the legacy literal an older state file carries', 'elevated'],
+    ['a value outside the vocabulary', 'banana'],
+    ['a vocabulary word in the wrong case', 'Elevated-Mechanism'],
+    ['the prose word with something appended', 'elevated-prose-ish'],
+    ['a tier that is not a string at all', 42],
+    ['a boolean', true],
+    ['an object where the word belongs', {}],
+  ];
+
+  it.each(UNKNOWN_TIERS)('refuses an elevated item after %s', async (_kind, tier) => {
+    const { selectNext } = await load('core.mjs');
+    const result = selectNext([ticket({ id: 'e2', tier: 'elevated' })], {
+      lastCompletedTier: tier,
+    });
+    expect(result.ticket).toBeNull();
+    expect(result.skipped[0].reason).toMatch(/back to back|consecutive|spacing/i);
+  });
+
+  // …and the boundary in the other direction, so "refuse everything unrecognised"
+  // cannot be satisfied by refusing everything. An absent tier is not an unknown
+  // one: it is the honest statement that nothing has closed yet, and `null` is how
+  // `index.mjs` spells it when there is no state file.
+  const NO_TIER: Array<[string, unknown]> = [
+    ['an explicit null', null],
+    ['an explicit undefined', undefined],
+  ];
+
+  it.each(NO_TIER)('hands an elevated item out when the tier is %s', async (_kind, tier) => {
+    const { selectNext } = await load('core.mjs');
+    const result = selectNext([ticket({ id: 'e2', tier: 'elevated' })], {
+      lastCompletedTier: tier,
+    });
+    expect(result.ticket?.id).toBe('e2');
+  });
 });
 
 // AR3-36: the ration above has never fired between tasks in this repository.
@@ -1022,7 +1095,7 @@ describe('the close step records the tier the change turned out to be', () => {
     // `.claude/queue.state.json`, which is what the close step will call with.
     recordCompletedTier({ changedFiles: ['packages/db/src/schema.ts'], projectRoot: dir });
 
-    expect((await jsonAt(statePath)).lastCompletedTier).toBe('elevated');
+    expect((await jsonAt(statePath)).lastCompletedTier).toBe('elevated-mechanism');
   });
 
   it('records normal when no changed file falls under a declared path', async () => {
@@ -1078,7 +1151,7 @@ describe('the close step records the tier the change turned out to be', () => {
     // know about: two files answering "which queue is this" and no rule for which
     // wins. The state answers exactly one question.
     const state = await jsonAt(statePath);
-    expect(state.lastCompletedTier).toBe('elevated');
+    expect(state.lastCompletedTier).toBe('elevated-mechanism');
     expect(state).not.toHaveProperty('adapter');
     expect(state).not.toHaveProperty('options');
   });
@@ -1109,9 +1182,11 @@ describe('the close step records the tier the change turned out to be', () => {
       statePath,
     });
 
-    // A close that cannot say WHY it wrote `elevated` cannot journal it, and an
-    // unexplained tier is the same unfalsifiable claim this item exists to remove.
-    expect(elevated.tier).toBe('elevated');
+    // A close that cannot say WHY it wrote an elevated tier cannot journal it, and
+    // an unexplained tier is the same unfalsifiable claim this item exists to
+    // remove. `README.md` is inert and drops out; the CI definition is what makes
+    // this a mechanism close rather than a prose one.
+    expect(elevated.tier).toBe('elevated-mechanism');
     expect(elevated.elevatedPaths).toEqual([
       '.github/workflows/ci.yml',
       'packages/db/src/schema.ts',
@@ -1199,7 +1274,10 @@ describe('the close step records the tier the change turned out to be', () => {
       statePath,
     });
 
-    expect(result.tier).toBe('elevated');
+    // `elevated-prose`, and the tier is still elevated where it is REVIEWED: the
+    // path is declared, so the merge takes the model lane and the sweep reads the
+    // file below. What it stops doing is spacing the next item.
+    expect(result.tier).toBe('elevated-prose');
     expect(result.elevatedPaths).toEqual(['.claude/rules/autonomy.md']);
   });
 
@@ -1225,6 +1303,114 @@ describe('the close step records the tier the change turned out to be', () => {
       '.claude/rules/autonomy.md',
       'packages/db/src/schema.ts',
     ]);
+  });
+
+  // 🔴 The tier splits in two, and ONLY the ration narrows. `elevated-prose` is
+  // still an elevated change everywhere it is reviewed — model lane, cold
+  // readers, `human-review` label, the gate sweep — it simply does not space the
+  // next item, because a document cannot compound into a broken runtime
+  // overnight. The split lives here rather than in `core.mjs` for the same reason
+  // the tier itself does: it is computed from the diff's paths, not claimed.
+  it('records elevated-prose when every elevated path it found is a document', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject({ adapter: 'plan-md' }, [
+      ...DECLARED,
+      'docs/decisions/',
+    ]);
+
+    const result = recordCompletedTier({
+      changedFiles: ['.claude/rules/workflow.md', 'docs/decisions/spacing.md'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(result.tier).toBe('elevated-prose');
+    expect((await jsonAt(statePath)).lastCompletedTier).toBe('elevated-prose');
+  });
+
+  it('still names every elevated path when the change was prose, so the sweep and the journal are unchanged', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject({ adapter: 'plan-md' }, [
+      ...DECLARED,
+      'docs/decisions/',
+    ]);
+
+    // `elevatedPaths` answers "what did this change cross", which is the gate's
+    // question and not the ration's. Narrowing the RATION must not quietly narrow
+    // the REPORT: a prose merge that stopped listing its rulebook files would go
+    // looking clean to the sweep that exists to catch exactly those merges.
+    const result = recordCompletedTier({
+      changedFiles: [
+        'README.md',
+        '.claude/rules/workflow.md',
+        'docs/decisions/spacing.md',
+        'services/api/src/handler.ts',
+      ],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(result.elevatedPaths).toEqual([
+      '.claude/rules/workflow.md',
+      'docs/decisions/spacing.md',
+    ]);
+  });
+
+  it('counts an .mdx rulebook page as a document too', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    // The sweep's own inert test is `/\.mdx?$/`, and this split has to read the
+    // same two extensions — a second, narrower notion of "document" here would be
+    // the two-implementations defect `invariants.md` names, with the copy nobody
+    // looks at rationing on a rule the other one does not have.
+    const result = recordCompletedTier({
+      changedFiles: ['.claude/rules/spacing.mdx'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(result.tier).toBe('elevated-prose');
+    expect(result.elevatedPaths).toEqual(['.claude/rules/spacing.mdx']);
+  });
+
+  const MECHANISMS: Array<[string, string]> = [
+    ['the selection code itself', '.claude/scripts/queue/core.mjs'],
+    ['the hook wiring', '.claude/settings.json'],
+    ['what CI runs', '.github/workflows/ci.yml'],
+    ['the dependency manifest', 'package.json'],
+  ];
+
+  it.each(MECHANISMS)('records elevated-mechanism for a change to %s', async (_kind, file) => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject({ adapter: 'plan-md' }, [
+      ...DECLARED,
+      'package.json',
+    ]);
+
+    const result = recordCompletedTier({ changedFiles: [file], projectRoot: dir, statePath });
+
+    expect(result.tier).toBe('elevated-mechanism');
+    expect(result.elevatedPaths).toEqual([file]);
+  });
+
+  it('records elevated-mechanism when one change carries both prose and a mechanism', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    // The mechanism half wins, and this is the case the split stands or falls on:
+    // a PR that rewrites a rule AND the script the rule describes executes, so it
+    // is exactly the kind of change spacing was bought to pace. Reading the tier
+    // off the first path, or off "most of them are documents", ships a ration
+    // that any diff can opt out of by touching a `.md`.
+    const result = recordCompletedTier({
+      changedFiles: ['.claude/rules/workflow.md', '.claude/scripts/queue/core.mjs'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(result.tier).toBe('elevated-mechanism');
+    expect((await jsonAt(statePath)).lastCompletedTier).toBe('elevated-mechanism');
   });
 });
 
@@ -2704,6 +2890,48 @@ describe('the queue CLI', () => {
     expect(parsed.ticket?.title).toBe('rotate the key');
   });
 
+  // 🔴 The split, end to end through the CLI — the layer where the vocabulary is
+  // validated before selection ever runs. A word `index.mjs` refuses never
+  // reaches `core.mjs`, so the unit tests on `selectNext` cannot show that these
+  // two tiers survive the round trip through a real state file.
+  it('hands an elevated item out after a close whose elevated paths were all documents', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, configPath, statePath } = await allElevated();
+    // Seeded held-back, so this proves the prose close CLEARED the ration rather
+    // than proving nothing was rationing in the first place.
+    await writeFile(statePath, `${JSON.stringify({ lastCompletedTier: 'elevated' })}\n`);
+
+    recordCompletedTier({ changedFiles: ['.claude/rules/autonomy.md'], projectRoot: dir });
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null };
+    expect(parsed.ticket?.title).toBe('rotate the key');
+  });
+
+  it('still holds after a close that touched a mechanism as well as prose', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, configPath, statePath } = await allElevated();
+
+    // The other direction on the same seam: a diff cannot buy its way out of the
+    // ration by also touching a `.md`.
+    recordCompletedTier({
+      changedFiles: ['.claude/rules/autonomy.md', '.claude/scripts/queue/core.mjs'],
+      projectRoot: dir,
+    });
+    expect(
+      (JSON.parse(await read(statePath)) as { lastCompletedTier: string }).lastCompletedTier,
+    ).toBe('elevated-mechanism');
+
+    const result = await run(['next', '--json', '--config', configPath], dir);
+
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.out) as { ticket: Ticket | null; stop: { kind: string } };
+    expect(parsed.ticket).toBeNull();
+    expect(parsed.stop?.kind).toBe('nothing-selectable');
+  });
+
   it('selects normally when no item has closed yet and there is no state file', async () => {
     const { dir, configPath, statePath } = await allElevated();
 
@@ -2957,9 +3185,17 @@ describe('reading the state — only a truly absent file means "nothing has clos
     expect(message).not.toMatch(/Cannot read propert|is not a function/i);
   });
 
+  // 🔴 The legacy row is load-bearing, not politeness. A checkout that upgrades
+  // mid-run still holds a state file written with the undivided `'elevated'`, and
+  // refusing it would make the very next selection exit 1 on a file the previous
+  // version of this code wrote. It stays readable, and `core.mjs` reads it
+  // restrictively — so the legacy value rations exactly as it did when it was
+  // written, which is the only reading that cannot un-ration the queue by accident.
   const ACCEPTED: Array<[string, string, unknown]> = [
-    ['the elevated tier', '{"lastCompletedTier":"elevated"}', 'elevated'],
+    ['the legacy elevated tier', '{"lastCompletedTier":"elevated"}', 'elevated'],
     ['the normal tier', '{"lastCompletedTier":"normal"}', 'normal'],
+    ['a prose close', '{"lastCompletedTier":"elevated-prose"}', 'elevated-prose'],
+    ['a mechanism close', '{"lastCompletedTier":"elevated-mechanism"}', 'elevated-mechanism'],
     ['an object that carries no tier at all', '{}', undefined],
   ];
 
@@ -3070,7 +3306,7 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
     // Exactly what the close snippet does from a task worktree: `process.cwd()`.
     recordCompletedTier({ changedFiles: ['packages/db/src/schema.ts'], projectRoot: worktree });
 
-    expect(JSON.parse(await read(stateFile(main))).lastCompletedTier).toBe('elevated');
+    expect(JSON.parse(await read(stateFile(main))).lastCompletedTier).toBe('elevated-mechanism');
     // and nothing is left in the worktree, which is about to be deleted
     await expect(read(stateFile(worktree))).rejects.toThrow();
   }, 20_000);
@@ -3131,7 +3367,7 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       statePath: explicit,
     });
 
-    expect(JSON.parse(await read(explicit)).lastCompletedTier).toBe('elevated');
+    expect(JSON.parse(await read(explicit)).lastCompletedTier).toBe('elevated-mechanism');
     await expect(read(stateFile(main))).rejects.toThrow();
   }, 20_000);
 
@@ -4469,9 +4705,11 @@ describe('the close step writes the run state without erasing the rest of it', (
     // spaces elevated work across RUNS, so moving it into a per-run file would
     // hand the next run a clean slate and let a second elevated item straight
     // through — the AR3-36 defect, restored by tidying.
-    expect(JSON.parse(await read(statePath))).toMatchObject({ lastCompletedTier: 'elevated' });
+    expect(JSON.parse(await read(statePath))).toMatchObject({
+      lastCompletedTier: 'elevated-mechanism',
+    });
     // and the run's own trace carries it too, per the state shape the item names
-    expect(await runStateOf(runDir)).toMatchObject({ lastCompletedTier: 'elevated' });
+    expect(await runStateOf(runDir)).toMatchObject({ lastCompletedTier: 'elevated-mechanism' });
   });
 });
 

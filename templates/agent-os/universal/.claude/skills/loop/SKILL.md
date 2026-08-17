@@ -152,6 +152,15 @@ meaningless when the run has no end. Never two elevated items back to back: land
 normal item on a healthy runtime in between. One unreviewed permissions or schema
 change is recoverable; a chain of them compounding overnight is not.
 
+**Only a change that EXECUTES spaces the next item.** The close records
+`normal` | `elevated-prose` | `elevated-mechanism`, computed from the diff's
+paths (`queue/state.mjs`): an elevated change whose elevated paths are all
+documents is `elevated-prose` and clears the ration, because a document cannot
+compound into a broken runtime overnight. Prose keeps its tier everywhere it is
+*reviewed* — model lane, cold readers, `human-review`, the gate sweep — and loses
+it only here. A tier outside that vocabulary **holds**, never releases
+(`docs/decisions/spacing-rations-mechanisms.md`).
+
 **The tier marker is a pre-filter, not the authority.** If an item passed as normal
 and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
@@ -242,7 +251,7 @@ Four of them deserve their reasons repeated:
 - **Nothing selectable** → also a clean stop, and **not the same finding**.
   Takeable work is still there and every piece of it is **held back by a
   condition that clears when something else happens, not by refilling the
-  queue**: the elevated spacing (a normal item lands), a blocker (its item
+  queue**: the elevated spacing (a normal or prose-only item lands), a blocker (its item
   closes), in-progress (the other session finishes), a trigger (a human
   declares it — and for a `trigger-auto` item that declaration is **written**,
   §2, so this is the one hold that needs a command rather than only time). The
@@ -514,7 +523,7 @@ three poisons the only channel by which this project learns.
 | **Re-aim an item whose premise turned out false** | Same rule wearing a disguise: an item silently rewritten into "what it should have said" is a work item the agent authored. Escalate it (§6) |
 | Take items needing a human decision | It cannot unblock itself; those wait in the Operator queue |
 | Take a `trigger-human` item | It would build for scale that does not exist |
-| Take two elevated items back to back | One unreviewed schema/permissions change is recoverable; a chain overnight is not |
+| Take two mechanism-touching elevated items back to back | One unreviewed schema/permissions change is recoverable; a chain overnight is not (a prose-only elevated close clears it) |
 | Merge past a blocking reviewer verdict | The reviewer gate is what replaced the human merge |
 | Trust a `blocked` label over the links | The label is a snapshot; the links are the dependency |
 | "Improve" on a queue that hands out nothing | Whether it stopped as empty or as held back, a run with no item is at its end, not at an invitation |
