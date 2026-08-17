@@ -331,122 +331,76 @@ export const millisPerCall = (
   return { perCall: Math.max(fastest / sampleCalls, 1e-6), sampleCalls, samples: taken };
 };
 
-interface ScalingBounds {
-  /** The smaller input size, in characters. The larger one is always 4×. */
-  n: number;
+interface CostBound {
+  /** The input size, in characters, the subject is measured at. */
+  size: number;
   /**
-   * The most the cost may grow for 4× the input. Chosen per subject, from its
-   * own measurements — the two differ because only one of them pays for I/O.
-   *
-   * 🔴 What a bound of this size does NOT detect, so "stays linear" is not read
-   * as "detects any superlinearity": over a 4× spread, a bound of 8 admits
-   * anything up to n^1.5 and a bound of 6 up to n^1.29, which means `n log n`
-   * (≈4.6 at these sizes) passes silently. That is a limit of comparing two
-   * sizes, not a regression — the absolute budget it replaced was blind to the
-   * same growth, and to quadratic terms ~22–350× larger besides.
+   * The most one call may cost at `size`. A **catastrophe ceiling**, not a
+   * budget: it is set from the measured cost of the dearest healthy shape times a
+   * wide margin, so it separates "this code is quadratic" from "this runner is
+   * busy" without needing to tell 4× from 8×.
    */
-  maxRatio: number;
-  /** A cost at `n` this far above the real one is a catastrophe, not a pause. */
-  catastropheMs: number;
+  ceilingMs: number;
 }
 
-/** How many small/large pairs `scalingRatio` measures before taking the cheapest. */
-const RATIO_PAIRS = 3;
-
 /**
- * The cost ratio between `prepare(n)` and `prepare(n * 4)`: the **cheapest of
- * `RATIO_PAIRS` interleaved pairs**, with the winning pair's figures returned
- * for the failure message.
+ * Assert that one call on `size` characters costs less than `ceilingMs` — one
+ * mechanism for both subjects, per `invariants.md`.
  *
- * 🔴 **Interleaved, and that is the whole repair.** The previous version measured
- * the small side to completion and then the large side, which makes the ratio a
- * comparison between *two different machines* whenever load arrives in between —
- * on a shared runner, routinely. Min-of-N inside each side cannot see it: once a
- * neighbour job starts, every sample of the large side is dear, so the minimum is
- * dear too. That is CI run 32004364990 — `8.07×` on code whose honest ratio is 4,
- * measured at 3.95–4.01 across 30 local pairs under six saturating processes.
+ * `prepare` builds the input OUTSIDE the timed call, so `' '.repeat(size)` is
+ * never charged to the code under test.
  *
- * Pairing puts the two measurements next to each other in time, so load that
- * covers a whole pair divides out of that pair's ratio, and taking the **minimum
- * across pairs** discards the pairs a burst straddled. Both directions matter and
- * both are pinned by tests: a linear subject under arriving load reads linear, a
- * quadratic subject still reads quadratic.
+ * 🔴 **Why this is absolute again, having twice been a ratio.** The ratio was
+ * introduced because an absolute budget failed on healthy code — 328 ms against
+ * ~0.1 ms of real work. That reading came from ONE untimed call, so a single
+ * scheduler quantum was the whole measurement. Since batching landed,
+ * `millisPerCall` is the min of nine batched samples, and that estimator is
+ * stable in a way the ratio never was — measured on this subject: 9.57–9.59 ms
+ * idle against 10.17 ms under ten saturating processes, a spread of **1.06×**.
  *
- * What it does NOT fix: load that arrives inside every pair, or a machine so
- * contended that no pair is clean. Those read as a wide ratio and fail the bound
- * — loudly, which is the right direction for a guard, and the reason this is a
- * minimum rather than an average.
+ * The ratio, by contrast, divides two independently noisy estimates, and it
+ * failed in BOTH directions:
+ *
+ * - **False red**, CI run 32004364990: load arriving between the two sides made
+ *   every sample of the large side dear, so 4× read as 8.07× and `master` went
+ *   red on code nobody had changed.
+ * - **False green**, measured while repairing that: interleaving the sides and
+ *   taking the cheapest ratio — the obvious fix — lets a genuinely QUADRATIC
+ *   subject pass at 2.15× against a bound of 8, because noise in the denominator
+ *   shrinks a ratio and a minimum then selects exactly the pair where the defect
+ *   is masked. A median does no better (2.21×). That direction is silent, which
+ *   makes it worse than the failure it replaced.
+ *
+ * So the ratio is gone rather than tuned — `invariants.md` prefers deleting a
+ * rule to adding one, and this rule had two ways of lying.
+ *
+ * ⚠ **What the ceiling does NOT detect**, stated because a guard's limits are
+ * part of its contract: a term that is superlinear but cheap. At these sizes it
+ * admits anything under ~2,700× the healthy cost of the pure subject, so `n log n`
+ * and `n^1.5` pass silently. The ratio nominally caught those and in practice
+ * could not be trusted to; what both catch, and what has actually happened here
+ * twice, is the catastrophic shape — the reproduced defect measures 1,685 ms
+ * against a 0.09 ms healthy cost, four orders of magnitude clear of the noise.
  */
-export const scalingRatio = (prepare: (size: number) => () => void, n: number): number =>
-  scalingMeasurement(prepare, n).ratio;
-
-const scalingMeasurement = (
-  prepare: (size: number) => () => void,
-  n: number,
-): {
-  ratio: number;
-  small: { perCall: number; sampleCalls: number; samples: number };
-  large: { perCall: number; sampleCalls: number; samples: number };
-} => {
-  let best: ReturnType<typeof scalingMeasurement> | null = null;
-  for (let pair = 0; pair < RATIO_PAIRS; pair += 1) {
-    const small = millisPerCall(prepare(n));
-    const large = millisPerCall(prepare(n * 4));
-    const ratio = large.perCall / small.perCall;
-    if (best === null || ratio < best.ratio) best = { ratio, small, large };
-  }
-  // `RATIO_PAIRS` is a positive constant, so the loop always runs; the assertion
-  // is for the type, not for a case that can occur.
-  return best as ReturnType<typeof scalingMeasurement>;
-};
-
-/**
- * Assert that `prepare(size)`'s call costs at most `maxRatio`× as much on 4× the
- * input — one mechanism for both subjects, per `invariants.md`.
- *
- * `prepare` builds the input OUTSIDE the timed call, so `' '.repeat(n)` is never
- * charged to the code under test.
- *
- * The catastrophe ceiling runs BEFORE the 4× measurement on purpose. A defect
- * worse than quadratic would make that second measurement take minutes, and a
- * vitest timeout reports nothing about what was measured; this fails first, with
- * the numbers in the message.
- */
-const staysLinear = (
+const costsUnder = (
   what: string,
   prepare: (size: number) => () => void,
-  { n, maxRatio, catastropheMs }: ScalingBounds,
+  { size, ceilingMs }: CostBound,
 ): void => {
-  const probe = millisPerCall(prepare(n));
+  const { perCall, sampleCalls, samples } = millisPerCall(prepare(size));
+  // 🔴 The sample sizes stay in the message. They are the one number that
+  // separates a real regression from an undersized measurement, and both of this
+  // apparatus's past repairs were diagnosed from the figures in this string.
   expect(
-    probe.perCall,
-    `${what}: ${n} characters cost ${probe.perCall.toFixed(4)}ms per call — the ` +
-      `fastest of ${probe.samples} samples of ${probe.sampleCalls} calls each — ` +
-      `over the ${catastropheMs}ms catastrophe ceiling. That is far past ` +
-      `anything a pause explains, so the ${n * 4}-character measurement is ` +
-      'skipped rather than left to run for minutes.',
-  ).toBeLessThan(catastropheMs);
-
-  const { ratio, small, large } = scalingMeasurement(prepare, n);
-  // 🔴 The sample sizes are in the message on purpose. They are the one number
-  // that separates a real regression from an undersized measurement, and the
-  // flake this batching fixed was diagnosed from the figures in this string.
-  // A sample of 1 on the cheap side means the probe mis-sized it and the
-  // reading is noise, not evidence. The figures are the WINNING pair's — the
-  // one the ratio came from — so the message describes the measurement that
-  // decided the result rather than an average of several.
-  expect(
-    ratio,
-    `${what}: 4× the input cost ${ratio.toFixed(2)}× the time — ` +
-      `${large.perCall.toFixed(4)}ms/call at ${n * 4} characters ` +
-      `(${large.samples} samples × ${large.sampleCalls} calls) against ` +
-      `${small.perCall.toFixed(4)}ms/call at ${n} ` +
-      `(${small.samples} × ${small.sampleCalls}), the cheapest of ` +
-      `${RATIO_PAIRS} interleaved pairs. Expected under ` +
-      `${maxRatio}×: linear work cannot exceed 4×, and the quadratic whitespace ` +
-      'shape this guards against measures ~16×.',
-  ).toBeLessThan(maxRatio);
+    perCall,
+    `${what}: ${size} characters cost ${perCall.toFixed(4)}ms per call — the ` +
+      `fastest of ${samples} samples of ${sampleCalls} calls each — over the ` +
+      `${ceilingMs}ms ceiling. The ceiling is ~24× the dearest healthy shape ` +
+      'measured under CPU saturation, so this is a quadratic shape rather than a ' +
+      'busy runner; the reproduced defect of this class measures ~1,685ms.',
+  ).toBeLessThan(ceilingMs);
 };
+
 // 🔴 The measuring apparatus gets its own tests, because it has now been wrong
 // twice and was repaired both times without one. First it asserted an absolute
 // millisecond budget over a single untimed sample, and CI failed it on healthy
@@ -582,64 +536,62 @@ describe('the scaling harness sizes its own samples', () => {
     }
   });
 
-  // 🔴 The third failure of this apparatus, and the first one whose cause is a
-  // property of the METHOD rather than of a number in it.
+  // 🔴 The third failure of this apparatus, and the one that retired the ratio.
   //
-  // CI run 32004364990 on master: `8.07×` against a bound of 8, on a tree that
-  // had passed the identical measurement twice on the same PR and five times
-  // locally. The bound was not too tight — min-of-9 within each side already
-  // rejects a scheduler quantum. What it cannot reject is load that arrives
-  // BETWEEN the two sides: `small` is measured to completion, then `large` is,
-  // and on a shared runner the machine those two measurements ran on is not the
-  // same machine. Every sample of `large` is then dear, so the min does not
-  // help, and a ratio of 4 reads as 8.
+  // CI run 32004364990 on master: `8.07×` against a bound of 8, on a tree that had
+  // passed the identical measurement twice on the same PR and five times locally.
+  // The bound was not too tight. Min-of-9 within each side already rejects a
+  // scheduler quantum; what it cannot reject is load arriving BETWEEN the two
+  // sides, which makes every sample of the large side dear — a false RED.
   //
-  // Measured locally, 30 pairs under six saturating processes: 3.95–4.01. The
-  // spread is not the problem; the ORDER is. So the fix is interleaving, not a
-  // wider ceiling — the ceiling stays at 8, the quadratic shape still measures
-  // ~16, and what changes is that each ratio now comes from a small and a large
-  // measured next to each other, with the run's answer the cheapest of them.
-  const iterate = (iterations: number): number => {
-    let sum = 0;
-    for (let i = 0; i < iterations; i += 1) sum += i % 7;
-    return sum;
+  // The obvious repair, interleaving the sides and taking the cheapest ratio, was
+  // built and then measured against a genuinely quadratic subject: **2.15×**
+  // against a bound of 8. Noise in the denominator shrinks a ratio, so a minimum
+  // selects exactly the pair where the defect is masked; a median gives 2.21× and
+  // fails the same way. That is a false GREEN, which is silent, and it is why the
+  // ratio is deleted rather than tuned.
+  //
+  // What replaces it is the absolute ceiling `costsUnder` documents, and these
+  // tests pin the two things that make the ceiling honest: it fires on a call that
+  // is genuinely too dear, and it does not fire on one that is not — measured
+  // through the same batching estimator, whose spread under saturation is 1.06×.
+  const burnFor = (ms: number) => () => {
+    const until = performance.now() + ms;
+    while (performance.now() < until) {
+      /* burn */
+    }
   };
 
-  it('ignores load that arrives after the first measurement', () => {
-    // The CI incident, modelled exactly: the subject is honestly linear, and
-    // something else on the machine starts competing once the small side is
-    // done. `prepare` is called once per measurement, so "after the first" is
-    // the same boundary the old two-measurement method straddled.
-    let prepared = 0;
-    const underLoad = (size: number) => {
-      prepared += 1;
-      const loaded = prepared > 1;
-      return () => {
-        iterate(size);
-        if (loaded) iterate(240_000); // the neighbour job, not this subject
-      };
+  it('fires on a call dearer than the ceiling', () => {
+    // 4 ms per call against a 1 ms ceiling: no plausible amount of runner noise
+    // makes a cheap call read this way, which is the property the ceiling rests on.
+    expect(() => costsUnder('a dear subject', () => burnFor(4), { size: 1, ceilingMs: 1 })).toThrow(
+      /over the 1ms ceiling/,
+    );
+  });
+
+  it('stays quiet on a call inside the ceiling', () => {
+    // The other direction, so "fires on dear calls" cannot be satisfied by a
+    // ceiling that fires on everything.
+    expect(() =>
+      costsUnder('a cheap subject', () => burnFor(0.05), { size: 1, ceilingMs: 50 }),
+    ).not.toThrow();
+  });
+
+  it('is not fooled by load that arrives mid-measurement', () => {
+    // The failure that killed the ratio, replayed against the ceiling: the subject
+    // is cheap and something else starts competing partway through. A ratio read
+    // this as growth; a ceiling reads it as what it is — still far under.
+    let calls = 0;
+    const cheapThenLoaded = () => () => {
+      calls += 1;
+      burnFor(0.05)();
+      if (calls > 20) burnFor(0.6)(); // the neighbour job, 12× the subject
     };
 
-    // Read straight through, this is 16× — the quadratic reading, on linear
-    // code. Interleaved, the pairs after the first see the load on BOTH sides
-    // and divide it out.
-    expect(scalingRatio(underLoad, 20_000)).toBeLessThan(8);
-  });
-
-  it('still reads a quadratic subject as quadratic', () => {
-    // The other direction, so "survives load" cannot be satisfied by a method
-    // that survives everything. 4× the input, 16× the work — no load anywhere.
-    const quadratic = (size: number) => () => iterate((size * size) / 20_000);
-
-    expect(scalingRatio(quadratic, 20_000)).toBeGreaterThan(8);
-  });
-
-  it('reads an honestly linear subject as linear', () => {
-    const linear = (size: number) => () => iterate(size);
-
-    const ratio = scalingRatio(linear, 20_000);
-    expect(ratio).toBeGreaterThan(2);
-    expect(ratio).toBeLessThan(8);
+    expect(() =>
+      costsUnder('a cheap subject', cheapThenLoaded, { size: 1, ceilingMs: 50 }),
+    ).not.toThrow();
   });
 });
 
@@ -778,26 +730,25 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
   // attacker-written on any public tracker, and this function runs per item on
   // every selection.
   //
-  // Bounds GROWTH, not milliseconds — see "measuring SCALING" at the top of this
-  // file for the CI failure that retired the absolute budget. This subject sets
-  // its own numbers rather than borrowing the fold's, because it is pure: with no
-  // constant I/O to dilute it, healthy growth sits AT the linear 4.0 (measured
-  // 3.96–4.32 over 450 samples under CPU saturation) rather than the fold's ~1.4,
-  // so 8 is the bound that still separates it from the quadratic 16.05.
+  // Bounds the COST of one call, not its growth — see `costsUnder` for why the
+  // ratio was retired after failing in both directions, and why an absolute
+  // ceiling is trustworthy now that the estimator is min-of-nine batched samples.
   //
-  // 🔴 The sizes are 8k and 32k, where the old fixtures were 65k and 20k — so
-  // this NO LONGER measures a body at the tracker's 64k cap, and the name says
-  // 'as it grows' rather than 'at the tracker size limit' for that reason. A
-  // name is a coverage claim, and this one had to move with the fixtures.
-  // Shrinking them buys sensitivity rather than spending it: a ratio bound at
-  // these sizes fires on a quadratic term ~35× smaller than the retired 250 ms
-  // budget caught at 20k on this same shape. What it costs is the tail — a
-  // defect that only turns superlinear ABOVE 32k is now invisible here, and the
-  // reproduced link defect measures 16.07× at these sizes — a second, separate
-  // run of the same reproduction as the 16.05× above, not a different
-  // measurement — so nothing known
-  // lives in that gap.
-  it('stays linear on a body as it grows', { timeout: 60_000 }, async () => {
+  // The numbers here are this subject's own, measured rather than borrowed:
+  // healthy cost at 32k is 0.084 ms idle and 0.090 ms under ten saturating
+  // processes for the two whitespace shapes, and 9.57 ms / 10.17 ms for the
+  // bracket run, which is linear with a large constant rather than a defect. The
+  // ceiling is 250 ms — ~24× the dearest of those under saturation — and the
+  // reproduced link defect measures 1,685 ms at the same size.
+  //
+  // 🔴 The size is 32k, where the old fixture was 65k — so this does NOT measure
+  // a body at the tracker's 64k cap, and the name says 'costs a bounded amount'
+  // rather than 'at the tracker size limit' for that reason. A name is a coverage
+  // claim. What the smaller fixture costs is the tail: a defect that only turns
+  // superlinear above 32k is invisible here. Nothing known lives in that gap —
+  // the one defect this class has produced is already 4 orders of magnitude over
+  // the ceiling at 32k.
+  it('costs a bounded amount per call on a large body', { timeout: 60_000 }, async () => {
     const { hygieneOf } = await load('core.mjs');
     const shapes: Array<[string, (size: number) => string]> = [
       // the unterminated link is the quadratic shape, and it goes first so a
@@ -808,13 +759,13 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
     ];
 
     for (const [shape, body] of shapes) {
-      staysLinear(
+      costsUnder(
         `hygieneOf on ${shape}`,
         (size) => {
           const item = ticket({ body: body(size) });
           return () => hygieneOf(item);
         },
-        { n: 8_192, maxRatio: 8, catastropheMs: 500 },
+        { size: 32_768, ceilingMs: 250 },
       );
     }
   });
@@ -2640,32 +2591,26 @@ describe('plan-md files a triage proposal instead of instructing a human to file
   // occurrence of the shape and says remembering it once was evidently not
   // enough; this is the fourth, so it gets the same bar the sibling has.
   //
-  // Bounds GROWTH, not milliseconds: this is the test CI failed at 328ms on ~0.1ms
-  // of real work, and the whole diagnosis is at the top of this file.
-  // The sizes are 4k/16k rather than the old 65k: a scaling claim needs a PAIR of
-  // sizes, not the biggest one, and the pair already separates healthy 1.39 from
-  // quadratic 16.5 while keeping a red run legible in seconds instead of minutes.
+  // Bounds the COST of one call, not its growth. This IS the test CI once failed
+  // at 328 ms on ~0.1 ms of real work, which is why the bound became a ratio —
+  // and the ratio has since failed in both directions (`costsUnder` carries the
+  // measurements). The absolute form is trustworthy now for a reason that did not
+  // hold then: the estimator is the min of nine batched samples, whose spread
+  // under ten saturating processes measures 1.06× on the sibling subject.
   //
-  // 🔴 **Count two detectors here, not three.** All three original shapes are
-  // kept, but the trailing-newline one CANNOT fail on the defect described
-  // above: a newline after the run is what makes that spelling fast ("0s the
-  // moment a newline appears after the run"), so it measures ~1.0× broken and
-  // ~1.13× healthy. Against the known defect it contributes nothing, and it is
-  // here as a detector of the opposite polarity — a future defect that is slow
-  // precisely WHEN a line terminator follows the run. That is worth keeping and
-  // is not what the shape's history suggests, so it is stated rather than left
-  // for a reader to count coverage they do not have.
+  // Measured here, worst of three runs under that saturation, at 16k: 0.27 ms for
+  // the space run, 0.40 ms for the tabs, 0.50 ms for the newline shape. The
+  // fixture is 32k, where the defect above — quadratic — extrapolates to ~1,600 ms
+  // from its 6,659 ms at 65k, so a 250 ms ceiling sits two orders of magnitude
+  // over healthy and six times under the defect.
   //
-  // One measurement bias, known and left alone: the three shapes share one plan
-  // file, so the `4n` reading scans more bullets than the `n` reading did. It
-  // pushes the ratio UP — toward a false red, the harmless direction — and
-  // measures at 1.15–1.60 against a bound of 6. That range GREW when sampling
-  // started batching (it was 1.10–1.32): a sample is now many calls, each
-  // appending a bullet and re-reading the file, so the plan grows ~10× faster
-  // during a run. Still far inside the bound and still pointing the safe way; a
-  // fresh plan per size would remove the term and cost more machinery than the
-  // term is worth, but the number is worth re-measuring if the bound ever moves.
-  it('folds a field onto one line in linear time', { timeout: 60_000 }, async () => {
+  // 🔴 The measurement bias that came with sharing one plan file is GONE, and
+  // this is where a stale comment would have survived: the three shapes appended
+  // to one growing plan, so a `4n` reading scanned more bullets than its `n`
+  // reading did, and the note here tracked that term at 1.15–1.60 against a bound
+  // of 6. With a single size there is no second reading to bias — the growth of
+  // the plan now shows up as cost, inside a ceiling two orders of magnitude away.
+  it('folds a field at a bounded cost per call', { timeout: 60_000 }, async () => {
     const { proposeTriage } = await load('plan-md.mjs');
     const planPath = await withPlan();
     const shapes: Array<[string, (size: number) => string]> = [
@@ -2676,7 +2621,7 @@ describe('plan-md files a triage proposal instead of instructing a human to file
     let nonce = 0;
 
     for (const [shape, whitespace] of shapes) {
-      staysLinear(
+      costsUnder(
         `proposeTriage folding ${shape}`,
         (size) => {
           const run = whitespace(size);
@@ -2685,7 +2630,7 @@ describe('plan-md files a triage proposal instead of instructing a human to file
             // Only a NEW proposal is folded — an increment rewrites a counter and
             // never builds a bullet — so every call carries its own fingerprint,
             // and this checks that rather than trusting it. A deduped call would
-            // time the wrong code path and report a flat, meaningless ratio.
+            // time the wrong code path and report a flat, meaningless cost.
             const result = proposeTriage(
               { finding: `fold ${nonce} ${run}`, part: 'p', change: 'c', proof: 'pr' },
               { planPath },
@@ -2693,7 +2638,7 @@ describe('plan-md files a triage proposal instead of instructing a human to file
             if (!result.filed) throw new Error('deduped, so nothing was folded');
           };
         },
-        { n: 4_096, maxRatio: 6, catastropheMs: 500 },
+        { size: 32_768, ceilingMs: 250 },
       );
     }
   });
