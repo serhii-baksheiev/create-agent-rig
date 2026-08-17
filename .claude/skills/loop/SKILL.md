@@ -415,11 +415,12 @@ past the cap. The count outlives the session, which is the point — a counter h
 context is one the next context does not have.
 
 ⚠ **What the cap does not carry, stated because the gap decides what you can write in
-the escalation:** the last gate's blockers are not persisted anywhere. Per-round
-verdicts are a separate item (the verdict schema), so the diagnosis a stalled item
-gets is the round count plus whatever this session still holds — and after a
-compaction, that is the round count alone. Say so in the comment rather than
-reconstructing findings from memory.
+the escalation:** the counter records the round and nothing about it. What each round
+found is in the run journal instead — `pr-ship` records every verdict that parsed,
+with its blockers, so a stalled item's diagnosis is the round count plus the
+`decisions.jsonl` of this run rather than whatever the session still remembers. Read
+it back rather than reconstructing findings from memory, and where the run declared no
+run directory, say that instead: there is nothing to read.
 
 🔴 **Escalate through the adapter, never by hand-labelling the item.** Every
 adapter's `escalate()` counts the escalation into the run state as it marks the

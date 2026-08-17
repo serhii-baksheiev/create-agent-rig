@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { readGateSpec, verdictExamplesIn, verdictWordsFor } from './verdict-spec.js';
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const skillPath = (...parts: string[]) =>
   path.join(repoRoot, 'templates', 'agent-os', ...parts, 'SKILL.md');
@@ -315,5 +317,58 @@ describe('pr-ship skill (universal)', () => {
     const fm = frontmatterOf(content);
     expect(fm['name']).toBe('pr-ship');
     expect(fm['allowed-tools']).toBeTruthy();
+  });
+
+  // AR-65: this gate reads other gates' answers, so it is the one place where a
+  // free-prose verdict actually costs something — a reviewer that returned no
+  // parseable block, or a HOLD naming nothing, was until now indistinguishable
+  // from a clean pass to a session skimming for a word.
+  it("checks each reviewer's returned block before it decides anything", async () => {
+    const content = await readGateSpec('pr-ship');
+    // the command, verbatim: a gate told to "validate the block" and given no
+    // way to do it validates it by reading, which is what this replaces
+    expect(content).toContain('node .claude/scripts/verdict.mjs check');
+    expect(content).toMatch(/each reviewer|every reviewer|each returned|each gate/i);
+    // and the ordering — a check run after the verdict was believed is a report
+    expect(content).toMatch(/before[\s\S]{0,60}(decid|verdict)/i);
+  });
+
+  it('refuses a reviewer whose stop verdict names no blocker, as incomplete', async () => {
+    const content = await readGateSpec('pr-ship');
+    expect(content).toMatch(/incomplete/i);
+    // 🔴 Refused, not silently upgraded to a pass and not accepted as a stop:
+    // a blocker list is what the author acts on, so a stop without one is an
+    // answer the gate cannot use in either direction.
+    expect(content).toMatch(/no blocker|names no blocker|without a blocker/i);
+  });
+});
+
+// The skill half of AR-65 — the agent half is in `agents.test.ts`, and both
+// halves assert the same promise: one fenced json block, of the shape
+// `lib/verdict.mjs` defines, naming the gate that wrote it.
+describe('every gate skill ends with one machine-readable verdict', () => {
+  const GATE_SKILLS = ['pr-ship', 'check-premises', 'post-deploy-verify'];
+
+  it.each(GATE_SKILLS)('%s asks for exactly one fenced json block', async (gate) => {
+    const content = await readGateSpec(gate);
+    expect(content).toMatch(/exactly one[\s\S]{0,80}json/i);
+  });
+
+  it.each(GATE_SKILLS)('%s shows an example verdict that names itself', async (gate) => {
+    const content = await readGateSpec(gate);
+    const examples = verdictExamplesIn(content, gate);
+    expect(examples, `${gate} ships no fenced json example`).not.toHaveLength(0);
+
+    const own = examples.filter((example) => example['gate'] === gate);
+    expect(own, `no example in ${gate} carries \`"gate": "${gate}"\``).not.toHaveLength(0);
+
+    // 🔴 `check-premises` states its verdicts as prose with spaces (`PREMISES
+    // HOLD`, asserted above) and inside the block as one token
+    // (`PREMISES_HOLD`). Both forms are the contract; this asserts the machine
+    // one, and the two tests together stop either from drifting alone.
+    const allowed = await verdictWordsFor(gate);
+    for (const example of own) {
+      expect(allowed, `${gate} shows a word it may not return`).toContain(example['verdict']);
+    }
   });
 });

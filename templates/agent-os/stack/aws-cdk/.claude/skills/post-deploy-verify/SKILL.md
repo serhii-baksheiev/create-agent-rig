@@ -55,6 +55,38 @@ Report exactly one, with the evidence lines that justify it:
   metric or log result means "no invocations", not "no errors"** — name a
   vacuous result honestly instead of reporting it as a pass.
 
+### The verdict block
+
+End your report with **exactly one** fenced `json` block of this shape, and
+nothing after it. The prose above it carries the evidence a human reads; this is
+what the caller acts on — and what it retypes into
+`node .claude/scripts/run-state.mjs deploy HEALTHY|REGRESSION`, which is where
+the next selection reads the verdict.
+
+```json
+{
+  "gate": "post-deploy-verify",
+  "verdict": "REGRESSION",
+  "blockers": [
+    {
+      "rule": "smoke request",
+      "note": "POST /notes returned 502 twice; expected 201"
+    }
+  ],
+  "advisories": [],
+  "evidence": ["stack LastUpdatedTime is this deploy", "DLQ depth 0"]
+}
+```
+
+- `verdict` is `HEALTHY` or `REGRESSION` — this skill has no third answer, and
+  "could not verify" is a `REGRESSION`, never a missing verdict.
+- A `REGRESSION` names one blocker per failed or unverifiable step, with the
+  observed output in its `note`. A step has no file, so `file` and `line` are
+  omitted here.
+- A `REGRESSION` naming no blocker is **refused**, and so is a `HEALTHY`
+  carrying one: `node .claude/scripts/verdict.mjs check <report>` is what
+  refuses them.
+
 ## Boundaries
 
 - Read-only AWS calls (`describe*`, `get*`, `list*`, `filter-log-events`) plus

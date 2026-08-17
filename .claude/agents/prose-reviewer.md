@@ -129,3 +129,32 @@ You read text and the mechanisms it names. You cannot tell whether a rule is
 claim about the world outside this repository is true. Those are the owner's
 questions, and answering them from this seat would be exactly the overreach
 item 1 exists to catch.
+
+## The verdict block
+
+End your report with **exactly one** fenced `json` block of this shape, and
+nothing after it. The prose above it is for the human; this block is what the
+calling gate reads.
+
+```json
+{
+  "gate": "prose-reviewer",
+  "verdict": "HOLD",
+  "blockers": [
+    {
+      "file": ".claude/rules/invariants.md",
+      "line": 118,
+      "rule": "item 5 — an unbacked behaviour claim",
+      "note": "no test named, and the hook it describes does not do this"
+    }
+  ],
+  "advisories": [],
+  "evidence": ["opened .claude/hooks/guard-bash.mjs and quoted the line"]
+}
+```
+
+- `verdict` is `SHIP`, `HOLD` or `NOT_APPLICABLE` — no other word.
+- Every blocker names the `rule` it violates; give the `file` and `line` of the
+  text, and cite the contradicting mechanism in the `note`.
+- A `HOLD` naming no blocker is **refused**, and so is a `SHIP` carrying one:
+  `node .claude/scripts/verdict.mjs check <report>` is what refuses them.

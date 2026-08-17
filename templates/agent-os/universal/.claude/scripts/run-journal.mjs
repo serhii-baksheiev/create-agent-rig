@@ -68,6 +68,7 @@ export const JOURNAL_FAILURES = Object.freeze([
   'undeclared', // no runDir was passed at all
   'run-dir-missing', // a runDir was passed and there is no such directory
   'field-missing', // a record that would name neither its gate nor its verdict
+  'field-invalid', // a field was supplied in a shape the record cannot carry
   'unusable', // the journal on disk cannot be trusted (sequence, or unreadable)
   'ended', // this run already carries its run-end marker
 ]);
@@ -316,11 +317,36 @@ const append = (runDir, file, fields, now) => {
   return record;
 };
 
-/** A gate verdict: what was decided, and on what basis. */
-export const recordDecision = ({ runDir, gate, verdict, why = null, now } = {}) => {
+/**
+ * A gate verdict: what was decided, and on what basis.
+ *
+ * `blockers` is what a structured verdict carries beyond the word
+ * (`lib/verdict.mjs`), and it is written verbatim — the blocker's own `rule` is
+ * what the author acts on, so a record keeping only a count would be the prose
+ * verdict again wearing a field name.
+ *
+ * 🔴 **Omitted is not empty.** With no `blockers` argument the key is absent
+ * from the record; `[]` is a CLAIM — "this gate named none" — and a caller that
+ * never passed the field never made it. Writing one in would let a later reader
+ * conclude a gate ruled clean from a record whose writer said nothing at all.
+ */
+export const recordDecision = ({ runDir, gate, verdict, why = null, blockers, now } = {}) => {
   requireField('gate', gate);
   requireField('verdict', verdict);
-  return append(runDir, DECISIONS, { gate, verdict, why }, now);
+
+  const fields = { gate, verdict, why };
+  if (blockers !== undefined) {
+    if (!Array.isArray(blockers)) {
+      throw new RunJournalError(
+        'field-invalid',
+        'the run journal takes `blockers` as a list of the blockers a verdict named. A ' +
+          'summary sentence in its place is the prose verdict this field exists to replace.',
+      );
+    }
+    fields.blockers = blockers;
+  }
+
+  return append(runDir, DECISIONS, fields, now);
 };
 
 /**

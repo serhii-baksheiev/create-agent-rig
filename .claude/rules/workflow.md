@@ -99,6 +99,17 @@ travels one path to merge, in this order:
 
    The `pr-ship` skill drives this fan-out and returns a SHIP / HOLD verdict
    with named blockers; blocking findings are resolved, not argued with.
+
+   **A verdict is a block, not a sentence.** Every gate ends its report with one
+   fenced `json` block of the shape `.claude/scripts/lib/verdict.mjs` defines,
+   and `pr-ship` runs `node .claude/scripts/verdict.mjs check` on each answer
+   **before** it decides anything from it. A report that does not parse — no
+   block, a word no gate returns, a blocker naming no rule, a stop naming no
+   blocker — is `incomplete`: the reviewer did not answer, which is neither a
+   pass nor a stop. Reading it as a pass is the failure the check exists to
+   prevent. What the check cannot decide for a gate the shared vocabulary does
+   not name is stated as that module's first limit; the gate reads such a word
+   against the reviewer's own spec.
 3. **Merge — on an explicit, non-lazy criterion.** Do not trust a watcher
    command that can exit before the checks have even registered. Confirm that
    the **required** check completed successfully **for this commit** — a list
