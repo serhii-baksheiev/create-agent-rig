@@ -1356,22 +1356,42 @@ describe('the close step records the tier the change turned out to be', () => {
     ]);
   });
 
-  it('counts an .mdx rulebook page as a document too', async () => {
+  // 🔴 `.mdx` is a MECHANISM, and the missing `x` is a ruling rather than an
+  // oversight. The sweep's inert test is `/\.mdx?$/` — both flavours need no
+  // reviewer — but `decision-router.mjs` sends `.mdx` down the code lane on the
+  // stated ground that *MDX carries components and imports: it is a program that
+  // renders, not a document that is read* (`docs/decisions/review-lanes.md`).
+  // Rationing it as prose would clear the spacing hold on a file this same rig
+  // calls a program, on the permissive side. So the two predicates differ on
+  // purpose, live in one file, and answer questions that are not the same
+  // question: "needs no reviewer" is not "executes nothing".
+  it('treats an .mdx rulebook page as a mechanism, not a document', async () => {
     const { recordCompletedTier } = await load('state.mjs');
     const { dir, statePath } = await withProject();
 
-    // The sweep's own inert test is `/\.mdx?$/`, and this split has to read the
-    // same two extensions — a second, narrower notion of "document" here would be
-    // the two-implementations defect `invariants.md` names, with the copy nobody
-    // looks at rationing on a rule the other one does not have.
     const result = recordCompletedTier({
       changedFiles: ['.claude/rules/spacing.mdx'],
       projectRoot: dir,
       statePath,
     });
 
-    expect(result.tier).toBe('elevated-prose');
+    expect(result.tier).toBe('elevated-mechanism');
+    // …and it is still reported as an elevated path: the ration narrowed, the
+    // report did not.
     expect(result.elevatedPaths).toEqual(['.claude/rules/spacing.mdx']);
+  });
+
+  it('counts a plain .md rulebook page as prose', async () => {
+    const { recordCompletedTier } = await load('state.mjs');
+    const { dir, statePath } = await withProject();
+
+    const result = recordCompletedTier({
+      changedFiles: ['.claude/rules/spacing.md'],
+      projectRoot: dir,
+      statePath,
+    });
+
+    expect(result.tier).toBe('elevated-prose');
   });
 
   const MECHANISMS: Array<[string, string]> = [
@@ -3159,10 +3179,11 @@ describe('reading the state — only a truly absent file means "nothing has clos
     expect(refusalOf(() => loadState(statePath))).toContain(statePath);
   });
 
-  // 🔴 The shape check belongs to the reader and not to the selector: `core.mjs`
-  // compares with `===`, so every value below is silently equal to "no elevated
-  // item has closed". A tier that cannot be trusted has to stop the run, exactly
-  // as an unparseable one does.
+  // 🔴 The shape check belongs to the reader as well as to the selector, and the
+  // two answer different questions. `core.mjs` now HOLDS on every value below —
+  // safe, but silent, and a run held by a typo looks exactly like a run held by
+  // the rule. A tier that cannot be trusted has to stop the run and name the
+  // file, exactly as an unparseable one does.
   const REFUSED: Array<[string, string]> = [
     ['a tier in the wrong case', '{"lastCompletedTier":"Elevated"}'],
     ['a tier outside the closed vocabulary', '{"lastCompletedTier":"tier-2"}'],

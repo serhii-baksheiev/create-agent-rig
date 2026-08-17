@@ -11,8 +11,9 @@ why a parked cause outranks a holding one. It is not loaded into any session.
   the loop drains it.
 - **Nothing selectable** — the work is there and every piece of it is held back
   by a condition that clears when _something else happens_: the elevated spacing
-  (a normal item lands), a blocker (its item closes), `in-progress` (the other
-  session finishes), a trigger (a human declares it).
+  (a normal item lands — or an elevated one whose paths were all documents, see
+  `spacing-rations-mechanisms.md`), a blocker (its item closes), `in-progress`
+  (the other session finishes), a trigger (a human declares it).
 
 An empty queue wants refilling. A held one wants interleaving, or simply time.
 Reporting the second as the first sends the owner to write tickets that already

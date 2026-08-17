@@ -148,9 +148,10 @@ word: a new run starts with a clean state, which is the same remedy the budget
 stop relies on.
 
 **The elevated tier is rationed by spacing, not by counting** — a per-run count is
-meaningless when the run has no end. Never two elevated items back to back: land a
-normal item on a healthy runtime in between. One unreviewed permissions or schema
-change is recoverable; a chain of them compounding overnight is not.
+meaningless when the run has no end. Never two elevated items back to back **when
+the first one touched a mechanism** (next paragraph): land a normal item on a
+healthy runtime in between. One unreviewed permissions or schema change is
+recoverable; a chain of them compounding overnight is not.
 
 **Only a change that EXECUTES spaces the next item.** The close records
 `normal` | `elevated-prose` | `elevated-mechanism`, computed from the diff's

@@ -3,7 +3,8 @@
  * the loop closed.
  *
  * 🔴 **Why this file exists at all.** `selectNext` rations the elevated tier by
- * spacing: never two elevated items back to back. It reads
+ * spacing: never two elevated items back to back, where "elevated" now means the
+ * half of the tier that EXECUTES — see `tierOf` below. It reads
  * `config.lastCompletedTier` — and nothing anywhere wrote it, so the filter was
  * called with `null` on every selection and **the ration never fired between
  * tasks**. The rule was upheld by whichever session happened to read it, which
@@ -30,7 +31,7 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { elevatedPathsIn, isDocument, readDeclaredPaths } from '../detect-missed-gate.mjs';
+import { elevatedPathsIn, executesNothing, readDeclaredPaths } from '../detect-missed-gate.mjs';
 import { updateState } from '../run-state.mjs';
 import { mainCheckoutRoot } from './checkout.mjs';
 
@@ -52,14 +53,24 @@ import { mainCheckoutRoot } from './checkout.mjs';
  * tier off the first path, or off "most of them are documents", would ship a
  * ration any diff can opt out of by also touching a `.md`.
  *
- * `isDocument` is the sweep's own predicate, imported rather than restated —
- * two notions of "document" is the two-implementations defect `invariants.md`
- * names, with the copy nobody looks at rationing on a rule the other one does
- * not have.
+ * The predicate is `executesNothing` — **`.md` only, not `.mdx`** — imported
+ * from `detect-missed-gate.mjs` so it sits beside the sweep's own markdown test
+ * rather than drifting from it. The two are deliberately different and the
+ * difference is the ration's whole subject: the sweep asks *does this need a
+ * reviewer*, this asks *can it compound overnight*, and MDX is a program that
+ * renders (`docs/decisions/review-lanes.md`).
+ *
+ * ⚠ **The limit worth knowing before trusting this:** a skill's `SKILL.md` is
+ * prose by this test, and some of them carry shell snippets an agent copies and
+ * runs. The owner's ruling is that skills stay prose for rationing — they are
+ * reviewed like the rules they are, and rewriting a procedure is not the chain
+ * of unreviewed compounding changes the ration was bought to stop. It is,
+ * however, the weakest ground the "no runtime executes it" justification stands
+ * on, and the place to look first if the ration ever turns out too loose.
  */
 const tierOf = (elevated) => {
   if (elevated.length === 0) return 'normal';
-  return elevated.every(isDocument) ? 'elevated-prose' : 'elevated-mechanism';
+  return elevated.every(executesNothing) ? 'elevated-prose' : 'elevated-mechanism';
 };
 
 /**

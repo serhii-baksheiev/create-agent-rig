@@ -146,7 +146,8 @@ export const loadState = (statePath) => {
     throw new Error(
       `${statePath} is valid JSON but not a state object, so the last completed tier ` +
         'cannot be read. Expected `{ "lastCompletedTier": "normal" | "elevated-prose" ' +
-        '| "elevated-mechanism" }`. ' +
+        '| "elevated-mechanism" }` — the legacy `"elevated"` is still accepted, and ' +
+        'held. ' +
         'Delete the file if you are unsure — an absent state means "nothing has ' +
         'closed yet", which is safe.',
     );

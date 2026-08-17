@@ -20,9 +20,21 @@ executes it. Yet in any repository whose rulebook lives under a declared
 elevated path — every rig, by construction — a `.md` close recorded the same
 `elevated` as a migration and held the next item exactly as hard.
 
-The measurement that forced the change: on this repository, 56 of 58 selectable
-items were held, 53 of them by spacing. That is not pacing the project, it is
-halting it, and the halt was indistinguishable from the rule working.
+Two measurements on this repository forced the change, and they are different
+facts — the second is the mechanism's own report, the first is not:
+
+- The `loop` run of 2026-08-17 hit `nothing-selectable` with **56 takeable items
+  held, 53 of them by spacing** — the count `queue/index.mjs next` printed, so
+  this one is the ration speaking. It holds on the item's **marker**, which is
+  what those 53 carried.
+- Earlier, the AR-63 run recorded (journal, 2026-08) that of 58 selectable items
+  **56 were elevated in fact — by declared path** — 31 of them marked so and 25
+  marked `normal` while their own bodies named an elevated path. That is a
+  measurement of the queue, not of the ration: it says the pressure is not going
+  to ease, because a rig's rulebook lives under a declared path by construction.
+
+Together: the ration was not pacing the project, it was halting it, and the halt
+was indistinguishable from the rule working.
 
 ## The split, and where it does NOT apply
 
@@ -34,9 +46,27 @@ halting it, and the halt was indistinguishable from the rule working.
 | any elevated path is not | `elevated-mechanism` | spaces it |
 | no elevated path at all | `normal` | clears the ration |
 
-"Document" is `isDocument` — `/\.mdx?$/`, imported from `detect-missed-gate.mjs`
-rather than restated, because two notions of the word would disagree and the copy
-nobody looks at would be the wrong one (`invariants.md`).
+The predicate is `executesNothing` — **`.md` only** — and it lives in
+`detect-missed-gate.mjs` beside the sweep's own markdown test so the two cannot
+drift apart.
+
+**They are different tests on purpose, and `.mdx` is where they part.** The
+sweep asks *does this need a reviewer* and calls both flavours inert. The ration
+asks *can a merge of this compound overnight*, and MDX carries components and
+imports — it is a program that renders, not a document that is read, which is why
+`decision-router.mjs` already sends it down the code lane
+(`review-lanes.md`). Calling it prose here would clear the spacing hold on a file
+this same rig treats as a program, on the permissive side. Two questions, two
+predicates, one file. A third one written somewhere else is the
+two-implementations defect `invariants.md` names.
+
+**The known soft spot: a skill's `SKILL.md` is prose by this test**, and some
+skills carry shell snippets an agent copies and runs. The ruling is that skills
+stay prose for rationing — they are reviewed like the rules they are, and
+rewriting a procedure is not the chain of unreviewed compounding changes the
+ration was bought to stop. It is still the weakest ground the "no runtime
+executes it" justification stands on, and the first place to look if the ration
+turns out too loose.
 
 **A mixed diff is a mechanism close.** The half that runs decides. Reading the
 tier off the first path, or off "most of them are documents", would ship a ration
@@ -65,13 +95,18 @@ filter that agrees with you.
 
 The legacy word stays *readable* for the same reason it must not be *permissive*:
 a checkout that upgrades mid-run still has one on disk, and refusing it outright
-would exit 1 on the next selection. `index.mjs` accepts four words and refuses
-the rest before selection runs; `core.mjs` is the second layer, and the one that
-holds when `selectNext` is called directly.
+would exit 1 on the next selection. `loadState` accepts four words and refuses
+the rest — **for the state file only**. Selection falls back to a tier left in
+`queue.json`, and `loadConfig` validates nothing but JSON syntax, so a word like
+`banana` in the config reaches `selectNext` unrefused (measured: the CLI exits 0
+and selects). It holds there, because `core.mjs` is the layer that reads every
+unrecognised value restrictively — the same layer that holds when `selectNext`
+is called directly.
 
 ## What this does not fix
 
 The livelock where *every* remaining item is elevated-by-mechanism still exists —
-narrowed, not closed, and its operator-only remedy (`reset-tier`) is a separate
-item. Spacing is also still per checkout, so a second worktree does not get its
-own allowance.
+narrowed, not closed. Its operator-only remedy is filed and **not built**: no
+such command exists in this repository today, so a run that hits the livelock
+stops and says so rather than clearing its own tier. Spacing is also still per
+checkout, so a second worktree does not get its own allowance.

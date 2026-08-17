@@ -150,17 +150,31 @@ const isRulebook = (path) =>
   isDecisionRecord(path);
 
 /**
- * A document: something a reader reads, that no runtime executes.
- *
- * Exported because a **second** consumer rations on it — `queue/state.mjs`
- * splits an elevated close into `elevated-prose` and `elevated-mechanism`, and
- * that split has to mean the same two extensions this sweep already calls inert.
- * Two files answering "is this a document" is the defect `invariants.md` names:
- * they disagree, and the one nobody is looking at is the one that is wrong. Note
- * the difference in what each caller does with the answer — the sweep drops an
- * inert path from review, the ration keeps it and only declines to space on it.
+ * A document, for the sweep's question: *does this need a reviewer?* Both
+ * markdown flavours qualify — an `.mdx` page still needs no gate.
  */
-export const isDocument = (path) => /\.mdx?$/.test(path);
+const isDocument = (path) => /\.mdx?$/.test(path);
+
+/**
+ * A file that **executes nothing**, for the ration's question: *can a merge of
+ * this compound into a broken runtime overnight?* (`queue/state.mjs`, and
+ * `docs/decisions/spacing-rations-mechanisms.md` for why the ration asks that
+ * question at all.)
+ *
+ * 🔴 **It is `.md` only, and the missing `x` is the whole point.** MDX carries
+ * components and imports: it is a program that renders, not a document that is
+ * read — which is exactly why `decision-router.mjs` sends `.mdx` down the code
+ * lane (`docs/decisions/review-lanes.md`). A ration that called it prose would
+ * clear the spacing hold on a file this same rig treats as a program, and it
+ * would do so on the permissive side, which is the one direction that costs
+ * something.
+ *
+ * So this repository now has two markdown predicates on purpose, in one file so
+ * they cannot drift apart, answering questions that genuinely differ: *needs no
+ * reviewer* is not *executes nothing*. Adding a third somewhere else is the
+ * defect `invariants.md` names — put it here, next to these two, or reuse one.
+ */
+export const executesNothing = (path) => /\.md$/.test(path);
 
 const isInert = (path) =>
   !isRulebook(path) &&
