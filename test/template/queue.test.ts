@@ -474,23 +474,39 @@ describe('the scaling harness sizes its own samples', () => {
     // measured 0.98ms/call against a true ~8ms, an eight-fold UNDER-read on the
     // side where under-reading hides a defect.
     //
-    // 🔴 The budget is passed in, at 50 ms rather than the real 2 s, and that is
-    // not only for speed. At the default this test burns ~2.3 s of saturated CPU
-    // inside a 38-file parallel run — manufacturing exactly the scheduler
+    // 🔴 The budget is passed in, at 50 ms rather than the real 2 s, and the
+    // burn is small, because at the default this test costs ~2.3 s of saturated
+    // CPU inside a 38-file parallel run — manufacturing exactly the scheduler
     // contention that produces the flake class this whole file exists to guard.
     // A test that causes its own subject matter is not a test.
     //
+    // Note what the budget does NOT buy: the cost here is
+    // `CLOCK_EVERY × per-call`, because the first in-sample deadline check
+    // happens on the 64th call whatever the budget is. Lowering the budget from
+    // 2000 to 50 cut this from 2.3 s to 768 ms; lowering the burn from 12 ms to
+    // 0.8 is what takes it to ~51 ms.
+    //
     // The premise it rests on, stated because it is the one unwritten
-    // assumption among these: the subject must probe ABOVE ~budget/166 for the
-    // sample to stay too large to finish. Below that the sample shrinks, a full
-    // one fits, and `samples` becomes 9 — the test would then pass while
-    // checking nothing. The burn below is three orders of magnitude clear of it,
-    // and the probe is a minimum of three, so the margin holds under saturation.
+    // assumption among these — and stated CORRECTLY on the second attempt, the
+    // first having inverted all three of its parts:
+    //
+    //   the test keeps its meaning while `probe < SAMPLE_TARGET_MS × per-call /
+    //   budget` — here 1 × 0.8 / 50 = 0.016 ms.
+    //
+    // A LOW probe asks for a big sample (`ceil(target / probe)`), and a big
+    // sample cannot finish inside the budget, which is the state being tested.
+    // A HIGH probe shrinks the sample until a whole one fits, and then `samples`
+    // is however many fit — measured 1, 3, 5 at rising probes, never the 9 the
+    // first version of this comment claimed. Probe was observed at
+    // 0.00004–0.00062 ms, so the margin is ~25–400×, and it is worth recomputing
+    // rather than inheriting if either number above changes: this threshold
+    // moved once already when the budget became a parameter, and the stale
+    // version of it survived the move by looking plausible.
     let calls = 0;
     const dear = () => {
       calls += 1;
       if (calls <= PROBE_CALLS + 1) return; // free through warm-up and probes
-      const until = performance.now() + 12;
+      const until = performance.now() + 0.8;
       while (performance.now() < until) {
         /* burn */
       }
