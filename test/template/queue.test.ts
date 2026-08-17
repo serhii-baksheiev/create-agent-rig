@@ -1696,9 +1696,11 @@ describe('plan-md adapter — the zero-setup default', () => {
      * `listEligible` with no options, in a child process whose cwd is `cwd`.
      *
      * A child rather than a direct import because the working directory IS the
-     * behaviour under test, and this suite's own is the repository root — where a
-     * real `PLAN.md` with a real Agent queue sits, so an in-process call would
-     * pass against a path resolved from anywhere.
+     * behaviour under test and vitest's own cannot be moved. This repository's
+     * `## Agent queue` is deliberately empty (`PLAN.md`: "`parsePlan` must return
+     * zero from it"), so an in-process call would resolve to that file and return
+     * nothing — failing both tests below for a reason that has nothing to do with
+     * where the path was resolved from.
      */
     const listEligibleTitlesFrom = (cwd: string): Promise<{ code: number; out: string }> =>
       new Promise((resolve) => {
@@ -2510,14 +2512,20 @@ describe('the queue CLI', () => {
       path.join(dir, 'PLAN.md'),
       '# P\n\n## Agent queue\n\n- add a route\n- rotate the key [elevated]\n\n## Journal\n',
     );
-    // 🔴 The `--config` names a path where NOTHING is written, and that is the
-    // point: `loadConfig` reads an absent file as `{}`, so this is still the
-    // zero-configuration case the title claims. What the flag supplies is the
-    // one thing the harness cannot otherwise say — which directory is the
-    // project. In production the CLI answers that from its own location
-    // (`import.meta.url`), but under test it runs out of the template tree, which
-    // is itself a complete project with its own PLAN.md, so an unaided run would
-    // read the template's queue rather than this fixture's.
+    // The `--config` names a path where NOTHING is written: `loadConfig` reads an
+    // absent file as `{}`, so no queue configuration reaches the CLI and the title
+    // still holds. What the flag supplies is the one thing the harness cannot
+    // otherwise say — which directory is the project. In production the CLI
+    // answers that from its own location (`import.meta.url`), but under test it
+    // runs out of the template tree, which is itself a project with its own
+    // PLAN.md, so an unaided run reads the template's queue rather than this
+    // fixture's.
+    //
+    // 🔴 The flag is not otherwise inert: `index.mjs` branches on it, not on the
+    // file, so the state file and the gate-round counter move beside the config.
+    // Harmless here — this fixture writes and reads no state, so both locations
+    // are absent and `loadState` returns `{}` either way — but a test that
+    // depends on the default state location cannot borrow this line unchanged.
     //
     // Before the plan path was anchored, this test passed by accident: the
     // adapter resolved a bare `'PLAN.md'` against cwd. That coupling is the
@@ -2554,7 +2562,12 @@ describe('the queue CLI', () => {
   it('says the queue is empty in a way that reads as success', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
     await writeFile(path.join(dir, 'PLAN.md'), '# P\n\n## Agent queue\n\n## Journal\n');
-    const result = await run(['next'], dir);
+    // Named for the same reason as above. Without it this run reads the template
+    // tree's PLAN.md and its own fixture stops participating — it would stay green
+    // with a real item written here, and go red the day someone adds one to the
+    // shipped template. An empty-queue assertion that cannot see its own queue is
+    // the emptiest kind of green.
+    const result = await run(['next', '--config', path.join(dir, '.claude', 'queue.json')], dir);
     expect(result.code).toBe(0);
     expect(result.out).toMatch(/queue empty/i);
     expect(result.out).toMatch(/do not invent|not an invitation|never invent/i);

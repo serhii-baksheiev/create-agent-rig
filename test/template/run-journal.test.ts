@@ -714,13 +714,21 @@ const project = async (item = 'add a route'): Promise<string> => {
   return dir;
 };
 
-// 🔴 A path where NOTHING is written. `loadConfig` reads an absent file as `{}`,
-// so every run below is still the zero-configuration case; what the flag supplies
-// is the one thing the harness cannot otherwise say — which directory is the
-// project. In production the CLI answers that from its own location
-// (`import.meta.url`); under test it runs out of the template tree, which is
-// itself a complete project carrying its own PLAN.md, so an unaided run would
-// select from the template's queue instead of the fixture's.
+// A path where NOTHING is written: `loadConfig` reads an absent file as `{}`, so
+// no queue configuration reaches the CLI. What the flag supplies is the one thing
+// the harness cannot otherwise say — which directory is the project. In production
+// the CLI answers that from its own location (`import.meta.url`); under test it
+// runs out of the template tree, which is itself a project carrying its own
+// PLAN.md, so an unaided run selects against that tree rather than the fixture.
+//
+// 🔴 The flag is NOT inert, and saying so was wrong before this comment was
+// corrected. `index.mjs` branches on the flag rather than on the file: with
+// `--config` the state file becomes `statePathFor(configPath)` and the gate-round
+// counter moves beside it, instead of `mainCheckoutRoot(...)/.claude/`. That is
+// deliberate there, and harmless here only because these fixtures write no state
+// and read none — both paths resolve to an absent file and `loadState` returns
+// `{}`. A test that DOES depend on the default state location must not adopt this
+// helper without saying what it changed.
 const planConfig = (dir: string): string => path.join(dir, '.claude', 'queue.json');
 
 // A journal nothing calls records nothing. This is the caller the item requires,
