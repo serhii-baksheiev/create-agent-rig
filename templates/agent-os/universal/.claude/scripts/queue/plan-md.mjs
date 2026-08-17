@@ -293,8 +293,13 @@ const COUNT = /seen ×(\d+)\s*$/;
  * U+0085 and NUL do not, and they survive verbatim — harmless, because
  * `split('\n')` is this adapter's whole line model, but a renderer may show them
  * as breaks.
+ *
+ * Exported for its cost guard. Measuring the fold through `proposeTriage` meant
+ * measuring the plan file it rewrites per call — which grew as the measurement
+ * ran, and read DEARER on a faster machine. The guard measures this function
+ * directly instead; nothing outside the test imports it.
  */
-const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
+export const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 
 /**
  * The proposal as ONE Operator-queue bullet: a flat list cannot hold a body.
