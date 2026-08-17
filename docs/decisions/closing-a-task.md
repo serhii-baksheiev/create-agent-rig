@@ -77,9 +77,10 @@ every other script here uses, and the moment someone "simplifies" the diff back
 to a symbolic ref it becomes the only thing standing between a git hook and a
 tier recorded from somebody else's repository.
 
-The source sweep in `test/template/git-env.test.ts` cannot read markdown, so
-this particular line is guarded by a sweep over the fenced code blocks in the
-rulebook documents instead.
+The sweep that checks `.mjs` sources for this line cannot read markdown, so the
+copy inside the rulebook's fenced code blocks is covered by a second sweep over
+those blocks. Both live in the generator that produced this project, not here —
+if you change the command above, that is the pair to re-check.
 
 ## The shape the dangerous one has
 
