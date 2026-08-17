@@ -120,10 +120,14 @@ const TIMED_CALLS = 9;
  * - **Truncation is not uniformly safe.** Cutting the sample set short can only
  *   raise the fastest reading. On the `4n` side that raises the ratio, toward a
  *   false red, which is the harmless direction. On the `n` side it *lowers* the
- *   ratio — toward a MISSED defect. The window is narrow (a call must exceed
- *   ~222 ms to truncate the set at all, yet stay under `catastropheMs` to reach
- *   the second reading), but narrow is not the same as absent, so it is written
- *   down rather than described as failing safe.
+ *   ratio — toward a MISSED defect. The window is narrower than it was: the
+ *   deadline now cuts a SAMPLE rather than a call, and an adaptive sample is
+ *   held near `SAMPLE_TARGET_MS`, so reaching the budget at all takes a subject
+ *   whose cost changes mid-run. It is also mostly moot now — a cut sample is
+ *   discarded rather than divided, and a run with none left reports `Infinity`
+ *   rather than a low number. Written down because narrow is not absent, and
+ *   because the earlier version of this sentence measured the threshold in
+ *   calls, which stopped being the unit.
  * - **It bounds sampling, not the test.** The untimed warm call and the probe
  *   are outside the budget, so the real bound is `SAMPLE_BUDGET_MS` plus those
  *   four calls, plus up to `CLOCK_EVERY` calls of whichever sample was running
@@ -134,8 +138,10 @@ const TIMED_CALLS = 9;
  *   unbounded: a subject with a cheap probe and dear calls measured **59.5 s**,
  *   then **61 s**, against a documented 2. Recalibration does not fix that — it
  *   runs after the sample it would have resized has already been paid for. The
- *   in-sample check is what bounds it, and the same subject now finishes in
- *   **2.2 s**. For
+ *   in-sample check is what bounds it: two such subjects now finish in 2.2 s and
+ *   3.4 s, both inside `budget + CLOCK_EVERY × per-call` — trust the formula
+ *   rather than either figure, since a wall-clock number is a property of the
+ *   subject that produced it. For
  *   a defect worse than quadratic those calls are themselves unbounded, and
  *   `catastropheMs` cannot help — it reads a number the warm call has already
  *   paid for. **And nothing else in this process bounds it either** — the
@@ -263,6 +269,7 @@ export const resizedSample = (firstMs: number, sampleCalls: number): number => {
  */
 export const millisPerCall = (
   call: () => void,
+  budgetMs: number = SAMPLE_BUDGET_MS,
 ): { perCall: number; sampleCalls: number; samples: number } => {
   call(); // warm the JIT and compile any lazily-built regex, untimed
 
@@ -274,7 +281,7 @@ export const millisPerCall = (
   }
 
   let sampleCalls = sampleSizeFor(probe);
-  const deadline = performance.now() + SAMPLE_BUDGET_MS;
+  const deadline = performance.now() + budgetMs;
 
   /** One sample, or `null` if the deadline cut it short — a partial count over
    *  a full clock reading is not a per-call cost, so it is discarded. */
@@ -466,6 +473,19 @@ describe('the scaling harness sizes its own samples', () => {
     // The first version returned `budget / sampleCalls`, which reads as a cost:
     // measured 0.98ms/call against a true ~8ms, an eight-fold UNDER-read on the
     // side where under-reading hides a defect.
+    //
+    // 🔴 The budget is passed in, at 50 ms rather than the real 2 s, and that is
+    // not only for speed. At the default this test burns ~2.3 s of saturated CPU
+    // inside a 38-file parallel run — manufacturing exactly the scheduler
+    // contention that produces the flake class this whole file exists to guard.
+    // A test that causes its own subject matter is not a test.
+    //
+    // The premise it rests on, stated because it is the one unwritten
+    // assumption among these: the subject must probe ABOVE ~budget/166 for the
+    // sample to stay too large to finish. Below that the sample shrinks, a full
+    // one fits, and `samples` becomes 9 — the test would then pass while
+    // checking nothing. The burn below is three orders of magnitude clear of it,
+    // and the probe is a minimum of three, so the margin holds under saturation.
     let calls = 0;
     const dear = () => {
       calls += 1;
@@ -475,7 +495,7 @@ describe('the scaling harness sizes its own samples', () => {
         /* burn */
       }
     };
-    const { perCall, samples } = millisPerCall(dear);
+    const { perCall, samples } = millisPerCall(dear, 50);
     expect(samples, 'no sample completed').toBe(0);
     expect(perCall, 'and that must read as unmeasurable, never as cheap').toBe(Infinity);
   });
