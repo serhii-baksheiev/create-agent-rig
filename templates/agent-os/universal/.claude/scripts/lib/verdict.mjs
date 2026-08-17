@@ -65,6 +65,12 @@
  *    text. Every spec says the block is the last thing in the report, so the
  *    remedy is the same either way — move the fenced snippet above the block,
  *    or name it in `evidence`, and answer again.
+ * 6. **`headSha` is optional, and an absent one means the gate did not say
+ *    which commit it answered for — never that it answered for the current
+ *    one.** A caller that read absence as "the head I am holding" would take a
+ *    verdict about a diff nobody named as a verdict about the diff it is about
+ *    to merge, so a caller that needs the answer keyed to a commit handles
+ *    absence itself.
  */
 
 /** Every word any gate in this rulebook may return. */
@@ -120,8 +126,15 @@ export const BLOCKING_VERDICTS = Object.freeze([
   'UNMEASURED',
 ]);
 
-/** The five keys a parsed verdict has, and the only five a block may carry. */
-const SHAPE_KEYS = Object.freeze(['gate', 'verdict', 'blockers', 'advisories', 'evidence']);
+/** The only keys a block may carry. */
+const SHAPE_KEYS = Object.freeze([
+  'gate',
+  'verdict',
+  'blockers',
+  'advisories',
+  'evidence',
+  'headSha',
+]);
 
 const FENCE = '```json';
 
@@ -384,6 +397,14 @@ export function parseVerdict(text) {
     problems.push('`advisories` is not a list — it is optional, and a list when present.');
   }
 
+  const headSha = parsed.headSha;
+  if (headSha !== undefined && !isText(headSha)) {
+    problems.push(
+      `\`headSha\` is \`${safeForDiagnosis(headSha)}\`, which is not a commit this verdict ` +
+        'could have answered for. It is optional, and a line of text when present.',
+    );
+  }
+
   const evidence = parsed.evidence;
   if (evidence !== undefined) {
     if (!Array.isArray(evidence)) {
@@ -403,6 +424,10 @@ export function parseVerdict(text) {
       blockers,
       advisories: advisories ?? [],
       evidence: evidence ?? [],
+      // Spread, never a hardcoded key: a verdict that named no commit must come
+      // back without the key at all, so a caller can tell "answered for this
+      // commit" from "said nothing about which commit".
+      ...(headSha === undefined ? {} : { headSha }),
     },
   };
 }

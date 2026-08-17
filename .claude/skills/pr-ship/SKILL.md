@@ -218,6 +218,7 @@ blockers.
          gate:     v.gate,
          verdict:  v.verdict,
          blockers: v.blockers,
+         headSha:  v.headSha,       // absent when the gate named no commit
          now:      new Date().toISOString(),
        }));
      } catch (error) {
