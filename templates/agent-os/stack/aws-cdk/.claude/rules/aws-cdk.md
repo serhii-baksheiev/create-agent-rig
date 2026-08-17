@@ -20,7 +20,7 @@ infra/
   is drift, and drift is a defect — reproduce it in CDK or revert it.
 - **Every change under `infra/` passes the `cdk-diff-reviewer` agent before it
   is deployed.** The review reads the synthesized diff (what CloudFormation
-  will do), not just the source. Deploying around a BLOCKED verdict is a
+  will do), not just the source. Deploying around that agent's `HOLD` is a
   Never-tier action.
 - `cdk synth` stays region-agnostic and credential-free: synth must work on any
   machine, in CI, with nothing configured.

@@ -54,6 +54,14 @@
  *    the example — somebody else's gate, and usually the opposite word.
  * 4. **Nothing launches it.** Like every gate in this layer it holds because a
  *    skill says to call it, not because a hook fires it.
+ * 5. **A ``` sequence inside the block ends the block.** Markdown has no
+ *    escape for it, so a reviewer quoting a fenced snippet in a `note` writes a
+ *    block whose end is ambiguous — and reading it to the first closing fence
+ *    would silently keep the front half, which on a measured case was a `SHIP`
+ *    standing in front of the `HOLD` that followed it. Such a report is
+ *    **refused**, naming the backticks as the cause: the reviewer moves the
+ *    quote out of the block (an `evidence` line, or the prose above it) and
+ *    answers again. There is no reading of it this module could trust.
  */
 
 /** Every word any gate in this rulebook may return. */
@@ -120,11 +128,13 @@ const isPlainObject = (value) =>
 const isText = (value) => typeof value === 'string' && value.trim() !== '';
 
 /**
- * The body of the last fenced ```json block, or null if the report has none.
+ * The last fenced ```json block, as one of three answers: `{ raw }` for a block
+ * whose extent is unambiguous, `{ ambiguous: true }` for one carrying a fence of
+ * its own (limit 5), and `null` when the report has no such block at all.
  *
- * One backward scan for the opening fence and one forward scan for the closing
- * one — no regular expression over model-written text, which is unbounded and
- * arrives from a subagent.
+ * One backward scan for the opening fence and one forward pass counting the
+ * closing ones — no regular expression over model-written text, which is
+ * unbounded and arrives from a subagent.
  */
 const lastJsonBlock = (text) => {
   const opening = text.lastIndexOf(FENCE);
@@ -136,7 +146,14 @@ const lastJsonBlock = (text) => {
   if (text[start] === '\n') start += 1;
 
   const closing = text.indexOf('```', start);
-  return closing === -1 ? text.slice(start) : text.slice(start, closing);
+  // No closing fence at all: the rest of the report is the body, and JSON tells
+  // the reader what is wrong with it. One closing fence is the ordinary block.
+  if (closing === -1) return { raw: text.slice(start) };
+  if (text.indexOf('```', closing + 3) === -1) return { raw: text.slice(start, closing) };
+
+  // 🔴 More than one: the block's end is a guess, and the two guesses disagree
+  // about the verdict rather than about whitespace. Refuse instead.
+  return { ambiguous: true };
 };
 
 const checkBlocker = (blocker, index, problems) => {
@@ -187,8 +204,8 @@ export function parseVerdict(text) {
     return { ok: false, problems: ['no report was supplied to read a verdict from.'] };
   }
 
-  const raw = lastJsonBlock(text);
-  if (raw === null) {
+  const block = lastJsonBlock(text);
+  if (block === null) {
     return {
       ok: false,
       problems: [
@@ -197,10 +214,21 @@ export function parseVerdict(text) {
       ],
     };
   }
+  if (block.ambiguous) {
+    return {
+      ok: false,
+      problems: [
+        'the final ```json block carries a ``` of its own, so where it ends is a guess — ' +
+          'and the guesses disagree about the verdict, not about whitespace. Move the ' +
+          'backticks out of the block (quote the snippet in the prose above it, or name ' +
+          'it in `evidence`) and answer again.',
+      ],
+    };
+  }
 
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(block.raw);
   } catch (error) {
     return {
       ok: false,

@@ -186,6 +186,17 @@ that is a round spent on what an edit would have fixed.
 `PREMISE FALSE` stays with the first pass. At the second one the claims are your own
 and the remedy is an edit, so nothing escalates.
 
+**Both passes end in a block, and you check it before you act on it** — the skill
+returns one fenced `json` verdict like every other gate, and this loop is its caller:
+
+```sh
+node .claude/scripts/verdict.mjs check <report> check-premises
+```
+
+Exit 1 means it did not answer: a stop verdict naming no premise, or no block at all.
+That is `incomplete` — neither "the premises hold" nor a reason to escalate — so run
+the pass again rather than reading the silence as a pass.
+
 ## 3. What keeps the loop running, and what stops it
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
@@ -218,6 +229,10 @@ both have to be the documented one:
 The other two are yours, after the checks that produce them:
 
 ```bash
+# the post-deploy check answers in a block like every other gate, and the word
+# below is retyped out of it — so check the block before you trust the word
+node .claude/scripts/verdict.mjs check <report> post-deploy-verify
+
 # after the post-deploy check (`.claude/rules/autonomy.md`, "Post-deploy
 # verification") — REGRESSION stops the next selection, HEALTHY clears it
 node .claude/scripts/run-state.mjs deploy REGRESSION
@@ -415,12 +430,19 @@ past the cap. The count outlives the session, which is the point — a counter h
 context is one the next context does not have.
 
 ⚠ **What the cap does not carry, stated because the gap decides what you can write in
-the escalation:** the counter records the round and nothing about it. What each round
-found is in the run journal instead — `pr-ship` records every verdict that parsed,
-with its blockers, so a stalled item's diagnosis is the round count plus the
-`decisions.jsonl` of this run rather than whatever the session still remembers. Read
-it back rather than reconstructing findings from memory, and where the run declared no
-run directory, say that instead: there is nothing to read.
+the escalation:** the counter records the round and nothing about it. Findings travel
+separately, and the two do not cover the same ground — the count is **per branch, in
+the main checkout, across runs**, while a verdict is journalled into **this run's**
+directory. So `decisions.jsonl` holds the rounds this run spent and nothing about a
+round spent before it: a branch on its third round in its second run has one round's
+findings here, and the earlier ones in whichever directory that run declared, or
+nowhere if it declared none.
+
+Write the diagnosis from what you can actually read — the round count, plus this run's
+records where there are any — and say which of the rounds that leaves unaccounted for
+rather than reconstructing them from memory. `pr-ship` is told to journal each verdict
+that parsed, and like every gate here that is a step in a skill rather than a
+mechanism: a round whose session skipped it left no record either.
 
 🔴 **Escalate through the adapter, never by hand-labelling the item.** Every
 adapter's `escalate()` counts the escalation into the run state as it marks the

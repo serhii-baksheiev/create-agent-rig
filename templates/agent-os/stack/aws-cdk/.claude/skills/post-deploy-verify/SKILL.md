@@ -83,9 +83,11 @@ the next selection reads the verdict.
 - A `REGRESSION` names one blocker per failed or unverifiable step, with the
   observed output in its `note`. A step has no file, so `file` and `line` are
   omitted here.
-- A `REGRESSION` naming no blocker is **refused**, and so is a `HEALTHY`
-  carrying one: `node .claude/scripts/verdict.mjs check <report>` is what
-  refuses them.
+- A `REGRESSION` naming no blocker, and a `HEALTHY` carrying one, are answers
+  the caller cannot act on. The caller is what checks: the session that ran the
+  deploy runs `node .claude/scripts/verdict.mjs check <report>
+  post-deploy-verify` before it retypes the word into `run-state.mjs`. This
+  skill runs nothing — it is read-only by construction.
 
 ## Boundaries
 

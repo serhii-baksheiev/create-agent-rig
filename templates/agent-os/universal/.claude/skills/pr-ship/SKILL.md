@@ -172,10 +172,16 @@ blockers.
    ends in one fenced `json` block; save what each subagent returned and run
 
    ```sh
-   node .claude/scripts/verdict.mjs check <report>
+   node .claude/scripts/verdict.mjs check <report> <the reviewer you launched>
    ```
 
-   on it **before** you decide anything from it. Exit 0 prints the parsed
+   on it **before** you decide anything from it. 🔴 **Name the reviewer.** You
+   launched two or three of them and the check reads the report's LAST block, so
+   without the name a report carrying `code-reviewer`'s `HOLD` followed by
+   anything else answers about the anything else — a stop you never see. With
+   the name, a block claiming another gate is refused.
+
+   Exit 0 prints the parsed
    verdict — including for a `HOLD`, because a reviewer that *found* something
    is not a reviewer that broke. Exit 1 means the report does not end in a
    verdict this gate can act on: no block or one that is not JSON, a word no
@@ -199,20 +205,32 @@ blockers.
 
    ```sh
    node --input-type=module -e '
-     const { recordDecision } = await import("./.claude/scripts/run-journal.mjs");
+     const runDir = process.env.RIG_RUN_DIR;
+     if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+     const journal = await import("./.claude/scripts/run-journal.mjs");
      const v = JSON.parse(process.argv[1]);            // the block `check` printed
-     console.log(recordDecision({
-       runDir:   process.env.RIG_RUN_DIR,
-       gate:     v.gate,
-       verdict:  v.verdict,
-       blockers: v.blockers,
-       now:      new Date().toISOString(),
-     }));
-   ' "$(node .claude/scripts/verdict.mjs check <report>)"
+     try {
+       console.log(journal.recordDecision({
+         runDir,
+         gate:     v.gate,
+         verdict:  v.verdict,
+         blockers: v.blockers,
+         now:      new Date().toISOString(),
+       }));
+     } catch (error) {
+       // The split `queue/index.mjs` makes, for the reason `run-journal.mjs`
+       // gives: a trace that can accept no more records is over, and the GATE
+       // is not. Anything else is this call mis-declared, and stops it.
+       if (!journal.isTraceExhausted?.(error)) throw error;
+       process.stderr.write(`run journal: ${error.message}\n  the verdict above was NOT recorded.\n`);
+     }
+   ' "$(node .claude/scripts/verdict.mjs check <report> <reviewer>)"
    ```
 
-   With no run directory declared there is nothing to record into and the call
-   refuses — that is a run with no trace, not a reason to skip the check above.
+   🔴 **The guard and the `catch` are the contract, not decoration** — an
+   exhausted trace must cost this round its record and nothing else. A round is
+   counted and capped, so a crash here spends one on a journal that was never
+   the thing under review.
 5. **DoD walk.** Check the Definition of Done list in
    `.claude/rules/workflow.md` item by item — test-first evidence, nothing
    skipped or weakened, boundaries respected, docs updated, autonomy tier
@@ -260,9 +278,12 @@ the author, then **exactly one** fenced `json` block, and nothing after it.
 - `verdict` is `SHIP` or `HOLD` — this gate has no third answer.
 - A failing check and a DoD line have no location, so `file` and `line` are
   omitted there; every blocker names the `rule` it came from either way.
-- A `HOLD` with an empty `blockers` list is **refused** by the same command you
-  ran on the reviewers, and so is a `SHIP` carrying one. The shape both obey is
-  `.claude/scripts/lib/verdict.mjs`.
+- A `HOLD` with an empty `blockers` list, and a `SHIP` carrying one, are both
+  answers this gate may not give. **Run the same command on your own block
+  before you return it** — `node .claude/scripts/verdict.mjs check <your-block>
+  pr-ship` — and fix what it refuses. Nothing downstream re-checks the gate's
+  own answer, so this call is the only thing between a malformed verdict and
+  whoever acts on it.
 
 ## Boundaries
 

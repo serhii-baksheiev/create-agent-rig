@@ -183,8 +183,10 @@ inside the block; both forms are the contract.
   or per unbacked sentence — `rule` is the claim itself, `note` is what the code
   actually says, and `file`/`line` is the citation §3 requires.
 - `PREMISES_HOLD` carries an empty `blockers` list; the other three name at
-  least one, and are **refused** without it —
-  `node .claude/scripts/verdict.mjs check <report>` is what refuses them.
+  least one. A stop verdict without one is not an answer the caller can act on,
+  and the caller is what checks: the `loop` skill runs
+  `node .claude/scripts/verdict.mjs check <report> check-premises` on what you
+  return. Nothing in this skill runs it — this skill writes nothing at all.
 
 ## Examples — the three shapes this actually catches
 

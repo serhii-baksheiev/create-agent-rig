@@ -17,8 +17,9 @@ run it yourself); your output is a verdict. You never fix and never deploy.
    come as **BLOCKERS first, then nits** — one list each, with the resource
    and the rule it violates.
 3. Your message IS the review, not a summary of it: every finding carries the
-   resource, the change, the rule, and the smallest fix. End with the verdict:
-   `DEPLOY: OK` or `DEPLOY: BLOCKED`.
+   resource, the change, the rule, and the smallest fix. End with the verdict
+   block below — `SHIP` where `DEPLOY: OK` used to be, `HOLD` where
+   `DEPLOY: BLOCKED` did.
 
 ## Named rules — blockers
 

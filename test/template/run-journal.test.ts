@@ -638,6 +638,33 @@ describe('a recorded verdict may carry the blockers it named', () => {
     // and it refused before writing, so the sequence has no hole to explain
     expect(await linesIn(runDir, 'decisions.jsonl')).toEqual([]);
   });
+
+  it('answers that refusal as `field-invalid`, and not as an exhausted trace', async () => {
+    // The failure KIND is the contract, not the sentence: `field-invalid` exists
+    // so a caller need not match on message text, which puts the decision in two
+    // files and drifts the day someone improves the wording. And the caller has
+    // to read it as its own mis-declaration — the trace is fine, the record it
+    // was handed is not — so it must not classify as an exhausted trace, which
+    // is what makes a queue selection carry on without its record.
+    const { recordDecision, isTraceExhausted } = (await load()) as unknown as {
+      recordDecision: (input: Input) => unknown;
+      isTraceExhausted: (error: unknown) => boolean;
+    };
+    const runDir = await newRunDir();
+
+    const error = (await refusalFrom(() =>
+      recordDecision({
+        runDir,
+        gate: 'code-reviewer',
+        verdict: 'HOLD',
+        blockers: 'gate rounds exhausted',
+        now: T0,
+      }),
+    )) as Error & { failure?: unknown };
+
+    expect(error.failure).toBe('field-invalid');
+    expect(isTraceExhausted(error)).toBe(false);
+  });
 });
 
 interface CliResult {

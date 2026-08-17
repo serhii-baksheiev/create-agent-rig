@@ -219,6 +219,52 @@ describe('the verdict is the block the report ends with', () => {
   });
 });
 
+// 🔴 The block is delimited by a fence, and a reviewer quoting one INSIDE its
+// answer is not exotic: a blocker's `note` showing the deleted test, or a
+// second report appended to the same file, both put ``` in the body. Reading to
+// the first ``` after the opening fence cuts the block there — and the half in
+// front of the cut is sometimes valid JSON, which is the dangerous shape.
+describe('a fence inside the block body is refused, not quietly cut out of it', () => {
+  const FENCE = '```';
+
+  /**
+   * The refusal has to name the FENCE as the cause. Deliberately not `/fence/i`:
+   * the module's existing "the final fenced json block is not JSON" already
+   * carries that word incidentally, and a reader told only "not JSON" goes
+   * hunting for a syntax error in a block that has none.
+   */
+  const namesTheFence = /backtick|```|closing fence|inner fence|fence inside|fence in the/i;
+
+  it('refuses a block whose body carries a fence, and says the fence is why', async () => {
+    // The honest reviewer case: the note quotes the test it is complaining
+    // about. Ambiguous input fails closed here — but "not JSON" sends the
+    // reader hunting for a syntax error in a block that has none.
+    const note = [`the case removed was:`, FENCE, "it('refuses an empty title')", FENCE].join('\n');
+    const problems = problemsOf(await parse(answer(hold({ blockers: [blocker({ note })] }))));
+    expect(problems.join('\n')).toMatch(namesTheFence);
+  });
+
+  it('refuses rather than accepting the part of the body in front of an inner fence', async () => {
+    // Measured on the shipped module: this returns `ok: true` with SHIP today.
+    // The body ends in a HOLD; everything after the inner fence is invisible,
+    // and what the caller acts on is the opposite of what the report said.
+    const text = ['```json', JSON.stringify(ship()), FENCE, JSON.stringify(hold()), FENCE].join(
+      '\n',
+    );
+    expect(problemsOf(await parse(text)).join('\n')).toMatch(namesTheFence);
+  });
+
+  it('states the fence as a fifth limit in the module, where the next reader looks', async () => {
+    // `invariants.md` ("State the limits — and test them"): the header claims
+    // its list is exhaustive, so a limit missing from it is cover the reader
+    // believes they have. The behaviour above and this sentence ship together.
+    const source = await readFile(modulePath, 'utf8');
+    const fifth = source.split(/\n \* 5\. /)[1]?.split('*/')[0] ?? '';
+    expect(fifth, 'the module lists no fifth limit').not.toBe('');
+    expect(fifth).toMatch(/fence|backtick|```/i);
+  });
+});
+
 describe('the gate and the word it returned have to agree', () => {
   it.each([
     ['no gate at all', { verdict: 'SHIP', blockers: [] }],
@@ -528,13 +574,16 @@ const runCli = (args: string[], stdin = ''): Promise<CliResult> =>
     child.stdin?.end(stdin);
   });
 
-/** A reviewer's report on disk, the way `pr-ship` will have captured it. */
-const reportFile = async (value: unknown): Promise<string> => {
+/** Whatever text a gate captured, on disk — including text no helper composes. */
+const rawReportFile = async (text: string): Promise<string> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'verdict-'));
   const file = path.join(dir, 'report.md');
-  await writeFile(file, answer(value));
+  await writeFile(file, text);
   return file;
 };
+
+/** A reviewer's report on disk, the way `pr-ship` will have captured it. */
+const reportFile = (value: unknown): Promise<string> => rawReportFile(answer(value));
 
 describe('the verdict CLI is what a gate calls before it believes a reviewer', () => {
   it('prints the parsed verdict and exits 0 on a well-formed block', async () => {
@@ -593,5 +642,99 @@ describe('the verdict CLI is what a gate calls before it believes a reviewer', (
     expect(result.code, result.out).toBe(1);
     expect(result.stderr).toContain(missing);
     expect(result.stderr).not.toMatch(/node:internal|at ModuleJob|at async/);
+  });
+
+  it('says the report argument is missing rather than calling `check` unknown', async () => {
+    // The subcommand was right and the FILE was not supplied; reporting the
+    // opposite sends the operator looking for a typo that is not there, and the
+    // two arms are one branch away from each other in the source.
+    const result = await runCli(['check']);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).not.toMatch(/not a subcommand|unknown subcommand/i);
+    expect(result.stderr).toMatch(/report|file/i);
+    expect(result.stderr).toMatch(/missing|no report|no file|needs|without/i);
+  });
+});
+
+// 🔴 `pr-ship` fans several reviewers out in one step and their answers end up
+// in one place. Measured on the shipped CLI: a file holding `code-reviewer`'s
+// HOLD followed by `prose-reviewer`'s SHIP exits 0 and prints the SHIP — the
+// earlier stop is invisible, and the caller reads a pass that no gate gave it.
+// So the caller says which gate it is checking, and the check refuses a verdict
+// from a different one.
+describe('`check` is told which gate it is checking', () => {
+  it('accepts the verdict when the block names the gate the caller asked for', async () => {
+    const result = await runCli(['check', await reportFile(hold()), 'code-reviewer']);
+    expect(result.code, result.out).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ gate: 'code-reviewer', verdict: 'HOLD' });
+  });
+
+  it('refuses a verdict from another gate, naming the one asked for and the one found', async () => {
+    const file = await reportFile(ship({ gate: 'prose-reviewer' }));
+    const result = await runCli(['check', file, 'code-reviewer']);
+    expect(result.code, result.out).toBe(1);
+    // stdout stays empty for the same reason every other refusal keeps it empty:
+    // a caller redirecting it would capture a verdict this command refused.
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('code-reviewer');
+    expect(result.stderr).toContain('prose-reviewer');
+  });
+
+  it('refuses the trailing SHIP of a second report as the gate that held', async () => {
+    // Two reviewers' answers concatenated into one capture — the shape that
+    // makes the earlier gate's stop disappear behind the later gate's pass.
+    const file = await rawReportFile(
+      [answer(hold({ gate: 'code-reviewer' })), answer(ship({ gate: 'prose-reviewer' }))].join(
+        '\n',
+      ),
+    );
+    const result = await runCli(['check', file, 'code-reviewer']);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('code-reviewer');
+    expect(result.stderr).toContain('prose-reviewer');
+  });
+
+  it('accepts whatever gate the block names when no gate was asked for', async () => {
+    // The argument is optional: every existing caller passes a file alone, and
+    // a check that suddenly required a second argument would refuse them all.
+    const result = await runCli(['check', await reportFile(ship({ gate: 'prose-reviewer' }))]);
+    expect(result.code, result.out).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ gate: 'prose-reviewer', verdict: 'SHIP' });
+  });
+});
+
+// 🔴 An accepted verdict is the path where nothing is supposed to go wrong, and
+// it is the one that crashes: `checkBlocker` lets a blocker carry keys the shape
+// does not define, so a nested value the printer cannot serialise reaches
+// `JSON.stringify` and throws AFTER the parse said `ok`. What the caller sees is
+// exit 1 with a raw node trace — which `pr-ship` reads as `incomplete`, turning
+// a legitimate HOLD into "the reviewer did not answer".
+describe('an accepted verdict does not crash the CLI on the way out', () => {
+  it('refuses in a sentence of its own when a blocker nests past the printer', async () => {
+    // Built rather than written out: the depth that defeats `JSON.stringify` is
+    // thousands of levels, and a literal that deep is unreadable and unmaintainable.
+    const depth = 50_000;
+    const nested = `${'['.repeat(depth)}1${']'.repeat(depth)}`;
+    const file = await rawReportFile(
+      [
+        'Reviewed the diff against the item.',
+        '',
+        '```json',
+        `{"gate":"code-reviewer","verdict":"HOLD","blockers":[{"rule":"r","note":"n","x":${nested}}]}`,
+        '```',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await runCli(['check', file]);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    // The file's own promise — "the path, not a stack": the operator needs to
+    // know WHICH report could not be handled, and a node trace answers a
+    // question nobody asked.
+    expect(result.stderr).not.toMatch(/node:internal|at ModuleJob|at async|RangeError/);
+    expect(result.stderr).toContain(file);
   });
 });
