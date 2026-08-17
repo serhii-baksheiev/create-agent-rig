@@ -961,18 +961,37 @@ describe('the skill that drives a run carries the calls the journal needs', () =
   const skill = () =>
     readFile(path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'), 'utf8');
 
-  it('names the run-end call in an executable block, so the marker has a caller', async () => {
+  it('names the run-end call in an executable block under the stop step', async () => {
     const source = await skill();
-    const blocks = [...source.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].map((match) => match[1] ?? '');
+    const journalSection = source.indexOf('\n## 7.');
+    expect(journalSection, 'the journal section is where the marker is written').toBeGreaterThan(
+      -1,
+    );
 
     // Not "the file mentions endRun" — a sentence about it is what the module
-    // already has. It must appear inside a block a run can run.
-    expect(blocks.filter((block) => block.includes('endRun('))).not.toHaveLength(0);
+    // already has — and not "some fenced block anywhere in the file" either,
+    // which is all this asserted until AR-42. The marker closes the journal to
+    // further records, so WHERE the call is documented is the load-bearing
+    // part: under the stop step, never beside a checkpoint.
+    const blocks = [...source.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].filter((match) =>
+      (match[1] ?? '').includes('endRun('),
+    );
+    expect(blocks, 'no fenced block calls endRun(').not.toHaveLength(0);
+    for (const block of blocks) {
+      expect(
+        block.index,
+        `an endRun( block sits outside the stop step (offset ${block.index}, section ${journalSection})`,
+      ).toBeGreaterThan(journalSection);
+    }
   });
 
   it('declares the run directory before the section that selects an item', async () => {
     const source = await skill();
-    const declaration = source.indexOf('RIG_RUN_DIR');
+    // An EXPORT, not a mention. Until AR-42 this searched for the bare name, so
+    // a sentence naming the variable satisfied a test titled "declares" — and a
+    // run following that skill would have had no run directory at all, which is
+    // the one failure that also silences the escalation counter.
+    const declaration = source.search(/export\s+RIG_RUN_DIR=/);
     const selection = source.indexOf('\n## 2.');
 
     // Selection is the journal's first call site and it runs before every task.

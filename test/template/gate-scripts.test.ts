@@ -511,6 +511,19 @@ describe('reconcile-external-prs — the lane the journal never sees', () => {
   });
 });
 
+/**
+ * What each CLI prints when it has really run — never merely "something".
+ *
+ * One entry per script in the matrix below: an unlisted script would index to
+ * `undefined` and throw, which is the loud failure a silent skip is not.
+ */
+const SYMLINK_OUTPUT_SHAPE: Record<string, RegExp> = {
+  'detect-missed-gate.mjs': /missed-gate|no merges|clean/i,
+  'reconcile-external-prs.mjs': /external lane|no merges|reconcile/i,
+  'preflight.mjs': /preflight/i,
+  'queue/index.mjs': /^(next|queue):/m,
+};
+
 describe('the CLI entrypoint survives a symlinked path', () => {
   // Found while testing: macOS `tmpdir()` is a symlink (/var → /private/var), and
   // an `isMain` guard that compares the module's REALPATH against the raw argv
@@ -522,7 +535,7 @@ describe('the CLI entrypoint survives a symlinked path', () => {
     'reconcile-external-prs.mjs',
     'preflight.mjs',
     'queue/index.mjs',
-  ])('%s produces output when invoked through a symlink', async (script) => {
+  ])('%s actually runs when invoked through a symlink', async (script) => {
     const { mkdir, symlink, copyFile, cp } = await import('node:fs/promises');
     const real = await mkdtemp(path.join(tmpdir(), 'realdir-'));
     const project = path.join(real, 'project');
@@ -554,7 +567,12 @@ describe('the CLI entrypoint survives a symlinked path', () => {
     // adapter) are static, so the CLI does not load at all without them;
     // `run-journal.mjs` is a dynamic import taken only when a run directory is
     // declared, so it fails only for a real rig.
-    for (const sibling of ['git-env.mjs', 'run-state.mjs', 'run-journal.mjs']) {
+    // `stop-flag.mjs` joined this list when the assertion was tightened (AR-42):
+    // `preflight.mjs` imports it statically, so until then preflight had NEVER
+    // run in this fixture — it died on ERR_MODULE_NOT_FOUND every time, and the
+    // old "output is non-empty" assertion was satisfied by the stack trace.
+    // Third time this exact gap hid here; the shape assertion is what closes it.
+    for (const sibling of ['git-env.mjs', 'run-state.mjs', 'run-journal.mjs', 'stop-flag.mjs']) {
       await copyFile(scriptPath(sibling), path.join(project, '.claude', 'scripts', sibling));
     }
     await writeFile(path.join(project, 'PLAN.md'), '# P\n\n## Agent queue\n\n- do a thing\n');
@@ -582,8 +600,23 @@ describe('the CLI entrypoint survives a symlinked path', () => {
         },
       );
     });
-    // The assertion is simply: it ran. Silence here is the bug.
-    expect(result.out.trim(), `${script} printed nothing through a symlink`).not.toBe('');
+    // 🔴 NOT "it printed something". `out` is stdout+stderr, so an
+    // `ERR_MODULE_NOT_FOUND` stack trace satisfies a non-empty assertion — and
+    // it did, for weeks, while the CLI this fixture exists to exercise never
+    // loaded at all. The assertion has to be that the script RAN: a clean exit,
+    // and a line only its own output shape produces.
+    // The exit code is deliberately NOT asserted to be 0: `preflight.mjs`
+    // returns non-zero on a STOP verdict, which is it working correctly. What
+    // separates "ran" from "never loaded" is the output shape plus the absence
+    // of a module-resolution crash.
+    expect(
+      result.out,
+      `${script} crashed instead of running through a symlink:\n${result.out}`,
+    ).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find (module|package)|at file:\/\/|node:internal/);
+    expect(
+      result.out,
+      `${script} produced no recognisable output through a symlink:\n${result.out}`,
+    ).toMatch(SYMLINK_OUTPUT_SHAPE[script]!);
   });
 });
 
