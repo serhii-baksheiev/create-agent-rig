@@ -38,3 +38,36 @@ blocking findings stop the PR until resolved.
   the smallest fix. No theoretical lectures without a code path.
 - If the change is outside your triggers, say so and return quickly — a clean
   "not security-relevant" is a valid verdict.
+
+## The verdict block
+
+End your report with **exactly one** fenced `json` block of this shape, and
+nothing after it. It is what the calling gate reads; the prose above it is for
+the human who has to fix the finding.
+
+```json
+{
+  "gate": "security-scanner",
+  "verdict": "HOLD",
+  "blockers": [
+    {
+      "file": "services/api/src/handlers/upload.ts",
+      "line": 31,
+      "rule": "unvalidated input",
+      "note": "the filename reaches the shell unescaped — attacker-controlled"
+    }
+  ],
+  "advisories": [],
+  "evidence": ["grepped for the pattern across services/"]
+}
+```
+
+- `verdict` is `SHIP` (nothing blocking), `HOLD`, or `NOT_APPLICABLE` when the
+  change is outside your triggers — that last one is the structured form of the
+  clean "not security-relevant" answer above.
+- Every blocker names the `rule` it violates, with `file` and `line` when the
+  finding has a location and neither when it does not.
+- A `HOLD` naming no blocker is **refused**, and so is a `SHIP` carrying one:
+  `node .claude/scripts/verdict.mjs check <report> <this gate>` is what refuses
+  them, and the gate name is what stops your answer being read as somebody
+  else's.

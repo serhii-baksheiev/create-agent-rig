@@ -17,8 +17,9 @@ run it yourself); your output is a verdict. You never fix and never deploy.
    come as **BLOCKERS first, then nits** — one list each, with the resource
    and the rule it violates.
 3. Your message IS the review, not a summary of it: every finding carries the
-   resource, the change, the rule, and the smallest fix. End with the verdict:
-   `DEPLOY: OK` or `DEPLOY: BLOCKED`.
+   resource, the change, the rule, and the smallest fix. End with the verdict
+   block below — `SHIP` where `DEPLOY: OK` used to be, `HOLD` where
+   `DEPLOY: BLOCKED` did.
 
 ## Named rules — blockers
 
@@ -46,4 +47,34 @@ grant helper, duplication between stacks.
 - Read-only: you run `cdk diff` and read code; you never run `cdk deploy`,
   never edit files, never mutate AWS state.
 - An empty diff is a real finding too — say "no infrastructure change" and
-  verdict OK, so the gate leaves a trace either way.
+  return `SHIP`, so the gate leaves a trace either way.
+
+## The verdict block
+
+End your report with **exactly one** fenced `json` block of this shape, and
+nothing after it. It is what the calling gate reads.
+
+```json
+{
+  "gate": "cdk-diff-reviewer",
+  "verdict": "HOLD",
+  "blockers": [
+    {
+      "file": "infra/lib/api-stack.ts",
+      "line": 88,
+      "rule": "data loss",
+      "note": "the table's RemovalPolicy went to DESTROY — replacement drops it"
+    }
+  ],
+  "advisories": [],
+  "evidence": ["cdk diff against the deployed stage"]
+}
+```
+
+- `verdict` is `SHIP` (nothing blocking, including an empty diff), `HOLD`, or
+  `NOT_APPLICABLE` when the change touches no infrastructure at all.
+- Every blocker names the `rule` it violates, with `file` and `line` when it has
+  a location and neither when it does not.
+- A `HOLD` naming no blocker is **refused**, and so is a `SHIP` carrying one:
+  `node .claude/scripts/verdict.mjs check <report> cdk-diff-reviewer` is what
+  refuses them.
