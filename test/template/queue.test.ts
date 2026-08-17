@@ -496,8 +496,13 @@ describe('the scaling harness sizes its own samples', () => {
     // A LOW probe asks for a big sample (`ceil(target / probe)`), and a big
     // sample cannot finish inside the budget, which is the state being tested.
     // A HIGH probe shrinks the sample until a whole one fits, and then `samples`
-    // is however many fit — measured 1, 3, 5 at rising probes, never the 9 the
-    // first version of this comment claimed. Probe was observed at
+    // is however many fit — which under this configuration reaches 9, and under
+    // the previous one topped out at 5. No illustrative counts are given here on
+    // purpose: they are a function of the burn and the budget, and the last two
+    // sets of them rode through a parameter change and had to be corrected —
+    // once inside this very sentence, which is as clear a demonstration of the
+    // hazard as the sentence could ask for. The mechanism is the durable part.
+    // Probe was observed at
     // 0.00004–0.00062 ms, so the margin is ~25–400×, and it is worth recomputing
     // rather than inheriting if either number above changes: this threshold
     // moved once already when the budget became a parameter, and the stale
