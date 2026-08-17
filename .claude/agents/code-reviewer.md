@@ -49,3 +49,35 @@ do not block on them.
 - Quote the checklist item a blocking finding violates. If nothing blocks, say
   so explicitly — "no blocking findings" is a valid, useful verdict.
 - Do not request rewrites of working, tested code for style alone.
+
+## The verdict block
+
+Write your report for the human, then end it with **exactly one** fenced `json`
+block of this shape, and nothing after it. That block is what the calling gate
+reads; a report that never writes one is read as whatever the caller expected.
+
+```json
+{
+  "gate": "code-reviewer",
+  "verdict": "HOLD",
+  "blockers": [
+    {
+      "file": "packages/core/src/note.ts",
+      "line": 42,
+      "rule": "checklist item 2 — test integrity",
+      "note": "the failing case was deleted rather than fixed"
+    }
+  ],
+  "advisories": [],
+  "evidence": ["diffed against origin/master", "queue item supplied"]
+}
+```
+
+- `verdict` is `SHIP`, `HOLD` or `NOT_APPLICABLE` — no other word.
+- Every blocker names the `rule` it violates. `file` and `line` travel together
+  and are both omitted when the finding has no single location.
+- A `HOLD` with an empty `blockers` list is **refused**, and so is a `SHIP`
+  carrying one: `node .claude/scripts/verdict.mjs check <report> <this gate>` is
+  what refuses them, and the shape it enforces is in
+  `.claude/scripts/lib/verdict.mjs`. The gate name is what stops your answer
+  being read as somebody else's.

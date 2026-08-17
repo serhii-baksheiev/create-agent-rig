@@ -154,6 +154,40 @@ branch named after a task that does not exist.
 so the assumption travels in the open, in the item and in the PR description,
 where the next reader can see which part of the work rests on it.
 
+### The verdict block
+
+Report in prose for the caller, then end with **exactly one** fenced `json` block
+of this shape, and nothing after it. The word is spaced in prose and one token
+inside the block; both forms are the contract.
+
+```json
+{
+  "gate": "check-premises",
+  "verdict": "PREMISE_FALSE",
+  "blockers": [
+    {
+      "file": "packages/core/src/note.ts",
+      "line": 17,
+      "rule": "the item claims the schema does not reject an empty title",
+      "note": "it does, here — the reported bug is a caller that skips the validator"
+    }
+  ],
+  "advisories": [],
+  "evidence": ["read the validator and both call sites"]
+}
+```
+
+- `verdict` is `PREMISES_HOLD`, `PREMISE_FALSE`, `UNVERIFIABLE` or `UNMEASURED`
+  — this skill returns no other word, and none of the reviewers' words.
+- One blocker per premise that did not hold, per claim that could not be decided,
+  or per unbacked sentence — `rule` is the claim itself, `note` is what the code
+  actually says, and `file`/`line` is the citation §3 requires.
+- `PREMISES_HOLD` carries an empty `blockers` list; the other three name at
+  least one. A stop verdict without one is not an answer the caller can act on,
+  and the caller is what checks: the `loop` skill runs
+  `node .claude/scripts/verdict.mjs check <report> check-premises` on what you
+  return. Nothing in this skill runs it — this skill writes nothing at all.
+
 ## Examples — the three shapes this actually catches
 
 **The thing already exists.** Item: "the payload schema does not reject an empty

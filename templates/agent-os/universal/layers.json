@@ -26,6 +26,8 @@
     ".claude/scripts/preflight.mjs",
     ".claude/scripts/run-journal.mjs",
     ".claude/scripts/run-state.mjs",
+    ".claude/scripts/verdict.mjs",
+    ".claude/scripts/lib/verdict.mjs",
     ".claude/scripts/queue/core.mjs",
     ".claude/scripts/queue/plan-md.mjs",
     ".claude/scripts/queue/github-issues.mjs",

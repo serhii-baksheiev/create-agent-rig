@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { readGateSpec, verdictExamplesIn, verdictWordsFor } from './verdict-spec.js';
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // agent-os v2 brief §2b Tier A: the infra rules gate deploys on a CDK diff
@@ -200,5 +202,38 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
       'utf8',
     );
     expect(prShip).toContain('prose-reviewer');
+  });
+});
+
+// AR-65: a reviewer's verdict stops being prose the calling session
+// pattern-matches by eye. Each of these agents ends its report with exactly one
+// fenced ```json block of the shape `lib/verdict.mjs` defines, so `pr-ship` can
+// check "one verdict per run" and "a stop names a blocker" instead of reading
+// for them. The three gate SKILLS make the same promise — their half of this is
+// in `skills.test.ts`.
+describe('every reviewing agent ends with one machine-readable verdict', () => {
+  const REVIEWERS = ['code-reviewer', 'prose-reviewer', 'security-scanner', 'cdk-diff-reviewer'];
+
+  it.each(REVIEWERS)('%s asks for exactly one fenced json block', async (gate) => {
+    const content = await readGateSpec(gate);
+    // "exactly one" is the load-bearing half: two blocks is two verdicts, and a
+    // reader that takes either one is choosing a verdict for the reviewer.
+    expect(content).toMatch(/exactly one[\s\S]{0,80}json/i);
+  });
+
+  it.each(REVIEWERS)('%s shows an example verdict that names itself', async (gate) => {
+    const content = await readGateSpec(gate);
+    const examples = verdictExamplesIn(content, gate);
+    expect(examples, `${gate} ships no fenced json example`).not.toHaveLength(0);
+
+    // The gate field is copied from the example by whoever follows the spec, so
+    // an example naming a DIFFERENT gate teaches every run to mislabel itself.
+    const own = examples.filter((example) => example['gate'] === gate);
+    expect(own, `no example in ${gate} carries \`"gate": "${gate}"\``).not.toHaveLength(0);
+
+    const allowed = await verdictWordsFor(gate);
+    for (const example of own) {
+      expect(allowed, `${gate} shows a word it may not return`).toContain(example['verdict']);
+    }
   });
 });

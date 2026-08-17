@@ -23,8 +23,9 @@ blockers.
    **Read the exit code, not just its sign.**
 
    - **0** — proceed to step 1.
-   - **2** — the rounds are spent. Return `VERDICT: HOLD` with one blocker:
-     *gate rounds exhausted*, quoting the round count. Do not run the fan-out.
+   - **2** — the rounds are spent. Return `HOLD` with one blocker whose `rule`
+     is *gate rounds exhausted*, quoting the round count in its `note`. Do not
+     run the fan-out.
    - **1** — the command itself failed (unreadable config, unreadable counter,
      detached checkout). This is **not** an exhausted cap: fix the cause and run
      step 0 again. Treating it as exhaustion escalates a healthy item.
@@ -166,6 +167,73 @@ blockers.
    Run them as subagents, in parallel — a fresh context reviews better than the
    session that wrote the code (see `.claude/rules/workflow.md`,
    "Review-context isolation").
+
+   🔴 **Check each reviewer's answer before you believe it.** Every gate spec
+   ends in one fenced `json` block; save what each subagent returned and run
+
+   ```sh
+   node .claude/scripts/verdict.mjs check <report> <the reviewer you launched>
+   ```
+
+   on it **before** you decide anything from it. 🔴 **Name the reviewer.** You
+   launched two or three of them and the check reads the report's LAST block, so
+   without the name a report carrying `code-reviewer`'s `HOLD` followed by
+   anything else answers about the anything else — a stop you never see. With
+   the name, a block claiming another gate is refused.
+
+   Exit 0 prints the parsed
+   verdict — including for a `HOLD`, because a reviewer that *found* something
+   is not a reviewer that broke. Exit 1 means the report does not end in a
+   verdict this gate can act on: no block or one that is not JSON, a word no
+   gate returns, a blocker naming no rule, or the case this check exists for —
+   a `HOLD` with an empty `blockers` list, and its mirror, a `SHIP` carrying
+   one. Where the shared vocabulary names the gate it also refuses a word that
+   belongs to a different one; for a gate it does not name — a reviewer this
+   project or its stack added — that one check is not made
+   (`.claude/scripts/lib/verdict.mjs`, limit 1), so read such a report's word
+   against the reviewer's own spec yourself.
+
+   Such a report is **`incomplete`**: the reviewer did not answer. Read it as
+   neither a pass nor a stop — relaunch that one reviewer with the shape, or
+   record `incomplete` as a blocker of your own. Never read "no blockers
+   parsed" as "no blockers found".
+
+   **Then journal each verdict that parsed**, so the round's blockers outlive
+   the session that read them — a gate round is counted and finite, and an
+   escalation written after a compaction otherwise carries the round count and
+   nothing about what was found:
+
+   ```sh
+   node --input-type=module -e '
+     const runDir = process.env.RIG_RUN_DIR;
+     if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+     // `check` prints nothing when it refuses, and a refused report is not a
+     // verdict to record — parse only what it actually printed.
+     if (!process.argv[1]) process.exit(0);
+     const journal = await import("./.claude/scripts/run-journal.mjs");
+     const v = JSON.parse(process.argv[1]);            // the block `check` printed
+     try {
+       console.log(journal.recordDecision({
+         runDir,
+         gate:     v.gate,
+         verdict:  v.verdict,
+         blockers: v.blockers,
+         now:      new Date().toISOString(),
+       }));
+     } catch (error) {
+       // The split `queue/index.mjs` makes, for the reason `run-journal.mjs`
+       // gives: a trace that can accept no more records is over, and the GATE
+       // is not. Anything else is this call mis-declared, and stops it.
+       if (!journal.isTraceExhausted?.(error)) throw error;
+       process.stderr.write(`run journal: ${error.message}\n  the verdict above was NOT recorded.\n`);
+     }
+   ' "$(node .claude/scripts/verdict.mjs check <report> <reviewer>)"
+   ```
+
+   🔴 **The guard and the `catch` are the contract, not decoration** — an
+   exhausted trace must cost this round its record and nothing else. A round is
+   counted and capped, so a crash here spends one on a journal that was never
+   the thing under review.
 5. **DoD walk.** Check the Definition of Done list in
    `.claude/rules/workflow.md` item by item — test-first evidence, nothing
    skipped or weakened, boundaries respected, docs updated, autonomy tier
@@ -180,14 +248,45 @@ blockers.
 
 ## Verdict
 
-- `VERDICT: SHIP` — checks green, no blocking findings, DoD holds. Say so
-  explicitly; a clean gate is a real result.
-- `VERDICT: HOLD` — list every blocker: the failing check by name, the
-  reviewer finding with its file:line, or the DoD item that does not hold.
-  Blocking findings are resolved, not argued with; after fixes, the gate runs
-  again from **step 0** — which counts the new round and is what makes "again"
-  finite. Re-entering at step 1 skips the counter, and the unbounded rounds this
-  gate measured are exactly what that produces.
+- `SHIP` — checks green, no blocking findings, DoD holds. Say so explicitly; a
+  clean gate is a real result.
+- `HOLD` — name every blocker: the failing check by name, the reviewer finding
+  with its file:line, or the DoD item that does not hold. Blocking findings are
+  resolved, not argued with; after fixes, the gate runs again from **step 0** —
+  which counts the new round and is what makes "again" finite. Re-entering at
+  step 1 skips the counter, and the unbounded rounds this gate measured are
+  exactly what that produces.
+
+Your own answer is a verdict like any other, so it ends the same way: prose for
+the author, then **exactly one** fenced `json` block, and nothing after it.
+
+```json
+{
+  "gate": "pr-ship",
+  "verdict": "HOLD",
+  "blockers": [
+    { "rule": "required check `ci`", "note": "red on the head commit: 3 tests failed" },
+    {
+      "file": "packages/core/src/note.ts",
+      "line": 42,
+      "rule": "code-reviewer — checklist item 2",
+      "note": "the failing case was deleted rather than fixed"
+    }
+  ],
+  "advisories": [],
+  "evidence": ["lane: model", "reviewers: code-reviewer, prose-reviewer"]
+}
+```
+
+- `verdict` is `SHIP` or `HOLD` — this gate has no third answer.
+- A failing check and a DoD line have no location, so `file` and `line` are
+  omitted there; every blocker names the `rule` it came from either way.
+- A `HOLD` with an empty `blockers` list, and a `SHIP` carrying one, are both
+  answers this gate may not give. **Run the same command on your own block
+  before you return it** — `node .claude/scripts/verdict.mjs check <your-block>
+  pr-ship` — and fix what it refuses. Nothing downstream re-checks the gate's
+  own answer, so this call is the only thing between a malformed verdict and
+  whoever acts on it.
 
 ## Boundaries
 
