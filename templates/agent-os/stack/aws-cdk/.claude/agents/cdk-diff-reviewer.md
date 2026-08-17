@@ -76,4 +76,5 @@ nothing after it. It is what the calling gate reads.
 - Every blocker names the `rule` it violates, with `file` and `line` when it has
   a location and neither when it does not.
 - A `HOLD` naming no blocker is **refused**, and so is a `SHIP` carrying one:
-  `node .claude/scripts/verdict.mjs check <report>` is what refuses them.
+  `node .claude/scripts/verdict.mjs check <report> cdk-diff-reviewer` is what
+  refuses them.

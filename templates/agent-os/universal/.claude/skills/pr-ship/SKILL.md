@@ -207,6 +207,9 @@ blockers.
    node --input-type=module -e '
      const runDir = process.env.RIG_RUN_DIR;
      if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+     // `check` prints nothing when it refuses, and a refused report is not a
+     // verdict to record — parse only what it actually printed.
+     if (!process.argv[1]) process.exit(0);
      const journal = await import("./.claude/scripts/run-journal.mjs");
      const v = JSON.parse(process.argv[1]);            // the block `check` printed
      try {

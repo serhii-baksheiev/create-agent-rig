@@ -157,4 +157,6 @@ calling gate reads.
 - Every blocker names the `rule` it violates; give the `file` and `line` of the
   text, and cite the contradicting mechanism in the `note`.
 - A `HOLD` naming no blocker is **refused**, and so is a `SHIP` carrying one:
-  `node .claude/scripts/verdict.mjs check <report>` is what refuses them.
+  `node .claude/scripts/verdict.mjs check <report> <this gate>` is what refuses
+  them, and the gate name is what stops your answer being read as somebody
+  else's.

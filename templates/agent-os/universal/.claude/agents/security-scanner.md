@@ -68,4 +68,6 @@ the human who has to fix the finding.
 - Every blocker names the `rule` it violates, with `file` and `line` when the
   finding has a location and neither when it does not.
 - A `HOLD` naming no blocker is **refused**, and so is a `SHIP` carrying one:
-  `node .claude/scripts/verdict.mjs check <report>` is what refuses them.
+  `node .claude/scripts/verdict.mjs check <report> <this gate>` is what refuses
+  them, and the gate name is what stops your answer being read as somebody
+  else's.

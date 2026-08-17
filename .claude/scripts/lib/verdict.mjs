@@ -54,14 +54,17 @@
  *    the example — somebody else's gate, and usually the opposite word.
  * 4. **Nothing launches it.** Like every gate in this layer it holds because a
  *    skill says to call it, not because a hook fires it.
- * 5. **A ``` sequence inside the block ends the block.** Markdown has no
- *    escape for it, so a reviewer quoting a fenced snippet in a `note` writes a
- *    block whose end is ambiguous — and reading it to the first closing fence
- *    would silently keep the front half, which on a measured case was a `SHIP`
- *    standing in front of the `HOLD` that followed it. Such a report is
- *    **refused**, naming the backticks as the cause: the reviewer moves the
- *    quote out of the block (an `evidence` line, or the prose above it) and
- *    answers again. There is no reading of it this module could trust.
+ * 5. **A second ``` after the opening fence makes the block's end a guess, and
+ *    the guess is refused.** Markdown has no escape for a fence, so a reviewer
+ *    quoting a fenced snippet in a `note` writes a block whose end is
+ *    ambiguous — and reading it to the first closing fence would silently keep
+ *    the front half, which on a measured case was a `SHIP` standing in front of
+ *    the `HOLD` behind it. The test is deliberately coarser than that one case:
+ *    **any** further fence is refused, including a well-formed block followed by
+ *    a fenced snippet in trailing prose, because from here the two are the same
+ *    text. Every spec says the block is the last thing in the report, so the
+ *    remedy is the same either way — move the fenced snippet above the block,
+ *    or name it in `evidence`, and answer again.
  */
 
 /** Every word any gate in this rulebook may return. */
@@ -218,10 +221,11 @@ export function parseVerdict(text) {
     return {
       ok: false,
       problems: [
-        'the final ```json block carries a ``` of its own, so where it ends is a guess — ' +
-          'and the guesses disagree about the verdict, not about whitespace. Move the ' +
-          'backticks out of the block (quote the snippet in the prose above it, or name ' +
-          'it in `evidence`) and answer again.',
+        'a second ``` follows the opening fence of the final json block, so where that ' +
+          'block ends is a guess — either backticks inside it, or a fenced snippet after ' +
+          'it, and from here the two are the same text. The block is the last thing in ' +
+          'the report: move the snippet above it, or name it in `evidence`, and answer ' +
+          'again.',
       ],
     };
   }

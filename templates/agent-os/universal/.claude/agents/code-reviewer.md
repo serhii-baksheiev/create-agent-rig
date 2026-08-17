@@ -77,6 +77,7 @@ reads; a report that never writes one is read as whatever the caller expected.
 - Every blocker names the `rule` it violates. `file` and `line` travel together
   and are both omitted when the finding has no single location.
 - A `HOLD` with an empty `blockers` list is **refused**, and so is a `SHIP`
-  carrying one: `node .claude/scripts/verdict.mjs check <report>` is what
-  refuses them, and the shape it enforces is in
-  `.claude/scripts/lib/verdict.mjs`.
+  carrying one: `node .claude/scripts/verdict.mjs check <report> <this gate>` is
+  what refuses them, and the shape it enforces is in
+  `.claude/scripts/lib/verdict.mjs`. The gate name is what stops your answer
+  being read as somebody else's.
