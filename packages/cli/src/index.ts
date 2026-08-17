@@ -29,7 +29,7 @@ Also: create-agent-rig init [--dry-run]
   Install the process layer (rules, gates, stop rules — no architecture
   assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md.
   --force is deprecated: it refuses and points at upgrade, which refreshes a
-  rig file by file. It is removed in the next release.
+  rig file by file. It is removed in 0.6.
 
 Also: create-agent-rig upgrade [--dry-run] [--yes]
   Bring the rig in the CURRENT repo up to this version. Replaces the files it
@@ -52,9 +52,9 @@ async function runInit(rawArgs: string[]): Promise<number> {
 
   // `init` adopts a repo the rig knows nothing about. Run inside a rig `create`
   // generated — reachable when its CLAUDE.md was deleted — it is the wrong
-  // command: it installs
-  // the process layer alone and never refreshes the stack overlays. Say so
-  // before anything is written, so it is visible on --dry-run too.
+  // command: it installs the process layer alone and never refreshes the stack
+  // overlays. Say so before anything is written, so it is visible on --dry-run
+  // too.
   //
   // It is a manifest read, so a pre-0.4.0 rig with no manifest gets no advisory
   // even when it came from `create` — the same limit `recordInstall` carries,
@@ -169,7 +169,7 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // and a report that mentions entries it never shows is not a plan.
   if (plan.wiring !== null) {
     process.stdout.write(
-      `\n!  .claude/settings.json has entries this rig did not install — it is where\n` +
+      `\n!  .claude/settings.json is not any version this rig released — it is where\n` +
         `   your own hooks live, so it is handed over rather than replaced.\n` +
         `   This version wires them like this; merge in what is missing:\n\n` +
         plan.wiring.replace(/^/gm, '   ') +

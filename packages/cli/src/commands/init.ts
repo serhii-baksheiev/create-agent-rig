@@ -20,8 +20,8 @@ export interface InitOptions {
   /** Report the plan, write nothing. */
   dryRun?: boolean;
   /**
-   * Deprecated: refused, and removed in the release after this one. It only
-   * ever replaced `CLAUDE.md`; `upgrade` refreshes a rig file by file.
+   * Deprecated: refused, and removed in 0.6 (AR-36). It only ever replaced
+   * `CLAUDE.md`; `upgrade` refreshes a rig file by file.
    */
   force?: boolean;
 }
@@ -198,8 +198,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   for (const rel of files) {
     const dest = path.join(repoDir, rel);
     if (await exists(dest)) {
-      // never overwrite a file init did not write (a user's own copy). With
-      // `--force` refused above, `CLAUDE.md` is no longer the exception it was.
+      // never overwrite a file init did not write (a user's own copy)
       skipped.push(rel);
       continue;
     }

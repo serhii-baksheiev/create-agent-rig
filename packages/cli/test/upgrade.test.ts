@@ -179,6 +179,23 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     expect(await read(SETTINGS)).toBe(mine);
   });
 
+  it('does not tell the user their own settings.json was edited since it was installed', async () => {
+    // `init` keeps a pre-existing settings.json and deliberately does not record
+    // it, so there is no recorded hash — the same state the conflict arm already
+    // distinguishes. Handing the wiring over is right either way; saying it was
+    // "edited since it was installed" is a claim about an install that never
+    // happened, made to the user about their own file.
+    await write(SETTINGS, '{"hooks":{}}');
+    await installRig();
+    expect((await readManifest(repo))?.files[SETTINGS]).toBeUndefined();
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    const action = plan.actions.find((a) => a.rel === SETTINGS);
+    expect(action?.verdict).toBe('wiring');
+    expect(action?.reason).not.toMatch(/edited since/i);
+    expect(action?.reason).toMatch(/never released|treated as yours/i);
+  });
+
   it('a dry run writes nothing at all', async () => {
     await installRig();
     await pretendInstalled(WORKFLOW, '# the 0.3.2 text\n');
@@ -426,7 +443,7 @@ describe('an `init` rig whose directory name is legal for the manifest but is no
 // manifest's *identity*: a create rig demoted to `kind: "init"` with no stacks
 // still upgrades, silently, from the smaller install set — the overlays leave
 // the plan without ever being reported as deleted or conflicting.
-describe('`init --force` inside a rig that came from `create`', () => {
+describe('`init` inside a rig that came from `create`, reached by a deleted CLAUDE.md', () => {
   let project: string;
 
   const AWS_RULE = '.claude/rules/aws-cdk.md';

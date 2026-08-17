@@ -28,7 +28,7 @@ export type UpgradeVerdict =
   | 'conflict'
   /** The manifest says we installed it; the user removed it. Stays removed. */
   | 'deleted'
-  /** `settings.json` the manifest does not vouch for: its new entries are handed over. */
+  /** `settings.json` the manifest does not vouch for: the released file is handed over. */
   | 'wiring';
 
 export interface UpgradeAction {
@@ -318,15 +318,21 @@ export async function planUpgrade(
       actions.push({ rel: file.rel, verdict: 'update', templatePath: file.source });
       nextFiles[file.rel] = sha256(file.content);
     } else if (file.rel === SETTINGS) {
-      // The two arms above have already failed, so nothing vouches for these
-      // bytes: the user's own hooks may be in them. This is the one file whose
-      // conflict is a merge rather than a choice — replacing it can unwire what
-      // they added — so the new entries are handed over instead of written.
+      // Every check above has failed, so nothing vouches for these bytes: the
+      // user's own hooks may be in them. This is the one file whose conflict is
+      // a merge rather than a choice — replacing it can unwire what they added —
+      // so the released file is handed over instead of written. The reason
+      // splits the same way the conflict arm's does, and for the same reason:
+      // `init` keeps a settings.json it found without recording it, so with no
+      // recorded hash the rig never installed this file and must not say it did.
       wiring = file.content;
       actions.push({
         rel: file.rel,
         verdict: 'wiring',
-        reason: 'edited since it was installed — merge the entries below by hand',
+        reason:
+          recorded === undefined
+            ? 'not a version this rig ever released — treated as yours, merge the entries below by hand'
+            : 'edited since it was installed — merge the entries below by hand',
       });
       if (recorded !== undefined) nextFiles[file.rel] = recorded;
     } else {
