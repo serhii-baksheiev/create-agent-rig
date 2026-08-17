@@ -131,8 +131,11 @@ const DIAGNOSIS_LIMIT = 120;
 /**
  * One reviewer-written value, made safe to print in a diagnosis.
  *
- * 🔴 **Every message below that quotes the report interpolates through this**, and
- * there is exactly one of it. The values are written by a subagent and read by a
+ * 🔴 **Every message below that quotes the report interpolates through this** — the
+ * key, the verdict word, the gate, and the parse error, whose message carries a
+ * snippet of the block the reviewer wrote — and there is exactly one of it.
+ *
+ * The values are written by a subagent and read by a
  * human in a terminal: a `gate` carrying `ESC[2K ESC[1A … ESC[0m` erases the line
  * above and repaints a refusal as a pass for whoever is watching the scrollback. The
  * exit code and the empty stdout are unaffected — the target is the person, not the
@@ -142,6 +145,19 @@ const DIAGNOSIS_LIMIT = 120;
  * the text the operator has to read survives: a repainting payload arrives as its
  * own visible words. Long values are cut to `DIAGNOSIS_LIMIT` with a `…`, so one
  * field cannot push the rest of the diagnosis off the screen.
+ *
+ * ⚠ **What it does not remove, and why that is the line.** Bidirectional overrides
+ * (`U+202E` and family), zero-width characters, the soft hyphen and combining marks
+ * survive. None of them can address the cursor, so none can reach outside the value
+ * — every site prints it inside backticks with a constant sentence after it, and the
+ * worst they buy is a misread within those backticks. Escape sequences are the ones
+ * that rewrite the operator's screen, and those are what this removes.
+ *
+ * ⚠ **The CLI's own argv is not passed through it.** The report's path and the
+ * subcommand are printed exactly as the caller wrote them, because their whole job
+ * is to be pasted back into a command; the expected-gate argument IS sanitised,
+ * because it is printed beside a reviewer-written gate as one of two names the
+ * operator compares, and a value that can repaint that comparison defeats it.
  *
  * It never throws — it is called only where something has already gone wrong, and a
  * sanitiser that throws there turns a diagnosis into a crash the caller reads as
@@ -155,16 +171,25 @@ export const safeForDiagnosis = (value) => {
     return '<unprintable>';
   }
 
-  let cleaned = '';
-  // One forward pass, capped: the input is unbounded and arrives from a subagent,
-  // and nothing here needs to see past what it will print.
+  // One forward pass over CODE POINTS, and the cap counts the units a terminal
+  // and a JSON writer count. Slicing the accumulated string instead would cut an
+  // astral character in half and hand the next consumer a lone surrogate.
+  const kept = [];
+  let units = 0;
   for (const character of text) {
     const code = character.codePointAt(0) ?? 0;
     if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) continue;
-    cleaned += character;
-    if (cleaned.length > DIAGNOSIS_LIMIT) return `${cleaned.slice(0, DIAGNOSIS_LIMIT - 1)}…`;
+
+    if (units + character.length > DIAGNOSIS_LIMIT) {
+      // Something is left over, so the value is cut and says so. Drop whole
+      // characters until the ellipsis fits inside the cap.
+      while (units > DIAGNOSIS_LIMIT - 1) units -= kept.pop().length;
+      return `${kept.join('')}…`;
+    }
+    kept.push(character);
+    units += character.length;
   }
-  return cleaned;
+  return kept.join('');
 };
 
 const isPlainObject = (value) =>
@@ -278,7 +303,14 @@ export function parseVerdict(text) {
   } catch (error) {
     return {
       ok: false,
-      problems: [`the final fenced json block is not JSON (${error?.message ?? 'parse failed'}).`],
+      // 🔴 Through the sanitiser like every other quoted value, and this one is
+      // the least obvious of them: V8 puts a ~20-character snippet of the input
+      // INTO the SyntaxError's message, so the reviewer chooses what a failed
+      // parse prints just as directly as it chooses a gate name.
+      problems: [
+        `the final fenced json block is not JSON ` +
+          `(${safeForDiagnosis(error?.message ?? 'parse failed')}).`,
+      ],
     };
   }
 

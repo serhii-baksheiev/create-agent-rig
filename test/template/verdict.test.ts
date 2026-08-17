@@ -933,7 +933,14 @@ describe('every diagnosis in both files goes through the one sanitiser', () => {
    * skips the helper; the behaviour tests above cover the sites that exist today.
    */
   it.each([
-    ['lib/verdict.mjs', () => modulePath, ['${key}', '${gate}', '${String(verdict)}']],
+    // `${error?.message` is the site both round-3 readers found and this list
+    // could not have caught: V8 puts a snippet of the reviewer's block INTO the
+    // SyntaxError, so a message that merely quotes the error quotes the report.
+    [
+      'lib/verdict.mjs',
+      () => modulePath,
+      ['${key}', '${gate}', '${String(verdict)}', '${error?.message'],
+    ],
     ['verdict.mjs', () => cliPath, ['${expectedGate}', '${result.verdict.gate}']],
   ])('interpolates no reviewer-controlled value raw in %s', async (_label, file, raws) => {
     const source = await readFile(file(), 'utf8');
