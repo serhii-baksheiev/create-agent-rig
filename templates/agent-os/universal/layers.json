@@ -35,7 +35,13 @@
     ".claude/scripts/queue/state.mjs",
     ".claude/queue.json",
     "PLAN.md",
-    "journal/README.md"
+    "journal/README.md",
+    "docs/decisions/fail-open-guards.md",
+    "docs/decisions/closing-a-task.md",
+    "docs/decisions/review-lanes.md",
+    "docs/decisions/run-directory.md",
+    "docs/decisions/stop-conditions-in-a-file.md",
+    "docs/decisions/two-empty-endings.md"
   ],
   "architecture": [
     ".claude/rules/architecture.md",

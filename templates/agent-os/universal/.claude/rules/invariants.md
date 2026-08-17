@@ -75,15 +75,6 @@ means **every line of work the guard does is a potential total bypass**. Any
 exception, any timeout, any stack overflow inside it resolves to *allow* — not
 for the rule that broke, for **all** of them.
 
-Three review rounds on one hook produced three separate total bypasses, and all
-three were the same shape: an input made the guard's own code throw, and the
-fail-open catch turned that into permission.
-
-- an unbounded `spread` over an input-derived array → `RangeError` → allow;
-- a recursive expansion whose bound was per-group, not total → stack overflow →
-  allow;
-- a quadratic loop → killed by the hook timeout → allow.
-
 So the test is not "is it fast enough on realistic input" but **"can any input
 make it do unbounded work at all"**. In practice:
 
@@ -92,12 +83,16 @@ make it do unbounded work at all"**. In practice:
   then spread;
 - one forward pass; no rescanning, no loop that re-copies the whole string;
 - when a bound is hit, fail **closed** or keep the input intact — never silently
-  drop part of it, which is how one of those bypasses hid whole commands.
+  drop part of it, which is how one past bypass hid whole commands from the
+  guard while it reported that it had looked.
 
 And the corollary that follows from all of it: **prefer deleting a rule to adding
-one.** Each of those three bypasses arrived in a commit whose purpose was to make
-the guard stricter. Subtraction cannot introduce this class of defect; addition
-routinely does.
+one.** Subtraction cannot introduce this class of defect; addition routinely
+does.
+
+The three bypasses this rule was paid for — what each one was, and why the
+corollary is subtraction rather than more care — are in
+`docs/decisions/fail-open-guards.md`.
 
 ## State the limits — and test them
 

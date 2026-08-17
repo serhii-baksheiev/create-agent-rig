@@ -126,7 +126,12 @@ import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { elevatedPathsIn, normalizePath, readDeclaredPaths } from './detect-missed-gate.mjs';
+import {
+  elevatedPathsIn,
+  isDecisionRecord,
+  normalizePath,
+  readDeclaredPaths,
+} from './detect-missed-gate.mjs';
 import { withoutGitLocation } from './git-env.mjs';
 
 /** The three lanes, cheapest first. The order is the dispatch order. */
@@ -211,7 +216,17 @@ const isRulebookPath = (path) => {
   if (segments.length === 0) return false;
   if (RULEBOOK_BASENAMES.has(segments[segments.length - 1].toLowerCase())) return true;
   for (const segment of segments) if (segment.toLowerCase() === '.claude') return true;
-  return false;
+  // A decision record carries rulebook rationale, so it is code here for the
+  // same reason a rule file is: the prose IS the implementation. Shared with
+  // the gate sweep rather than re-spelled — see `isDecisionRecord`.
+  //
+  // Fed the REJOINED, folded segments, not the raw argument: the predicate is
+  // case-sensitive by design for the sweep, and this file's case-folding
+  // whitelist above covers every check in it. A `git mv` to `docs/Decisions/`
+  // on a case-insensitive checkout would otherwise drop a record onto the
+  // prose lane — the exact move that whitelist exists to close. Rejoining also
+  // keeps this branch on the same normalised path as the two tests above it.
+  return isDecisionRecord(segments.join('/').toLowerCase());
 };
 
 // 🔴 Deliberately EMPTY, and it held `.rig-manifest.json` for one review round.

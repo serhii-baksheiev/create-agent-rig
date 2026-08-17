@@ -257,6 +257,74 @@ describe('classifyFile — what kind of file this is', () => {
     }
   });
 
+  it('calls a decision record code — the rationale it carries is still rulebook', async () => {
+    const { classifyFile } = await load();
+    // 🔴 AR-63 cut the defect history and the rationale out of `.claude/rules/*`
+    // and the `loop` skill into `docs/decisions/*.md`. Under `.claude/` that text
+    // routed to `model` with `code-reviewer`; the same sentences one directory
+    // move later classify as prose and can reach `fast-path`. The move was meant
+    // to relocate the words, not to downgrade the gate over them.
+    for (const file of [
+      'docs/decisions/review-lanes.md',
+      'docs/decisions/fail-open-guards.md',
+      // the vendored form — this repository ships the records inside the layer
+      'templates/agent-os/universal/docs/decisions/run-directory.md',
+    ]) {
+      expect(classifyFile(file), file).toBe('code');
+    }
+  });
+
+  it('recognises a decision record whatever the case of its directories', async () => {
+    const { classifyFile } = await load();
+    // 🔴 The same two-commit attack `recognises a rulebook whatever the case of
+    // its name` closes, one directory over and still open: `isRulebookPath`
+    // folds for the rulebook basenames and for `.claude`, but the decision-record
+    // branch delegates to `isDecisionRecord`, which is case-SENSITIVE on purpose
+    // — it belongs to the sweep, whose `normalizePath` must not fold. So on a
+    // case-insensitive checkout `git mv docs/decisions docs/Decisions` is
+    // accepted and recorded, and from the next commit on the extracted rationale
+    // sits in the prose lane forever. Measured: `docs/Decisions/x.md` and
+    // `Docs/decisions/x.md` both classified `prose` and routed `fast-path`.
+    //
+    // The fix belongs on the ROUTER side only — folding here can only escalate,
+    // while folding in the sweep would create false positives. The sweep's own
+    // case sensitivity is pinned by `still calls documentation outside
+    // decisions/ prose` below and by detect-missed-gate's suite.
+    for (const file of [
+      'docs/Decisions/review-lanes.md',
+      'Docs/decisions/review-lanes.md',
+      'DOCS/DECISIONS/fail-open-guards.md',
+      // the vendored form, where the pair sits mid-path rather than at the root
+      'templates/agent-os/universal/docs/Decisions/run-directory.md',
+    ]) {
+      expect(classifyFile(file), file).toBe('code');
+    }
+  });
+
+  it('still calls documentation outside decisions/ prose', async () => {
+    const { classifyFile } = await load();
+    // The widening is narrow: `docs/` is ordinary documentation too, and calling
+    // all of it code would put every README edit back on the expensive lane.
+    for (const file of ['docs/guide.md', 'docs/decisions-overview.md', 'docs/api/notes.txt']) {
+      expect(classifyFile(file), file).toBe('prose');
+    }
+  });
+
+  it('keeps a case variant of ordinary documentation on the cheap lane', async () => {
+    const { classifyFile, route } = await load();
+    // The negative that has to survive the folding fix, or the widening stops
+    // being narrow: folding the decision-record check must not drag every
+    // capitalised `Docs/` directory into the expensive lane. `Docs/` is the
+    // ordinary spelling in a .NET or Java checkout, and a README edit there
+    // is exactly the change the cheap lanes exist to admit.
+    for (const file of ['Docs/guide.md', 'DOCS/api/notes.txt', 'Docs/Decisions-overview.md']) {
+      expect(classifyFile(file), file).toBe('prose');
+      const result = route({ files: [file], elevatedPaths: ELEVATED });
+      expect(result.lane, file).toBe('fast-path');
+      expect(result.reviewers, file).toEqual(['prose-reviewer']);
+    }
+  });
+
   it('calls every source, config and test file code', async () => {
     const { classifyFile } = await load();
     for (const file of [
@@ -524,6 +592,43 @@ describe('route — the ladder in ascending order of cost', () => {
     expect(result.risks).toEqual([]);
     expect(result.lane).toBe('model');
     expect(result.reviewers).toEqual(['code-reviewer', 'prose-reviewer']);
+  });
+
+  it('never gives a decision record the prose fast lane', async () => {
+    const { route } = await load();
+    // `docs/decisions/` is under no declared elevated prefix here, so nothing
+    // escalates it — it must reach the model lane on its CLASSIFICATION alone,
+    // exactly as the rule file the rationale was cut out of did.
+    const result = route({ files: ['docs/decisions/review-lanes.md'], elevatedPaths: ELEVATED });
+    expect(result.risks).toEqual([]);
+    expect(result.lane).toBe('model');
+    expect(result.reviewers).toEqual(['code-reviewer', 'prose-reviewer']);
+  });
+
+  it('never gives a case-variant decision record the prose fast lane either', async () => {
+    const { route } = await load();
+    // `ELEVATED` declares no `docs/` prefix, so nothing escalates these — the
+    // lane has to be earned by CLASSIFICATION alone, exactly as the correctly
+    // cased `docs/decisions/review-lanes.md` earns it above. That is the point
+    // of using this declaration rather than the generated project's: a lane won
+    // by the elevated block would not prove the router recognised the record.
+    for (const file of [
+      'docs/Decisions/review-lanes.md',
+      'Docs/decisions/review-lanes.md',
+      'templates/agent-os/universal/docs/Decisions/run-directory.md',
+    ]) {
+      const result = route({ files: [file], elevatedPaths: ELEVATED });
+      expect(result.risks, file).toEqual([]);
+      expect(result.lane, file).toBe('model');
+      expect(result.reviewers, file).toContain('code-reviewer');
+    }
+  });
+
+  it('leaves documentation outside decisions/ on the fast path', async () => {
+    const { route } = await load();
+    const result = route({ files: ['docs/guide.md'], elevatedPaths: ELEVATED });
+    expect(result.lane).toBe('fast-path');
+    expect(result.reviewers).toEqual(['prose-reviewer']);
   });
 
   it('sends a file it could not classify to the model lane', async () => {

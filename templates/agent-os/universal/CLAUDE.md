@@ -62,7 +62,7 @@ them all; they are one rulebook.
   escalated;
   `security-scanner` when a change touches auth, secrets, parsing, or outbound
   calls; `prose-reviewer` when it touches the documents that instruct agents —
-  rules, skills, agent specs, this file, the README. Those last two are
+  rules, skills, agent specs, decision records, this file, the README. Those last two are
   **lane-independent and may only add** — the lane is a floor, never a ceiling.
   `.claude/rules/workflow.md` carries the ladder and what the cheap lanes give
   up. Blocking findings are resolved, not argued with, and the
@@ -104,6 +104,7 @@ is a path the gate sweep cannot see.
 ```elevated-paths
 packages/db/src/
 .claude/
+docs/decisions/
 .github/workflows/
 ```
 

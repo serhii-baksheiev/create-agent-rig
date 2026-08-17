@@ -62,7 +62,7 @@ them all; they are one rulebook.
   escalated;
   `security-scanner` when a change touches auth, secrets, parsing, or outbound
   calls; `prose-reviewer` when it touches the documents that instruct agents —
-  rules, skills, agent specs, this file, the README. Those last two are
+  rules, skills, agent specs, decision records, this file, the README. Those last two are
   **lane-independent and may only add** — the lane is a floor, never a ceiling.
   `.claude/rules/workflow.md` carries the ladder and what the cheap lanes give
   up. Blocking findings are resolved, not argued with, and the
@@ -113,6 +113,8 @@ templates/agent-os/universal/.claude/agents/
 templates/agent-os/universal/.claude/skills/
 templates/agent-os/universal/.claude/rules/
 templates/agent-os/universal/CLAUDE.md
+templates/agent-os/universal/docs/decisions/
+docs/decisions/
 templates/agent-os/stack/aws-cdk/.claude/agents/
 templates/agent-os/stack/aws-cdk/.claude/skills/
 templates/agent-os/stack/node-ts/.claude/hooks/
@@ -203,11 +205,13 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
    private work repository (PLAN.md §9).
 5. **Never edit a synced file directly** — edit `templates/agent-os/` (or this
    addendum) and run the sync script; the drift test fails otherwise. The synced
-   set is `CLAUDE.md`, everything under `.claude/`, **and `journal/README.md`**,
-   which since AR-64 is the first synced payload file living outside `.claude/`.
-   It sits in the repo root next to `journal/YYYY-MM.md`, so it is the natural
-   thing to edit in place — and an edit there is lost at the next sync. The month
-   files themselves are this repo's own and are never synced.
+   set is `CLAUDE.md`, everything under `.claude/`, **`journal/README.md`** and
+   **`docs/decisions/`** — the two synced payload paths living outside
+   `.claude/` (AR-64 and AR-63 respectively). Both sit in the repo root among
+   files this repo does own — `journal/YYYY-MM.md` next to the one, nothing yet
+   next to the other — so they are the natural things to edit in place, and an
+   edit there is lost at the next sync. The month files themselves are this
+   repo's own and are never synced.
 6. **This repo has a remote and CI, so it follows its own PR flow** (see the
    synced `.claude/rules/workflow.md`): one task per short-lived branch, never
    commit to `master` directly, merge through a PR once CI is green. The

@@ -144,6 +144,41 @@ describe('elevatedPathsIn — which files make a change elevated', () => {
     expect(elevatedPathsIn(rulebook, declared).sort()).toEqual([...rulebook].sort());
   });
 
+  // AR-63 moved the rulebook's rationale out of `.claude/rules/*` and the `loop`
+  // skill into `docs/decisions/*.md`. The text did not stop being rulebook — but
+  // the sweep's exemption is anchored on `.claude/`, so every record landed in
+  // `isInert` and dropped out of the gate the day it was extracted.
+  it('sees a decision record as rulebook, wherever the layer keeps it', async () => {
+    const { elevatedPathsIn } = await load('detect-missed-gate.mjs');
+    const declared = ['docs/decisions/', 'templates/agent-os/universal/docs/decisions/'];
+    const records = [
+      'docs/decisions/review-lanes.md',
+      // the vendored form: this repository ships the records inside the layer it
+      // generates from, and that is the copy a merge here actually touches
+      'templates/agent-os/universal/docs/decisions/fail-open-guards.md',
+    ];
+    expect(elevatedPathsIn(records, declared).sort()).toEqual([...records].sort());
+  });
+
+  // The second half, and it is the one that made the loss silent: `isInert` is
+  // tested BEFORE any prefix, so declaring the directory elevated bought nothing.
+  // A reader who added `docs/decisions/` to the block would believe it was covered.
+  it('does not let the inert test overrule an elevated declaration for a record', async () => {
+    const { elevatedPathsIn } = await load('detect-missed-gate.mjs');
+    expect(elevatedPathsIn(['docs/decisions/two-empty-endings.md'], ['docs/'])).toEqual([
+      'docs/decisions/two-empty-endings.md',
+    ]);
+  });
+
+  // 🔴 The widening is narrow ON PURPOSE. `docs/` is where ordinary
+  // documentation lives too, and escalating all of it would make the sweep fire
+  // on honest prose until someone stopped believing it.
+  it('still ignores ordinary documentation that is not a decision record', async () => {
+    const { elevatedPathsIn } = await load('detect-missed-gate.mjs');
+    const prose = ['docs/guide.md', 'docs/architecture.mdx', 'docs/decisions-overview.md'];
+    expect(elevatedPathsIn(prose, ['docs/'])).toEqual([]);
+  });
+
   it('still ignores ordinary prose inside an elevated directory', async () => {
     const { elevatedPathsIn } = await load('detect-missed-gate.mjs');
     const declared = ['infra/', 'templates/agent-os/universal/.claude/'];
