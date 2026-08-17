@@ -375,6 +375,23 @@ describe('pr-ship skill (universal)', () => {
     ).not.toHaveLength(0);
   });
 
+  it('never reads a command-line argument as `process.argv[0]`', async () => {
+    // 🔴 A command in a skill is run verbatim by a session that trusts it, so an
+    // off-by-one here does not fail — it records the path to the node binary
+    // where a commit SHA belongs, and shifts every other argument by one. The
+    // first argument after the script is `argv[1]`; `argv[0]` is the executable.
+    // Measured against this file's own working snippet, which uses `argv[1]`.
+    const content = await readGateSpec('pr-ship');
+    expect(
+      [...content.matchAll(/process\.argv\[0\]/g)],
+      '`process.argv[0]` is the node binary, never the first argument passed after the script',
+    ).toHaveLength(0);
+    expect(
+      [...content.matchAll(/process\.argv\.slice\(1\)/g)],
+      '`process.argv.slice(1)` keeps the first argument, which is rarely one of a list',
+    ).toHaveLength(0);
+  });
+
   it('says why the set it launched is not the set that answered', async () => {
     const content = await readGateSpec('pr-ship');
     // 🔴 Without this sentence the second record reads as a duplicate of the

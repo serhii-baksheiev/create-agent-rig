@@ -182,16 +182,23 @@ blockers.
          runDir,
          gate:      "reviewer-fan-out",
          verdict:   "launched",
-         reviewers: process.argv.slice(1),   // every reviewer you just started
-         headSha:   process.argv[0],
+         // `argv[1]` is the first argument after the script — `argv[0]` is the
+         // node binary itself, and reading it here would record that path as
+         // the commit and shift every reviewer along by one.
+         headSha:   process.argv[1],
+         reviewers: process.argv.slice(2),   // every reviewer you just started
          now:       new Date().toISOString(),
        }));
      } catch (error) {
        if (!journal.isTraceExhausted?.(error)) throw error;
        process.stderr.write(`run journal: ${error.message}\n  the fan-out above was NOT recorded.\n`);
      }
-   ' "$(git rev-parse HEAD)" code-reviewer security-scanner
+   ' "$(git rev-parse HEAD)" <the reviewers you launched>
    ```
+
+   Substitute the reviewers you actually started — the point of the record is
+   that it is not derivable from the lane, so a list copied from this example
+   records somebody else's fan-out.
 
    **Launched is not answered, and the difference is the point.** The records
    below are written per verdict that *parsed* — so a reviewer whose report came
