@@ -63,8 +63,9 @@ proves the rig wrote those exact bytes and you have not touched them — the cas
 where a release adds a hook and the wiring that calls it. Anything else, and it
 is where your own hooks live: the new wiring is printed for you to merge, never
 written. Unlike every other file, a match against the released hashes is not
-enough for this one, and a replacement that would stop calling a hook still
-sitting in `.claude/hooks/` is handed over instead.
+enough for this one, and a replacement that would stop calling a hook the
+current wiring names — while that hook's file is still in `.claude/hooks/` — is
+handed over instead.
 
 **A file you deleted stays deleted.** The rules invite you to delete the ones
 whose invariant your project does not have, so an upgrade that quietly restored

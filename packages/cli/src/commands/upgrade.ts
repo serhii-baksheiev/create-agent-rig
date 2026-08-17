@@ -29,7 +29,7 @@ export type UpgradeVerdict =
   | 'conflict'
   /** The manifest says we installed it; the user removed it. Stays removed. */
   | 'deleted'
-  /** `settings.json` the manifest does not vouch for: the released file is handed over. */
+  /** `settings.json` that is not replaceable: the released file is handed over. */
   | 'wiring';
 
 export interface UpgradeAction {
@@ -380,10 +380,14 @@ export async function planUpgrade(
       actions.push({
         rel: file.rel,
         verdict: 'wiring',
+        // Say what was actually checked. This file no longer consults the
+        // released-hash table (see the limits above), so it cannot claim these
+        // bytes are not a release — only that the manifest does not vouch for
+        // them, which is the check that ran.
         reason: wouldUnwireAnInstalledHook
           ? 'replacing it would stop calling a hook that is still installed — merge the entries below by hand'
           : recorded === undefined
-            ? 'not a version this rig ever released — treated as yours, merge the entries below by hand'
+            ? 'the manifest does not vouch for it — treated as yours, merge the entries below by hand'
             : 'edited since it was installed — merge the entries below by hand',
       });
       if (recorded !== undefined) nextFiles[file.rel] = recorded;

@@ -22,8 +22,8 @@ content as a patch by the owner's call and stays recorded as one.
   the on-disk bytes hash-match the entry the manifest recorded for the installed
   release, they are provably the rig's own and the release's version is written.
 
-  **Three limits, and each is there because removing it was tried and produced a
-  reproducible regression.**
+  **Three limits. The first two are there because not having them was tried,
+  and each produced a regression two reviewers reproduced independently.**
 
   1. **The released-hash fallback does not apply to this file.** Every other
      file the rig installed can be recognised by matching a tagged release even

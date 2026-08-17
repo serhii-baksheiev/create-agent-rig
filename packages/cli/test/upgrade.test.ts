@@ -155,7 +155,7 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     const plan = await planUpgrade(repo, { history: emptyHistory });
     expect(verdictFor(plan, SETTINGS)).toBe('update');
     // replaced *instead of* being handed over, not as well as: the report's
-    // "never replaced — merge these by hand" block would contradict the write
+    // hand-over block would contradict the write
     expect(plan.wiring).toBeNull();
 
     await applyUpgrade(repo, plan);
@@ -555,6 +555,27 @@ describe('a rig running wiring wider than the flavour its manifest claims', () =
     // the hook is on disk, so settings.json must still call it.
     await expect(readIn(GUARD)).resolves.toBeTruthy();
     expect(await readIn(SETTINGS)).toContain('guard-core-purity.mjs');
+  });
+
+  it('replaces the wiring once every hook it would stop calling is gone', async () => {
+    // The other side of the guard, and the whole of what its filesystem probe
+    // buys: a hook the user deleted is not being silenced by this write, so
+    // there is nothing to hand over and the replacement is ordinary again.
+    // Without the probe this case would hand over a wiring block listing hooks
+    // that no longer exist.
+    //
+    // BOTH architecture hooks go: the narrower flavour drops the pair, and one
+    // surviving on disk is enough to keep the hand-over — which is the guard
+    // working, and is why this fixture deletes them together.
+    await generateThenDemoteTheKind();
+    await rm(path.join(project, ...GUARD.split('/')));
+    await rm(path.join(project, '.claude', 'hooks', 'guard-web-boundary.mjs'));
+
+    const plan = await planUpgrade(project, { history: emptyHistory });
+    expect(verdictFor(plan, SETTINGS)).toBe('update');
+
+    await applyUpgrade(project, plan);
+    expect(await readIn(SETTINGS)).not.toContain('guard-core-purity.mjs');
   });
 });
 

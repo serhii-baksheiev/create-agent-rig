@@ -169,8 +169,9 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // and a report that mentions entries it never shows is not a plan.
   if (plan.wiring !== null) {
     process.stdout.write(
-      `\n!  .claude/settings.json is not any version this rig released — it is where\n` +
-        `   your own hooks live, so it is handed over rather than replaced.\n` +
+      `\n!  .claude/settings.json was handed over rather than replaced — the reason is\n` +
+        `   on its line above. It is where your own hooks live, so it is never\n` +
+        `   overwritten on anything but proof the rig wrote those exact bytes.\n` +
         `   This version wires them like this; merge in what is missing:\n\n` +
         plan.wiring.replace(/^/gm, '   ') +
         '\n',
