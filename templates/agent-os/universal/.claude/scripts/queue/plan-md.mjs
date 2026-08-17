@@ -143,14 +143,12 @@ export const closeInPlan = (plan, id) => {
   return lines.join('\n');
 };
 
-// 🔴 The bare default is cwd-relative on purpose, and that is a contract rather
-// than an oversight. This module is imported directly as well as driven by the
-// CLI, and a direct caller's cwd is the only project it can mean. The CLI, which
-// knows where its config lives, supplies an absolute `planPath` instead — see
-// `optionsWithPlanPath` in `index.mjs`. Resolving this default from the module's
-// own location would point every call at the rig's own tree; the behaviour is
-// pinned by queue.test.ts › "never resolves that default from its own location on
-// disk".
+// 🔴 The bare default is cwd-relative on purpose. This module is imported
+// directly as well as driven by the CLI, and a direct caller's cwd is the only
+// project it can mean. The CLI, which knows where its config lives, supplies an
+// absolute `planPath` instead — see `optionsWithPlanPath` in `index.mjs`.
+// Resolving this default from the module's own location would point every call at
+// the rig's own tree.
 const planPath = (options) => options?.planPath ?? 'PLAN.md';
 const readPlan = (options) => readFileSync(planPath(options), 'utf8');
 

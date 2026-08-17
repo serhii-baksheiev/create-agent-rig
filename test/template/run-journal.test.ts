@@ -721,14 +721,16 @@ const project = async (item = 'add a route'): Promise<string> => {
 // runs out of the template tree, which is itself a project carrying its own
 // PLAN.md, so an unaided run selects against that tree rather than the fixture.
 //
-// 🔴 The flag is NOT inert, and saying so was wrong before this comment was
-// corrected. `index.mjs` branches on the flag rather than on the file: with
-// `--config` the state file becomes `statePathFor(configPath)` and the gate-round
-// counter moves beside it, instead of `mainCheckoutRoot(...)/.claude/`. That is
-// deliberate there, and harmless here only because these fixtures write no state
-// and read none — both paths resolve to an absent file and `loadState` returns
-// `{}`. A test that DOES depend on the default state location must not adopt this
-// helper without saying what it changed.
+// 🔴 The flag is NOT inert, and it isolates rather than merely relocating.
+// `index.mjs` branches on the flag rather than on the file: with `--config` the
+// state file becomes `statePathFor(configPath)` and the gate-round counter moves
+// beside it, instead of `mainCheckoutRoot(...)/.claude/`. Without it the default
+// lands on this repository's own `.claude/queue.state.json` — gitignored, so
+// present on any machine that has run the loop, and carrying a real
+// `lastCompletedTier` that would ration these fixtures. The flagged locations are
+// absent, so `loadState` returns `{}`, which is what these tests want. A test
+// that DOES depend on the default state location must not adopt this helper
+// without saying what it changed.
 const planConfig = (dir: string): string => path.join(dir, '.claude', 'queue.json');
 
 // A journal nothing calls records nothing. This is the caller the item requires,

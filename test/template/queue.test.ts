@@ -2521,11 +2521,16 @@ describe('the queue CLI', () => {
     // PLAN.md, so an unaided run reads the template's queue rather than this
     // fixture's.
     //
-    // 🔴 The flag is not otherwise inert: `index.mjs` branches on it, not on the
-    // file, so the state file and the gate-round counter move beside the config.
-    // Harmless here — this fixture writes and reads no state, so both locations
-    // are absent and `loadState` returns `{}` either way — but a test that
-    // depends on the default state location cannot borrow this line unchanged.
+    // 🔴 The flag is not otherwise inert, and it is the opposite of neutral:
+    // `index.mjs` branches on it, not on the file, so the state file and the
+    // gate-round counter move beside the config. That ISOLATES this run. Without
+    // the flag the default resolves through `mainCheckoutRoot` to this
+    // repository's own `.claude/queue.state.json`, which exists on any machine
+    // that has run the loop and carries a real `lastCompletedTier` — so an
+    // unflagged fixture would be rationed by developer-local state. Here the
+    // flagged locations are absent and `loadState` returns `{}`, which is what
+    // this test wants; a test that depends on the default location cannot borrow
+    // this line unchanged.
     //
     // Before the plan path was anchored, this test passed by accident: the
     // adapter resolved a bare `'PLAN.md'` against cwd. That coupling is the
