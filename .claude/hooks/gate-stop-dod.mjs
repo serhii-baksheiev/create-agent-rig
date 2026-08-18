@@ -66,12 +66,24 @@ import { readFileSync } from 'node:fs';
 
 import { withoutGitLocation } from '../scripts/git-env.mjs';
 
-// The default total budget. It must stay strictly below the `timeout` on the
-// Stop entry in `.claude/settings.json` (that one is in SECONDS), or the
-// harness kills the gate before the gate can report — the two are read from
-// their files and compared, never restated —
+// The default total budget, and the allowance for everything that happens
+// OUTSIDE it.
+//
+// The relation the gate actually needs is not "the budget is below the wiring
+// `timeout`" — it is `budget + preamble <= timeout`. The budget's clock starts
+// after node has booted, the payload has been read, `git status` has answered
+// and the config has been parsed, so a budget merely below the wiring timeout
+// still lets the whole hook outrun it. That was a real reader: 890_000 ms
+// against a 900 s wiring timeout obeys "strictly below" and restores the silent
+// kill this hook exists to remove.
+//
+// So the preamble gets a number and a leash: `git status` below is given this
+// as its own timeout, which turns the allowance from a guess into a bound.
+// Both numbers are read from this file and compared against the wiring —
 //   see hooks.test.ts › "gives the stop gate a harness timeout its own budget finishes inside"
+//   see hooks.test.ts › "bounds its own preamble: the git status call carries a timeout derived from the declared margin"
 const DEFAULT_BUDGET_MS = 600_000;
+const PREAMBLE_MARGIN_MS = 60_000;
 
 /** The gate stays open, and says so — a silent 0 is indistinguishable from clean. */
 function failOpen(reason) {
@@ -84,6 +96,10 @@ function failOpen(reason) {
  * Everything else that surfaces as `result.error` — a timeout, a buffer
  * overrun — killed a check that WAS running, and that is the unmeasured case.
  */
+// 🔴 `E2BIG` looks like it belongs here by the letter of the rule — the exec
+// never started — and adding it would reopen the round-1 bypass: one
+// over-long entry would then fail the WHOLE suite open. It blocks instead, and
+// that is deliberate.
 const SPAWN_NEVER_STARTED = new Set(['ENOENT', 'EACCES', 'EPERM', 'EMFILE', 'ENFILE', 'ENOMEM']);
 
 /**
@@ -161,10 +177,16 @@ function main() {
     // 🔴 Limit: only THIS command is sanitised. The Definition-of-Done checks
     // below run with the environment as given, because they are the project's
     // own commands and their environment is the project's business.
+    // `timeout` below is the preamble's own leash: this is the one call that
+    // runs before the budget's clock starts. A repository slow enough to exceed
+    // it throws into the catch and the checks run anyway — the safe direction,
+    // and the reason the bound can be generous. The options object stays terse
+    // on purpose; a sibling test matches it by a bounded window.
     const status = execSync('git status --porcelain', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       env: withoutGitLocation(),
+      timeout: PREAMBLE_MARGIN_MS,
     });
     if (status.trim() === '') return 0;
   } catch {
@@ -181,34 +203,44 @@ function main() {
     return failOpen(`dod-checks.json could not be read: ${error.message}`);
   }
   if (!Array.isArray(checks)) return failOpen('dod-checks.json is not an array of commands');
-  // Judged per ENTRY, and this is the part that took a measurement to get right.
+  // Judged per ENTRY, and the two ways to get this wrong are mirror images.
   //
-  // Refusing the whole config on one bad entry is what a reviewer first
-  // proposed, and it reopens the hole it was meant to close: `failOpen` returns
-  // 0, so a genuinely failing check sitting NEXT to the bad entry never runs and
-  // the session ends green. Measured on `["", "exit 1"]`.
-  //
-  // So an entry that cannot be a command is announced and skipped, and every
-  // entry that CAN still runs. A verdict is never lost to a neighbour.
+  // Refusing the whole config on one bad entry hides a FAILING check standing
+  // next to the bad one: the refusal returns 0 and the neighbour never runs.
+  // Skipping the bad entry and returning 0 when nothing usable is left hides
+  // the bad entry itself: a declared check produced no verdict and the session
+  // still ended green. Both were shipped here, one after the other, and both
+  // are closed the same way — every usable entry runs, and a skipped entry is
+  // a check with no verdict, which blocks.
   //   see hooks.test.ts › "never lets an unusable config entry hide a failing check behind it (an empty string)"
+  //   see hooks.test.ts › "refuses the stop for an empty config entry it skipped, even though every check it could run passed"
   //
-  // The check happens here rather than at `spawnSync`, which throws on a
-  // non-string, an empty string and a NUL-bearing string alike — and that throw
-  // lands in the backstop, which is the same exit code by accident instead of by
-  // decision, with a message about argument types instead of the file to fix.
-  //   see hooks.test.ts › "announces a config it could read but cannot use, and names the file to fix"
+  // The predicate is exactly the three shapes `spawnSync` throws on, and no
+  // wider: the shell answers every other unrunnable string with 127, which is
+  // a verdict. Filtering past these three converts a real block into a skip.
+  //   see hooks.test.ts › "refuses the stop for a config it could read but cannot use, and names the file to fix"
   const runnable = (command) =>
-    typeof command === 'string' && command.trim() !== '' && !command.includes('\0');
+    typeof command === 'string' && command !== '' && !command.includes('\0');
   const usable = checks.filter(runnable);
-  if (usable.length !== checks.length) {
-    // Announced, not silent — but this alone never decides the exit code; the
-    // usable entries below still do.
+  const skipped = checks.map((command, index) => index).filter((index) => !runnable(checks[index]));
+
+  // Nothing DECLARED is the documented "nothing to gate" case. Everything
+  // declared being unusable is not the same state, and reading them as one is
+  // what let a skipped check pass for a passing suite.
+  if (checks.length === 0) return 0;
+
+  // Said UP FRONT, because the block for it comes last: a check that failed is
+  // the more useful first message, and without this line a run that stops on a
+  // failing check would never mention the entry it could not run at all.
+  //
+  // Deliberately NOT the `[hook fail-open]` marker: that marker means the gate
+  // stayed open, and this path ends in a block. One vocabulary, one meaning.
+  if (skipped.length > 0) {
     process.stderr.write(
-      `[hook fail-open] dod-checks.json carries ${checks.length - usable.length} entry/entries ` +
-        `that are not runnable command strings; they were skipped. The rest still ran.\n`,
+      `gate-stop-dod: dod-checks.json entr${skipped.length > 1 ? 'ies' : 'y'} at index ` +
+        `${skipped.join(', ')} cannot be run as a command and will not be measured.\n`,
     );
   }
-  if (usable.length === 0) return 0;
 
   const budget = budgetMs(process.env);
   if (budget.notice) process.stderr.write(`gate-stop-dod: ${budget.notice}\n`);
@@ -273,6 +305,22 @@ function main() {
       );
       return 2;
     }
+  }
+
+  // Reached only when every check that COULD run passed. A skipped entry is a
+  // declared check that produced no verdict, and unmeasured is not a pass —
+  // the same rule the killed-check branch above answers to. It is reported
+  // last because a check that actually failed is the more useful message.
+  if (skipped.length > 0) {
+    const plural = skipped.length > 1;
+    process.stderr.write(
+      `STOP GATED — dod-checks.json entr${plural ? 'ies' : 'y'} at index ` +
+        `${skipped.join(', ')} cannot be run as a command, so ${plural ? 'those checks' : 'that check'} ` +
+        `produced no verdict. Every other check passed; these were never measured, ` +
+        `and unmeasured is not a pass. Fix the entr${plural ? 'ies' : 'y'} — an empty string, ` +
+        `a NUL byte or a non-string is not a command. This gate never fires twice in a row.\n`,
+    );
+    return 2;
   }
   return 0;
 }

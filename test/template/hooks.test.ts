@@ -630,11 +630,22 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
   // all the way to `spawnSync`, throws, and lands in the backstop: the same
   // exit code by accident, announced as an internal error about an argument
   // type, with nothing to tell the reader which file to go and fix.
-  it('announces a config it could read but cannot use, and names the file to fix', async () => {
+  //
+  // 🔴 And the decision is a BLOCK, not a pass. An entry the gate could not run
+  // produced no verdict, and unmeasured is not a pass — the same rule the
+  // budget half of this file is built on. `checks: []` is the case that means
+  // "nothing was declared"; a config whose every entry is unusable means
+  // "everything declared went unmeasured", and collapsing the two is how the
+  // gate hands back a green session it never measured. This assertion used to
+  // read `toBe(0)` for exactly this fixture; that was the bypass, mirrored.
+  it('refuses the stop for a config it could read but cannot use, and names the file to fix', async () => {
     await setUpProject({ rawConfig: '[{"cmd":"exit 1"}]', dirty: true });
     const result = await runStopHook(stop());
-    expect(result.code, result.stderr).toBe(0);
-    expect(result.stderr).toContain('[hook fail-open]');
+    expect(result.code, result.stderr).toBe(2);
+    // NOT `[hook fail-open]`: that marker means the gate stayed open, and this
+    // path blocks. Pinning it here is what made the marker mean both things —
+    // a round-3 blocker, so the assertion moved rather than the behaviour.
+    expect(result.stderr).toContain('gate-stop-dod:');
     expect(result.stderr).toContain('dod-checks.json');
     // decided by the gate, not discovered by the child-process layer
     expect(result.stderr).not.toContain('must be of type string');
@@ -651,33 +662,112 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
   // Both fixtures put the unusable entry FIRST and a check that really fails
   // second: the entry the gate cannot use must not become the entry that
   // decides the session.
-  const unusableFirstEntry: Array<{ what: string; entry: string; nodeWording: RegExp }> = [
-    { what: 'an empty string', entry: '', nodeWording: /cannot be empty/i },
-    {
-      what: 'a string carrying a NUL byte',
-      // assembled, never written out: a literal NUL in the source is not
-      // something a reader of this file can see
-      entry: `${String.fromCharCode(0)}oops`,
-      nodeWording: /without null bytes/i,
-    },
-  ];
+  //
+  // ⚠ Spelled out one `it` per case rather than generated from a table: a name
+  // assembled from a template literal is a name no `grep -F` finds, so the
+  // hook's `see hooks.test.ts › "…"` pointer at it resolves to nothing. The
+  // shared part is the assertion helper; the names are literal.
 
-  for (const { what, entry, nodeWording } of unusableFirstEntry) {
-    it(`never lets an unusable config entry hide a failing check behind it (${what})`, async () => {
-      await setUpProject({ checks: [entry, 'node -e "process.exit(1)"'], dirty: true });
-      const result = await runStopHook(stop());
-      // whatever the gate decides about the unusable entry, it may not be
-      // "this session ended on a green Definition of Done"
-      expect(result.code, result.stderr).not.toBe(0);
-      // and the decision is the gate's own, taken while the file is still in
-      // hand: it names the file to fix …
-      expect(result.stderr).toContain('[hook fail-open]');
-      expect(result.stderr).toContain('dod-checks.json');
-      // … rather than surfacing an argument-type error from the child-process
-      // layer, which is what a throw caught by the backstop reads like
-      expect(result.stderr).not.toMatch(nodeWording);
-    }, 30_000);
+  /** Assembled, never written out: a literal NUL in the source is not something
+   *  a reader of this file can see. */
+  const NUL_BEARING_ENTRY = `${String.fromCharCode(0)}oops`;
+
+  async function expectAFailingCheckSurvivesAnUnusableNeighbour(
+    entry: unknown,
+    nodeWording: RegExp,
+  ): Promise<void> {
+    await setUpProject({ checks: [entry, 'node -e "process.exit(1)"'], dirty: true });
+    const result = await runStopHook(stop());
+    // whatever the gate decides about the unusable entry, it may not be
+    // "this session ended on a green Definition of Done"
+    expect(result.code, result.stderr).not.toBe(0);
+    // and the decision is the gate's own, taken while the file is still in
+    // hand: it names the file to fix …
+    // NOT `[hook fail-open]`: that marker means the gate stayed open, and this
+    // path blocks. Pinning it here is what made the marker mean both things —
+    // a round-3 blocker, so the assertion moved rather than the behaviour.
+    expect(result.stderr).toContain('gate-stop-dod:');
+    expect(result.stderr).toContain('dod-checks.json');
+    // … rather than surfacing an argument-type error from the child-process
+    // layer, which is what a throw caught by the backstop reads like
+    expect(result.stderr).not.toMatch(nodeWording);
   }
+
+  it('never lets an unusable config entry hide a failing check behind it (an empty string)', async () => {
+    await expectAFailingCheckSurvivesAnUnusableNeighbour('', /cannot be empty/i);
+  }, 30_000);
+
+  it('never lets an unusable config entry hide a failing check behind it (a string carrying a NUL byte)', async () => {
+    await expectAFailingCheckSurvivesAnUnusableNeighbour(NUL_BEARING_ENTRY, /without null bytes/i);
+  }, 30_000);
+
+  // The mirror of that bypass, and the reason the round-2 fix was only half of
+  // one. Judging per entry stopped a bad entry from swallowing a FAILING
+  // neighbour — but a bad entry beside a PASSING neighbour still ended the
+  // session green, because `usable.length === 0` was never the question. The
+  // entry was declared, it was never run, and a Definition of Done nobody
+  // measured is not one that passed.
+  //
+  // The unusable entry sits FIRST in every fixture, so the index the message
+  // has to name is 0 and "which entry do I go and fix" has one answer.
+  async function gateOnAnUnusableEntryBesideAPassingCheck(entry: unknown): Promise<HookResult> {
+    await setUpProject({ checks: [entry, 'node -e "process.exit(0)"'], dirty: true });
+    return runStopHook(stop());
+  }
+
+  function expectTheSkippedEntryGatesTheStop(result: HookResult, index: number): void {
+    // an entry that was skipped is an entry that produced no verdict …
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('STOP GATED');
+    // … and the message points at the file AND at which entry in it, because
+    // "one of your entries is not runnable" is not something a reader can act on
+    expect(result.stderr).toContain('dod-checks.json');
+    expect(result.stderr, 'the message must name the index of the skipped entry').toMatch(
+      new RegExp(`index(?:es|ices)?\\b[^\\n]*\\b${index}\\b`, 'i'),
+    );
+    expect(result.stderr).toMatch(/unmeasured|no verdict/i);
+  }
+
+  it('refuses the stop for an empty config entry it skipped, even though every check it could run passed', async () => {
+    expectTheSkippedEntryGatesTheStop(await gateOnAnUnusableEntryBesideAPassingCheck(''), 0);
+  }, 30_000);
+
+  it('refuses the stop for a skipped entry carrying a NUL byte, even though every check it could run passed', async () => {
+    expectTheSkippedEntryGatesTheStop(
+      await gateOnAnUnusableEntryBesideAPassingCheck(NUL_BEARING_ENTRY),
+      0,
+    );
+  }, 30_000);
+
+  it('refuses the stop for a skipped entry that is not a string at all, even though every check it could run passed', async () => {
+    expectTheSkippedEntryGatesTheStop(
+      await gateOnAnUnusableEntryBesideAPassingCheck({ cmd: 'exit 0' }),
+      0,
+    );
+  }, 30_000);
+
+  // The round-2 property, pinned against the shape the table above does not
+  // carry: a failing check is still what the session is told about first, and
+  // the skipped entry does not get to replace that verdict with its own.
+  it('still reports the failing check when a non-string entry sits beside it', async () => {
+    await setUpProject({ checks: [{ cmd: 'exit 0' }, 'node -e "process.exit(1)"'], dirty: true });
+    const result = await runStopHook(stop());
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('process.exit(1)');
+    expect(result.stderr).toMatch(/diagnosis/i);
+  }, 30_000);
+
+  // The boundary on the other side of the same rule: an EMPTY array is
+  // "nothing was declared", which is the universal layer's ordinary state, not
+  // "everything declared went unmeasured". Nothing was skipped, so there is
+  // nothing to announce and nothing to gate.
+  it('stays silent when the config declares no checks at all — an empty array is nothing to gate', async () => {
+    await setUpProject({ checks: [], dirty: true });
+    const result = await runStopHook(stop());
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('STOP GATED');
+    expect(result.stderr).not.toContain('[hook fail-open]');
+  });
 
   // The other side of that boundary, and the reason it is a boundary: universal
   // ships no checks at all, so an ABSENT config is the ordinary state of a
@@ -688,6 +778,30 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     const result = await runStopHook(stop());
     expect(result.code, result.stderr).toBe(0);
     expect(result.stderr).not.toContain('[hook fail-open]');
+  });
+
+  // The gate's whole thesis is "report before you are killed", and everything
+  // it spends before its deadline is set is spent outside that budget: node
+  // starting, the payload read, `git status --porcelain`, the config read. All
+  // of those are bounded by something except the `git status`, which on a large
+  // or index-locked repository can outlast the harness timeout on its own — at
+  // which point the gate is killed having measured nothing, and (on the harness
+  // assumption the hook header labels as unprovable here) the session ends.
+  //
+  // So the preamble allowance is the hook's own constant, and the one unbounded
+  // call in the preamble is bounded BY it. Asserted from the source rather than
+  // driven behaviourally: making `git status` hang for real needs an index lock
+  // held by another process, which is a sleep in a test by another name.
+  it('bounds its own preamble: the git status call carries a timeout derived from the declared margin', async () => {
+    const source = await readFile(path.join(hooksDir, 'gate-stop-dod.mjs'), 'utf8');
+    const call = /execSync\(\s*'git status --porcelain'\s*,\s*\{([\s\S]*?)\n\s*\}\)/.exec(source);
+    expect(call, "the gate's tree check must stay one findable execSync call").not.toBeNull();
+    const options = call![1]!;
+    expect(options, 'the one unbudgeted call in a gate built on a budget').toMatch(/timeout:/);
+    expect(
+      options,
+      'and the bound is the declared preamble allowance, not a second guess beside it',
+    ).toMatch(/timeout:\s*PREAMBLE_MARGIN_MS/);
   });
 });
 
@@ -1690,24 +1804,33 @@ describe('hook wiring (settings.json)', () => {
   });
 
   /**
-   * How much of the gate's wall clock is spent OUTSIDE its own budget, and
-   * therefore has to fit between the budget expiring and the harness timeout.
+   * Both halves of the gate's wall clock, read from the hook rather than
+   * restated here.
    *
-   * The gate's deadline is set only after node has started, the Stop payload
-   * has been read from stdin, `git status --porcelain` has run (with no
-   * `timeout` of its own — an unbounded preamble on a large or locked
-   * repository) and `dod-checks.json` has been read. None of that is derivable
-   * from a file, so this number is a JUDGEMENT, not a measurement, and it is
-   * declared here rather than implied by a bare `<`.
+   * The budget covers only the checks: the deadline is set after node has
+   * started, the Stop payload has been read from stdin, `git status
+   * --porcelain` has run and `dod-checks.json` has been read. That preamble has
+   * to fit between the budget expiring and the harness killing the gate — so it
+   * is an allowance the HOOK declares and bounds its own preamble with, not a
+   * number this test invents about a file it is only reading.
    *
-   * 60 s is chosen as the smallest round number that is an order of magnitude
-   * above a healthy preamble (well under a second) while still leaving room for
-   * the pathological `git status` this repository has no way to bound. Raising
-   * the budget until only milliseconds separate it from the harness timeout is
-   * what today's bare `toBeLessThan` permits, and that is the silent harness
-   * kill this whole change removes.
+   * Each name is matched in full. A loose `/BUDGET_MS\s*=\s*…/` also matches a
+   * `RIG_DOD_BUDGET_MS=1000` in a comment line above the constant, and would
+   * then compare the wiring against whichever number a doc example happened to
+   * use.
    */
-  const PREAMBLE_MARGIN_MS = 60_000;
+  async function hookConstantsMs(): Promise<{ budget: number; preambleMargin: number }> {
+    const source = await readFile(path.join(hooksDir, 'gate-stop-dod.mjs'), 'utf8');
+    const declared = (name: string): number => {
+      const found = new RegExp(`${name}\\s*=\\s*([\\d_]+)`).exec(source);
+      expect(found, `the hook must declare ${name}`).not.toBeNull();
+      return Number(found![1]!.replaceAll('_', ''));
+    };
+    return {
+      budget: declared('DEFAULT_BUDGET_MS'),
+      preambleMargin: declared('PREAMBLE_MARGIN_MS'),
+    };
+  }
 
   // Two numbers that only work as a pair. The wiring's `timeout` is when the
   // harness kills the gate — the hook header labels what follows from that (a
@@ -1736,18 +1859,16 @@ describe('hook wiring (settings.json)', () => {
     expect(entry, 'the Stop gate must be wired at all').toBeDefined();
     expect(typeof entry?.timeout, 'the Stop gate needs a timeout in seconds').toBe('number');
 
-    const source = await readFile(path.join(hooksDir, 'gate-stop-dod.mjs'), 'utf8');
-    const declared = /BUDGET_MS\s*=\s*([\d_]+)/.exec(source);
-    expect(declared, 'the hook must declare a default budget in ms').not.toBeNull();
-    const budgetMs = Number(declared![1]!.replaceAll('_', ''));
+    const { budget: budgetMs, preambleMargin: marginMs } = await hookConstantsMs();
     const harnessMs = (entry!.timeout as number) * 1000;
     expect(budgetMs).toBeLessThan(harnessMs);
-    // strictly below is not enough: the gate's wall clock is preamble + budget,
-    // and only the budget half is bounded by the number read above
+    // strictly below is not enough, and the hook's header may not say it is:
+    // the gate's wall clock is preamble + budget, and both numbers are the
+    // hook's own declarations, compared here rather than restated
     expect(
-      budgetMs + PREAMBLE_MARGIN_MS,
-      `the ${budgetMs} ms budget leaves less than ${PREAMBLE_MARGIN_MS} ms of the ` +
-        `${harnessMs} ms harness timeout for the gate's unbudgeted preamble`,
+      budgetMs + marginMs,
+      `the ${budgetMs} ms budget leaves less than the declared ${marginMs} ms of the ` +
+        `${harnessMs} ms harness timeout for the gate's preamble`,
     ).toBeLessThanOrEqual(harnessMs);
   });
 });
