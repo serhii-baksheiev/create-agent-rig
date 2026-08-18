@@ -28,16 +28,24 @@ templates/skeleton/*/apps/web/out/
 # (templates/skeleton/*/gitignore); this repository did not, and it runs the
 # loop against a Jira adapter that reads JIRA_API_TOKEN from the environment.
 #
-# 🔴 These five lines now exist in THREE files, which is the shape
-# `invariants.md` warns about — gitignore has no import, so the duplication is
-# forced rather than chosen, and the copy nobody looks at is the one that will
-# be wrong. What ties them together is a test: `dogfood.test.ts` extracts the
-# patterns from all three and fails when they diverge.
+# 🔴 This block exists in THREE files, which is the shape `invariants.md` warns
+# about — gitignore has no import, so the duplication is forced rather than
+# chosen, and the copy nobody looks at is the one that will be wrong. What ties
+# them together is a test: `dogfood.test.ts` extracts the patterns from all
+# three and fails when they diverge, comparing them in ORDER.
 #
-# Order is load-bearing: `!.env.example` must stay BELOW `.env.*`, or the
-# negation stops re-including it. And per the note at the top of this file,
-# these patterns reach `templates/skeleton/**` too — a skeleton that ever needs
-# to ship a fixture named `*.key` would find it untrackable with no error.
+# Order is load-bearing in TWO places, and neither is obvious from reading:
+#   - `!.env.example` must stay BELOW `.env.*`, or the negation stops
+#     re-including it;
+#   - `*.env` must stay ABOVE `.env`. Git's `*` matches a leading dot, so both
+#     patterns match `.env`, and `check-ignore -v` reports the LAST one — below,
+#     `.env` starts reporting `*.env` as its rule. A test pins that, but it
+#     fails as "wrong rule name" in a file the editor was not editing.
+#
+# Per the note at the top of this file, these patterns reach
+# `templates/skeleton/**` too — a project that ever needs to track a file named
+# `.npmrc` (registry, `node-linker`, `engine-strict`) or a fixture named `*.key`
+# would find it untrackable with no error.
 *.env
 .env
 .env.*

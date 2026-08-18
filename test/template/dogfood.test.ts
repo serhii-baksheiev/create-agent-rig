@@ -46,15 +46,23 @@ const setLiteralOf = (source: string, name: string): string[] => {
 };
 
 /**
- * One filename per way `isSecretFile` (decision-router.mjs `:408`) can answer
- * "this file IS a credential", excluding nothing that the ignore block ought to
- * cover.
+ * One filename per way `isSecretFile` (decision-router.mjs `:408`) answers "this
+ * file IS a credential" — for TWO of its arms, not all of them.
  *
- * Three of its four arms are derived here. The fourth — an extension that is any
- * `SECURITY_WORDS` member — is deliberately narrowed to `env`, because taking it
- * whole would demand ignore rules for `*.cors`, `*.acl` and `*.session`, which
- * are not credential files in any project. `env` is taken because `service.env`
- * and `jira.env` are the real form this repository's own tooling writes.
+ * Derived: `SECRET_BASENAMES`, and `SECRET_EXTENSIONS`. Plus `env` alone out of
+ * the `SECURITY_WORDS` arm, because `service.env` and `jira.env` are the form
+ * this repository's own tooling writes.
+ *
+ * 🔴 **What this deliberately does NOT cover, measured rather than assumed.**
+ * The `SECURITY_WORDS` arm has 56 members, and taking it whole would demand
+ * ignore rules for `*.cors`, `*.acl` and `*.session`, which are not credential
+ * files. Narrowing it to `env` leaves these committable today, each one a name
+ * `isSecretFile` calls a credential: `*.secret`, `*.token`, `*.password`,
+ * `*.passwd`, `*.creds`, `*.credentials`, `*.apikey`, `*.jwt`, `*.keys`,
+ * `*.bearer`. Closing that needs a named credential subset of `SECURITY_WORDS`,
+ * which is a decision about which words are credentials rather than a
+ * derivation — so it is not taken here.
+ *
  * The segment arm (`secrets/`, `credentials/`) is a directory, not a filename,
  * and a gitignore that swallowed either would hide legitimate source.
  */
@@ -401,9 +409,13 @@ describe('the secrets block the skeletons ship is live in this repository too', 
 
   // The derivation is the whole test, so it gets its own pin: run it over a
   // fabricated source and a name that exists nowhere in this repository. This is
-  // the "drift the other way" half — it proves that ADDING a credential kind to
-  // the router produces a new required ignore, instead of the parser silently
-  // returning what it returned yesterday.
+  // the "drift the other way" half — a name added to the two DERIVED arms
+  // (`SECRET_BASENAMES`, `SECRET_EXTENSIONS`) produces a new required ignore,
+  // instead of the parser silently returning what it returned yesterday.
+  //
+  // 🔴 It does not reach the `SECURITY_WORDS` arm: that one is narrowed to `env`
+  // above, so adding `password` there produces nothing here. The docstring on
+  // `credentialFileNames` lists what stays committable because of it.
   it('turns a name newly added to the router sets into a newly required ignore', () => {
     const fabricated = [
       "const SECRET_EXTENSIONS = new Set(['ar49ext']);",
