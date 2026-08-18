@@ -94,7 +94,13 @@ own cost figures are read next to the lane they do not cover.
 - disable, skip, or weaken tests, hooks, or CI checks to get to green
 - bypass pre-commit (`--no-verify` is hook-blocked anyway)
 - force-push a shared branch
-- put secrets in code, config, logs, or fixtures
+- put secrets in code, config, logs, or fixtures — and this one is **mechanical**
+  rather than a wish: `guard-secret-file` refuses a `Write`/`Edit` that names a
+  credential file or carries a credential value, and the vocabulary both it and
+  the ignore rules read is `.claude/scripts/lib/secrets.mjs`. Its reach and its
+  three blind spots are stated in that hook's own header; a fixture that needs a
+  credential SHAPE assembles it at runtime rather than writing it out, which is
+  what keeps the check's own suites committable
 - touch production data outside a reviewed migration
 
 ## Stop rules — by work-state, not by feelings
