@@ -341,6 +341,74 @@ describe('pr-ship skill (universal)', () => {
     // answer the gate cannot use in either direction.
     expect(content).toMatch(/no blocker|names no blocker|without a blocker/i);
   });
+
+  // AR-102: step 4 journals one record per verdict THAT PARSED, keyed by the
+  // reviewer's name — so the reviewers that answered are already in the trace and
+  // the ones that were merely LAUNCHED are not. A report that came back
+  // `incomplete` leaves its reviewer with no record at all, which is precisely
+  // the case an auditor is looking for. The launched set has to be written down
+  // by the session that launched it; nothing downstream can reconstruct it.
+  const sentencesOf = (content: string): string[] =>
+    content.replace(/[ \t]*\n[ \t]*/g, ' ').split(/(?<=[.:])\s+/);
+
+  it('records the reviewer set it actually launched', async () => {
+    const content = await readGateSpec('pr-ship');
+    const instructing = sentencesOf(content).filter(
+      (sentence) => /\blaunch(ed)?\b/i.test(sentence) && /\b(record|journal)/i.test(sentence),
+    );
+    expect(
+      instructing,
+      'pr-ship never tells the session to write down the reviewers it launched',
+    ).not.toHaveLength(0);
+  });
+
+  it('lands the launched set in the `reviewers` field the run journal takes', async () => {
+    const content = await readGateSpec('pr-ship');
+    // Named in prose alone, the instruction has nowhere to land: the skill's
+    // journal command copies fields BY NAME, so a set the snippet does not name
+    // is a set `recordDecision` never sees.
+    const calls = [...content.matchAll(/recordDecision\(\{[\s\S]{0,900}?\}\)/g)].map((m) => m[0]);
+    expect(calls, 'the skill shows no journal call at all').not.toHaveLength(0);
+    expect(
+      calls.filter((call) => /reviewers\s*:/.test(call)),
+      'no recordDecision in pr-ship names a `reviewers` field',
+    ).not.toHaveLength(0);
+  });
+
+  it('never reads a command-line argument as `process.argv[0]` in a command', async () => {
+    // 🔴 A command in a skill is run verbatim by a session that trusts it, so an
+    // off-by-one here does not fail — it records the path to the node binary
+    // where a commit SHA belongs, and shifts every other argument by one. The
+    // first argument after the script is `argv[1]`; `argv[0]` is the executable.
+    //
+    // Scoped to the fenced commands on purpose: that is where a command lives,
+    // and prose around it may need to name the mistake to warn about it.
+    // `slice(1)` is not checked at all — under `node -e` it IS the whole
+    // argument list, so forbidding it would refuse a correct snippet that takes
+    // only a list.
+    const content = await readGateSpec('pr-ship');
+    const commands = [...content.matchAll(/```(?:sh|bash)\n([\s\S]*?)```/g)].map((m) => m[1] ?? '');
+    expect(commands, 'pr-ship shows no shell command at all').not.toHaveLength(0);
+    expect(
+      commands.filter((command) => command.includes('process.argv[0]')),
+      'a command reads `process.argv[0]`, which is the node binary and never the first argument',
+    ).toHaveLength(0);
+  });
+
+  it('says why the set it launched is not the set that answered', async () => {
+    const content = await readGateSpec('pr-ship');
+    // 🔴 Without this sentence the second record reads as a duplicate of the
+    // per-verdict one and the next editor deletes it. The gap it covers is
+    // exactly the reviewer whose report did not parse: `incomplete` produces no
+    // verdict record, so only the launched set can show it was ever asked.
+    const explaining = sentencesOf(content).filter(
+      (sentence) => /incomplete/i.test(sentence) && /\blaunch(ed)?\b/i.test(sentence),
+    );
+    expect(
+      explaining,
+      'pr-ship never connects an `incomplete` report to a launched reviewer with no record',
+    ).not.toHaveLength(0);
+  });
 });
 
 // The skill half of AR-65 — the agent half is in `agents.test.ts`, and both

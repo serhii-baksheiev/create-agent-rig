@@ -337,6 +337,7 @@ export const recordDecision = ({
   why = null,
   blockers,
   headSha,
+  reviewers,
   now,
 } = {}) => {
   requireField('gate', gate);
@@ -353,6 +354,21 @@ export const recordDecision = ({
       );
     }
     fields.headSha = headSha;
+  }
+  if (reviewers !== undefined) {
+    if (!Array.isArray(reviewers) || reviewers.some((name) => typeof name !== 'string')) {
+      throw new RunJournalError(
+        'field-invalid',
+        'the run journal takes `reviewers` as the list of reviewers a route asked for, or a ' +
+          'gate launched. A summary sentence in its place cannot be compared against the ' +
+          'verdicts that came back, which is the only thing this field is for.',
+      );
+    }
+    // 🔴 No length check: `[]` is the answer for a lane that launches nobody,
+    // and it has to be distinguishable from the key being absent. Absent means
+    // the writer said nothing about reviewers at all — which is what every
+    // record written before this field existed means.
+    fields.reviewers = reviewers;
   }
   if (blockers !== undefined) {
     if (!Array.isArray(blockers)) {

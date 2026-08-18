@@ -746,6 +746,125 @@ describe('a recorded verdict may name the commit it answered for', () => {
   });
 });
 
+// AR-102: the trace records WHICH GATE decided and never WHO WAS ASKED. The
+// router computes a reviewer set, prints it to stdout and persists it nowhere,
+// and that set is a FLOOR the gate may add to — so it cannot be recomputed from
+// the paths afterwards either. "Every reviewer the route named answered for this
+// commit" is not a checkable statement until the set itself is in the record.
+describe('a recorded verdict may name the reviewers the route asked for', () => {
+  it('writes the reviewer set it was handed', async () => {
+    const { recordDecision } = await load();
+    const runDir = await newRunDir();
+    const reviewers = ['code-reviewer', 'prose-reviewer', 'security-scanner'];
+
+    const record = await recordDecision({
+      runDir,
+      gate: 'review-routing:model',
+      verdict: 'route',
+      reviewers,
+      now: T0,
+    });
+
+    // Verbatim and in order, like `blockers`: the names are what a later reader
+    // matches the answers against, and a count would not name a missing one.
+    expect(record['reviewers']).toEqual(reviewers);
+    expect((await linesIn(runDir, 'decisions.jsonl'))[0]?.['reviewers']).toEqual(reviewers);
+  });
+
+  it('writes an empty reviewer set as `[]`, because naming nobody is an answer', async () => {
+    const { recordDecision } = await load();
+    const runDir = await newRunDir();
+
+    const record = await recordDecision({
+      runDir,
+      gate: 'review-routing:deterministic',
+      verdict: 'route',
+      reviewers: [],
+      now: T0,
+    });
+
+    // 🔴 This is the pair the whole field turns on, and it is the mirror image of
+    // the `blockers` doctrine rather than a contradiction of it. `[]` is the
+    // CLAIM "this route named no reviewer" — exactly what the `deterministic`
+    // lane means — so it is persisted, present and empty. Dropping it as
+    // falsy-and-therefore-nothing would make the lane that launches nobody
+    // indistinguishable from a router that never said.
+    expect('reviewers' in record).toBe(true);
+    expect(record['reviewers']).toEqual([]);
+
+    const written = (await linesIn(runDir, 'decisions.jsonl'))[0]!;
+    expect('reviewers' in written).toBe(true);
+    expect(written['reviewers']).toEqual([]);
+  });
+
+  it('writes no reviewers field at all when the caller named no set', async () => {
+    const { recordDecision } = await load();
+    const runDir = await newRunDir();
+
+    const record = await recordDecision({
+      runDir,
+      gate: 'item-selection',
+      verdict: 'taken',
+      now: T0,
+    });
+
+    // Absent, exactly as `blockers` and `headSha` are absent — and absent is a
+    // DIFFERENT fact from the `[]` above: this writer said nothing about who was
+    // asked, and every record written before this field existed reads this way.
+    expect('reviewers' in record).toBe(false);
+    expect(await linesIn(runDir, 'decisions.jsonl')).toEqual([record]);
+  });
+
+  it.each([
+    ['a string', 'code-reviewer, prose-reviewer'],
+    ['an object', { first: 'code-reviewer' }],
+    ['a number', 2],
+    ['a list carrying a number', ['code-reviewer', 7]],
+    ['a list carrying an object', [{ name: 'code-reviewer' }]],
+  ])('refuses reviewers that are %s rather than a list of names', async (_label, reviewers) => {
+    const { recordDecision } = await load();
+    const runDir = await newRunDir();
+
+    const error = await refusalFrom(() =>
+      recordDecision({
+        runDir,
+        gate: 'review-routing:model',
+        verdict: 'route',
+        reviewers,
+        now: T0,
+      }),
+    );
+    expect(error.message).toMatch(/reviewer/i);
+
+    // and it refused before writing, so the sequence has no hole to explain
+    expect(await linesIn(runDir, 'decisions.jsonl')).toEqual([]);
+  });
+
+  it('answers a mis-declared reviewer set as `field-invalid`, not as an exhausted trace', async () => {
+    // Same reasoning as the two refusals above: the failure KIND is the contract,
+    // and a caller reading its own mis-declaration as an exhausted trace would
+    // abandon a journal that is perfectly fine.
+    const { recordDecision, isTraceExhausted } = (await load()) as unknown as {
+      recordDecision: (input: Input) => unknown;
+      isTraceExhausted: (error: unknown) => boolean;
+    };
+    const runDir = await newRunDir();
+
+    const error = (await refusalFrom(() =>
+      recordDecision({
+        runDir,
+        gate: 'review-routing:model',
+        verdict: 'route',
+        reviewers: 'code-reviewer, prose-reviewer',
+        now: T0,
+      }),
+    )) as Error & { failure?: unknown };
+
+    expect(error.failure).toBe('field-invalid');
+    expect(isTraceExhausted(error)).toBe(false);
+  });
+});
+
 interface CliResult {
   code: number;
   stdout: string;

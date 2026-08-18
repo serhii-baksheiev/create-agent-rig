@@ -168,6 +168,48 @@ blockers.
    session that wrote the code (see `.claude/rules/workflow.md`,
    "Review-context isolation").
 
+   🔴 **Record the set you launched, as you launch it.** The router journals the
+   set it *routed*; the triggers above may only add, so what you actually
+   launched is a different list and this is the only place that knows it:
+
+   ```sh
+   node --input-type=module -e '
+     const runDir = process.env.RIG_RUN_DIR;
+     if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+     const journal = await import("./.claude/scripts/run-journal.mjs");
+     try {
+       console.log(journal.recordDecision({
+         runDir,
+         gate:      "reviewer-fan-out",
+         verdict:   "launched",
+         // `argv[1]` is the first argument after the script — `argv[0]` is the
+         // node binary itself, and reading it here would record that path as
+         // the commit and shift every reviewer along by one.
+         headSha:   process.argv[1],
+         reviewers: process.argv.slice(2),   // every reviewer you just started
+         now:       new Date().toISOString(),
+       }));
+     } catch (error) {
+       if (!journal.isTraceExhausted?.(error)) throw error;
+       process.stderr.write(`run journal: ${error.message}\n  the fan-out above was NOT recorded.\n`);
+     }
+   ' "$(git rev-parse HEAD)" <reviewer> <reviewer> …
+   ```
+
+   Substitute the reviewers you actually started — the point of the record is
+   that it is not derivable from the lane, so a list copied from this example
+   records somebody else's fan-out. **One argument each**, unquoted — a single
+   quoted string arrives as one reviewer whose name is both of theirs joined by
+   a space, and `recordDecision` accepts it: it checks for a list of strings and
+   nothing about what a name is.
+
+   **Launched is not answered, and the difference is the point.** The records
+   below are written per verdict that *parsed* — so a reviewer whose report came
+   back `incomplete` produced no record at all, and without this one nothing
+   afterwards can tell "that reviewer was never launched" from "it was launched
+   and did not answer". Those need opposite responses, and the round that has to
+   tell them apart is the one reading this trace after a compaction.
+
    🔴 **Check each reviewer's answer before you believe it.** Every gate spec
    ends in one fenced `json` block; save what each subagent returned and run
 

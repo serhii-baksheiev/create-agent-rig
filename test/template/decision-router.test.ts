@@ -886,6 +886,98 @@ describe('the router writes one journal line per gate verdict', () => {
   });
 });
 
+// AR-102: the journal above records the LANE and never the reviewer set. The set
+// is printed to stdout and persisted nowhere — and it is a floor `pr-ship` may
+// add to, so nothing downstream can recompute it from the paths later. Until it
+// is in the record, "every reviewer this route named answered" is unanswerable.
+//
+// 🔴 Every assertion here reads the RECORDED SET, never the lane string. A lane
+// name is not a reviewer list: that substitution is the defect, not the test.
+describe('the router records who the route asked for, not only which lane it chose', () => {
+  /** The record for the gate that actually routed — the set belongs to that one. */
+  const routedRecord = (decisions: Array<Record<string, unknown>>): Record<string, unknown> => {
+    const routed = decisions.filter((d) => d['verdict'] === 'route');
+    expect(routed, 'no gate in the journal claimed the change').toHaveLength(1);
+    return routed[0]!;
+  };
+
+  const runWithJournal = async (
+    args: string[],
+    cwd: string,
+  ): Promise<Array<Record<string, unknown>>> => {
+    const runDir = await temp('run-');
+    const result = await runCli(args, cwd, { ...withoutGitLocation(), RIG_RUN_DIR: runDir });
+    expect(result.code, result.out).toBe(0);
+    return journal.readRun({ runDir }).decisions;
+  };
+
+  it('journals the security scanner the risk flag added, and not merely that it escalated', async () => {
+    const decisions = await runWithJournal(
+      ['--files', 'services/api/src/auth/session.ts', '--json'],
+      await temp('router-'),
+    );
+
+    // A record saying `model` says the expensive path was taken; it does not say
+    // a scanner was ever named, and a scanner named nowhere cannot be found
+    // missing from the answers.
+    const reviewers = routedRecord(decisions)['reviewers'];
+    expect(reviewers, 'the route recorded no reviewer set at all').toBeInstanceOf(Array);
+    expect(reviewers).toContain('security-scanner');
+  });
+
+  it('journals the prose reviewer as the whole of a documentation route', async () => {
+    const decisions = await runWithJournal(
+      ['--files', 'README.md,docs/guide.txt', '--json'],
+      await temp('router-'),
+    );
+
+    // Exactly the floor the lane returns — the CLI already prints this set; what
+    // is pinned here is that it reaches `decisions.jsonl`.
+    expect(routedRecord(decisions)['reviewers']).toEqual(['prose-reviewer']);
+  });
+
+  it('journals an empty reviewer set for the lane that launches nobody', async () => {
+    // The `deterministic` lane needs git to say the file was drift, and the
+    // `--files` form carries no status — so this one goes through a real diff.
+    const repo = await temp('router-repo-');
+    const git = (args: string[]): Promise<void> =>
+      new Promise((resolve, reject) => {
+        execFile(
+          'git',
+          ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+          { cwd: repo, env: withoutGitLocation() },
+          (error, stdout, stderr) => (error ? reject(new Error(stderr || stdout)) : resolve()),
+        );
+      });
+    const bundle = path.join(repo, 'dist', 'bundle.js');
+    await mkdir(path.dirname(bundle), { recursive: true });
+    await git(['init', '-b', 'main']);
+    await writeFile(bundle, 'console.log(1);\n');
+    await git(['add', '-A']);
+    await git(['commit', '-m', 'seed']);
+    await writeFile(bundle, 'console.log(2);\n');
+    await git(['commit', '-a', '-m', 'regenerate']);
+
+    const decisions = await runWithJournal(['--base', 'main~1', '--head', 'main', '--json'], repo);
+    const routed = routedRecord(decisions);
+    // A precondition on the FIXTURE, not the behaviour under test: a diff that
+    // came back empty or dirty would route elsewhere and this test would then be
+    // pinning some other lane's set while still reading green.
+    expect(routed['gate'], 'the fixture did not reach the lane under test').toBe(
+      'review-routing:deterministic',
+    );
+
+    // 🔴 Present and EMPTY, and the two assertions are not the same one twice.
+    // `[]` is this route's claim that it named nobody; an absent key is a router
+    // that said nothing about who was asked. A reader auditing the fan-out has
+    // to be able to tell "no reviewer was owed" from "no reviewer was recorded",
+    // and the lane whose whole meaning is the first is the one that would be
+    // silently written as the second.
+    expect('reviewers' in routed, 'the deterministic route recorded no reviewer set').toBe(true);
+    expect(routed['reviewers']).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Review round 1 — every block below reproduces a finding from the gate fan-out
 // on this branch. Each one is a bug the module shipped with, written as the test
