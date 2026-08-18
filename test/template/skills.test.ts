@@ -381,11 +381,11 @@ describe('pr-ship skill (universal)', () => {
     // where a commit SHA belongs, and shifts every other argument by one. The
     // first argument after the script is `argv[1]`; `argv[0]` is the executable.
     //
-    // Scoped to the fenced commands on purpose. `slice(1)` is not checked at
-    // all: under `node -e` it IS the whole argument list, so forbidding it would
-    // refuse a correct snippet that takes only a list — and a text-level check
-    // over the whole file would refuse this comment for naming the thing it
-    // warns about.
+    // Scoped to the fenced commands on purpose: that is where a command lives,
+    // and prose around it may need to name the mistake to warn about it.
+    // `slice(1)` is not checked at all — under `node -e` it IS the whole
+    // argument list, so forbidding it would refuse a correct snippet that takes
+    // only a list.
     const content = await readGateSpec('pr-ship');
     const commands = [...content.matchAll(/```(?:sh|bash)\n([\s\S]*?)```/g)].map((m) => m[1] ?? '');
     expect(commands, 'pr-ship shows no shell command at all').not.toHaveLength(0);
