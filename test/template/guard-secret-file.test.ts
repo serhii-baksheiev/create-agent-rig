@@ -207,7 +207,7 @@ describe('guard-secret-file: the ordinary work of the day stays allowed', () => 
     ['Bash', { command: `echo ${CLOUD_ACCESS_KEY} >> notes.md` }],
     ['Grep', { pattern: GITHUB_PAT, path: '.' }],
   ])(
-    'allows a %s call carrying the same credential payload — the matcher is Write|Edit',
+    'allows a %s call carrying the same credential payload — the matcher is edit-only',
     async (toolName, toolInput) => {
       await allow(
         { hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput },
@@ -308,7 +308,7 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
 // `.claude/rules/invariants.md`, "State the limits — and test them": a limits
 // comment is the guard's own claim about how far it can be trusted, and nothing
 // checks prose, so it drifts — into overstatement, which is the direction that
-// gets someone hurt. The hook's header names three limits. These are them.
+// gets someone hurt. The hook's header names four limits. These are them.
 describe('guard-secret-file: the limits it states, asserted rather than asserted-in-prose', () => {
   it('does not see a credential split across two edits, because it is shown one fragment at a time', async () => {
     // The halves are innocuous apart and a credential together. Each edit is

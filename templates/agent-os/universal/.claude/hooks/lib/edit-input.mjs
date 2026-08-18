@@ -13,6 +13,7 @@ import {
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
   openSync,
   readSync,
   realpathSync,
@@ -44,11 +45,14 @@ export function editFragments(input) {
   }
   if (toolName !== 'apply_patch') return [];
   const rawCommand = toolInput.command;
-  const command = typeof rawCommand === 'string'
-    ? rawCommand
-    : Array.isArray(rawCommand) && rawCommand.every((part) => typeof part === 'string')
-      ? rawCommand.join('\n')
-      : '';
+  if (
+    typeof rawCommand !== 'string' &&
+    !(Array.isArray(rawCommand) && rawCommand.every((part) => typeof part === 'string'))
+  ) {
+    process.stderr.write('edit-input: cannot safely inspect patch — apply_patch command has an unsupported shape\n');
+    return [];
+  }
+  const command = typeof rawCommand === 'string' ? rawCommand : rawCommand.join('\n');
   if (command.length > MAX_PATCH_CHARACTERS) {
     return [
       {
@@ -59,23 +63,30 @@ export function editFragments(input) {
       },
     ];
   }
-  return patchFragments(command);
+  return patchFragments(command, input?.cwd);
 }
 
-function patchFragments(command) {
+function patchFragments(command, payloadCwd) {
   const fragments = [];
-  const budget = { movedBytes: 0, hunkLines: 0, outputLines: 0, splices: 0, comparisons: MAX_CONTEXT_COMPARISONS, repoRoot: null };
-  try { budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000 }).trim()); } catch { /* moved inspection below refuses without a trusted root */ }
+  const budget = { movedBytes: 0, hunkLines: 0, outputLines: 0, splices: 0, comparisons: MAX_CONTEXT_COMPARISONS, repoRoot: null, patchCwd: null, exhausted: null };
+  try {
+    const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
+      ? path.resolve(payloadCwd)
+      : process.cwd();
+    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000 }).trim());
+    budget.patchCwd = realpathSync(requestedCwd);
+    if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
+  } catch { /* moved inspection below refuses without a trusted root and cwd */ }
   let current = null;
 
   const flush = () => {
     if (current !== null) {
-      const destination = canonicalPatchPath(current.moveTo ?? current.sourcePath);
+      const destination = repositoryPatchPath(current.moveTo ?? current.sourcePath, budget);
       if (destination === null) {
         fragments.push({
           filePath: '',
           fragment: '',
-          inspectionRefusal: 'patch destination is outside the repository',
+          inspectionRefusal: 'patch destination is outside the repository or cannot be resolved safely',
           appliesToAll: true,
         });
       } else {
@@ -119,6 +130,7 @@ function patchFragments(command) {
 }
 
 function movedFragment(current, budget) {
+  if (budget.exhausted !== null) return inspectionRefusal(current, budget.exhausted);
   const sourcePath = canonicalPatchPath(current.sourcePath);
   if (sourcePath === null) {
     return inspectionRefusal(current, 'move source is outside the repository root');
@@ -126,21 +138,19 @@ function movedFragment(current, budget) {
   if (budget.repoRoot === null) {
     return inspectionRefusal(current, 'cannot resolve the repository root with git rev-parse');
   }
+  if (budget.patchCwd === null) {
+    return inspectionRefusal(current, 'cannot resolve the apply_patch working directory');
+  }
   try {
-    const repoRoot = budget.repoRoot ?? realpathSync(
-      execFileSync('git', ['rev-parse', '--show-toplevel'], {
-        cwd: process.cwd(),
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 1000,
-      }).trim(),
-    );
-    const candidate = path.resolve(repoRoot, sourcePath);
+    const repoRoot = budget.repoRoot;
+    const candidate = path.resolve(budget.patchCwd, sourcePath);
     if (!isWithin(repoRoot, candidate)) {
       return inspectionRefusal(current, 'move source is outside the repository root');
     }
 
+    if (lstatSync(candidate).isSymbolicLink()) {
+      return inspectionRefusal(current, 'unsafe move source is a symbolic link');
+    }
     const resolvedSource = realpathSync(candidate);
     if (!isWithin(repoRoot, resolvedSource)) {
       return inspectionRefusal(current, 'move source resolves outside the repository root');
@@ -148,7 +158,7 @@ function movedFragment(current, budget) {
 
     const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
     const nonBlocking = constants.O_NONBLOCK ?? 0;
-    const handle = openSync(candidate, constants.O_RDONLY | noFollow | nonBlocking);
+    const handle = openSync(resolvedSource, constants.O_RDONLY | noFollow | nonBlocking);
     try {
       const opened = fstatSync(handle);
       if (!opened.isFile()) return inspectionRefusal(current, 'move source is not a regular file');
@@ -169,14 +179,21 @@ function movedFragment(current, budget) {
         if (count === 0) break;
         bytesRead += count;
       }
+      budget.movedBytes += bytesRead;
+      if (budget.movedBytes > MAX_TOTAL_MOVED_FILE_BYTES) {
+        return exhaustBudget(
+          budget,
+          current,
+          `aggregate move source inspection exceeds the ${MAX_TOTAL_MOVED_FILE_BYTES}-byte limit`,
+        );
+      }
       if (bytesRead > MAX_MOVED_FILE_BYTES) {
-        return inspectionRefusal(
+        return exhaustBudget(
+          budget,
           current,
           `move source exceeds the ${MAX_MOVED_FILE_BYTES}-byte inspection limit`,
         );
       }
-      budget.movedBytes += bytesRead;
-      if (budget.movedBytes > MAX_TOTAL_MOVED_FILE_BYTES) return inspectionRefusal(current, `aggregate move source inspection exceeds the ${MAX_TOTAL_MOVED_FILE_BYTES}-byte limit`);
 
       const content = buffer.toString('utf8', 0, bytesRead);
       return applyHunks(content, current.hunks, current, budget);
@@ -197,16 +214,17 @@ function movedFragment(current, budget) {
 
 function applyHunks(content, hunks, current, budget) {
   const lines = content.split(/\r?\n/);
-  if (lines.length > MAX_OUTPUT_LINES) return inspectionRefusal(current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
+  if (lines.length > MAX_OUTPUT_LINES) return exhaustBudget(budget, current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
   for (const hunk of hunks) {
     if (hunk.lines.length > MAX_HUNK_LINES) {
-      return inspectionRefusal(
+      return exhaustBudget(
+        budget,
         current,
         `move hunk exceeds the ${MAX_HUNK_LINES}-line inspection limit`,
       );
     }
     budget.hunkLines += hunk.lines.length;
-    if (budget.hunkLines > MAX_TOTAL_HUNK_LINES) return inspectionRefusal(current, `total move hunk lines exceed the ${MAX_TOTAL_HUNK_LINES}-line limit`);
+    if (budget.hunkLines > MAX_TOTAL_HUNK_LINES) return exhaustBudget(budget, current, `total move hunk lines exceed the ${MAX_TOTAL_HUNK_LINES}-line limit`);
     const before = hunk.lines
       .filter(({ operation }) => operation !== '+')
       .map(({ text }) => text);
@@ -216,22 +234,26 @@ function applyHunks(content, hunks, current, budget) {
 
     if (before.length === 0) {
       budget.splices += 1;
-      if (budget.splices > MAX_SPLICE_OPERATIONS) return inspectionRefusal(current, `move splice budget exceeds ${MAX_SPLICE_OPERATIONS} operations`);
-      if (lines.length + after.length > MAX_OUTPUT_LINES) return inspectionRefusal(current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
+      if (budget.splices > MAX_SPLICE_OPERATIONS) return exhaustBudget(budget, current, `move splice budget exceeds ${MAX_SPLICE_OPERATIONS} operations`);
+      if (lines.length + after.length > MAX_OUTPUT_LINES) return exhaustBudget(budget, current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
       lines.splice(Math.max(0, lines.length - 1), 0, ...after);
       continue;
     }
     const match = findSequence(lines, before, budget);
     if (match.exhausted) {
-      return inspectionRefusal(current, 'move context comparison budget was exhausted');
+      return exhaustBudget(budget, current, 'move context comparison budget was exhausted');
     }
     if (match.index === -1) {
       return inspectionRefusal(current, 'move patch context does not match the source file');
     }
     lines.splice(match.index, before.length, ...after);
     budget.splices += 1;
-    if (budget.splices > MAX_SPLICE_OPERATIONS) return inspectionRefusal(current, `move splice budget exceeds ${MAX_SPLICE_OPERATIONS} operations`);
-    if (lines.length > MAX_OUTPUT_LINES) return inspectionRefusal(current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
+    if (budget.splices > MAX_SPLICE_OPERATIONS) return exhaustBudget(budget, current, `move splice budget exceeds ${MAX_SPLICE_OPERATIONS} operations`);
+    if (lines.length > MAX_OUTPUT_LINES) return exhaustBudget(budget, current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
+  }
+  budget.outputLines += lines.length;
+  if (budget.outputLines > MAX_OUTPUT_LINES) {
+    return exhaustBudget(budget, current, `aggregate move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
   }
   return { fragment: lines.join('\n') };
 }
@@ -291,4 +313,39 @@ function canonicalPatchPath(value) {
     return null;
   }
   return normalised.replace(/^\.\//, '');
+}
+
+function repositoryPatchPath(value, budget) {
+  const patchPath = canonicalPatchPath(value);
+  if (patchPath === null || budget.repoRoot === null || budget.patchCwd === null) return null;
+  const candidate = path.resolve(budget.patchCwd, patchPath);
+  if (!isWithin(budget.repoRoot, candidate)) return null;
+
+  let existing = candidate;
+  const suffix = [];
+  while (true) {
+    try {
+      const resolved = realpathSync(existing);
+      const resolvedCandidate = path.resolve(resolved, ...suffix);
+      if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
+      return path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return null;
+      try {
+        lstatSync(existing);
+        return null;
+      } catch (lstatError) {
+        if (lstatError?.code !== 'ENOENT') return null;
+      }
+      const parent = path.dirname(existing);
+      if (parent === existing) return null;
+      suffix.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+function exhaustBudget(budget, current, reason) {
+  budget.exhausted = reason;
+  return inspectionRefusal(current, reason);
 }

@@ -234,12 +234,13 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
    private work repository (PLAN.md §9).
 5. **Never edit a synced file directly** — edit `templates/agent-os/` (or this
    addendum) and run the sync script; the drift test fails otherwise. The synced
-   set is `CLAUDE.md`, everything under `.claude/`, **`journal/README.md`** and
-   **`docs/decisions/`** — the two synced payload paths living outside
-   `.claude/` (AR-64 and AR-63 respectively). Both sit in the repo root among
-   files this repo does own — `journal/YYYY-MM.md` next to the one, nothing yet
-   next to the other — so they are the natural things to edit in place, and an
-   edit there is lost at the next sync. The month files themselves are this
+   set is `CLAUDE.md`, everything under `.claude/`, the Codex projection
+   (`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and
+   **`docs/decisions/`**. The last two payload paths sit outside either harness's
+   configuration tree (AR-64 and AR-63 respectively). Both live in the repo root
+   among files this repo does own — `journal/YYYY-MM.md` next to the one, nothing
+   yet next to the other — so they are the natural things to edit in place, and
+   an edit there is lost at the next sync. The month files themselves are this
    repo's own and are never synced.
 6. **This repo has a remote and CI, so it follows its own PR flow** (see the
    synced `.claude/rules/workflow.md`): one task per short-lived branch, never

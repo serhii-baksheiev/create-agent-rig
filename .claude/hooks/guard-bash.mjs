@@ -135,6 +135,35 @@ const WRAPPER_VALUE_FLAGS = {
 const KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'fi', 'done', 'in', '!', '{', '}']);
 /** Shells whose `-c` argument is itself a command line, so it must be parsed too. */
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+/** Shell options that consume the following token before the `-c` script. */
+const SHELL_VALUE_FLAGS = new Set(['-o', '-O', '+o', '+O', '--init-file', '--rcfile']);
+const compactShellValueCount = (value) =>
+  /^[+-][^+-]+$/.test(value)
+    ? [...value].filter((flag) => flag === 'o' || flag === 'O').length
+    : 0;
+
+const shellScript = (args) => {
+  const commandFlag = args.findIndex(
+    ({ value }) => value === '-c' || (/^-[^-]+$/.test(value) && value.includes('c')),
+  );
+  if (commandFlag === -1) return args.map(({ value }) => value).join(' ');
+
+  const compactFlag = args[commandFlag].value;
+  const compactValues = compactShellValueCount(compactFlag);
+  const firstCandidate = commandFlag + 1 + compactValues;
+  for (let index = firstCandidate; index < args.length; index += 1) {
+    const value = args[index].value;
+    if (value === '--') return args[index + 1]?.value ?? '';
+    const valueCount = compactShellValueCount(value);
+    if (valueCount > 0 || SHELL_VALUE_FLAGS.has(value)) {
+      index += Math.max(1, valueCount);
+      continue;
+    }
+    if ((value.startsWith('-') || value.startsWith('+')) && value !== '-' && value !== '+') continue;
+    return value;
+  }
+  return '';
+};
 /**
  * Flags whose VALUE is prose or a path, never a ref. Skipping them is what keeps
  * a commit message from being read as a live argument.
@@ -735,11 +764,7 @@ export const inspect = (raw, brake, depth = 0) => {
       // `bash -c "<command line>"` / `eval "<command line>"` — the payload is a
       // command line of its own. Taken whether or not it is quote-delimited: a
       // backslash-joined payload is still a payload.
-      const flagIndex = command.args.findIndex(({ value }) => value === '-c' || /^-[^-]*c$/.test(value));
-      const script =
-        flagIndex >= 0
-          ? command.args[flagIndex + 1]?.value
-          : command.args.map(({ value }) => value).join(' ');
+      const script = shellScript(command.args);
       if (script) {
         const reason = inspect(script, brake, depth + 1);
         if (reason) return reason;
@@ -778,7 +803,7 @@ function main() {
   const raw = Array.isArray(commandValue)
     ? commandValue
         .filter((part) => typeof part === 'string')
-        .map((part) => `'${part.replaceAll("'", "'\\\"'\\\"'")}'`)
+        .map((part) => `'${part.replaceAll("'", "'\"'\"'")}'`)
         .join(' ')
     : String(commandValue ?? '');
   if (!raw.trim()) return 0;

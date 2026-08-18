@@ -224,6 +224,31 @@ describe('guard-bash: it fails open on anything it does not understand', () => {
     expect(result.stderr).toMatch(/shared branch|force/i);
   });
 
+  it('inspects a later argv-array command after an argument containing an apostrophe', async () => {
+    const result = await runHook([
+      'bash',
+      '-lc',
+      `printf "%s\\n" "it's safe"; git push --force origin main`,
+    ]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/shared branch|force/i);
+  });
+
+  it.each([
+    'bash -cx',
+    'bash -c -x',
+    'bash -c +x',
+    'bash -c +o nounset',
+    'bash -cO extglob',
+    'bash -coO nounset extglob',
+    'bash -c -oO nounset extglob',
+    'bash -c +oO nounset extglob',
+  ])('inspects the script argument passed through %s', async (shell) => {
+    const result = await runHook(`${shell} "git push --force origin main"`);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/shared branch|force/i);
+  });
+
   it('allows a malformed payload', async () => {
     const code = await new Promise<number>((resolve, reject) => {
       const child = execFile(process.execPath, [hook], (error) =>

@@ -98,7 +98,7 @@ own cost figures are read next to the lane they do not cover.
   **mechanical**: `guard-secret-file` refuses a `Write`/`Edit` that names a
   credential file or carries a credential value, reading its vocabulary from
   `.claude/scripts/lib/secrets.mjs`. ⚠ **Only that part.** The hook sees what an
-  agent writes through two tools and nothing else — its own header states the
+  agent writes through `Write`, `Edit`, or `apply_patch` and nothing else — its own header states the
   four blind spots — so whether a credential typed by a human, or committed
   from disk, is also refused depends on whether this project has a commit-time
   check. Look at `.husky/` and the CI workflow; this file cannot tell you, and a

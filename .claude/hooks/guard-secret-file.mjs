@@ -32,9 +32,9 @@
 //     at a time". This is the same limit every guard in this directory has,
 //     stated in full in `.claude/rules/invariants.md`, "What the enforcement
 //     actually is — stated exactly".
-//   - It sees only what the AGENT writes, and only through two tools — see
-//     guard-secret-file.test.ts › "allows a %s call carrying the same credential
-//     payload — the matcher is Write|Edit". A human editing the file, or a
+//   - It sees only what the AGENT writes. The `toolName` branch in `main` below
+//     names the complete surface: `Write`, `Edit`, and `apply_patch`; every other
+//     tool returns before inspection. A human editing the file, or a
 //     `git commit` of something already on disk, never reaches a PreToolUse hook
 //     at all, and no test here can show that: it is a property of the harness,
 //     not of this file.
