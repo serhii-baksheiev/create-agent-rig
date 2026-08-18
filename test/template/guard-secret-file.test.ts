@@ -36,11 +36,16 @@ interface HookResult {
 }
 
 /** Feed a synthetic hook payload to the hook, exactly as Claude Code does. */
-function runHook(payload: unknown): Promise<HookResult> {
+function runHook(payload: unknown, env: NodeJS.ProcessEnv = {}): Promise<HookResult> {
   return new Promise((resolve, reject) => {
-    const child = execFile(process.execPath, [hook], (error, _stdout, stderr) => {
-      resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
-    });
+    const child = execFile(
+      process.execPath,
+      [hook],
+      { env: { ...process.env, ...env } },
+      (error, _stdout, stderr) => {
+        resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
+      },
+    );
     if (!child.stdin) return reject(new Error('no stdin'));
     // A hook that decides early and exits closes the pipe under us; that EPIPE
     // is the hook working, not the test failing. The exit code is the subject.
@@ -294,5 +299,43 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     expect(source).toMatch(/LIMITS/);
     expect(source).toMatch(/fragment/i);
     expect(source).toMatch(/FAILS OPEN/i);
+  });
+});
+
+describe('guard-secret-file: a checkout is judged by its repo-relative path', () => {
+  // A project living under a directory called `secrets` is an ordinary thing —
+  // `~/secrets/work/app`. If the guard judged the ABSOLUTE path it would refuse
+  // every edit in that checkout, and be uninstalled the same day.
+  it.each([
+    ['/tmp/secrets/project', 'without a trailing slash'],
+    ['/tmp/secrets/project/', 'with a trailing slash'],
+  ])('judges the repo-relative path even when the project directory is given %s', async (dir) => {
+    const result = await runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: {
+          file_path: '/tmp/secrets/project/src/index.ts',
+          content: 'export const greet = () => "hello";\n',
+        },
+      },
+      { CLAUDE_PROJECT_DIR: dir },
+    );
+    expect(result.code, `an ordinary edit was refused\n${result.stderr}`).toBe(0);
+  });
+
+  it('still refuses a credential directory INSIDE the project, whatever the project is called', async () => {
+    const result = await runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: {
+          file_path: '/tmp/secrets/project/config/secrets/prod.txt',
+          content: 'nothing special\n',
+        },
+      },
+      { CLAUDE_PROJECT_DIR: '/tmp/secrets/project/' },
+    );
+    expect(result.code, result.stderr).toBe(2);
   });
 });

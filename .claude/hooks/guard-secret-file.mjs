@@ -79,7 +79,15 @@ function main() {
   // The tool sends an absolute path. Judge the repo-relative tail so a checkout
   // living under a directory literally called `secrets` does not make every edit
   // in the project a credential.
-  const projectDir = String(process.env.CLAUDE_PROJECT_DIR ?? '').replaceAll('\\', '/');
+  // Trailing slashes stripped: with `CLAUDE_PROJECT_DIR=/repo/` the prefix test
+  // below never matches, every path stays absolute, and a checkout that happens
+  // to live under a directory called `secrets` has EVERY edit refused. That is
+  // the "deleted within the hour" outcome `.claude/rules/invariants.md` warns
+  // about — see guard-secret-file.test.ts › "judges the repo-relative path even
+  // when the project directory is given with a trailing slash".
+  const projectDir = String(process.env.CLAUDE_PROJECT_DIR ?? '')
+    .replaceAll('\\', '/')
+    .replace(/\/+$/, '');
   const relativePath =
     projectDir !== '' && filePath.startsWith(`${projectDir}/`)
       ? filePath.slice(projectDir.length + 1)
