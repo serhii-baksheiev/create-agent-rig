@@ -74,7 +74,8 @@ the next selection reads the verdict.
     }
   ],
   "advisories": [],
-  "evidence": ["stack LastUpdatedTime is this deploy", "DLQ depth 0"]
+  "evidence": ["stack LastUpdatedTime is this deploy", "DLQ depth 0"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -88,6 +89,9 @@ the next selection reads the verdict.
   deploy runs `node .claude/scripts/verdict.mjs check <report>
   post-deploy-verify` before it retypes the word into `run-state.mjs`. This
   skill runs nothing — it is read-only by construction.
+- **`headSha` is the commit that was deployed** — `git rev-parse HEAD` in the
+  checkout the deploy went out from, so a verdict cannot later be read as
+  being about a different release.
 
 ## Boundaries
 

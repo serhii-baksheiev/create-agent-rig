@@ -17,8 +17,9 @@ session to skip.
 It was refused on four costs, each of them a rule this project already paid for.
 
 **1. It needs to recognise a merge command while the brake is off.** The kill
-switch can be coarse — it denies the network clients wholesale — because a false
-block is cheap when the session is already stopped. `invariants.md` states that
+switch can be coarse — it denies the network clients *as a class of binaries*,
+reading no merge semantics at all, while still allowing the wind-down it asks
+for — because a false block is cheap when the session is already stopped. `invariants.md` states that
 directly: match a rule's precision to the cost of a false positive. A merge gate
 runs during ordinary work, where a false block lands on the last step of finished
 work. The one attempt at enumerating merge routes was reverted, and what it cost

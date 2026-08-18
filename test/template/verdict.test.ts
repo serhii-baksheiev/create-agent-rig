@@ -1079,7 +1079,12 @@ describe('every diagnosis in both files goes through the one sanitiser', () => {
       () => modulePath,
       ['${key}', '${gate}', '${String(verdict)}', '${error?.message'],
     ],
-    ['verdict.mjs', () => cliPath, ['${expectedGate}', '${result.verdict.gate}']],
+    // AR-79: `${reviewer}` is the coverage refusal's line, and the names in it
+    // come out of the run journal — where `recordDecision` checks the array for
+    // strings and nothing else, so they are as reviewer-controlled as a gate
+    // name is. The refusal is also the one an operator is most likely watching
+    // live, mid fan-out.
+    ['verdict.mjs', () => cliPath, ['${expectedGate}', '${result.verdict.gate}', '${reviewer}']],
   ])('interpolates no reviewer-controlled value raw in %s', async (_label, file, raws) => {
     const source = await readFile(file(), 'utf8');
     expect(source).toContain('safeForDiagnosis');

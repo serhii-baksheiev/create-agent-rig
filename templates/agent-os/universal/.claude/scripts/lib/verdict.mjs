@@ -168,11 +168,14 @@ const DIAGNOSIS_LIMIT = 120;
  * worst they buy is a misread within those backticks. Escape sequences are the ones
  * that rewrite the operator's screen, and those are what this removes.
  *
- * ⚠ **The CLI's own argv is not passed through it.** The report's path and the
- * subcommand are printed exactly as the caller wrote them, because their whole job
- * is to be pasted back into a command; the expected-gate argument IS sanitised,
- * because it is printed beside a reviewer-written gate as one of two names the
- * operator compares, and a value that can repaint that comparison defeats it.
+ * ⚠ **Two of the CLI's own arguments are passed through it, and two are not.**
+ * The report's path and the subcommand are printed exactly as the caller wrote
+ * them, because their whole job is to be pasted back into a command. The
+ * expected-gate argument IS sanitised, because it is printed beside a
+ * reviewer-written gate as one of two names the operator compares, and a value
+ * that can repaint that comparison defeats it. So is `coverage`'s commit
+ * argument, which is printed beside journal-written reviewer names for the same
+ * reason.
  *
  * It never throws — it is called only where something has already gone wrong, and a
  * sanitiser that throws there turns a diagnosis into a crash the caller reads as
@@ -233,7 +236,7 @@ const isText = (value) => typeof value === 'string' && value.trim() !== '';
  * needs rewriting to pass is a value the reviewer did not write, and rewriting it
  * silently is how a near-miss becomes a match.
  */
-const isCommitId = (value) => typeof value === 'string' && /^[0-9a-f]{7,64}$/i.test(value);
+export const isCommitId = (value) => typeof value === 'string' && /^[0-9a-f]{7,64}$/i.test(value);
 
 /**
  * The last fenced ```json block, as one of three answers: `{ raw }` for a block

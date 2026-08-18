@@ -337,7 +337,8 @@ the author, then **exactly one** fenced `json` block, and nothing after it.
     }
   ],
   "advisories": [],
-  "evidence": ["lane: model", "reviewers: code-reviewer, prose-reviewer"]
+  "evidence": ["lane: model", "reviewers: code-reviewer, prose-reviewer"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -350,6 +351,9 @@ the author, then **exactly one** fenced `json` block, and nothing after it.
   pr-ship` — and fix what it refuses. Nothing downstream re-checks the gate's
   own answer, so this call is the only thing between a malformed verdict and
   whoever acts on it.
+- **`headSha` is the commit you gated** — `git rev-parse HEAD`, the same one
+  step 5 asked coverage about. It is what stops this verdict being read later
+  as an answer about a commit that has since moved.
 
 ## Boundaries
 

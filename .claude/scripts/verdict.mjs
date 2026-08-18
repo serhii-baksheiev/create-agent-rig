@@ -35,7 +35,7 @@
 import { readFileSync } from 'node:fs';
 
 import { coverageOf } from './lib/gate-coverage.mjs';
-import { parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
+import { isCommitId, parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
 import { readRun } from './run-journal.mjs';
 
 const USAGE =
@@ -93,6 +93,18 @@ if (subcommand === 'coverage') {
     );
   }
 
+  // The one commit field this command owns. Everything else that reaches
+  // `sameCommit` came through the schema; this argument came off the command
+  // line, and without a check `coverage <a-full-sha>garbage` prefix-matched its
+  // way to "covered" — the answer that ends in a merge.
+  if (!isCommitId(commit)) {
+    refuse(
+      `verdict: \`${safeForDiagnosis(commit)}\` is not a commit to ask about. ` +
+        'It is 7 to 64 hex characters (0-9a-f), the same shape a verdict may name — ' +
+        '`git rev-parse HEAD` in the reviewed checkout.\n',
+    );
+  }
+
   const runDir = process.env.RIG_RUN_DIR;
   if (!runDir) {
     // 🔴 Exit 0 with nothing printed is indistinguishable from a clean round,
@@ -129,7 +141,11 @@ if (subcommand === 'coverage') {
   const lines = [];
   if (coverage.reason !== undefined) lines.push(`  ${coverage.reason}`);
   for (const [key, why] of CASES) {
-    for (const reviewer of coverage[key]) lines.push(`  ${reviewer} — ${why}`);
+    // Through the sanitiser like every other quoted value here: the names come
+    // from the fan-out record, which `recordDecision` checks as strings and
+    // nothing more, and a name carrying a cursor sequence repaints this refusal
+    // as a pass for whoever is watching the scrollback.
+    for (const reviewer of coverage[key]) lines.push(`  ${safeForDiagnosis(reviewer)} — ${why}`);
   }
   refuse(
     `verdict: the fan-out for ${safeForDiagnosis(commit)} is not covered.\n` +

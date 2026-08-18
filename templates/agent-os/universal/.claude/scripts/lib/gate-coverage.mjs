@@ -26,8 +26,18 @@
  * answers `ok: false` and says why in `reason`, which is present on no other
  * answer.
  *
- * Pure by design, and tested for it: the records and the commit come from the
- * caller, so the rule has one implementation and the CLI is only its call site.
+ * Pure by design: the records and the commit come from the caller, so the rule
+ * has one implementation and the CLI is only its call site. The purity is pinned
+ * by `test/template/gate-coverage.test.ts` › "reads no clock, no environment and
+ * no filesystem" — which lives in the generator that produced this project and
+ * does not ship with the module, exactly as `.claude/rules/invariants.md` says of
+ * the hooks. Edit this file here and that pin does not move with you.
+ *
+ * ⚠ **`routed` and `launched` are the last of each record type, scanned
+ * independently.** They co-move only because `pr-ship` re-enters at step 0 after
+ * a HOLD, so a new round always re-routes before it re-launches. A round that
+ * ever relaunched only the holding reviewer would report every already-shipped
+ * one as `neverLaunched`.
  */
 
 /** The gate name `pr-ship` writes its fan-out under. */
@@ -58,6 +68,17 @@ const uniq = (names) => [...new Set(names)];
 const SHORTEST_COMMIT = 7;
 
 /**
+ * The lengths a COMPLETE commit id has: sha-1 and sha-256.
+ *
+ * An abbreviation resolves against a complete id and nothing else. Without this,
+ * any strict extension of a full id prefix-matched it — a 50-character value
+ * built by appending to a 40-character commit was counted as coverage of that
+ * commit, and it passes the schema (7–64 hex), so it arrives through the fully
+ * validated path rather than as obvious junk.
+ */
+const COMPLETE_COMMIT_LENGTHS = new Set([40, 64]);
+
+/**
  * Are these two ids the same commit?
  *
  * 🔴 **Not string equality, and the difference is a false HOLD.** The schema
@@ -66,16 +87,33 @@ const SHORTEST_COMMIT = 7;
  * comparison reports that as answered-for-another-commit and holds the merge on
  * honest work, which is the way a guard loses the room.
  *
- * So: the shorter is a prefix of the longer, case-insensitively, the way git
- * resolves an abbreviation itself. **Both must reach the schema's floor.** A
- * value shorter than that is one `parseVerdict` refuses upstream, and stretching
- * it into a match would let a value nothing accepted decide that a gate was
- * covered.
+ * So: equal ids match, and otherwise the shorter must be a prefix of a
+ * **complete** one, case-insensitively — the way git resolves an abbreviation.
+ * Two bounds, each closing one direction:
+ *
+ * - **the floor.** Both must reach `SHORTEST_COMMIT`. A shorter value is one the
+ *   verdict schema refuses, and stretching it into a match would let a value
+ *   nothing accepted decide that a gate was covered. ⚠ The journal is the other
+ *   way in and it does not apply that schema (`run-journal.mjs` takes `headSha`
+ *   as any non-blank string), so this floor is enforced here on its own account,
+ *   not on the strength of an upstream check.
+ * - **the ceiling.** The longer must be a complete id. An abbreviation resolves
+ *   against a whole commit; a value that merely *extends* one is not that commit
+ *   written shorter, and counting it as coverage fails in the unsafe direction.
+ *
+ * One case is decided rather than left ambiguous: a 40-character value that
+ * prefixes a 64-character one matches, because the longer is complete. It could
+ * be a sha-256 abbreviated to 40 or a sha-1 with characters appended, and nothing
+ * here can resolve which — a pure function has no repository to ask. The first
+ * reading is the one an honest run produces.
  */
 const sameCommit = (one, other) => {
   if (one.length < SHORTEST_COMMIT || other.length < SHORTEST_COMMIT) return false;
-  const [shorter, longer] =
-    one.length <= other.length ? [one.toLowerCase(), other.toLowerCase()] : [other.toLowerCase(), one.toLowerCase()];
+  const first = one.toLowerCase();
+  const second = other.toLowerCase();
+  if (first === second) return true;
+  const [shorter, longer] = first.length <= second.length ? [first, second] : [second, first];
+  if (!COMPLETE_COMMIT_LENGTHS.has(longer.length)) return false;
   return longer.startsWith(shorter);
 };
 
@@ -99,6 +137,7 @@ export const coverageOf = ({ records, headSha } = {}) => {
   // round after fixes, and the round's whole question is whether THIS round's
   // reviewers answered. An earlier fan-out answers about a round already over.
   let routedNames = [];
+  let routeRecorded = false;
   let fanOutAt = -1;
   let launchedNames = [];
 
@@ -110,6 +149,10 @@ export const coverageOf = ({ records, headSha } = {}) => {
     // against a lane nobody took.
     if (gate.startsWith(ROUTING) && Array.isArray(record?.reviewers)) {
       routedNames = namesOf(record.reviewers);
+      // A set was RECORDED, which is a different fact from the set being empty.
+      // The `deterministic` lane legitimately routes nobody; a run that never
+      // journalled a route knows nothing about who should have been launched.
+      routeRecorded = true;
     }
     if (gate === FAN_OUT) {
       fanOutAt = index;
@@ -172,17 +215,29 @@ export const coverageOf = ({ records, headSha } = {}) => {
     }
   }
 
+  const outstanding =
+    neverLaunched.length + unanswered.length + unattributed.length + stale.length;
+
   return {
-    ok:
-      neverLaunched.length === 0 &&
-      unanswered.length === 0 &&
-      unattributed.length === 0 &&
-      stale.length === 0,
+    ok: routeRecorded && outstanding === 0,
     routed,
     launched,
     neverLaunched,
     unanswered,
     unattributed,
     stale,
+    // Unlike the missing fan-out, this one still has a launched set and answers
+    // to compare, so the four lists are computed and returned — the reason says
+    // which half of the check could not run, rather than replacing the half that
+    // could.
+    ...(routeRecorded
+      ? {}
+      : {
+          reason:
+            'this run journalled no routed reviewer set, so `neverLaunched` was compared ' +
+            'against nothing: a reviewer the route asked for and nobody launched would not ' +
+            'appear. An empty route that WAS recorded is a different answer, and this is ' +
+            'not it.',
+        }),
   };
 };

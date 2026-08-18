@@ -316,8 +316,16 @@ describe('a verdict for another commit is not coverage of this one', () => {
   });
 
   it('accepts the reviewer that answered for the commit asked about', async () => {
+    // The `routed` record is part of the fixture rather than of the case: a run
+    // that journalled no route at all is refused on that ground alone (see "a
+    // round whose route was never journalled is not a covered round"), and
+    // without it this test would be asserting the wrong `ok`.
     const coverage = await coverageOf(
-      journal(fanOut(['code-reviewer']), answered('code-reviewer', { headSha: HEAD })),
+      journal(
+        routed(['code-reviewer']),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer', { headSha: HEAD }),
+      ),
       HEAD,
     );
     expect(coverage.stale).toEqual([]);
@@ -420,7 +428,79 @@ describe('a run with no fan-out recorded is never read as a pass', () => {
   it('names no reason when a fan-out was there to compare against', async () => {
     // Omitted is not empty, the same way it is for `headSha` in the verdict
     // schema: a reason present on every answer is a reason a caller stops reading.
-    const coverage = await coverageOf(journal(fanOut([])));
+    //
+    // The `routed([])` record is fixture, not case: a journal carrying NO
+    // routing record now carries a reason of its own ("a round whose route was
+    // never journalled is not a covered round" below), and omitted is not empty
+    // on that side too — so the fan-out has to be the only thing this test
+    // varies for it to keep testing what it was written to test.
+    const coverage = await coverageOf(journal(routed([], 'deterministic'), fanOut([])));
+    expect('reason' in coverage).toBe(false);
+  });
+});
+
+// 🔴 AR-79, round 1. The routed set is assigned by ONE thing: a record matching
+// `review-routing:` that carries a `reviewers` array. With no such record the
+// routed set stays `[]`, `neverLaunched` can never fire, and the answer is
+// `ok: true` — for a round in which nothing is known to have been routed. That
+// is the vacuous pass this module exists to refuse, wearing the shape of the
+// `deterministic` lane's legitimate empty route.
+//
+// It needs no crafting to reach: `decision-router.mjs` catches its own journal
+// failure and carries on, and a second gate round driven from a fresh
+// `RIG_RUN_DIR` has no routing line in it at all.
+//
+// The distinction pinned here is the same "omitted is not empty" the `headSha`
+// schema keeps: *a set was recorded and it was empty* versus *no set was
+// recorded*.
+describe('a round whose route was never journalled is not a covered round', () => {
+  const noRoute = (): JournalRecord[] =>
+    journal(fanOut(['code-reviewer']), answered('code-reviewer'));
+
+  it('refuses a run whose journal records no routed reviewer set at all', async () => {
+    expect((await coverageOf(noRoute())).ok).toBe(false);
+  });
+
+  it('says why in the field the missing fan-out already uses, so a caller reads one', async () => {
+    const coverage = await coverageOf(noRoute());
+    expect(typeof coverage.reason, 'the refusal names no reason').toBe('string');
+    expect(coverage.reason).toMatch(/rout(e|ed|ing)/i);
+  });
+
+  it('refuses a run in which every lane declined and none of them recorded a set', async () => {
+    // `declined()` carries no `reviewers` key by design — the set belongs to the
+    // route, not to the lanes that passed on it — so a journal of nothing but
+    // declines has recorded no routed set either. Same unreadable round, three
+    // records instead of none.
+    const coverage = await coverageOf(
+      journal(
+        declined('deterministic'),
+        declined('fast-path'),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer'),
+      ),
+    );
+    expect(coverage.ok).toBe(false);
+    expect(coverage.reason).toMatch(/rout(e|ed|ing)/i);
+  });
+
+  it('still names the reviewers it can, because the reason is not the only thing to act on', async () => {
+    // Unlike a missing FAN-OUT, this round has a launched set and answers to
+    // compare against it, so the four lists are computable — and a refusal that
+    // dropped them would cost the reader the finding they could act on today.
+    const coverage = await coverageOf(
+      journal(fanOut(['code-reviewer', 'prose-reviewer']), answered('code-reviewer')),
+    );
+    expect(coverage.unanswered).toEqual(['prose-reviewer']);
+    expect([...coverage.launched].sort()).toEqual(['code-reviewer', 'prose-reviewer']);
+  });
+
+  it('reads a recorded empty route as an empty route rather than as a missing one', async () => {
+    // The `deterministic` lane routes nobody and journals that it routed nobody.
+    // It is the case the refusal above must not swallow, and the only thing
+    // telling the two apart is that the record exists.
+    const coverage = await coverageOf(journal(routed([], 'deterministic'), fanOut([])));
+    expect(coverage.ok).toBe(true);
     expect('reason' in coverage).toBe(false);
   });
 });
@@ -592,6 +672,13 @@ describe('`coverage` is what a gate runs before it believes its own fan-out', ()
     expect(result.stderr).toMatch(/fan.?out/i);
   });
 
+  it('refuses a run that journalled no route rather than reporting it clean', async () => {
+    const runDir = await runDirWith(journal(fanOut(['code-reviewer']), answered('code-reviewer')));
+    const result = await runCli(['coverage', HEAD], runDir);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stderr).toMatch(/rout(e|ed|ing)/i);
+  });
+
   it('says the commit argument is missing rather than calling `coverage` unknown', async () => {
     // The same two arms `check` keeps apart: the subcommand was right and the
     // ARGUMENT was not supplied, and reporting the opposite sends the operator
@@ -603,6 +690,58 @@ describe('`coverage` is what a gate runs before it believes its own fan-out', ()
     expect(result.stderr).not.toMatch(/not a subcommand|unknown subcommand/i);
     expect(result.stderr).toMatch(/commit|sha/i);
     expect(result.stderr).toMatch(/missing|no commit|needs|without/i);
+  });
+
+  // 🔴 AR-79, round 1. Only `undefined` is caught today, so any other argument
+  // is carried straight into the comparison: `<head>garbage` is reported as
+  // COVERED by the prefix rule, and `''` reports every reviewer stale. Both are
+  // answers about a commit nobody named, and the first exits 0.
+  //
+  // `lib/verdict.mjs` already fixes the shape a commit id has (7–64 hex,
+  // `isCommitId`); the argument this CLI compares against is the same kind of
+  // value and gets the same check, before anything is decided from it.
+  describe('the commit `coverage` is asked about has to be a commit id', () => {
+    /**
+     * The refusal has to name the SHAPE — 7 to 64 characters of hex — the same
+     * way the verdict schema's does; several phrasings satisfy it, and none of
+     * them may leave the reader without the shape.
+     */
+    const namesTheShape = /hex|0-9a-f|7\D{1,4}64/i;
+
+    /** A round that IS covered, so a refusal here can only be about the argument. */
+    const coveredRun = (): Promise<string> =>
+      runDirWith(
+        journal(routed(['code-reviewer']), fanOut(['code-reviewer']), answered('code-reviewer')),
+      );
+
+    it.each([
+      ['a value that merely extends a commit id', `${HEAD}garbage`],
+      ['an empty argument', ''],
+      ['a value starting with a dash', '-9c1f0a7'],
+      ['a path traversal', '../x'],
+      ['text that is not hex at all', 'not-a-commit'],
+      ['six characters, one short of the shortest sha', '9c1f0a'],
+      ['sixty-five characters, one past the longest', 'a'.repeat(65)],
+      ['a commit id with whitespace around it', ` ${HEAD} `],
+    ])('refuses %s instead of answering about it', async (_label, commit) => {
+      const result = await runCli(['coverage', commit], await coveredRun());
+      expect(result.code, result.out).toBe(1);
+      // Nothing on stdout, for the same reason `check` promises it: a caller
+      // redirecting it would capture an answer this command has just refused.
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(namesTheShape);
+      // and it stays the OTHER arm of the pair: an operator told no commit was
+      // given goes looking for the argument they can see they passed.
+      expect(result.stderr).not.toMatch(/no commit was given/i);
+    });
+
+    it('still answers about an abbreviated commit, which is a commit id too', async () => {
+      // The regression guard on the check: the schema accepts seven characters,
+      // so a caller that abbreviated must not be refused by the shape.
+      const result = await runCli(['coverage', HEAD.slice(0, 7)], await coveredRun());
+      expect(result.code, result.out).toBe(0);
+      expect(result.stdout).toMatch(/coverage complete/i);
+    });
   });
 
   it('names `coverage` in the usage line beside `check`', async () => {
@@ -742,5 +881,137 @@ describe('an abbreviated commit id and a full one are the same commit', () => {
     expect(coverage.stale).toEqual(['code-reviewer']);
     expect(coverage.unattributed).toEqual([]);
     expect(coverage.ok).toBe(false);
+  });
+
+  // 🔴 AR-79, round 1: the prefix rule is only safe in ONE direction, and the
+  // other one is reachable through the fully validated path. A value formed by
+  // APPENDING to the full forty-character head has that head as its prefix, so
+  // it is reported as coverage of it — and being 7–64 hex it passes `isCommitId`
+  // and reaches the journal as an ordinary `headSha`.
+  //
+  // The rule that makes every case in this describe consistent: two ids name the
+  // same commit when they are EQUAL, or when the shorter is a prefix of a
+  // COMPLETE one — the forty characters git prints for a sha1, or the sixty-four
+  // of the longer hash. A value of any other length is an abbreviation of
+  // nothing, and an abbreviation is only ever resolved against a whole id.
+
+  /** The sixty-four characters of the longer hash, abbreviating to the same seven. */
+  const HEAD_LONG = `${HEAD.slice(0, 7)}${'f'.repeat(57)}`;
+
+  /** What `--abbrev=12` prints: neither a complete id nor the length of its partner. */
+  const HEAD_MEDIUM = HEAD.slice(0, 12);
+
+  /** The full head with ten more hex characters welded on — no commit is fifty long. */
+  const EXTENDED = `${HEAD}0f1e2d3c4b`;
+
+  it('counts a twelve-character verdict as coverage of the full commit it abbreviates', async () => {
+    // The length that is neither complete nor equal to its partner: it can only
+    // be judged by the rule above, not by either id being the size the other is.
+    const coverage = await covered(HEAD_MEDIUM);
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('counts a seven-character verdict as coverage of the sixty-four character hash it abbreviates', async () => {
+    const coverage = await covered(HEAD_LONG.slice(0, 7), HEAD_LONG);
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('counts a sixty-four character verdict as coverage of the same commit asked about in seven', async () => {
+    const coverage = await covered(HEAD_LONG, HEAD_LONG.slice(0, 7));
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('counts two identical abbreviations as the same commit, complete or not', async () => {
+    // Equality is the other half of the rule and it is length-independent: two
+    // ids that are the same text are the same commit, whatever length they are.
+    const coverage = await covered(HEAD_SHORT, HEAD_SHORT);
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('calls a fifty-character value that merely extends the full commit stale', async () => {
+    // 🔴 The defect. `EXTENDED` starts with every character of `HEAD`, and
+    // nothing about that makes it the same commit — no hash is fifty long, so it
+    // is an id nobody abbreviated from anything.
+    const coverage = await covered(EXTENDED);
+    expect(coverage.stale).toEqual(['code-reviewer']);
+    expect(coverage.unattributed).toEqual([]);
+    expect(coverage.ok).toBe(false);
+  });
+
+  it('calls the same extension stale when it is the commit asked about instead', async () => {
+    // The mirror, because the comparison is symmetric: the caller's argument is
+    // whatever it had to hand, and a value nothing produced must not become the
+    // yardstick either.
+    const coverage = await covered(HEAD, EXTENDED);
+    expect(coverage.stale).toEqual(['code-reviewer']);
+    expect(coverage.ok).toBe(false);
+  });
+
+  it('calls a value one character past the full commit stale', async () => {
+    // The narrowest form of the same thing: it is not the SIZE of the extension
+    // that decides, it is that the longer id is not a length any commit has.
+    const coverage = await covered(`${HEAD}0`);
+    expect(coverage.stale).toEqual(['code-reviewer']);
+    expect(coverage.ok).toBe(false);
+  });
+});
+
+// 🔴 AR-79, round 1. The coverage refusal prints reviewer names straight out of
+// the journal, and `recordDecision` checks that array for strings and nothing
+// more — the names are typed by the model driving `pr-ship`, which is the same
+// class of value every other quoted field in this CLI already sanitises. A name
+// carrying a CR or a cursor sequence repaints the line it is printed on, and
+// that line is a merge-gating refusal: the operator watching the fan-out reads a
+// HOLD as a pass, while the exit code (which nobody is looking at) says 1.
+//
+// `safeForDiagnosis` in `lib/verdict.mjs` is the one sanitiser for this, and
+// `verdict.mjs` already imports it. Pinned end to end through the CLI, because
+// the journal round trip is part of the path the value takes.
+describe('a reviewer name in a coverage refusal cannot repaint the operator’s screen', () => {
+  /** ESC, built rather than typed: a raw escape byte is one the next reader cannot see. */
+  const ESC = String.fromCharCode(0x1b);
+
+  /** The C1 control introducer — the single-character spelling of the same escape. */
+  const C1 = String.fromCharCode(0x9b);
+
+  /**
+   * What a name would carry to erase the refusal above it and print a pass in
+   * its place: erase the line, move up one, return the carriage, reset.
+   */
+  const painted = (identity: string): string =>
+    `${ESC}[2K${identity}${ESC}[1A\r${C1}0m all gates clear`;
+
+  /**
+   * Newlines are the refusal's own — it writes one per reviewer — so they come
+   * out first, and every remaining control character is one it did not intend.
+   */
+  const paintableCharsIn = (stderr: string): string[] =>
+    [...stderr.split('\n').join('')].filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+    });
+
+  it.each([
+    [
+      'the fan-out launched and nothing answered for',
+      (name: string): JournalRecord[] => journal(routed([name]), fanOut([name])),
+    ],
+    [
+      'the route asked for and the fan-out never launched',
+      (name: string): JournalRecord[] => journal(routed([name]), fanOut([])),
+    ],
+  ])('prints no control character out of a name %s', async (_label, build) => {
+    const runDir = await runDirWith(build(painted('code-reviewer')));
+    const result = await runCli(['coverage', HEAD], runDir);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(paintableCharsIn(result.stderr)).toEqual([]);
+    // and the reviewer stays identifiable, or the fix trades one unreadable
+    // diagnosis for another: the payload arrives as its own visible words.
+    expect(result.stderr).toContain('code-reviewer');
   });
 });
