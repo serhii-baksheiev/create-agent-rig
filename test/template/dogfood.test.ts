@@ -27,6 +27,65 @@ const { withoutGitLocation } = (await import(
     .href
 )) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 
+// AR-49(a). The router's credential vocabulary, read from the router.
+//
+// `SECRET_EXTENSIONS`, `SECRET_BASENAMES` and `SECURITY_WORDS` are module-private
+// consts in decision-router.mjs — not exported, and exporting them is a change to
+// an elevated file that this test has no business forcing. So they are parsed out
+// of the source instead. The parse is asserted non-empty by a test of its own
+// below: a rename that made this return `[]` would otherwise turn every
+// derived-candidate assertion vacuously green, which is the exact failure mode a
+// hand-copied list has.
+const setLiteralOf = (source: string, name: string): string[] => {
+  const declaration = source.indexOf(`${name} = new Set([`);
+  if (declaration < 0) return [];
+  const open = source.indexOf('[', declaration);
+  const close = source.indexOf(']', open); // no member contains a bracket
+  if (close < 0) return [];
+  return [...source.slice(open + 1, close).matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
+};
+
+/**
+ * One filename per way `isSecretFile` (decision-router.mjs `:408`) answers "this
+ * file IS a credential" — for TWO of its arms, not all of them.
+ *
+ * Derived: `SECRET_BASENAMES`, and `SECRET_EXTENSIONS`. Plus `env` alone out of
+ * the `SECURITY_WORDS` arm, because `service.env` and `jira.env` are the form
+ * this repository's own tooling writes.
+ *
+ * 🔴 **What this deliberately does NOT cover, stated as a rule so it cannot go
+ * stale.** `SECURITY_WORDS` has 55 members. Narrowing the arm to `env` leaves
+ * **53** of them committable — every member except `env` (`*.env`) and `key`
+ * (`*.key`, which the extension arm already covers). Among them are names
+ * `isSecretFile` calls a credential: `*.secret`, `*.secrets`, `*.token`,
+ * `*.tokens`, `*.password`, `*.passwords`, `*.credential`, `*.credentials`,
+ * `*.apikey`, `*.apikeys`, `*.passwd`, `*.creds`, `*.jwt`, `*.keys`, `*.bearer`
+ * — examples, not the set. Taking the arm whole would demand ignore rules for
+ * `*.cors`, `*.acl` and `*.session`, which are not credential files. Closing it
+ * needs a named credential subset — a decision about which words are
+ * credentials rather than a derivation — so it is not taken here.
+ *
+ * The `53 = 55 − {env, key}` form is deliberate: a hand-listed set is the
+ * fourth copy the comment below complains about, and the first attempt at one
+ * here was wrong on day one — it said 56 and named 10, omitting the plural
+ * twins of half the names it did give.
+ *
+ * The segment arm (`secrets/`, `credentials/`) is a directory, not a filename,
+ * and a gitignore that swallowed either would hide legitimate source.
+ */
+const credentialFileNames = (source: string): string[] => {
+  const names = [...setLiteralOf(source, 'SECRET_BASENAMES')];
+  for (const extension of setLiteralOf(source, 'SECRET_EXTENSIONS'))
+    names.push(`private.${extension}`);
+  if (setLiteralOf(source, 'SECURITY_WORDS').includes('env')) names.push('jira.env');
+  return names;
+};
+
+const routerSource = await readFile(
+  path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/decision-router.mjs'),
+  'utf8',
+);
+
 // The elevated-path declaration this repo publishes, read the way the sweep
 // reads it. Imported through a URL for the same reason as below: the script
 // ships as plain .mjs with no type declarations.
@@ -184,12 +243,19 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
 // pinned together with the RULE that produced it: not-ignored has to be the work
 // of `!.env.example`, not of the whole block having been deleted.
 describe('the secrets block the skeletons ship is live in this repository too', () => {
-  /** The real ignore verdict. `-q` alone: 0 = ignored, 1 = not. */
+  /**
+   * The real ignore verdict. `-q` alone: 0 = ignored, 1 = not.
+   *
+   * `-c core.excludesFile=/dev/null` for the same reason the skeleton spawn
+   * further down passes it: `*.pem`, `*.key` and `.env` are common enough in a
+   * developer's global excludesfile that this whole block could be missing and
+   * every assertion here still pass on one machine while failing in CI.
+   */
   const ignored = (file: string): Promise<boolean> =>
     new Promise((resolve) => {
       execFile(
         'git',
-        ['check-ignore', '-q', '--', file],
+        ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-q', '--', file],
         { cwd: repoRoot, env: withoutGitLocation() },
         (error) => resolve(!error),
       );
@@ -203,14 +269,14 @@ describe('the secrets block the skeletons ship is live in this repository too', 
    * match too (`.env.example` matches `!.env.example` and is not ignored), so
    * reading ignore-ness off that exit code inverts this file's headline case.
    * The source is asserted so an ignore cannot be credited to a developer's
-   * global excludesfile — `*.pem` and `*.key` are common enough there that the
-   * whole block could be missing and these tests still pass on one machine.
+   * global excludesfile — belt and braces with the `core.excludesFile` override
+   * above, because this one also pins WHICH rule decided.
    */
   const matchedRule = (file: string): Promise<string | null> =>
     new Promise((resolve, reject) => {
       execFile(
         'git',
-        ['check-ignore', '-v', '--non-matching', '--', file],
+        ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-v', '--non-matching', '--', file],
         { cwd: repoRoot, env: withoutGitLocation() },
         (error, stdout) => {
           const code = error ? ((error as { code?: number }).code ?? 1) : 0;
@@ -313,5 +379,75 @@ describe('the secrets block the skeletons ship is live in this repository too', 
         `${target} has drifted from the root .gitignore`,
       ).resolves.toEqual(root);
     }
+  });
+
+  // AR-49(a). The same invariant one layer up, and the one the three-way test
+  // above cannot reach: the three ignore blocks agree with EACH OTHER, and all
+  // three disagree with `decision-router.mjs`. The router's `isSecretFile`
+  // (`:408`) is this repository's written-down answer to "which files ARE
+  // credentials"; the ignore block is the mechanism that keeps such a file out
+  // of the history. Two statements of one definition, and — `invariants.md`,
+  // "One mechanism, one implementation" — the one nobody is looking at is the
+  // one that is wrong. Measured at the time of writing: `.npmrc`, `.netrc`,
+  // `.pgpass`, `id_rsa`, `id_ed25519`, `*.p12`, `*.pfx`, `*.keystore`, `*.jks`
+  // and `*.env` are all committable in this repo while the router calls each of
+  // them a credential file.
+  //
+  // 🔴 The candidate list is DERIVED from the router's own sets, never restated.
+  // A restated list is the fourth copy this comment is complaining about, and it
+  // would go stale in the direction that reads as green.
+  it.each([
+    ['SECRET_EXTENSIONS', 'p12'],
+    ['SECRET_BASENAMES', '.pgpass'],
+    ['SECURITY_WORDS', 'env'],
+  ])('reads the router set %s, and finds %s in it rather than an empty set', (name, member) => {
+    const members = setLiteralOf(routerSource, name);
+    expect(members.length, `${name} was not readable from decision-router.mjs`).toBeGreaterThan(0);
+    expect(members).toContain(member);
+  });
+
+  it.each(credentialFileNames(routerSource))(
+    'never lets %s be committed — the router calls it a credential file',
+    async (file) => {
+      await expect(ignored(file)).resolves.toBe(true);
+      await expect(matchedRule(file)).resolves.toMatch(/^\.gitignore:/);
+    },
+  );
+
+  // The derivation is the whole test, so it gets its own pin: run it over a
+  // fabricated source and a name that exists nowhere in this repository. This is
+  // the "drift the other way" half — a name added to the two DERIVED arms
+  // (`SECRET_BASENAMES`, `SECRET_EXTENSIONS`) produces a new required ignore,
+  // instead of the parser silently returning what it returned yesterday.
+  //
+  // 🔴 It does not reach the `SECURITY_WORDS` arm: that one is narrowed to `env`
+  // above, so adding `password` there produces nothing here. The docstring on
+  // `credentialFileNames` lists what stays committable because of it.
+  it('turns a name newly added to the router sets into a newly required ignore', () => {
+    const fabricated = [
+      "const SECRET_EXTENSIONS = new Set(['ar49ext']);",
+      "const SECRET_BASENAMES = new Set(['.ar49rc']);",
+      "const SECURITY_WORDS = new Set(['env']);",
+    ].join('\n');
+
+    const derived = credentialFileNames(fabricated);
+    expect(derived).toContain('.ar49rc');
+    expect(derived.some((file) => file.endsWith('.ar49ext'))).toBe(true);
+    // and the fabricated source's names are the ONLY ones — nothing is smuggled
+    // in from a hardcoded default that would keep passing after a rename
+    expect(derived.some((file) => file.includes('pgpass') || file.includes('p12'))).toBe(false);
+  });
+
+  // NOT derived, and the reason is worth writing down rather than hiding in the
+  // list above: `isSecretFile` does **not** classify `.envrc`. Its `.env` arm
+  // tests `basename === '.env' || basename.startsWith('.env.')` — with a
+  // trailing dot — and the extension arm returns early on `lastIndexOf('.') <= 0`,
+  // which for `.envrc` is 0. So direnv's file is a credential store that this
+  // repository's own classifier misses and its ignore block misses too; the
+  // second gap is the one this test closes. The first is the router's, and
+  // widening a risk classifier is not this change.
+  it('never lets .envrc be committed, though isSecretFile does not classify it', async () => {
+    await expect(ignored('.envrc')).resolves.toBe(true);
+    await expect(matchedRule('.envrc')).resolves.toMatch(/^\.gitignore:/);
   });
 });
