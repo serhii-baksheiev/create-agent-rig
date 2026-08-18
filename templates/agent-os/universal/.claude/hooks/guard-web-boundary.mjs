@@ -3,9 +3,10 @@
 // layer (`…/db`) and never the services. Enforced at the tool layer, same as
 // core purity: best-effort text scan, failing safe toward a false block.
 //
-// Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
+// Contract (Claude Code and Codex): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason.
 import { readFileSync } from 'node:fs';
+import { editFragments } from './lib/edit-input.mjs';
 
 const WEB_PATH = /(^|\/)apps\/web\//;
 const CODE_FILE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -22,21 +23,16 @@ function main() {
   } catch {
     return 0; // unparseable payload: not ours to judge
   }
-  const toolName = input.tool_name;
-  const toolInput = input.tool_input ?? {};
-  if (toolName !== 'Write' && toolName !== 'Edit') return 0;
-
-  const filePath = String(toolInput.file_path ?? '').replaceAll('\\', '/');
-  if (!WEB_PATH.test(filePath) || !CODE_FILE.test(filePath)) return 0;
-
-  const fragment = String((toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '');
   const violations = [];
   const importRe =
     /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;
-  for (const match of fragment.matchAll(importRe)) {
-    const spec = match[1];
-    if (FORBIDDEN_WORKSPACE.test(spec) || FORBIDDEN_RELATIVE.test(spec)) {
-      violations.push(spec);
+  for (const { filePath, fragment } of editFragments(input)) {
+    if (!WEB_PATH.test(filePath) || !CODE_FILE.test(filePath)) continue;
+    for (const match of fragment.matchAll(importRe)) {
+      const spec = match[1];
+      if (FORBIDDEN_WORKSPACE.test(spec) || FORBIDDEN_RELATIVE.test(spec)) {
+        violations.push(spec);
+      }
     }
   }
   if (violations.length === 0) return 0;

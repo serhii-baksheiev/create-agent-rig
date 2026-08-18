@@ -100,6 +100,15 @@ describe('createProject', () => {
     await expect(
       readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
     ).rejects.toThrow();
+    await expect(
+      readFile(path.join(projectDir, '.codex', 'agents', 'cdk-diff-reviewer.toml'), 'utf8'),
+    ).rejects.toThrow();
+    await expect(
+      readFile(
+        path.join(projectDir, '.agents', 'skills', 'post-deploy-verify', 'SKILL.md'),
+        'utf8',
+      ),
+    ).rejects.toThrow();
   });
 
   it('refuses an unknown target, naming the known ones', async () => {
@@ -115,11 +124,20 @@ describe('createProject', () => {
     const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
     expect(claudeMd).toContain('my-app');
     expect(claudeMd).not.toContain('__PROJECT_NAME__');
+    expect(await readFile(path.join(projectDir, 'AGENTS.md'), 'utf8')).toBe(claudeMd);
 
     const settings = JSON.parse(
       await readFile(path.join(projectDir, '.claude', 'settings.json'), 'utf8'),
     );
     expect(settings.hooks?.PreToolUse?.length).toBeGreaterThan(0);
+    const codexHooks = JSON.parse(
+      await readFile(path.join(projectDir, '.codex', 'hooks.json'), 'utf8'),
+    );
+    expect(
+      codexHooks.hooks?.PreToolUse?.some((group: { matcher?: string }) =>
+        group.matcher?.includes('apply_patch'),
+      ),
+    ).toBe(true);
 
     // Composition: universal rules + the target's stack rules (PLAN.md phase 4).
     for (const rule of [
@@ -150,10 +168,16 @@ describe('createProject', () => {
       await expect(
         readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
+      await expect(
+        readFile(path.join(projectDir, '.agents', 'skills', skill, 'SKILL.md'), 'utf8'),
+      ).resolves.toBeTruthy();
     }
     // …and the stack-layer CDK diff gate
     await expect(
       readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
+    ).resolves.toBeTruthy();
+    await expect(
+      readFile(path.join(projectDir, '.codex', 'agents', 'cdk-diff-reviewer.toml'), 'utf8'),
     ).resolves.toBeTruthy();
   });
 

@@ -3,9 +3,10 @@
 // an agent (or a human using the agent) cannot write an impure line into
 // packages/core/src/ even if it wants to.
 //
-// Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
+// Contract (Claude Code and Codex): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason.
 import { readFileSync } from 'node:fs';
+import { editFragments } from './lib/edit-input.mjs';
 
 /** The only non-relative import the core may use: its schema/validation library. */
 const ALLOWED_PACKAGES = ['zod'];
@@ -31,17 +32,9 @@ function main() {
   } catch {
     return 0; // unparseable payload: not ours to judge
   }
-  const toolName = input.tool_name;
-  const toolInput = input.tool_input ?? {};
-  if (toolName !== 'Write' && toolName !== 'Edit') return 0;
-
-  const filePath = String(toolInput.file_path ?? '').replaceAll('\\', '/');
-  if (!CORE_PATH.test(filePath) || !CODE_FILE.test(filePath)) return 0;
-
-  const fragment = String(
-    (toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '',
+  const violations = editFragments(input).flatMap(({ filePath, fragment }) =>
+    CORE_PATH.test(filePath) && CODE_FILE.test(filePath) ? findViolations(fragment) : [],
   );
-  const violations = findViolations(fragment);
   if (violations.length === 0) return 0;
 
   process.stderr.write(

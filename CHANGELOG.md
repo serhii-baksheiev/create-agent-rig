@@ -13,6 +13,15 @@ content as a patch by the owner's call and stays recorded as one.
 
 ## Unreleased
 
+### Added
+
+- **Codex is now a native target of the Agent OS.** Generated and `init`ed
+  projects receive `AGENTS.md`, repository skills in `.agents/skills/`, custom
+  agent profiles in `.codex/agents/`, and portable `.codex/hooks.json` wiring.
+  These files are derived from the Claude Code sources and drift-checked.
+- Architecture guards now understand Codex `apply_patch` payloads and inspect
+  only added lines, so removing an old violation does not create a false block.
+
 ### Changed
 
 - **`upgrade` now replaces `.claude/settings.json` when the manifest proves you

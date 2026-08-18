@@ -86,6 +86,16 @@ describe('create-agent-rig init (into an existing repo)', () => {
     expect(await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8')).toBe('{}');
   });
 
+  it('tells the operator when it kept existing Codex hook wiring', async () => {
+    await mkdir(path.join(repo, '.codex'), { recursive: true });
+    await writeFile(path.join(repo, '.codex', 'hooks.json'), '{}');
+    const result = await runInit([]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/\.codex[/\\]hooks\.json/);
+    expect(result.stdout).toMatch(/not wired|merge/i);
+    expect(await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{}');
+  });
+
   it('refuses to clobber an existing CLAUDE.md, as a message not a trace', async () => {
     await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules');
     const result = await runInit([]);

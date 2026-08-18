@@ -3,6 +3,12 @@
 Scaffold a project that ships with an **agent operating system** — rules,
 gates, and hooks that hold the architecture mechanically, not by prose.
 
+The same Agent OS is native to both **Claude Code and Codex**. Claude-facing
+files remain the authoring surface; the generator derives Codex's `AGENTS.md`,
+repository skills under `.agents/skills/`, custom agents under `.codex/agents/`,
+and `.codex/hooks.json`. `node scripts/sync-codex-adapter.mjs --check` refuses
+drift between the two projections.
+
 ```sh
 npx create-agent-rig my-app                        # choose a target interactively
 npx create-agent-rig my-app --target node-service  # or name it up front
@@ -22,15 +28,21 @@ npx create-agent-rig init --dry-run  # print the plan, write nothing
 ```
 
 `init` drops in the autonomy tiers, stop rules, workflow, and the enforcement
-hooks — **wired**, in a `.claude/settings.json` that names exactly the hooks it
-installed — plus a `CLAUDE.md` that describes that rig rather than the generated
-monorepo. It refuses to clobber an existing `CLAUDE.md`; if the repo already has
-a `.claude/settings.json`, it keeps it and prints the entries to merge, because a
-hook nothing calls is not enforcement.
+hooks — **wired** for both harnesses, in `.claude/settings.json` and
+`.codex/hooks.json`, each naming exactly the hooks it installed — plus matching
+`CLAUDE.md` and `AGENTS.md` maps that describe that rig rather than the generated
+monorepo. It refuses to clobber either existing map; if the repo already has a
+Claude or Codex hook config, it keeps it and prints the entries to merge,
+because a hook nothing calls is not enforcement.
 
 Two things it deliberately leaves to you, and says so in the installed
-`CLAUDE.md`: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
+maps: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
 your commands), and the elevated-path list names only what every repo has.
+
+Codex loads project hooks only after the repository is trusted, and asks you to
+review new or changed hook definitions. Open `/hooks` once after generation or
+upgrade and trust the checked-in `.codex/hooks.json`; changed hook hashes require
+review again. This is Codex's intended trust boundary, not an installation error.
 
 ## Upgrading a rig you already have
 
@@ -81,8 +93,8 @@ and `--dry-run` lists it before anything is written.
 **A system of boundaries, each held by tooling.** An agent (or a human using
 one) cannot talk its way past them — each guard is a pre-write scan that stops
 the normal path cold (review and tests back it; the claim is stated exactly,
-never inflated). The hooks live in `.claude/hooks/` and are wired in
-`.claude/settings.json`:
+never inflated). The hook implementations live once in `.claude/hooks/` and are
+wired by both `.claude/settings.json` and `.codex/hooks.json`:
 
 - **`guard-core-purity`** — refuses any edit that puts I/O, clock, randomness,
   environment access, or a non-allowlisted import into the pure domain core;
@@ -133,8 +145,8 @@ never), **stop rules** (three strikes, flaky ≠ retry, session staleness),
 `prose-reviewer`, and `cdk-diff-reviewer` on the AWS target), **skills** (`pr-ship` pre-merge gate;
 `loop` queue driver; `worktree-task` for concurrent sessions; `new-invariant`, a
 generator for the invariant→hook→test pattern; `post-deploy-verify` and
-`ro-debug` on the AWS target), and a one-page `CLAUDE.md` map a fresh session
-orients by.
+`ro-debug` on the AWS target), and matching one-page `CLAUDE.md` / `AGENTS.md`
+maps a fresh session orients by.
 
 **The hooks are examples, not laws.** `.claude/rules/invariants.md` states the
 pattern behind each one — a stated invariant, a mechanical check, a test for the
@@ -204,8 +216,8 @@ under test, because that is exactly where scaffolders break. A grep-test keeps
 the universal rules free of any provider mention; the hook-blocking behavior
 itself is under test; and a weekly lockfile-free run resolves each template's
 dependencies fresh to catch upstream breakage early. This repo dogfoods its own
-rulebook — `CLAUDE.md` and `.claude/` are composed from the templates, and
-drift fails the suite.
+rulebook — the Claude and Codex projections are composed from the templates,
+and drift fails the suite.
 
 **And the enforcement layer is adversarially reviewed, not just tested.** The
 Bash guard went through four review rounds with ten reviewers, who executed it

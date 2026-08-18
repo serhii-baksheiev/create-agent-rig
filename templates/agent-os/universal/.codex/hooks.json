@@ -1,0 +1,59 @@
+{
+  "description": "Codex adapter generated from .claude/settings.json.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-core-purity.mjs\"",
+            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-core-purity.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-web-boundary.mjs\"",
+            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-web-boundary.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/block-no-verify.mjs\"",
+            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/block-no-verify.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-bash.mjs\"",
+            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-bash.mjs\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/gate-stop-dod.mjs\"",
+            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/gate-stop-dod.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/inject-rules.mjs\"",
+            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/inject-rules.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

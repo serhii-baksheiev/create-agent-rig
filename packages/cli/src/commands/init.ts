@@ -54,6 +54,8 @@ export interface InitResult {
 }
 
 const SETTINGS = '.claude/settings.json';
+const CODEX_HOOKS = '.codex/hooks.json';
+const MAPS = ['CLAUDE.md', 'AGENTS.md'] as const;
 
 async function loadManifest(): Promise<Manifest> {
   const raw = await readFile(path.join(agentOsUniversalDir(), 'layers.json'), 'utf8');
@@ -103,7 +105,7 @@ export async function initManifest(): Promise<InitFile[]> {
   const override = agentOsInitDir();
 
   const files: InitFile[] = [];
-  for (const rel of [...manifest.process, 'CLAUDE.md']) {
+  for (const rel of [...manifest.process, ...MAPS]) {
     const overridden = path.join(override, rel);
     files.push({
       rel,
@@ -111,6 +113,7 @@ export async function initManifest(): Promise<InitFile[]> {
     });
   }
   files.push({ rel: SETTINGS, source: null });
+  files.push({ rel: CODEX_HOOKS, source: null });
   return files;
 }
 
@@ -151,6 +154,13 @@ export async function initFileContents(
     SETTINGS,
     `${JSON.stringify(settingsForInstalledHooks(shipped, installedHooks), null, 2)}\n`,
   );
+  const shippedCodex = JSON.parse(
+    await readFile(path.join(agentOsUniversalDir(), CODEX_HOOKS), 'utf8'),
+  ) as unknown;
+  contents.set(
+    CODEX_HOOKS,
+    `${JSON.stringify(settingsForInstalledHooks(shippedCodex, installedHooks), null, 2)}\n`,
+  );
   return contents;
 }
 
@@ -180,13 +190,24 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   if (options.force) throw new InitError(FORCE_DEPRECATED);
 
   const files = (await initManifest()).map((f) => f.rel);
+  const previous = await readManifest(repoDir);
 
   // Refuse to clobber an existing CLAUDE.md — init edits someone's working
   // repository (brief §4, non-negotiable).
-  if (files.includes('CLAUDE.md')) {
-    if (await exists(path.join(repoDir, 'CLAUDE.md'))) {
+  for (const map of MAPS) {
+    if (files.includes(map) && (await exists(path.join(repoDir, map)))) {
+      // A create rig whose CLAUDE.md was deleted is the legacy route into init.
+      // Its generated AGENTS.md must not newly close that route, but only the
+      // manifest can distinguish that file from a user's own Codex guidance.
+      if (
+        map === 'AGENTS.md' &&
+        previous?.files[map] !== undefined &&
+        sha256(await readFile(path.join(repoDir, map), 'utf8')) === previous.files[map]
+      ) {
+        continue;
+      }
       throw new InitError(
-        'This repo already has a CLAUDE.md. Refusing to overwrite it. ' +
+        `This repo already has an ${map}. Refusing to overwrite it. ` +
           'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.',
       );
     }
