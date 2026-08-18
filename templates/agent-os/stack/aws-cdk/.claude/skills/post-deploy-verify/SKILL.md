@@ -90,8 +90,11 @@ the next selection reads the verdict.
   post-deploy-verify` before it retypes the word into `run-state.mjs`. This
   skill runs nothing — it is read-only by construction.
 - **`headSha` is the commit that was deployed** — `git rev-parse HEAD` in the
-  checkout the deploy went out from, so a verdict cannot later be read as
-  being about a different release.
+  checkout the deploy went out from. ⚠ **Nothing reads it yet**: `run-state.mjs`
+  stores the word alone, so the commit lives in this block and nowhere else.
+  Write it anyway — the pairing is what a later reader needs to tell a stale
+  `HEALTHY` from a current one, and `HEALTHY` is the only thing that clears the
+  `REGRESSION` latch the next selection reads.
 
 ## Boundaries
 

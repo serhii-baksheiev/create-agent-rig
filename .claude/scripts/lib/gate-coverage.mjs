@@ -33,11 +33,19 @@
  * does not ship with the module, exactly as `.claude/rules/invariants.md` says of
  * the hooks. Edit this file here and that pin does not move with you.
  *
- * ⚠ **`routed` and `launched` are the last of each record type, scanned
- * independently.** They co-move only because `pr-ship` re-enters at step 0 after
- * a HOLD, so a new round always re-routes before it re-launches. A round that
- * ever relaunched only the holding reviewer would report every already-shipped
- * one as `neverLaunched`.
+ * 🔴 **A round is judged against its OWN route, not the run's last one.** The
+ * answers are scoped to the records after the last fan-out; the route needs the
+ * mirror of that, and not having it made the refusal above vacuous in the case it
+ * was written for. A run directory spans several rounds and several PRs, so an
+ * earlier round's route would otherwise satisfy a later round that journalled
+ * none — and its *set* would be inherited too, which after a `deterministic` lane
+ * means `neverLaunched` is empty for the rest of the run whatever the route asked
+ * for. So the route that counts is the last one carrying `reviewers` **between the
+ * previous fan-out and the last one**: the route that produced the fan-out being
+ * judged.
+ *
+ * A route journalled *after* the last fan-out belongs to a round that has not
+ * launched yet, and is not read here.
  */
 
 /** The gate name `pr-ship` writes its fan-out under. */
@@ -136,8 +144,13 @@ export const coverageOf = ({ records, headSha } = {}) => {
   // One forward pass, keeping the LAST of each: a branch gets a second gate
   // round after fixes, and the round's whole question is whether THIS round's
   // reviewers answered. An earlier fan-out answers about a round already over.
-  let routedNames = [];
-  let routeRecorded = false;
+  //
+  // `pendingRoute` is what makes the route round-scoped: a routing record is held
+  // until a fan-out consumes it, and each fan-out takes only what was journalled
+  // since the previous one. Nothing survives a fan-out, so no round can inherit
+  // the round before it.
+  let pendingRoute = null;
+  let routeOfRound = null;
   let fanOutAt = -1;
   let launchedNames = [];
 
@@ -148,17 +161,21 @@ export const coverageOf = ({ records, headSha } = {}) => {
     // `reviewers` key at all, and reading one off it would compare the answers
     // against a lane nobody took.
     if (gate.startsWith(ROUTING) && Array.isArray(record?.reviewers)) {
-      routedNames = namesOf(record.reviewers);
       // A set was RECORDED, which is a different fact from the set being empty.
-      // The `deterministic` lane legitimately routes nobody; a run that never
+      // The `deterministic` lane legitimately routes nobody; a round that never
       // journalled a route knows nothing about who should have been launched.
-      routeRecorded = true;
+      pendingRoute = namesOf(record.reviewers);
     }
     if (gate === FAN_OUT) {
       fanOutAt = index;
       launchedNames = namesOf(record?.reviewers);
+      routeOfRound = pendingRoute;
+      pendingRoute = null;
     }
   }
+
+  const routeRecorded = routeOfRound !== null;
+  const routedNames = routeOfRound ?? [];
 
   const routed = uniq(routedNames);
 
@@ -234,10 +251,10 @@ export const coverageOf = ({ records, headSha } = {}) => {
       ? {}
       : {
           reason:
-            'this run journalled no routed reviewer set, so `neverLaunched` was compared ' +
+            'this round journalled no routed reviewer set, so `neverLaunched` was compared ' +
             'against nothing: a reviewer the route asked for and nobody launched would not ' +
-            'appear. An empty route that WAS recorded is a different answer, and this is ' +
-            'not it.',
+            'appear. An empty route that WAS recorded is a different answer, and so is a ' +
+            'route belonging to an earlier round — neither is this one.',
         }),
   };
 };

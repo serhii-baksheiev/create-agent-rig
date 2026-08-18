@@ -147,13 +147,19 @@ function compose() {
   // whatever the template ships, so a key added there later (a schema version, a
   // state-file path, new default options) reaches this repo on the next sync
   // instead of being silently dropped by a literal.
+  //
+  // `maxGateRounds` is the owner's standing ruling (AR-103), applied HERE and only
+  // here: this repository's own gate gets three rounds, and the template default
+  // stays at 2 for every project the rig generates. A generated project raising
+  // its own cap is that project's decision to make, and AR-103 owns whether the
+  // default itself moves.
   out.set(
     '.claude/queue.json',
     JSON.stringify(
       {
         ...JSON.parse(out.get('.claude/queue.json')),
         adapter: 'jira',
-        options: { project: 'AR' },
+        options: { project: 'AR', maxGateRounds: 3 },
       },
       null,
       2,

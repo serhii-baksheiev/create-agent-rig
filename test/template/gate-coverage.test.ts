@@ -151,6 +151,13 @@ describe('the fan-out a coverage answer is about is the last one', () => {
         routed(['code-reviewer']),
         fanOut(['code-reviewer']),
         answered('code-reviewer', { verdict: 'HOLD', blockers: [{ rule: 'r', note: 'n' }] }),
+        // Round 2's own routing record is fixture, not case: a round judged
+        // against a route it never journalled is refused on that ground alone
+        // ("the route a round is judged against is that round's own", below),
+        // and without this line the `ok` asserted here would be the wrong one.
+        // `pr-ship` re-enters at step 0 after a HOLD, so a real second round
+        // re-routes before it re-launches — this is the shape a run produces.
+        routed(['code-reviewer', 'prose-reviewer']),
         fanOut(['code-reviewer', 'prose-reviewer']),
         answered('code-reviewer'),
         answered('prose-reviewer'),
@@ -505,6 +512,118 @@ describe('a round whose route was never journalled is not a covered round', () =
   });
 });
 
+// 🔴 AR-79, round 2. The ANSWERS are already scoped to the round — everything
+// after the last fan-out — and the ROUTE is not: it is read from the last
+// `review-routing:` record carrying a set ANYWHERE in the journal. A run
+// directory spans more than one round, so an earlier round's route satisfies the
+// refusal for a later round that journalled none, and the earlier round's SET is
+// inherited along with it.
+//
+// It needs no crafting to reach: `decision-router.mjs` catches its own journal
+// failure and carries on, so a round whose routing line was never written still
+// reports `ok: true` against the route of the round before it — while the
+// reviewer THIS round's route asked for was never launched and never spoke.
+//
+// The worst shape is an inherited EMPTY route: round 1 on the `deterministic`
+// lane leaves `routed` at `[]` for every later round, and `neverLaunched` is then
+// unconditionally empty — the comparison cannot fire at all.
+//
+// The rule: the route belongs to the round, exactly as the answers do. The
+// routing record that counts is the last one carrying `reviewers` whose position
+// is after the previous fan-out and before the last one.
+const secondRoundWithNoRouteOfItsOwn = (firstRoute: JournalRecord): JournalRecord[] =>
+  journal(
+    firstRoute,
+    fanOut(['code-reviewer'], OLDER),
+    answered('code-reviewer', { headSha: OLDER }),
+    // Round 2: the router's line never reached the journal, so the only thing
+    // recorded is what was launched and what came back.
+    fanOut(['code-reviewer']),
+    answered('code-reviewer'),
+  );
+
+describe('the route a round is judged against is that round’s own', () => {
+  it('refuses a second round that journalled no route, instead of reading the first round’s', async () => {
+    const coverage = await coverageOf(
+      secondRoundWithNoRouteOfItsOwn(routed(['code-reviewer'])),
+      HEAD,
+    );
+    expect(coverage.ok).toBe(false);
+    expect(typeof coverage.reason, 'the refusal names no reason').toBe('string');
+    expect(coverage.reason).toMatch(/rout(e|ed|ing)/i);
+  });
+
+  it('inherits no reviewer from the route of the round before it', async () => {
+    // The security half. `security-scanner` is what round 2's route asked for;
+    // nothing recorded it, nothing launched it, and round 1's route — which
+    // named only `code-reviewer` and was fully satisfied — is what the answer
+    // was compared against.
+    const coverage = await coverageOf(
+      secondRoundWithNoRouteOfItsOwn(routed(['code-reviewer'])),
+      HEAD,
+    );
+    expect(coverage.routed).toEqual([]);
+  });
+
+  it('refuses a second round with no route even when the first round routed nobody', async () => {
+    // 🔴 The shape with no findings of its own to give it away. Round 1 took the
+    // `deterministic` lane, so the inherited route is `[]` — every later round
+    // then has an empty `routed`, `neverLaunched` can never fire, and the answer
+    // is a pass computed from a comparison that never happened.
+    const coverage = await coverageOf(
+      journal(
+        routed([], 'deterministic'),
+        fanOut([], OLDER),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer'),
+      ),
+      HEAD,
+    );
+    expect(coverage.ok).toBe(false);
+    expect(coverage.reason).toMatch(/rout(e|ed|ing)/i);
+  });
+
+  it('judges a second round that carries its own route by that route alone', async () => {
+    // Round 1 routed two reviewers; round 2 re-routed to one. The reviewer round
+    // 1 asked for is not outstanding in round 2 — nobody asked for it, and
+    // naming it would send the author to relaunch a gate this round does not
+    // want.
+    const coverage = await coverageOf(
+      journal(
+        routed(['code-reviewer', 'security-scanner']),
+        fanOut(['code-reviewer', 'security-scanner'], OLDER),
+        answered('code-reviewer', { headSha: OLDER }),
+        answered('security-scanner', { headSha: OLDER }),
+        routed(['code-reviewer']),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer'),
+      ),
+      HEAD,
+    );
+    expect(coverage.routed).toEqual(['code-reviewer']);
+    expect(coverage.neverLaunched).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('names a reviewer the second round’s own route asked for and nobody launched', async () => {
+    // The other direction of the same rule: round 1 was complete, and that does
+    // not cover a reviewer round 2 added and never started.
+    const coverage = await coverageOf(
+      journal(
+        routed(['code-reviewer']),
+        fanOut(['code-reviewer'], OLDER),
+        answered('code-reviewer', { headSha: OLDER }),
+        routed(['code-reviewer', 'security-scanner']),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer'),
+      ),
+      HEAD,
+    );
+    expect(coverage.neverLaunched).toEqual(['security-scanner']);
+    expect(coverage.ok).toBe(false);
+  });
+});
+
 describe('the answer is a function of its arguments and nothing else', () => {
   it('reads no clock, no environment and no filesystem', async () => {
     // The rule the whole module exists under (`architecture.md`): values like
@@ -676,6 +795,18 @@ describe('`coverage` is what a gate runs before it believes its own fan-out', ()
     const runDir = await runDirWith(journal(fanOut(['code-reviewer']), answered('code-reviewer')));
     const result = await runCli(['coverage', HEAD], runDir);
     expect(result.code, result.out).toBe(1);
+    expect(result.stderr).toMatch(/rout(e|ed|ing)/i);
+  });
+
+  it('refuses a second round that journalled no route, through a real run directory', async () => {
+    // 🔴 The end-to-end half of "the route a round is judged against is that
+    // round's own": a run directory is not per-round, so this is the ordinary
+    // shape of a branch that got a second gate round — and the answer it gets
+    // today is `coverage complete`, exit 0.
+    const runDir = await runDirWith(secondRoundWithNoRouteOfItsOwn(routed(['code-reviewer'])));
+    const result = await runCli(['coverage', HEAD], runDir);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
     expect(result.stderr).toMatch(/rout(e|ed|ing)/i);
   });
 
@@ -957,6 +1088,46 @@ describe('an abbreviated commit id and a full one are the same commit', () => {
     const coverage = await covered(`${HEAD}0`);
     expect(coverage.stale).toEqual(['code-reviewer']);
     expect(coverage.ok).toBe(false);
+  });
+
+  // The one pair where the floor and the ceiling MEET: a complete forty-character
+  // id that is a prefix of a complete sixty-four character one. The rule decides
+  // it as a match — it could be a sha-256 abbreviated to forty or a sha-1 with
+  // characters welded on, nothing pure can resolve which, and the first reading is
+  // the one an honest run produces.
+  //
+  // No fixture above reaches it in either direction: `HEAD_LONG` shares only seven
+  // characters with `HEAD`, and `EXTENDED`/`${HEAD}0` are fifty and forty-one,
+  // which the ceiling refuses outright. So the outcome is currently chosen rather
+  // than derived, and a later tightening would flip it with the whole suite green.
+
+  /**
+   * `HEAD` extended to sixty-four hex characters — a COMPLETE id of the longer
+   * hash that has the complete forty-character one as its prefix.
+   */
+  const HEAD_AS_PREFIX_OF_COMPLETE = `${HEAD}${'a1b2c3d4e5f6'.repeat(2)}`;
+
+  it('counts a forty-character verdict as coverage of the complete sixty-four character id it prefixes', async () => {
+    // The fixture IS the case, so the pair is asserted rather than assumed:
+    // forty characters, sixty-four characters, one a prefix of the other.
+    expect(HEAD).toHaveLength(40);
+    expect(HEAD_AS_PREFIX_OF_COMPLETE).toHaveLength(64);
+    expect(HEAD_AS_PREFIX_OF_COMPLETE.startsWith(HEAD)).toBe(true);
+
+    const coverage = await covered(HEAD, HEAD_AS_PREFIX_OF_COMPLETE);
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('counts a complete sixty-four character verdict as coverage of the forty-character commit it extends', async () => {
+    // The mirror, because the comparison is symmetric and the argument is
+    // whatever the caller had to hand.
+    expect(HEAD_AS_PREFIX_OF_COMPLETE).toHaveLength(64);
+    expect(HEAD_AS_PREFIX_OF_COMPLETE.startsWith(HEAD)).toBe(true);
+
+    const coverage = await covered(HEAD_AS_PREFIX_OF_COMPLETE, HEAD);
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
   });
 });
 

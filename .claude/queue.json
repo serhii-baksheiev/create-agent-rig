@@ -1,6 +1,7 @@
 {
   "adapter": "jira",
   "options": {
-    "project": "AR"
+    "project": "AR",
+    "maxGateRounds": 3
   }
 }

@@ -93,10 +93,12 @@ if (subcommand === 'coverage') {
     );
   }
 
-  // The one commit field this command owns. Everything else that reaches
-  // `sameCommit` came through the schema; this argument came off the command
-  // line, and without a check `coverage <a-full-sha>garbage` prefix-matched its
-  // way to "covered" — the answer that ends in a merge.
+  // The one commit field this command owns, and the only one shaped before it is
+  // compared: the journal is the other way in and `recordDecision` takes any
+  // non-blank string, which is why `sameCommit` enforces its own floor and
+  // ceiling rather than trusting an upstream check. Without this arm
+  // `coverage <a-full-sha>garbage` prefix-matched its way to "covered" — the
+  // answer that ends in a merge.
   if (!isCommitId(commit)) {
     refuse(
       `verdict: \`${safeForDiagnosis(commit)}\` is not a commit to ask about. ` +
