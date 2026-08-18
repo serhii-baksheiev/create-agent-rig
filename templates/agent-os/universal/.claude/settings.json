@@ -37,7 +37,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate-stop-dod.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate-stop-dod.mjs\"",
+            "timeout": 900
           }
         ]
       }

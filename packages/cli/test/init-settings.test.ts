@@ -1,5 +1,8 @@
+import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { settingsForInstalledHooks } from '../src/lib/init-settings.js';
+import { agentOsUniversalDir } from '../src/templates.js';
 
 /**
  * `init` installs the process layer only — four of the six shipped hooks. The
@@ -101,5 +104,31 @@ describe('settingsForInstalledHooks', () => {
       hooks: 'nonsense',
     });
     expect(settingsForInstalledHooks({}, new Set())).toEqual({});
+  });
+
+  // A regression pin for a field nothing here asserted. The shipped Stop entry
+  // carries a `timeout` — the second of the two numbers that only work as a
+  // pair, and the gate's own budget is sized against it. `init` does not copy
+  // that wiring, it derives it, and a derivation that dropped an entry's extra
+  // fields would hand every `init` install the harness default while every
+  // other assertion in this file stayed green.
+  it("keeps the Stop gate's harness timeout when it narrows the shipped wiring", async () => {
+    type Wiring = {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: unknown }> }>>;
+    };
+    const timeoutOf = (wiring: Wiring) =>
+      (wiring.hooks.Stop ?? [])
+        .flatMap((group) => group.hooks)
+        .find((entry) => entry.command.includes('gate-stop-dod.mjs'))?.timeout;
+
+    // read from the file the wiring is derived from, never restated here: the
+    // two drifting apart is exactly the failure this pins
+    const shipped = JSON.parse(
+      await readFile(path.join(agentOsUniversalDir(), '.claude', 'settings.json'), 'utf8'),
+    ) as Wiring;
+    expect(typeof timeoutOf(shipped), 'the shipped Stop gate must carry a timeout').toBe('number');
+
+    const derived = settingsForInstalledHooks(shipped, PROCESS_HOOKS) as Wiring;
+    expect(timeoutOf(derived)).toBe(timeoutOf(shipped));
   });
 });
