@@ -53,15 +53,22 @@ const setLiteralOf = (source: string, name: string): string[] => {
  * the `SECURITY_WORDS` arm, because `service.env` and `jira.env` are the form
  * this repository's own tooling writes.
  *
- * 🔴 **What this deliberately does NOT cover, measured rather than assumed.**
- * The `SECURITY_WORDS` arm has 56 members, and taking it whole would demand
- * ignore rules for `*.cors`, `*.acl` and `*.session`, which are not credential
- * files. Narrowing it to `env` leaves these committable today, each one a name
- * `isSecretFile` calls a credential: `*.secret`, `*.token`, `*.password`,
- * `*.passwd`, `*.creds`, `*.credentials`, `*.apikey`, `*.jwt`, `*.keys`,
- * `*.bearer`. Closing that needs a named credential subset of `SECURITY_WORDS`,
- * which is a decision about which words are credentials rather than a
- * derivation — so it is not taken here.
+ * 🔴 **What this deliberately does NOT cover, stated as a rule so it cannot go
+ * stale.** `SECURITY_WORDS` has 55 members. Narrowing the arm to `env` leaves
+ * **53** of them committable — every member except `env` (`*.env`) and `key`
+ * (`*.key`, which the extension arm already covers). Among them are names
+ * `isSecretFile` calls a credential: `*.secret`, `*.secrets`, `*.token`,
+ * `*.tokens`, `*.password`, `*.passwords`, `*.credential`, `*.credentials`,
+ * `*.apikey`, `*.apikeys`, `*.passwd`, `*.creds`, `*.jwt`, `*.keys`, `*.bearer`
+ * — examples, not the set. Taking the arm whole would demand ignore rules for
+ * `*.cors`, `*.acl` and `*.session`, which are not credential files. Closing it
+ * needs a named credential subset — a decision about which words are
+ * credentials rather than a derivation — so it is not taken here.
+ *
+ * The `53 = 55 − {env, key}` form is deliberate: a hand-listed set is the
+ * fourth copy the comment below complains about, and the first attempt at one
+ * here was wrong on day one — it said 56 and named 10, omitting the plural
+ * twins of half the names it did give.
  *
  * The segment arm (`secrets/`, `credentials/`) is a directory, not a filename,
  * and a gitignore that swallowed either would hide legitimate source.
