@@ -26,8 +26,12 @@ function main() {
   const violations = [];
   const importRe =
     /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;
-  for (const { filePath, fragment } of editFragments(input)) {
+  for (const { filePath, fragment, inspectionError } of editFragments(input)) {
     if (!WEB_PATH.test(filePath) || !CODE_FILE.test(filePath)) continue;
+    if (inspectionError) {
+      violations.push(`cannot safely inspect this move — ${inspectionError}`);
+      continue;
+    }
     for (const match of fragment.matchAll(importRe)) {
       const spec = match[1];
       if (FORBIDDEN_WORKSPACE.test(spec) || FORBIDDEN_RELATIVE.test(spec)) {

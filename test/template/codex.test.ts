@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const exec = promisify(execFile);
@@ -143,6 +143,7 @@ function runGuard(script: string, command: string): Promise<{ code: number; stde
         hook_event_name: 'PreToolUse',
         tool_name: 'apply_patch',
         tool_input: { command },
+        cwd: repoRoot,
       }),
     );
   });
@@ -194,8 +195,56 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.code).toBe(0);
   });
 
+  it.each(['absolute', 'traversal'])(
+    'refuses to inspect a move source outside the repository via %s',
+    async (pathKind) => {
+      const scratch = await mkdtemp(path.join(tmpdir(), 'codex-outside-'));
+      const source = path.join(scratch, 'safe.ts');
+      await writeFile(source, 'export const safe = true;\n');
+      const sourcePath = pathKind === 'absolute' ? source : path.relative(repoRoot, source);
+
+      try {
+        const result = await runGuard(
+          'guard-core-purity.mjs',
+          [
+            '*** Begin Patch',
+            `*** Update File: ${sourcePath}`,
+            '*** Move to: packages/core/src/safe.ts',
+            '*** End Patch',
+          ].join('\n'),
+        );
+        expect(result.code).toBe(2);
+        expect(result.stderr).toMatch(/outside|repository|repo root|refus|inspect/i);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('does not echo content read from an outside-repository move source', async () => {
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-outside-content-'));
+    const source = path.join(scratch, 'private.ts');
+    await writeFile(source, "import '@app/db/unique-private-marker';\n");
+
+    try {
+      const result = await runGuard(
+        'guard-web-boundary.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${source}`,
+          '*** Move to: apps/web/src/private.ts',
+          '*** End Patch',
+        ].join('\n'),
+      );
+      expect(result.code).toBe(2);
+      expect(result.stderr).not.toContain('unique-private-marker');
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('blocks a move-only patch that carries existing impurity into core', async () => {
-    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-move-'));
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-impure-move-'));
     const source = path.join(scratch, 'impure.ts');
     await writeFile(source, "import { readFile } from 'node:fs/promises';\n");
 
@@ -204,12 +253,80 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         'guard-core-purity.mjs',
         [
           '*** Begin Patch',
-          `*** Update File: ${source}`,
+          `*** Update File: ${path.relative(repoRoot, source)}`,
           '*** Move to: packages/core/src/impure.ts',
           '*** End Patch',
         ].join('\n'),
       );
       expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/core/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks rather than reading an oversized move source', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-large-move-'));
+    const source = path.join(scratch, 'large.ts');
+    await writeFile(source, 'x'.repeat(1024 * 1024 + 1));
+
+    try {
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          '*** Move to: packages/core/src/large.ts',
+          '*** End Patch',
+        ].join('\n'),
+      );
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/large|size|limit|inspect/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the occurrence selected by the complete hunk, not the first matching line', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-exact-move-'));
+    const source = path.join(scratch, 'duplicate.ts');
+    await writeFile(
+      source,
+      [
+        'const duplicate = true;',
+        'const anchor = true;',
+        'const duplicate = true;',
+        'export {};',
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      const editInput = (await import(
+        pathToFileURL(path.join(hooksDir, 'lib', 'edit-input.mjs')).href
+      )) as {
+        editFragments(input: unknown): Array<{ filePath: string; fragment: string }>;
+      };
+      const [move] = editInput.editFragments({
+        tool_name: 'apply_patch',
+        cwd: repoRoot,
+        tool_input: {
+          command: [
+            '*** Begin Patch',
+            `*** Update File: ${path.relative(repoRoot, source)}`,
+            '*** Move to: packages/core/src/duplicate.ts',
+            '@@',
+            ' const anchor = true;',
+            '-const duplicate = true;',
+            ' export {};',
+            '*** End Patch',
+          ].join('\n'),
+        },
+      });
+
+      expect(move?.fragment).toBe(
+        ['const duplicate = true;', 'const anchor = true;', 'export {};', ''].join('\n'),
+      );
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
