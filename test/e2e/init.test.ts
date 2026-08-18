@@ -61,10 +61,36 @@ describe('create-agent-rig init (into an existing repo)', () => {
     ) as { hooks: Record<string, unknown> };
     expect(Object.keys(settings.hooks).length).toBeGreaterThan(0);
 
+    // DERIVED from the manifest, never restated. This assertion was a hand-written
+    // list until adding one process hook turned it red — which is the "fourth
+    // copy" failure `invariants.md` names: the list and the thing it describes
+    // drift, and the copy nobody is looking at is the one that is wrong. Asking
+    // layers.json makes the assertion "init installs exactly the hooks the
+    // process layer claims", which is the property that actually matters.
+    //
+    // ⚠ The limit that buys, stated rather than discovered: both sides now trace
+    // back to layers.json, so a hook DROPPED from the manifest changes neither
+    // and this case stays green. That question belongs to two tests that own it,
+    // and both were checked by removing an entry and watching them go red:
+    // composition.test.ts › "classifies every universal file exactly once", and
+    // guard-secret-file.test.ts › "is classified in layers.json together with
+    // the module it imports".
+    const manifest = JSON.parse(
+      await readFile(
+        path.join(repoRoot, 'templates', 'agent-os', 'universal', 'layers.json'),
+        'utf8',
+      ),
+    ) as Record<string, string[]>;
+    const expectedHooks = (manifest['process'] ?? [])
+      .filter((rel) => rel.startsWith('.claude/hooks/'))
+      .map((rel) => path.basename(rel));
+    // Non-vacuity: a renamed key or a changed prefix would otherwise make the
+    // comparison below pass on two empty arrays, forever.
+    expect(expectedHooks.length, 'no process hooks read from layers.json').toBeGreaterThan(3);
+    expect(expectedHooks).toContain('block-no-verify.mjs');
+
     const hooks = await readdir(path.join(repo, '.claude', 'hooks'));
-    expect(hooks.sort()).toEqual(
-      ['block-no-verify.mjs', 'gate-stop-dod.mjs', 'guard-bash.mjs', 'inject-rules.mjs'].sort(),
-    );
+    expect(hooks.sort()).toEqual(expectedHooks.sort());
     for (const hook of hooks) {
       await exec(process.execPath, ['--check', path.join(repo, '.claude', 'hooks', hook)]);
     }

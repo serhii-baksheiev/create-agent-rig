@@ -1,3 +1,8 @@
 #!/bin/sh
 # Fast checks only; the full suite (e2e, template-in-place) runs in CI.
+#
+# The secret check runs FIRST and reads the INDEX, not the worktree: it answers
+# "what would this commit contain". It is the layer a PreToolUse hook cannot
+# cover, because a human editing a file never reaches one (AR-49 b).
+node scripts/validate-no-secrets.mjs --staged || exit 1
 pnpm lint && pnpm typecheck && pnpm test:unit
