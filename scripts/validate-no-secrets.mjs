@@ -1,5 +1,9 @@
-// The CI half of AR-49(b): nothing tracked in this repository carries a
-// credential, and nothing about to be committed does either.
+// The CI half of AR-49(b): the sweep that looks for a credential in everything
+// this repository tracks, and in everything about to be committed.
+//
+// Deliberately phrased as what it LOOKS AT rather than as what it guarantees.
+// The limits block below says what it cannot see, and a guarantee written above
+// it would be read instead of it.
 //
 // Three modes, one vocabulary:
 //
@@ -25,6 +29,28 @@
 // its own definition is asserted rather than asserted-in-prose: see
 // validate-no-secrets.test.ts › "carries no literal credential in its own
 // source".
+//
+// 🔴 LIMITS — what this sweep cannot see. `.claude/rules/invariants.md` asks for
+// these in the file, next to the guarantee, because the `clean` line is where a
+// reader forms their belief. Each is pinned by a test:
+//
+//   - A BINARY file is not scanned at all. Any file containing a NUL byte is
+//     skipped, and the summary counts it separately rather than reporting it as
+//     scanned — see validate-no-secrets.test.ts › "reports the files it could
+//     not read, instead of counting them as scanned". A credential inside a
+//     binary blob is invisible here.
+//   - An UNREADABLE file is the same case and is counted the same way.
+//   - It reads the TRACKED set (or the STAGED set). A credential in a file git
+//     does not track is out of scope on purpose — a local `.env` is the point of
+//     `.gitignore` — see › "leaves an untracked file alone, however loudly it
+//     carries a credential".
+//   - It is a text scan over known shapes, not an entropy analyser. What the
+//     shapes do and do not match is `secrets.mjs`'s own limits block.
+//
+// The 2 MB bound `findSecretValues` applies by default is deliberately NOT one
+// of them: that cap exists so a FAIL-OPEN hook cannot be made to hang, and this
+// sweep fails closed. It reads whole files — see › "finds a credential past the
+// two-megabyte mark the hook stops at".
 //
 // 🔴 WHY `--self-test` EXISTS AT ALL. A scanner that has silently stopped
 // matching reports a clean tree forever, and a clean tree is exactly what
@@ -82,16 +108,38 @@ export function exemptionProblems({ exemptions = [], tracked = [], offending = [
 }
 
 /**
- * A git command in the current working directory, with an explicit environment.
+ * A git command in the current working directory.
  *
- * An inherited `GIT_DIR`/`GIT_INDEX_FILE` aims this at another repository, which
- * would have it report another tree's cleanliness as this one's.
+ * 🔴 THE ENVIRONMENT DEPENDS ON WHO IS ASKING, and getting this wrong was a
+ * total bypass of the pre-commit layer.
+ *
+ * A standalone run (CI) must not inherit `GIT_DIR`/`GIT_INDEX_FILE` from
+ * whatever spawned it: those aim git at another repository, and the sweep would
+ * report that tree's cleanliness as this one's.
+ *
+ * A `--staged` run is the opposite case. It is git's own child — the `pre-commit`
+ * hook — and during `git commit -a` git builds a TEMPORARY index holding exactly
+ * the changes being committed and points `GIT_INDEX_FILE` at it. Stripping that
+ * makes `git diff --cached` read `.git/index`, which has none of them: the sweep
+ * then reports `0 staged file(s)` and the commit sails through. Measured, with a
+ * real commit carrying a real key shape. So in that mode git's own environment
+ * is authoritative and is left alone — see validate-no-secrets.test.ts ›
+ * "refuses a credential committed with `git commit -am`, not only one that was
+ * `git add`ed".
  */
-const git = (args, { encoding = 'utf8' } = {}) => {
+const git = (args, { inheritLocation = false, encoding = 'utf8' } = {}) => {
   const env = { ...process.env };
-  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'])
-    delete env[key];
-  return execFileSync('git', args, { encoding, env, maxBuffer: 256 * 1024 * 1024 });
+  if (!inheritLocation)
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'])
+      delete env[key];
+  return execFileSync('git', args, {
+    encoding,
+    env,
+    maxBuffer: 256 * 1024 * 1024,
+    // git's own diagnostics are not this tool's report; a raw `fatal:` line in
+    // pre-commit output reads as a crash in the guard.
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
 };
 
 const zeroSeparated = (output) =>
@@ -100,7 +148,16 @@ const zeroSeparated = (output) =>
     .filter((entry) => entry !== '');
 
 const trackedFiles = () => zeroSeparated(git(['ls-files', '-z']));
-const stagedFiles = () => zeroSeparated(git(['diff', '--cached', '--name-only', '-z']));
+
+// `--diff-filter=d` drops DELETIONS. Without it the path arm fires on the very
+// commit that removes a credential file — the guard refusing the remediation its
+// own message prescribes, with `--no-verify` hook-blocked, leaving the author
+// nothing but to route around the guard. See validate-no-secrets.test.ts › "lets
+// the commit that REMOVES a credential file through".
+const stagedFiles = () =>
+  zeroSeparated(
+    git(['diff', '--cached', '--name-only', '--diff-filter=d', '-z'], { inheritLocation: true }),
+  );
 
 /** Text of a file, or `null` when it is binary or unreadable — never a throw. */
 const textOf = (read) => {
@@ -120,49 +177,86 @@ const worktreeText = (relativePath) =>
 // commit contain", and a file edited after `git add` differs from what is
 // staged — reading the worktree would refuse a commit over text nobody is
 // committing, or wave through text nobody has on disk.
-const indexText = (relativePath) => textOf(() => git(['show', `:${relativePath}`]));
+const indexText = (relativePath) =>
+  textOf(() => git(['show', `:${relativePath}`], { inheritLocation: true }));
 
-/** Every finding in one file, path arm first. */
+/**
+ * The whole file, not the first two megabytes.
+ *
+ * `findSecretValues` defaults to a 2 MB cap so a FAIL-OPEN hook cannot be made
+ * to hang by a crafted payload. This sweep fails closed and runs in CI, where a
+ * truncated read is a blind spot reported as `clean`. So the cap is lifted here,
+ * deliberately and in one place.
+ */
+const NO_SCAN_LIMIT = Number.MAX_SAFE_INTEGER;
+
+/** Every finding in one file, path arm first, as data rather than as text. */
 const findingsIn = (relativePath, text) => {
   const findings = [];
-  if (isCredentialPath(relativePath)) findings.push({ id: CREDENTIAL_PATH_ID, line: null });
-  if (text !== null) for (const finding of findSecretValues(text)) findings.push(finding);
+  if (isCredentialPath(relativePath))
+    findings.push({ path: relativePath, id: CREDENTIAL_PATH_ID, line: null });
+  if (text !== null)
+    for (const finding of findSecretValues(text, { limit: NO_SCAN_LIMIT }))
+      findings.push({ path: relativePath, id: finding.id, line: finding.line });
   return findings;
 };
 
-const formatFinding = (relativePath, finding) =>
+const formatFinding = (finding) =>
   finding.line === null
-    ? `${relativePath} — ${finding.id}`
-    : `${relativePath}:${finding.line} — ${finding.id}`;
+    ? `${finding.path} — ${finding.id}`
+    : `${finding.path}:${finding.line} — ${finding.id}`;
 
-/** The sweep, shared by both file-reading modes. */
-function sweep(files, readText, label) {
-  const lines = [];
-  const offending = [];
+/**
+ * The sweep, shared by both file-reading modes.
+ *
+ * 🔴 Findings stay STRUCTURED until the last moment. An earlier version excused
+ * a file by re-parsing its own formatted line back into a path, which truncated
+ * any path containing `:` — under-excusing the intended file and over-excusing
+ * its siblings at once. A value that has been rendered for a human is not a
+ * value to compute with.
+ */
+export function sweep(files, readText, label, { tracked = files, exemptions = EXEMPTIONS } = {}) {
+  const findings = [];
+  let unread = 0;
   for (const relativePath of files) {
-    const findings = findingsIn(relativePath, readText(relativePath));
-    if (findings.length === 0) continue;
-    offending.push(relativePath);
-    for (const finding of findings) lines.push(formatFinding(relativePath, finding));
+    const text = readText(relativePath);
+    if (text === null) unread += 1;
+    findings.push(...findingsIn(relativePath, text));
   }
 
-  const listProblems = exemptionProblems({ exemptions: EXEMPTIONS, tracked: files, offending });
-  for (const problem of listProblems)
-    lines.push(`${problem.path} — ${problem.kind} (in this script's EXEMPTIONS list)`);
+  const offending = [...new Set(findings.map((finding) => finding.path))];
+  // 🔴 Checked against the TRACKED set, never against the set just scanned. In
+  // `--staged` mode those differ, and feeding the staged set here made a valid
+  // exemption for any file not in this commit report `exemption-not-tracked` —
+  // so the first exemption anyone added bricked every subsequent commit.
+  const listProblems = exemptionProblems({ exemptions, tracked, offending });
 
-  const excused = new Set(listProblems.length === 0 ? EXEMPTIONS.map((entry) => entry.path) : []);
-  const reported = lines.filter((line) => !excused.has(line.split(' — ')[0].split(':')[0]));
+  // 🔴 All-or-nothing, and deliberately so: one unusable entry suspends EVERY
+  // excusal rather than honouring the rest. The direction is fail-closed — a
+  // list that cannot be trusted excuses nothing — and it is surprising enough
+  // that it is pinned by test rather than left to be rediscovered: see
+  // validate-no-secrets.test.ts › "suspends every excusal while one entry is
+  // unusable, rather than honouring the rest".
+  const excused = new Set(listProblems.length === 0 ? exemptions.map((entry) => entry.path) : []);
+  const lines = [
+    ...findings.filter((finding) => !excused.has(finding.path)).map(formatFinding),
+    ...listProblems.map(
+      (problem) => `${problem.path} — ${problem.kind} (in this script's EXEMPTIONS list)`,
+    ),
+  ];
 
-  if (reported.length === 0) {
-    // 🔴 The clean line states the SIZE of the set it read. "Clean" and "I found
-    // nothing to look at" print identically otherwise — a wrong cwd, a wrong
-    // repository or a flag that stopped being supported all read as a pass.
-    process.stdout.write(`clean — ${files.length} ${label} scanned, no credential found\n`);
+  const counted = `${files.length} ${label} scanned${unread > 0 ? `, ${unread} unread` : ''}`;
+  if (lines.length === 0) {
+    // 🔴 The clean line states the SIZE of the set it read, and how much of it
+    // it could not open. "Clean", "I found nothing to look at" and "I counted
+    // files I never opened" print identically otherwise — and a wrong cwd, a
+    // wrong repository or a tree of binaries all land in one of the last two.
+    process.stdout.write(`clean — ${counted}, no credential found\n`);
     return 0;
   }
   process.stdout.write(
-    `${reported.length} finding(s) — a credential must never be committed:\n` +
-      `${reported.map((line) => `${line}\n`).join('')}` +
+    `${lines.length} finding(s) — a credential must never be committed (${counted}):\n` +
+      `${lines.map((line) => `${line}\n`).join('')}` +
       'The matched values are deliberately not printed. Open the lines above.\n',
   );
   return 1;
@@ -212,7 +306,8 @@ function selfTest() {
 
 export function main(argv = []) {
   if (argv.includes('--self-test')) return selfTest();
-  if (argv.includes('--staged')) return sweep(stagedFiles(), indexText, 'staged file(s)');
+  if (argv.includes('--staged'))
+    return sweep(stagedFiles(), indexText, 'staged file(s)', { tracked: trackedFiles() });
   return sweep(trackedFiles(), worktreeText, 'tracked file(s)');
 }
 

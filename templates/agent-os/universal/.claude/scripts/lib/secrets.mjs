@@ -1,12 +1,17 @@
-// The credential vocabulary, decided once and imported by every layer that
-// refuses one.
+// The credential vocabulary, decided once, so that everything which refuses a
+// credential refuses the same set.
 //
-// Every layer that refuses a credential imports it: the `guard-secret-file`
-// PreToolUse hook, and `scripts/validate-no-secrets.mjs` — which CI runs over
-// the tracked tree and `.husky/pre-commit` runs over the staged set.
-// `.claude/rules/invariants.md` ("one mechanism, one implementation") is why it
-// is a module rather than a list per layer: two copies of an invariant disagree,
-// and the one nobody is looking at is the one that is wrong.
+// In THIS project one thing imports it: the `guard-secret-file` PreToolUse hook.
+// ⚠ Read that as the whole list, because it is. The generator this rulebook came
+// from runs the same vocabulary through two more layers — a pre-commit check and
+// a CI sweep over every tracked file — and neither of them travels here. Adding
+// one is a decision for this project; nothing has made it already.
+//
+// `.claude/rules/invariants.md` ("one mechanism, one implementation") is why the
+// vocabulary is a module and not a list per consumer: two copies of an invariant
+// disagree, and the one nobody is looking at is the one that is wrong. That is
+// worth keeping even at one consumer, because the ignore rules are the second
+// reader of this set whether or not they import it.
 //
 // It answers two different questions, and keeping them apart matters:
 //

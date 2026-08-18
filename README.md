@@ -88,6 +88,13 @@ never inflated). The hooks live in `.claude/hooks/` and are wired in
   environment access, or a non-allowlisted import into the pure domain core;
 - **`guard-web-boundary`** — refuses `db`/service imports from the frontend;
   the web talks to the backend over HTTP only;
+- **`guard-secret-file`** — refuses an edit that writes a credential: either the
+  path names one (`jira.env`, `id_rsa`, anything under `secrets/`) or the text
+  carries a credential VALUE. Both arms read one vocabulary,
+  `.claude/scripts/lib/secrets.mjs`, and a refusal names the pattern and the line
+  and **never the matched value** — printing it would leak the secret in the act
+  of refusing it. Its three blind spots are in its own header, each pointing at
+  the test that pins it;
 - **`block-no-verify`** — refuses bypassing pre-commit checks (and knows the
   difference between using the `--no-verify`/`-n` flag and merely mentioning it
   in a message);

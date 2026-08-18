@@ -26,8 +26,10 @@ import {
 //
 // Half (a) made the router's credential FILENAMES un-committable. It left two
 // holes on purpose, both stated in dogfood.test.ts: the `SECURITY_WORDS` arm
-// (53 of 55 words still committable as extensions, because taking the arm whole
-// would demand ignore rules for `*.cors`, `*.acl` and `*.session`), and the
+// (at the time, 53 of 55 words still committable as extensions, because taking
+// the arm whole
+// would demand ignore rules for `*.cors`, `*.acl` and `*.session` — this branch
+// closed fourteen of them, and dogfood.test.ts carries the current split), and the
 // SEGMENT arm (`secrets/`, `credentials/` — an ignore rule over a directory
 // would hide legitimate source). Both need a decision about which words are
 // credentials rather than a derivation, and a guard rather than an ignore rule.

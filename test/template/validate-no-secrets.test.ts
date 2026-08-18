@@ -67,6 +67,12 @@ interface ExemptionProblem {
 
 interface ValidatorModule {
   EXEMPTIONS: ReadonlyArray<Exemption>;
+  sweep(
+    files: readonly string[],
+    readText: (relativePath: string) => string | null,
+    label: string,
+    options?: { tracked?: readonly string[]; exemptions?: ReadonlyArray<Partial<Exemption>> },
+  ): number;
   exemptionProblems(input: {
     exemptions: ReadonlyArray<Partial<Exemption>>;
     tracked: readonly string[];
@@ -452,5 +458,223 @@ describe('validate-no-secrets is wired into the paths that run it', () => {
     const declared = parseElevatedPaths(claudeMd);
     expect(declared).not.toBeNull();
     expect(declared).toContain('.husky/');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Round-2 gate findings.
+//
+// 🔴 The first block below exists because every `--staged` case above runs the
+// validator STANDALONE, after an explicit `git add`. That is not the situation
+// the layer is for. `security-scanner` drove a real `git commit` through a real
+// hook and found the guard absent from the most ordinary idiom there is, and no
+// test here could have noticed. So these drive `git`, not the script.
+
+/** A real `pre-commit` hook in a throwaway repo, running the real validator. */
+const installPreCommitHook = async (dir: string): Promise<void> => {
+  const hook = path.join(dir, '.git', 'hooks', 'pre-commit');
+  await mkdir(path.dirname(hook), { recursive: true });
+  await writeFile(hook, `#!/bin/sh\nexec "${process.execPath}" "${validator}" --staged\n`, {
+    mode: 0o755,
+  });
+};
+
+/** A commit attempt that reports whether it landed, rather than throwing. */
+const tryCommit = async (dir: string, args: string[]): Promise<{ ok: boolean; out: string }> => {
+  const before = (await git(dir, ['rev-parse', 'HEAD'])).stdout.trim();
+  let out;
+  try {
+    const result = await git(dir, [
+      '-c',
+      'user.email=nobody@example.invalid',
+      '-c',
+      'user.name=nobody',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      ...args,
+    ]);
+    out = result.stdout + result.stderr;
+  } catch (error) {
+    const failure = error as { stdout?: string; stderr?: string };
+    out = (failure.stdout ?? '') + (failure.stderr ?? '');
+  }
+  const after = (await git(dir, ['rev-parse', 'HEAD'])).stdout.trim();
+  return { ok: before !== after, out };
+};
+
+describe('validate-no-secrets --staged — driven by git, the way a commit actually runs it', () => {
+  const seeded = async (): Promise<string> => {
+    const dir = await temporaryRepo();
+    await put(dir, 'src/config.ts', 'export const port = 8080;\n');
+    await git(dir, ['add', '--', 'src/config.ts']);
+    await commitAll(dir);
+    await installPreCommitHook(dir);
+    return dir;
+  };
+
+  // 🔴 THE ONE THAT MATTERED. During `git commit -a`, git builds a TEMPORARY
+  // index holding exactly the changes being committed and points
+  // GIT_INDEX_FILE at it before running this hook. A sweep that strips that
+  // variable reads `.git/index` instead — which has none of them — and reports
+  // `0 staged file(s) scanned` on its way to letting the commit through.
+  it('refuses a credential committed with `git commit -am`, not only one that was `git add`ed', async () => {
+    const dir = await seeded();
+    await put(dir, 'src/config.ts', `export const key = "${CLOUD_ACCESS_KEY}";\n`);
+
+    const { ok, out } = await tryCommit(dir, ['-a', '-m', 'sneak']);
+    expect(ok, `the commit landed and should not have\n${out}`).toBe(false);
+  }, 30_000);
+
+  it('still refuses the same credential when it was staged with `git add` first', async () => {
+    const dir = await seeded();
+    await put(dir, 'src/config.ts', `export const key = "${CLOUD_ACCESS_KEY}";\n`);
+    await git(dir, ['add', '--', 'src/config.ts']);
+
+    const { ok, out } = await tryCommit(dir, ['-m', 'sneak']);
+    expect(ok, `the commit landed and should not have\n${out}`).toBe(false);
+  }, 30_000);
+
+  // The direction that decides whether anyone keeps the hook installed.
+  it('lets an honest `git commit -am` through', async () => {
+    const dir = await seeded();
+    await put(dir, 'src/config.ts', 'export const port = 9090;\n');
+
+    const { ok, out } = await tryCommit(dir, ['-a', '-m', 'honest']);
+    expect(ok, `an honest commit was refused\n${out}`).toBe(true);
+  }, 30_000);
+
+  // A guard whose refusal says "this repository never carries one" must not
+  // then block the only clean way to act on it. `git diff --cached` lists
+  // deletions; running the path arm over them refuses the remediation.
+  it('lets the commit that REMOVES a credential file through', async () => {
+    const dir = await temporaryRepo();
+    await put(dir, 'jira.env', 'TOKEN=placeholder\n');
+    await put(dir, 'README.md', '# repo\n');
+    await git(dir, ['add', '-f', '--', 'jira.env', 'README.md']);
+    await commitAll(dir);
+    await git(dir, ['rm', '-q', '--', 'jira.env']);
+
+    const result = await run(dir, ['--staged']);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).not.toMatch(/credential-path/);
+    // and no raw git plumbing error reaches the author either
+    expect(result.out).not.toMatch(/fatal:/);
+  }, 30_000);
+});
+
+describe('validate-no-secrets — what the sweep cannot see, stated and tested', () => {
+  // The hook is fail-open and owes bounded work; the CI sweep is fail-closed and
+  // owes none. Inheriting the hook's 2 MB cap made a large tracked file a blind
+  // spot while the summary still said "clean".
+  it('finds a credential past the two-megabyte mark the hook stops at', async () => {
+    const dir = await temporaryRepo();
+    const filler = 'lorem ipsum dolor sit amet consectetur adipiscing elit\n'.repeat(60_000);
+    expect(filler.length).toBeGreaterThan(3_000_000);
+    await put(dir, 'data/blob.txt', `${filler}${CLOUD_ACCESS_KEY}\n`);
+    await git(dir, ['add', '--', 'data/blob.txt']);
+
+    const result = await run(dir);
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/^data\/blob\.txt:\d+ — cloud-access-key$/m);
+  }, 60_000);
+
+  // "clean" and "N scanned" were built to separate a clean tree from an empty
+  // read. They did not separate either from "N counted, some never opened".
+  it('reports the files it could not read, instead of counting them as scanned', async () => {
+    const dir = await temporaryRepo();
+    await put(dir, 'ok.txt', 'ordinary text\n');
+    await put(dir, 'image.bin', 'PNG\0\0binary\0payload\n');
+    await git(dir, ['add', '--', 'ok.txt', 'image.bin']);
+
+    const result = await run(dir);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out, 'the summary hides that a file was never opened').toMatch(
+      /1 unread|1 skipped/i,
+    );
+  }, 20_000);
+
+  it('states its limits in its own source, where a reader of the clean line would look', async () => {
+    const source = await readFile(validator, 'utf8');
+    expect(source).toMatch(/LIMITS/);
+    expect(source).toMatch(/binary/i);
+  });
+});
+
+// The excusal path was the part of this script nothing exercised: every
+// exemption case called `exemptionProblems` directly, so the code that DECIDES
+// from its answer — which findings are suppressed, and what happens when the
+// list itself is unusable — ran only in production. The list ships empty, so
+// these inject one rather than editing the script to make it testable.
+describe('validate-no-secrets — the excusal path, with a list that is not empty', () => {
+  const text = (byPath: Record<string, string>) => (relativePath: string) =>
+    byPath[relativePath] ?? null;
+
+  it('suppresses a finding on an exempt path, and only on that path', async () => {
+    const { sweep } = await loadValidator();
+    const files = ['fixtures/sample.txt', 'src/other.txt'];
+    const code = sweep(
+      files,
+      text({
+        'fixtures/sample.txt': `key=${CLOUD_ACCESS_KEY}`,
+        'src/other.txt': 'ordinary\n',
+      }),
+      'file(s)',
+      {
+        tracked: files,
+        exemptions: [{ path: 'fixtures/sample.txt', reason: 'a documented sample' }],
+      },
+    );
+    expect(code, 'the exempt finding was not suppressed').toBe(0);
+  });
+
+  it('still reports a finding on a path the list does not name', async () => {
+    const { sweep } = await loadValidator();
+    const files = ['fixtures/sample.txt', 'src/other.txt'];
+    const code = sweep(
+      files,
+      text({
+        'fixtures/sample.txt': 'ordinary\n',
+        'src/other.txt': `key=${CLOUD_ACCESS_KEY}`,
+      }),
+      'file(s)',
+      {
+        tracked: files,
+        exemptions: [{ path: 'fixtures/sample.txt', reason: 'a documented sample' }],
+      },
+    );
+    expect(code, 'an unexempt finding was suppressed').toBe(1);
+  });
+
+  it('suspends every excusal while one entry is unusable, rather than honouring the rest', async () => {
+    const { sweep } = await loadValidator();
+    const files = ['fixtures/sample.txt'];
+    const code = sweep(
+      files,
+      text({ 'fixtures/sample.txt': `key=${CLOUD_ACCESS_KEY}` }),
+      'file(s)',
+      {
+        tracked: files,
+        exemptions: [
+          { path: 'fixtures/sample.txt', reason: 'a documented sample' },
+          { path: 'fixtures/gone.txt', reason: 'names a path nobody tracks' },
+        ],
+      },
+    );
+    // Fail-closed: a list carrying a stale entry cannot be trusted to excuse
+    // anything, so the good entry stops applying too.
+    expect(code).toBe(1);
+  });
+
+  // 🔴 The reason findings stay structured. An earlier version rebuilt a path by
+  // splitting its own formatted output, which truncates at the first colon.
+  it('excuses a path containing a colon, which its own formatted output would have truncated', async () => {
+    const { sweep } = await loadValidator();
+    const files = ['odd:name.txt'];
+    const code = sweep(files, text({ 'odd:name.txt': `key=${CLOUD_ACCESS_KEY}` }), 'file(s)', {
+      tracked: files,
+      exemptions: [{ path: 'odd:name.txt', reason: 'a path with a colon in it' }],
+    });
+    expect(code, 'the path was re-parsed out of formatted text and lost its tail').toBe(0);
   });
 });

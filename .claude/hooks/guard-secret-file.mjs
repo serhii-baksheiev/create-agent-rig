@@ -33,13 +33,20 @@
 //     payload — the matcher is Write|Edit". A human editing the file, or a
 //     `git commit` of something already on disk, never reaches a PreToolUse hook
 //     at all, and no test here can show that: it is a property of the harness,
-//     not of this file. That is precisely why AR-49(b) is two layers — the
-//     `.husky/pre-commit` check covers the author this one cannot see.
+//     not of this file.
+//
+//     🔴 READ THAT AS THE WHOLE OF YOUR COVER, because in this project it is.
+//     The generator this rulebook came from closes the blind spot with a second
+//     layer — a pre-commit check and a CI sweep over the same vocabulary — and
+//     neither of them travels here: no `.husky/` directory ships, and no
+//     validator does. A credential a human types, or one already on disk when a
+//     commit is made, is refused by nothing in this repository. Adding that
+//     layer is a decision for this project, not something already done for it.
 //   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
 //     not JSON at all" and its neighbours. An unparseable payload, a missing
 //     field, an internal throw — all allow the edit. A crashed guard that blocks everything gets deleted
-//     within the hour, and the layers behind it (the pre-commit check, the CI
-//     validator, review) are what catch the rest.
+//     within the hour. What catches the rest is whatever this project has put
+//     behind it — review always, a commit-time check only once one exists.
 //
 // Failing open is also why every line here does provably bounded work: the scan
 // is capped inside `findSecretValues`, there is no recursion, and nothing
