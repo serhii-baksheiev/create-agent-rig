@@ -4,12 +4,32 @@
  * Claude sends Write/Edit fields directly. Codex sends an apply_patch command,
  * so added lines are returned for ordinary edits. A move is different: the
  * destination receives the existing file too, so guards inspect the resulting
- * content instead of only the patch additions.
+ * content instead of only the patch additions when inspection succeeds.
+ *
+ * Limits and their executable contracts:
+ * - move sources must stay inside the repository (codex.test.ts > refuses to inspect a move source outside the repository via %s)
+ * - symlinks may not resolve outside it (codex.test.ts > rejects an in-repository symlink that resolves outside without echoing its content)
+ * - missing or unreadable sources diagnose and fail open (codex.test.ts > diagnoses a missing move source but leaves the guard fail-open)
+ * - source reads are capped (codex.test.ts > reads only a bounded prefix and blocks an oversized move source)
+ * - patch input is capped before parsing (codex.test.ts > refuses an oversized apply_patch command before parsing its contents)
+ * - patch context must match (codex.test.ts > blocks a move whose patch context does not match its source)
+ * - each hunk is capped (codex.test.ts > blocks a move hunk that exceeds the hunk-line ceiling)
+ * - context search has one total budget (codex.test.ts > blocks a move when the context-comparison budget is exhausted)
+ * - patch destinations must stay inside the repository (codex.test.ts > refuses absolute and traversal move destinations outside the repository)
  */
 import { execFileSync } from 'node:child_process';
-import { closeSync, openSync, readSync, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import path from 'node:path';
 
+const MAX_PATCH_CHARACTERS = 1024 * 1024;
 const MAX_MOVED_FILE_BYTES = 1024 * 1024;
 const MAX_HUNK_LINES = 10_000;
 const MAX_CONTEXT_COMPARISONS = 2_000_000;
@@ -28,7 +48,18 @@ export function editFragments(input) {
     ];
   }
   if (toolName !== 'apply_patch') return [];
-  return patchFragments(String(toolInput.command ?? ''));
+  const command = String(toolInput.command ?? '');
+  if (command.length > MAX_PATCH_CHARACTERS) {
+    return [
+      {
+        filePath: '',
+        fragment: '',
+        inspectionRefusal: `apply_patch command exceeds the ${MAX_PATCH_CHARACTERS}-character inspection limit`,
+        appliesToAll: true,
+      },
+    ];
+  }
+  return patchFragments(command);
 }
 
 function patchFragments(command) {
@@ -37,10 +68,20 @@ function patchFragments(command) {
 
   const flush = () => {
     if (current !== null) {
-      const moved = current.moveTo
-        ? movedFragment(current)
-        : { fragment: current.additions.join('\n') };
-      fragments.push({ filePath: normalisePath(current.moveTo ?? current.sourcePath), ...moved });
+      const destination = canonicalPatchPath(current.moveTo ?? current.sourcePath);
+      if (destination === null) {
+        fragments.push({
+          filePath: '',
+          fragment: '',
+          inspectionRefusal: 'patch destination is outside the repository',
+          appliesToAll: true,
+        });
+      } else {
+        const moved = current.moveTo
+          ? movedFragment(current)
+          : { fragment: current.additions.join('\n') };
+        fragments.push({ filePath: destination, ...moved });
+      }
       current = null;
     }
   };
@@ -76,6 +117,10 @@ function patchFragments(command) {
 }
 
 function movedFragment(current) {
+  const sourcePath = canonicalPatchPath(current.sourcePath);
+  if (sourcePath === null) {
+    return inspectionRefusal(current, 'move source is outside the repository root');
+  }
   try {
     const repoRoot = realpathSync(
       execFileSync('git', ['rev-parse', '--show-toplevel'], {
@@ -86,51 +131,64 @@ function movedFragment(current) {
         timeout: 1000,
       }).trim(),
     );
-    const candidate = path.resolve(repoRoot, current.sourcePath);
+    const candidate = path.resolve(repoRoot, sourcePath);
     if (!isWithin(repoRoot, candidate)) {
-      return inspectionFailure(current, 'move source is outside the repository root');
+      return inspectionRefusal(current, 'move source is outside the repository root');
     }
 
-    const source = realpathSync(candidate);
-    if (!isWithin(repoRoot, source)) {
-      return inspectionFailure(current, 'move source resolves outside the repository root');
+    const resolvedSource = realpathSync(candidate);
+    if (!isWithin(repoRoot, resolvedSource)) {
+      return inspectionRefusal(current, 'move source resolves outside the repository root');
     }
 
-    const handle = openSync(source, 'r');
-    let bytesRead = 0;
-    const buffer = Buffer.allocUnsafe(MAX_MOVED_FILE_BYTES + 1);
+    const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+    const handle = openSync(candidate, constants.O_RDONLY | noFollow);
     try {
+      const opened = fstatSync(handle);
+      const verifiedSource = realpathSync(candidate);
+      if (!isWithin(repoRoot, verifiedSource)) {
+        return inspectionRefusal(current, 'move source resolves outside the repository root');
+      }
+      const verified = statSync(verifiedSource);
+      if (opened.dev !== verified.dev || opened.ino !== verified.ino) {
+        return inspectionRefusal(current, 'move source changed during inspection');
+      }
+
+      let bytesRead = 0;
+      const buffer = Buffer.allocUnsafe(MAX_MOVED_FILE_BYTES + 1);
       while (bytesRead < buffer.length) {
         const count = readSync(handle, buffer, bytesRead, buffer.length - bytesRead, bytesRead);
         if (count === 0) break;
         bytesRead += count;
       }
+      if (bytesRead > MAX_MOVED_FILE_BYTES) {
+        return inspectionRefusal(
+          current,
+          `move source exceeds the ${MAX_MOVED_FILE_BYTES}-byte inspection limit`,
+        );
+      }
+
+      const content = buffer.toString('utf8', 0, bytesRead);
+      return applyHunks(content, current.hunks, current);
     } finally {
       closeSync(handle);
     }
-    if (bytesRead > MAX_MOVED_FILE_BYTES) {
-      return inspectionFailure(
-        current,
-        `move source exceeds the ${MAX_MOVED_FILE_BYTES}-byte inspection limit`,
-      );
-    }
-
-    const content = buffer.toString('utf8', 0, bytesRead);
-    const applied = applyHunks(content, current.hunks);
-    if (applied === null) {
-      return inspectionFailure(current, 'move patch context does not match the source file');
-    }
-    return { fragment: applied };
   } catch (error) {
-    return inspectionFailure(current, `could not inspect moved file: ${error.message}`);
+    process.stderr.write(`edit-input: could not inspect moved file: ${error.message}\n`);
+    return { fragment: current.additions.join('\n') };
   }
 }
 
-function applyHunks(content, hunks) {
+function applyHunks(content, hunks, current) {
   const lines = content.split(/\r?\n/);
   const budget = { remaining: MAX_CONTEXT_COMPARISONS };
   for (const hunk of hunks) {
-    if (hunk.lines.length > MAX_HUNK_LINES) return null;
+    if (hunk.lines.length > MAX_HUNK_LINES) {
+      return inspectionRefusal(
+        current,
+        `move hunk exceeds the ${MAX_HUNK_LINES}-line inspection limit`,
+      );
+    }
     const before = hunk.lines
       .filter(({ operation }) => operation !== '+')
       .map(({ text }) => text);
@@ -142,11 +200,16 @@ function applyHunks(content, hunks) {
       lines.splice(Math.max(0, lines.length - 1), 0, ...after);
       continue;
     }
-    const index = findSequence(lines, before, budget);
-    if (index === -1) return null;
-    lines.splice(index, before.length, ...after);
+    const match = findSequence(lines, before, budget);
+    if (match.exhausted) {
+      return inspectionRefusal(current, 'move context comparison budget was exhausted');
+    }
+    if (match.index === -1) {
+      return inspectionRefusal(current, 'move patch context does not match the source file');
+    }
+    lines.splice(match.index, before.length, ...after);
   }
-  return lines.join('\n');
+  return { fragment: lines.join('\n') };
 }
 
 function findSequence(lines, sequence, budget) {
@@ -155,15 +218,15 @@ function findSequence(lines, sequence, budget) {
     let matches = true;
     for (let offset = 0; offset < sequence.length; offset += 1) {
       budget.remaining -= 1;
-      if (budget.remaining < 0) return -1;
+      if (budget.remaining < 0) return { index: -1, exhausted: true };
       if (lines[start + offset] !== sequence[offset]) {
         matches = false;
         break;
       }
     }
-    if (matches) return start;
+    if (matches) return { index: start, exhausted: false };
   }
-  return -1;
+  return { index: -1, exhausted: false };
 }
 
 function isWithin(root, candidate) {
@@ -174,11 +237,26 @@ function isWithin(root, candidate) {
   );
 }
 
-function inspectionFailure(current, reason) {
+function inspectionRefusal(current, reason) {
   process.stderr.write(`edit-input: ${reason}\n`);
-  return { fragment: current.additions.join('\n'), inspectionError: reason };
+  return { fragment: current.additions.join('\n'), inspectionRefusal: reason };
 }
 
 function normalisePath(value) {
-  return String(value ?? '').replaceAll('\\', '/');
+  const slashed = String(value ?? '').replaceAll('\\', '/');
+  return slashed === '' ? '' : path.posix.normalize(slashed);
+}
+
+function canonicalPatchPath(value) {
+  const normalised = normalisePath(value);
+  if (
+    normalised === '' ||
+    path.posix.isAbsolute(normalised) ||
+    /^[A-Za-z]:\//.test(normalised) ||
+    normalised === '..' ||
+    normalised.startsWith('../')
+  ) {
+    return null;
+  }
+  return normalised.replace(/^\.\//, '');
 }

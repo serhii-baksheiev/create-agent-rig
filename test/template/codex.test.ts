@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -180,6 +180,57 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.stderr).toMatch(/web/i);
   });
 
+  it.each([
+    {
+      guard: 'guard-core-purity.mjs',
+      destination: 'packages/core/./src/note.ts',
+      addition: "+import { readFile } from 'node:fs/promises';",
+    },
+    {
+      guard: 'guard-web-boundary.mjs',
+      destination: 'apps/./web/src/app/page.tsx',
+      addition: "+import { db } from '@app/db';",
+    },
+  ])('canonicalizes and protects the dotted destination $destination', async (example) => {
+    const result = await runGuard(
+      example.guard,
+      [
+        '*** Begin Patch',
+        `*** Update File: ${example.destination}`,
+        '@@',
+        example.addition,
+        '*** End Patch',
+      ].join('\n'),
+    );
+
+    expect(result.code).toBe(2);
+  });
+
+  it('refuses absolute and traversal move destinations outside the repository', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-outside-destination-'));
+    const source = path.join(scratch, 'source.ts');
+    await writeFile(source, 'export const safe = true;\n');
+
+    try {
+      for (const destination of [path.join(tmpdir(), 'outside.ts'), '../outside.ts']) {
+        const result = await runGuard(
+          'guard-core-purity.mjs',
+          [
+            '*** Begin Patch',
+            `*** Update File: ${path.relative(repoRoot, source)}`,
+            `*** Move to: ${destination}`,
+            '*** End Patch',
+          ].join('\n'),
+        );
+
+        expect(result.code, destination).toBe(2);
+        expect(result.stderr, destination).toMatch(/destination.*outside|unsafe.*destination/i);
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('does not inspect removed patch lines as newly introduced code', async () => {
     const result = await runGuard(
       'guard-core-purity.mjs',
@@ -243,6 +294,49 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
+  it('rejects an in-repository symlink that resolves outside without echoing its content', async () => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'codex-symlink-target-'));
+    const inside = await mkdtemp(path.join(repoRoot, '.codex-symlink-source-'));
+    const link = path.join(inside, 'outside');
+    await writeFile(path.join(outside, 'private.ts'), "import '@app/db/unique-symlink-marker';\n");
+
+    try {
+      await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+      const result = await runGuard(
+        'guard-web-boundary.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, path.join(link, 'private.ts'))}`,
+          '*** Move to: apps/web/src/private.ts',
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/resolves outside|outside.*repository/i);
+      expect(result.stderr).not.toContain('unique-symlink-marker');
+    } finally {
+      await rm(inside, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('diagnoses a missing move source but leaves the guard fail-open', async () => {
+    const result = await runGuard(
+      'guard-core-purity.mjs',
+      [
+        '*** Begin Patch',
+        '*** Update File: definitely-missing/move-source.ts',
+        '*** Move to: packages/core/src/missing.ts',
+        '*** End Patch',
+      ].join('\n'),
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toMatch(/could not inspect moved file/i);
+    expect(result.stderr).not.toMatch(/BLOCKED/i);
+  });
+
   it('blocks a move-only patch that carries existing impurity into core', async () => {
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-impure-move-'));
     const source = path.join(scratch, 'impure.ts');
@@ -265,7 +359,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('blocks rather than reading an oversized move source', async () => {
+  it('reads only a bounded prefix and blocks an oversized move source', async () => {
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-large-move-'));
     const source = path.join(scratch, 'large.ts');
     await writeFile(source, 'x'.repeat(1024 * 1024 + 1));
@@ -284,6 +378,118 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/large|size|limit|inspect/i);
     } finally {
       await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an oversized apply_patch command before parsing its contents', async () => {
+    const result = await runGuard(
+      'guard-core-purity.mjs',
+      [
+        '*** Begin Patch',
+        '*** Update File: packages/core/src/large-patch.ts',
+        '@@',
+        `+${'x'.repeat(1024 * 1024 + 1)}`,
+        '*** End Patch',
+      ].join('\n'),
+    );
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/patch.*(?:size|limit|large)|(?:size|limit|large).*patch/i);
+  });
+
+  it('blocks a move whose patch context does not match its source', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-context-mismatch-'));
+    const source = path.join(scratch, 'actual.ts');
+    await writeFile(source, 'export const actual = true;\n');
+
+    try {
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          '*** Move to: packages/core/src/actual.ts',
+          '@@',
+          ' export const expected = true;',
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/context does not match/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks a move hunk that exceeds the hunk-line ceiling', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-hunk-lines-'));
+    const source = path.join(scratch, 'small.ts');
+    await writeFile(source, 'same\n');
+
+    try {
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          '*** Move to: packages/core/src/small.ts',
+          '@@',
+          ...Array.from({ length: 10_001 }, () => ' same'),
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/hunk.*(?:ceiling|limit)|(?:ceiling|limit).*hunk/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks a move when the context-comparison budget is exhausted', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-comparison-budget-'));
+    const source = path.join(scratch, 'repetitive.ts');
+    const content = `${Array.from({ length: 12_000 }, () => 'same').join('\n')}\n`;
+    expect(Buffer.byteLength(content)).toBeLessThan(1024 * 1024);
+    await writeFile(source, content);
+
+    try {
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          '*** Move to: packages/core/src/repetitive.ts',
+          '@@',
+          ...Array.from({ length: 4_999 }, () => ' same'),
+          ' needle',
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/comparison.*(?:budget|limit)|(?:budget|limit).*comparison/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('points every move-inspection limit comment at the exact behavior test name', async () => {
+    const source = await text(hooksDir, 'lib', 'edit-input.mjs');
+
+    for (const testName of [
+      'reads only a bounded prefix and blocks an oversized move source',
+      'refuses an oversized apply_patch command before parsing its contents',
+      'blocks a move whose patch context does not match its source',
+      'blocks a move hunk that exceeds the hunk-line ceiling',
+      'blocks a move when the context-comparison budget is exhausted',
+      'refuses to inspect a move source outside the repository via %s',
+      'rejects an in-repository symlink that resolves outside without echoing its content',
+      'diagnoses a missing move source but leaves the guard fail-open',
+      'refuses absolute and traversal move destinations outside the repository',
+    ]) {
+      expect(source, testName).toContain(`codex.test.ts > ${testName}`);
     }
   });
 

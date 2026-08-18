@@ -32,11 +32,16 @@ function main() {
   } catch {
     return 0; // unparseable payload: not ours to judge
   }
-  const violations = editFragments(input).flatMap(({ filePath, fragment, inspectionError }) => {
-    if (!CORE_PATH.test(filePath) || !CODE_FILE.test(filePath)) return [];
-    if (inspectionError) return [`cannot safely inspect this move — ${inspectionError}`];
-    return findViolations(fragment);
-  });
+  const violations = editFragments(input).flatMap(
+    ({ filePath, fragment, inspectionRefusal, appliesToAll }) => {
+      if (appliesToAll && inspectionRefusal) {
+        return [`cannot safely inspect this patch — ${inspectionRefusal}`];
+      }
+      if (!CORE_PATH.test(filePath) || !CODE_FILE.test(filePath)) return [];
+      if (inspectionRefusal) return [`cannot safely inspect this move — ${inspectionRefusal}`];
+      return findViolations(fragment);
+    },
+  );
   if (violations.length === 0) return 0;
 
   process.stderr.write(

@@ -26,10 +26,14 @@ function main() {
   const violations = [];
   const importRe =
     /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;
-  for (const { filePath, fragment, inspectionError } of editFragments(input)) {
+  for (const { filePath, fragment, inspectionRefusal, appliesToAll } of editFragments(input)) {
+    if (appliesToAll && inspectionRefusal) {
+      violations.push(`cannot safely inspect this patch — ${inspectionRefusal}`);
+      continue;
+    }
     if (!WEB_PATH.test(filePath) || !CODE_FILE.test(filePath)) continue;
-    if (inspectionError) {
-      violations.push(`cannot safely inspect this move — ${inspectionError}`);
+    if (inspectionRefusal) {
+      violations.push(`cannot safely inspect this move — ${inspectionRefusal}`);
       continue;
     }
     for (const match of fragment.matchAll(importRe)) {
