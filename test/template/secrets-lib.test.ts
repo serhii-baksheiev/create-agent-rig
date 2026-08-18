@@ -16,6 +16,10 @@ import {
   PEM_HEADER,
   assignment,
   pemHeader,
+  AWS_SECRET,
+  LONG_RUN,
+  LONG_WORDS,
+  quoted,
 } from './secrets-fixtures.js';
 
 // AR-49(b). The half of AR-49 that `.gitignore` could not close.
@@ -613,5 +617,123 @@ describe('what the assignment pattern can and cannot see, stated as a limit rath
   it('cannot see a credential whose literal run breaks before sixteen characters', async () => {
     const shortRunBeforeDot = [assignment('token=', 'ab12cd34'), 'ef56gh78ij90klmnop'].join('.');
     expect(idsIn(await scan(shortRunBeforeDot))).not.toContain('assigned-secret');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Round-2 gate findings. Three reviewers returned HOLD; these are the cases they
+// measured, each pinned from BOTH sides — the shape that must now be found, and
+// the honest source that must still be left alone. The second half is the one
+// that matters: the narrowing these widen was itself forced by false positives,
+// and a widening that brings them back has traded one defect for a worse one.
+
+describe('a credential assigned with a quoted value is still a credential', () => {
+  // The dominant shape in a TypeScript, JSON or YAML tree, and every one of
+  // these carries an unbroken 32-character run: they were lost to the quote in
+  // front of the value, not to anything about the value itself.
+  it.each([
+    quoted('const token = ', LONG_RUN) + ';',
+    '  ' + quoted('"api_key": ', LONG_RUN) + ',',
+    quoted('password: ', LONG_WORDS),
+    quoted('token: ', LONG_RUN, "'"),
+    quoted('PASSWORD = ', LONG_WORDS),
+  ])('reports %s, whose value is quoted rather than bare', async (line) => {
+    expect(idsIn(await scan(line))).toContain('assigned-secret');
+  });
+
+  // 🔴 The other side, in the same block on purpose. Widening for quotes must
+  // not re-admit the expressions that forced the narrowing in the first place.
+  it.each([
+    'const apiKey = process.env.ANTHROPIC_API_KEY;',
+    'export const SECRET = config.get("some.long.dotted.path");',
+    'token: z.string().min(1).describe("the caller token"),',
+    'return { baseUrl, email: env.JIRA_EMAIL, token: env.JIRA_API_TOKEN };',
+    'JIRA_API_TOKEN=your-token-here',
+    'TOKEN=<redacted>',
+  ])('still leaves the honest line %s alone', async (line) => {
+    expect(await scan(line)).toEqual([]);
+  });
+});
+
+describe('the assignment arm reads the same vocabulary as the rest of the module', () => {
+  // A hardcoded five-word list sat in the pattern while CREDENTIAL_WORDS held
+  // fourteen and the module called itself "one vocabulary, decided once". Two
+  // lists answering one question is the exact failure this module exists to
+  // prevent — so the agreement is asserted rather than assumed.
+  it('accepts every word in the credential vocabulary as an assignment keyword', async () => {
+    const { CREDENTIAL_WORDS } = await load();
+    // Non-vacuity: a renamed export would otherwise walk an empty set.
+    expect(CREDENTIAL_WORDS.size).toBe(14);
+    const missed: string[] = [];
+    for (const word of CREDENTIAL_WORDS) {
+      const findings = await scan(`${word.toUpperCase()}=${LONG_RUN}`);
+      if (!findings.some((finding) => finding.id === 'assigned-secret')) missed.push(word);
+    }
+    expect(
+      missed,
+      'these words are credentials by CREDENTIAL_WORDS and not by the assignment pattern, ' +
+        'which is two vocabularies answering one question',
+    ).toEqual([]);
+  });
+
+  // The concrete harm the mismatch caused: `cloud-access-key` matches AKIA…,
+  // which is the access key IDENTIFIER and not secret material. Missing the
+  // secret half while catching the public half reads as coverage.
+  it.each([`AWS_SECRET_ACCESS_KEY=${AWS_SECRET}`, `aws_secret_access_key = ${AWS_SECRET}`])(
+    'reports %s, where the keyword is not adjacent to the separator',
+    async (line) => {
+      expect(idsIn(await scan(line))).toContain('assigned-secret');
+    },
+  );
+
+  // A keyword in prose must not reach a separator further along the line.
+  it('does not let a keyword in prose reach a separator further down the line', async () => {
+    expect(await scan(`the token here means BASE64 = ${LONG_RUN}`)).toEqual([]);
+  });
+});
+
+describe('a credential path is the same path however it is spelled', () => {
+  it.each([
+    '.aws/credentials',
+    '.git-credentials',
+    'prod.env.local',
+    'jira.env.local',
+    '.ENV',
+    'Id_rsa',
+    'config/Secrets/x.txt',
+  ])('calls %s a credential', async (file) => {
+    await expect(isCredentialPath(file)).resolves.toBe(true);
+  });
+
+  // 🔴 And the negative side: case-folding must not start eating source.
+  it.each([
+    'Auth.ts',
+    'Session.ts',
+    'Tokenizer.ts',
+    'README.md',
+    '.env.example',
+    '.ENV.EXAMPLE',
+    'packages/core/src/credentials.ts',
+  ])('still leaves %s alone', async (file) => {
+    await expect(isCredentialPath(file)).resolves.toBe(false);
+  });
+});
+
+describe('a credential quoted in documentation has still been leaked', () => {
+  // The queue item names this fixture by hand. The scanner is line-based, so a
+  // fence marker is an ordinary line and this passes today; its value is
+  // prospective — it is the only thing that would object to a future
+  // "do not scan documentation fences" narrowing.
+  it('reports a token inside a fenced block in markdown, on the line it sits on', async () => {
+    const doc = [
+      '# Setting up',
+      '',
+      'Put your token in the environment:',
+      '',
+      '```sh',
+      `export JIRA_API_TOKEN=${LONG_RUN}`,
+      '```',
+    ].join('\n');
+    expect(await scan(doc)).toEqual([{ id: 'assigned-secret', line: 6 }]);
   });
 });

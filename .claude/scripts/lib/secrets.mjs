@@ -124,8 +124,14 @@ const extensionOf = (basename) => {
   return dot <= 0 ? '' : basename.slice(dot + 1).toLowerCase();
 };
 
+// `.env` anywhere in the name, not only at either end: `prod.env.local` and
+// `jira.env.local` are the forms a multi-environment project writes, and they
+// match neither `*.env` nor `.env.*`.
 const isEnvFile = (basename) =>
-  basename === '.env' || basename.startsWith('.env.') || basename.endsWith('.env');
+  basename === '.env' ||
+  basename.startsWith('.env.') ||
+  basename.endsWith('.env') ||
+  basename.includes('.env.');
 
 /**
  * Whether a path names a credential file, from the path text alone.
@@ -135,7 +141,14 @@ const isEnvFile = (basename) =>
  */
 export const isCredentialPath = (relativePath) => {
   const normalised = String(relativePath ?? '').replaceAll('\\', '/');
-  const segments = normalised.split('/').filter((segment) => segment !== '');
+  // 🔴 Lowercased once, and every arm below reads the lowered form. macOS and
+  // Windows are case-insensitive filesystems, so `.ENV` and `.env` are the SAME
+  // FILE — a case-sensitive check refuses one spelling and waves the other
+  // through, while git records whichever one was typed.
+  const segments = normalised
+    .split('/')
+    .filter((segment) => segment !== '')
+    .map((segment) => segment.toLowerCase());
   if (segments.length === 0) return false;
 
   const basename = segments[segments.length - 1];
@@ -148,6 +161,14 @@ export const isCredentialPath = (relativePath) => {
 
   if (CREDENTIAL_BASENAMES.has(basename)) return true;
 
+  // The two most famous credential filenames there are, and both were missed:
+  // a cloud CLI's `credentials` file and `.git-credentials` carry the word as
+  // the BASENAME,
+  // which the segment loop above deliberately skips. Matched exactly, or behind
+  // a `-`, so `credentials.ts` and `secrets-lib.test.ts` stay source.
+  if (CREDENTIAL_SEGMENTS.has(basename)) return true;
+  if (basename.endsWith('-credentials') || basename.endsWith('-secrets')) return true;
+
   if (isEnvFile(basename))
     return !PLACEHOLDER_SUFFIXES.some((suffix) => basename.endsWith(suffix));
 
@@ -157,12 +178,40 @@ export const isCredentialPath = (relativePath) => {
 };
 
 /**
+ * The `assigned-secret` pattern, built from `CREDENTIAL_WORDS`.
+ *
+ * Longest word first, so `credentials` is tried before `credential` — the
+ * alternation is ordered, and a shorter prefix winning would leave the rest of
+ * the word to the run below rather than to the separator.
+ *
+ * `[A-Za-z0-9_-]*` between the keyword and the separator is what reaches
+ * `SECRET_ACCESS_KEY=` and every plural. It cannot cross whitespace, so a
+ * keyword in prose never reaches a separator further down the line: `the token
+ * here = x` does not match, because `here` is not adjacent to `token`.
+ *
+ * Bounded by construction: that class, `\s*` and `[=:]` are mutually disjoint,
+ * so no input gives the engine a choice to backtrack over.
+ */
+const assignmentPattern = () => {
+  const words = [...CREDENTIAL_WORDS].sort((a, b) => b.length - a.length);
+  // `api_key` and `api-key` are the same keyword spelled three ways; the
+  // vocabulary holds only the closed form, so the separator is added here.
+  const alternation = [...words, 'api[_-]?keys?', 'secret[_-]?access[_-]?key'].join('|');
+  return new RegExp(
+    `(?:${alternation})[A-Za-z0-9_-]*["']?\\s*[=:]\\s*["']?[A-Za-z0-9_\\-+/=]{16,}`,
+    'i',
+  );
+};
+
+/**
  * The credential shapes the three call sites refuse, each named so a refusal can
  * say WHICH shape it matched without quoting what it matched.
  *
- * Every pattern is deliberately flat: a literal prefix followed by one bounded
- * character class. None of them nests a quantifier inside another, which is the
- * shape that backtracks — and a guard that fails open cannot afford to hang.
+ * Every pattern is deliberately flat: no quantifier nests inside another, and
+ * where two run in sequence their character classes are DISJOINT, so the engine
+ * never has a choice to backtrack over. That is the property that matters — a
+ * guard that fails open cannot afford to hang, and ambiguity is what makes a
+ * regex hang.
  */
 export const SECRET_VALUE_PATTERNS = [
   { id: 'atlassian-token', pattern: /ATATT3x[A-Za-z0-9_\-=]{16,}/ },
@@ -170,34 +219,50 @@ export const SECRET_VALUE_PATTERNS = [
   { id: 'cloud-access-key', pattern: /\bAKIA[A-Z0-9]{16}\b/ },
   { id: 'anthropic-key', pattern: /\bsk-ant-[A-Za-z0-9\-_]{16,}/ },
   { id: 'private-key-block', pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
-  // A keyword next to a long LITERAL value.
+  // A keyword next to a long LITERAL value — the only pattern here that is
+  // built rather than written, because it is the only one whose vocabulary this
+  // project decides.
   //
-  // Two bounds, and both were paid for. The 16-character one is what keeps
-  // `.env.example` committable — `your-token-here` is fifteen.
+  // THREE bounds, and every one of them was paid for by a defect:
   //
-  // The character class is the second, and it is the one that matters more. An
-  // earlier form read `\S{16,}`, which matched a code expression as happily as a
-  // literal — and this pattern feeds a hook that blocks a commit, where
-  // `.claude/rules/invariants.md` says to stay narrow: "Where a false block
-  // interrupts ordinary work, stay narrow and specific." What keeps it narrow is
-  // not this comment but two live tests — one over ordinary source, one over
-  // every file the repository tracks: see secrets-lib.test.ts › "leaves the
-  // honest line %s alone" and › "finds no credential value in any file this
-  // repository tracks".
+  // 1. Sixteen characters. This is what keeps `.env.example` committable —
+  //    `your-token-here` is fifteen. See secrets-lib.test.ts › "leaves the
+  //    placeholder %s alone".
   //
-  // So the value must look like a literal: no dot, no bracket, no quote — the
-  // characters that mark `process.env.X`, `config.get(…)` and `z.string()`.
+  // 2. A LITERAL value class — no dot, no bracket. An earlier form read
+  //    `\S{16,}` and matched a code expression as happily as a literal, which
+  //    against this repository's own tree produced false positives and nothing
+  //    else, feeding a hook that blocks a commit. `.claude/rules/invariants.md`:
+  //    "Where a false block interrupts ordinary work, stay narrow and specific."
+  //    What keeps it narrow is not this comment but two live tests — see
+  //    secrets-lib.test.ts › "leaves the honest line %s alone" and › "finds no
+  //    credential value in any file this repository tracks".
   //
-  // The price is stated rather than hidden, and stated as MEASURED rather than as
-  // guessed: what is lost is a value whose literal run BREAKS before sixteen
-  // characters, not a value containing a dot at all. An inline JWT is still
-  // matched, because its first segment is twenty-odd literal characters — see
-  // secrets-lib.test.ts › "does see an inline JWT, because its first segment is a
-  // long literal run" and, for the case genuinely lost, › "cannot see a
-  // credential whose literal run breaks before sixteen characters".
+  // 3. An OPTIONAL leading quote, and the keyword need not touch the separator.
+  //    Without those two the pattern missed `const token = "…"`, `"api_key":
+  //    "…"` and `SECRET_ACCESS_KEY=…` — every quoted assignment, which is the
+  //    dominant shape in a TypeScript, JSON or YAML tree. The second of those is
+  //    the sharp one: `cloud-access-key` matches the key IDENTIFIER, which is
+  //    public, so without this the scanner caught the public half of a key pair
+  //    and missed the private half. That is worse than catching neither, because
+  //    it reads as coverage. See secrets-lib.test.ts › "reports %s, whose value
+  //    is quoted rather than bare" and › "reports %s, where the keyword is not
+  //    adjacent to the separator".
+  //
+  // 🔴 THE KEYWORDS ARE DERIVED FROM `CREDENTIAL_WORDS`, not restated. A
+  // hardcoded five-word list sat here while the file called itself "one
+  // vocabulary, decided once" and the vocabulary had fourteen — two lists
+  // answering one question, which is the exact thing this module exists to
+  // prevent. A test walks every word: see secrets-lib.test.ts › "accepts every
+  // word in the credential vocabulary as an assignment keyword".
+  //
+  // What is still lost, stated as measured: a value whose literal run breaks
+  // before sixteen characters — see › "cannot see a credential whose literal run
+  // breaks before sixteen characters". An inline JWT is NOT lost; its first
+  // segment is twenty-odd literal characters.
   {
     id: 'assigned-secret',
-    pattern: /(?:api[_-]?key|token|secret|password|passwd)\s*[=:]\s*[A-Za-z0-9_\-+/=]{16,}/i,
+    pattern: assignmentPattern(),
   },
 ];
 

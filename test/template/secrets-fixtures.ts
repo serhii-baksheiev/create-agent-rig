@@ -59,3 +59,19 @@ export const INLINE_JWT = [
   'eyJzdWIiOiIxMjM0NTY3ODkwIn0',
   'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV',
 ].join('.');
+
+/**
+ * A 32-character literal run, long enough to clear the sixteen-character bound
+ * with room to spare — so a case that fails does so for the reason it names and
+ * not for length.
+ */
+export const LONG_RUN = assemble('aBcDeFgHiJkLmNoPqRsTuVwXyZ', '012345');
+export const LONG_WORDS = assemble('hunter2hunter2', 'hunter2hunter2');
+
+/** The AWS secret access key, whose canonical spellings both put text between
+ * the credential word and the separator. */
+export const AWS_SECRET = assemble('wJalrXUtnFEMI', 'K7MDENGbPxRfiCYEXAMPLEKEY');
+
+/** A quoted assignment, assembled so the quote never sits next to the run. */
+export const quoted = (prefix: string, value: string, quote = '"'): string =>
+  assemble(prefix, quote, value, quote);
