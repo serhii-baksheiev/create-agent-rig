@@ -906,3 +906,93 @@ describe('the shapes a reader of this tool would reasonably expect it to know', 
     expect(await scan(line)).toEqual([]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Round-3 gate findings. The walk that judges a candidate's value arrived in
+// round 2 with a docstring and no test, and it carried a detection hole.
+
+describe('a credential is found even when an innocent candidate precedes it', () => {
+  // 🔴 THE HOLE, measured through all three layers before it was fixed: on a
+  // rejected candidate the scan resumed past the WHOLE greedy match, so any
+  // credential keyword inside the rejected value was swallowed with it.
+  // `AtlassianApiToken` ends in `Token`. The property was inverted — more
+  // credential vocabulary on the line meant LESS detection — and the same line
+  // with a neutral name was found, so the arm was demonstrably capable of it.
+  it.each([
+    `const secret: AtlassianApiToken = "${LONG_RUN}";`,
+    `const token: AtlassianApiCredential = "${LONG_RUN}";`,
+    `let password: DefaultAdminCredentials = "${LONG_RUN}";`,
+    `const apiKey: AtlassianCloudApiToken = "${LONG_RUN}";`,
+  ])('reports %s, whose real value sits behind a rejected one', async (line) => {
+    expect(idsIn(await scan(line))).toContain('assigned-secret');
+  });
+
+  // the control the hole was found by: the same shape with a neutral name was
+  // always found, which is what proved the miss was the walk and not the value
+  it('reports the same line with a neutral name, which is how the miss was found', async () => {
+    expect(idsIn(await scan(`const value: AtlassianApiToken = "${LONG_RUN}";`))).toContain(
+      'assigned-secret',
+    );
+  });
+
+  // and the false positives the rejection exists for stay rejected
+  it.each([
+    'readonly credentials: CredentialsContainer;',
+    'const trailingToken = getTrailingToken(node, lastItem);',
+  ])('still leaves %s alone', async (line) => {
+    expect(await scan(line)).toEqual([]);
+  });
+});
+
+describe('the candidate walk is bounded, and the bound is a stated blind spot', () => {
+  const decoys = (count: number): string =>
+    Array.from({ length: count }, (_, index) => `token${index}: RequestCredentialsValue`).join(
+      ', ',
+    );
+
+  // The walk exists so an innocent match before a guilty one does not hide it.
+  // Asserted here rather than only in a comment: shrinking the cap to 1 used to
+  // leave the whole suite green.
+  it('finds a credential behind thirty-one innocent candidates', async () => {
+    expect(idsIn(await scan(`${decoys(31)}, token = "${LONG_RUN}"`))).toContain('assigned-secret');
+  });
+
+  // 🔴 And the price, pinned from BOTH sides the way the scan cap already is:
+  // past the cap the credential is missed. It needs 32+ keyword-plus-identifier
+  // candidates ahead of the real value ON ONE LINE — a minified bundle or a
+  // single-line config, not ordinary source — but a silent miss in a security
+  // guard is a limit, and this module's rule is that limits are written down.
+  it('misses a credential behind more candidates than the cap allows', async () => {
+    expect(idsIn(await scan(`${decoys(40)}, token = "${LONG_RUN}"`))).not.toContain(
+      'assigned-secret',
+    );
+  });
+
+  it('states that miss in its own source, where a reader of the guard would look', async () => {
+    const source = await readFile(modulePath, 'utf8');
+    expect(source).toMatch(/candidates? on one line/i);
+  });
+});
+
+describe('a vendor documentation example is not a leak', () => {
+  // 🔴 The cloud key pattern fired on the issuer's own published example key,
+  // which this repository's aws-cdk target makes likely to appear in a README or
+  // a decision record. Refusing that at commit time, with --no-verify
+  // hook-blocked, leaves an author nothing but to route around the guard.
+  it('leaves the published example access key alone', async () => {
+    expect(await scan(`AWS_ACCESS_KEY_ID=${['AKIAIOSFODNN', '7EXAMPLE'].join('')}`)).toEqual([]);
+  });
+
+  // and a real-shaped key on the same line still is a finding
+  it('still reports a key of the same shape that is not the example', async () => {
+    expect(idsIn(await scan(`AWS_ACCESS_KEY_ID=${CLOUD_ACCESS_KEY}`))).toContain(
+      'cloud-access-key',
+    );
+  });
+
+  // The Google prefix matched an ordinary identifier because its bound was open.
+  // Real keys of that shape are exactly 39 characters.
+  it('leaves an ordinary identifier beginning with the same four letters alone', async () => {
+    expect(await scan('import AIzaSyntaxHighlighter from "./highlighter";')).toEqual([]);
+  });
+});

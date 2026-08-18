@@ -14,6 +14,12 @@
 // worth keeping even at one consumer, because the ignore rules are the second
 // reader of this set whether or not they import it.
 //
+// ⚠ The `see <file> › "<test>"` pointers below name suites that live in the
+// GENERATOR this rig came from, not in this repository — the same arrangement
+// `.claude/rules/invariants.md` describes for the hooks themselves under "About
+// the hooks you were given". They are where a claim is proven, not cover you
+// have here. The moment you edit this module, its tests are yours.
+//
 // It answers two different questions, and keeping them apart matters:
 //
 //   isCredentialPath(path)  — is this file a credential BY ITS NAME?
@@ -31,6 +37,13 @@
 //     finding is `{ id, line }` and the tests assert the serialised finding
 //     carries neither the value nor a fragment of it: see secrets-lib.test.ts ›
 //     "never carries the credential itself into the finding it reports".
+//   - The assignment arm judges at most 32 candidates on one line and gives up.
+//     Past that a real credential is missed — it needs 32+ keyword-plus-identifier
+//     candidates ahead of the real value on ONE line, so a minified bundle or a
+//     single-line config rather than ordinary source. Pinned from both sides, the
+//     way the scan cap is: see secrets-lib.test.ts › "finds a credential behind
+//     thirty-one innocent candidates" and › "misses a credential behind more
+//     candidates than the cap allows".
 //   - It is a TEXT scan, not an entropy analyser. A credential that matches none
 //     of the shapes below passes, and a base64 blob that happens to look like
 //     one does not. It targets drift, not an adversary. Named rather than left
@@ -38,7 +51,9 @@
 //     assumption: a password inside a `postgres://user:pass@host` or a
 //     basic-auth URL, a bare unassigned JWT, a storage connection string of
 //     the `AccountKey=…` form and a PuTTY key header are all still invisible
-//     to it.
+//     to it. Nor are these siblings of the prefixes it does know: the `xapp-`
+//     and `xoxe-` chat-app forms, a test-mode payment key, and the classic
+//     un-prefixed model-provider key.
 //   - `assigned-secret` reads a keyword next to a long value. It cannot tell a
 //     real token from a long placeholder, which is why the length bound exists
 //     and why the placeholder forms this repository actually writes are pinned
@@ -150,6 +165,11 @@ const extensionOf = (basename) => {
  * which are ordinary source. `CLAUDE.md` puts env loading in `packages/shared`,
  * so that false positive lands on the file most likely to need writing. See
  * secrets-lib.test.ts › "leaves %s writable — it is source, not a credential".
+ *
+ * ⚠ The price, named rather than left to be found: an environment this list does
+ * not know — `app.env.qa`, `svc.env.ci` — is invisible to the path arm. A file
+ * called `.env.qa` is unaffected; only the `<stem>.env.<suffix>` form needs the
+ * suffix to be recognised.
  */
 const ENV_SUFFIXES = new Set([
   'local',
@@ -224,14 +244,12 @@ export const isCredentialPath = (relativePath) => {
  *
  * 🔴 THE RUN BETWEEN KEYWORD AND SEPARATOR IS BOUNDED, and that bound is the
  * whole difference between linear and quadratic. Unbounded, the engine restarts
- * at every offset and walks `[A-Za-z0-9_-]*` to end-of-line at each keyword hit:
- * measured at 140 ms for 16 KB of one line, 2.2 s at 64 KB, 9 s at 128 KB, 36 s
- * at 256 KB — four times per doubling. In a guard that FAILS OPEN and shares its
- * matcher with two others, that is not slowness, it is a bypass of all three.
- * `.claude/rules/invariants.md` states the bar exactly: not "is it fast enough
- * on realistic input" but "can any input make it do unbounded work at all".
- * Pinned by secrets-lib.test.ts › "grows linearly with input size rather than
- * quadratically".
+ * at every offset and walks `[A-Za-z0-9_-]*` to end-of-line at each keyword hit.
+ * In a guard that FAILS OPEN and shares its matcher with two others, that is not
+ * slowness, it is a bypass of all three. `.claude/rules/invariants.md` states the
+ * bar exactly: not "is it fast enough on realistic input" but "can any input make
+ * it do unbounded work at all". Pinned by secrets-lib.test.ts › "grows linearly
+ * with input size rather than quadratically".
  *
  * Forty characters is chosen to clear the longest real prefix this has to
  * cross — `_ACCESS_KEY` after `secret` — with room, and nothing longer is an
@@ -263,12 +281,15 @@ const assignmentPattern = () => {
  * 🔴 This is the rule that separates an assigned random string from
  * `readonly credentials: RequestCredentials`. (Deliberately described rather
  * than shown: a literal example here is a finding in this file, which is the
- * same reason the suites assemble their fixtures.) Measured over 2 946 honest
- * files:
- * without it the arm produced 35 findings and every one was false — `const
- * trailingToken = getTrailingToken(…)`, `exports.isTokenOnSameLine = …`,
- * `credentials: CredentialsContainer`. Those are the shapes a TypeScript service
- * tree is MADE of, and this module ships into one.
+ * same reason the suites assemble their fixtures.)
+ *
+ * Without it the arm reported ordinary source — `const trailingToken =
+ * getTrailingToken(…)`, `exports.isTokenOnSameLine = …`, `credentials:
+ * CredentialsContainer`. Those are the shapes a TypeScript service tree is MADE
+ * of, and this module ships into one. What keeps that true is not this comment:
+ * see secrets-lib.test.ts › "leaves %s alone" in the block about ordinary
+ * TypeScript, and › "finds no credential value in any file this repository
+ * tracks", which sweeps the whole tree with no exemption.
  *
  * A guard that fires on honest work is routed around within the week, and a
  * routed-around guard is worse than none because everyone believes they are
@@ -283,19 +304,35 @@ const assignmentPattern = () => {
 const IDENTIFIER_VALUE = /^[A-Za-z]+$/;
 
 /**
- * The credential shapes the three call sites refuse, each named so a refusal can
- * say WHICH shape it matched without quoting what it matched.
+ * The credential shapes a refusal names — each id chosen so a block can say WHICH
+ * shape it matched without quoting what it matched.
  *
- * Every pattern is deliberately flat: no quantifier nests inside another, and
- * where two run in sequence their character classes are DISJOINT, so the engine
- * never has a choice to backtrack over. That is the property that matters — a
- * guard that fails open cannot afford to hang, and ambiguity is what makes a
- * regex hang.
+ * How many things read this list is a question about the project, answered at the
+ * top of this file; it is not a property of the list.
+ *
+ * Every pattern is deliberately flat: no quantifier nests inside another.
+ *
+ * 🔴 THAT IS NOT SUFFICIENT ON ITS OWN, and reading it as sufficient is how the
+ * quadratic in `assignedPattern` got written. Disjoint consecutive classes bound
+ * each backtrack STEP; they say nothing about the engine RESTARTING at every
+ * offset. An unanchored alternation followed by an unbounded run is linear per
+ * attempt and quadratic over the line. The rule for a thirteenth pattern is
+ * therefore: a literal prefix and ONE bounded class, or a bound on every
+ * quantifier that can follow a match that fails.
  */
 export const SECRET_VALUE_PATTERNS = [
   { id: 'atlassian-token', pattern: /ATATT3x[A-Za-z0-9_\-=]{16,}/ },
-  { id: 'github-pat', pattern: /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/ },
-  { id: 'cloud-access-key', pattern: /\bAKIA[A-Z0-9]{16}\b/ },
+  // `gh[pousr]_` rather than `ghp_` alone: the other four are live credentials
+  // of the same shape, and an id called `github-pat` reads as though they were
+  // already covered.
+  { id: 'github-pat', pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/ },
+  // The negative lookahead is the issuer's own PUBLISHED example key. It appears
+  // in documentation, and this generator ships a target whose README quotes such
+  // docs — refusing it at commit time, with --no-verify hook-blocked, leaves an
+  // author nothing but to route around the guard. A fixed-length literal, so it
+  // adds no backtracking surface. See secrets-lib.test.ts › "leaves the published
+  // example access key alone".
+  { id: 'cloud-access-key', pattern: /\bAKIA(?!IOSFODNN7EXAMPLE\b)[A-Z0-9]{16}\b/ },
   { id: 'anthropic-key', pattern: /\bsk-ant-[A-Za-z0-9\-_]{16,}/ },
   { id: 'private-key-block', pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
   // Six more with a recognisable prefix. Each is a literal followed by ONE
@@ -304,7 +341,9 @@ export const SECRET_VALUE_PATTERNS = [
   // invites the reader to assume it knows the rest; the ones it still does not
   // know are named in the limits block above rather than left to be discovered.
   { id: 'slack-token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{16,}/ },
-  { id: 'google-api-key', pattern: /\bAIza[A-Za-z0-9_-]{16,}/ },
+  // Exactly 35, not 16-or-more: the open bound matched ordinary identifiers
+  // that merely begin with those four letters (`AIzaSyntaxHighlighter`).
+  { id: 'google-api-key', pattern: /\bAIza[A-Za-z0-9_-]{35}\b/ },
   { id: 'stripe-live-key', pattern: /\b[sr]k_live_[A-Za-z0-9]{16,}/ },
   { id: 'openai-project-key', pattern: /\bsk-proj-[A-Za-z0-9_-]{16,}/ },
   { id: 'npm-token', pattern: /\bnpm_[A-Za-z0-9]{30,}/ },
@@ -403,9 +442,17 @@ const matches = (entry, line) => {
     const match = global.exec(line);
     if (match === null) return false;
     if (!entry.reject.test(match[entry.valueGroup] ?? '')) return true;
-    // A zero-length match would spin here; every pattern above consumes, but the
-    // guard costs one comparison and removes the question.
-    if (global.lastIndex === match.index) global.lastIndex += 1;
+    // 🔴 RESUME ONE CHARACTER PAST THE START, never past the whole match. A
+    // rejected match ends after its all-letters value, and a credential keyword
+    // INSIDE that value is then consumed with it: `AtlassianApiToken` ends in
+    // `Token`, so `const secret: AtlassianApiToken = "<a real one>"` was reported
+    // clean by all three layers. The property was inverted — more credential
+    // vocabulary on the line meant less detection. See secrets-lib.test.ts ›
+    // "reports %s, whose real value sits behind a rejected one".
+    //
+    // This is also what makes the cap above load-bearing rather than decorative:
+    // the walk now revisits offsets, so it is the cap that bounds it.
+    global.lastIndex = match.index + 1;
   }
   return false;
 };

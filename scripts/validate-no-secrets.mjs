@@ -109,11 +109,11 @@ const excusalKey = (entryPath, id) => `${entryPath}\u0000${id}`;
  */
 export function exemptionProblems({ exemptions = [], tracked = [], offending = [] } = {}) {
   const trackedSet = new Set(tracked);
-  const offendingSet = new Set(
-    offending.map((finding) =>
-      typeof finding === 'string' ? finding : excusalKey(finding.path, finding.id),
-    ),
-  );
+  // Findings only, never bare paths. A string form was accepted here and could
+  // not work — it entered the set unkeyed while every lookup is keyed — so a
+  // caller using it got `exemption-no-longer-needed` on every entry. Deleted
+  // rather than fixed: nothing wanted it.
+  const offendingSet = new Set(offending.map((finding) => excusalKey(finding.path, finding.id)));
   const problems = [];
   for (const entry of exemptions) {
     const entryPath = String(entry?.path ?? '');

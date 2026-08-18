@@ -93,8 +93,8 @@ never inflated). The hooks live in `.claude/hooks/` and are wired in
   carries a credential VALUE. Both arms read one vocabulary,
   `.claude/scripts/lib/secrets.mjs`, and a refusal names the pattern and the line
   and **never the matched value** — printing it would leak the secret in the act
-  of refusing it. Its three blind spots are in its own header, each pointing at
-  the test that pins it;
+  of refusing it. Its four blind spots are in its own header, each pointing at
+  the test that pins it — those tests live in this generator, not in the rig;
 - **`block-no-verify`** — refuses bypassing pre-commit checks (and knows the
   difference between using the `--no-verify`/`-n` flag and merely mentioning it
   in a message);

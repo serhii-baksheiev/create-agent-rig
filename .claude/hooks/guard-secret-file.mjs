@@ -20,7 +20,11 @@
 // 🔴 LIMITS, stated because a guard's own claim about its reach is the first
 // thing to go stale. Each one names the test that pins it — a limits comment
 // nothing checks drifts into overstatement, which is the direction that gets a
-// reader hurt:
+// reader hurt. ⚠ Those tests live in the GENERATOR this rig came from, not here;
+// `.claude/rules/invariants.md` ("About the hooks you were given") says the same
+// of this hook's own tests, and the moment you edit it they are yours.
+//
+// There are FOUR:
 //
 //   - It sees ONE edit fragment, not the resulting file. A credential assembled
 //     across two edits is not seen — see guard-secret-file.test.ts › "does not
@@ -43,6 +47,10 @@
 //     rulebook came from has both, running the same vocabulary; a freshly
 //     generated rig ships neither, and adding one is a decision for the project.
 //
+//   - It reads at most the first 2 MB of the text being written, the cap
+//     `findSecretValues` applies by default so a fail-open guard cannot be made
+//     to hang. A credential past that point is not seen. The CI sweep lifts the
+//     cap; this hook cannot, and that asymmetry is the point.
 //   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
 //     not JSON at all" and its neighbours. An unparseable payload, a missing
 //     field, an internal throw — all allow the edit. A crashed guard that blocks everything gets deleted

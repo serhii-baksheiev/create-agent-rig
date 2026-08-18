@@ -83,8 +83,8 @@ interface ValidatorModule {
   exemptionProblems(input: {
     exemptions: ReadonlyArray<Partial<Exemption>>;
     tracked: readonly string[];
-    /** A finding is `{ path, id }`; a bare path is accepted for the path arm. */
-    offending: ReadonlyArray<string | { path: string; id: string }>;
+    /** Findings, always `{ path, id }` — the key an exemption is matched on. */
+    offending: ReadonlyArray<{ path: string; id: string }>;
   }): ExemptionProblem[];
 }
 
@@ -391,6 +391,18 @@ describe('validate-no-secrets — the exemption list answers for itself', () => 
     // silenced. Honouring it silently is the failure; naming it is the fix.
     expect(problems.map((problem) => problem.kind)).toContain('exemption-without-reason');
     expect(problems.map((problem) => problem.path)).toContain('fixtures/sample.env');
+  });
+
+  it('refuses an entry that names no finding id, complaining about its own list', async () => {
+    const { exemptionProblems } = await loadValidator();
+    const problems = exemptionProblems({
+      exemptions: [{ path: 'fixtures/sample.env', reason: 'a documented placeholder' }],
+      tracked: ['fixtures/sample.env'],
+      offending: [{ path: 'fixtures/sample.env', id: 'credential-path' }],
+    });
+    // An entry with no id cannot say WHAT it excuses, so honouring it would be
+    // the blanket-per-path licence the {path, id} key exists to remove.
+    expect(problems.map((problem) => problem.kind)).toContain('exemption-without-id');
   });
 
   it('reports an exemption naming a path that is not tracked', async () => {
@@ -847,4 +859,19 @@ describe('validate-no-secrets --staged — the list is audited where the whole t
     );
     expect(code, 'a commit was refused over the exemption list, not over a credential').toBe(0);
   });
+});
+
+describe('validate-no-secrets --self-test — a pattern added without a fixture fails', () => {
+  // 🔴 The header claims a shape cannot ride along uncovered. That claim was
+  // backed only by a hardcoded id list, so a thirteenth pattern would have got
+  // the free pass the header says is impossible. This derives the expectation
+  // from the vocabulary instead.
+  it('names every id the vocabulary defines, derived rather than listed', async () => {
+    const { SECRET_VALUE_PATTERNS } = await loadSecretsLib();
+    expect(SECRET_VALUE_PATTERNS.length, 'the vocabulary must have patterns').toBeGreaterThan(6);
+    const dir = await temporaryRepo();
+    const result = await run(dir, ['--self-test']);
+    expect(result.code, result.out).toBe(0);
+    for (const { id } of SECRET_VALUE_PATTERNS) expect(result.out).toContain(id);
+  }, 20_000);
 });
