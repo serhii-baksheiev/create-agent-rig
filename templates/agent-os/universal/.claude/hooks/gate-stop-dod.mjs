@@ -9,8 +9,9 @@
 //   - stop_hook_active in the payload means we already blocked this stop once
 //     — never block again, or an agent that cannot go green spins forever;
 //   - a clean git tree stops instantly: nothing changed, nothing to gate;
-//   - fail open on any hook error — a crashed gate must not make the session
-//     unquittable.
+//   - fail open on any fault of the hook's OWN — a crashed gate must not make
+//     the session unquittable. A check that ran and was killed is NOT one of
+//     those; the 🔴 block below is the rule that separates the two.
 //
 // 🔴 The budget, and the one place this gate fails CLOSED. The checks are a
 // real test suite, and it can outrun the wiring `timeout` in
@@ -68,7 +69,8 @@ import { withoutGitLocation } from '../scripts/git-env.mjs';
 // The default total budget. It must stay strictly below the `timeout` on the
 // Stop entry in `.claude/settings.json` (that one is in SECONDS), or the
 // harness kills the gate before the gate can report — the two are read from
-// their files and compared by the wiring test above, never restated.
+// their files and compared, never restated —
+//   see hooks.test.ts › "gives the stop gate a harness timeout its own budget finishes inside"
 const DEFAULT_BUDGET_MS = 600_000;
 
 /** The gate stays open, and says so — a silent 0 is indistinguishable from clean. */
@@ -99,6 +101,7 @@ const SPAWN_NEVER_STARTED = new Set(['ENOENT', 'EACCES', 'EPERM', 'EMFILE', 'ENF
  * it. `Number.isSafeInteger` is the test rather than `isFinite`, because
  * `spawnSync` throws on a fractional `timeout` — and a throw here would land in
  * the backstop and open the gate completely.
+ *   see hooks.test.ts › "runs the gate on the default budget when the override is unusable, instead of not running it"
  */
 function budgetMs(env) {
   const raw = env.RIG_DOD_BUDGET_MS;
@@ -182,6 +185,7 @@ function main() {
   // and lands the throw in the backstop below: the same exit code by accident
   // instead of by decision, and a message about argument types instead of the
   // file to fix.
+  //   see hooks.test.ts › "announces a config it could read but cannot use, and names the file to fix"
   if (!checks.every((command) => typeof command === 'string')) {
     return failOpen('dod-checks.json must be an array of command strings');
   }
