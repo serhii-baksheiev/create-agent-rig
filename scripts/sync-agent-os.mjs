@@ -33,6 +33,16 @@ const substitute = (content) => content.replaceAll('__PROJECT_NAME__', 'create-a
 const ELEVATED_PATHS = [
   '.github/workflows/', // what runs on every push, and what deploys
   'scripts/', // prepare + the dogfooding sync itself
+  // The git-hook layer. It runs on every commit BY ANY AUTHOR — the one gate a
+  // PreToolUse hook cannot cover, because a human editing a file never reaches
+  // one. Declared with the pre-commit secret check that landed in it (AR-49 b):
+  // until then this directory held only `lint && typecheck && test:unit`, and a
+  // merge that quietly emptied it would have looked like a formatting change.
+  //
+  // ⚠ Unlike most entries here, `.husky/` exists ONLY in this repository —
+  // neither template ships a git-hook directory. So this line declares a gate
+  // over a real directory in THIS tree and deliberately has no template twin.
+  '.husky/',
   'package.json', // the publish manifest: files, bin, version
   'templates/agent-os/universal/.claude/hooks/', // the enforcement layer
   'templates/agent-os/universal/.claude/scripts/', // and the sweeps that watch it

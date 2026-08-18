@@ -84,7 +84,10 @@ them all; they are one rulebook.
   difference is worth keeping straight.
 - **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
   the core the moment it lands; `guard-web-boundary` keeps the frontend off the
-  backend; `block-no-verify` refuses pre-commit bypasses; `guard-bash` refuses
+  backend; `guard-secret-file` refuses an edit that writes a credential — by the
+  file's name or by a value in its text, from the one vocabulary in
+  `.claude/scripts/lib/secrets.mjs`; `block-no-verify` refuses pre-commit
+  bypasses; `guard-bash` refuses
   the "Never" tier — force-pushing a shared branch, a production deploy, a
   filesystem wipe — and carries the kill switch; `gate-stop-dod` refuses to end
   the session while a Definition-of-Done check fails. If a hook blocks you, fix

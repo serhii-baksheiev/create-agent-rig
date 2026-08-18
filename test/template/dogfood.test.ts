@@ -46,40 +46,54 @@ const setLiteralOf = (source: string, name: string): string[] => {
 };
 
 /**
- * One filename per way `isSecretFile` (decision-router.mjs `:408`) answers "this
- * file IS a credential" — for TWO of its arms, not all of them.
+ * One filename per way this repository answers "this file IS a credential".
  *
- * Derived: `SECRET_BASENAMES`, and `SECRET_EXTENSIONS`. Plus `env` alone out of
- * the `SECURITY_WORDS` arm, because `service.env` and `jira.env` are the form
- * this repository's own tooling writes.
+ * Derived, never restated — a restated list is the fourth copy the comment below
+ * complains about. Three sources feed it:
  *
- * 🔴 **What this deliberately does NOT cover, stated as a rule so it cannot go
- * stale.** `SECURITY_WORDS` has 55 members. Narrowing the arm to `env` leaves
- * **53** of them committable — every member except `env` (`*.env`) and `key`
- * (`*.key`, which the extension arm already covers). Among them are names
- * `isSecretFile` calls a credential: `*.secret`, `*.secrets`, `*.token`,
- * `*.tokens`, `*.password`, `*.passwords`, `*.credential`, `*.credentials`,
- * `*.apikey`, `*.apikeys`, `*.passwd`, `*.creds`, `*.jwt`, `*.keys`, `*.bearer`
- * — examples, not the set. Taking the arm whole would demand ignore rules for
- * `*.cors`, `*.acl` and `*.session`, which are not credential files. Closing it
- * needs a named credential subset — a decision about which words are
- * credentials rather than a derivation — so it is not taken here.
+ *   - `SECRET_BASENAMES` and `SECRET_EXTENSIONS`, parsed out of the router;
+ *   - `env` out of the router's `SECURITY_WORDS`, because `service.env` and
+ *     `jira.env` are the form this repository's own tooling writes;
+ *   - `CREDENTIAL_WORDS`, imported from `.claude/scripts/lib/secrets.mjs` — the
+ *     14-word NAMED SUBSET the AR-49(b) ruling settled. That import is what ties
+ *     the three ignore blocks to the one module the guards also read, so the
+ *     ignore rule and the refusal cannot come to disagree about what a
+ *     credential is.
  *
- * The `53 = 55 − {env, key}` form is deliberate: a hand-listed set is the
- * fourth copy the comment below complains about, and the first attempt at one
- * here was wrong on day one — it said 56 and named 10, omitting the plural
- * twins of half the names it did give.
+ * 🔴 **What is still committable, stated as a rule so it cannot go stale.**
+ * `SECURITY_WORDS` has 55 members; 16 of them are ignored — the fourteen above
+ * plus `env` and `key` — so **39 stay committable**. That is deliberate, not a
+ * gap: the remainder is `auth`, `session`, `cors`, `acl`, `cert`, `keys`,
+ * `crypto` and their kin, which are ordinary names in ordinary source. An ignore
+ * rule over `*.session` would hide legitimate files, and a guard that fired on
+ * them would be routed around within the week.
+ *
+ * The `39 = 55 − 16` form is deliberate. A hand-listed set is that fourth copy,
+ * and the first attempt at one here was wrong on day one.
  *
  * The segment arm (`secrets/`, `credentials/`) is a directory, not a filename,
- * and a gitignore that swallowed either would hide legitimate source.
+ * and a gitignore that swallowed either would hide legitimate source. It is
+ * closed by `guard-secret-file` and the CI validator instead, which refuse a
+ * commit rather than hiding a tree.
  */
-const credentialFileNames = (source: string): string[] => {
+const credentialFileNames = (
+  source: string,
+  credentialWords: ReadonlySet<string> = new Set(),
+): string[] => {
   const names = [...setLiteralOf(source, 'SECRET_BASENAMES')];
   for (const extension of setLiteralOf(source, 'SECRET_EXTENSIONS'))
     names.push(`private.${extension}`);
   if (setLiteralOf(source, 'SECURITY_WORDS').includes('env')) names.push('jira.env');
+  for (const word of credentialWords) names.push(`prod.${word}`);
   return names;
 };
+
+// The ruling AR-49(b) settled, read from the module the guards read. Imported
+// rather than restated so the ignore blocks and the refusal share one list.
+const { CREDENTIAL_WORDS } = (await import(
+  pathToFileURL(path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/lib/secrets.mjs'))
+    .href
+)) as { CREDENTIAL_WORDS: ReadonlySet<string> };
 
 const routerSource = await readFile(
   path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/decision-router.mjs'),
@@ -406,7 +420,7 @@ describe('the secrets block the skeletons ship is live in this repository too', 
     expect(members).toContain(member);
   });
 
-  it.each(credentialFileNames(routerSource))(
+  it.each(credentialFileNames(routerSource, CREDENTIAL_WORDS))(
     'never lets %s be committed — the router calls it a credential file',
     async (file) => {
       await expect(ignored(file)).resolves.toBe(true);
@@ -420,9 +434,10 @@ describe('the secrets block the skeletons ship is live in this repository too', 
   // (`SECRET_BASENAMES`, `SECRET_EXTENSIONS`) produces a new required ignore,
   // instead of the parser silently returning what it returned yesterday.
   //
-  // 🔴 It does not reach the `SECURITY_WORDS` arm: that one is narrowed to `env`
-  // above, so adding `password` there produces nothing here. The docstring on
-  // `credentialFileNames` lists what stays committable because of it.
+  // 🔴 It does not reach the `SECURITY_WORDS` arm: that one contributes `env`
+  // only, so adding a word to the ROUTER produces nothing here. The credential
+  // words come from `secrets.mjs` instead and are passed in separately — which
+  // is why this case passes no set, and why the `prod.*` names are absent below.
   it('turns a name newly added to the router sets into a newly required ignore', () => {
     const fabricated = [
       "const SECRET_EXTENSIONS = new Set(['ar49ext']);",
