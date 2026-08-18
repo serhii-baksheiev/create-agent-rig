@@ -507,10 +507,16 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
   });
 
   // A gate that runs out of time is the one case where failing open costs the
-  // most: the harness kills the hook, a killed hook blocks nothing, and the
-  // session ends reporting a Definition of Done that was never measured. So the
-  // hook owns a budget of its own and spends it before the harness's runs out —
-  // and when the budget goes, the answer is "not verified", which is a block.
+  // most: the session ends reporting a Definition of Done that was never
+  // measured. So the hook owns a budget of its own and spends it before the
+  // wiring's `timeout` runs out — and when the budget goes, the answer is "not
+  // verified", which is a block.
+  //
+  // The premise underneath (a hook past its timeout is killed, and a killed
+  // Stop hook does not block) is the harness assumption the hook header labels
+  // as unprovable from this repository. It is why the budget exists; it is not
+  // something this file demonstrates, and it is not stated here as though it
+  // were.
   it('gates the stop when a check outruns the budget — unmeasured is not a pass', async () => {
     await setUpProject({ checks: ['sleep 5'], dirty: true });
     const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '1000' });
@@ -551,6 +557,97 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     const result = await runStopHook(stop());
     expect(result.code).toBe(0);
     expect(result.stderr).toContain('[hook fail-open]');
+  });
+
+  // The governing rule, stated once and pinned five ways below: a check that
+  // did not produce a verdict BLOCKS, and a gate that could not START stays
+  // open. `spawnSync` reports "the child was killed before it finished" as an
+  // `error` with `status: null`, and a timeout is only ONE of the ways that
+  // happens — a check that outruns the read buffer lands in exactly the same
+  // shape. Reading anything but ETIMEDOUT as the hook's own problem hands the
+  // session a pass nobody measured.
+  it('gates the stop when a check drowns its own buffer — a pass nobody watched is not a pass', async () => {
+    // Exits 0, so it WOULD have passed — and 70 MB past a 64 MB buffer means
+    // the hook never sees that exit code: `error.code === 'ENOBUFS'`,
+    // `status: null`, `signal: SIGTERM`. The verdict is unknown, not clean.
+    await setUpProject({
+      checks: [`node -e "process.stdout.write('x'.repeat(70*1024*1024))"`],
+      dirty: true,
+    });
+    const result = await runStopHook(stop());
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('70*1024*1024');
+    expect(result.stderr).toMatch(/unmeasured|could not be measured/i);
+    // …and it is a gate, not a shrug: a fail-open announcement here would mean
+    // the session ended on a Definition of Done that was never read.
+    expect(result.stderr).not.toContain('[hook fail-open]');
+  }, 60_000);
+
+  // The budget override is read from the environment, so it is outside input:
+  // `spawnSync` refuses a non-integer `timeout` by THROWING, the backstop
+  // catches it, and one stray decimal point turns the whole Definition of Done
+  // into an announced exit 0. An override the hook cannot use must cost the
+  // override, never the gate.
+  it('runs the gate on the default budget when the override is unusable, instead of not running it', async () => {
+    await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: true });
+    const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '1000.5' });
+    expect(result.code, result.stderr).toBe(2);
+    // the failing check is still what the session is told about …
+    expect(result.stderr).toContain('process.exit(1)');
+    // … and the unusable override is reported rather than silently obeyed
+    expect(result.stderr).toContain('RIG_DOD_BUDGET_MS');
+    expect(result.stderr).toMatch(/default/i);
+  }, 30_000);
+
+  /** The default total budget, read from the hook rather than restated: the
+   *  clamp below is announced in milliseconds, and a test that hardcodes the
+   *  number drifts the moment the hook's own constant moves. */
+  async function defaultBudgetMs(): Promise<number> {
+    const source = await readFile(path.join(hooksDir, 'gate-stop-dod.mjs'), 'utf8');
+    const declared = /DEFAULT_BUDGET_MS\s*=\s*([\d_]+)/.exec(source);
+    expect(declared, 'the hook must declare a default budget in ms').not.toBeNull();
+    return Number(declared![1]!.replaceAll('_', ''));
+  }
+
+  // The override may only LOWER the budget. Raised above the Stop entry's
+  // `timeout` in settings.json it re-creates the exact defect this gate exists
+  // to remove — the harness kills the hook before the hook can report, and a
+  // killed Stop hook blocks nothing — except now the session believes it
+  // configured a longer gate rather than none at all.
+  it('clamps a budget override that would outlive the harness, and names the budget it used', async () => {
+    await setUpProject({ checks: ['node -e "process.exit(0)"'], dirty: true });
+    const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '999999999' });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).toContain('RIG_DOD_BUDGET_MS');
+    expect(result.stderr).toMatch(/clamp|cap|lower|reduc/i);
+    expect(result.stderr).toContain(String(await defaultBudgetMs()));
+  }, 30_000);
+
+  // Failing open is right here — a config the gate cannot use is the gate's
+  // problem, not the session's — but it has to be a DECISION, taken while the
+  // file is still in hand and can be named. Today a non-string entry travels
+  // all the way to `spawnSync`, throws, and lands in the backstop: the same
+  // exit code by accident, announced as an internal error about an argument
+  // type, with nothing to tell the reader which file to go and fix.
+  it('announces a config it could read but cannot use, and names the file to fix', async () => {
+    await setUpProject({ rawConfig: '[{"cmd":"exit 1"}]', dirty: true });
+    const result = await runStopHook(stop());
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).toContain('[hook fail-open]');
+    expect(result.stderr).toContain('dod-checks.json');
+    // decided by the gate, not discovered by the child-process layer
+    expect(result.stderr).not.toContain('must be of type string');
+  });
+
+  // The other side of that boundary, and the reason it is a boundary: universal
+  // ships no checks at all, so an ABSENT config is the ordinary state of a
+  // freshly generated project. Announcing a fail-open there trains every reader
+  // to ignore the announcement, which is the one thing it cannot afford.
+  it('stays silent when there is no config at all — nothing to gate is the design, not a swallowed error', async () => {
+    await setUpProject({ dirty: true });
+    const result = await runStopHook(stop());
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('[hook fail-open]');
   });
 });
 

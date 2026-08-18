@@ -14,15 +14,20 @@
 //
 // 🔴 The budget, and the one place this gate fails CLOSED. The checks are a
 // real test suite, and it can outrun the wiring `timeout` in
-// `.claude/settings.json`. So the hook carries a budget of its own, spends it
-// BEFORE the wiring's runs out, and treats exhausting it as "not verified",
-// which is a block rather than a pass.
+// `.claude/settings.json`. So the hook carries a budget of its own and spends
+// it BEFORE the wiring's runs out.
 //
-// ⚠ This rests on ONE assumption about the harness that nothing in this
-// repository can prove or falsify: that a hook outrunning its timeout is
-// killed, and that a killed Stop hook does not block the stop. If that is ever
-// false, this budget is merely redundant — nothing here breaks. It is stated
-// rather than asserted because the whole design follows from it.
+// The rule the whole file follows, stated once because two earlier readings of
+// it disagreed:
+//
+//   a check that did not produce a VERDICT blocks;
+//   a gate that could not START stays open.
+//
+// `spawnSync` reports a timeout and a buffer overrun the same way — an `error`
+// with `status: null` — and in both the check's result is unknown. Unmeasured
+// is not a pass. The hook's OWN faults (an unreadable payload, a config it
+// cannot use, a shell it cannot spawn) keep failing open and announcing
+// themselves, so a crashed gate still cannot make the session unquittable.
 //
 // The budget is ONE allowance for the whole suite, not a fresh one per check:
 // a per-step budget is how three checks quietly cost three times the wall
@@ -32,16 +37,29 @@
 //   see hooks.test.ts › "spends one budget across the whole suite, not a fresh one per check"
 //   see hooks.test.ts › "gives the stop gate a harness timeout its own budget finishes inside"
 //
+// ⚠ This rests on ONE assumption about the harness that nothing in this
+// repository can prove or falsify: that a hook outrunning its timeout is
+// killed, and that a killed Stop hook does not block the stop. If it is false
+// the budget is not merely inert — it becomes the only thing that would stop a
+// suite still running at the wiring timeout. It is stated rather than asserted
+// because the whole design follows from it.
+//
 // Limits, each with the test that pins it:
-//   - output volume is not a verdict: a passing check that prints more than the
-//     buffer allows is a hook problem, never a DoD failure —
+//   - a check whose output outgrows the buffer is UNMEASURED, and blocks like
+//     any other unmeasured check —
+//     see hooks.test.ts › "gates the stop when a check drowns its own buffer — a pass nobody watched is not a pass"
+//   - below that buffer, output volume is not a verdict: a chatty check that
+//     passes, passes —
 //     see hooks.test.ts › "does not read a chatty passing check as a failure (the ENOBUFS false gate)"
+//   - the RIG_DOD_BUDGET_MS override may only LOWER the budget, and an
+//     override this hook did not honour is announced rather than ignored —
+//     see hooks.test.ts › "clamps a budget override that would outlive the harness, and names the budget it used"
 //   - a fail-open is announced on stderr, because a silent exit 0 and a clean
 //     pass are the same observation from outside —
 //     see hooks.test.ts › "announces a fail-open instead of returning a silent clean pass"
-//   - an ABSENT config is not a failure and says nothing: universal ships no
-//     checks, and "no config → nothing to gate" is the design, not a swallowed
-//     error. Only a config that exists and cannot be used announces.
+//   - an ABSENT config is not a failure and says nothing; only a config that
+//     exists and cannot be used announces —
+//     see hooks.test.ts › "stays silent when there is no config at all — nothing to gate is the design, not a swallowed error"
 import { execSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -59,10 +77,53 @@ function failOpen(reason) {
   return 0;
 }
 
-/** The total budget for the whole suite: the override if it is usable, else the default. */
+/**
+ * Error codes that mean the child never ran, so there is no verdict to lose.
+ * Everything else that surfaces as `result.error` — a timeout, a buffer
+ * overrun — killed a check that WAS running, and that is the unmeasured case.
+ */
+const SPAWN_NEVER_STARTED = new Set(['ENOENT', 'EACCES', 'EPERM', 'EMFILE', 'ENFILE', 'ENOMEM']);
+
+/**
+ * The total budget for the whole suite, and a note when the override was not
+ * taken at face value.
+ *
+ * 🔴 The override may only LOWER the budget. Raising it past the wiring's
+ * `timeout` puts back the exact defect this hook exists to remove — the
+ * harness kills the gate before it can report, and that kill is silent.
+ * Raising the ceiling is a two-file decision (this constant and the wiring),
+ * deliberately not something one environment variable can do.
+ *
+ * An override this hook did not honour is announced, never silently dropped:
+ * an operator who set a budget and got a different one has to be able to see
+ * it. `Number.isSafeInteger` is the test rather than `isFinite`, because
+ * `spawnSync` throws on a fractional `timeout` — and a throw here would land in
+ * the backstop and open the gate completely.
+ */
 function budgetMs(env) {
-  const declared = Number(env.RIG_DOD_BUDGET_MS);
-  return Number.isFinite(declared) && declared > 0 ? declared : DEFAULT_BUDGET_MS;
+  const raw = env.RIG_DOD_BUDGET_MS;
+  if (raw === undefined || raw === '') return { ms: DEFAULT_BUDGET_MS, notice: null };
+
+  const declared = Number(raw);
+  if (!Number.isSafeInteger(declared) || declared <= 0) {
+    return {
+      ms: DEFAULT_BUDGET_MS,
+      notice:
+        `RIG_DOD_BUDGET_MS=${raw} is not a whole number of milliseconds above zero — ` +
+        `using the default ${DEFAULT_BUDGET_MS} ms instead.`,
+    };
+  }
+  if (declared > DEFAULT_BUDGET_MS) {
+    return {
+      ms: DEFAULT_BUDGET_MS,
+      notice:
+        `RIG_DOD_BUDGET_MS=${raw} is above this gate's ceiling and was clamped to ` +
+        `${DEFAULT_BUDGET_MS} ms — the budget must expire before the Stop hook's ` +
+        `\`timeout\` in .claude/settings.json, or the gate is killed before it can report. ` +
+        `Raise both, in their own files, to raise it at all.`,
+    };
+  }
+  return { ms: declared, notice: null };
 }
 
 function main() {
@@ -117,41 +178,59 @@ function main() {
     return failOpen(`dod-checks.json could not be read: ${error.message}`);
   }
   if (!Array.isArray(checks)) return failOpen('dod-checks.json is not an array of commands');
+  // Decided HERE rather than left to `spawnSync`, which throws on a non-string
+  // and lands the throw in the backstop below: the same exit code by accident
+  // instead of by decision, and a message about argument types instead of the
+  // file to fix.
+  if (!checks.every((command) => typeof command === 'string')) {
+    return failOpen('dod-checks.json must be an array of command strings');
+  }
   if (checks.length === 0) return 0;
 
-  const deadline = Date.now() + budgetMs(process.env);
+  const budget = budgetMs(process.env);
+  if (budget.notice) process.stderr.write(`gate-stop-dod: ${budget.notice}\n`);
+  const deadline = Date.now() + budget.ms;
 
   for (const command of checks) {
-    const remaining = deadline - Date.now();
-    const result =
-      remaining > 0
-        ? spawnSync(command, {
-            shell: true,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: remaining,
-            // Output volume is not a verdict. The default 1 MB turned a chatty
-            // but PASSING suite into a throw the catch below reported as a
-            // failing check — a gate that fired on nothing.
-            maxBuffer: 64 * 1024 * 1024,
-          })
-        : { error: Object.assign(new Error('budget exhausted'), { code: 'ETIMEDOUT' }) };
+    // A 1 ms floor rather than a branch for "the budget is already gone": the
+    // check then times out through the ordinary path, which names the command
+    // that did not fit instead of blaming it for spending what an earlier one
+    // spent. One path, and no branch that only a race can reach.
+    const result = spawnSync(command, {
+      shell: true,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: Math.max(1, deadline - Date.now()),
+      // Output volume is not a verdict — below this bound. Past it the child is
+      // killed and its result is unknown, which the error branch treats as
+      // unmeasured rather than as a failure or a pass. The old 1 MB default
+      // made a chatty but PASSING suite look like a failing check.
+      maxBuffer: 64 * 1024 * 1024,
+    });
 
     if (result.error) {
-      // 🔴 The one fail-CLOSED case. Out of budget means the checks did not
-      // finish, so nothing was measured — and an unmeasured Definition of Done
-      // is not a passed one. Every OTHER error here is the hook's own problem
-      // (it could not spawn, it overran its own buffer), and those stay open.
-      if (result.error.code !== 'ETIMEDOUT') {
-        return failOpen(`the check \`${command}\` could not be run: ${result.error.message}`);
+      // 🔴 The rule this file follows, at the point where it is decided.
+      //
+      // A spawn that never started is the gate's own problem — no shell, no
+      // file descriptors — and there is no verdict to lose, so it stays open
+      // and says so.
+      if (SPAWN_NEVER_STARTED.has(result.error.code)) {
+        return failOpen(`the check \`${command}\` could not be started: ${result.error.message}`);
       }
+      // Everything else killed a check that WAS running — a timeout, a buffer
+      // overrun, anything unrecognised. `status` is null, so the verdict is
+      // unknown, and an unmeasured Definition of Done is not a passed one.
+      const timedOut = result.error.code === 'ETIMEDOUT';
       process.stderr.write(
-        `STOP GATED — \`${command}\` exceeded the Definition of Done budget ` +
-          `(${budgetMs(process.env)} ms for the whole suite, RIG_DOD_BUDGET_MS).\n` +
-          `The checks did not finish, so the Definition of Done is UNMEASURED — which is ` +
-          `not a pass. Run them yourself, or raise the budget if the suite has ` +
-          `honestly outgrown it (and raise the Stop hook's \`timeout\` in ` +
-          `.claude/settings.json with it — the budget must stay the smaller of the two). ` +
+        `STOP GATED — \`${command}\` produced no verdict: ${result.error.message}\n` +
+          (timedOut
+            ? `It did not finish inside the ${budget.ms} ms budget for the whole suite ` +
+              `(RIG_DOD_BUDGET_MS lowers it; raising it means raising this hook's default ` +
+              `and the Stop hook's \`timeout\` in .claude/settings.json together, in that ` +
+              `order — the budget must stay the smaller of the two).\n`
+            : `It was killed before it could report — output past the buffer is the usual ` +
+              `cause. Run it yourself to see the result.\n`) +
+          `The check's outcome is UNMEASURED, which is not a pass. ` +
           `This gate never fires twice in a row.\n`,
       );
       return 2;
