@@ -83,3 +83,15 @@ export const STRIPE_LIVE_KEY = assemble('sk_live', '_51HkQ2aBcDeFgHiJkLmNoPqRsTu
 export const OPENAI_PROJECT_KEY = assemble('sk-proj', '-Zq9Wx7Lv2Kd4Nb8Mc1Pf6Rt3Hy5Ug0Jn2Bs4Dt');
 export const NPM_TOKEN = assemble('npm', '_aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX');
 export const GITLAB_PAT = assemble('glpat', '-aB1cD2eF3gH4iJ5kL6');
+
+/** The five live GitHub credential prefixes, not only the personal-token one. */
+export const githubToken = (prefix: string): string =>
+  assemble(prefix, '_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8');
+
+/**
+ * A 39-character key of the search-vendor shape whose LAST character is chosen
+ * by the caller. The base64url alphabet admits `-`, so roughly one real key in
+ * sixty-four ends in one — and a trailing word boundary rejects exactly those.
+ */
+export const googleApiKey = (last = 'B'): string =>
+  assemble('AIza', 'SyD-9fA2dC7bE1gH4jK6mN8pQ0rS3tU5vW', last);

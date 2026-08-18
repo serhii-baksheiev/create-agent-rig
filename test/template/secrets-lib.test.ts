@@ -26,6 +26,8 @@ import {
   OPENAI_PROJECT_KEY,
   SLACK_BOT_TOKEN,
   STRIPE_LIVE_KEY,
+  githubToken,
+  googleApiKey,
 } from './secrets-fixtures.js';
 
 // AR-49(b). The half of AR-49 that `.gitignore` could not close.
@@ -970,7 +972,10 @@ describe('the candidate walk is bounded, and the bound is a stated blind spot', 
 
   it('states that miss in its own source, where a reader of the guard would look', async () => {
     const source = await readFile(modulePath, 'utf8');
-    expect(source).toMatch(/candidates? on one line/i);
+    // 🔴 Matched on the BULLET's own wording. An earlier form matched
+    // /candidates? on one line/i, which an unrelated JSDoc already satisfied —
+    // so deleting the limits bullet left the suite green.
+    expect(source).toMatch(/judges at most 32 candidates on one line/);
   });
 });
 
@@ -995,4 +1000,37 @@ describe('a vendor documentation example is not a leak', () => {
   it('leaves an ordinary identifier beginning with the same four letters alone', async () => {
     expect(await scan('import AIzaSyntaxHighlighter from "./highlighter";')).toEqual([]);
   });
+});
+
+describe('a prefix arm covers every prefix its id claims', () => {
+  // 🔴 The arm was widened from one prefix to five and nothing saw it: reverting
+  // it left the whole suite green, and the self-test fixture was still the
+  // personal-token literal. An id that reads as "this issuer is covered" has to
+  // be covered.
+  it.each(['ghp', 'gho', 'ghu', 'ghs', 'ghr'])('reports the %s_ prefix', async (prefix) => {
+    expect(idsIn(await scan(githubToken(prefix)))).toContain('github-pat');
+  });
+
+  it.each(['ghx', 'ghc'])(
+    'leaves the %s_ prefix alone — it is not a credential form',
+    async (p) => {
+      expect(await scan(githubToken(p))).toEqual([]);
+    },
+  );
+
+  // 🔴 A detection REGRESSION this branch introduced. Tightening the bound to an
+  // exact length with a trailing word boundary rejects a real key whose last
+  // character is `-`: the class admits it, `\b` does not, and what follows a key
+  // in the wild is a quote, an ampersand or end-of-line. Roughly one key in 64.
+  it.each(['B', '-', '_'])('reports a key of that shape ending in %s', async (last) => {
+    expect(idsIn(await scan(`MAPS_KEY="${googleApiKey(last)}"`))).toContain('google-api-key');
+  });
+
+  // and the false positive the exact length was tightened FOR stays rejected
+  it.each(['import AIzaSyntaxHighlighter from "./highlighter";', 'const AIzaHelper = 1;'])(
+    'still leaves %s alone',
+    async (line) => {
+      expect(await scan(line)).toEqual([]);
+    },
+  );
 });

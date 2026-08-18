@@ -209,6 +209,12 @@ const indexText = (relativePath) =>
  * to hang by a crafted payload. This sweep fails closed and runs in CI, where a
  * truncated read is a blind spot reported as `clean`. So the cap is lifted here,
  * deliberately and in one place.
+ *
+ * ⚠ Uncapped is not unlimited: a single line of roughly six megabytes overflows
+ * V8's regexp stack and the run ends in a `RangeError`. That is exit 1 with no
+ * finding printed and no file content in the trace — it fails CLOSED, which is
+ * the right direction for a CI gate, but it ends as a crash rather than as a
+ * report. Measured; unchanged by the cap being lifted.
  */
 const NO_SCAN_LIMIT = Number.MAX_SAFE_INTEGER;
 

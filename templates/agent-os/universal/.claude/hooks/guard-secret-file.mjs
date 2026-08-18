@@ -18,9 +18,9 @@
 // stderr is shown to the agent as the reason.
 //
 // 🔴 LIMITS, stated because a guard's own claim about its reach is the first
-// thing to go stale. Each one names the test that pins it — a limits comment
-// nothing checks drifts into overstatement, which is the direction that gets a
-// reader hurt. ⚠ Those tests live in the GENERATOR this rig came from, not here;
+// thing to go stale. Each names the test that pins it where one exists, and says
+// so plainly where none does — a limits comment nothing checks drifts into
+// overstatement, which is the direction that gets a reader hurt. ⚠ Those tests live in the GENERATOR this rig came from, not here;
 // `.claude/rules/invariants.md` ("About the hooks you were given") says the same
 // of this hook's own tests, and the moment you edit it they are yours.
 //
@@ -49,7 +49,9 @@
 //
 //   - It reads at most the first 2 MB of the text being written, the cap
 //     `findSecretValues` applies by default so a fail-open guard cannot be made
-//     to hang. A credential past that point is not seen. The CI sweep lifts the
+//     to hang. A credential past that point is not seen. ⚠ No test here pins
+//     this one: the case is pinned one layer down, on the module, by
+//     secrets-lib.test.ts › "has a limit even when the caller names none". The CI sweep lifts the
 //     cap; this hook cannot, and that asymmetry is the point.
 //   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
 //     not JSON at all" and its neighbours. An unparseable payload, a missing
@@ -58,9 +60,11 @@
 //     behind it: review always, a commit-time check once one exists.
 //
 // Failing open is also why every line here does provably bounded work: the scan
-// is capped inside `findSecretValues`, there is no recursion, and nothing
-// rescans. Any unbounded work in a fail-open guard is a total bypass of every
-// rule at once, not just of this one.
+// is capped inside `findSecretValues`, there is no recursion, and the one arm
+// that revisits offsets — the one that judges a candidate's value — is bounded
+// by an explicit per-line candidate cap rather than running to exhaustion. Any
+// unbounded work in a fail-open guard is a total bypass of every rule at once,
+// not just of this one.
 import { readFileSync } from 'node:fs';
 
 import { findSecretValues, isCredentialPath } from '../scripts/lib/secrets.mjs';

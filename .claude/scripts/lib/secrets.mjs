@@ -67,12 +67,11 @@
 // 1 on a finding. The asymmetry is deliberate and belongs to those files.)
 //
 // Hence, and every one of these is a bound rather than a hope: the input is
-// capped BEFORE it is split; every quantifier is bounded or over a class
-// disjoint from what follows it; the one pattern that judges its value walks a
-// line's candidates under an explicit cap rather than to exhaustion. The last
-// two were paid for — an unbounded run between keyword and separator made this
-// quadratic, 36 s on 256 KB of one line, in a guard that fails open. The cap is
-// asserted by test from both
+// capped BEFORE it is split; no quantifier nests inside another; and the one
+// pattern that judges its value walks a line's candidates under an explicit cap
+// rather than to exhaustion. The last was paid for — an unbounded run between
+// keyword and separator made this arm quadratic, in a guard that fails open. The
+// cap is asserted by test from both
 // sides — that a secret past it is missed, and that the same secret is found
 // without the cap, so the miss is not passing for the wrong reason: see
 // secrets-lib.test.ts › "scans nothing past the limit it was given".
@@ -343,7 +342,12 @@ export const SECRET_VALUE_PATTERNS = [
   { id: 'slack-token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{16,}/ },
   // Exactly 35, not 16-or-more: the open bound matched ordinary identifiers
   // that merely begin with those four letters (`AIzaSyntaxHighlighter`).
-  { id: 'google-api-key', pattern: /\bAIza[A-Za-z0-9_-]{35}\b/ },
+  // A negative lookahead, not `\b`. The class admits `-`, and `\b` after a `-`
+  // needs a word character next — in the wild a key is followed by a quote, an
+  // ampersand or end of line, so a key whose last character is `-` (about one in
+  // sixty-four) went unseen. Found by a reviewer measuring what the tightening
+  // cost; see secrets-lib.test.ts › "reports a key of that shape ending in %s".
+  { id: 'google-api-key', pattern: /\bAIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/ },
   { id: 'stripe-live-key', pattern: /\b[sr]k_live_[A-Za-z0-9]{16,}/ },
   { id: 'openai-project-key', pattern: /\bsk-proj-[A-Za-z0-9_-]{16,}/ },
   { id: 'npm-token', pattern: /\bnpm_[A-Za-z0-9]{30,}/ },
@@ -445,8 +449,8 @@ const matches = (entry, line) => {
     // 🔴 RESUME ONE CHARACTER PAST THE START, never past the whole match. A
     // rejected match ends after its all-letters value, and a credential keyword
     // INSIDE that value is then consumed with it: `AtlassianApiToken` ends in
-    // `Token`, so `const secret: AtlassianApiToken = "<a real one>"` was reported
-    // clean by all three layers. The property was inverted — more credential
+    // `Token`, so `const secret: AtlassianApiToken = "<a real one>"` was not seen
+    // at all — by this module, and therefore by everything that reads it. The property was inverted — more credential
     // vocabulary on the line meant less detection. See secrets-lib.test.ts ›
     // "reports %s, whose real value sits behind a rejected one".
     //
@@ -460,7 +464,10 @@ const matches = (entry, line) => {
 /**
  * Every credential shape found in `text`, as `{ id, line }` and nothing else.
  *
- * One forward pass over at most `limit` characters. A pattern is reported once
+ * At most `limit` characters are read. Most patterns answer in one `test`; the
+ * arm that JUDGES its value walks up to `MAX_CANDIDATES_PER_LINE` candidates per
+ * line and revisits offsets under that cap, which is what bounds it — see the
+ * note on `matches()`. A pattern is reported once
  * per line however many times it occurs there: the finding locates the problem,
  * it does not count it.
  */

@@ -188,7 +188,7 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
 ## Commands
 
 - `pnpm test` — build + all tests (unit, template, e2e)
-- `pnpm test:unit` — fast tests only
+- `pnpm test:unit` — fast tests only (pre-commit runs these, after the sweep below)
 - `node scripts/validate-no-secrets.mjs` — the credential sweep over every tracked
   file; `--staged` is what pre-commit runs FIRST, before lint/typecheck/test, and
   `--self-test` proves the scanner still detects each shape it claims
