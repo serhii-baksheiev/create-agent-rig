@@ -41,8 +41,35 @@ export async function copyTree(
   options: CopyTreeOptions = {},
 ): Promise<void> {
   const ignore = new Set(options.ignore ?? DEFAULT_IGNORE);
+  const files: CopyFileTask[] = [];
   await mkdir(destDir, { recursive: true });
-  await copyDir(srcDir, destDir, '', { ...options, ignore });
+  await collectCopyTasks(srcDir, destDir, '', { ...options, ignore }, files);
+  await mapConcurrent(files, 16, ({ srcPath, destPath, relPath }) =>
+    copyFileEntry(srcPath, destPath, relPath, { ...options, ignore }),
+  );
+}
+
+/** Run independent async work through a bounded pool while preserving result order. */
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(limit) || limit < 1)
+    throw new RangeError('concurrency limit must be positive');
+  const results = new Array<R>(items.length);
+  let next = 0;
+
+  const run = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index]!);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => run()));
+  return results;
 }
 
 /** One file {@link copyTree} would produce, and the template file behind it. */
@@ -97,11 +124,18 @@ interface ResolvedOptions extends Omit<CopyTreeOptions, 'ignore'> {
   ignore: Set<string>;
 }
 
-async function copyDir(
+interface CopyFileTask {
+  srcPath: string;
+  destPath: string;
+  relPath: string;
+}
+
+async function collectCopyTasks(
   srcDir: string,
   destDir: string,
   relDir: string,
   options: ResolvedOptions,
+  files: CopyFileTask[],
 ): Promise<void> {
   const entries = await readdir(srcDir, { withFileTypes: true });
   for (const entry of entries) {
@@ -112,9 +146,9 @@ async function copyDir(
     const relPath = path.join(relDir, entry.name);
     if (entry.isDirectory()) {
       await mkdir(destPath, { recursive: true });
-      await copyDir(srcPath, destPath, relPath, options);
+      await collectCopyTasks(srcPath, destPath, relPath, options, files);
     } else if (entry.isFile()) {
-      await copyFileEntry(srcPath, destPath, relPath, options);
+      files.push({ srcPath, destPath, relPath });
     }
     // Symlinks and other special entries are intentionally not copied:
     // templates are plain trees.
@@ -131,7 +165,7 @@ async function copyFileEntry(
     await copyFile(srcPath, destPath); // copyFile preserves the mode by itself
     return;
   }
-  const buffer = await readFile(srcPath);
+  const [buffer, { mode }] = await Promise.all([readFile(srcPath), stat(srcPath)]);
   if (isBinary(buffer)) {
     await writeFile(destPath, buffer);
   } else {
@@ -139,6 +173,5 @@ async function copyFileEntry(
   }
   // writeFile does NOT preserve permissions — restore them (chmod ignores umask),
   // otherwise executable template files (scripts, hooks) arrive non-executable.
-  const { mode } = await stat(srcPath);
   await chmod(destPath, mode & 0o777);
 }

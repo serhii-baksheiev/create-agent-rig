@@ -170,15 +170,17 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // The one thing this command will not do for you — printed with the plan,
   // because the dry run is where a reader decides whether there is work here,
   // and a report that mentions entries it never shows is not a plan.
-  if (plan.wiring !== null) {
-    process.stdout.write(
-      `\n!  .claude/settings.json was handed over rather than replaced — the reason is\n` +
-        `   on its line above. It is where your own hooks live, so it is never\n` +
-        `   overwritten on anything but proof the rig wrote those exact bytes.\n` +
-        `   This version wires them like this; merge in what is missing:\n\n` +
-        plan.wiring.replace(/^/gm, '   ') +
-        '\n',
-    );
+  if (plan.wiringByPath.size > 0) {
+    for (const [wiringPath, wiring] of plan.wiringByPath) {
+      process.stdout.write(
+        `\n!  ${wiringPath} was handed over rather than replaced — the reason is\n` +
+          `   on its line above. It is hook wiring, so it is never overwritten\n` +
+          `   without proof the rig wrote those exact bytes.\n` +
+          `   This version wires it like this; merge in what is missing:\n\n` +
+          wiring.replace(/^/gm, '   ') +
+          '\n',
+      );
+    }
   }
 
   if (values['dry-run'] === true) {

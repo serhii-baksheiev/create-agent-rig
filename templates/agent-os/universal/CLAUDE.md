@@ -14,6 +14,8 @@ a weaker policy. The `.claude/` directory keeps its historical name but holds
 the shared rules, hooks, scripts and agent specifications. Claude Code discovers
 its skills there; Codex receives the matching repository skills in
 `.agents/skills/` and its native agent and hook configuration in `.codex/`.
+The derivation and rollback contract is recorded in
+`docs/decisions/codex-adapter.md`.
 
 This project runs under an agent operating system: the rules below are not
 suggestions — the important ones are enforced by hooks and gates at the tool
@@ -119,6 +121,9 @@ is a path the gate sweep cannot see.
 ```elevated-paths
 packages/db/src/
 .claude/
+.agents/
+.codex/
+AGENTS.md
 docs/decisions/
 .github/workflows/
 ```

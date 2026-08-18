@@ -15,6 +15,7 @@
     ".claude/hooks/gate-stop-dod.mjs",
     ".claude/hooks/inject-rules.mjs",
     ".claude/hooks/guard-secret-file.mjs",
+    ".claude/hooks/lib/edit-input.mjs",
     ".claude/skills/pr-ship/SKILL.md",
     ".claude/skills/loop/SKILL.md",
     ".claude/skills/check-premises/SKILL.md",
@@ -53,6 +54,7 @@
     "PLAN.md",
     "journal/README.md",
     "docs/decisions/fail-open-guards.md",
+    "docs/decisions/codex-adapter.md",
     "docs/decisions/closing-a-task.md",
     "docs/decisions/review-lanes.md",
     "docs/decisions/run-directory.md",
@@ -63,8 +65,7 @@
   "architecture": [
     ".claude/rules/architecture.md",
     ".claude/hooks/guard-core-purity.mjs",
-    ".claude/hooks/guard-web-boundary.mjs",
-    ".claude/hooks/lib/edit-input.mjs"
+    ".claude/hooks/guard-web-boundary.mjs"
   ],
   "meta": [
     ".claude/settings.json",

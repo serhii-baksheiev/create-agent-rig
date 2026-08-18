@@ -2,7 +2,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { copyTree } from '../src/lib/copy-tree.js';
+import { copyTree, mapConcurrent } from '../src/lib/copy-tree.js';
 
 let work: string;
 
@@ -25,6 +25,41 @@ async function makeSrc(files: Record<string, string | Buffer>): Promise<string> 
 }
 
 describe('copyTree', () => {
+  it('overlaps independent work up to the concurrency limit', async () => {
+    const items = Array.from({ length: 8 }, (_, index) => index);
+    const gates = items.map(() => {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    });
+    let announceThreeStarted!: () => void;
+    const threeStarted = new Promise<void>((resolve) => {
+      announceThreeStarted = resolve;
+    });
+    let active = 0;
+    let maxActive = 0;
+
+    const mapped = mapConcurrent(items, 3, async (item: number) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (active === 3) announceThreeStarted();
+      await gates[item]!.promise;
+      active -= 1;
+      return item * 2;
+    });
+
+    await threeStarted;
+    try {
+      expect(active).toBe(3);
+      expect(maxActive).toBe(3);
+    } finally {
+      for (const gate of gates) gate.release();
+    }
+    expect(await mapped).toEqual(items.map((item) => item * 2));
+  });
+
   it('copies a nested tree', async () => {
     const src = await makeSrc({
       'a.txt': 'A',

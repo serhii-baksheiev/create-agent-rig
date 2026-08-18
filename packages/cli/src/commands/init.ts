@@ -2,6 +2,7 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
+import { mapConcurrent } from '../lib/copy-tree.js';
 import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
 import { substituteContent } from '../lib/substitute.js';
@@ -104,14 +105,17 @@ export async function initManifest(): Promise<InitFile[]> {
   const universal = agentOsUniversalDir();
   const override = agentOsInitDir();
 
-  const files: InitFile[] = [];
-  for (const rel of [...manifest.process, ...MAPS]) {
-    const overridden = path.join(override, rel);
-    files.push({
-      rel,
-      source: (await exists(overridden)) ? overridden : path.join(universal, rel),
-    });
-  }
+  const files = await mapConcurrent<string, InitFile>(
+    [...manifest.process, ...MAPS],
+    16,
+    async (rel) => {
+      const overridden = path.join(override, rel);
+      return {
+        rel,
+        source: (await exists(overridden)) ? overridden : path.join(universal, rel),
+      };
+    },
+  );
   files.push({ rel: SETTINGS, source: null });
   files.push({ rel: CODEX_HOOKS, source: null });
   return files;
@@ -139,24 +143,30 @@ export async function initFileContents(
 
   const files = await initManifest();
   const contents = new Map<string, string>();
-  for (const { rel, source } of files) {
-    if (source === null) continue;
-    contents.set(rel, substituteContent(await readFile(source, 'utf8'), ctx));
+  const sourceFiles = files.filter(
+    (file): file is InitFile & { source: string } => file.source !== null,
+  );
+  const rendered = await mapConcurrent(sourceFiles, 16, async ({ rel, source }) => ({
+    rel,
+    content: substituteContent(await readFile(source, 'utf8'), ctx),
+  }));
+  for (const { rel, content } of rendered) {
+    contents.set(rel, content);
   }
 
   const installedHooks = new Set(
     files.map((f) => f.rel).filter((rel) => rel.startsWith('.claude/hooks/')),
   );
-  const shipped = JSON.parse(
-    await readFile(path.join(agentOsUniversalDir(), SETTINGS), 'utf8'),
-  ) as unknown;
+  const [shippedSettings, shippedCodexHooks] = await Promise.all([
+    readFile(path.join(agentOsUniversalDir(), SETTINGS), 'utf8'),
+    readFile(path.join(agentOsUniversalDir(), CODEX_HOOKS), 'utf8'),
+  ]);
+  const shipped = JSON.parse(shippedSettings) as unknown;
   contents.set(
     SETTINGS,
     `${JSON.stringify(settingsForInstalledHooks(shipped, installedHooks), null, 2)}\n`,
   );
-  const shippedCodex = JSON.parse(
-    await readFile(path.join(agentOsUniversalDir(), CODEX_HOOKS), 'utf8'),
-  ) as unknown;
+  const shippedCodex = JSON.parse(shippedCodexHooks) as unknown;
   contents.set(
     CODEX_HOOKS,
     `${JSON.stringify(settingsForInstalledHooks(shippedCodex, installedHooks), null, 2)}\n`,
@@ -176,10 +186,11 @@ export async function initInstallSet(
 
 export async function planInit(repoDir: string): Promise<InitPlan> {
   const files = (await initManifest()).map((f) => f.rel);
-  const conflicts: string[] = [];
-  for (const rel of files) {
-    if (await exists(path.join(repoDir, rel))) conflicts.push(rel);
-  }
+  const conflicts = (
+    await mapConcurrent(files, 16, async (rel) =>
+      (await exists(path.join(repoDir, rel))) ? rel : null,
+    )
+  ).filter((rel): rel is string => rel !== null);
   return { files: files.map((p) => ({ path: p })), conflicts };
 }
 
@@ -214,22 +225,20 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   }
 
   const contents = await initFileContents(repoDir);
-  const written: string[] = [];
-  const skipped: string[] = [];
   const plannedCount = files.length;
-
-  for (const rel of files) {
+  const actions = await mapConcurrent(files, 16, async (rel) => {
     const dest = path.join(repoDir, rel);
     if (await exists(dest)) {
       // never overwrite a file init did not write (a user's own copy)
-      skipped.push(rel);
-      continue;
+      return { rel, verdict: 'skipped' as const };
     }
-    if (options.dryRun) continue;
+    if (options.dryRun) return { rel, verdict: 'planned' as const };
     await mkdir(path.dirname(dest), { recursive: true });
     await writeFile(dest, contents.get(rel) ?? '');
-    written.push(rel);
-  }
+    return { rel, verdict: 'written' as const };
+  });
+  const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);
+  const skipped = actions.filter(({ verdict }) => verdict === 'skipped').map(({ rel }) => rel);
 
   if (!options.dryRun) await recordInstall(repoDir, written, contents);
 

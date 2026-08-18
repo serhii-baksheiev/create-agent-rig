@@ -26,7 +26,9 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
   `--self-test` proves the scanner still detects each shape it claims
 - `pnpm lint` / `pnpm typecheck` / `pnpm format`
 - `pnpm template:check` — the template's own in-place check (lint/type/test/synth)
-- `node scripts/sync-agent-os.mjs` — regenerate CLAUDE.md + .claude/ from templates
+- `node scripts/sync-agent-os.mjs` — compose the Claude rulebook and regenerate
+  its derived Codex projection (`AGENTS.md`, `.agents/`, `.codex/`) from the
+  templates; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
 
 ## Repo-specific rules
 

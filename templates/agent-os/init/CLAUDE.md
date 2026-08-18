@@ -154,6 +154,9 @@ is a path the gate sweep cannot see.
 
 ```elevated-paths
 .claude/
+.agents/
+.codex/
+AGENTS.md
 .github/workflows/
 ```
 

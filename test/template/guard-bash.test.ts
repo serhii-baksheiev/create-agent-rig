@@ -36,7 +36,10 @@ beforeAll(async () => {
   await writeFile(presentFlag, '');
 });
 
-function runHook(command: string, flag?: string): Promise<{ code: number; stderr: string }> {
+function runHook(
+  command: string | string[],
+  flag?: string,
+): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
@@ -213,6 +216,12 @@ describe('guard-bash: it fails open on anything it does not understand', () => {
     });
     expect(nonBash).toBe(0);
     await allow('')();
+  });
+
+  it('inspects Codex argv-array shell payloads', async () => {
+    const result = await runHook(['bash', '-lc', 'git push --force origin master']);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/shared branch|force/i);
   });
 
   it('allows a malformed payload', async () => {

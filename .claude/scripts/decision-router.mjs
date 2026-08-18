@@ -216,6 +216,10 @@ const isRulebookPath = (path) => {
   if (segments.length === 0) return false;
   if (RULEBOOK_BASENAMES.has(segments[segments.length - 1].toLowerCase())) return true;
   for (const segment of segments) if (segment.toLowerCase() === '.claude') return true;
+  for (const segment of segments) {
+    const lowered = segment.toLowerCase();
+    if (lowered === '.agents' || lowered === '.codex') return true;
+  }
   // A decision record carries rulebook rationale, so it is code here for the
   // same reason a rule file is: the prose IS the implementation. Shared with
   // the gate sweep rather than re-spelled — see `isDecisionRecord`.

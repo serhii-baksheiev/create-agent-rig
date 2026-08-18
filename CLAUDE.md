@@ -14,6 +14,8 @@ a weaker policy. The `.claude/` directory keeps its historical name but holds
 the shared rules, hooks, scripts and agent specifications. Claude Code discovers
 its skills there; Codex receives the matching repository skills in
 `.agents/skills/` and its native agent and hook configuration in `.codex/`.
+The derivation and rollback contract is recorded in
+`docs/decisions/codex-adapter.md`.
 
 This project runs under an agent operating system: the rules below are not
 suggestions — the important ones are enforced by hooks and gates at the tool
@@ -209,7 +211,9 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
   `--self-test` proves the scanner still detects each shape it claims
 - `pnpm lint` / `pnpm typecheck` / `pnpm format`
 - `pnpm template:check` — the template's own in-place check (lint/type/test/synth)
-- `node scripts/sync-agent-os.mjs` — regenerate CLAUDE.md + .claude/ from templates
+- `node scripts/sync-agent-os.mjs` — compose the Claude rulebook and regenerate
+  its derived Codex projection (`AGENTS.md`, `.agents/`, `.codex/`) from the
+  templates; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
 
 ## Repo-specific rules
 

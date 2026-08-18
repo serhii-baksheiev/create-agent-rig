@@ -52,12 +52,18 @@ function parseAgent(markdown, source) {
   const name = fields.get('name');
   const description = fields.get('description');
   if (!name || !description) throw new Error(`agent is missing name or description: ${source}`);
-  return { name, description, body: match[2].trim() };
+  return { name, description, tools: fields.get('tools') ?? '', body: match[2].trim() };
 }
 
 function codexAgent(markdown, source) {
   const agent = parseAgent(markdown, source);
-  const sandbox = agent.name === 'test-writer' ? 'workspace-write' : 'read-only';
+  const tools = (agent.tools ?? '')
+    .split(',')
+    .map((tool) => tool.trim())
+    .filter(Boolean);
+  const sandbox = tools.some((tool) => /^(Write|Edit|NotebookEdit|apply_patch)$/.test(tool))
+    ? 'workspace-write'
+    : 'read-only';
   return [
     `name = ${JSON.stringify(agent.name)}`,
     `description = ${JSON.stringify(agent.description)}`,
@@ -91,16 +97,25 @@ function codexHooks(settings) {
   const source = JSON.parse(settings);
   const hooks = {};
   for (const [event, groups] of Object.entries(source.hooks ?? {})) {
-    hooks[event] = groups.map((group) => ({
-      ...group,
-      ...(typeof group.matcher === 'string' && /(?:Write|Edit)/.test(group.matcher)
-        ? { matcher: `${group.matcher}|apply_patch` }
-        : {}),
-      hooks: group.hooks.map((hook) => {
-        const command = portableHookCommand(hook.command);
-        return { ...hook, command, commandWindows: windowsHookCommand(hook.command) };
-      }),
-    }));
+    hooks[event] = groups.map((group) => {
+      const matcherTools =
+        typeof group.matcher === 'string'
+          ? group.matcher.split('|').map((tool) => tool.trim())
+          : [];
+      const matcher =
+        matcherTools.some((tool) => tool === 'Write' || tool === 'Edit') &&
+        !matcherTools.includes('apply_patch')
+          ? `${group.matcher}|apply_patch`
+          : group.matcher;
+      return {
+        ...group,
+        ...(typeof matcher === 'string' ? { matcher } : {}),
+        hooks: group.hooks.map((hook) => {
+          const command = portableHookCommand(hook.command);
+          return { ...hook, command, commandWindows: windowsHookCommand(hook.command) };
+        }),
+      };
+    });
   }
   return `${JSON.stringify(
     { description: 'Codex adapter generated from .claude/settings.json.', hooks },

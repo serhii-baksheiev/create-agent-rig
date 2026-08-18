@@ -105,6 +105,20 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     }
   });
 
+  it('emits each tool at most once in generated Codex hook matchers', async () => {
+    const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+      hooks: Record<string, Array<{ matcher?: string }>>;
+    };
+
+    for (const groups of Object.values(config.hooks)) {
+      for (const group of groups) {
+        if (!group.matcher) continue;
+        const tools = group.matcher.split('|').map((tool) => tool.trim());
+        expect(tools, group.matcher).toHaveLength(new Set(tools).size);
+      }
+    }
+  });
+
   it('refuses to expose a Claude edit guard to apply_patch without the shared normalizer', async () => {
     const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
       hooks: {
@@ -126,6 +140,12 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         );
       }
     }
+  });
+
+  it('declares generated Codex hook wiring as an elevated path', async () => {
+    const map = await text(universal, 'CLAUDE.md');
+    const elevated = /```elevated-paths\n([\s\S]*?)```/.exec(map)?.[1] ?? '';
+    expect(elevated.split(/\r?\n/)).toContain('.codex/');
   });
 });
 
@@ -212,7 +232,13 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     await writeFile(source, 'export const safe = true;\n');
 
     try {
-      for (const destination of [path.join(tmpdir(), 'outside.ts'), '../outside.ts']) {
+      for (const destination of [
+        path.join(tmpdir(), 'outside.ts'),
+        '../outside.ts',
+        '..\\outside.ts',
+        'C:outside.ts',
+        '\\\\server\\share\\outside.ts',
+      ]) {
         const result = await runGuard(
           'guard-core-purity.mjs',
           [
@@ -321,6 +347,34 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
+  it('treats a final-component symlink as a recognized unsafe-source refusal', async () => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'codex-final-symlink-target-'));
+    const inside = await mkdtemp(path.join(repoRoot, '.codex-final-symlink-'));
+    const target = path.join(outside, 'private.ts');
+    const link = path.join(inside, 'private.ts');
+    await writeFile(target, "import '@app/db/unique-final-symlink-marker';\n");
+
+    try {
+      await symlink(target, link, 'file');
+      const result = await runGuard(
+        'guard-web-boundary.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, link)}`,
+          '*** Move to: apps/web/src/private.ts',
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/resolves outside|unsafe.*source/i);
+      expect(result.stderr).not.toContain('unique-final-symlink-marker');
+    } finally {
+      await rm(inside, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it('diagnoses a missing move source but leaves the guard fail-open', async () => {
     const result = await runGuard(
       'guard-core-purity.mjs',
@@ -397,6 +451,31 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.stderr).toMatch(/patch.*(?:size|limit|large)|(?:size|limit|large).*patch/i);
   });
 
+  it('caps aggregate source inspection across many move sections', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-many-moves-'));
+    const sections: string[] = [];
+
+    try {
+      for (let index = 0; index < 17; index += 1) {
+        const source = path.join(scratch, `${index}.ts`);
+        await writeFile(source, 'x'.repeat(64 * 1024));
+        sections.push(
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          `*** Move to: packages/core/src/moved-${index}.ts`,
+        );
+      }
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        ['*** Begin Patch', ...sections, '*** End Patch'].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/aggregate|total.*(?:move|inspection)|move.*budget/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('blocks a move whose patch context does not match its source', async () => {
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-context-mismatch-'));
     const source = path.join(scratch, 'actual.ts');
@@ -447,6 +526,82 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
+  it('caps total hunk lines across one move', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-total-hunks-'));
+    const source = path.join(scratch, 'small.ts');
+    await writeFile(source, 'export {};\n');
+
+    try {
+      const additions = Array.from({ length: 6_000 }, () => '+const safe = true;');
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          '*** Move to: packages/core/src/many-hunks.ts',
+          '@@',
+          ...additions,
+          '@@',
+          ...additions,
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/total.*hunk|hunk.*(?:total|budget)/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('caps the total output lines produced by move inspection', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-output-lines-'));
+    const source = path.join(scratch, 'many-lines.ts');
+    await writeFile(source, `${Array.from({ length: 20_001 }, () => 'safe').join('\n')}\n`);
+
+    try {
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          '*** Move to: packages/core/src/many-lines.ts',
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/output.*(?:budget|limit)|(?:budget|limit).*output/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('caps the number of splice operations across one move', async () => {
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-splice-budget-'));
+    const source = path.join(scratch, 'small.ts');
+    await writeFile(source, 'export {};\n');
+
+    try {
+      const hunks = Array.from({ length: 1_001 }, () => ['@@', '+const safe = true;']).flat();
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${path.relative(repoRoot, source)}`,
+          '*** Move to: packages/core/src/many-splices.ts',
+          ...hunks,
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/splice.*(?:budget|limit)|(?:budget|limit).*splice/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('blocks a move when the context-comparison budget is exhausted', async () => {
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-comparison-budget-'));
     const source = path.join(scratch, 'repetitive.ts');
@@ -475,22 +630,30 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('points every move-inspection limit comment at the exact behavior test name', async () => {
+  it('keeps move-inspection contracts mechanically self-contained in shipped code', async () => {
     const source = await text(hooksDir, 'lib', 'edit-input.mjs');
+    expect(source).not.toMatch(/codex\.test\.ts|test[\\/]template/);
 
-    for (const testName of [
-      'reads only a bounded prefix and blocks an oversized move source',
-      'refuses an oversized apply_patch command before parsing its contents',
-      'blocks a move whose patch context does not match its source',
-      'blocks a move hunk that exceeds the hunk-line ceiling',
-      'blocks a move when the context-comparison budget is exhausted',
-      'refuses to inspect a move source outside the repository via %s',
-      'rejects an in-repository symlink that resolves outside without echoing its content',
-      'diagnoses a missing move source but leaves the guard fail-open',
-      'refuses absolute and traversal move destinations outside the repository',
+    for (const [name, value] of [
+      ['MAX_PATCH_CHARACTERS', '1024 * 1024'],
+      ['MAX_MOVED_FILE_BYTES', '1024 * 1024'],
+      ['MAX_HUNK_LINES', '10_000'],
+      ['MAX_CONTEXT_COMPARISONS', '2_000_000'],
     ]) {
-      expect(source, testName).toContain(`codex.test.ts > ${testName}`);
+      expect(source, `${name} must be declared in the shipped normalizer`).toContain(
+        `const ${name} = ${value};`,
+      );
+      expect(
+        [...source.matchAll(new RegExp(`\\b${name}\\b`, 'g'))].length,
+        `${name} must be consumed by inspection behavior`,
+      ).toBeGreaterThan(1);
     }
+
+    const guards = await Promise.all(
+      ['guard-core-purity.mjs', 'guard-web-boundary.mjs'].map((guard) => text(hooksDir, guard)),
+    );
+    expect(source).toMatch(/inspectionRefusal:\s*reason/);
+    for (const guard of guards) expect(guard).toMatch(/inspectionRefusal/);
   });
 
   it('removes the occurrence selected by the complete hunk, not the first matching line', async () => {

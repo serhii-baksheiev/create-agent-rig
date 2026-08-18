@@ -68,6 +68,7 @@
 import { readFileSync } from 'node:fs';
 
 import { findSecretValues, isCredentialPath } from '../scripts/lib/secrets.mjs';
+import { editFragments } from './lib/edit-input.mjs';
 
 /** Where a refusal points the agent, so the block is actionable rather than a wall. */
 const WHERE_CREDENTIALS_BELONG =
@@ -83,7 +84,29 @@ function main() {
   }
 
   const toolName = input?.tool_name;
-  if (toolName !== 'Write' && toolName !== 'Edit') return 0;
+  if (toolName !== 'Write' && toolName !== 'Edit' && toolName !== 'apply_patch') return 0;
+
+  if (toolName === 'apply_patch') {
+    let refused = false;
+    for (const { filePath, fragment, inspectionRefusal, appliesToAll } of editFragments(input)) {
+      if (inspectionRefusal) {
+        refused = true;
+        process.stderr.write(`BLOCKED — cannot safely inspect this edit: ${inspectionRefusal}\n`);
+        continue;
+      }
+      if (isCredentialPath(filePath)) {
+        refused = true;
+        process.stderr.write(`BLOCKED — "${filePath}" is a credential file, and this repository never carries one.\n${WHERE_CREDENTIALS_BELONG}\n`);
+        continue;
+      }
+      const findings = findSecretValues(fragment);
+      if (findings.length > 0 || appliesToAll) {
+        refused = true;
+        if (findings.length > 0) process.stderr.write(`BLOCKED — this edit writes a credential value into "${filePath}".\n${WHERE_CREDENTIALS_BELONG}\n`);
+      }
+    }
+    return refused ? 2 : 0;
+  }
 
   const toolInput = input?.tool_input ?? {};
   const filePath = String(toolInput.file_path ?? '').replaceAll('\\', '/');

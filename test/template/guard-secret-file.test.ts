@@ -67,6 +67,16 @@ const edit = (filePath: string, newString: string) => ({
   tool_input: { file_path: filePath, old_string: 'x', new_string: newString },
 });
 
+const applyPatch = (filePath: string, addition: string) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'apply_patch',
+  tool_input: {
+    command: ['*** Begin Patch', `*** Add File: ${filePath}`, `+${addition}`, '*** End Patch'].join(
+      '\n',
+    ),
+  },
+});
+
 const deny = async (payload: unknown, why: string): Promise<HookResult> => {
   const result = await runHook(payload);
   expect(result.code, `should BLOCK: ${why}\nstderr: ${result.stderr}`).toBe(2);
@@ -104,6 +114,10 @@ describe('guard-secret-file: a credential-named path is refused whatever is in i
     await deny(write(`${repoRoot}/config/secrets/prod.txt`, 'anything at all\n'), 'absolute path');
   });
 
+  it('blocks apply_patch from adding a credential-named file', async () => {
+    await deny(applyPatch('config/secrets/prod.txt', 'documented placeholder'), 'apply_patch path');
+  });
+
   it('names the path it refused and where a credential belongs instead', async () => {
     const result = await deny(write('jira.env', 'anything at all\n'), 'jira.env');
     expect(result.stderr).toContain('jira.env');
@@ -127,6 +141,13 @@ describe('guard-secret-file: a credential value is refused wherever it is being 
   // that only ever looked at `content` would pass every Edit in the session.
   it('blocks an Edit whose new_string carries a credential value', async () => {
     await deny(edit('packages/core/src/thing.ts', `const key = '${GITHUB_PAT}';`), 'Edit');
+  });
+
+  it('blocks apply_patch when an added line carries a credential value', async () => {
+    await deny(
+      applyPatch('notes.md', `const key = '${GITHUB_PAT}';`),
+      'apply_patch credential value',
+    );
   });
 
   it('names which shape it matched and the line it is on', async () => {
@@ -267,6 +288,20 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
     // whose first line is an unresolvable import.
     expect(layers.process).toContain('.claude/hooks/guard-secret-file.mjs');
     expect(layers.process).toContain('.claude/scripts/lib/secrets.mjs');
+  });
+
+  it('registers apply_patch and consumes the shared edit normalizer', async () => {
+    const settings = JSON.parse(
+      await readFile(path.join(universal, '.claude', 'settings.json'), 'utf8'),
+    ) as { hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> } };
+    const group = settings.hooks.PreToolUse.find((candidate) =>
+      candidate.hooks.some((entry) => entry.command.includes('guard-secret-file.mjs')),
+    );
+    expect(group?.matcher.split('|').map((part) => part.trim())).toContain('apply_patch');
+
+    const source = await readFile(hook, 'utf8');
+    expect(source).toMatch(/from ['"]\.\/lib\/edit-input\.mjs['"]/);
+    expect(source).toMatch(/editFragments\(input\)/);
   });
 });
 

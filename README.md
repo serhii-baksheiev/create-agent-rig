@@ -39,10 +39,10 @@ Two things it deliberately leaves to you, and says so in the installed
 maps: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
 your commands), and the elevated-path list names only what every repo has.
 
-Codex loads project hooks only after the repository is trusted, and asks you to
-review new or changed hook definitions. Open `/hooks` once after generation or
-upgrade and trust the checked-in `.codex/hooks.json`; changed hook hashes require
-review again. This is Codex's intended trust boundary, not an installation error.
+After generation or upgrade, review the checked-in `.codex/hooks.json` in Codex's
+`/hooks` view and explicitly trust it if Codex presents a trust prompt. A changed
+hook definition may require that review again; the adapter does not silently
+replace user-owned hook configuration.
 
 ## Upgrading a rig you already have
 

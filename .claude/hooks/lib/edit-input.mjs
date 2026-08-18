@@ -6,16 +6,7 @@
  * destination receives the existing file too, so guards inspect the resulting
  * content instead of only the patch additions when inspection succeeds.
  *
- * Limits and their executable contracts:
- * - move sources must stay inside the repository (codex.test.ts > refuses to inspect a move source outside the repository via %s)
- * - symlinks may not resolve outside it (codex.test.ts > rejects an in-repository symlink that resolves outside without echoing its content)
- * - missing or unreadable sources diagnose and fail open (codex.test.ts > diagnoses a missing move source but leaves the guard fail-open)
- * - source reads are capped (codex.test.ts > reads only a bounded prefix and blocks an oversized move source)
- * - patch input is capped before parsing (codex.test.ts > refuses an oversized apply_patch command before parsing its contents)
- * - patch context must match (codex.test.ts > blocks a move whose patch context does not match its source)
- * - each hunk is capped (codex.test.ts > blocks a move hunk that exceeds the hunk-line ceiling)
- * - context search has one total budget (codex.test.ts > blocks a move when the context-comparison budget is exhausted)
- * - patch destinations must stay inside the repository (codex.test.ts > refuses absolute and traversal move destinations outside the repository)
+ * Inspection is bounded globally per patch: sources, hunks, output, splices and comparisons.
  */
 import { execFileSync } from 'node:child_process';
 import {
@@ -33,6 +24,10 @@ const MAX_PATCH_CHARACTERS = 1024 * 1024;
 const MAX_MOVED_FILE_BYTES = 1024 * 1024;
 const MAX_HUNK_LINES = 10_000;
 const MAX_CONTEXT_COMPARISONS = 2_000_000;
+const MAX_TOTAL_MOVED_FILE_BYTES = 1024 * 1024;
+const MAX_TOTAL_HUNK_LINES = 10_000;
+const MAX_OUTPUT_LINES = 20_000;
+const MAX_SPLICE_OPERATIONS = 1_000;
 
 export function editFragments(input) {
   const toolName = input?.tool_name;
@@ -48,7 +43,12 @@ export function editFragments(input) {
     ];
   }
   if (toolName !== 'apply_patch') return [];
-  const command = String(toolInput.command ?? '');
+  const rawCommand = toolInput.command;
+  const command = typeof rawCommand === 'string'
+    ? rawCommand
+    : Array.isArray(rawCommand) && rawCommand.every((part) => typeof part === 'string')
+      ? rawCommand.join('\n')
+      : '';
   if (command.length > MAX_PATCH_CHARACTERS) {
     return [
       {
@@ -64,6 +64,8 @@ export function editFragments(input) {
 
 function patchFragments(command) {
   const fragments = [];
+  const budget = { movedBytes: 0, hunkLines: 0, outputLines: 0, splices: 0, comparisons: MAX_CONTEXT_COMPARISONS, repoRoot: null };
+  try { budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000 }).trim()); } catch { /* moved inspection below refuses without a trusted root */ }
   let current = null;
 
   const flush = () => {
@@ -78,7 +80,7 @@ function patchFragments(command) {
         });
       } else {
         const moved = current.moveTo
-          ? movedFragment(current)
+          ? movedFragment(current, budget)
           : { fragment: current.additions.join('\n') };
         fragments.push({ filePath: destination, ...moved });
       }
@@ -116,13 +118,16 @@ function patchFragments(command) {
   return fragments;
 }
 
-function movedFragment(current) {
+function movedFragment(current, budget) {
   const sourcePath = canonicalPatchPath(current.sourcePath);
   if (sourcePath === null) {
     return inspectionRefusal(current, 'move source is outside the repository root');
   }
+  if (budget.repoRoot === null) {
+    return inspectionRefusal(current, 'cannot resolve the repository root with git rev-parse');
+  }
   try {
-    const repoRoot = realpathSync(
+    const repoRoot = budget.repoRoot ?? realpathSync(
       execFileSync('git', ['rev-parse', '--show-toplevel'], {
         cwd: process.cwd(),
         encoding: 'utf8',
@@ -142,14 +147,17 @@ function movedFragment(current) {
     }
 
     const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
-    const handle = openSync(candidate, constants.O_RDONLY | noFollow);
+    const nonBlocking = constants.O_NONBLOCK ?? 0;
+    const handle = openSync(candidate, constants.O_RDONLY | noFollow | nonBlocking);
     try {
       const opened = fstatSync(handle);
+      if (!opened.isFile()) return inspectionRefusal(current, 'move source is not a regular file');
       const verifiedSource = realpathSync(candidate);
       if (!isWithin(repoRoot, verifiedSource)) {
         return inspectionRefusal(current, 'move source resolves outside the repository root');
       }
       const verified = statSync(verifiedSource);
+      if (!verified.isFile()) return inspectionRefusal(current, 'move source is not a regular file');
       if (opened.dev !== verified.dev || opened.ino !== verified.ino) {
         return inspectionRefusal(current, 'move source changed during inspection');
       }
@@ -167,21 +175,29 @@ function movedFragment(current) {
           `move source exceeds the ${MAX_MOVED_FILE_BYTES}-byte inspection limit`,
         );
       }
+      budget.movedBytes += bytesRead;
+      if (budget.movedBytes > MAX_TOTAL_MOVED_FILE_BYTES) return inspectionRefusal(current, `aggregate move source inspection exceeds the ${MAX_TOTAL_MOVED_FILE_BYTES}-byte limit`);
 
       const content = buffer.toString('utf8', 0, bytesRead);
-      return applyHunks(content, current.hunks, current);
+      return applyHunks(content, current.hunks, current, budget);
     } finally {
       closeSync(handle);
     }
   } catch (error) {
+    if (error?.code === 'ENOENT') {
+      // A deleted/missing source is not an unsafe path. Preserve the existing
+      // fail-open contract, but make the loss of source context visible.
+      process.stderr.write(`edit-input: could not inspect moved file: ${error.message}\n`);
+      return { fragment: current.additions.join('\n') };
+    }
     process.stderr.write(`edit-input: could not inspect moved file: ${error.message}\n`);
-    return { fragment: current.additions.join('\n') };
+    return inspectionRefusal(current, 'cannot safely inspect moved file');
   }
 }
 
-function applyHunks(content, hunks, current) {
+function applyHunks(content, hunks, current, budget) {
   const lines = content.split(/\r?\n/);
-  const budget = { remaining: MAX_CONTEXT_COMPARISONS };
+  if (lines.length > MAX_OUTPUT_LINES) return inspectionRefusal(current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
   for (const hunk of hunks) {
     if (hunk.lines.length > MAX_HUNK_LINES) {
       return inspectionRefusal(
@@ -189,6 +205,8 @@ function applyHunks(content, hunks, current) {
         `move hunk exceeds the ${MAX_HUNK_LINES}-line inspection limit`,
       );
     }
+    budget.hunkLines += hunk.lines.length;
+    if (budget.hunkLines > MAX_TOTAL_HUNK_LINES) return inspectionRefusal(current, `total move hunk lines exceed the ${MAX_TOTAL_HUNK_LINES}-line limit`);
     const before = hunk.lines
       .filter(({ operation }) => operation !== '+')
       .map(({ text }) => text);
@@ -197,6 +215,9 @@ function applyHunks(content, hunks, current) {
       .map(({ text }) => text);
 
     if (before.length === 0) {
+      budget.splices += 1;
+      if (budget.splices > MAX_SPLICE_OPERATIONS) return inspectionRefusal(current, `move splice budget exceeds ${MAX_SPLICE_OPERATIONS} operations`);
+      if (lines.length + after.length > MAX_OUTPUT_LINES) return inspectionRefusal(current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
       lines.splice(Math.max(0, lines.length - 1), 0, ...after);
       continue;
     }
@@ -208,23 +229,30 @@ function applyHunks(content, hunks, current) {
       return inspectionRefusal(current, 'move patch context does not match the source file');
     }
     lines.splice(match.index, before.length, ...after);
+    budget.splices += 1;
+    if (budget.splices > MAX_SPLICE_OPERATIONS) return inspectionRefusal(current, `move splice budget exceeds ${MAX_SPLICE_OPERATIONS} operations`);
+    if (lines.length > MAX_OUTPUT_LINES) return inspectionRefusal(current, `move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
   }
   return { fragment: lines.join('\n') };
 }
 
 function findSequence(lines, sequence, budget) {
-  const lastStart = lines.length - sequence.length;
-  for (let start = 0; start <= lastStart; start += 1) {
-    let matches = true;
-    for (let offset = 0; offset < sequence.length; offset += 1) {
-      budget.remaining -= 1;
-      if (budget.remaining < 0) return { index: -1, exhausted: true };
-      if (lines[start + offset] !== sequence[offset]) {
-        matches = false;
-        break;
-      }
-    }
-    if (matches) return { index: start, exhausted: false };
+  if (sequence.length === 0) return { index: 0, exhausted: false };
+  const prefix = Array(sequence.length).fill(0);
+  for (let i = 1, length = 0; i < sequence.length; i += 1) {
+    while (length > 0 && sequence[i] !== sequence[length]) length = prefix[length - 1];
+    if (sequence[i] === sequence[length]) length += 1;
+    prefix[i] = length;
+  }
+  for (let i = 0, matched = 0; i < lines.length; i += 1) {
+    // Account for the worst-case window comparison represented by this
+    // candidate, even though KMP avoids performing all of those operations.
+    // The cap remains meaningful without giving up the linear-time matcher.
+    budget.comparisons -= sequence.length;
+    if (budget.comparisons < 0) return { index: -1, exhausted: true };
+    while (matched > 0 && lines[i] !== sequence[matched]) matched = prefix[matched - 1];
+    if (lines[i] === sequence[matched]) matched += 1;
+    if (matched === sequence.length) return { index: i - sequence.length + 1, exhausted: false };
   }
   return { index: -1, exhausted: false };
 }
@@ -243,16 +271,20 @@ function inspectionRefusal(current, reason) {
 }
 
 function normalisePath(value) {
-  const slashed = String(value ?? '').replaceAll('\\', '/');
+  const slashed = String(value ?? '').trim().replaceAll('\\', '/');
   return slashed === '' ? '' : path.posix.normalize(slashed);
 }
 
 function canonicalPatchPath(value) {
-  const normalised = normalisePath(value);
+  const raw = String(value ?? '').replaceAll('\\', '/');
+  const normalised = normalisePath(raw);
   if (
     normalised === '' ||
+    raw.startsWith('/') ||
+    raw.startsWith('//') ||
     path.posix.isAbsolute(normalised) ||
-    /^[A-Za-z]:\//.test(normalised) ||
+    /^[A-Za-z]:/.test(raw) ||
+    raw.split('/').some((part) => part === '..') ||
     normalised === '..' ||
     normalised.startsWith('../')
   ) {

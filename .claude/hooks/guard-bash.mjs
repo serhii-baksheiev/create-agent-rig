@@ -735,7 +735,7 @@ export const inspect = (raw, brake, depth = 0) => {
       // `bash -c "<command line>"` / `eval "<command line>"` — the payload is a
       // command line of its own. Taken whether or not it is quote-delimited: a
       // backslash-joined payload is still a payload.
-      const flagIndex = command.args.findIndex(({ value }) => value === '-c');
+      const flagIndex = command.args.findIndex(({ value }) => value === '-c' || /^-[^-]*c$/.test(value));
       const script =
         flagIndex >= 0
           ? command.args[flagIndex + 1]?.value
@@ -774,7 +774,13 @@ function main() {
     return 0;
   }
   if (input.tool_name !== 'Bash') return 0;
-  const raw = String(input.tool_input?.command ?? '');
+  const commandValue = input.tool_input?.command;
+  const raw = Array.isArray(commandValue)
+    ? commandValue
+        .filter((part) => typeof part === 'string')
+        .map((part) => `'${part.replaceAll("'", "'\\\"'\\\"'")}'`)
+        .join(' ')
+    : String(commandValue ?? '');
   if (!raw.trim()) return 0;
 
   try {

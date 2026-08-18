@@ -63,6 +63,7 @@ describe('the init layer installs a rig with no dangling references', () => {
     );
     const shipped = [...files.keys()]
       .filter((rel) => rel.startsWith('.claude/hooks/') && rel.endsWith('.mjs'))
+      .filter((rel) => !rel.startsWith('.claude/hooks/lib/'))
       .map((rel) => path.basename(rel));
     expect([...new Set(wired)].sort()).toEqual(shipped.sort());
   });
