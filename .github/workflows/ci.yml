@@ -16,6 +16,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Before anything else, and without needing the install: the sweep that
+      # answers for the whole tracked tree rather than for one commit. The
+      # pre-commit check only ever sees what one author staged (AR-49 b).
+      - run: node scripts/validate-no-secrets.mjs
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
