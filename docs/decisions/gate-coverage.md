@@ -3,9 +3,9 @@
 The check lives in the `pr-ship` skill, step 5 ("Coverage"), and its rule is one
 sentence: *a merge is not gated by a fan-out whose reviewers did not all answer
 for the commit being merged.* This file explains why that check sits in a skill
-rather than in `guard-bash`, because the hook version was proposed three times
-and refused, and a refusal nobody wrote down gets proposed a fourth. It is not
-loaded into any session.
+rather than in `guard-bash`. The hook version is the one that keeps being
+proposed, and a refusal nobody wrote down gets proposed again. It is not loaded
+into any session.
 
 ## The shape that was refused
 
@@ -21,8 +21,9 @@ switch can be coarse — it denies the network clients wholesale — because a f
 block is cheap when the session is already stopped. `invariants.md` states that
 directly: match a rule's precision to the cost of a false positive. A merge gate
 runs during ordinary work, where a false block lands on the last step of finished
-work. The one attempt at enumerating merge routes was reverted for denying 19
-ordinary commands, `git log --no-merges` among them.
+work. The one attempt at enumerating merge routes was reverted, and what it cost
+is recorded where the attempt was made rather than restated here:
+`.claude/hooks/guard-bash.mjs`, the comment above `NETWORK_CLIENTS`.
 
 **2. It needs the head commit, inside a hook that must stay pure.** For
 `gh pr merge <number>` the head is only knowable over the network, and

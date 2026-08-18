@@ -215,17 +215,23 @@ const isText = (value) => typeof value === 'string' && value.trim() !== '';
 /**
  * A commit id, checked as a SHAPE rather than as text (AR-79).
  *
- * `headSha` arrived as "any non-blank text" and nothing interpolated it, which
- * made the looseness free. It stopped being free the moment a consumer existed:
- * this repository's own merge criterion puts the value in an argument position
- * (`gh api "repos/{owner}/{repo}/commits/$SHA/check-runs"`), where `--upload-pack=…`,
- * a leading `-` and `../…` are not commits but are arguments.
+ * `headSha` arrived as "any non-blank text". **No consumer interpolates it
+ * today** — the only reader compares it as a string (`lib/gate-coverage.mjs`),
+ * and the merge criterion takes its SHA from `gh pr view --json headRefOid`, not
+ * from a verdict. The shape is fixed here so that the first consumer that does
+ * put it in an argument position inherits the check instead of having to
+ * remember it; `--upload-pack=…`, a leading `-` and `../…` are not commits, and
+ * a field that only ever holds commits is the cheap way to keep them out.
  *
- * Fixed here rather than at each consumer, for the reason `invariants.md` gives:
- * two places enforcing one invariant will disagree, and the one nobody is looking
- * at is the wrong one. **Checked on the raw value — never trimmed, never
- * lowercased.** A value that needs rewriting to pass is a value the reviewer did
- * not write, and rewriting it silently is how a near-miss becomes a match.
+ * ⚠ **This covers the value inside a verdict block, and nothing else.**
+ * `run-journal.mjs` takes `headSha` on a decision record as any non-blank
+ * string, and `pr-ship`'s fan-out record reaches it without passing through
+ * `parseVerdict` at all — so a commit id that never came from a reviewer's block
+ * is not shaped by this.
+ *
+ * **Checked on the raw value — never trimmed, never lowercased.** A value that
+ * needs rewriting to pass is a value the reviewer did not write, and rewriting it
+ * silently is how a near-miss becomes a match.
  */
 const isCommitId = (value) => typeof value === 'string' && /^[0-9a-f]{7,64}$/i.test(value);
 

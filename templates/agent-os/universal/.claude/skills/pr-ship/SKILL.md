@@ -279,8 +279,8 @@ blockers.
    the thing under review.
 5. 🔴 **Coverage — check your own fan-out before you believe it.** You recorded
    what the route asked for, what you launched and what came back; this is the
-   step that compares them, and it is the only mechanical answer to "did the
-   gate actually run":
+   step that compares them, and it is the only one that does — nothing else in
+   this gate would notice a reviewer that never answered:
 
    ```sh
    node .claude/scripts/verdict.mjs coverage "$(git rev-parse HEAD)"

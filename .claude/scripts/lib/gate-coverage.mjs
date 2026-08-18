@@ -16,9 +16,9 @@
  * reviewer that answered — about a commit two pushes ago.
  *
  * 🔴 **A verdict that names no commit is not coverage of this one.** `headSha` is
- * optional in the schema, so absence is the state this check meets most often,
- * and reading it as "it must have meant the head I am holding" is the inference
- * the schema's own limit forbids. It gets its own list rather than a pass.
+ * optional in the schema — every report written before it existed omits one — and
+ * reading absence as "it must have meant the head I am holding" is the inference
+ * the schema's own limit 6 forbids. It gets its own list rather than a pass.
  *
  * 🔴 **No fan-out record is not a clean round.** A run whose journal records no
  * fan-out has not been shown to be covered, it has been shown to be unreadable —
@@ -50,6 +50,34 @@ const namesOf = (value) =>
 
 /** Order-preserving, because the output is read by a human looking for a name. */
 const uniq = (names) => [...new Set(names)];
+
+/**
+ * The shortest commit id the verdict schema accepts, and the floor a prefix
+ * match needs to be worth anything (`lib/verdict.mjs`, `isCommitId`).
+ */
+const SHORTEST_COMMIT = 7;
+
+/**
+ * Are these two ids the same commit?
+ *
+ * 🔴 **Not string equality, and the difference is a false HOLD.** The schema
+ * accepts an abbreviated id, so a reviewer may answer `b4e3ef0` about the commit
+ * `git rev-parse HEAD` prints in full — the same commit, written shorter. Exact
+ * comparison reports that as answered-for-another-commit and holds the merge on
+ * honest work, which is the way a guard loses the room.
+ *
+ * So: the shorter is a prefix of the longer, case-insensitively, the way git
+ * resolves an abbreviation itself. **Both must reach the schema's floor.** A
+ * value shorter than that is one `parseVerdict` refuses upstream, and stretching
+ * it into a match would let a value nothing accepted decide that a gate was
+ * covered.
+ */
+const sameCommit = (one, other) => {
+  if (one.length < SHORTEST_COMMIT || other.length < SHORTEST_COMMIT) return false;
+  const [shorter, longer] =
+    one.length <= other.length ? [one.toLowerCase(), other.toLowerCase()] : [other.toLowerCase(), one.toLowerCase()];
+  return longer.startsWith(shorter);
+};
 
 /**
  * Which reviewers are outstanding for `headSha`, and in which of the four ways.
@@ -134,7 +162,7 @@ export const coverageOf = ({ records, headSha } = {}) => {
     const answered = after.some((record) => gateOf(record) === name);
     if (!answered) {
       unanswered.push(name);
-    } else if (commits.includes(target)) {
+    } else if (commits.some((commit) => sameCommit(commit, target))) {
       // Covered. A HOLD counts here exactly as a SHIP does: coverage is about
       // who spoke for which commit, never about what they said.
     } else if (commits.length === 0) {

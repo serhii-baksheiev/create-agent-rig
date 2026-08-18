@@ -75,5 +75,6 @@ the human who has to fix the finding.
 - **`headSha` is the commit you reviewed** — `git rev-parse HEAD` in the
   checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
   <commit>` tell "this gate answered for the commit being merged" from "it
-  answered two pushes ago", and a verdict naming no commit is counted as
-  neither: it holds the merge until the gate answers again.
+  answered two pushes ago". A verdict naming no commit is counted as neither
+  covered nor missing, so `pr-ship` holds on it — and only `pr-ship`: no hook
+  runs that check, so a session that skips the gate skips this with it.

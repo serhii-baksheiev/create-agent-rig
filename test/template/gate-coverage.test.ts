@@ -638,3 +638,109 @@ describe('`coverage` is what a gate runs before it believes its own fan-out', ()
     }
   });
 });
+
+// 🔴 AR-79 defect. `coverageOf` decides "this reviewer answered for this commit"
+// by exact string equality, but `lib/verdict.mjs` deliberately accepts an
+// ABBREVIATED commit id — `/^[0-9a-f]{7,64}$/i`, with a seven-character sha
+// pinned as accepted in `verdict.test.ts`. So a reviewer that answered
+// `9c1f0a7` for the very commit `git rev-parse HEAD` prints in full is reported
+// as `stale`, "it answered for another commit": a false HOLD on honest work.
+//
+// The rule an abbreviated id needs is git's own: two ids name the same commit
+// when one is a prefix of the other, compared case-insensitively. The schema's
+// seven-character floor is what makes that safe enough to rely on — which is
+// also why a shorter value, one the schema refuses upstream, must not be
+// stretched into a prefix match down here.
+describe('an abbreviated commit id and a full one are the same commit', () => {
+  /** The seven characters git prints by default for `HEAD`. */
+  const HEAD_SHORT = HEAD.slice(0, 7);
+
+  /**
+   * A different commit that agrees with `HEAD` for its first six characters and
+   * diverges at the seventh — `OLDER` shares nothing with `HEAD`, so it cannot
+   * catch a prefix comparison that truncates to a fixed length before comparing.
+   */
+  const SIBLING_SHORT = `${HEAD.slice(0, 6)}8`;
+
+  /** The same trap at full length: forty characters agreeing for the first seven. */
+  const SIBLING_FULL = `${HEAD.slice(0, HEAD.length - 1)}1`;
+
+  const covered = (verdictSha: string, argument: string = HEAD): Promise<Coverage> =>
+    coverageOf(
+      journal(
+        routed(['code-reviewer']),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer', { headSha: verdictSha }),
+      ),
+      argument,
+    );
+
+  it('counts a seven-character verdict as coverage of the full commit asked about', async () => {
+    const coverage = await covered(HEAD_SHORT);
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('counts a full-length verdict as coverage when the commit asked about is abbreviated', async () => {
+    // The mirror, because the argument is whatever the caller had to hand: the
+    // CLI is given a commit id, not necessarily the one the reviewer wrote.
+    const coverage = await covered(HEAD, HEAD_SHORT);
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('counts an uppercase verdict as coverage of the same commit in lowercase', async () => {
+    // `verdict.test.ts` pins uppercase hex as accepted and round-tripped
+    // unchanged — "uppercase hex, which git prints on request" — so this value
+    // reaches `coverageOf` in practice rather than in principle.
+    const coverage = await covered(HEAD.toUpperCase());
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('counts an abbreviated uppercase verdict as coverage of the full lowercase commit', async () => {
+    const coverage = await covered(HEAD_SHORT.toUpperCase());
+    expect(coverage.stale).toEqual([]);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('still calls a verdict for an unrelated commit stale', async () => {
+    // The regression guard on the widening: prefix matching must not turn the
+    // check into "some commit was named".
+    const coverage = await covered(OLDER);
+    expect(coverage.stale).toEqual(['code-reviewer']);
+    expect(coverage.ok).toBe(false);
+  });
+
+  it('still calls a verdict stale when the two ids diverge inside the seven compared', async () => {
+    // The case that forbids the lazy fix. Truncating both to six characters
+    // before comparing would read this reviewer as having answered for `HEAD`,
+    // and the whole point of the check is that it did not.
+    const coverage = await covered(SIBLING_SHORT);
+    expect(coverage.stale).toEqual(['code-reviewer']);
+    expect(coverage.ok).toBe(false);
+  });
+
+  it('still calls a verdict stale when two full ids agree for their first seven characters', async () => {
+    // The same trap one level up: comparing a fixed seven characters of two
+    // full-length ids would call two different commits one.
+    const coverage = await covered(SIBLING_FULL);
+    expect(coverage.stale).toEqual(['code-reviewer']);
+    expect(coverage.ok).toBe(false);
+  });
+
+  it('calls a verdict shorter than the schema’s seven-character floor stale rather than coverage', async () => {
+    // 🔴 The answer pinned here is STALE, not coverage. `coverageOf` never
+    // validates — it is handed whatever is in the journal — and six characters
+    // is a value `lib/verdict.mjs` refuses upstream ("six characters, one short
+    // of the shortest sha"). Seven is the floor that makes a prefix safe to
+    // trust; stretching a shorter one into a match would let a value nothing
+    // accepted decide that a gate was covered. It named a commit, so it is not
+    // `unattributed` either — the reviewer spoke, and what it said cannot be
+    // matched to this commit.
+    const coverage = await covered(HEAD.slice(0, 6));
+    expect(coverage.stale).toEqual(['code-reviewer']);
+    expect(coverage.unattributed).toEqual([]);
+    expect(coverage.ok).toBe(false);
+  });
+});

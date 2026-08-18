@@ -569,11 +569,13 @@ describe('a verdict may name the commit it answered for', () => {
   });
 
   // 🔴 AR-79. Each of these parsed as a commit under AR-101's "any non-blank
-  // text", and each of them is a value that stops being data downstream: the
-  // merge criterion interpolates the recorded sha into `gh api
-  // "repos/{owner}/{repo}/commits/$SHA/check-runs"`, where a leading `-` is an
-  // option, `--upload-pack=` is a command to run, `../` walks the path the API
-  // is addressed by, and a newline ends the line the operator pasted.
+  // text", and none of them is one. **No consumer interpolates the value
+  // today** — `coverageOf` compares it as a string, and the merge criterion
+  // takes its sha from `gh pr view --json headRefOid` — so the shape is pinned
+  // here to keep them out of the field before a consumer that would act on them
+  // exists, not to describe one that does. A leading `-` is an option to a
+  // command, `--upload-pack=` names one to run, `../` walks a path, and a
+  // newline ends the line an operator pasted.
   it.each([
     ['an option git would act on', '--upload-pack=touch /tmp/pwned'],
     ['a path traversal', '../x'],
