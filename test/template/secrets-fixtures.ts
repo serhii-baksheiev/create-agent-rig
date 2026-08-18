@@ -7,8 +7,9 @@
  * literally in its own test file becomes the scanner's first finding the moment
  * the file is committed — and then the `.husky/pre-commit` check refuses the
  * commit that adds the test, and the CI validator reports a leak that is not
- * one. Measured before this file existed: 21 self-matches across the two
- * suites, in four of the six pattern ids.
+ * one. That the suites are clean by the scanner's own definition is asserted,
+ * not asserted-in-prose: see secrets-lib.test.ts › "finds no credential value in
+ * any file this repository tracks", which sweeps them with no exemption.
  *
  * The alternative was an exemption list naming the test files. That is worse in
  * a specific way: an exemption is indistinguishable from a real leak that

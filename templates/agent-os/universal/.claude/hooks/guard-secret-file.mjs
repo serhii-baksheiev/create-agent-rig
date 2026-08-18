@@ -18,19 +18,26 @@
 // stderr is shown to the agent as the reason.
 //
 // 🔴 LIMITS, stated because a guard's own claim about its reach is the first
-// thing to go stale, and each one is pinned by a test in
-// test/template/guard-secret-file.test.ts:
+// thing to go stale. Each one names the test that pins it — a limits comment
+// nothing checks drifts into overstatement, which is the direction that gets a
+// reader hurt:
 //
 //   - It sees ONE edit fragment, not the resulting file. A credential assembled
-//     across two edits is not seen. This is the same limit every guard in this
-//     directory has, stated in full in `.claude/rules/invariants.md`, "What the
-//     enforcement actually is — stated exactly".
-//   - It sees only what the AGENT writes. A human editing the file, or a
-//     `git commit` of something already on disk, never reaches a PreToolUse
-//     hook. That is precisely why AR-49(b) is two layers: the `.husky/pre-commit`
-//     check covers the author this one cannot see.
-//   - It FAILS OPEN. An unparseable payload, a missing field, an internal throw
-//     — all allow the edit. A crashed guard that blocks everything gets deleted
+//     across two edits is not seen — see guard-secret-file.test.ts › "does not
+//     see a credential split across two edits, because it is shown one fragment
+//     at a time". This is the same limit every guard in this directory has,
+//     stated in full in `.claude/rules/invariants.md`, "What the enforcement
+//     actually is — stated exactly".
+//   - It sees only what the AGENT writes, and only through two tools — see
+//     guard-secret-file.test.ts › "allows a %s call carrying the same credential
+//     payload — the matcher is Write|Edit". A human editing the file, or a
+//     `git commit` of something already on disk, never reaches a PreToolUse hook
+//     at all, and no test here can show that: it is a property of the harness,
+//     not of this file. That is precisely why AR-49(b) is two layers — the
+//     `.husky/pre-commit` check covers the author this one cannot see.
+//   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
+//     not JSON at all" and its neighbours. An unparseable payload, a missing
+//     field, an internal throw — all allow the edit. A crashed guard that blocks everything gets deleted
 //     within the hour, and the layers behind it (the pre-commit check, the CI
 //     validator, review) are what catch the rest.
 //

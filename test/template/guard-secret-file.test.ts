@@ -264,3 +264,35 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
     expect(layers.process).toContain('.claude/scripts/lib/secrets.mjs');
   });
 });
+
+// `.claude/rules/invariants.md`, "State the limits — and test them": a limits
+// comment is the guard's own claim about how far it can be trusted, and nothing
+// checks prose, so it drifts — into overstatement, which is the direction that
+// gets someone hurt. The hook's header names three limits. These are them.
+describe('guard-secret-file: the limits it states, asserted rather than asserted-in-prose', () => {
+  it('does not see a credential split across two edits, because it is shown one fragment at a time', async () => {
+    // The halves are innocuous apart and a credential together. Each edit is
+    // allowed — not because the guard judged them safe, but because it never
+    // sees the file the two of them build. This is the limit every PreToolUse
+    // guard in this directory shares, and the layer that covers it is
+    // `validate-no-secrets.mjs --staged`, which reads the assembled file.
+    const half = CLOUD_ACCESS_KEY.slice(0, 10);
+    const rest = CLOUD_ACCESS_KEY.slice(10);
+    await allow(edit('src/config.ts', `const a = '${half}';`), 'the first half alone');
+    await allow(edit('src/config.ts', `const b = '${rest}';`), 'the second half alone');
+
+    // and the assembled text IS refused, so the two assertions above are a
+    // statement about the guard's reach rather than about a weak pattern
+    await deny(edit('src/config.ts', `const key = '${half}${rest}';`), 'the two halves together');
+  });
+
+  it('states its limits in its own source, where the next reader looks for them', async () => {
+    // The comment is load-bearing: a guard whose reach is undocumented gets
+    // trusted for cover it does not give. Asserted so deleting the block is a
+    // red test rather than a silent loss.
+    const source = await readFile(hook, 'utf8');
+    expect(source).toMatch(/LIMITS/);
+    expect(source).toMatch(/fragment/i);
+    expect(source).toMatch(/FAILS OPEN/i);
+  });
+});

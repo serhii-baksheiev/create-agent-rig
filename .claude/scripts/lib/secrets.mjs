@@ -1,11 +1,12 @@
 // The credential vocabulary, decided once and imported by every layer that
 // refuses one.
 //
-// Three call sites share this module — a `.husky/pre-commit` check, the
-// `guard-secret-file` PreToolUse hook, and `scripts/validate-no-secrets.mjs`.
+// Every layer that refuses a credential imports it: the `guard-secret-file`
+// PreToolUse hook, and `scripts/validate-no-secrets.mjs` — which CI runs over
+// the tracked tree and `.husky/pre-commit` runs over the staged set.
 // `.claude/rules/invariants.md` ("one mechanism, one implementation") is why it
-// is a module rather than three lists: two copies of an invariant disagree, and
-// the one nobody is looking at is the one that is wrong.
+// is a module rather than a list per layer: two copies of an invariant disagree,
+// and the one nobody is looking at is the one that is wrong.
 //
 // It answers two different questions, and keeping them apart matters:
 //
@@ -34,9 +35,10 @@
 //     placeholder %s alone".
 //
 // 🔴 AND IT IS BOUNDED, which is the rule `invariants.md` says cost the most to
-// learn. Two of its three consumers fail OPEN — a hook that throws allows the
-// edit — so every line of work here is a potential total bypass, for all the
-// rules at once rather than for the one that broke. Hence: the input is capped
+// learn. Its PreToolUse consumer fails OPEN — a hook that throws allows the edit
+// — so every line of work here is a potential total bypass, for all the rules at
+// once rather than for the one that broke. (The validator fails closed: it exits
+// 1 on a finding. The asymmetry is deliberate and belongs to those files.) Hence: the input is capped
 // BEFORE it is split, one forward pass, no rescanning, and no pattern that can
 // backtrack (every quantifier below is anchored by a literal or a character
 // class, never a nested repetition). The cap is asserted by test from both
@@ -175,11 +177,13 @@ export const SECRET_VALUE_PATTERNS = [
   //
   // The character class is the second, and it is the one that matters more. An
   // earlier form read `\S{16,}`, which matched a code expression as happily as a
-  // literal: measured across all 335 tracked files of this repository it
-  // produced two findings and BOTH were false — `token: env.JIRA_API_TOKEN };`
-  // in the Jira adapter. Zero true positives, a 100% false rate, feeding a hook
-  // that blocks a commit. `.claude/rules/invariants.md`: "Where a false block
-  // interrupts ordinary work, stay narrow and specific."
+  // literal — and this pattern feeds a hook that blocks a commit, where
+  // `.claude/rules/invariants.md` says to stay narrow: "Where a false block
+  // interrupts ordinary work, stay narrow and specific." What keeps it narrow is
+  // not this comment but two live tests — one over ordinary source, one over
+  // every file the repository tracks: see secrets-lib.test.ts › "leaves the
+  // honest line %s alone" and › "finds no credential value in any file this
+  // repository tracks".
   //
   // So the value must look like a literal: no dot, no bracket, no quote — the
   // characters that mark `process.env.X`, `config.get(…)` and `z.string()`.

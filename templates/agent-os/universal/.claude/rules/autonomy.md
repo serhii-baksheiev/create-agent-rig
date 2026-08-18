@@ -96,11 +96,13 @@ own cost figures are read next to the lane they do not cover.
 - force-push a shared branch
 - put secrets in code, config, logs, or fixtures — and this one is **mechanical**
   rather than a wish: `guard-secret-file` refuses a `Write`/`Edit` that names a
-  credential file or carries a credential value, and the vocabulary both it and
-  the ignore rules read is `.claude/scripts/lib/secrets.mjs`. Its reach and its
-  three blind spots are stated in that hook's own header; a fixture that needs a
-  credential SHAPE assembles it at runtime rather than writing it out, which is
-  what keeps the check's own suites committable
+  credential file or carries a credential value, reading its vocabulary from
+  `.claude/scripts/lib/secrets.mjs`. The ignore rules are held to that same
+  vocabulary by a test that derives them from it, not by reading it themselves.
+  The hook's reach and its three blind spots are stated in its own header, each
+  pointing at the test that pins it; a fixture that needs a credential SHAPE
+  assembles it at runtime rather than writing it out, which is what keeps the
+  check's own suites committable
 - touch production data outside a reviewed migration
 
 ## Stop rules — by work-state, not by feelings

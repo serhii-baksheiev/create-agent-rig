@@ -439,16 +439,18 @@ describe('the scan is bounded, because a fail-open guard that hangs is a total b
 // ─────────────────────────────────────────────────────────────────────────────
 // AR-49(b), the other half of the decision: what the guard must NOT do.
 //
-// 🔴 MEASURED over the 335 tracked files of this repository, before a line below
-// was written: `findSecretValues` reports TWO findings across the whole tree,
-// and BOTH are false positives — `.claude/scripts/queue/jira.mjs` and its
-// template twin, line 186 of each:
+// 🔴 An earlier `assigned-secret` arm read `\S{16,}`, which matches a code
+// EXPRESSION as happily as a literal — this line, from the Jira adapter, was
+// reported as a credential:
 //
 //     return { baseUrl, email: env.JIRA_EMAIL, token: env.JIRA_API_TOKEN };
 //
-// There are ZERO true positives in the tree. So the `assigned-secret` arm's
-// entire measured output today is noise, and `\S{16,}` is why: it matches a code
-// EXPRESSION as happily as it matches a literal.
+// The count that mattered is not restated here, because a number in a comment
+// cannot be re-run and goes stale the day the tree grows. The property it stood
+// for is asserted instead, over the whole tree and on every run: see
+// › "finds no credential value in any file this repository tracks" below, which
+// sweeps every tracked file with NO exemption, and › "leaves alone the line this
+// repository really contains at queue/jira.mjs:186", which pins the case by name.
 //
 // That costs more than an ordinary false positive, because this module feeds a
 // `.husky/pre-commit` check that BLOCKS A COMMIT. `.claude/rules/invariants.md`

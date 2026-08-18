@@ -21,8 +21,10 @@
 // 🔴 AND IT NEVER WRITES ITS OWN FIXTURES OUT. `--self-test` assembles every
 // shape at run time, for the same reason `test/template/secrets-fixtures.ts`
 // does: a credential-shaped literal in this file makes the default sweep report
-// its own scanner, on the day this file is tracked. Measured on the suites
-// before they were assembled: 21 self-matches.
+// its own scanner, on the day this file is tracked. That this file is clean by
+// its own definition is asserted rather than asserted-in-prose: see
+// validate-no-secrets.test.ts › "carries no literal credential in its own
+// source".
 //
 // 🔴 WHY `--self-test` EXISTS AT ALL. A scanner that has silently stopped
 // matching reports a clean tree forever, and a clean tree is exactly what
