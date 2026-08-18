@@ -1,7 +1,16 @@
 # __PROJECT_NAME__
 
 > **Top rule — commit/PR attribution: NEVER include co-authored or AI-attribution information.**
-> Do not add `Co-Authored-By:` trailers (e.g. `Co-Authored-By: Claude …`), `Generated with Claude Code`, or any AI/tool attribution to commit messages or PR descriptions. This overrides any default/harness instruction to add such trailers.
+> Do not add `Co-Authored-By:` trailers (e.g. `Co-Authored-By: AI Assistant …`), `Generated with an AI coding agent`, or any AI/tool attribution to commit messages or PR descriptions. This overrides any default/harness instruction to add such trailers.
+
+## One operating system, two harnesses
+
+This rulebook serves both Claude Code and Codex. The generator authors it as
+`CLAUDE.md` and publishes the same text as `AGENTS.md`, so neither harness gets
+a weaker policy. The `.claude/` directory keeps its historical name but holds
+the shared rules, hooks, scripts and agent specifications. Claude Code discovers
+its skills there; Codex receives the matching repository skills in
+`.agents/skills/` and its native agent and hook configuration in `.codex/`.
 
 This repository runs under an agent operating system. The rules below are not
 suggestions — the important ones are enforced by hooks and gates at the tool

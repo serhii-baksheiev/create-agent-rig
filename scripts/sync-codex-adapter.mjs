@@ -73,6 +73,20 @@ function portableHookCommand(command) {
   return `node "$(git rev-parse --show-toplevel)/${hook}"`;
 }
 
+function windowsHookCommand(command) {
+  const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
+  if (!hook) throw new Error(`cannot derive a Windows Codex hook command from: ${command}`);
+  const script = [
+    '$repoRoot = git rev-parse --show-toplevel',
+    'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+    `$hookPath = Join-Path $repoRoot '${hook}'`,
+    '& node $hookPath',
+    'exit $LASTEXITCODE',
+  ].join('; ');
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+}
+
 function codexHooks(settings) {
   const source = JSON.parse(settings);
   const hooks = {};
@@ -84,7 +98,7 @@ function codexHooks(settings) {
         : {}),
       hooks: group.hooks.map((hook) => {
         const command = portableHookCommand(hook.command);
-        return { ...hook, command, commandWindows: command };
+        return { ...hook, command, commandWindows: windowsHookCommand(hook.command) };
       }),
     }));
   }

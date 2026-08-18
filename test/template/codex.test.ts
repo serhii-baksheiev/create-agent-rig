@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     async (layer) => {
       const dir = path.join(agentOs, layer);
       await expect(text(dir, 'AGENTS.md')).resolves.toBe(await text(dir, 'CLAUDE.md'));
+      await expect(text(dir, 'AGENTS.md')).resolves.toMatch(/Claude Code and Codex/);
     },
   );
 
@@ -79,7 +81,18 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       for (const group of groups) {
         for (const hook of group.hooks) {
           expect(hook.command).toContain('git rev-parse --show-toplevel');
-          expect(hook.commandWindows).toContain('git rev-parse --show-toplevel');
+          expect(hook.commandWindows).not.toBe(hook.command);
+          const windowsCommand = hook.commandWindows?.match(
+            /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+          );
+          expect(windowsCommand).toBeDefined();
+          const windowsScript = Buffer.from(windowsCommand?.[1] ?? '', 'base64').toString(
+            'utf16le',
+          );
+          expect(windowsScript).toContain('git rev-parse --show-toplevel');
+          expect(windowsScript).toMatch(
+            /Join-Path \$repoRoot '\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs'/,
+          );
           expect(hook.command).not.toContain('CLAUDE_PROJECT_DIR');
           // `command` is what Codex executes on macOS and Linux. Keep it valid
           // for the platform-provided POSIX shell and independent of GNU tools.
@@ -88,6 +101,29 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           );
           expect(hook.command).not.toMatch(/powershell|cmd\.exe|%CD%|\\/i);
         }
+      }
+    }
+  });
+
+  it('refuses to expose a Claude edit guard to apply_patch without the shared normalizer', async () => {
+    const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+      hooks: {
+        PreToolUse: Array<{
+          matcher?: string;
+          hooks: Array<{ command: string }>;
+        }>;
+      };
+    };
+
+    for (const group of config.hooks.PreToolUse) {
+      if (!group.matcher?.includes('apply_patch')) continue;
+      for (const hook of group.hooks) {
+        const relativeHook = hook.command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
+        expect(relativeHook, `cannot locate the hook in: ${hook.command}`).toBeDefined();
+        const source = await text(universal, ...(relativeHook?.split('/') ?? []));
+        expect(source, `${relativeHook} bypasses the shared edit normalizer`).toMatch(
+          /from ['"]\.\/lib\/edit-input\.mjs['"]/,
+        );
       }
     }
   });
@@ -156,5 +192,26 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       ].join('\n'),
     );
     expect(result.code).toBe(0);
+  });
+
+  it('blocks a move-only patch that carries existing impurity into core', async () => {
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-move-'));
+    const source = path.join(scratch, 'impure.ts');
+    await writeFile(source, "import { readFile } from 'node:fs/promises';\n");
+
+    try {
+      const result = await runGuard(
+        'guard-core-purity.mjs',
+        [
+          '*** Begin Patch',
+          `*** Update File: ${source}`,
+          '*** Move to: packages/core/src/impure.ts',
+          '*** End Patch',
+        ].join('\n'),
+      );
+      expect(result.code).toBe(2);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
   });
 });

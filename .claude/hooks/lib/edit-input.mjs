@@ -2,9 +2,13 @@
  * Normalise the edit surfaces exposed by Claude Code and Codex.
  *
  * Claude sends Write/Edit fields directly. Codex sends an apply_patch command,
- * so only added lines are returned: removed/context lines are not new code and
- * must not create false blocks.
+ * so added lines are returned for ordinary edits. A move is different: the
+ * destination receives the existing file too, so guards inspect the resulting
+ * content instead of only the patch additions.
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 export function editFragments(input) {
   const toolName = input?.tool_name;
   const toolInput = input?.tool_input ?? {};
@@ -19,16 +23,19 @@ export function editFragments(input) {
     ];
   }
   if (toolName !== 'apply_patch') return [];
-  return patchFragments(String(toolInput.command ?? ''));
+  return patchFragments(String(toolInput.command ?? ''), input?.cwd);
 }
 
-function patchFragments(command) {
+function patchFragments(command, cwd) {
   const fragments = [];
   let current = null;
 
   const flush = () => {
     if (current !== null) {
-      fragments.push({ filePath: normalisePath(current.filePath), fragment: current.lines.join('\n') });
+      const fragment = current.moveTo
+        ? movedFragment(current, cwd)
+        : current.additions.join('\n');
+      fragments.push({ filePath: normalisePath(current.moveTo ?? current.sourcePath), fragment });
       current = null;
     }
   };
@@ -37,22 +44,37 @@ function patchFragments(command) {
     const file = /^\*\*\* (?:Add|Update) File: (.+)$/.exec(line);
     if (file) {
       flush();
-      current = { filePath: file[1], lines: [] };
+      current = { sourcePath: file[1], moveTo: null, additions: [], removals: [] };
       continue;
     }
     const move = /^\*\*\* Move to: (.+)$/.exec(line);
     if (move && current !== null) {
-      current.filePath = move[1];
+      current.moveTo = move[1];
       continue;
     }
     if (/^\*\*\* (?:Delete File|End Patch)/.test(line)) {
       flush();
       continue;
     }
-    if (current !== null && line.startsWith('+')) current.lines.push(line.slice(1));
+    if (current !== null && line.startsWith('+')) current.additions.push(line.slice(1));
+    if (current !== null && line.startsWith('-')) current.removals.push(line.slice(1));
   }
   flush();
   return fragments;
+}
+
+function movedFragment(current, cwd) {
+  const source = path.isAbsolute(current.sourcePath)
+    ? current.sourcePath
+    : path.resolve(String(cwd ?? process.cwd()), current.sourcePath);
+  try {
+    let content = readFileSync(source, 'utf8');
+    for (const removed of current.removals) content = content.replace(`${removed}\n`, '');
+    return [content, ...current.additions].join('\n');
+  } catch (error) {
+    process.stderr.write(`edit-input: could not inspect moved file ${source}: ${error.message}\n`);
+    return current.additions.join('\n');
+  }
 }
 
 function normalisePath(value) {

@@ -8,12 +8,12 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-core-purity.mjs\"",
-            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-core-purity.mjs\""
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBnAHUAYQByAGQALQBjAG8AcgBlAC0AcAB1AHIAaQB0AHkALgBtAGoAcwAnADsAIAAmACAAbgBvAGQAZQAgACQAaABvAG8AawBQAGEAdABoADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA="
           },
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-web-boundary.mjs\"",
-            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-web-boundary.mjs\""
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBnAHUAYQByAGQALQB3AGUAYgAtAGIAbwB1AG4AZABhAHIAeQAuAG0AagBzACcAOwAgACYAIABuAG8AZABlACAAJABoAG8AbwBrAFAAYQB0AGgAOwAgAGUAeABpAHQAIAAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFAA=="
           }
         ]
       },
@@ -23,12 +23,12 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/block-no-verify.mjs\"",
-            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/block-no-verify.mjs\""
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBiAGwAbwBjAGsALQBuAG8ALQB2AGUAcgBpAGYAeQAuAG0AagBzACcAOwAgACYAIABuAG8AZABlACAAJABoAG8AbwBrAFAAYQB0AGgAOwAgAGUAeABpAHQAIAAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFAA=="
           },
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-bash.mjs\"",
-            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-bash.mjs\""
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBnAHUAYQByAGQALQBiAGEAcwBoAC4AbQBqAHMAJwA7ACAAJgAgAG4AbwBkAGUAIAAkAGgAbwBvAGsAUABhAHQAaAA7ACAAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUA"
           }
         ]
       }
@@ -39,7 +39,7 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/gate-stop-dod.mjs\"",
-            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/gate-stop-dod.mjs\""
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBnAGEAdABlAC0AcwB0AG8AcAAtAGQAbwBkAC4AbQBqAHMAJwA7ACAAJgAgAG4AbwBkAGUAIAAkAGgAbwBvAGsAUABhAHQAaAA7ACAAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUA"
           }
         ]
       }
@@ -50,7 +50,7 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/inject-rules.mjs\"",
-            "commandWindows": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/inject-rules.mjs\""
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBpAG4AagBlAGMAdAAtAHIAdQBsAGUAcwAuAG0AagBzACcAOwAgACYAIABuAG8AZABlACAAJABoAG8AbwBrAFAAYQB0AGgAOwAgAGUAeABpAHQAIAAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFAA=="
           }
         ]
       }
