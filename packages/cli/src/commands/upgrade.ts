@@ -1,6 +1,7 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { initInstallSet, projectNameFor } from './init.js';
+import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
 import { agentOsInstallSet, agentOsLayerDirs } from '../lib/install-set.js';
@@ -28,7 +29,7 @@ export type UpgradeVerdict =
   | 'conflict'
   /** The manifest says we installed it; the user removed it. Stays removed. */
   | 'deleted'
-  /** `settings.json`: never replaced, its new entries are handed over. */
+  /** `settings.json` that is not replaceable: the released file is handed over. */
   | 'wiring';
 
 export interface UpgradeAction {
@@ -204,6 +205,33 @@ function isReleasedVersion(
 }
 
 /**
+ * Would writing `next` over `current` stop calling a hook that is still there?
+ *
+ * The one question the hash arms cannot answer. They prove the bytes belong to
+ * the rig; they do not prove the replacement wires the same hooks, and
+ * `settings.json` has two flavours that differ in exactly that. A hook file
+ * still on disk with nothing wired to it is the quiet failure
+ * `lib/init-settings.ts` names: the rules claim it is enforced and nothing ever
+ * calls it.
+ *
+ * Only hooks whose FILE is still present count. One the user deleted on purpose
+ * is not being silenced by this write — it was already gone.
+ */
+async function unwiresAnInstalledHook(
+  repoDir: string,
+  current: string,
+  next: string,
+): Promise<boolean> {
+  const nextHooks = hookFilesReferencedIn(next);
+  for (const hook of hookFilesReferencedIn(current)) {
+    if (nextHooks.has(hook)) continue;
+    const onDisk = resolveInside(repoDir, hook);
+    if (onDisk !== null && (await exists(onDisk))) return true;
+  }
+  return false;
+}
+
+/**
  * What an upgrade would do, decided per file, writing nothing.
  *
  * The rule is the whole design: **replace what the rig installed and the user
@@ -308,33 +336,61 @@ export async function planUpgrade(
       continue;
     }
 
-    if (file.rel === SETTINGS) {
-      if (current === file.content) {
-        actions.push({ rel: file.rel, verdict: 'unchanged' });
-        nextFiles[file.rel] = sha256(file.content);
-      } else {
-        // Same special case `init` makes: this file is a merge target, not a
-        // payload — replacing it can unwire hooks the user added themselves.
-        wiring = file.content;
-        actions.push({
-          rel: file.rel,
-          verdict: 'wiring',
-          reason: 'never replaced — merge the entries below by hand',
-        });
-        if (recorded !== undefined) nextFiles[file.rel] = recorded;
-      }
-      continue;
-    }
+    // The two limits that keep `settings.json`'s new replaceability from
+    // disarming the rig, both measured rather than reasoned about.
+    //
+    // 1. The released-hash fallback is not enough for THIS file. Every other
+    //    file has one flavour; this one has two — `create` wires all the hooks,
+    //    `init` wires only the ones it installs — and they share a history
+    //    entry. A manifest-less rig that ran `init` is recorded `kind: 'init'`,
+    //    so matching a released hash would write the narrow wiring over the
+    //    full one. The item asks for the manifest arm and says the rest is
+    //    reported, which is also the reading with no regression behind it.
+    // 2. Even the manifest arm is not enough on its own, because `kind` is
+    //    trusted from a file that travels in pull requests. So the decision is
+    //    gated on the wiring itself: if the replacement would stop calling a
+    //    hook still sitting in `.claude/hooks/`, it is handed over. That check
+    //    does not care which flavour anything claims to be.
+    const isSettings = file.rel === SETTINGS;
+    const wouldUnwireAnInstalledHook =
+      isSettings && (await unwiresAnInstalledHook(repoDir, current, file.content));
+    const vouched = isSettings
+      ? recorded !== undefined && sha256(current) === recorded
+      : (recorded !== undefined && sha256(current) === recorded) ||
+        isReleasedVersion(history, file.rel, current, ctx);
 
     if (current === file.content) {
       actions.push({ rel: file.rel, verdict: 'unchanged' });
       nextFiles[file.rel] = sha256(file.content);
-    } else if (recorded !== undefined && sha256(current) === recorded) {
-      actions.push({ rel: file.rel, verdict: 'update', templatePath: file.source });
+    } else if (vouched && !wouldUnwireAnInstalledHook) {
+      actions.push({
+        rel: file.rel,
+        verdict: 'update',
+        templatePath: file.source,
+        // Every other replacement is routine; this one rewrites what calls the
+        // guards, so it says so rather than arriving as one more `~` line.
+        ...(isSettings ? { reason: 'the hook wiring, replaced — you never edited it' } : {}),
+      });
       nextFiles[file.rel] = sha256(file.content);
-    } else if (isReleasedVersion(history, file.rel, current, ctx)) {
-      actions.push({ rel: file.rel, verdict: 'update', templatePath: file.source });
-      nextFiles[file.rel] = sha256(file.content);
+    } else if (isSettings) {
+      // Nothing vouches for these bytes, or replacing them would silence a hook
+      // that is still installed. Either way this is the one file whose conflict
+      // is a merge rather than a choice, so the released file is handed over.
+      wiring = file.content;
+      actions.push({
+        rel: file.rel,
+        verdict: 'wiring',
+        // Say what was actually checked. This file no longer consults the
+        // released-hash table (see the limits above), so it cannot claim these
+        // bytes are not a release — only that the manifest does not vouch for
+        // them, which is the check that ran.
+        reason: wouldUnwireAnInstalledHook
+          ? 'replacing it would stop calling a hook that is still installed — merge the entries below by hand'
+          : recorded === undefined
+            ? 'the manifest does not vouch for it — treated as yours, merge the entries below by hand'
+            : 'edited since it was installed — merge the entries below by hand',
+      });
+      if (recorded !== undefined) nextFiles[file.rel] = recorded;
     } else {
       actions.push({
         rel: file.rel,

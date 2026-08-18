@@ -129,10 +129,29 @@ describe('create-agent-rig init (inside a rig that came from `create`)', () => {
     return path.join(repo, 'my-app');
   };
 
+  // `--force` used to be the way into a created rig. It is refused now, and
+  // this is the only level that can see both halves of that: the message a
+  // human reads, and the exit code a script branches on.
+  it('refuses `--force` with the command that does refresh a rig, and exits non-zero', async () => {
+    const project = await generate();
+    const claudeMd = await readFile(path.join(project, 'CLAUDE.md'), 'utf8');
+
+    const forced = await runCliIn(project, ['init', '--force']);
+
+    expect(forced.code).not.toBe(0);
+    expect(`${forced.stdout}${forced.stderr}`).toContain(
+      'deprecated — init --force replaced only CLAUDE.md; run create-agent-rig upgrade instead',
+    );
+    // and it wrote nothing — starting with the one file it used to replace
+    expect(await readFile(path.join(project, 'CLAUDE.md'), 'utf8')).toBe(claudeMd);
+  });
+
   it('points the operator at `upgrade` when it re-installs over a created rig', async () => {
     const project = await generate();
-    // --force is the only way in: plain `init` refuses the generated CLAUDE.md.
-    const forced = await runCliIn(project, ['init', '--force']);
+    // The way in is a deleted CLAUDE.md: that is what lifts `init`'s refusal now
+    // that `--force` is refused outright.
+    await rm(path.join(project, 'CLAUDE.md'));
+    const forced = await runCliIn(project, ['init']);
     expect(forced.code, forced.stderr).toBe(0);
 
     // the fixture really is a create rig that init has just run inside
@@ -166,7 +185,11 @@ describe('create-agent-rig init (inside a rig that came from `create`)', () => {
     const first = await runCliIn(repo, ['init']);
     expect(first.code, first.stderr).toBe(0);
 
-    const second = await runCliIn(repo, ['init', '--force']);
+    // The re-install needs a way past the CLAUDE.md refusal, and `--force` is no
+    // longer one. Deleting it is what the refusal is actually about — the file,
+    // not the flag — and it leaves the manifest this test reads untouched.
+    await rm(path.join(repo, 'CLAUDE.md'));
+    const second = await runCliIn(repo, ['init']);
     expect(second.code, second.stderr).toBe(0);
 
     // the fixture is what the test claims: a manifest exists, and it says `init`

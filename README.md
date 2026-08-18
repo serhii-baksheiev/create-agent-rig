@@ -58,8 +58,14 @@ of every **tagged** release (0.3.0 onward — 0.1.0 and 0.2.0 shipped untagged,
 and a rig from those reports every file as yours) and recognises a file matching
 one of them.
 
-`.claude/settings.json` is never replaced — it is where your own hooks live, so
-the new wiring is printed for you to merge.
+`.claude/settings.json` is replaced only when the manifest's recorded hash
+proves the rig wrote those exact bytes and you have not touched them — the case
+where a release adds a hook and the wiring that calls it. Anything else, and it
+is where your own hooks live: the new wiring is printed for you to merge, never
+written. Unlike every other file, a match against the released hashes is not
+enough for this one, and a replacement that would stop calling a hook the
+current wiring names — while that hook's file is still in `.claude/hooks/` — is
+handed over instead.
 
 **A file you deleted stays deleted.** The rules invite you to delete the ones
 whose invariant your project does not have, so an upgrade that quietly restored

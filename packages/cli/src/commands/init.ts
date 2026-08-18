@@ -12,10 +12,19 @@ import { packageVersion } from '../lib/version.js';
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class InitError extends Error {}
 
+/** What `--force` answers with now that `upgrade` owns the case it stood in for. */
+export const FORCE_DEPRECATED =
+  'deprecated — init --force replaced only CLAUDE.md; run create-agent-rig upgrade instead';
+
 export interface InitOptions {
   /** Report the plan, write nothing. */
   dryRun?: boolean;
-  /** Overwrite an existing CLAUDE.md (the one file init will not clobber blindly). */
+  /**
+   * @deprecated Refused since 0.5 and removed in 0.6. It only ever replaced
+   * `CLAUDE.md`; `upgrade` refreshes a rig file by file. It stays in the type
+   * so `index.ts` can pass the flag through and get the refusal, rather than an
+   * unknown-option parse error that names nothing.
+   */
   force?: boolean;
 }
 
@@ -165,15 +174,20 @@ export async function planInit(repoDir: string): Promise<InitPlan> {
 }
 
 export async function initProject(repoDir: string, options: InitOptions): Promise<InitResult> {
+  // Refused before anything is read or written, so a deprecated flag cannot
+  // half-install: `upgrade` covers what this stood in for, and it decides per
+  // file from the manifest instead of overriding one refusal wholesale.
+  if (options.force) throw new InitError(FORCE_DEPRECATED);
+
   const files = (await initManifest()).map((f) => f.rel);
 
-  // Refuse to clobber an existing CLAUDE.md unless forced — init edits
-  // someone's working repository (brief §4, non-negotiable).
-  if (!options.force && files.includes('CLAUDE.md')) {
+  // Refuse to clobber an existing CLAUDE.md — init edits someone's working
+  // repository (brief §4, non-negotiable).
+  if (files.includes('CLAUDE.md')) {
     if (await exists(path.join(repoDir, 'CLAUDE.md'))) {
       throw new InitError(
         'This repo already has a CLAUDE.md. Refusing to overwrite it. ' +
-          'Merge the agent-os map in by hand, or re-run with --force to replace it.',
+          'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.',
       );
     }
   }
@@ -185,8 +199,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
 
   for (const rel of files) {
     const dest = path.join(repoDir, rel);
-    const isForceableMeta = rel === 'CLAUDE.md';
-    if ((await exists(dest)) && !(isForceableMeta && options.force)) {
+    if (await exists(dest)) {
       // never overwrite a file init did not write (a user's own copy)
       skipped.push(rel);
       continue;
@@ -211,8 +224,8 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * user's own document with the rig's. Earlier entries are preserved: a re-run
  * writes nothing and must not therefore un-remember everything.
  *
- * 🔴 **`kind`, `project` and `stacks` are preserved, not rewritten.** Run with
- * `--force` inside a rig `create` produced, this used to stamp `kind: 'init'`,
+ * 🔴 **`kind`, `project` and `stacks` are preserved, not rewritten.** Reached
+ * inside a rig `create` produced, this used to stamp `kind: 'init'`,
  * `stacks: []` and an empty `region` over the truth — and `planUpgrade` trusts
  * a manifest wholesale (it never re-detects), so the next upgrade routed to the
  * `init` install set and the stack overlays left the plan entirely: not
@@ -229,10 +242,10 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * The fallback below is the honest floor, not the best available answer.
  *
  * The item that asked for this also floated refusing `init` outright on a
- * `create` manifest without `--force`. It is already refused a step earlier and
- * for a different reason — {@link initProject} throws on the existing
- * `CLAUDE.md`. The gap that leaves is a `create` rig whose `CLAUDE.md` was
- * deleted, and this function is what makes that case safe.
+ * `create` manifest. It is already refused a step earlier and for a different
+ * reason — {@link initProject} throws on the existing `CLAUDE.md`. The gap that
+ * leaves is a `create` rig whose `CLAUDE.md` was deleted, and this function is
+ * what makes that case safe.
  */
 async function recordInstall(
   repoDir: string,
