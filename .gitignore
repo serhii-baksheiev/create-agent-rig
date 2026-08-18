@@ -38,8 +38,19 @@ templates/skeleton/*/apps/web/out/
 # negation stops re-including it. And per the note at the top of this file,
 # these patterns reach `templates/skeleton/**` too — a skeleton that ever needs
 # to ship a fixture named `*.key` would find it untrackable with no error.
+*.env
 .env
 .env.*
 !.env.example
+.envrc
+.npmrc
+.netrc
+.pgpass
+id_rsa
+id_ed25519
 *.pem
 *.key
+*.p12
+*.pfx
+*.keystore
+*.jks

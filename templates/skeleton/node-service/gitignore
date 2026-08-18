@@ -20,8 +20,19 @@ dist/
 .claude/runs/
 
 # secrets — never commit these
+*.env
 .env
 .env.*
 !.env.example
+.envrc
+.npmrc
+.netrc
+.pgpass
+id_rsa
+id_ed25519
 *.pem
 *.key
+*.p12
+*.pfx
+*.keystore
+*.jks
