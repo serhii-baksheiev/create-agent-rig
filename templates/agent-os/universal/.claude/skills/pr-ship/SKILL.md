@@ -277,11 +277,31 @@ blockers.
    exhausted trace must cost this round its record and nothing else. A round is
    counted and capped, so a crash here spends one on a journal that was never
    the thing under review.
-5. **DoD walk.** Check the Definition of Done list in
+5. 🔴 **Coverage — check your own fan-out before you believe it.** You recorded
+   what the route asked for, what you launched and what came back; this is the
+   step that compares them, and it is the only mechanical answer to "did the
+   gate actually run":
+
+   ```sh
+   node .claude/scripts/verdict.mjs coverage "$(git rev-parse HEAD)"
+   ```
+
+   Exit 0 is coverage; **exit 1 is a `HOLD`**, and its lines name each reviewer
+   and which of four cases it is — never launched (launch it), launched and
+   silent (go and read why), answered without naming a commit, or answered for
+   another commit (the head moved under the round). A blocker of yours, in the
+   same list as a failing check.
+
+   Two limits, stated because a step that looks mechanical is trusted like one.
+   It reads **this run's journal**, so with no `RIG_RUN_DIR` it says it was
+   skipped and exits 0 — an honest nothing, not a pass. And it cannot see a
+   round that never reached this skill at all: a session that skips `pr-ship`
+   skips its coverage check with it (`docs/decisions/gate-coverage.md`).
+6. **DoD walk.** Check the Definition of Done list in
    `.claude/rules/workflow.md` item by item — test-first evidence, nothing
    skipped or weakened, boundaries respected, docs updated, autonomy tier
    honored.
-6. **Named checks only.** The merge criterion is the project's *named* required
+7. **Named checks only.** The merge criterion is the project's *named* required
    checks, all green. "Some checks passed" is not a criterion; an unnamed
    green wall hides a red brick. Two traps here, both observed in the wild:
    status watchers can exit while checks are **still unregistered** — poll the

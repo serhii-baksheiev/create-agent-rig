@@ -69,7 +69,8 @@ reads; a report that never writes one is read as whatever the caller expected.
     }
   ],
   "advisories": [],
-  "evidence": ["diffed against origin/master", "queue item supplied"]
+  "evidence": ["diffed against origin/master", "queue item supplied"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -81,3 +82,8 @@ reads; a report that never writes one is read as whatever the caller expected.
   what refuses them, and the shape it enforces is in
   `.claude/scripts/lib/verdict.mjs`. The gate name is what stops your answer
   being read as somebody else's.
+- **`headSha` is the commit you reviewed** — `git rev-parse HEAD` in the
+  checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
+  <commit>` tell "this gate answered for the commit being merged" from "it
+  answered two pushes ago", and a verdict naming no commit is counted as
+  neither: it holds the merge until the gate answers again.

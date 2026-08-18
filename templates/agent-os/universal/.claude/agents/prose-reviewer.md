@@ -149,7 +149,8 @@ calling gate reads.
     }
   ],
   "advisories": [],
-  "evidence": ["opened .claude/hooks/guard-bash.mjs and quoted the line"]
+  "evidence": ["opened .claude/hooks/guard-bash.mjs and quoted the line"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -160,3 +161,8 @@ calling gate reads.
   `node .claude/scripts/verdict.mjs check <report> <this gate>` is what refuses
   them, and the gate name is what stops your answer being read as somebody
   else's.
+- **`headSha` is the commit you reviewed** — `git rev-parse HEAD` in the
+  checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
+  <commit>` tell "this gate answered for the commit being merged" from "it
+  answered two pushes ago", and a verdict naming no commit is counted as
+  neither: it holds the merge until the gate answers again.

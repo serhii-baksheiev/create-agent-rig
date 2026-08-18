@@ -70,7 +70,9 @@
  *    one.** A caller that read absence as "the head I am holding" would take a
  *    verdict about a diff nobody named as a verdict about the diff it is about
  *    to merge, so a caller that needs the answer keyed to a commit handles
- *    absence itself.
+ *    absence itself — `lib/gate-coverage.mjs` is the one that does, and it puts
+ *    such a verdict in its own list rather than counting it either way. When
+ *    present the value is a commit SHAPE, not free text: see `isCommitId`.
  */
 
 /** Every word any gate in this rulebook may return. */
@@ -209,6 +211,23 @@ const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isText = (value) => typeof value === 'string' && value.trim() !== '';
+
+/**
+ * A commit id, checked as a SHAPE rather than as text (AR-79).
+ *
+ * `headSha` arrived as "any non-blank text" and nothing interpolated it, which
+ * made the looseness free. It stopped being free the moment a consumer existed:
+ * this repository's own merge criterion puts the value in an argument position
+ * (`gh api "repos/{owner}/{repo}/commits/$SHA/check-runs"`), where `--upload-pack=…`,
+ * a leading `-` and `../…` are not commits but are arguments.
+ *
+ * Fixed here rather than at each consumer, for the reason `invariants.md` gives:
+ * two places enforcing one invariant will disagree, and the one nobody is looking
+ * at is the wrong one. **Checked on the raw value — never trimmed, never
+ * lowercased.** A value that needs rewriting to pass is a value the reviewer did
+ * not write, and rewriting it silently is how a near-miss becomes a match.
+ */
+const isCommitId = (value) => typeof value === 'string' && /^[0-9a-f]{7,64}$/i.test(value);
 
 /**
  * The last fenced ```json block, as one of three answers: `{ raw }` for a block
@@ -398,10 +417,11 @@ export function parseVerdict(text) {
   }
 
   const headSha = parsed.headSha;
-  if (headSha !== undefined && !isText(headSha)) {
+  if (headSha !== undefined && !isCommitId(headSha)) {
     problems.push(
       `\`headSha\` is \`${safeForDiagnosis(headSha)}\`, which is not a commit this verdict ` +
-        'could have answered for. It is optional, and a line of text when present.',
+        'could have answered for. It is optional, and 7 to 64 hex characters (0-9a-f) when ' +
+        'present — nothing else, and with no surrounding space.',
     );
   }
 

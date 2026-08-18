@@ -490,6 +490,15 @@ describe('the optional lists arrive as lists or not at all', () => {
 describe('a verdict may name the commit it answered for', () => {
   const HEAD_SHA = '9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70';
 
+  /**
+   * AR-79: the refusal has to name the SHAPE — 7 to 64 characters of hex — and
+   * not merely repeat AR-101's "a line of text", which is the sentence a reader
+   * of `--upload-pack=x` would take as "so write a longer one". Several
+   * phrasings satisfy it; what none of them may do is leave the reader without
+   * the shape.
+   */
+  const namesTheShape = /hex|0-9a-f|7\D{1,4}64/i;
+
   it('carries the commit through to the verdict the caller reads', async () => {
     // The whole shape, not a subset: an accepted key that the returned object
     // does not carry is the worse half of this defect — the gate said which
@@ -505,14 +514,36 @@ describe('a verdict may name the commit it answered for', () => {
     });
   });
 
-  it('accepts a headSha this repository could never resolve to a commit', async () => {
-    // The permissiveness is the decision, and it is the same one limit 1 makes
-    // about an unknown gate name: this module decides whether a verdict is
-    // WELL-FORMED, and it has no repository to resolve a commit against. A
-    // caller that needs the SHA to be real checks that itself.
-    expect(acceptedVerdict(await parse(answer(ship({ headSha: 'not-a-commit' })))).headSha).toBe(
-      'not-a-commit',
-    );
+  // 🔴 AR-79 CHANGES THIS PIN, and the direction is the whole point: AR-101 left
+  // `headSha` as "any non-blank text", so `--upload-pack=…`, `../x` and a value
+  // with a newline in it all parsed as commits. The tightening is at the SCHEMA
+  // rather than at each consumer because the value does not stay data: the merge
+  // criterion interpolates it into an argument position
+  // (`gh api "repos/{owner}/{repo}/commits/$SHA/check-runs"`,
+  // `.claude/rules/node-ts.md`), and every consumer that has to remember to
+  // re-check it is a consumer that will forget once. One shape, one place.
+  //
+  // The value is still never resolved against a repository — limit 1's
+  // permissiveness about an unknown GATE is untouched, and this module still has
+  // no repository to ask. What it now decides is only whether the text could be a
+  // commit id at all.
+  it('refuses a headSha that is text but could never be a commit id', async () => {
+    const problems = problemsOf(await parse(answer(ship({ headSha: 'not-a-commit' }))));
+    expect(problems.join('\n')).toMatch(/head\s*sha/i);
+    expect(problems.join('\n')).toMatch(namesTheShape);
+  });
+
+  it.each([
+    ['seven characters', '9c1f0a7'],
+    ['the forty of a full sha', HEAD_SHA],
+    ['the sixty-four of the longer hash', 'a'.repeat(64)],
+    ['uppercase hex, which git prints on request', HEAD_SHA.toUpperCase()],
+  ])('accepts %s and hands it back exactly as it was written', async (_label, headSha) => {
+    // Round-tripped unchanged, uppercase included: a schema that lowercased or
+    // trimmed on the way through would make the recorded commit differ from the
+    // one the reviewer wrote, and every later comparison against it is then
+    // deciding on a value nobody said.
+    expect(acceptedVerdict(await parse(answer(ship({ headSha })))).headSha).toBe(headSha);
   });
 
   it('leaves the key off the verdict entirely when the block names no commit', async () => {
@@ -535,6 +566,30 @@ describe('a verdict may name the commit it answered for', () => {
     // otherwise this test is green today, on the sentence that says the schema
     // has never heard of the key, and would say nothing about the new one.
     expect(problems.join('\n')).not.toMatch(/does not define/i);
+  });
+
+  // 🔴 AR-79. Each of these parsed as a commit under AR-101's "any non-blank
+  // text", and each of them is a value that stops being data downstream: the
+  // merge criterion interpolates the recorded sha into `gh api
+  // "repos/{owner}/{repo}/commits/$SHA/check-runs"`, where a leading `-` is an
+  // option, `--upload-pack=` is a command to run, `../` walks the path the API
+  // is addressed by, and a newline ends the line the operator pasted.
+  it.each([
+    ['an option git would act on', '--upload-pack=touch /tmp/pwned'],
+    ['a path traversal', '../x'],
+    ['a value starting with a dash', '-9c1f0a7'],
+    ['a value with a newline in it', '9c1f0a7\nrm -rf /'],
+    ['a value with whitespace around it', ` ${HEAD_SHA} `],
+    ['text that is not hex at all', 'not-a-commit'],
+    ['six characters, one short of the shortest sha', '9c1f0a'],
+    ['sixty-five characters, one past the longest', 'a'.repeat(65)],
+  ])('refuses a headSha that is %s, naming the key and the shape', async (_label, headSha) => {
+    const problems = problemsOf(await parse(answer(ship({ headSha }))));
+    expect(problems.join('\n')).toMatch(/head\s*sha/i);
+    expect(problems.join('\n')).toMatch(namesTheShape);
+    // The old sentence sent a reader of `--upload-pack=x` looking for a longer
+    // string rather than a different one.
+    expect(problems.join('\n')).not.toMatch(/a line of text/i);
   });
 
   it('still refuses a neighbouring key this shape does not define', async () => {
