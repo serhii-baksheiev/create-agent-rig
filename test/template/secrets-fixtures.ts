@@ -75,3 +75,11 @@ export const AWS_SECRET = assemble('wJalrXUtnFEMI', 'K7MDENGbPxRfiCYEXAMPLEKEY')
 /** A quoted assignment, assembled so the quote never sits next to the run. */
 export const quoted = (prefix: string, value: string, quote = '"'): string =>
   assemble(prefix, quote, value, quote);
+
+/** Six more shapes with a recognisable prefix, all assembled, none real. */
+export const SLACK_BOT_TOKEN = assemble('xoxb', '-2417923850-4192837465-aBcDeFgHiJkLmNoPqRsTuVwX');
+export const GOOGLE_API_KEY = assemble('AIza', 'SyD-9fA2dC7bE1gH4jK6mN8pQ0rS3tU5vW7');
+export const STRIPE_LIVE_KEY = assemble('sk_live', '_51HkQ2aBcDeFgHiJkLmNoPqRsTuVwXyZ0123');
+export const OPENAI_PROJECT_KEY = assemble('sk-proj', '-Zq9Wx7Lv2Kd4Nb8Mc1Pf6Rt3Hy5Ug0Jn2Bs4Dt');
+export const NPM_TOKEN = assemble('npm', '_aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX');
+export const GITLAB_PAT = assemble('glpat', '-aB1cD2eF3gH4iJ5kL6');

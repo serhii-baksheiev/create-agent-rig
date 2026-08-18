@@ -1,11 +1,12 @@
 // The credential vocabulary, decided once, so that everything which refuses a
 // credential refuses the same set.
 //
-// In THIS project one thing imports it: the `guard-secret-file` PreToolUse hook.
-// ⚠ Read that as the whole list, because it is. The generator this rulebook came
-// from runs the same vocabulary through two more layers — a pre-commit check and
-// a CI sweep over every tracked file — and neither of them travels here. Adding
-// one is a decision for this project; nothing has made it already.
+// Every layer that refuses one reads THIS module — which layers exist is a
+// question about the project, not about this file. A freshly generated rig has
+// the `guard-secret-file` PreToolUse hook and nothing else; the generator this
+// came from adds a commit-time check and a CI sweep over the same vocabulary
+// (`scripts/validate-no-secrets.mjs`, wired in `.husky/pre-commit` and the CI
+// workflow). Read `.husky/` and the CI config to know which of those you have.
 //
 // `.claude/rules/invariants.md` ("one mechanism, one implementation") is why the
 // vocabulary is a module and not a list per consumer: two copies of an invariant
@@ -32,7 +33,12 @@
 //     "never carries the credential itself into the finding it reports".
 //   - It is a TEXT scan, not an entropy analyser. A credential that matches none
 //     of the shapes below passes, and a base64 blob that happens to look like
-//     one does not. It targets drift, not an adversary.
+//     one does not. It targets drift, not an adversary. Named rather than left
+//     to be discovered, because the list of prefixes below invites the opposite
+//     assumption: a password inside a `postgres://user:pass@host` or a
+//     basic-auth URL, a bare unassigned JWT, a storage connection string of
+//     the `AccountKey=…` form and a PuTTY key header are all still invisible
+//     to it.
 //   - `assigned-secret` reads a keyword next to a long value. It cannot tell a
 //     real token from a long placeholder, which is why the length bound exists
 //     and why the placeholder forms this repository actually writes are pinned
@@ -43,10 +49,15 @@
 // learn. Its PreToolUse consumer fails OPEN — a hook that throws allows the edit
 // — so every line of work here is a potential total bypass, for all the rules at
 // once rather than for the one that broke. (The validator fails closed: it exits
-// 1 on a finding. The asymmetry is deliberate and belongs to those files.) Hence: the input is capped
-// BEFORE it is split, one forward pass, no rescanning, and no pattern that can
-// backtrack (every quantifier below is anchored by a literal or a character
-// class, never a nested repetition). The cap is asserted by test from both
+// 1 on a finding. The asymmetry is deliberate and belongs to those files.)
+//
+// Hence, and every one of these is a bound rather than a hope: the input is
+// capped BEFORE it is split; every quantifier is bounded or over a class
+// disjoint from what follows it; the one pattern that judges its value walks a
+// line's candidates under an explicit cap rather than to exhaustion. The last
+// two were paid for — an unbounded run between keyword and separator made this
+// quadratic, 36 s on 256 KB of one line, in a guard that fails open. The cap is
+// asserted by test from both
 // sides — that a secret past it is missed, and that the same secret is found
 // without the cap, so the miss is not passing for the wrong reason: see
 // secrets-lib.test.ts › "scans nothing past the limit it was given".
@@ -129,14 +140,35 @@ const extensionOf = (basename) => {
   return dot <= 0 ? '' : basename.slice(dot + 1).toLowerCase();
 };
 
-// `.env` anywhere in the name, not only at either end: `prod.env.local` and
-// `jira.env.local` are the forms a multi-environment project writes, and they
-// match neither `*.env` nor `.env.*`.
-const isEnvFile = (basename) =>
-  basename === '.env' ||
-  basename.startsWith('.env.') ||
-  basename.endsWith('.env') ||
-  basename.includes('.env.');
+/**
+ * The suffixes that make `<stem>.env.<suffix>` an env FILE rather than a source
+ * file about the environment.
+ *
+ * 🔴 Named rather than open-ended, and that is the whole point. A bare
+ * `basename.includes('.env.')` reaches `prod.env.local` — and also
+ * `packages/shared/src/config.env.ts`, `src/app.env.ts` and `docs/setup.env.md`,
+ * which are ordinary source. `CLAUDE.md` puts env loading in `packages/shared`,
+ * so that false positive lands on the file most likely to need writing. See
+ * secrets-lib.test.ts › "leaves %s writable — it is source, not a credential".
+ */
+const ENV_SUFFIXES = new Set([
+  'local',
+  'development',
+  'dev',
+  'production',
+  'prod',
+  'staging',
+  'stage',
+  'test',
+]);
+
+// `.env` at either end, or in the middle followed by a named environment.
+const isEnvFile = (basename) => {
+  if (basename === '.env' || basename.startsWith('.env.') || basename.endsWith('.env')) return true;
+  const middle = basename.indexOf('.env.');
+  if (middle < 0) return false;
+  return ENV_SUFFIXES.has(basename.slice(middle + '.env.'.length));
+};
 
 /**
  * Whether a path names a credential file, from the path text alone.
@@ -172,7 +204,12 @@ export const isCredentialPath = (relativePath) => {
   // which the segment loop above deliberately skips. Matched exactly, or behind
   // a `-`, so `credentials.ts` and `secrets-lib.test.ts` stay source.
   if (CREDENTIAL_SEGMENTS.has(basename)) return true;
-  if (basename.endsWith('-credentials') || basename.endsWith('-secrets')) return true;
+  // 🔴 DOTFILES only. `.git-credentials` is a credential store; `scripts/rotate-secrets`
+  // and `ops/sync-credentials` are ordinary extensionless scripts, and refusing
+  // to write them is the false positive that gets a guard uninstalled. See
+  // secrets-lib.test.ts › "leaves %s writable — it is source, not a credential".
+  if (basename.startsWith('.') && (basename.endsWith('-credentials') || basename.endsWith('-secrets')))
+    return true;
 
   if (isEnvFile(basename))
     return !PLACEHOLDER_SUFFIXES.some((suffix) => basename.endsWith(suffix));
@@ -185,28 +222,65 @@ export const isCredentialPath = (relativePath) => {
 /**
  * The `assigned-secret` pattern, built from `CREDENTIAL_WORDS`.
  *
- * Longest word first, so `credentials` is tried before `credential` — the
- * alternation is ordered, and a shorter prefix winning would leave the rest of
- * the word to the run below rather than to the separator.
+ * 🔴 THE RUN BETWEEN KEYWORD AND SEPARATOR IS BOUNDED, and that bound is the
+ * whole difference between linear and quadratic. Unbounded, the engine restarts
+ * at every offset and walks `[A-Za-z0-9_-]*` to end-of-line at each keyword hit:
+ * measured at 140 ms for 16 KB of one line, 2.2 s at 64 KB, 9 s at 128 KB, 36 s
+ * at 256 KB — four times per doubling. In a guard that FAILS OPEN and shares its
+ * matcher with two others, that is not slowness, it is a bypass of all three.
+ * `.claude/rules/invariants.md` states the bar exactly: not "is it fast enough
+ * on realistic input" but "can any input make it do unbounded work at all".
+ * Pinned by secrets-lib.test.ts › "grows linearly with input size rather than
+ * quadratically".
  *
- * `[A-Za-z0-9_-]*` between the keyword and the separator is what reaches
- * `SECRET_ACCESS_KEY=` and every plural. It cannot cross whitespace, so a
- * keyword in prose never reaches a separator further down the line: `the token
- * here = x` does not match, because `here` is not adjacent to `token`.
+ * Forty characters is chosen to clear the longest real prefix this has to
+ * cross — `_ACCESS_KEY` after `secret` — with room, and nothing longer is an
+ * assignment anyone writes.
  *
- * Bounded by construction: that class, `\s*` and `[=:]` are mutually disjoint,
- * so no input gives the engine a choice to backtrack over.
+ * ⚠ NOT anchored with `\b`, deliberately. It would read as the obvious fix for
+ * the same measurements, and it breaks the case this arm exists for:
+ * a name like `<VENDOR>_SECRET_ACCESS_KEY` is one word, so there is no word
+ * boundary before `SECRET` and the keyword would never be found.
+ * What separates a credential from an identifier here is the VALUE, not the
+ * keyword — see `IDENTIFIER_VALUE` below.
  */
 const assignmentPattern = () => {
+  // Ordered longest-first so `credentials` is tried before `credential`. This is
+  // presentation, not correctness: the bounded run absorbs either tail.
   const words = [...CREDENTIAL_WORDS].sort((a, b) => b.length - a.length);
   // `api_key` and `api-key` are the same keyword spelled three ways; the
-  // vocabulary holds only the closed form, so the separator is added here.
-  const alternation = [...words, 'api[_-]?keys?', 'secret[_-]?access[_-]?key'].join('|');
+  // vocabulary holds only the closed form, so the separators are added here.
+  const alternation = [...words, 'api[_-]?keys?'].join('|');
   return new RegExp(
-    `(?:${alternation})[A-Za-z0-9_-]*["']?\\s*[=:]\\s*["']?[A-Za-z0-9_\\-+/=]{16,}`,
+    `(?:${alternation})[A-Za-z0-9_-]{0,40}["']?\\s*[=:]\\s*["']?([A-Za-z0-9_\\-+/=]{16,})`,
     'i',
   );
 };
+
+/**
+ * A value that is a bare identifier, which is what SOURCE is made of.
+ *
+ * 🔴 This is the rule that separates an assigned random string from
+ * `readonly credentials: RequestCredentials`. (Deliberately described rather
+ * than shown: a literal example here is a finding in this file, which is the
+ * same reason the suites assemble their fixtures.) Measured over 2 946 honest
+ * files:
+ * without it the arm produced 35 findings and every one was false — `const
+ * trailingToken = getTrailingToken(…)`, `exports.isTokenOnSameLine = …`,
+ * `credentials: CredentialsContainer`. Those are the shapes a TypeScript service
+ * tree is MADE of, and this module ships into one.
+ *
+ * A guard that fires on honest work is routed around within the week, and a
+ * routed-around guard is worse than none because everyone believes they are
+ * covered. See secrets-lib.test.ts › "leaves %s alone" in the block about
+ * ordinary TypeScript.
+ *
+ * ⚠ The price is real and is pinned too: an all-letters secret is invisible to
+ * this arm — see › "cannot see an assigned value that is all letters, which is
+ * the price of the rule above". Shapes with a recognisable prefix are caught by
+ * the patterns above regardless of what they are assigned to.
+ */
+const IDENTIFIER_VALUE = /^[A-Za-z]+$/;
 
 /**
  * The credential shapes the three call sites refuse, each named so a refusal can
@@ -224,6 +298,17 @@ export const SECRET_VALUE_PATTERNS = [
   { id: 'cloud-access-key', pattern: /\bAKIA[A-Z0-9]{16}\b/ },
   { id: 'anthropic-key', pattern: /\bsk-ant-[A-Za-z0-9\-_]{16,}/ },
   { id: 'private-key-block', pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
+  // Six more with a recognisable prefix. Each is a literal followed by ONE
+  // bounded class — the cheapest shape there is, and the one that cannot
+  // backtrack. They are here because a tool that names four issuers by prefix
+  // invites the reader to assume it knows the rest; the ones it still does not
+  // know are named in the limits block above rather than left to be discovered.
+  { id: 'slack-token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{16,}/ },
+  { id: 'google-api-key', pattern: /\bAIza[A-Za-z0-9_-]{16,}/ },
+  { id: 'stripe-live-key', pattern: /\b[sr]k_live_[A-Za-z0-9]{16,}/ },
+  { id: 'openai-project-key', pattern: /\bsk-proj-[A-Za-z0-9_-]{16,}/ },
+  { id: 'npm-token', pattern: /\bnpm_[A-Za-z0-9]{30,}/ },
+  { id: 'gitlab-pat', pattern: /\bglpat-[A-Za-z0-9_-]{16,}/ },
   // A keyword next to a long LITERAL value — the only pattern here that is
   // built rather than written, because it is the only one whose vocabulary this
   // project decides.
@@ -268,6 +353,9 @@ export const SECRET_VALUE_PATTERNS = [
   {
     id: 'assigned-secret',
     pattern: assignmentPattern(),
+    // The value is captured so it can be judged, not merely matched.
+    valueGroup: 1,
+    reject: IDENTIFIER_VALUE,
   },
 ];
 
@@ -279,6 +367,48 @@ export const SECRET_VALUE_PATTERNS = [
  * a generated blob from turning a fail-open guard into a bypass.
  */
 export const DEFAULT_SCAN_LIMIT = 2 * 1024 * 1024;
+
+/**
+ * A global twin per rejecting pattern, built once.
+ *
+ * Only patterns that JUDGE their value need to walk a line: the rest answer with
+ * one `test`. Built at module load rather than per line, because a fail-open
+ * guard should not allocate per unit of input.
+ */
+const GLOBAL_TWIN = new Map(
+  SECRET_VALUE_PATTERNS.filter((entry) => entry.reject).map((entry) => [
+    entry.id,
+    new RegExp(entry.pattern.source, `${entry.pattern.flags}g`),
+  ]),
+);
+
+/** How many candidates on one line are judged before the line is given up on. */
+const MAX_CANDIDATES_PER_LINE = 32;
+
+/**
+ * Whether one pattern claims this line.
+ *
+ * A rejecting pattern walks the line's candidates rather than judging only the
+ * first: `credentials: RequestCredentials, token: <a real one>` has an innocent
+ * match before a guilty one, and stopping at the first would miss it. Bounded by
+ * `MAX_CANDIDATES_PER_LINE`, so the walk cannot become the unbounded work this
+ * module exists to avoid.
+ */
+const matches = (entry, line) => {
+  if (!entry.reject) return entry.pattern.test(line);
+  const global = GLOBAL_TWIN.get(entry.id);
+  if (!global) return entry.pattern.test(line);
+  global.lastIndex = 0;
+  for (let seen = 0; seen < MAX_CANDIDATES_PER_LINE; seen += 1) {
+    const match = global.exec(line);
+    if (match === null) return false;
+    if (!entry.reject.test(match[entry.valueGroup] ?? '')) return true;
+    // A zero-length match would spin here; every pattern above consumes, but the
+    // guard costs one comparison and removes the question.
+    if (global.lastIndex === match.index) global.lastIndex += 1;
+  }
+  return false;
+};
 
 /**
  * Every credential shape found in `text`, as `{ id, line }` and nothing else.
@@ -298,8 +428,8 @@ export const findSecretValues = (text, options = {}) => {
   const lines = scanned.split('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    for (const { id, pattern } of SECRET_VALUE_PATTERNS) {
-      if (pattern.test(line)) findings.push({ id, line: index + 1 });
+    for (const entry of SECRET_VALUE_PATTERNS) {
+      if (matches(entry, line)) findings.push({ id: entry.id, line: index + 1 });
     }
   }
   return findings;

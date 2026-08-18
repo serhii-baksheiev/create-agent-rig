@@ -56,6 +56,8 @@ const loadSecretsLib = async (): Promise<SecretsModule> =>
 /** One entry of the validator's own exemption list. */
 interface Exemption {
   path: string;
+  /** The ONE finding id this entry excuses — never the whole path. */
+  id: string;
   reason: string;
 }
 
@@ -71,12 +73,18 @@ interface ValidatorModule {
     files: readonly string[],
     readText: (relativePath: string) => string | null,
     label: string,
-    options?: { tracked?: readonly string[]; exemptions?: ReadonlyArray<Partial<Exemption>> },
+    options?: {
+      tracked?: readonly string[];
+      exemptions?: ReadonlyArray<Partial<Exemption>>;
+      /** Off in `--staged`: a commit cannot see the tree the list is about. */
+      auditList?: boolean;
+    },
   ): number;
   exemptionProblems(input: {
     exemptions: ReadonlyArray<Partial<Exemption>>;
     tracked: readonly string[];
-    offending: readonly string[];
+    /** A finding is `{ path, id }`; a bare path is accepted for the path arm. */
+    offending: ReadonlyArray<string | { path: string; id: string }>;
   }): ExemptionProblem[];
 }
 
@@ -375,9 +383,9 @@ describe('validate-no-secrets — the exemption list answers for itself', () => 
   it('refuses an entry that carries no reason, complaining about its own list', async () => {
     const { exemptionProblems } = await loadValidator();
     const problems = exemptionProblems({
-      exemptions: [{ path: 'fixtures/sample.env' }],
+      exemptions: [{ path: 'fixtures/sample.env', id: 'credential-path' }],
       tracked: ['fixtures/sample.env'],
-      offending: ['fixtures/sample.env'],
+      offending: [{ path: 'fixtures/sample.env', id: 'credential-path' }],
     });
     // An unexplained exemption is indistinguishable from a real leak someone
     // silenced. Honouring it silently is the failure; naming it is the fix.
@@ -388,7 +396,13 @@ describe('validate-no-secrets — the exemption list answers for itself', () => 
   it('reports an exemption naming a path that is not tracked', async () => {
     const { exemptionProblems } = await loadValidator();
     const problems = exemptionProblems({
-      exemptions: [{ path: 'fixtures/deleted.env', reason: 'a fixture that used to exist' }],
+      exemptions: [
+        {
+          path: 'fixtures/deleted.env',
+          id: 'credential-path',
+          reason: 'a fixture that used to exist',
+        },
+      ],
       tracked: ['src/index.ts'],
       offending: [],
     });
@@ -398,7 +412,9 @@ describe('validate-no-secrets — the exemption list answers for itself', () => 
   it('reports an exemption whose path no longer produces any finding', async () => {
     const { exemptionProblems } = await loadValidator();
     const problems = exemptionProblems({
-      exemptions: [{ path: 'fixtures/sample.env', reason: 'a documented placeholder' }],
+      exemptions: [
+        { path: 'fixtures/sample.env', id: 'credential-path', reason: 'a documented placeholder' },
+      ],
       tracked: ['fixtures/sample.env'],
       offending: [],
     });
@@ -410,9 +426,11 @@ describe('validate-no-secrets — the exemption list answers for itself', () => 
   it('leaves an exemption that is tracked, explained and still needed alone', async () => {
     const { exemptionProblems } = await loadValidator();
     const problems = exemptionProblems({
-      exemptions: [{ path: 'fixtures/sample.env', reason: 'a documented placeholder' }],
+      exemptions: [
+        { path: 'fixtures/sample.env', id: 'credential-path', reason: 'a documented placeholder' },
+      ],
       tracked: ['fixtures/sample.env'],
-      offending: ['fixtures/sample.env'],
+      offending: [{ path: 'fixtures/sample.env', id: 'credential-path' }],
     });
     // The negative half: a rule that also fires on the compliant form is a rule
     // that gets routed around.
@@ -622,7 +640,9 @@ describe('validate-no-secrets — the excusal path, with a list that is not empt
       'file(s)',
       {
         tracked: files,
-        exemptions: [{ path: 'fixtures/sample.txt', reason: 'a documented sample' }],
+        exemptions: [
+          { path: 'fixtures/sample.txt', id: 'cloud-access-key', reason: 'a documented sample' },
+        ],
       },
     );
     expect(code, 'the exempt finding was not suppressed').toBe(0);
@@ -640,7 +660,9 @@ describe('validate-no-secrets — the excusal path, with a list that is not empt
       'file(s)',
       {
         tracked: files,
-        exemptions: [{ path: 'fixtures/sample.txt', reason: 'a documented sample' }],
+        exemptions: [
+          { path: 'fixtures/sample.txt', id: 'cloud-access-key', reason: 'a documented sample' },
+        ],
       },
     );
     expect(code, 'an unexempt finding was suppressed').toBe(1);
@@ -656,8 +678,12 @@ describe('validate-no-secrets — the excusal path, with a list that is not empt
       {
         tracked: files,
         exemptions: [
-          { path: 'fixtures/sample.txt', reason: 'a documented sample' },
-          { path: 'fixtures/gone.txt', reason: 'names a path nobody tracks' },
+          { path: 'fixtures/sample.txt', id: 'cloud-access-key', reason: 'a documented sample' },
+          {
+            path: 'fixtures/gone.txt',
+            id: 'cloud-access-key',
+            reason: 'names a path nobody tracks',
+          },
         ],
       },
     );
@@ -673,8 +699,152 @@ describe('validate-no-secrets — the excusal path, with a list that is not empt
     const files = ['odd:name.txt'];
     const code = sweep(files, text({ 'odd:name.txt': `key=${CLOUD_ACCESS_KEY}` }), 'file(s)', {
       tracked: files,
-      exemptions: [{ path: 'odd:name.txt', reason: 'a path with a colon in it' }],
+      exemptions: [
+        { path: 'odd:name.txt', id: 'cloud-access-key', reason: 'a path with a colon in it' },
+      ],
     });
     expect(code, 'the path was re-parsed out of formatted text and lost its tail').toBe(0);
+  });
+});
+
+describe('validate-no-secrets — an exemption excuses one finding, not a file', () => {
+  const text = (byPath: Record<string, string>) => (relativePath: string) =>
+    byPath[relativePath] ?? null;
+
+  // 🔴 The failure this closes, demonstrated end to end by the round-2 scan: an
+  // exemption taken out for a `credential-path` false positive on
+  // `docs/secrets/threat-model.md` went on to report a REAL token in that same
+  // file as clean, exit 0, with no staleness finding to say so. A blanket
+  // per-path excusal is a standing licence for whatever lands on that path next.
+  it('excuses the id it names', async () => {
+    const { sweep } = await loadValidator();
+    const files = ['docs/secrets/note.md'];
+    const code = sweep(files, text({ 'docs/secrets/note.md': 'ordinary prose\n' }), 'file(s)', {
+      tracked: files,
+      exemptions: [
+        {
+          path: 'docs/secrets/note.md',
+          id: 'credential-path',
+          reason: 'a documentation directory',
+        },
+      ],
+    });
+    expect(code, 'the named finding was not excused').toBe(0);
+  });
+
+  it('does NOT excuse a different id on the same path', async () => {
+    const { sweep } = await loadValidator();
+    const files = ['docs/secrets/note.md'];
+    const code = sweep(
+      files,
+      text({ 'docs/secrets/note.md': `token=${'a1'.repeat(12)}\n` }),
+      'file(s)',
+      {
+        tracked: files,
+        exemptions: [
+          {
+            path: 'docs/secrets/note.md',
+            id: 'credential-path',
+            reason: 'a documentation directory',
+          },
+        ],
+      },
+    );
+    expect(code, 'a real credential was suppressed by a path-arm exemption').toBe(1);
+  });
+
+  it('reports an entry whose named id has stopped appearing on that path', async () => {
+    const { exemptionProblems } = await loadValidator();
+    const problems = exemptionProblems({
+      exemptions: [{ path: 'a.txt', id: 'assigned-secret', reason: 'was needed once' }],
+      tracked: ['a.txt'],
+      offending: [{ path: 'a.txt', id: 'credential-path' }],
+    });
+    expect(problems.map((problem) => problem.kind)).toContain('exemption-no-longer-needed');
+  });
+
+  it('leaves an entry alone while the id it names is still appearing', async () => {
+    const { exemptionProblems } = await loadValidator();
+    const problems = exemptionProblems({
+      exemptions: [{ path: 'a.txt', id: 'credential-path', reason: 'a documentation directory' }],
+      tracked: ['a.txt'],
+      offending: [{ path: 'a.txt', id: 'credential-path' }],
+    });
+    expect(problems).toEqual([]);
+  });
+
+  // 🔴 The mutation that survived round 1 with a green suite, and why. The
+  // all-or-nothing rule was asserted only through the exit code — and the stale
+  // entry emits a line of its own, so the code is 1 whether the rule is there or
+  // not. Deleting the rule left 31/31 passing while the credential finding
+  // silently vanished from the output. So this reads the OUTPUT: the suppressed
+  // finding has to come back, by name.
+  it('stops excusing anything while one entry is unusable, and says which finding came back', async () => {
+    const { sweep } = await loadValidator();
+    const files = ['a.txt'];
+    const printed: string[] = [];
+    const write = process.stdout.write.bind(process.stdout);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (process.stdout as any).write = (chunk: unknown): boolean => {
+      printed.push(String(chunk));
+      return true;
+    };
+    let code: number;
+    try {
+      code = sweep(files, text({ 'a.txt': `key=${CLOUD_ACCESS_KEY}` }), 'file(s)', {
+        tracked: files,
+        exemptions: [
+          { path: 'a.txt', id: 'cloud-access-key', reason: 'excused' },
+          { path: 'gone.txt', id: 'cloud-access-key', reason: 'names a path nobody tracks' },
+        ],
+      });
+    } finally {
+      process.stdout.write = write;
+    }
+    const out = printed.join('');
+    expect(code).toBe(1);
+    expect(out, 'the excused finding did not come back when the list became untrustworthy').toMatch(
+      /^a\.txt:\d+ — cloud-access-key$/m,
+    );
+    expect(out).toMatch(/gone\.txt — exemption-not-tracked/);
+  });
+});
+
+describe('validate-no-secrets --staged — the list is audited where the whole tree is visible', () => {
+  const text = (byPath: Record<string, string>) => (relativePath: string) =>
+    byPath[relativePath] ?? null;
+
+  // 🔴 Round 1 fixed half of this: `exemption-not-tracked` stopped reading the
+  // staged set, and `exemption-no-longer-needed` kept reading it. So one valid
+  // exemption still failed every commit that did not touch its path — under the
+  // headline "a credential must never be committed", which is not what happened.
+  // A commit sees one slice of the tree; auditing the list against a slice is
+  // the category error. The audit belongs to the sweep that sees everything.
+  // 🔴 The case above drives `sweep` directly, so it cannot see whether `main()`
+  // actually asks for the audit to be off. Round 1 shipped a pass-through whose
+  // deletion left the suite green for exactly that reason. Reading the wiring is
+  // the weakest kind of test and it is the one this suite already uses for
+  // `.husky/pre-commit` and `ci.yml` — it catches the mutation, which the
+  // behavioural case above does not.
+  it('wires the staged mode to skip the audit, and not only supports skipping it', async () => {
+    const source = await readFile(validator, 'utf8');
+    const staged = source.slice(source.indexOf("argv.includes('--staged')"));
+    expect(staged.slice(0, 900)).toMatch(/auditList:\s*false/);
+  });
+
+  it('does not report a stale exemption from a commit that cannot see the whole tree', async () => {
+    const { sweep } = await loadValidator();
+    const staged = ['unrelated.ts'];
+    const code = sweep(
+      staged,
+      text({ 'unrelated.ts': 'export const x = 1;\n' }),
+      'staged file(s)',
+      {
+        tracked: ['unrelated.ts', 'fixtures/sample.env'],
+        exemptions: [{ path: 'fixtures/sample.env', id: 'credential-path', reason: 'a sample' }],
+        auditList: false,
+      },
+    );
+    expect(code, 'a commit was refused over the exemption list, not over a credential').toBe(0);
   });
 });

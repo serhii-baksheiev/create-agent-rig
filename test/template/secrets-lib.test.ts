@@ -20,6 +20,12 @@ import {
   LONG_RUN,
   LONG_WORDS,
   quoted,
+  GITLAB_PAT,
+  GOOGLE_API_KEY,
+  NPM_TOKEN,
+  OPENAI_PROJECT_KEY,
+  SLACK_BOT_TOKEN,
+  STRIPE_LIVE_KEY,
 } from './secrets-fixtures.js';
 
 // AR-49(b). The half of AR-49 that `.gitignore` could not close.
@@ -400,12 +406,16 @@ describe('prose about credentials is not a credential', () => {
     },
   );
 
+  // 🔴 The values below carry a digit ON PURPOSE. An all-letters value is
+  // rejected as a bare identifier whatever its length, so `'a'.repeat(16)` would
+  // make both of these pass for the wrong reason and stop pinning the LENGTH
+  // boundary they are named for.
   it('does not report an assigned value one character short of the bound', async () => {
-    expect(idsIn(await scan(`TOKEN=${'a'.repeat(15)}`))).not.toContain('assigned-secret');
+    expect(idsIn(await scan(`TOKEN=${'a1'.repeat(7)}a`))).not.toContain('assigned-secret');
   });
 
   it('reports an assigned value exactly at the bound', async () => {
-    expect(idsIn(await scan(`TOKEN=${'a'.repeat(16)}`))).toContain('assigned-secret');
+    expect(idsIn(await scan(`TOKEN=${'a1'.repeat(8)}`))).toContain('assigned-secret');
   });
 });
 
@@ -737,5 +747,162 @@ describe('a credential quoted in documentation has still been leaked', () => {
       '```',
     ].join('\n');
     expect(await scan(doc)).toEqual([{ id: 'assigned-secret', line: 6 }]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Round-2 gate findings — the two the widening introduced, and the honest-source
+// corpus that would have caught the second one a round earlier.
+
+describe('the assignment pattern does provably bounded work, on any input', () => {
+  // 🔴 `.claude/rules/invariants.md`: "the test is not 'is it fast enough on
+  // realistic input' but 'can any input make it do unbounded work at all'".
+  // Measured on the round-1 pattern: 140 ms at 16 KB, 2.2 s at 64 KB, 9 s at
+  // 128 KB, 36 s at 256 KB — clean 4x per doubling, because the alternation was
+  // unanchored (a restart at every offset) and `[A-Za-z0-9_-]*` walked to
+  // end-of-line at each keyword hit. Disjoint consecutive classes bound each
+  // backtrack STEP; they say nothing about O(n) restarts.
+  //
+  // This is the shape that matters most: `guard-secret-file` fails open and
+  // shares its `Write|Edit` matcher with `guard-core-purity` and
+  // `guard-web-boundary`, so a stall here is a bypass of all three at once.
+  it.each([
+    ['jwt', 128],
+    ['token_', 128],
+    ['creds-', 128],
+    ['password', 128],
+  ])('scans %s repeated to %i KB without going quadratic', async (word, kilobytes) => {
+    const line = word.repeat(Math.floor((kilobytes * 1024) / word.length));
+    const started = process.hrtime.bigint();
+    await scan(line);
+    const elapsed = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(elapsed, `${kilobytes} KB of "${word}" took ${elapsed.toFixed(0)}ms`).toBeLessThan(500);
+  });
+
+  // Linear growth, asserted as a RATIO so the case survives a slow machine: a
+  // quadratic pattern is 4x per doubling, a linear one is about 2x.
+  it('grows linearly with input size rather than quadratically', async () => {
+    const time = async (kilobytes: number): Promise<number> => {
+      const line = 'jwt'.repeat(Math.floor((kilobytes * 1024) / 3));
+      const started = process.hrtime.bigint();
+      await scan(line);
+      return Number(process.hrtime.bigint() - started) / 1e6;
+    };
+    await time(16); // warm up, so the first measurement is not the JIT's
+    const small = await time(32);
+    const large = await time(128);
+    // 4x the input. Linear would be ~4x the time; quadratic would be ~16x.
+    expect(large / Math.max(small, 1), `32KB=${small}ms 128KB=${large}ms`).toBeLessThan(8);
+  });
+});
+
+describe('ordinary TypeScript is not a credential, however its identifiers are spelled', () => {
+  // 🔴 Measured over 2 946 honest files in node_modules: 35 findings, every one
+  // false. These are the verbatim shapes, and they are the ones this project
+  // GENERATES — a rig is a TypeScript service tree. Every one of them was
+  // refused by the live hook, and once tracked would have left CI permanently
+  // red with no remedy but an exemption.
+  //
+  // The earlier honest-source cases all broke the value run with a `.` or `(`
+  // — `process.env.X`, `config.get(…)`, `z.string()`. None covered a camelCase
+  // identifier or a type annotation, which are exactly the forms that carry an
+  // unbroken sixteen-character run.
+  it.each([
+    'const trailingToken = getTrailingToken(node, lastItem);',
+    'readonly credentials: RequestCredentials;',
+    'readonly credentials: CredentialsContainer;',
+    'export interface Session { token: AuthorizationToken }',
+    'const password: PasswordPolicyResult = check(input);',
+    'const apiKeyHeader = requestHeadersForClient;',
+    'exports.isTokenOnSameLine = isTokenOnSameLine;',
+    'tokenizer: createTokenizerFromGrammar,',
+    'secretsManager: new SecretsManagerClient({}),',
+    'let credential: PublicKeyCredential | null = null;',
+  ])('leaves %s alone', async (line) => {
+    expect(await scan(line)).toEqual([]);
+  });
+
+  // The rule that separates them, stated so the next widening has a criterion:
+  // a credential is not a bare identifier. A value of letters only, with no
+  // digit and no `-_/+=`, is a name — and a name is what source is made of.
+  it('still reports an assignment whose value is not a bare identifier', async () => {
+    expect(idsIn(await scan(`TOKEN=${LONG_RUN}`))).toContain('assigned-secret');
+    expect(idsIn(await scan(`PASSWORD=${LONG_WORDS}`))).toContain('assigned-secret');
+  });
+
+  // ⚠ The price, stated rather than discovered: an all-letters secret is now
+  // invisible to this arm. It is the same trade the value class already makes,
+  // and it is why the value patterns above exist for the shapes that have a
+  // recognisable prefix.
+  it('cannot see an assigned value that is all letters, which is the price of the rule above', async () => {
+    expect(idsIn(await scan('TOKEN=abcdefghijklmnopqrstuvwxyz'))).not.toContain('assigned-secret');
+  });
+});
+
+describe('the path arm widenings do not swallow ordinary source', () => {
+  // 🔴 Both of these arms were added in round 1 and each brought a false
+  // positive with it. A path the hook calls a credential is a path the agent can
+  // never write to, and `packages/shared` is where CLAUDE.md puts env loading —
+  // so `config.env.ts` being unwritable is the shape that would be hit first.
+  it.each([
+    'packages/shared/src/config.env.ts',
+    'src/app.env.ts',
+    'docs/setup.env.md',
+    'scripts/rotate-secrets',
+    'ops/sync-credentials',
+  ])('leaves %s writable — it is source, not a credential', async (file) => {
+    await expect(isCredentialPath(file)).resolves.toBe(false);
+  });
+
+  // and the cases those arms exist for still hold
+  it.each(['prod.env.local', 'jira.env.local', '.git-credentials', '.aws/credentials'])(
+    'still calls %s a credential',
+    async (file) => {
+      await expect(isCredentialPath(file)).resolves.toBe(true);
+    },
+  );
+});
+
+describe('the shapes a reader of this tool would reasonably expect it to know', () => {
+  // 🔴 The round-2 scan listed twelve common credentials that passed unnoticed.
+  // The limits block discloses the CLASS ("known shapes, not an entropy
+  // analyser") — but a tool that names four vendors by prefix invites the
+  // assumption that it knows the rest. Six more, each a literal prefix and one
+  // bounded class, so none of them can backtrack.
+  it.each([
+    ['slack-token', SLACK_BOT_TOKEN],
+    ['google-api-key', GOOGLE_API_KEY],
+    ['stripe-live-key', STRIPE_LIVE_KEY],
+    ['openai-project-key', OPENAI_PROJECT_KEY],
+    ['npm-token', NPM_TOKEN],
+    ['gitlab-pat', GITLAB_PAT],
+  ])('reports %s', async (id, value) => {
+    expect(idsIn(await scan(`some ordinary line\n${value}\nmore text\n`))).toContain(id);
+  });
+
+  // The self-test asserts a fixture per pattern, so a shape added without one
+  // fails rather than riding along uncovered. This pins the same property from
+  // the vocabulary's side.
+  it('names every new shape in the pattern list, so the self-test must cover it', async () => {
+    const { SECRET_VALUE_PATTERNS } = await load();
+    const ids = SECRET_VALUE_PATTERNS.map((entry) => entry.id);
+    for (const id of [
+      'slack-token',
+      'google-api-key',
+      'stripe-live-key',
+      'openai-project-key',
+      'npm-token',
+      'gitlab-pat',
+    ])
+      expect(ids).toContain(id);
+  });
+
+  // and none of them fires on prose that merely names the vendor
+  it.each([
+    'we post to Slack from the worker',
+    'the Stripe webhook is verified before use',
+    'npm install then npm run build',
+  ])('leaves the ordinary sentence %s alone', async (line) => {
+    expect(await scan(line)).toEqual([]);
   });
 });

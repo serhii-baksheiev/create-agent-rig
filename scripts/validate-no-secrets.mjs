@@ -46,6 +46,10 @@
 //     carries a credential".
 //   - It is a text scan over known shapes, not an entropy analyser. What the
 //     shapes do and do not match is `secrets.mjs`'s own limits block.
+//   - `--staged` runs from `pre-commit`, and git does NOT run that hook for a
+//     merge — it runs `pre-merge-commit`. So a credential can enter through a
+//     merge commit and is caught by the next CI sweep rather than at the moment
+//     it lands.
 //
 // The 2 MB bound `findSecretValues` applies by default is deliberately NOT one
 // of them: that cap exists so a FAIL-OPEN hook cannot be made to hang, and this
@@ -72,7 +76,15 @@ const { findSecretValues, isCredentialPath, SECRET_VALUE_PATTERNS } = await impo
 const CREDENTIAL_PATH_ID = 'credential-path';
 
 /**
- * Files excused from the sweep, each with the reason it is excused.
+ * Findings excused from the sweep — each naming a PATH, the ONE finding id it
+ * excuses, and the reason.
+ *
+ * 🔴 An entry excuses one finding, never a file. Keyed on the path alone it was
+ * a standing licence: an exemption taken out for a `credential-path` false
+ * positive on a documentation directory went on to report a real token in that
+ * same file as clean, exit 0, with no staleness finding to say so. Measured end
+ * to end. See validate-no-secrets.test.ts › "does NOT excuse a different id on
+ * the same path".
  *
  * 🔴 It ships EMPTY, and that is a property worth defending rather than a
  * placeholder. The suites that need synthetic credentials assemble them at run
@@ -84,24 +96,34 @@ const CREDENTIAL_PATH_ID = 'credential-path';
  */
 export const EXEMPTIONS = [];
 
+/** The key an exemption and a finding are matched on. */
+const excusalKey = (entryPath, id) => `${entryPath}\u0000${id}`;
+
 /**
  * What is wrong with the exemption list itself, as findings about the list.
  *
- * A stale exemption is the failure this guards: an entry outlives the file it
+ * A stale exemption is the failure this guards: an entry outlives the finding it
  * excused, and then stands as permanent cover for whatever lands on that path
- * next. So the list is checked against reality every run — three ways.
+ * next. So the list is checked against reality every run — and the last check is
+ * why an entry has to name an id rather than only a path.
  */
 export function exemptionProblems({ exemptions = [], tracked = [], offending = [] } = {}) {
   const trackedSet = new Set(tracked);
-  const offendingSet = new Set(offending);
+  const offendingSet = new Set(
+    offending.map((finding) =>
+      typeof finding === 'string' ? finding : excusalKey(finding.path, finding.id),
+    ),
+  );
   const problems = [];
   for (const entry of exemptions) {
     const entryPath = String(entry?.path ?? '');
+    const entryId = String(entry?.id ?? '');
     if (String(entry?.reason ?? '').trim() === '')
       problems.push({ kind: 'exemption-without-reason', path: entryPath });
+    if (entryId === '') problems.push({ kind: 'exemption-without-id', path: entryPath });
     if (!trackedSet.has(entryPath))
       problems.push({ kind: 'exemption-not-tracked', path: entryPath });
-    else if (!offendingSet.has(entryPath))
+    else if (entryId !== '' && !offendingSet.has(excusalKey(entryPath, entryId)))
       problems.push({ kind: 'exemption-no-longer-needed', path: entryPath });
   }
   return problems;
@@ -215,7 +237,12 @@ const formatFinding = (finding) =>
  * its siblings at once. A value that has been rendered for a human is not a
  * value to compute with.
  */
-export function sweep(files, readText, label, { tracked = files, exemptions = EXEMPTIONS } = {}) {
+export function sweep(
+  files,
+  readText,
+  label,
+  { tracked = files, exemptions = EXEMPTIONS, auditList = true } = {},
+) {
   const findings = [];
   let unread = 0;
   for (const relativePath of files) {
@@ -224,22 +251,32 @@ export function sweep(files, readText, label, { tracked = files, exemptions = EX
     findings.push(...findingsIn(relativePath, text));
   }
 
-  const offending = [...new Set(findings.map((finding) => finding.path))];
-  // 🔴 Checked against the TRACKED set, never against the set just scanned. In
-  // `--staged` mode those differ, and feeding the staged set here made a valid
-  // exemption for any file not in this commit report `exemption-not-tracked` —
-  // so the first exemption anyone added bricked every subsequent commit.
-  const listProblems = exemptionProblems({ exemptions, tracked, offending });
+  // 🔴 THE LIST IS AUDITED ONLY WHERE THE WHOLE TREE IS VISIBLE. A commit sees
+  // one slice of it, so asking "is this entry still needed?" from `--staged`
+  // compares an entry against a set that was never going to contain it. Round 1
+  // fixed the `not-tracked` half of that and left `no-longer-needed` reading the
+  // staged set, which still failed every commit that did not touch the exempt
+  // path — under a headline saying a credential must never be committed, which
+  // was not what had happened. See validate-no-secrets.test.ts › "does not
+  // report a stale exemption from a commit that cannot see the whole tree".
+  const listProblems = auditList
+    ? exemptionProblems({ exemptions, tracked, offending: findings })
+    : [];
 
   // 🔴 All-or-nothing, and deliberately so: one unusable entry suspends EVERY
   // excusal rather than honouring the rest. The direction is fail-closed — a
-  // list that cannot be trusted excuses nothing — and it is surprising enough
-  // that it is pinned by test rather than left to be rediscovered: see
-  // validate-no-secrets.test.ts › "suspends every excusal while one entry is
-  // unusable, rather than honouring the rest".
-  const excused = new Set(listProblems.length === 0 ? exemptions.map((entry) => entry.path) : []);
+  // list that cannot be trusted excuses nothing. Pinned by test on the
+  // SUPPRESSION rather than on the exit code, because a stale entry sets the
+  // exit code by itself and the first version of that test could not see the
+  // rule it was named for: see validate-no-secrets.test.ts › "stops excusing
+  // anything while one entry is unusable, and says which finding came back".
+  const excused = new Set(
+    listProblems.length === 0 ? exemptions.map((entry) => excusalKey(entry.path, entry.id)) : [],
+  );
   const lines = [
-    ...findings.filter((finding) => !excused.has(finding.path)).map(formatFinding),
+    ...findings
+      .filter((finding) => !excused.has(excusalKey(finding.path, finding.id)))
+      .map(formatFinding),
     ...listProblems.map(
       (problem) => `${problem.path} — ${problem.kind} (in this script's EXEMPTIONS list)`,
     ),
@@ -276,6 +313,12 @@ function selfTest() {
     'anthropic-key': join('sk-ant', '-api03-Zq9Wx7Lv2Kd4Nb8Mc1Pf6Rt3Hy5Ug0Jn'),
     'private-key-block': join('-----BEGIN ', 'RSA ', 'PRIVATE', ' KEY-----'),
     'assigned-secret': join('JIRA_API_TOKEN=', 'zK3mQ7vR1nT9bX5dW2sL8pF4'),
+    'slack-token': join('xoxb', '-2417923850-4192837465-aBcDeFgHiJkLmNoPqRsTuVwX'),
+    'google-api-key': join('AIza', 'SyD-9fA2dC7bE1gH4jK6mN8pQ0rS3tU5vW7'),
+    'stripe-live-key': join('sk_live', '_51HkQ2aBcDeFgHiJkLmNoPqRsTuVwXyZ0123'),
+    'openai-project-key': join('sk-proj', '-Zq9Wx7Lv2Kd4Nb8Mc1Pf6Rt3Hy5Ug0Jn2Bs4Dt'),
+    'npm-token': join('npm', '_aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX'),
+    'gitlab-pat': join('glpat', '-aB1cD2eF3gH4iJ5kL6'),
   };
 
   const missing = [];
@@ -307,7 +350,11 @@ function selfTest() {
 export function main(argv = []) {
   if (argv.includes('--self-test')) return selfTest();
   if (argv.includes('--staged'))
-    return sweep(stagedFiles(), indexText, 'staged file(s)', { tracked: trackedFiles() });
+    // No `tracked` here on purpose: with the audit off it would be an extra git
+    // spawn feeding a parameter nothing reads. Round 1 passed it, round 2 turned
+    // the audit off, and a pass-through that no test could distinguish from its
+    // absence is exactly the "fix that survives deletion" this round was for.
+    return sweep(stagedFiles(), indexText, 'staged file(s)', { auditList: false });
   return sweep(trackedFiles(), worktreeText, 'tracked file(s)');
 }
 

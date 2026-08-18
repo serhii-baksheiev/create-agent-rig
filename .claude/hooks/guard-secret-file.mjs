@@ -35,18 +35,19 @@
 //     at all, and no test here can show that: it is a property of the harness,
 //     not of this file.
 //
-//     🔴 READ THAT AS THE WHOLE OF YOUR COVER, because in this project it is.
-//     The generator this rulebook came from closes the blind spot with a second
-//     layer — a pre-commit check and a CI sweep over the same vocabulary — and
-//     neither of them travels here: no `.husky/` directory ships, and no
-//     validator does. A credential a human types, or one already on disk when a
-//     commit is made, is refused by nothing in this repository. Adding that
-//     layer is a decision for this project, not something already done for it.
+//     🔴 WHETHER ANYTHING ELSE CATCHES THAT IS NOT A QUESTION THIS FILE CAN
+//     ANSWER, and it is the one worth asking before relying on the rule. The
+//     layer that covers a human's edit is a COMMIT-TIME check — a git hook, a CI
+//     sweep — and this hook cannot see whether one is installed. Look at
+//     `.husky/` and the CI workflow rather than assuming: the generator this
+//     rulebook came from has both, running the same vocabulary; a freshly
+//     generated rig ships neither, and adding one is a decision for the project.
+//
 //   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
 //     not JSON at all" and its neighbours. An unparseable payload, a missing
 //     field, an internal throw — all allow the edit. A crashed guard that blocks everything gets deleted
 //     within the hour. What catches the rest is whatever this project has put
-//     behind it — review always, a commit-time check only once one exists.
+//     behind it: review always, a commit-time check once one exists.
 //
 // Failing open is also why every line here does provably bounded work: the scan
 // is capped inside `findSecretValues`, there is no recursion, and nothing
