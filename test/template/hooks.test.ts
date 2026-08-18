@@ -505,6 +505,53 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     await setUpProject({ rawConfig: '{not json', dirty: true });
     expect((await runStopHook(stop())).code).toBe(0);
   });
+
+  // A gate that runs out of time is the one case where failing open costs the
+  // most: the harness kills the hook, a killed hook blocks nothing, and the
+  // session ends reporting a Definition of Done that was never measured. So the
+  // hook owns a budget of its own and spends it before the harness's runs out —
+  // and when the budget goes, the answer is "not verified", which is a block.
+  it('gates the stop when a check outruns the budget — unmeasured is not a pass', async () => {
+    await setUpProject({ checks: ['sleep 5'], dirty: true });
+    const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '1000' });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('sleep 5');
+    expect(result.stderr).toMatch(/budget/i);
+  }, 30_000);
+
+  // The budget is for the whole suite, not a fresh allowance per check: three
+  // checks each granted the full budget is three times the wall clock the
+  // harness allows, which is the same overrun by a longer route. Two two-second
+  // sleeps under a three-second budget: the first leaves ~1s for the second.
+  it('spends one budget across the whole suite, not a fresh one per check', async () => {
+    await setUpProject({ checks: ['sleep 2', 'sleep 2'], dirty: true });
+    const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '3000' });
+    expect(result.code, result.stderr).toBe(2);
+  }, 30_000);
+
+  // The regression pin for the ENOBUFS false gate: `execSync` buffers 1 MB by
+  // default and THROWS past it, and the catch below it reported that throw as
+  // "a Definition of Done check fails". A chatty `pnpm test` that exits 0 was
+  // gating sessions on nothing. Output volume is not a verdict.
+  it('does not read a chatty passing check as a failure (the ENOBUFS false gate)', async () => {
+    await setUpProject({
+      checks: [`node -e "process.stdout.write('x'.repeat(2*1024*1024))"`],
+      dirty: true,
+    });
+    const result = await runStopHook(stop());
+    expect(result.code, result.stderr).toBe(0);
+  }, 30_000);
+
+  // Failing open is right — a crashed gate must not make the session
+  // unquittable — but a silent exit 0 is indistinguishable from a clean pass,
+  // so the one thing worth knowing (the gate did not actually run) is exactly
+  // the thing nobody learns. It stays open, and it says so.
+  it('announces a fail-open instead of returning a silent clean pass', async () => {
+    await setUpProject({ rawConfig: '{not json', dirty: true });
+    const result = await runStopHook(stop());
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('[hook fail-open]');
+  });
 });
 
 describe('inject-rules hook (rules survive compaction and resumes)', () => {
@@ -1503,5 +1550,36 @@ describe('hook wiring (settings.json)', () => {
       (settings.hooks[event] ?? []).flatMap((h) => h.hooks.map((x) => x.command));
     expect(commandsOf('Stop').some((c) => c.includes('gate-stop-dod.mjs'))).toBe(true);
     expect(commandsOf('SessionStart').some((c) => c.includes('inject-rules.mjs'))).toBe(true);
+  });
+
+  // Two numbers that only work as a pair. The wiring's `timeout` is when the
+  // harness kills the gate, and a killed gate blocks nothing — so the hook's
+  // own budget has to run out FIRST, while it can still write a reason and exit
+  // 2. Both are read from the files here rather than restated, because the
+  // failure mode of restating them is that they drift apart and nothing notices
+  // until a session ends on an unmeasured Definition of Done.
+  it('gives the stop gate a harness timeout its own budget finishes inside', async () => {
+    const settingsPath = path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'settings.json',
+    );
+    const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: unknown }> }>>;
+    };
+    const entry = (settings.hooks.Stop ?? [])
+      .flatMap((h) => h.hooks)
+      .find((x) => x.command.includes('gate-stop-dod.mjs'));
+    expect(entry, 'the Stop gate must be wired at all').toBeDefined();
+    expect(typeof entry?.timeout, 'the Stop gate needs a timeout in seconds').toBe('number');
+
+    const source = await readFile(path.join(hooksDir, 'gate-stop-dod.mjs'), 'utf8');
+    const declared = /BUDGET_MS\s*=\s*([\d_]+)/.exec(source);
+    expect(declared, 'the hook must declare a default budget in ms').not.toBeNull();
+    const budgetMs = Number(declared![1]!.replaceAll('_', ''));
+    expect(budgetMs).toBeLessThan((entry!.timeout as number) * 1000);
   });
 });
