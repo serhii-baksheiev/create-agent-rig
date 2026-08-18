@@ -611,9 +611,10 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
 
   // The override may only LOWER the budget. Raised above the Stop entry's
   // `timeout` in settings.json it re-creates the exact defect this gate exists
-  // to remove — the harness kills the hook before the hook can report, and a
-  // killed Stop hook blocks nothing — except now the session believes it
-  // configured a longer gate rather than none at all.
+  // to remove — the harness kills the hook before the hook can report, and (on
+  // the harness assumption the hook header labels as unprovable from this
+  // repository) a killed Stop hook does not block the stop — except now the
+  // session believes it configured a longer gate rather than none at all.
   it('clamps a budget override that would outlive the harness, and names the budget it used', async () => {
     await setUpProject({ checks: ['node -e "process.exit(0)"'], dirty: true });
     const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '999999999' });
@@ -638,6 +639,45 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     // decided by the gate, not discovered by the child-process layer
     expect(result.stderr).not.toContain('must be of type string');
   });
+
+  // The `typeof command === 'string'` predicate above lets through two string
+  // values that `spawnSync` refuses to spawn at all — it THROWS before the
+  // child exists — and that throw lands in the top-level backstop, which is a
+  // fail-open: exit 0, for the WHOLE suite. So one unusable entry buys a clean
+  // session while a genuinely failing Definition of Done check sits untouched
+  // behind it in the same array. That is the total bypass this gate exists to
+  // close, reached through the config file rather than through the clock.
+  //
+  // Both fixtures put the unusable entry FIRST and a check that really fails
+  // second: the entry the gate cannot use must not become the entry that
+  // decides the session.
+  const unusableFirstEntry: Array<{ what: string; entry: string; nodeWording: RegExp }> = [
+    { what: 'an empty string', entry: '', nodeWording: /cannot be empty/i },
+    {
+      what: 'a string carrying a NUL byte',
+      // assembled, never written out: a literal NUL in the source is not
+      // something a reader of this file can see
+      entry: `${String.fromCharCode(0)}oops`,
+      nodeWording: /without null bytes/i,
+    },
+  ];
+
+  for (const { what, entry, nodeWording } of unusableFirstEntry) {
+    it(`never lets an unusable config entry hide a failing check behind it (${what})`, async () => {
+      await setUpProject({ checks: [entry, 'node -e "process.exit(1)"'], dirty: true });
+      const result = await runStopHook(stop());
+      // whatever the gate decides about the unusable entry, it may not be
+      // "this session ended on a green Definition of Done"
+      expect(result.code, result.stderr).not.toBe(0);
+      // and the decision is the gate's own, taken while the file is still in
+      // hand: it names the file to fix …
+      expect(result.stderr).toContain('[hook fail-open]');
+      expect(result.stderr).toContain('dod-checks.json');
+      // … rather than surfacing an argument-type error from the child-process
+      // layer, which is what a throw caught by the backstop reads like
+      expect(result.stderr).not.toMatch(nodeWording);
+    }, 30_000);
+  }
 
   // The other side of that boundary, and the reason it is a boundary: universal
   // ships no checks at all, so an ABSENT config is the ordinary state of a
@@ -1649,12 +1689,35 @@ describe('hook wiring (settings.json)', () => {
     expect(commandsOf('SessionStart').some((c) => c.includes('inject-rules.mjs'))).toBe(true);
   });
 
+  /**
+   * How much of the gate's wall clock is spent OUTSIDE its own budget, and
+   * therefore has to fit between the budget expiring and the harness timeout.
+   *
+   * The gate's deadline is set only after node has started, the Stop payload
+   * has been read from stdin, `git status --porcelain` has run (with no
+   * `timeout` of its own — an unbounded preamble on a large or locked
+   * repository) and `dod-checks.json` has been read. None of that is derivable
+   * from a file, so this number is a JUDGEMENT, not a measurement, and it is
+   * declared here rather than implied by a bare `<`.
+   *
+   * 60 s is chosen as the smallest round number that is an order of magnitude
+   * above a healthy preamble (well under a second) while still leaving room for
+   * the pathological `git status` this repository has no way to bound. Raising
+   * the budget until only milliseconds separate it from the harness timeout is
+   * what today's bare `toBeLessThan` permits, and that is the silent harness
+   * kill this whole change removes.
+   */
+  const PREAMBLE_MARGIN_MS = 60_000;
+
   // Two numbers that only work as a pair. The wiring's `timeout` is when the
-  // harness kills the gate, and a killed gate blocks nothing — so the hook's
-  // own budget has to run out FIRST, while it can still write a reason and exit
-  // 2. Both are read from the files here rather than restated, because the
-  // failure mode of restating them is that they drift apart and nothing notices
-  // until a session ends on an unmeasured Definition of Done.
+  // harness kills the gate — the hook header labels what follows from that (a
+  // killed Stop hook not blocking the stop) as the one assumption about the
+  // harness nothing in this repository can prove or falsify, and this file does
+  // not restate it as fact. It is why the hook's own budget has to run out
+  // FIRST, while it can still write a reason and exit 2. Both numbers are read
+  // from the files here rather than restated, because the failure mode of
+  // restating them is that they drift apart and nothing notices until a session
+  // ends on an unmeasured Definition of Done.
   it('gives the stop gate a harness timeout its own budget finishes inside', async () => {
     const settingsPath = path.join(
       repoRoot,
@@ -1677,6 +1740,14 @@ describe('hook wiring (settings.json)', () => {
     const declared = /BUDGET_MS\s*=\s*([\d_]+)/.exec(source);
     expect(declared, 'the hook must declare a default budget in ms').not.toBeNull();
     const budgetMs = Number(declared![1]!.replaceAll('_', ''));
-    expect(budgetMs).toBeLessThan((entry!.timeout as number) * 1000);
+    const harnessMs = (entry!.timeout as number) * 1000;
+    expect(budgetMs).toBeLessThan(harnessMs);
+    // strictly below is not enough: the gate's wall clock is preamble + budget,
+    // and only the budget half is bounded by the number read above
+    expect(
+      budgetMs + PREAMBLE_MARGIN_MS,
+      `the ${budgetMs} ms budget leaves less than ${PREAMBLE_MARGIN_MS} ms of the ` +
+        `${harnessMs} ms harness timeout for the gate's unbudgeted preamble`,
+    ).toBeLessThanOrEqual(harnessMs);
   });
 });

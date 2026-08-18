@@ -108,11 +108,10 @@ describe('settingsForInstalledHooks', () => {
 
   // A regression pin for a field nothing here asserted. The shipped Stop entry
   // carries a `timeout` — the second of the two numbers that only work as a
-  // pair: it is when the harness KILLS the gate, and a killed Stop hook blocks
-  // nothing, so the gate's own budget has to run out first. `init` does not
-  // copy that wiring, it derives it, and a derivation that dropped an entry's
-  // extra fields would hand every `init` install the harness default while
-  // every other assertion in this file stayed green.
+  // pair, and the gate's own budget is sized against it. `init` does not copy
+  // that wiring, it derives it, and a derivation that dropped an entry's extra
+  // fields would hand every `init` install the harness default while every
+  // other assertion in this file stayed green.
   it("keeps the Stop gate's harness timeout when it narrows the shipped wiring", async () => {
     type Wiring = {
       hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: unknown }> }>>;

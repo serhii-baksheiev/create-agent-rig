@@ -181,21 +181,40 @@ function main() {
     return failOpen(`dod-checks.json could not be read: ${error.message}`);
   }
   if (!Array.isArray(checks)) return failOpen('dod-checks.json is not an array of commands');
-  // Decided HERE rather than left to `spawnSync`, which throws on a non-string
-  // and lands the throw in the backstop below: the same exit code by accident
-  // instead of by decision, and a message about argument types instead of the
-  // file to fix.
+  // Judged per ENTRY, and this is the part that took a measurement to get right.
+  //
+  // Refusing the whole config on one bad entry is what a reviewer first
+  // proposed, and it reopens the hole it was meant to close: `failOpen` returns
+  // 0, so a genuinely failing check sitting NEXT to the bad entry never runs and
+  // the session ends green. Measured on `["", "exit 1"]`.
+  //
+  // So an entry that cannot be a command is announced and skipped, and every
+  // entry that CAN still runs. A verdict is never lost to a neighbour.
+  //   see hooks.test.ts › "never lets an unusable config entry hide a failing check behind it (an empty string)"
+  //
+  // The check happens here rather than at `spawnSync`, which throws on a
+  // non-string, an empty string and a NUL-bearing string alike — and that throw
+  // lands in the backstop, which is the same exit code by accident instead of by
+  // decision, with a message about argument types instead of the file to fix.
   //   see hooks.test.ts › "announces a config it could read but cannot use, and names the file to fix"
-  if (!checks.every((command) => typeof command === 'string')) {
-    return failOpen('dod-checks.json must be an array of command strings');
+  const runnable = (command) =>
+    typeof command === 'string' && command.trim() !== '' && !command.includes('\0');
+  const usable = checks.filter(runnable);
+  if (usable.length !== checks.length) {
+    // Announced, not silent — but this alone never decides the exit code; the
+    // usable entries below still do.
+    process.stderr.write(
+      `[hook fail-open] dod-checks.json carries ${checks.length - usable.length} entry/entries ` +
+        `that are not runnable command strings; they were skipped. The rest still ran.\n`,
+    );
   }
-  if (checks.length === 0) return 0;
+  if (usable.length === 0) return 0;
 
   const budget = budgetMs(process.env);
   if (budget.notice) process.stderr.write(`gate-stop-dod: ${budget.notice}\n`);
   const deadline = Date.now() + budget.ms;
 
-  for (const command of checks) {
+  for (const command of usable) {
     // A 1 ms floor rather than a branch for "the budget is already gone": the
     // check then times out through the ordinary path, which names the command
     // that did not fit instead of blaming it for spending what an earlier one
