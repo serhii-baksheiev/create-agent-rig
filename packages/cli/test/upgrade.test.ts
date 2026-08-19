@@ -280,8 +280,10 @@ describe('a rig that came from `create`, not from `init`', () => {
 // A `create` rig's directory name is only a legal project name until someone
 // renames the directory or clones it under another name. The manifest an
 // upgrade bootstraps from that basename is then written and immediately voided:
-// its own reader refuses the value, so every later run reports "no manifest
-// here (a pre-0.4.0 rig)" — the release's whole point, lost silently.
+// its own reader refuses the value, so every later run falls back to matching
+// against released versions — the release's whole point, lost silently. This is
+// the third population the plan header has to be true for: the file is on disk
+// and unreadable, which is why that line says "no READABLE manifest".
 describe('a `create` rig upgraded from a directory name that is not a project name', () => {
   let project: string;
 

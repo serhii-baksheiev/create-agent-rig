@@ -16,22 +16,24 @@ content as a patch by the owner's call and stays recorded as one.
 ### Fixed
 
 - **The upgrade plan's header told you your rig was old when it could not know
-  that.** Every rig with no readable manifest was greeted with "no manifest here
-  (a pre-0.4.0 rig)", and deleting the manifest of a rig installed at 0.4.0 or
-  0.5.0 is exactly what forces that path — so the line asserted an age it had no
-  evidence for, to the one population 0.5.0's own notes called unaffected. It now
-  names both readings and asserts neither.
+  that.** It greeted every rig it could not read a manifest for with "no manifest
+  here (a pre-0.4.0 rig)". There are three ways to reach that branch and the
+  claim is false for two of them: a manifest you deleted, and one that is on disk
+  and voided by its own reader — the case 0.5.0's notes below single out. The
+  header now states the condition the code actually has, **no readable manifest
+  here**, and offers the three causes without asserting any of them.
 - **`--no-color` is accepted by `upgrade` and `init`**, not only by the
   scaffolder. It was advertised under Options without being scoped to one
-  command, and the other two exited 1 with "Unknown option". Neither colours its
-  output, so nothing about the output changes; the flag simply stops being a
-  refusal. `NO_COLOR` worked all along.
-- **The plan's summary now accounts for every line it printed.** It counted
-  files to replace, new files, yours-kept and already-current, while the plan
-  above it also prints a line for a hook wiring hand-over and for a file you
-  removed — so a reader counted five lines and was told four. Both are counted
-  now, and they appear only when they occurred: a plan without them reads exactly
-  as it did.
+  command, and the other two exited 1 with "Unknown option". **Nothing about
+  their output changes** — the CLI builds its palette on the `create` path alone,
+  so neither command had colour to switch off, and neither read `NO_COLOR`
+  either. What changes is that a flag the help offers is no longer a refusal.
+- **The plan's summary now accounts for every action, not four kinds out of
+  six.** It counted files to replace, new files, yours-kept and already-current,
+  while the plan above it also prints a line for a hook wiring hand-over and for
+  a file you removed — so the four buckets could not add up to what was printed.
+  Both are counted now, in the order the plan lists them, and they appear only
+  when they occurred: a plan without them reads exactly as it did.
 
 ## 0.5.0
 

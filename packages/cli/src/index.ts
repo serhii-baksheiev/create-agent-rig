@@ -37,7 +37,7 @@ Also: create-agent-rig upgrade [--dry-run] [--yes]
   installed and you did not touch; everything else is reported, never merged.`;
 
 async function runInit(rawArgs: string[]): Promise<number> {
-  let values: { 'dry-run'?: boolean; force?: boolean };
+  let values: { 'dry-run'?: boolean; force?: boolean; 'no-color'?: boolean };
   try {
     ({ values } = parseArgs({
       args: rawArgs,
@@ -63,9 +63,11 @@ async function runInit(rawArgs: string[]): Promise<number> {
   // overlays. Say so before anything is written, so it is visible on --dry-run
   // too.
   //
-  // It is a manifest read, so a pre-0.4.0 rig with no manifest gets no advisory
-  // even when it came from `create` — the same limit `recordInstall` carries,
-  // and stated in both places because either one alone reads as wider.
+  // It is a manifest read, so any rig without a READABLE manifest gets no
+  // advisory even when it came from `create` — one never written, one deleted,
+  // and one present but voided by `parseManifest` all reach here alike. The
+  // same limit `recordInstall` carries, stated in both places because either
+  // one alone reads as wider.
   const existing = await readManifest(cwd);
 
   const plan = await planInit(cwd);
@@ -129,7 +131,7 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   const lines: string[] = [
     `agent-rig upgrade — ${plan.kind} rig in ${repoDir}`,
     plan.bootstrapped
-      ? `  no manifest here (deleted, or a rig installed before 0.4.0) — matching files against released versions`
+      ? `  no readable manifest here (deleted, never written, or unparseable) — matching files against released versions`
       : `  installed by ${plan.fromVersion}`,
     `  upgrading to ${plan.toVersion}`,
     '',
@@ -147,13 +149,18 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     }
   }
 
-  // Every action printed above is accounted for here. `wiring` and `deleted`
-  // each print their own line and were in none of the buckets, so a reader
-  // counted lines and was told a smaller number. They appear only when they
-  // occurred: a plan without them reads exactly as it always has.
+  // Every one of `UpgradeVerdict`'s six members is accounted for here.
+  // `wiring` and `deleted` each print their own line and were in none of the
+  // buckets, so a reader counted lines and was told a smaller number.
+  // (`unchanged` is counted and prints nothing — the sum is over actions, not
+  // over printed lines.) The two appear only when they occurred, so a plan
+  // without them renders exactly as it always has: see cli-report.test.ts ›
+  // "renders a plan with no wiring action exactly as it does today".
+  // Same order the plan printed them in (`deleted` before `conflict`), so a
+  // reader scanning the summary against the list above finds each where it was.
   const occasional = [
-    ['wiring', (n: number) => `${n} wiring handed over`],
     ['deleted', (n: number) => `${n} you removed (left removed)`],
+    ['wiring', (n: number) => `${n} wiring handed over`],
   ] as const;
   const extra = occasional
     .map(([verdict, phrase]) => [of(verdict).length, phrase] as const)
@@ -169,14 +176,16 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
 }
 
 async function runUpgrade(rawArgs: string[]): Promise<number> {
-  let values: { 'dry-run'?: boolean; yes?: boolean };
+  let values: { 'dry-run'?: boolean; yes?: boolean; 'no-color'?: boolean };
   try {
     ({ values } = parseArgs({
       args: rawArgs,
       // `--no-color` is advertised in USAGE without scoping it to one command, so
-      // every command accepts it. Neither `upgrade` nor `init` colours its
-      // output today, which is why this only has to parse: refusing a flag the
-      // help offers costs the reader more than honouring it costs us.
+      // every command accepts it. Refusing a flag the help offers costs the
+      // reader more than honouring it costs us — and honouring it is only a
+      // parse here, because the sole palette lives on the `create` path below.
+      // See cli-report.test.ts › "upgrade accepts --no-color and prints plain
+      // output".
       options: {
         'dry-run': { type: 'boolean' },
         yes: { type: 'boolean' },

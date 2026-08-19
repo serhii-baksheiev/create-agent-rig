@@ -37,7 +37,12 @@ import { MANIFEST_REL, readManifest } from '../src/lib/manifest.js';
 // `package.json`. Hence `<sandbox>/packages/cli/dist/index.js`.
 
 const exec = promisify(execFile);
-/** An ANSI colour escape — what "plain output" means, mechanically. */
+/**
+ * An ANSI colour escape. ⚠ This is a weak check by construction: the spawned
+ * child writes to a pipe and this CLI's palette is TTY-gated, so plain output
+ * here is not evidence the flag was honoured. The load-bearing assertion in
+ * both flag tests is the ABSENCE of "Unknown option".
+ */
 // An ANSI colour escape, built rather than written as a literal: a control
 // character inside a regex literal is a lint error (no-control-regex).
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[`);
@@ -143,13 +148,37 @@ describe('the upgrade plan header states what it knows, not what it infers', () 
 
     const run = await runCli(repo, ['upgrade', '--dry-run']);
     expect(run.code, run.stderr).toBe(0);
-    const line = lineMatching(run.stdout, /no manifest/i);
+    const line = lineMatching(run.stdout, /manifest/i);
     expect(line, 'the plan printed no line about the missing manifest at all').toBeTruthy();
     // It may name "installed before 0.4.0" as one possibility; what it may not
     // do is state an age it has no evidence for.
     expect(line).not.toMatch(/\ba pre-0\.4\.0 rig\b/);
-    // and it must cover the population it just met: the manifest was deleted
+    // and it must not swap one false claim for another: `bootstrapped` is
+    // `manifest === null`, which `readManifest` also returns for a manifest that
+    // is PRESENT and unparseable — so a line asserting the file is absent is
+    // false for that rig, exactly as an age claim is false for this one.
+    expect(line).toMatch(/no readable manifest/i);
+    // the causes are offered, none of them asserted
     expect(line).toMatch(/delet/i);
+    expect(line).toMatch(/unparseable|unreadable/i);
+  });
+
+  it('says the same of a manifest that is present and unparseable', async () => {
+    await installRig();
+    // `parseManifest` voids this, so `readManifest` returns null and the run
+    // takes the bootstrapped branch with the file still on disk. This is the
+    // population the 0.5.0 notes single out, and the header may not tell it that
+    // there is no manifest here.
+    await writeFile(abs(MANIFEST_REL), '{"version":"0.5.0","files":\n');
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const line = lineMatching(run.stdout, /manifest/i);
+    expect(line, 'the plan printed no line about the manifest at all').toBeTruthy();
+    expect(line).toMatch(/no readable manifest/i);
+    expect(line).toMatch(/unparseable|unreadable/i);
+    // the file is right there — the header may not claim otherwise
+    expect(line).not.toMatch(/no manifest here/i);
   });
 
   it('still says it is matching files against released versions', async () => {
@@ -158,7 +187,7 @@ describe('the upgrade plan header states what it knows, not what it infers', () 
 
     const run = await runCli(repo, ['upgrade', '--dry-run']);
     expect(run.code, run.stderr).toBe(0);
-    const line = lineMatching(run.stdout, /no manifest/i);
+    const line = lineMatching(run.stdout, /manifest/i);
     expect(line).toMatch(/matching files against released versions/);
   });
 });
