@@ -11,7 +11,30 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
-## Unreleased
+## 0.5.0
+
+**Codex is a harness of this rig now, not a thing you adapt it to.** A generated
+project carries one rulebook and two readers: `CLAUDE.md` for Claude Code and
+the same text as `AGENTS.md` for Codex, with repository skills in
+`.agents/skills/`, agent profiles in `.codex/agents/` and portable hook wiring
+in `.codex/hooks.json`. Neither harness gets the weaker policy, and the derived
+half is drift-checked rather than maintained twice.
+
+**This release ships untagged, by the owner's decision, and that has exactly one
+consequence — read it before you `upgrade` a rig installed before 0.4.0.**
+`templates/hash-history.json`, the table a rig with **no manifest** is measured
+against, is built from `v*` tags. So 0.5.0's bytes will not enter it, and the
+`0.4.0` row it gained in this release carries the _previous_ release's bytes:
+that tag points at 0.3.2's content, which is why the row adds no hash to any
+path. The two files 0.4.0 genuinely changed in the agent-os layer —
+`.claude/skills/loop/SKILL.md` and `PLAN.md` — are absent from every row as a
+result.
+
+**A rig installed from 0.4.0 onwards is unaffected:** `create`, `init` and
+`upgrade` each write `.claude/.rig-manifest.json`, and `upgrade` consults it
+before the table. On a pre-0.4.0 rig the effect is the conservative one — those
+two files are reported as yours instead of being replaced, so nothing you wrote
+is overwritten and nothing is silently skipped.
 
 ### Added
 
@@ -479,15 +502,29 @@ sometimes earlier (step 6). Everything before that is mechanical:
    comparing the _old_ release to the _old_ table and passes either way. A
    guard that can only fire after the thing it guards has changed has to be run
    after it.
-7. `git tag v<version> && git push --tags` — **first check that the tag does not
-   already exist** (`git ls-remote --tags origin`). A leftover from an abandoned
-   attempt is a published ref: deleting or moving it is an **owner** action, and
-   the release stops here until it is gone. A tag pointing at the wrong commit
-   is not cosmetic: the next release builds its hash table from it, so the table
-   ends up **naming a version whose bytes it does not carry**, and everything
-   that version actually changed is absent from it. A rig with a manifest is
-   unaffected — the manifest is consulted first — which is exactly why the
-   damage is quiet rather than loud.
+7. **Tagging is not part of this project's release process** — standing owner
+   decision, recorded at 0.5.0: the owner publishes by hand and does not tag. So
+   this step is deliberately _not_ performed, and the cost is stated here rather
+   than discovered later.
+
+   Step 4 builds the table from `v*` tags, so an untagged release never enters
+   it. That is free for the release being prepared and **not free for the one
+   after it**: step 6 fails as soon as the CHANGELOG lists an untagged release
+   _below_ the version being prepared, and its message says "stale table", which
+   running the builder cannot satisfy. Measured against this repository at
+   0.5.0 preparation: with `0.5.0` untagged, a `0.5.0` bump passes and an
+   `0.6.0` bump fails. The check is
+   `test/template/hash-history.test.ts` › "covers every released version below
+   the one being prepared". **AR-35 carries the fix** — anchor the table on the
+   commit that bumped the version, so tags stop being load-bearing at all.
+
+   If a tag is ever cut anyway, the older warning still applies: check first
+   that it does not exist (`git ls-remote --tags origin`), because a leftover
+   from an abandoned attempt is a published ref, deleting or moving one is an
+   **owner** action, and a tag on the wrong commit makes the next table **name a
+   version whose bytes it does not carry**. `v0.4.0` is in exactly that state —
+   it points at 0.3.2's content.
+
 8. **Owner:** `npm publish`.
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and
