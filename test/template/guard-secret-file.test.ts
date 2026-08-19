@@ -423,15 +423,19 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     expect(source).toMatch(/FAILS OPEN/i);
   });
 
-  it('includes unsupported apply_patch command shapes in its existing fail-open limit', async () => {
+  it('separates the shapes it refuses from the payloads it still fails open on', async () => {
     const source = await readFile(hook, 'utf8');
     expect(source).toMatch(/There are FOUR:/);
 
     const failOpenLimit =
       source.match(/\/\/ {3}- It FAILS OPEN[\s\S]*?(?=\n\/\/\n\/\/ Failing open)/)?.[0] ?? '';
-    expect(failOpenLimit).toMatch(
-      /(?:unsupported|unrecognised|unrecognized)[\s\S]{0,40}`?apply_patch`?[\s\S]{0,40}command[\s\S]{0,20}(?:shape|form)|`?apply_patch`?[\s\S]{0,40}command[\s\S]{0,20}(?:shape|form)[\s\S]{0,40}(?:unsupported|unrecognised|unrecognized)/i,
-    );
+    // The limit must say REFUSES for a present-but-unreadable command shape —
+    // this assertion used to require the opposite, and kept a false claim green
+    // after the behaviour was reversed.
+    expect(failOpenLimit).toMatch(/refuse/i);
+    expect(failOpenLimit).toMatch(/shape/i);
+    // and the pointer it carries has to name a test that exists
+    expect(failOpenLimit).toMatch(/refuses, rather than failing open/);
   });
 });
 

@@ -63,10 +63,20 @@ only against an agent that deliberately builds a decoy repository — the
 "determined evasion" `.claude/rules/invariants.md` puts outside every guard's
 threat model: *the guard targets drift, not an adversary.*
 
-What this costs is worth naming: under Codex the hook layer is drift-resistant,
-not adversary-resistant, and it is one layer less than under Claude Code, where
-the harness sets the root. The layers behind it — review, the test suite, CI —
-are unchanged.
+What this costs is worth naming, and the first draft of this paragraph understated
+it. "Drift-resistant, not adversary-resistant" is wrong: **no adversary is
+required.** A session whose cwd sits inside any repository that is not this one —
+a vendored dependency with its own `.git`, a fixture repo, a scratch `git init` —
+resolves a root with no `.claude/hooks` in it, and the emitted command exits 1.
+Measured: exit 2 from the rig root, **exit 1 from a nested repository**, exit 1
+outside a worktree. Exit 1 is not the blocking code, so the hook layer is simply
+gone, silently, for ordinary reasons.
+
+So state it plainly: under Codex the hook layer holds when the session works from
+the rig's own root and is absent otherwise, which is one layer less than under
+Claude Code, where the harness sets the root. The layers behind it — review, the
+test suite, CI — are unchanged, and they are what this rig relies on for the
+Codex path.
 
 ## Schema and executable contracts
 
@@ -81,7 +91,11 @@ rather than narrow: Codex's canonical matcher name for its shell/exec tool **is*
 `Write` aliases. Recorded here because it is an external fact no test in this
 repository can pin, and a reader who assumes otherwise will widen those gates to
 names the platform never sends. The guards therefore accept
-that documented string form and fail open on unsupported command shapes.
+that documented string form. A command that is ABSENT still fails open — a
+payload the hook does not understand — while one that is present and is not a
+shape the normalizer reads is REFUSED, because that is a condition it detects
+and can report rather than an error it threw. See `codex.test.ts` › "refuses,
+rather than failing open, when apply_patch command is supplied as %s".
 Hook output is the JSON `description` plus event arrays accepted by
 `.codex/hooks.json`; command portability is carried by generated POSIX and
 Windows commands. In this generated project, `.claude/settings.json` and

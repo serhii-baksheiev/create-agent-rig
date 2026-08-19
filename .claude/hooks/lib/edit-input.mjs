@@ -11,6 +11,18 @@
  */
 import { execFileSync } from 'node:child_process';
 
+// 🔴 Git hands its hooks an absolute GIT_DIR, so an inherited one answers about
+// the HOOK's repository rather than the session's. Every other git call site in
+// this rig strips it — gate-stop-dod, preflight, decision-router,
+// queue/checkout — and the move-source lookup below did not, which is how the
+// resolved root became an ancestor of the real path and the purity test stopped
+// matching. The `env` is spelled out at the call itself rather than behind this
+// comment, because the generator's sweep for unsanitised git spawns reads the
+// call's own option window.
+//
+// ⚠ This is this file's only import outside `node:` — if it goes missing every
+// guard that consumes `editFragments` dies at module resolution with exit 1,
+// which neither harness treats as blocking.
 import { withoutGitLocation } from '../../scripts/git-env.mjs';
 import {
   closeSync,
@@ -50,6 +62,15 @@ export function editFragments(input) {
   }
   if (toolName !== 'apply_patch') return [];
   const rawCommand = toolInput.command;
+  // ⚠ **Absent is not malformed, and the difference decides which way this fails.**
+  // A payload with no `command` at all is one the hook does not understand, which
+  // `.claude/rules/invariants.md` says must ALLOW — the same answer the
+  // `Write`/`Edit` arm above gives a payload with no `file_path`. A `command`
+  // that is THERE and is not a shape this guard reads is the other case: a
+  // condition it detects and can report. Collapsing the two blocked every Codex
+  // edit the day the platform renamed the field, with a remedy nobody could act
+  // on.
+  if (!('command' in toolInput)) return [];
   if (
     typeof rawCommand !== 'string' &&
     !(Array.isArray(rawCommand) && rawCommand.every((part) => typeof part === 'string'))
@@ -112,12 +133,7 @@ function patchFragments(command, payloadCwd) {
     const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
       ? path.resolve(payloadCwd)
       : process.cwd();
-    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000, // Git hands its hooks an absolute GIT_DIR, so an inherited one answers about the
-      // HOOK's repository rather than the session's. Every other git call site in this
-      // rig strips it — gate-stop-dod, preflight, decision-router, queue/checkout — and
-      // this one did not, which is how the resolved root became an ancestor of the real
-      // path and the purity test stopped matching.
-      env: withoutGitLocation() }).trim());
+    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000, env: withoutGitLocation() }).trim());
     budget.patchCwd = realpathSync(requestedCwd);
     if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
   } catch { /* moved inspection below refuses without a trusted root and cwd */ }

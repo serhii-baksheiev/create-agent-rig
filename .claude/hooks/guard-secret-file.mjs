@@ -53,13 +53,19 @@
 //     this one: the case is pinned one layer down, on the module, by
 //     secrets-lib.test.ts › "has a limit even when the caller names none". The CI sweep lifts the
 //     cap; this hook cannot, and that asymmetry is the point.
-//   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
-//     not JSON at all" and its neighbours. An unparseable payload, a missing
-//     field, an unsupported `apply_patch` command shape, or an internal throw
-//     all allow the edit. The command-shape case is pinned upstream by
-//     codex.test.ts › "fails open with a diagnostic when apply_patch command is
-//     supplied as %s". A crashed guard that blocks everything gets deleted
-//     within the hour. What catches the rest is whatever this project has put
+//   - It FAILS OPEN on what it cannot understand — see guard-secret-file.test.ts
+//     › "allows a payload that is not JSON at all" and its neighbours. An
+//     unparseable payload, a missing field, or an internal throw all allow the
+//     edit; a crashed guard that blocks everything gets deleted within the hour.
+//
+//     ⚠ **An `apply_patch` command that is PRESENT and is not a shape this guard
+//     reads is the other case, and it now REFUSES** — see codex.test.ts ›
+//     "refuses, rather than failing open, when apply_patch command is supplied
+//     as %s". The line between them is whether the guard can tell: an absent
+//     field is a payload it does not understand, a container it detects and
+//     cannot read is a decision it can report. That reversed a contract this
+//     file previously pinned the other way, so it is stated rather than
+//     assumed. What catches the rest is whatever this project has put
 //     behind it: review always, a commit-time check once one exists.
 //
 // Failing open is also why every line here does provably bounded work: the scan
@@ -96,7 +102,10 @@ function main() {
         refused = true;
         process.stderr.write(
           `BLOCKED — cannot safely inspect this edit: ${inspectionRefusal}\n` +
-            `Split it into a smaller patch and retry.\n`,
+            // The remedy has to match the refusal: splitting cannot change a
+            // container shape, and a fixed line sent the agent into a retry loop
+            // on the one path it could not retry out of.
+            `${/shape/i.test(inspectionRefusal) ? 'Send the command as a patch string, or a list of strings.' : 'Split it into a smaller patch and retry.'}\n`,
         );
         continue;
       }

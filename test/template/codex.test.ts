@@ -12,8 +12,9 @@ import { describe, expect, it } from 'vitest';
 // scratch directory — measured: it flipped the checkout to `core.bare=true`,
 // silently, while the suite stayed green. `git-env.mjs` is the one
 // implementation and its own header says a new git spawn belongs on the sweep's
-// list the day it is written; these two are that.
-const sanitisedGit = { env: withoutGitLocation() };
+// list the day it is written; both are on it, and the `env` is spelled out at
+// each call rather than hidden behind a named object, because the sweep reads
+// the call's own option window.
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const agentOs = path.join(repoRoot, 'templates', 'agent-os');
@@ -276,13 +277,10 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     },
   );
 
-  // ⚠ CONFLICT, stated rather than resolved here: the case above pins that an
-  // unreadable `command` resolves to ALLOW, and this one pins that it resolves to
-  // a refusal fragment every consumer fails closed on. Both cannot hold. The
-  // decision recorded for this branch is to refuse — the shape is a condition the
-  // normalizer detects and reports, not an error it threw — which makes the case
-  // above the one that has to change. It is left untouched deliberately: weakening
-  // an existing test is not a call this file makes on its own.
+  // The unit-level half of the case above: that one drives the whole guard, this
+  // one pins the fragment `editFragments` hands its consumers. Both say refuse —
+  // the shape is a condition the normalizer detects and reports, not an error it
+  // threw, which is the line `invariants.md` draws around failing open.
   it.each([
     ['a number', 42],
     ['a mixed array', ['*** Begin Patch', 42, '*** End Patch']],
@@ -722,7 +720,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     // reason to pass. A git hook exports a VALID one — that is the case that
     // resolves the wrong root successfully.
     const foreign = await mkdtemp(path.join(tmpdir(), 'foreign-repo-'));
-    await exec('git', ['init', '-q', foreign], sanitisedGit);
+    await exec('git', ['init', '-q', foreign], { env: withoutGitLocation() });
     const nested = await mkdtemp(
       path.join(
         repoRoot,
@@ -760,6 +758,12 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         { GIT_DIR: path.join(foreign, '.git'), GIT_WORK_TREE: foreign },
       );
 
+      // 🔴 The REASON, not just the code. Without the fix this still exits 2 —
+      // the root resolves to `foreign`, the destination lands outside it, and the
+      // guard refuses for that instead. Measured: deleting `withoutGitLocation()`
+      // from both copies left all 61 tests in this file green. Asserting the
+      // purity message is what makes the test fail for the defect it names.
+      expect(result.stderr).toMatch(/pure module/i);
       expect(result.code).toBe(2);
     } finally {
       await rm(nested, { recursive: true, force: true });
@@ -839,7 +843,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       await mkdir(core, { recursive: true });
-      await exec('git', ['init', '--quiet'], { cwd: scratch, ...sanitisedGit });
+      await exec('git', ['init', '--quiet'], { cwd: scratch, env: withoutGitLocation() });
       try {
         await exec('mkfifo', [source]);
       } catch (error) {
