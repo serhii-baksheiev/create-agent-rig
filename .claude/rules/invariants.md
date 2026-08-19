@@ -67,6 +67,12 @@ costs it all its credibility.
 gets a payload it does not understand, it must allow the edit. A crashed guard
 that blocks everything gets deleted within the hour.
 
+**Refusing bounded inspection is a third outcome, not a match or an error.** If
+the payload shape is understood but safely inspecting it would cross an explicit
+work bound, the hook blocks without claiming that its protected invariant was
+violated. The refusal names the inspection limit and tells the caller to split
+the change into a smaller edit and retry.
+
 **A guard that fails open must do provably bounded work — and this is the rule
 that cost the most to learn.**
 

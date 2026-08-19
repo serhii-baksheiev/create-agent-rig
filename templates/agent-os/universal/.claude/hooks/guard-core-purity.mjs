@@ -5,6 +5,9 @@
 //
 // Contract (Claude Code and Codex): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason.
+// Generator-owned coverage for the neutral bounded-inspection refusal lives upstream in
+// codex.test.ts › "$guard blocks with a neutral, actionable size-limit refusal"; generated
+// projects do not carry that suite, and a downstream edit requires a local replacement test.
 import { readFileSync } from 'node:fs';
 import { editFragments } from './lib/edit-input.mjs';
 
@@ -32,16 +35,23 @@ function main() {
   } catch {
     return 0; // unparseable payload: not ours to judge
   }
-  const violations = editFragments(input).flatMap(
-    ({ filePath, fragment, inspectionRefusal, appliesToAll }) => {
-      if (appliesToAll && inspectionRefusal) {
-        return [`cannot safely inspect this patch — ${inspectionRefusal}`];
-      }
-      if (!CORE_PATH.test(filePath) || !CODE_FILE.test(filePath)) return [];
-      if (inspectionRefusal) return [`cannot safely inspect this move — ${inspectionRefusal}`];
-      return findViolations(fragment);
-    },
-  );
+  const fragments = editFragments(input);
+  const globalRefusal = fragments.find(
+    ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
+  )?.inspectionRefusal;
+  if (globalRefusal) {
+    process.stderr.write(
+      `BLOCKED — cannot safely inspect this edit: ${globalRefusal}\n` +
+        `Split it into a smaller patch and retry.\n`,
+    );
+    return 2;
+  }
+
+  const violations = fragments.flatMap(({ filePath, fragment, inspectionRefusal }) => {
+    if (!CORE_PATH.test(filePath) || !CODE_FILE.test(filePath)) return [];
+    if (inspectionRefusal) return [`cannot safely inspect this move — ${inspectionRefusal}`];
+    return findViolations(fragment);
+  });
   if (violations.length === 0) return 0;
 
   process.stderr.write(

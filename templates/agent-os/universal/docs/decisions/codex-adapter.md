@@ -43,6 +43,10 @@ fail-open boundary of the portable root lookup visible in `.codex/hooks.json`.
 
 The emitted agent fields are `name`, `description`, `sandbox_mode`, and
 `developer_instructions`, matching the documented Codex custom-agent TOML.
+For hooks, the [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks)
+documents `tool_input.command` for both `Bash` and `apply_patch` and requires a
+string `command` when a hook replaces that input. The guards therefore accept
+that documented string form and fail open on unsupported command shapes.
 Hook output is the JSON `description` plus event arrays accepted by
 `.codex/hooks.json`; command portability is carried by generated POSIX and
 Windows commands. In this generated project, `.claude/settings.json` and

@@ -94,7 +94,10 @@ function main() {
     for (const { filePath, fragment, inspectionRefusal, appliesToAll } of editFragments(input)) {
       if (inspectionRefusal) {
         refused = true;
-        process.stderr.write(`BLOCKED — cannot safely inspect this edit: ${inspectionRefusal}\n`);
+        process.stderr.write(
+          `BLOCKED — cannot safely inspect this edit: ${inspectionRefusal}\n` +
+            `Split it into a smaller patch and retry.\n`,
+        );
         continue;
       }
       if (isCredentialPath(filePath)) {

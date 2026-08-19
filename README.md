@@ -40,9 +40,11 @@ maps: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
 your commands), and the elevated-path list names only what every repo has.
 
 After generation or upgrade, review the checked-in `.codex/hooks.json` in Codex's
-`/hooks` view and explicitly trust it if Codex presents a trust prompt. A changed
-hook definition may require that review again; the adapter does not silently
-replace user-owned hook configuration.
+`/hooks` view and explicitly trust it if Codex presents a trust prompt. The
+[official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks)
+records trust against the current hook hash, so a changed hook definition may
+require that review again; the adapter does not silently replace user-owned hook
+configuration.
 
 ## Upgrading a rig you already have
 

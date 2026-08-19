@@ -29,6 +29,8 @@ const MAX_TOTAL_MOVED_FILE_BYTES = 1024 * 1024;
 const MAX_TOTAL_HUNK_LINES = 10_000;
 const MAX_OUTPUT_LINES = 20_000;
 const MAX_SPLICE_OPERATIONS = 1_000;
+const MAX_PATCH_SECTIONS = 128;
+const MAX_PATCH_PATH_COMPONENTS = 512;
 
 export function editFragments(input) {
   const toolName = input?.tool_name;
@@ -68,7 +70,19 @@ export function editFragments(input) {
 
 function patchFragments(command, payloadCwd) {
   const fragments = [];
-  const budget = { movedBytes: 0, hunkLines: 0, outputLines: 0, splices: 0, comparisons: MAX_CONTEXT_COMPARISONS, repoRoot: null, patchCwd: null, exhausted: null };
+  const budget = {
+    movedBytes: 0,
+    hunkLines: 0,
+    outputLines: 0,
+    splices: 0,
+    sections: 0,
+    pathComponents: 0,
+    comparisons: MAX_CONTEXT_COMPARISONS,
+    repoRoot: null,
+    patchCwd: null,
+    resolvedDirectories: new Map(),
+    exhausted: null,
+  };
   try {
     const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
       ? path.resolve(payloadCwd)
@@ -78,10 +92,36 @@ function patchFragments(command, payloadCwd) {
     if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
   } catch { /* moved inspection below refuses without a trusted root and cwd */ }
   let current = null;
+  let patchRefusal = null;
 
   const flush = () => {
     if (current !== null) {
-      const destination = repositoryPatchPath(current.moveTo ?? current.sourcePath, budget);
+      budget.sections += 1;
+      if (budget.sections > MAX_PATCH_SECTIONS) {
+        patchRefusal = {
+          filePath: '',
+          fragment: '',
+          inspectionRefusal: `apply_patch exceeds the ${MAX_PATCH_SECTIONS}-section inspection limit`,
+          appliesToAll: true,
+        };
+        current = null;
+        return false;
+      }
+      const destinationPath = current.moveTo ?? current.sourcePath;
+      budget.pathComponents += String(destinationPath ?? '')
+        .replaceAll('\\', '/')
+        .split('/').length;
+      if (budget.pathComponents > MAX_PATCH_PATH_COMPONENTS) {
+        patchRefusal = {
+          filePath: '',
+          fragment: '',
+          inspectionRefusal: `apply_patch destination path component count exceeds the ${MAX_PATCH_PATH_COMPONENTS}-component inspection limit`,
+          appliesToAll: true,
+        };
+        current = null;
+        return false;
+      }
+      const destination = repositoryPatchPath(destinationPath, budget);
       if (destination === null) {
         fragments.push({
           filePath: '',
@@ -97,12 +137,13 @@ function patchFragments(command, payloadCwd) {
       }
       current = null;
     }
+    return true;
   };
 
   for (const line of command.split(/\r?\n/)) {
     const file = /^\*\*\* (?:Add|Update) File: (.+)$/.exec(line);
     if (file) {
-      flush();
+      if (!flush()) break;
       current = { sourcePath: file[1], moveTo: null, additions: [], hunks: [], activeHunk: null };
       continue;
     }
@@ -112,7 +153,7 @@ function patchFragments(command, payloadCwd) {
       continue;
     }
     if (/^\*\*\* (?:Delete File|End Patch)/.test(line)) {
-      flush();
+      if (!flush()) break;
       continue;
     }
     if (current !== null && line.startsWith('@@')) {
@@ -125,7 +166,9 @@ function patchFragments(command, payloadCwd) {
       current.activeHunk.lines.push({ operation: line[0], text: line.slice(1) });
     }
   }
+  if (patchRefusal !== null) return [patchRefusal];
   flush();
+  if (patchRefusal !== null) return [patchRefusal];
   return fragments;
 }
 
@@ -324,8 +367,24 @@ function repositoryPatchPath(value, budget) {
   let existing = candidate;
   const suffix = [];
   while (true) {
+    if (suffix.length > 0 && budget.resolvedDirectories.has(existing)) {
+      const resolved = budget.resolvedDirectories.get(existing);
+      const resolvedCandidate = path.resolve(resolved, ...suffix);
+      if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
+      return path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/');
+    }
     try {
       const resolved = realpathSync(existing);
+      if (suffix.length > 0) {
+        budget.resolvedDirectories.set(existing, resolved);
+        let lexicalPrefix = existing;
+        let resolvedPrefix = resolved;
+        for (const component of suffix.slice(0, -1)) {
+          lexicalPrefix = path.resolve(lexicalPrefix, component);
+          resolvedPrefix = path.resolve(resolvedPrefix, component);
+          budget.resolvedDirectories.set(lexicalPrefix, resolvedPrefix);
+        }
+      }
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
       return path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/');

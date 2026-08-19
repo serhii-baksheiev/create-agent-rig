@@ -150,6 +150,21 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     const elevated = /```elevated-paths\n([\s\S]*?)```/.exec(map)?.[1] ?? '';
     expect(elevated.split(/\r?\n/)).toContain('.codex/');
   });
+
+  it('grounds the string command payload contract in the official Codex hooks documentation', async () => {
+    const decision = await text(universal, 'docs', 'decisions', 'codex-adapter.md');
+
+    expect(decision).toContain('https://learn.chatgpt.com/docs/hooks');
+    expect(decision).toMatch(/tool_input\.command[^.]{0,120}string/i);
+  });
+
+  it('grounds hook trust and re-review guidance in the official Codex hooks documentation', async () => {
+    const readme = await text(repoRoot, 'README.md');
+    const trustGuidance = readme.match(/After generation or upgrade,[\s\S]*?(?=\n## )/)?.[0] ?? '';
+
+    expect(trustGuidance).toContain('https://learn.chatgpt.com/docs/hooks');
+    expect(trustGuidance).toMatch(/changed[^.]*hook[^.]*review again/i);
+  });
 });
 
 function runGuard(script: string, command: string): Promise<{ code: number; stderr: string }> {
@@ -767,6 +782,114 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.stderr).toMatch(/patch.*(?:size|limit|large)|(?:size|limit|large).*patch/i);
   });
 
+  it('refuses the whole patch and stops processing after the global section budget is exhausted', async () => {
+    const source = await text(hooksDir, 'lib', 'edit-input.mjs');
+    const declaration = /const MAX_PATCH_SECTIONS = ([\d_]+);/.exec(source);
+    expect(
+      declaration,
+      'MAX_PATCH_SECTIONS must bound filesystem work independently of patch character size',
+    ).not.toBeNull();
+
+    const sectionLimit = Number(declaration?.[1]?.replaceAll('_', ''));
+    expect(sectionLimit).toBeGreaterThan(0);
+    expect(sectionLimit).toBeLessThanOrEqual(4_096);
+    expect([...source.matchAll(/\bMAX_PATCH_SECTIONS\b/g)].length).toBeGreaterThan(1);
+
+    const editInput = (await import(
+      pathToFileURL(path.join(hooksDir, 'lib', 'edit-input.mjs')).href
+    )) as {
+      editFragments(input: unknown): Array<{
+        filePath: string;
+        fragment: string;
+        inspectionRefusal?: string;
+        appliesToAll?: boolean;
+      }>;
+    };
+    const sections = Array.from({ length: sectionLimit + 1 }, (_, index) => [
+      `*** Add File: packages/core/src/section-${index}.ts`,
+      '+export {};',
+    ]).flat();
+    const fragments = editInput.editFragments({
+      tool_name: 'apply_patch',
+      cwd: repoRoot,
+      tool_input: {
+        command: [
+          '*** Begin Patch',
+          ...sections,
+          // If processing continues after exhaustion this path produces a
+          // different repository-path refusal and masks the budget failure.
+          '*** Add File: ../../must-not-resolve.ts',
+          '+export {};',
+          '*** End Patch',
+        ].join('\n'),
+      },
+    });
+    const refusals = fragments.filter(({ inspectionRefusal }) => inspectionRefusal);
+
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toMatchObject({ appliesToAll: true });
+    expect(refusals[0]?.inspectionRefusal).toMatch(
+      /section.*(?:budget|limit)|(?:budget|limit).*section/i,
+    );
+    expect(refusals[0]?.inspectionRefusal).not.toMatch(/destination|repository|path/i);
+  });
+
+  it('refuses the whole patch before later sections after the global path-component budget is exhausted', async () => {
+    const source = await text(hooksDir, 'lib', 'edit-input.mjs');
+    const declaration = /const MAX_PATCH_PATH_COMPONENTS = ([\d_]+);/.exec(source);
+    expect(
+      declaration,
+      'MAX_PATCH_PATH_COMPONENTS must bound destination traversal independently of section count',
+    ).not.toBeNull();
+
+    const componentLimit = Number(declaration?.[1]?.replaceAll('_', ''));
+    expect(componentLimit).toBeGreaterThan(0);
+    expect(componentLimit).toBeLessThanOrEqual(4_096);
+    expect([...source.matchAll(/\bMAX_PATCH_PATH_COMPONENTS\b/g)].length).toBeGreaterThan(1);
+
+    const editInput = (await import(
+      pathToFileURL(path.join(hooksDir, 'lib', 'edit-input.mjs')).href
+    )) as {
+      editFragments(input: unknown): Array<{
+        filePath: string;
+        fragment: string;
+        inspectionRefusal?: string;
+        appliesToAll?: boolean;
+      }>;
+    };
+    const componentsPerSection = Math.min(32, componentLimit);
+    const sectionCount = Math.floor(componentLimit / componentsPerSection) + 1;
+    const sections = Array.from({ length: sectionCount }, (_, section) => {
+      const components = Array.from(
+        { length: componentsPerSection },
+        (_unused, component) => `s${section}-${component}`,
+      );
+      components[components.length - 1] += '.ts';
+      return [`*** Add File: ${components.join('/')}`, '+export {};'];
+    }).flat();
+    const fragments = editInput.editFragments({
+      tool_name: 'apply_patch',
+      cwd: repoRoot,
+      tool_input: {
+        command: [
+          '*** Begin Patch',
+          ...sections,
+          '*** Add File: ../../must-not-resolve-after-component-budget.ts',
+          '+export {};',
+          '*** End Patch',
+        ].join('\n'),
+      },
+    });
+    const refusals = fragments.filter(({ inspectionRefusal }) => inspectionRefusal);
+
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toMatchObject({ appliesToAll: true });
+    expect(refusals[0]?.inspectionRefusal).toMatch(
+      /(?:path|destination).*component.*(?:budget|limit)|(?:budget|limit).*component/i,
+    );
+    expect(refusals[0]?.inspectionRefusal).not.toMatch(/outside|cannot be resolved safely/i);
+  });
+
   it('caps aggregate source inspection across many move sections', async () => {
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-many-moves-'));
     const sections: string[] = [];
@@ -1105,4 +1228,43 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       await rm(scratch, { recursive: true, force: true });
     }
   });
+});
+
+describe('Codex oversized apply_patch inspection refusals', () => {
+  it.each([
+    {
+      guard: 'guard-core-purity.mjs',
+      falseDiagnosis:
+        /packages\/core is a pure module|breaks its purity|usecase layer|into an adapter/i,
+    },
+    {
+      guard: 'guard-web-boundary.mjs',
+      falseDiagnosis:
+        /apps\/web imports the domain|crosses the web boundary|talks to services|storage stays behind/i,
+    },
+    {
+      guard: 'guard-secret-file.mjs',
+      falseDiagnosis:
+        /credential file|credential value|writes a credential|repository never carries one/i,
+    },
+  ])(
+    '$guard blocks with a neutral, actionable size-limit refusal',
+    async ({ guard, falseDiagnosis }) => {
+      const result = await runGuard(
+        guard,
+        [
+          '*** Begin Patch',
+          '*** Add File: docs/big.md',
+          `+${'x'.repeat(1024 * 1024 + 1)}`,
+          '*** End Patch',
+        ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/BLOCKED — cannot safely inspect/i);
+      expect(result.stderr).toMatch(/1048576-character inspection limit/i);
+      expect(result.stderr).toMatch(/split|smaller patch/i);
+      expect(result.stderr).not.toMatch(falseDiagnosis);
+    },
+  );
 });
