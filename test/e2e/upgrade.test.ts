@@ -133,13 +133,18 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
     });
   });
 
-  it('upgrades a rig that predates the manifest, and leaves one behind', async () => {
+  it('upgrades a rig with no readable manifest, and leaves one behind', async () => {
     await withChangedTemplate(async (repo) => {
+      // Deleting it is one of the three ways to reach the bootstrapped branch;
+      // the others are a rig from before 0.4.0, which never had one, and a
+      // manifest on disk that `parseManifest` voids. The header may not name
+      // which of the three this is — see cli-report.test.ts › "does not tell a
+      // rig whose manifest was deleted that it predates 0.4.0".
       await rm(path.join(repo, '.claude', '.rig-manifest.json'));
 
       const run = await runCli(repo, ['upgrade', '--yes']);
       expect(run.code).toBe(0);
-      expect(run.stdout).toMatch(/no manifest/i);
+      expect(run.stdout).toMatch(/no readable manifest/i);
       expect(await readFile(path.join(repo, ...recognisable.split('/')), 'utf8')).toContain(
         '<!-- 0.4.0 -->',
       );

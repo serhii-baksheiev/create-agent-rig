@@ -256,6 +256,42 @@ describe('the plan summary accounts for every file it planned', () => {
     ).toBe(plan.actions.length);
   });
 
+  it('lists the two occasional buckets in the order the plan prints them', async () => {
+    await installRig();
+    await editTheHookWiring();
+    // A file the rig installed and the user removed — the `deleted` verdict,
+    // which no test covered until this one, and the second half of the pair the
+    // ordering claim in `renderUpgradePlan` is about.
+    await rm(abs('.claude/rules/workflow.md'));
+
+    const plan = await groundTruth();
+    expect(
+      plan.actions.some((a) => a.verdict === 'wiring'),
+      'fixture: no wiring action',
+    ).toBe(true);
+    expect(
+      plan.actions.some((a) => a.verdict === 'deleted'),
+      'fixture: no deleted action',
+    ).toBe(true);
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const summary = lineMatching(run.stdout, /to replace/);
+    expect(summary, 'the plan printed no summary line').toBeTruthy();
+
+    // Both present, and `deleted` before `wiring` — the only ordering the
+    // comment at the call site claims. It deliberately does NOT claim the
+    // summary follows the plan's whole order: the plan prints `deleted` before
+    // `conflict` and the summary prints it after.
+    const removed = (summary ?? '').indexOf('you removed');
+    const wiring = (summary ?? '').indexOf('wiring handed over');
+    expect(removed, 'the deleted bucket is missing from the summary').toBeGreaterThan(-1);
+    expect(wiring, 'the wiring bucket is missing from the summary').toBeGreaterThan(-1);
+    expect(removed).toBeLessThan(wiring);
+    // and it still adds up with both of them in it
+    expect(sum(numbersIn(summary ?? ''))).toBe(plan.actions.length);
+  });
+
   it('renders a plan with no wiring action exactly as it does today', async () => {
     await installRig();
 

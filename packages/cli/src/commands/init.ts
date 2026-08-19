@@ -263,9 +263,12 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * it wrote; it does not get to re-describe how the rig was installed.
  *
  * ⚠ **The limit, stated because the fix reads as wider than it is:** this
- * preserves a manifest, so a rig that has none — anything from before 0.4.0 —
- * still gets `kind: 'init'`, no stacks and an empty region, and the advisory in
- * `runInit` stays silent for the same reason. `upgrade`'s `detectInstall`
+ * preserves a manifest, so a rig without a READABLE one still gets
+ * `kind: 'init'`, no stacks and an empty region, and the advisory in `runInit`
+ * stays silent for the same reason. That is three populations, not one: a rig
+ * from before 0.4.0 never had a manifest, a deleted manifest is a documented
+ * recovery step, and one on disk that `parseManifest` voids reads as absent to
+ * `readManifest` alike. `upgrade`'s `detectInstall`
  * recovers all three from the files on disk, so those values are not
  * unavailable, only unavailable *here*: reaching for it would point
  * `commands/init` at `commands/upgrade`, which already imports this module.

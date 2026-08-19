@@ -154,10 +154,13 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   // buckets, so a reader counted lines and was told a smaller number.
   // (`unchanged` is counted and prints nothing — the sum is over actions, not
   // over printed lines.) The two appear only when they occurred, so a plan
-  // without them renders exactly as it always has: see cli-report.test.ts ›
+  // without them renders exactly as it always has. Pinned by, in cli-report.test.ts,
   // "renders a plan with no wiring action exactly as it does today".
-  // Same order the plan printed them in (`deleted` before `conflict`), so a
-  // reader scanning the summary against the list above finds each where it was.
+  // `deleted` before `wiring`, the relative order the plan prints them in.
+  // ⚠ Only their order relative to EACH OTHER matches: the plan prints
+  // `deleted` before `conflict` and the summary prints it after, so this is not
+  // a plan-ordered line. Pinned by, in cli-report.test.ts,
+  // "lists the two occasional buckets in the order the plan prints them".
   const occasional = [
     ['deleted', (n: number) => `${n} you removed (left removed)`],
     ['wiring', (n: number) => `${n} wiring handed over`],
@@ -184,8 +187,8 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
       // every command accepts it. Refusing a flag the help offers costs the
       // reader more than honouring it costs us — and honouring it is only a
       // parse here, because the sole palette lives on the `create` path below.
-      // See cli-report.test.ts › "upgrade accepts --no-color and prints plain
-      // output".
+      // Pinned by, in cli-report.test.ts,
+      // "upgrade accepts --no-color and prints plain output".
       options: {
         'dry-run': { type: 'boolean' },
         yes: { type: 'boolean' },
