@@ -20,21 +20,37 @@ the same text as `AGENTS.md` for Codex, with repository skills in
 in `.codex/hooks.json`. Neither harness gets the weaker policy, and the derived
 half is drift-checked rather than maintained twice.
 
-**This release ships untagged, by the owner's decision, and that has exactly one
-consequence — read it before you `upgrade` a rig installed before 0.4.0.**
-`templates/hash-history.json`, the table a rig with **no manifest** is measured
-against, is built from `v*` tags. So 0.5.0's bytes will not enter it, and the
-`0.4.0` row it gained in this release carries the _previous_ release's bytes:
-that tag points at 0.3.2's content, which is why the row adds no hash to any
-path. The two files 0.4.0 genuinely changed in the agent-os layer —
-`.claude/skills/loop/SKILL.md` and `PLAN.md` — are absent from every row as a
-result.
+**This release ships untagged, by the owner's decision, and it has exactly one
+consequence — read it if you ever run `upgrade` on a rig whose
+`.claude/.rig-manifest.json` is missing or unreadable.**
+`templates/hash-history.json`, the table such a rig is measured against, is
+built from `v*` tags. So 0.5.0's bytes never enter it, and the `0.4.0` row it
+gained in this release carries the _previous_ release's bytes: that tag points at
+0.3.2's content, which is why the row adds no hash to any path. Both paths 0.4.0
+actually changed — `.claude/skills/loop/SKILL.md` and `PLAN.md` — are in the
+table with their 0.3.x hashes; what is absent is 0.4.0's bytes from their hash
+lists.
 
-**A rig installed from 0.4.0 onwards is unaffected:** `create`, `init` and
-`upgrade` each write `.claude/.rig-manifest.json`, and `upgrade` consults it
-before the table. On a pre-0.4.0 rig the effect is the conservative one — those
-two files are reported as yours instead of being replaced, so nothing you wrote
-is overwritten and nothing is silently skipped.
+**Who that reaches, and who it does not.** `create`, `init` and `upgrade` each
+write the manifest, and `upgrade` matches it **before** it consults the table, so
+a rig whose manifest is present and parseable is unaffected whatever the table
+says. Without a readable manifest the table decides, and it decides in the
+conservative direction: bytes it recognises are replaced, bytes it does not are
+kept and reported as yours — see `packages/cli/test/upgrade.test.ts` › "replaces
+a file that matches a released version, and reports the rest".
+
+A rig installed **before** 0.4.0 is not the exposed case: its 0.3.x bytes are in
+the table, so those two files are recognised and replaced. The rig that keeps
+them is one installed at **0.4.0** whose manifest is unreadable.
+
+**And the scale of it grows with this release, which matters more than those two
+files.** Because 0.5.0 is untagged, nothing it ships enters the table either — so
+a rig installed at 0.5.0 and later upgraded **without a readable manifest** has
+66 of its 79 agent-os paths unrecognised at this release, 38 of them paths the
+table has no row for at all. Every one is kept and reported as yours, so no edit
+is lost and no file is silently skipped, but almost nothing would be refreshed
+either. **Commit `.claude/.rig-manifest.json`** — that single habit makes the
+table irrelevant to you, and it is what `README.md` puts in bold.
 
 ### Added
 
@@ -115,7 +131,7 @@ is overwritten and nothing is silently skipped.
 
 - **`init --force` inside a generated project used to make `upgrade` stop
   refreshing the stack overlays — silently.** ⚠ Read this next to the
-  deprecation above: `--force` is refused in this same unreleased version, so
+  deprecation above: `--force` is refused in this same release, so
   the route described here is gone. The fix is not idle — the manifest is
   preserved on **every** `init` over a `create` rig, and the remaining route in
   is a deleted `CLAUDE.md`. `init` rewrote the rig manifest
@@ -494,7 +510,10 @@ sometimes earlier (step 6). Everything before that is mechanical:
 4. `node scripts/build-hash-history.mjs` — regenerate the released-hash table
    from the tags **after** the version bump, so the version now shipping is the
    first one it excludes. Forgetting it would leave `upgrade` unable to
-   recognise the previous release.
+   recognise the previous release. ⚠ With no tag cut (step 7), what excludes the
+   shipping version is the absent tag rather than that filter — and the same
+   absence keeps it out of every later table too, which is the cost step 7
+   states.
 5. This file, and `PLAN.md` if the plan's claims changed.
 6. **`pnpm test` again — this run, not step 1, is the one that can catch a
    stale hash table.** The check compares the table against the versions this
@@ -515,8 +534,14 @@ sometimes earlier (step 6). Everything before that is mechanical:
    0.5.0 preparation: with `0.5.0` untagged, a `0.5.0` bump passes and an
    `0.6.0` bump fails. The check is
    `test/template/hash-history.test.ts` › "covers every released version below
-   the one being prepared". **AR-35 carries the fix** — anchor the table on the
-   commit that bumped the version, so tags stop being load-bearing at all.
+   the one being prepared". **AR-35 carries the fix**, and which shape it takes
+   is that item's to decide, not this note's.
+
+   **What a releaser may do when step 6 fails, stated so it is not inferred:**
+   stop, and land AR-35 first. Cutting the missing tag after the fact is _not_
+   the sanctioned way out — it would put the table's honesty back on a step this
+   process does not perform, which is the whole reason the decision is recorded
+   here.
 
    If a tag is ever cut anyway, the older warning still applies: check first
    that it does not exist (`git ls-remote --tags origin`), because a leftover

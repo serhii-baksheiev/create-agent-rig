@@ -70,7 +70,10 @@ repository the command is blind on CI and on a colleague's machine. Rigs
 installed before 0.4.0 have no manifest, so the package also carries the hashes
 of every **tagged** release (0.3.0 onward — 0.1.0 and 0.2.0 shipped untagged,
 and a rig from those reports every file as yours) and recognises a file matching
-one of them.
+one of them. Releases from 0.5.0 on ship untagged as well, so the table does not
+carry them either: on a rig with no manifest their files are reported as yours
+rather than refreshed. This is why committing the manifest is the sentence in
+bold above and not an aside.
 
 `.claude/settings.json` is replaced only when the manifest's recorded hash
 proves the rig wrote those exact bytes and you have not touched them — the case
