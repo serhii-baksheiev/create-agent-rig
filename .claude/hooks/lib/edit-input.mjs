@@ -6,7 +6,8 @@
  * destination receives the existing file too, so guards inspect the resulting
  * content instead of only the patch additions when inspection succeeds.
  *
- * Inspection is bounded globally per patch: sources, hunks, output, splices and comparisons.
+ * Inspection is bounded globally per patch: sources, hunks, output, splices,
+ * comparisons, sections and path components.
  */
 import { execFileSync } from 'node:child_process';
 import {

@@ -51,3 +51,9 @@ Hook output is the JSON `description` plus event arrays accepted by
 `.codex/hooks.json`; command portability is carried by generated POSIX and
 Windows commands. In this generated project, `.claude/settings.json` and
 `.codex/hooks.json` are the two concrete hook-wiring snapshots to review.
+
+`apply_patch` inspection also has aggregate, per-patch work bounds. In
+particular, `MAX_PATCH_PATH_COMPONENTS` counts destination path components
+across the whole patch, so the file capacity of one patch decreases as path
+depth increases. When that bound is reached, split the edit into multiple
+smaller patches.

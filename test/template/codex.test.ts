@@ -158,6 +158,40 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     expect(decision).toMatch(/tool_input\.command[^.]{0,120}string/i);
   });
 
+  it('documents how the aggregate path-component budget limits files per patch', async () => {
+    const decision = await text(universal, 'docs', 'decisions', 'codex-adapter.md');
+    const contract = decision
+      .split(/\n\s*\n/)
+      .find((paragraph) => paragraph.includes('MAX_PATCH_PATH_COMPONENTS'));
+
+    expect(contract, 'the authored decision must name MAX_PATCH_PATH_COMPONENTS').toBeDefined();
+    expect(contract).toMatch(
+      /(?:aggregate|cumulative|total|patch-wide)[^.]{0,160}(?:per[- ]patch|whole patch|entire patch|across (?:a|the) patch)|(?:per[- ]patch|whole patch|entire patch|across (?:a|the) patch)[^.]{0,160}(?:aggregate|cumulative|total|patch-wide)/i,
+    );
+    expect(contract).toMatch(
+      /(?:file capacity|number of files|how many files|file count)[^.]{0,160}(?:path depth|path components?)|(?:path depth|path components?)[^.]{0,160}(?:file capacity|number of files|how many files|file count)/i,
+    );
+    expect(contract).toMatch(/split(?:ting)?[^.]{0,100}(?:smaller|multiple)[^.]{0,40}patch/i);
+  });
+
+  it('names all seven per-patch inspection budgets in the normalizer header', async () => {
+    const source = await text(hooksDir, 'lib', 'edit-input.mjs');
+    const header = /^\/\*\*[\s\S]*?\*\//.exec(source)?.[0] ?? '';
+    const budgets: Array<[string, RegExp]> = [
+      ['sources', /\bsources?\b/i],
+      ['hunks', /\bhunks?\b/i],
+      ['output', /\boutput\b/i],
+      ['splices', /\bsplices?\b/i],
+      ['comparisons', /\bcomparisons?\b/i],
+      ['sections', /\bsections?\b/i],
+      ['path components', /\bpath[- ]components?\b/i],
+    ];
+    const missing = budgets.filter(([, pattern]) => !pattern.test(header)).map(([name]) => name);
+
+    expect(header).toMatch(/bounded globally per patch/i);
+    expect(missing, 'the header must enumerate every global inspection budget').toEqual([]);
+  });
+
   it('grounds hook trust and re-review guidance in the official Codex hooks documentation', async () => {
     const readme = await text(repoRoot, 'README.md');
     const trustGuidance = readme.match(/After generation or upgrade,[\s\S]*?(?=\n## )/)?.[0] ?? '';
