@@ -97,7 +97,7 @@ function main() {
 
   if (toolName === 'apply_patch') {
     let refused = false;
-    for (const { filePath, fragment, inspectionRefusal, appliesToAll } of editFragments(input)) {
+    for (const { filePath, fragment, inspectionRefusal, remedy, appliesToAll } of editFragments(input)) {
       if (inspectionRefusal) {
         refused = true;
         process.stderr.write(
@@ -105,7 +105,7 @@ function main() {
             // The remedy has to match the refusal: splitting cannot change a
             // container shape, and a fixed line sent the agent into a retry loop
             // on the one path it could not retry out of.
-            `${/shape/i.test(inspectionRefusal) ? 'Send the command as a patch string, or a list of strings.' : 'Split it into a smaller patch and retry.'}\n`,
+            `${remedy ?? 'Split it into a smaller patch and retry.'}\n`,
         );
         continue;
       }

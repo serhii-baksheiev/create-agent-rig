@@ -70,6 +70,25 @@ export function editFragments(input) {
   // condition it detects and can report. Collapsing the two blocked every Codex
   // edit the day the platform renamed the field, with a remedy nobody could act
   // on.
+  // ⚠ **`in` throws on a primitive, and two of the three guards have no catch** —
+  // they exited 1 with a stack trace, which neither harness treats as blocking, so
+  // a crash here was an ALLOW. A `tool_input` that is not an object is the same
+  // case as a `command` whose container this guard cannot read: detected, not
+  // readable, refused.
+  if (typeof toolInput !== 'object' || toolInput === null || Array.isArray(toolInput)) {
+    return [
+      {
+        filePath: '',
+        fragment: '',
+        inspectionRefusal:
+          'the apply_patch command arrived in a shape this guard cannot read — it is a ' +
+          'string, or a list of strings, and nothing else. Nothing was inspected, so ' +
+          'nothing about this patch is vouched for.',
+        remedy: 'Send the command as a patch string, or a list of strings.',
+        appliesToAll: true,
+      },
+    ];
+  }
   if (!('command' in toolInput)) return [];
   if (
     typeof rawCommand !== 'string' &&
@@ -96,6 +115,11 @@ export function editFragments(input) {
           'the apply_patch command arrived in a shape this guard cannot read — it is a ' +
           'string, or a list of strings, and nothing else. Nothing was inspected, so ' +
           'nothing about this patch is vouched for.',
+        // 🔴 The remedy travels WITH the refusal that earns it. It was chosen by
+        // `/shape/i.test(reason)` in six copies — correct only by coincidence of
+        // wording, so rewording the reason silently restored the retry loop this
+        // remedy exists to replace. One field, one place.
+        remedy: 'Send the command as a patch string, or a list of strings.',
         appliesToAll: true,
       },
     ];

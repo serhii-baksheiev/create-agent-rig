@@ -245,6 +245,76 @@ function runGuardInput(
 }
 
 describe('Codex apply_patch cannot bypass architecture guards', () => {
+  // 🔴 The remedy an operator is shown, pinned across all three guards. It used
+  // to be chosen by `/shape/i.test(reason)` in six copies — correct only by
+  // coincidence of wording — and nothing asserted either string, so reverting
+  // the whole mechanism left 203 tests green. It now travels as a `remedy` field
+  // on the refusal that earns it, and these are the assertions that keep it
+  // honest: a shape refusal must not send the agent to split the patch, and a
+  // size refusal must.
+  const GUARDS = ['guard-core-purity.mjs', 'guard-web-boundary.mjs', 'guard-secret-file.mjs'];
+
+  it.each(GUARDS)('%s tells an unreadable shape to resend, not to split', async (guard) => {
+    const result = await runGuardInput(guard, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command: { patch: '*** Begin Patch\n*** End Patch' } },
+      cwd: repoRoot,
+    });
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/patch string, or a list of strings/i);
+    expect(result.stderr).not.toMatch(/smaller patch/i);
+  });
+
+  it.each(GUARDS)('%s still tells an oversized patch to split', async (guard) => {
+    const oversized = [
+      '*** Begin Patch',
+      '*** Add File: a.md',
+      `+${'x'.repeat(1024 * 1024 + 10)}`,
+      '*** End Patch',
+    ].join('\n');
+    const result = await runGuardInput(guard, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command: oversized },
+      cwd: repoRoot,
+    });
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/smaller patch/i);
+    expect(result.stderr).not.toMatch(/patch string, or a list of strings/i);
+  });
+
+  // 🔴 A `tool_input` that is not an object threw on `'command' in toolInput`, and
+  // two of the three guards have no catch — they exited 1 with a stack trace,
+  // which neither harness treats as blocking. A crash was an ALLOW, on the path
+  // this whole item exists for.
+  it.each(GUARDS)('%s refuses a tool_input that is not an object', async (guard) => {
+    const result = await runGuardInput(guard, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: 'oops' as unknown as { command: unknown },
+      cwd: repoRoot,
+    });
+
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  // The other side of the same seam, and it had no test at all: an ABSENT
+  // command is a payload the hook does not understand, which the rules say must
+  // allow — the same answer the Write/Edit arm gives a missing file_path.
+  it.each(GUARDS)('%s allows a payload carrying no command at all', async (guard) => {
+    const result = await runGuardInput(guard, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {} as unknown as { command: unknown },
+      cwd: repoRoot,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+  });
+
   it.each([
     ['a number', 42],
     ['a mixed array', ['*** Begin Patch', 42, '*** End Patch']],

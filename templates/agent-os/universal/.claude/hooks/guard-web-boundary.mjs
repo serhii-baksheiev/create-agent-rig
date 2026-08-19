@@ -30,16 +30,17 @@ function main() {
   const importRe =
     /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;
   const fragments = editFragments(input);
-  const globalRefusal = fragments.find(
+  const blocked = fragments.find(
     ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
-  )?.inspectionRefusal;
+  );
+  const globalRefusal = blocked?.inspectionRefusal;
   if (globalRefusal) {
     process.stderr.write(
       `BLOCKED — cannot safely inspect this edit: ${globalRefusal}\n` +
         // The remedy has to match the refusal: splitting cannot change a
         // container shape, and a fixed line sent the agent into a retry loop
         // on the one path it could not retry out of.
-        `${/shape/i.test(globalRefusal) ? 'Send the command as a patch string, or a list of strings.' : 'Split it into a smaller patch and retry.'}\n`,
+        `${blocked.remedy ?? 'Split it into a smaller patch and retry.'}\n`,
     );
     return 2;
   }
