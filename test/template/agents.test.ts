@@ -137,6 +137,22 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     expect(content).toMatch(/pointer to (a|the) test/i);
   });
 
+  it('allows an absent upstream test only for an unchanged generator-authored hook', async () => {
+    const content = await read();
+    const checklist = content.slice(
+      content.indexOf('## Checklist'),
+      content.indexOf('## Advisory'),
+    );
+
+    expect(checklist).toMatch(/generator-authored hook/i);
+    expect(checklist).toMatch(/(?:upstream|generator)[^.]{0,80}tests?[^.]{0,120}absent locally/i);
+    expect(checklist).toMatch(/hook[^.]{0,80}header[^.]{0,120}absent locally/i);
+    expect(checklist).toMatch(/only while[^.]{0,120}(?:unchanged|untouched)[^.]{0,80}downstream/i);
+    expect(checklist).toMatch(
+      /(?:edit|change)[^.]{0,120}(?:downstream|current diff)[^.]{0,160}(?:local test|test is yours|exception (?:expires|ends|no longer applies))/i,
+    );
+  });
+
   it('states the boundary that keeps it from becoming a style gate', async () => {
     const content = await read();
     expect(content).toMatch(/not a (literary|copy) editor/i);

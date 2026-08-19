@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { listTreeEntries } from './copy-tree.js';
+import { listTreeEntries, mapConcurrent } from './copy-tree.js';
 import { substituteContent, substituteFileName } from './substitute.js';
 import type { SubstitutionContext } from './substitute.js';
 import { agentOsStackDir, agentOsUniversalDir } from '../templates.js';
@@ -53,13 +53,13 @@ export async function agentOsInstallSet(
     const entries = await listTreeEntries(layer.dir, {
       transformName: (name) => substituteFileName(name, ctx),
     });
-    for (const entry of entries) {
-      files.push({
+    files.push(
+      ...(await mapConcurrent(entries, 16, async (entry) => ({
         rel: entry.rel,
         source: entry.source,
         content: substituteContent(await readFile(entry.source, 'utf8'), ctx),
-      });
-    }
+      }))),
+    );
   }
   return files;
 }

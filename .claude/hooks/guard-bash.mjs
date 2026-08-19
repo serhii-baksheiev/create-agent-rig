@@ -135,6 +135,43 @@ const WRAPPER_VALUE_FLAGS = {
 const KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'fi', 'done', 'in', '!', '{', '}']);
 /** Shells whose `-c` argument is itself a command line, so it must be parsed too. */
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+/** Shell options that consume the following token before the `-c` script. */
+const SHELL_VALUE_FLAGS = new Set(['-o', '-O', '+o', '+O', '--init-file', '--rcfile']);
+const compactShellValueCount = (value) =>
+  /^[+-][^+-]+$/.test(value)
+    ? [...value].filter((flag) => flag === 'o' || flag === 'O').length
+    : 0;
+
+const shellScript = (args) => {
+  let commandFlag = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index].value;
+    if (value === '--' || value === '-' || value === '+' || !/^[+-]/.test(value)) break;
+    if (value === '-c' || (/^-[^-]+$/.test(value) && value.includes('c'))) {
+      commandFlag = index;
+      break;
+    }
+    const valueCount = compactShellValueCount(value);
+    if (valueCount > 0 || SHELL_VALUE_FLAGS.has(value)) index += Math.max(1, valueCount);
+  }
+  if (commandFlag === -1) return '';
+
+  const compactFlag = args[commandFlag].value;
+  const compactValues = compactShellValueCount(compactFlag);
+  const firstCandidate = commandFlag + 1 + compactValues;
+  for (let index = firstCandidate; index < args.length; index += 1) {
+    const value = args[index].value;
+    if (value === '--') return args[index + 1]?.value ?? '';
+    const valueCount = compactShellValueCount(value);
+    if (valueCount > 0 || SHELL_VALUE_FLAGS.has(value)) {
+      index += Math.max(1, valueCount);
+      continue;
+    }
+    if ((value.startsWith('-') || value.startsWith('+')) && value !== '-' && value !== '+') continue;
+    return value;
+  }
+  return '';
+};
 /**
  * Flags whose VALUE is prose or a path, never a ref. Skipping them is what keeps
  * a commit message from being read as a live argument.
@@ -735,11 +772,10 @@ export const inspect = (raw, brake, depth = 0) => {
       // `bash -c "<command line>"` / `eval "<command line>"` — the payload is a
       // command line of its own. Taken whether or not it is quote-delimited: a
       // backslash-joined payload is still a payload.
-      const flagIndex = command.args.findIndex(({ value }) => value === '-c');
       const script =
-        flagIndex >= 0
-          ? command.args[flagIndex + 1]?.value
-          : command.args.map(({ value }) => value).join(' ');
+        command.name === 'eval'
+          ? command.args.map(({ value }) => value).join(' ')
+          : shellScript(command.args);
       if (script) {
         const reason = inspect(script, brake, depth + 1);
         if (reason) return reason;
@@ -774,7 +810,9 @@ function main() {
     return 0;
   }
   if (input.tool_name !== 'Bash') return 0;
-  const raw = String(input.tool_input?.command ?? '');
+  const commandValue = input.tool_input?.command;
+  if (typeof commandValue !== 'string') return 0;
+  const raw = commandValue;
   if (!raw.trim()) return 0;
 
   try {

@@ -192,6 +192,14 @@ describe('every authored git spawn passes an explicit environment', () => {
     'templates/agent-os/universal/.claude/scripts/queue/checkout.mjs',
     'test/template/hooks.test.ts',
     'test/template/queue.test.ts',
+    // Added the day these spawns were written, which is what this file's own
+    // header asks for. Both were invisible to the matcher before: the hook kept
+    // its `env` 573 characters past the call, behind a comment, and the test
+    // passed a named options object carrying no `env` token at all. A sweep that
+    // cannot see a call site is a sweep that reports it clean.
+    'test/template/codex.test.ts',
+    'templates/agent-os/universal/.claude/hooks/lib/edit-input.mjs',
+    '.claude/hooks/lib/edit-input.mjs',
   ];
 
   it.each(files)('%s', async (rel) => {

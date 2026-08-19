@@ -10,6 +10,9 @@ PLAN.md
 # composed verbatim into CLAUDE.md, so it must not be reformatted either)
 CLAUDE.md
 .claude/
+AGENTS.md
+.agents/
+.codex/
 # ...and the synced set reaches outside .claude/ in two places, both composed
 # from templates/agent-os/universal/ (itself ignored above): journal/README.md
 # since AR-64, and docs/decisions/ since AR-63. The month files next to the

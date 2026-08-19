@@ -7,10 +7,16 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { syncCodexAdapters } from './sync-codex-adapter.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const stacks = ['node-ts'].map((s) => path.join(repoRoot, 'templates', 'agent-os', 'stack', s));
+const check = process.argv.includes('--check');
+
+// Claude files are the authoring surface; refresh (or verify) their native
+// Codex projections before composing this repository's dogfood copy.
+syncCodexAdapters({ check });
 
 const substitute = (content) => content.replaceAll('__PROJECT_NAME__', 'create-agent-rig');
 
@@ -52,11 +58,17 @@ const ELEVATED_PATHS = [
   // honest gap.
   'templates/agent-os/universal/.claude/agents/',
   'templates/agent-os/universal/.claude/skills/',
+  'templates/agent-os/universal/.agents/',
+  'templates/agent-os/universal/.codex/',
+  'templates/agent-os/universal/AGENTS.md',
   // The rules themselves: the autonomy tiers and the Never list are authored
   // here, and the sweep's own reason for exempting the rulebook from "inert" is
   // "a merged PR rewriting the autonomy tiers". That text lives in this repo.
   'templates/agent-os/universal/.claude/rules/',
   'templates/agent-os/universal/CLAUDE.md',
+  '.agents/',
+  '.codex/',
+  'AGENTS.md',
   // The rationale extracted out of those rules (AR-63). Declaring it is only
   // half of what it needs: `.md` is inert to the sweep unless the path counts
   // as rulebook, so `isDecisionRecord` in `detect-missed-gate.mjs` is the other
@@ -105,8 +117,8 @@ function compose() {
         const abs = path.join(dir, entry.name);
         if (entry.isDirectory()) walk(abs);
         else if (entry.isFile()) {
-          const rel = path.relative(baseDir, abs);
-          if (rel === 'CLAUDE.md') continue; // handled separately below
+          const rel = path.relative(baseDir, abs).replaceAll('\\', '/');
+          if (rel === 'CLAUDE.md' || rel === 'AGENTS.md') continue; // handled separately below
           if (rel === 'layers.json') continue; // init-manifest, not project content
           if (rel === 'PLAN.md') continue; // this repo has its own owner-authored plan
           out.set(rel, substitute(readFileSync(abs, 'utf8')));
@@ -120,12 +132,12 @@ function compose() {
   for (const stack of stacks) addTree(stack);
 
   const addendum = readFileSync(path.join(repoRoot, '.claude', 'CLAUDE.addendum.md'), 'utf8');
-  out.set(
-    'CLAUDE.md',
+  const repositoryMap =
     withElevatedPaths(substitute(readFileSync(path.join(universal, 'CLAUDE.md'), 'utf8'))) +
-      '\n---\n\n' +
-      addendum,
-  );
+    '\n---\n\n' +
+    addendum;
+  out.set('CLAUDE.md', repositoryMap);
+  out.set('AGENTS.md', repositoryMap);
 
   // Repo-specific override: this repo's `pnpm test` is the full e2e (minutes).
   // The DoD stop gate needs the cheap, deterministic loop instead.
@@ -162,7 +174,6 @@ function compose() {
   return out;
 }
 
-const check = process.argv.includes('--check');
 const composed = compose();
 const drifted = [];
 

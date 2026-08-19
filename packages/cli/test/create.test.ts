@@ -50,17 +50,22 @@ describe('createProject', () => {
     await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).resolves.toBeTruthy();
   });
 
-  it('ships a .gitignore in every target (npm publish strips dotfile originals)', async () => {
-    for (const target of ['aws-serverless', 'node-service']) {
-      const { projectDir } = await createProject(`gi-${target}`, { cwd: work, target });
+  it.each(['aws-serverless', 'node-service'])(
+    'ships a .gitignore in the %s target (npm publish strips dotfile originals)',
+    async (target) => {
+      const { projectDir } = await createProject(`gi-${target}`, {
+        cwd: work,
+        target,
+        git: false,
+      });
       const gitignore = await readFile(path.join(projectDir, '.gitignore'), 'utf8');
       expect(gitignore).toContain('node_modules');
       // the un-dotted source name must not leak into the generated project
       await expect(readFile(path.join(projectDir, 'gitignore'), 'utf8')).rejects.toThrow();
       // npm packaging metadata must not leak either
       await expect(readFile(path.join(projectDir, '.npmignore'), 'utf8')).rejects.toThrow();
-    }
-  });
+    },
+  );
 
   it('refuses an invalid project name', async () => {
     await expect(createProject('My App!', { cwd: work })).rejects.toThrow(CreateError);
@@ -100,6 +105,15 @@ describe('createProject', () => {
     await expect(
       readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
     ).rejects.toThrow();
+    await expect(
+      readFile(path.join(projectDir, '.codex', 'agents', 'cdk-diff-reviewer.toml'), 'utf8'),
+    ).rejects.toThrow();
+    await expect(
+      readFile(
+        path.join(projectDir, '.agents', 'skills', 'post-deploy-verify', 'SKILL.md'),
+        'utf8',
+      ),
+    ).rejects.toThrow();
   });
 
   it('refuses an unknown target, naming the known ones', async () => {
@@ -115,11 +129,20 @@ describe('createProject', () => {
     const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
     expect(claudeMd).toContain('my-app');
     expect(claudeMd).not.toContain('__PROJECT_NAME__');
+    expect(await readFile(path.join(projectDir, 'AGENTS.md'), 'utf8')).toBe(claudeMd);
 
     const settings = JSON.parse(
       await readFile(path.join(projectDir, '.claude', 'settings.json'), 'utf8'),
     );
     expect(settings.hooks?.PreToolUse?.length).toBeGreaterThan(0);
+    const codexHooks = JSON.parse(
+      await readFile(path.join(projectDir, '.codex', 'hooks.json'), 'utf8'),
+    );
+    expect(
+      codexHooks.hooks?.PreToolUse?.some((group: { matcher?: string }) =>
+        group.matcher?.includes('apply_patch'),
+      ),
+    ).toBe(true);
 
     // Composition: universal rules + the target's stack rules (PLAN.md phase 4).
     for (const rule of [
@@ -150,10 +173,16 @@ describe('createProject', () => {
       await expect(
         readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
+      await expect(
+        readFile(path.join(projectDir, '.agents', 'skills', skill, 'SKILL.md'), 'utf8'),
+      ).resolves.toBeTruthy();
     }
     // …and the stack-layer CDK diff gate
     await expect(
       readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
+    ).resolves.toBeTruthy();
+    await expect(
+      readFile(path.join(projectDir, '.codex', 'agents', 'cdk-diff-reviewer.toml'), 'utf8'),
     ).resolves.toBeTruthy();
   });
 

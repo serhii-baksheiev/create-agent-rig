@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { copyTree, listTree } from '../lib/copy-tree.js';
+import { copyTree, listTree, mapConcurrent } from '../lib/copy-tree.js';
 import { ALLOWED_OVERWRITES, detectCollisions } from '../lib/composition.js';
 import { agentOsLayerDirs } from '../lib/install-set.js';
 import { sha256, writeManifest } from '../lib/manifest.js';
@@ -124,8 +124,13 @@ async function recordInstall(
 ): Promise<void> {
   const files: Record<string, string> = {};
   for (const layer of agentOsLayers) {
-    for (const rel of await listTree(layer.dir, transforms)) {
-      files[rel] = sha256(await readFile(path.join(projectDir, ...rel.split('/')), 'utf8'));
+    const paths = await listTree(layer.dir, transforms);
+    const hashes = await mapConcurrent(paths, 16, async (rel) => ({
+      rel,
+      hash: sha256(await readFile(path.join(projectDir, ...rel.split('/')), 'utf8')),
+    }));
+    for (const { rel, hash } of hashes) {
+      files[rel] = hash;
     }
   }
   await writeManifest(projectDir, {

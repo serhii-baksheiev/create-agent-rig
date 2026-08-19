@@ -141,9 +141,15 @@ export const isDecisionRecord = (path) => /(^|\/)docs\/decisions\/[^/]/.test(pat
  */
 const isRulebook = (path) =>
   path === 'CLAUDE.md' ||
+  path === 'AGENTS.md' ||
   path.endsWith('/CLAUDE.md') ||
+  path.endsWith('/AGENTS.md') ||
   path.startsWith('.claude/') ||
   path.includes('/.claude/') ||
+  path.startsWith('.agents/') ||
+  path.includes('/.agents/') ||
+  path.startsWith('.codex/') ||
+  path.includes('/.codex/') ||
   // The rationale extracted out of the rulebook is still rulebook. It left
   // `.claude/` for `docs/decisions/` so that sessions stop paying to load it —
   // not so that it stops being reviewed like the rule it explains.

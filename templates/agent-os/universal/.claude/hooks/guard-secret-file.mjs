@@ -32,9 +32,9 @@
 //     at a time". This is the same limit every guard in this directory has,
 //     stated in full in `.claude/rules/invariants.md`, "What the enforcement
 //     actually is — stated exactly".
-//   - It sees only what the AGENT writes, and only through two tools — see
-//     guard-secret-file.test.ts › "allows a %s call carrying the same credential
-//     payload — the matcher is Write|Edit". A human editing the file, or a
+//   - It sees only what the AGENT writes. The `toolName` branch in `main` below
+//     names the complete surface: `Write`, `Edit`, and `apply_patch`; every other
+//     tool returns before inspection. A human editing the file, or a
 //     `git commit` of something already on disk, never reaches a PreToolUse hook
 //     at all, and no test here can show that: it is a property of the harness,
 //     not of this file.
@@ -53,10 +53,19 @@
 //     this one: the case is pinned one layer down, on the module, by
 //     secrets-lib.test.ts › "has a limit even when the caller names none". The CI sweep lifts the
 //     cap; this hook cannot, and that asymmetry is the point.
-//   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
-//     not JSON at all" and its neighbours. An unparseable payload, a missing
-//     field, an internal throw — all allow the edit. A crashed guard that blocks everything gets deleted
-//     within the hour. What catches the rest is whatever this project has put
+//   - It FAILS OPEN on what it cannot understand — see guard-secret-file.test.ts
+//     › "allows a payload that is not JSON at all" and its neighbours. An
+//     unparseable payload, a missing field, or an internal throw all allow the
+//     edit; a crashed guard that blocks everything gets deleted within the hour.
+//
+//     ⚠ **An `apply_patch` command that is PRESENT and is not a shape this guard
+//     reads is the other case, and it now REFUSES** — see codex.test.ts ›
+//     "refuses, rather than failing open, when apply_patch command is supplied
+//     as %s". The line between them is whether the guard can tell: an absent
+//     field is a payload it does not understand, a container it detects and
+//     cannot read is a decision it can report. That reversed a contract this
+//     file previously pinned the other way, so it is stated rather than
+//     assumed. What catches the rest is whatever this project has put
 //     behind it: review always, a commit-time check once one exists.
 //
 // Failing open is also why every line here does provably bounded work: the scan
@@ -68,6 +77,7 @@
 import { readFileSync } from 'node:fs';
 
 import { findSecretValues, isCredentialPath } from '../scripts/lib/secrets.mjs';
+import { editFragments } from './lib/edit-input.mjs';
 
 /** Where a refusal points the agent, so the block is actionable rather than a wall. */
 const WHERE_CREDENTIALS_BELONG =
@@ -83,7 +93,35 @@ function main() {
   }
 
   const toolName = input?.tool_name;
-  if (toolName !== 'Write' && toolName !== 'Edit') return 0;
+  if (toolName !== 'Write' && toolName !== 'Edit' && toolName !== 'apply_patch') return 0;
+
+  if (toolName === 'apply_patch') {
+    let refused = false;
+    for (const { filePath, fragment, inspectionRefusal, remedy, appliesToAll } of editFragments(input)) {
+      if (inspectionRefusal) {
+        refused = true;
+        process.stderr.write(
+          `BLOCKED — cannot safely inspect this edit: ${inspectionRefusal}\n` +
+            // The remedy has to match the refusal: splitting cannot change a
+            // container shape, and a fixed line sent the agent into a retry loop
+            // on the one path it could not retry out of.
+            `${remedy ?? 'Split it into a smaller patch and retry.'}\n`,
+        );
+        continue;
+      }
+      if (isCredentialPath(filePath)) {
+        refused = true;
+        process.stderr.write(`BLOCKED — "${filePath}" is a credential file, and this repository never carries one.\n${WHERE_CREDENTIALS_BELONG}\n`);
+        continue;
+      }
+      const findings = findSecretValues(fragment);
+      if (findings.length > 0 || appliesToAll) {
+        refused = true;
+        if (findings.length > 0) process.stderr.write(`BLOCKED — this edit writes a credential value into "${filePath}".\n${WHERE_CREDENTIALS_BELONG}\n`);
+      }
+    }
+    return refused ? 2 : 0;
+  }
 
   const toolInput = input?.tool_input ?? {};
   const filePath = String(toolInput.file_path ?? '').replaceAll('\\', '/');

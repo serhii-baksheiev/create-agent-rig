@@ -16,6 +16,7 @@ let repo: string;
 
 const WORKFLOW = '.claude/rules/workflow.md';
 const SETTINGS = '.claude/settings.json';
+const CODEX_HOOKS = '.codex/hooks.json';
 const STOP_FLAG = '.claude/scripts/stop-flag.mjs';
 
 const abs = (rel: string): string => path.join(repo, ...rel.split('/'));
@@ -177,6 +178,18 @@ describe('planUpgrade — what it would do, before it does anything', () => {
 
     await applyUpgrade(repo, plan);
     expect(await read(SETTINGS)).toBe(mine);
+  });
+
+  it('hands over Codex hook wiring the user edited, and writes none of it', async () => {
+    await installRig();
+    const mine = '{\n  "hooks": {"PreToolUse": []}\n}\n';
+    await write(CODEX_HOOKS, mine);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, CODEX_HOOKS)).toBe('wiring');
+
+    await applyUpgrade(repo, plan);
+    expect(await read(CODEX_HOOKS)).toBe(mine);
   });
 
   it('does not tell the user their own settings.json was edited since it was installed', async () => {

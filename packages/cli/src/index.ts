@@ -13,7 +13,7 @@ import { packageVersion } from './lib/version.js';
 
 const USAGE = `Usage: create-agent-rig <dir> [options]
 
-Scaffolds a new project into <dir>: agent operating system (.claude/, CLAUDE.md)
+Scaffolds a new project into <dir>: a Claude Code + Codex agent operating system
 plus a runnable code skeleton. Refuses to write into a non-empty directory.
 
 Options
@@ -27,7 +27,8 @@ Options
 
 Also: create-agent-rig init [--dry-run]
   Install the process layer (rules, gates, stop rules — no architecture
-  assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md.
+  assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md
+  or AGENTS.md.
   --force is deprecated: it refuses and points at upgrade, which refreshes a
   rig file by file. It is removed in 0.6.
 
@@ -91,13 +92,15 @@ async function runInit(rawArgs: string[]): Promise<number> {
       '.\n',
   );
 
-  // The one kept file that silently disables everything else: without this
-  // wiring the hooks sit on disk and are never called, while the rules claim
-  // they are enforced. Say so loudly, and hand over the exact entries.
-  if (result.skipped.includes('.claude/settings.json')) {
-    const wiring = (await initFileContents(cwd)).get('.claude/settings.json') ?? '';
+  // A kept harness config silently disables that harness's enforcement: the
+  // hooks sit on disk and are never called, while the rules claim they are.
+  // Say so loudly, and hand over the exact entries for each affected harness.
+  const generated = await initFileContents(cwd);
+  for (const wiringPath of ['.claude/settings.json', '.codex/hooks.json']) {
+    if (!result.skipped.includes(wiringPath)) continue;
+    const wiring = generated.get(wiringPath) ?? '';
     process.stdout.write(
-      `\n!  .claude/settings.json already exists — it was kept, so the rig's hooks are NOT wired.\n` +
+      `\n!  ${wiringPath} already exists — it was kept, so the rig's hooks are NOT wired there.\n` +
         `   Until you merge these entries into it, nothing enforces the rules:\n\n` +
         wiring.replace(/^/gm, '   ') +
         '\n',
@@ -167,15 +170,17 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // The one thing this command will not do for you — printed with the plan,
   // because the dry run is where a reader decides whether there is work here,
   // and a report that mentions entries it never shows is not a plan.
-  if (plan.wiring !== null) {
-    process.stdout.write(
-      `\n!  .claude/settings.json was handed over rather than replaced — the reason is\n` +
-        `   on its line above. It is where your own hooks live, so it is never\n` +
-        `   overwritten on anything but proof the rig wrote those exact bytes.\n` +
-        `   This version wires them like this; merge in what is missing:\n\n` +
-        plan.wiring.replace(/^/gm, '   ') +
-        '\n',
-    );
+  if (plan.wiringByPath.size > 0) {
+    for (const [wiringPath, wiring] of plan.wiringByPath) {
+      process.stdout.write(
+        `\n!  ${wiringPath} was handed over rather than replaced — the reason is\n` +
+          `   on its line above. It is hook wiring, so it is never overwritten\n` +
+          `   without proof the rig wrote those exact bytes.\n` +
+          `   This version wires it like this; merge in what is missing:\n\n` +
+          wiring.replace(/^/gm, '   ') +
+          '\n',
+      );
+    }
   }
 
   if (values['dry-run'] === true) {

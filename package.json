@@ -10,6 +10,7 @@
     "template",
     "agent",
     "claude-code",
+    "codex",
     "agent-os",
     "aws-serverless",
     "node-service"

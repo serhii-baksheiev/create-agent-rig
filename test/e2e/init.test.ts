@@ -32,6 +32,19 @@ async function runInit(args: string[]): Promise<{ code: number; stdout: string; 
   }
 }
 
+async function hookFiles(root: string, dir = root): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map((entry) => {
+      const full = path.join(dir, entry.name);
+      return entry.isDirectory()
+        ? hookFiles(root, full)
+        : Promise.resolve([path.relative(root, full)]);
+    }),
+  );
+  return files.flat().filter((rel) => rel.endsWith('.mjs'));
+}
+
 describe('create-agent-rig init (into an existing repo)', () => {
   it('installs the process layer and leaves architecture rules out', async () => {
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -83,16 +96,17 @@ describe('create-agent-rig init (into an existing repo)', () => {
     ) as Record<string, string[]>;
     const expectedHooks = (manifest['process'] ?? [])
       .filter((rel) => rel.startsWith('.claude/hooks/'))
-      .map((rel) => path.basename(rel));
+      .map((rel) => rel.slice('.claude/hooks/'.length));
     // Non-vacuity: a renamed key or a changed prefix would otherwise make the
     // comparison below pass on two empty arrays, forever.
     expect(expectedHooks.length, 'no process hooks read from layers.json').toBeGreaterThan(3);
     expect(expectedHooks).toContain('block-no-verify.mjs');
 
-    const hooks = await readdir(path.join(repo, '.claude', 'hooks'));
+    const hooksRoot = path.join(repo, '.claude', 'hooks');
+    const hooks = await hookFiles(hooksRoot);
     expect(hooks.sort()).toEqual(expectedHooks.sort());
     for (const hook of hooks) {
-      await exec(process.execPath, ['--check', path.join(repo, '.claude', 'hooks', hook)]);
+      await exec(process.execPath, ['--check', path.join(hooksRoot, hook)]);
     }
 
     // the kill switch is a filename: an unsubstituted token means the brake
@@ -110,6 +124,16 @@ describe('create-agent-rig init (into an existing repo)', () => {
     expect(result.stdout).toMatch(/settings\.json/);
     expect(result.stdout).toMatch(/not wired|merge/i);
     expect(await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8')).toBe('{}');
+  });
+
+  it('tells the operator when it kept existing Codex hook wiring', async () => {
+    await mkdir(path.join(repo, '.codex'), { recursive: true });
+    await writeFile(path.join(repo, '.codex', 'hooks.json'), '{}');
+    const result = await runInit([]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/\.codex[/\\]hooks\.json/);
+    expect(result.stdout).toMatch(/not wired|merge/i);
+    expect(await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{}');
   });
 
   it('refuses to clobber an existing CLAUDE.md, as a message not a trace', async () => {
