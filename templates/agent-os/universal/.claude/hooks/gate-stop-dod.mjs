@@ -9,19 +9,148 @@
 //   - stop_hook_active in the payload means we already blocked this stop once
 //     — never block again, or an agent that cannot go green spins forever;
 //   - a clean git tree stops instantly: nothing changed, nothing to gate;
-//   - fail open on any hook error — a crashed gate must not make the session
-//     unquittable.
-import { execSync } from 'node:child_process';
+//   - fail open on any fault of the hook's OWN — a crashed gate must not make
+//     the session unquittable. A check that ran and was killed is NOT one of
+//     those; the 🔴 block below is the rule that separates the two.
+//
+// 🔴 The budget, and the one place this gate fails CLOSED. The checks are a
+// real test suite, and it can outrun the wiring `timeout` in
+// `.claude/settings.json`. So the hook carries a budget of its own and spends
+// it BEFORE the wiring's runs out.
+//
+// The rule the whole file follows, stated once because two earlier readings of
+// it disagreed:
+//
+//   a check that did not produce a VERDICT blocks;
+//   a gate that could not START stays open.
+//
+// `spawnSync` reports a timeout and a buffer overrun the same way — an `error`
+// with `status: null` — and in both the check's result is unknown. Unmeasured
+// is not a pass. The hook's OWN faults (an unreadable payload, a config it
+// cannot use, a shell it cannot spawn) keep failing open and announcing
+// themselves, so a crashed gate still cannot make the session unquittable.
+//
+// The budget is ONE allowance for the whole suite, not a fresh one per check:
+// a per-step budget is how three checks quietly cost three times the wall
+// clock the wiring allows (`.claude/rules/invariants.md` — "an explicit total
+// budget rather than a per-step one").
+//   see hooks.test.ts › "gates the stop when a check outruns the budget — unmeasured is not a pass"
+//   see hooks.test.ts › "spends one budget across the whole suite, not a fresh one per check"
+//   see hooks.test.ts › "gives the stop gate a harness timeout its own budget finishes inside"
+//
+// ⚠ This rests on ONE assumption about the harness that nothing in this
+// repository can prove or falsify: that a hook outrunning its timeout is
+// killed, and that a killed Stop hook does not block the stop. If it is false
+// the budget is not merely inert — it becomes the only thing that would stop a
+// suite still running at the wiring timeout. It is stated rather than asserted
+// because the whole design follows from it.
+//
+// Limits, each with the test that pins it:
+//   - a check whose output outgrows the buffer is UNMEASURED, and blocks like
+//     any other unmeasured check —
+//     see hooks.test.ts › "gates the stop when a check drowns its own buffer — a pass nobody watched is not a pass"
+//   - below that buffer, output volume is not a verdict: a chatty check that
+//     passes, passes —
+//     see hooks.test.ts › "does not read a chatty passing check as a failure (the ENOBUFS false gate)"
+//   - the RIG_DOD_BUDGET_MS override may only LOWER the budget, and an
+//     override this hook did not honour is announced rather than ignored —
+//     see hooks.test.ts › "clamps a budget override that would outlive the harness, and names the budget it used"
+//   - a fail-open is announced on stderr, because a silent exit 0 and a clean
+//     pass are the same observation from outside —
+//     see hooks.test.ts › "announces a fail-open instead of returning a silent clean pass"
+//   - an ABSENT config is not a failure and says nothing; only a config that
+//     exists and cannot be used announces —
+//     see hooks.test.ts › "stays silent when there is no config at all — nothing to gate is the design, not a swallowed error"
+import { execSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 import { withoutGitLocation } from '../scripts/git-env.mjs';
+
+// The default total budget, and the allowance for everything that happens
+// OUTSIDE it.
+//
+// The relation the gate actually needs is not "the budget is below the wiring
+// `timeout`" — it is `budget + preamble <= timeout`. The budget's clock starts
+// after node has booted, the payload has been read, `git status` has answered
+// and the config has been parsed, so a budget merely below the wiring timeout
+// still lets the whole hook outrun it. That was a real reader: 890_000 ms
+// against a 900 s wiring timeout obeys "strictly below" and restores the silent
+// kill this hook exists to remove.
+//
+// So the preamble gets a number and a leash: `git status` below is given this
+// as its own timeout, which turns the allowance from a guess into a bound.
+// Both numbers are read from this file and compared against the wiring —
+//   see hooks.test.ts › "gives the stop gate a harness timeout its own budget finishes inside"
+//   see hooks.test.ts › "bounds its own preamble: the git status call carries a timeout derived from the declared margin"
+const DEFAULT_BUDGET_MS = 600_000;
+const PREAMBLE_MARGIN_MS = 60_000;
+
+/** The gate stays open, and says so — a silent 0 is indistinguishable from clean. */
+function failOpen(reason) {
+  process.stderr.write(`[hook fail-open] ${reason}\n`);
+  return 0;
+}
+
+/**
+ * Error codes that mean the child never ran, so there is no verdict to lose.
+ * Everything else that surfaces as `result.error` — a timeout, a buffer
+ * overrun — killed a check that WAS running, and that is the unmeasured case.
+ */
+// 🔴 `E2BIG` looks like it belongs here by the letter of the rule — the exec
+// never started — and adding it would reopen the round-1 bypass: one
+// over-long entry would then fail the WHOLE suite open. It blocks instead, and
+// that is deliberate.
+const SPAWN_NEVER_STARTED = new Set(['ENOENT', 'EACCES', 'EPERM', 'EMFILE', 'ENFILE', 'ENOMEM']);
+
+/**
+ * The total budget for the whole suite, and a note when the override was not
+ * taken at face value.
+ *
+ * 🔴 The override may only LOWER the budget. Raising it past the wiring's
+ * `timeout` puts back the exact defect this hook exists to remove — the
+ * harness kills the gate before it can report, and that kill is silent.
+ * Raising the ceiling is a two-file decision (this constant and the wiring),
+ * deliberately not something one environment variable can do.
+ *
+ * An override this hook did not honour is announced, never silently dropped:
+ * an operator who set a budget and got a different one has to be able to see
+ * it. `Number.isSafeInteger` is the test rather than `isFinite`, because
+ * `spawnSync` throws on a fractional `timeout` — and a throw here would land in
+ * the backstop and open the gate completely.
+ *   see hooks.test.ts › "runs the gate on the default budget when the override is unusable, instead of not running it"
+ */
+function budgetMs(env) {
+  const raw = env.RIG_DOD_BUDGET_MS;
+  if (raw === undefined || raw === '') return { ms: DEFAULT_BUDGET_MS, notice: null };
+
+  const declared = Number(raw);
+  if (!Number.isSafeInteger(declared) || declared <= 0) {
+    return {
+      ms: DEFAULT_BUDGET_MS,
+      notice:
+        `RIG_DOD_BUDGET_MS=${raw} is not a whole number of milliseconds above zero — ` +
+        `using the default ${DEFAULT_BUDGET_MS} ms instead.`,
+    };
+  }
+  if (declared > DEFAULT_BUDGET_MS) {
+    return {
+      ms: DEFAULT_BUDGET_MS,
+      notice:
+        `RIG_DOD_BUDGET_MS=${raw} is above this gate's ceiling and was clamped to ` +
+        `${DEFAULT_BUDGET_MS} ms — the budget must expire before the Stop hook's ` +
+        `\`timeout\` in .claude/settings.json, or the gate is killed before it can report. ` +
+        `Raise both, in their own files, to raise it at all.`,
+    };
+  }
+  return { ms: declared, notice: null };
+}
 
 function main() {
   let input;
   try {
     input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0;
+  } catch (error) {
+    return failOpen(`the Stop payload could not be read: ${error.message}`);
   }
   if (input.hook_event_name !== 'Stop' && input.hook_event_name !== 'SubagentStop') return 0;
   if (input.stop_hook_active) return 0;
@@ -48,10 +177,16 @@ function main() {
     // 🔴 Limit: only THIS command is sanitised. The Definition-of-Done checks
     // below run with the environment as given, because they are the project's
     // own commands and their environment is the project's business.
+    // `timeout` below is the preamble's own leash: this is the one call that
+    // runs before the budget's clock starts. A repository slow enough to exceed
+    // it throws into the catch and the checks run anyway — the safe direction,
+    // and the reason the bound can be generous. The options object stays terse
+    // on purpose; a sibling test matches it by a bounded window.
     const status = execSync('git status --porcelain', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       env: withoutGitLocation(),
+      timeout: PREAMBLE_MARGIN_MS,
     });
     if (status.trim() === '') return 0;
   } catch {
@@ -61,16 +196,103 @@ function main() {
   let checks;
   try {
     checks = JSON.parse(readFileSync(new URL('./dod-checks.json', import.meta.url), 'utf8'));
-  } catch {
-    return 0;
+  } catch (error) {
+    // An absent config is the documented "nothing to gate" case, not an error
+    // to announce; anything else is a config that exists and cannot be used.
+    if (error.code === 'ENOENT') return 0;
+    return failOpen(`dod-checks.json could not be read: ${error.message}`);
   }
-  if (!Array.isArray(checks) || checks.length === 0) return 0;
+  if (!Array.isArray(checks)) return failOpen('dod-checks.json is not an array of commands');
+  // Judged per ENTRY, and the two ways to get this wrong are mirror images.
+  //
+  // Refusing the whole config on one bad entry hides a FAILING check standing
+  // next to the bad one: the refusal returns 0 and the neighbour never runs.
+  // Skipping the bad entry and returning 0 when nothing usable is left hides
+  // the bad entry itself: a declared check produced no verdict and the session
+  // still ended green. Both were shipped here, one after the other, and both
+  // are closed the same way — every usable entry runs, and a skipped entry is
+  // a check with no verdict, which blocks.
+  //   see hooks.test.ts › "never lets an unusable config entry hide a failing check behind it (an empty string)"
+  //   see hooks.test.ts › "refuses the stop for an empty config entry it skipped, even though every check it could run passed"
+  //
+  // The predicate is exactly the three shapes `spawnSync` throws on, and no
+  // wider: the shell answers every other unrunnable string with 127, which is
+  // a verdict. Filtering past these three converts a real block into a skip.
+  //   see hooks.test.ts › "refuses the stop for a config it could read but cannot use, and names the file to fix"
+  const runnable = (command) =>
+    typeof command === 'string' && command !== '' && !command.includes('\0');
+  const usable = checks.filter(runnable);
+  const skipped = checks.map((command, index) => index).filter((index) => !runnable(checks[index]));
 
-  for (const command of checks) {
-    try {
-      execSync(command, { stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (error) {
-      const tail = String(error.stdout ?? '')
+  // Nothing DECLARED is the documented "nothing to gate" case. Everything
+  // declared being unusable is not the same state, and reading them as one is
+  // what let a skipped check pass for a passing suite.
+  if (checks.length === 0) return 0;
+
+  // Said UP FRONT, because the block for it comes last: a check that failed is
+  // the more useful first message, and without this line a run that stops on a
+  // failing check would never mention the entry it could not run at all.
+  //
+  // Deliberately NOT the `[hook fail-open]` marker: that marker means the gate
+  // stayed open, and this path ends in a block. One vocabulary, one meaning.
+  if (skipped.length > 0) {
+    process.stderr.write(
+      `gate-stop-dod: dod-checks.json entr${skipped.length > 1 ? 'ies' : 'y'} at index ` +
+        `${skipped.join(', ')} cannot be run as a command and will not be measured.\n`,
+    );
+  }
+
+  const budget = budgetMs(process.env);
+  if (budget.notice) process.stderr.write(`gate-stop-dod: ${budget.notice}\n`);
+  const deadline = Date.now() + budget.ms;
+
+  for (const command of usable) {
+    // A 1 ms floor rather than a branch for "the budget is already gone": the
+    // check then times out through the ordinary path, which names the command
+    // that did not fit instead of blaming it for spending what an earlier one
+    // spent. One path, and no branch that only a race can reach.
+    const result = spawnSync(command, {
+      shell: true,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: Math.max(1, deadline - Date.now()),
+      // Output volume is not a verdict — below this bound. Past it the child is
+      // killed and its result is unknown, which the error branch treats as
+      // unmeasured rather than as a failure or a pass. The old 1 MB default
+      // made a chatty but PASSING suite look like a failing check.
+      maxBuffer: 64 * 1024 * 1024,
+    });
+
+    if (result.error) {
+      // 🔴 The rule this file follows, at the point where it is decided.
+      //
+      // A spawn that never started is the gate's own problem — no shell, no
+      // file descriptors — and there is no verdict to lose, so it stays open
+      // and says so.
+      if (SPAWN_NEVER_STARTED.has(result.error.code)) {
+        return failOpen(`the check \`${command}\` could not be started: ${result.error.message}`);
+      }
+      // Everything else killed a check that WAS running — a timeout, a buffer
+      // overrun, anything unrecognised. `status` is null, so the verdict is
+      // unknown, and an unmeasured Definition of Done is not a passed one.
+      const timedOut = result.error.code === 'ETIMEDOUT';
+      process.stderr.write(
+        `STOP GATED — \`${command}\` produced no verdict: ${result.error.message}\n` +
+          (timedOut
+            ? `It did not finish inside the ${budget.ms} ms budget for the whole suite ` +
+              `(RIG_DOD_BUDGET_MS lowers it; raising it means raising this hook's default ` +
+              `and the Stop hook's \`timeout\` in .claude/settings.json together, in that ` +
+              `order — the budget must stay the smaller of the two).\n`
+            : `It was killed before it could report — output past the buffer is the usual ` +
+              `cause. Run it yourself to see the result.\n`) +
+          `The check's outcome is UNMEASURED, which is not a pass. ` +
+          `This gate never fires twice in a row.\n`,
+      );
+      return 2;
+    }
+
+    if (result.status !== 0) {
+      const tail = String(result.stdout ?? '')
         .split('\n')
         .slice(-15)
         .join('\n');
@@ -84,7 +306,31 @@ function main() {
       return 2;
     }
   }
+
+  // Reached only when every check that COULD run passed. A skipped entry is a
+  // declared check that produced no verdict, and unmeasured is not a pass —
+  // the same rule the killed-check branch above answers to. It is reported
+  // last because a check that actually failed is the more useful message.
+  if (skipped.length > 0) {
+    const plural = skipped.length > 1;
+    process.stderr.write(
+      `STOP GATED — dod-checks.json entr${plural ? 'ies' : 'y'} at index ` +
+        `${skipped.join(', ')} cannot be run as a command, so ${plural ? 'those checks' : 'that check'} ` +
+        `produced no verdict. Every other check passed; these were never measured, ` +
+        `and unmeasured is not a pass. Fix the entr${plural ? 'ies' : 'y'} — an empty string, ` +
+        `a NUL byte or a non-string is not a command. This gate never fires twice in a row.\n`,
+    );
+    return 2;
+  }
   return 0;
 }
 
-process.exit(main());
+let code;
+try {
+  code = main();
+} catch (error) {
+  // The backstop. A gate that throws must not make the session unquittable —
+  // but it must not look clean either.
+  code = failOpen(`the gate itself threw: ${error.message}`);
+}
+process.exit(code);
