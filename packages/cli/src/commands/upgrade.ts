@@ -271,8 +271,8 @@ export async function planUpgrade(
   // The one case where the raw name cannot be kept is a directory the manifest
   // reader would refuse — `My App` produced `{"name":"My App"}`, which
   // `parseManifest` voids, so the manifest this command exists to write was
-  // written and immediately unreadable and every later run reported "no
-  // manifest here (a pre-0.4.0 rig)". The condition is that reader's own
+  // written and immediately unreadable, and every later run fell back to
+  // matching against released versions. The condition is that reader's own
   // exported predicate, not a second copy of its rule.
   //
   // 🔴 All three branches were bought by a defect, and two of those defects
