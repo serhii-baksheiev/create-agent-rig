@@ -4,8 +4,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { describe, expect, it } from 'vitest';
 
+// 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
+// `git init` under pre-commit re-initialises THIS repository rather than the
+// scratch directory — measured: it flipped the checkout to `core.bare=true`,
+// silently, while the suite stayed green. `git-env.mjs` is the one
+// implementation and its own header says a new git spawn belongs on the sweep's
+// list the day it is written; these two are that.
+const sanitisedGit = { env: withoutGitLocation() };
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const agentOs = path.join(repoRoot, 'templates', 'agent-os');
@@ -714,7 +722,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     // reason to pass. A git hook exports a VALID one — that is the case that
     // resolves the wrong root successfully.
     const foreign = await mkdtemp(path.join(tmpdir(), 'foreign-repo-'));
-    await exec('git', ['init', '-q', foreign]);
+    await exec('git', ['init', '-q', foreign], sanitisedGit);
     const nested = await mkdtemp(
       path.join(
         repoRoot,
@@ -831,7 +839,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       await mkdir(core, { recursive: true });
-      await exec('git', ['init', '--quiet'], { cwd: scratch });
+      await exec('git', ['init', '--quiet'], { cwd: scratch, ...sanitisedGit });
       try {
         await exec('mkfifo', [source]);
       } catch (error) {
