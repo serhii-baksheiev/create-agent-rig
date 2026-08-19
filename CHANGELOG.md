@@ -11,6 +11,28 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## Unreleased
+
+### Fixed
+
+- **The upgrade plan's header told you your rig was old when it could not know
+  that.** Every rig with no readable manifest was greeted with "no manifest here
+  (a pre-0.4.0 rig)", and deleting the manifest of a rig installed at 0.4.0 or
+  0.5.0 is exactly what forces that path — so the line asserted an age it had no
+  evidence for, to the one population 0.5.0's own notes called unaffected. It now
+  names both readings and asserts neither.
+- **`--no-color` is accepted by `upgrade` and `init`**, not only by the
+  scaffolder. It was advertised under Options without being scoped to one
+  command, and the other two exited 1 with "Unknown option". Neither colours its
+  output, so nothing about the output changes; the flag simply stops being a
+  refusal. `NO_COLOR` worked all along.
+- **The plan's summary now accounts for every line it printed.** It counted
+  files to replace, new files, yours-kept and already-current, while the plan
+  above it also prints a line for a hook wiring hand-over and for a file you
+  removed — so a reader counted five lines and was told four. Both are counted
+  now, and they appear only when they occurred: a plan without them reads exactly
+  as it did.
+
 ## 0.5.0
 
 **Codex is a harness of this rig now, not a thing you adapt it to.** A generated
