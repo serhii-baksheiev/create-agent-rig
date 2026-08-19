@@ -46,10 +46,9 @@ them is one installed at **0.4.0** whose manifest is unreadable.
 **And the scale of it grows with this release, which matters more than those two
 files.** Because 0.5.0 is untagged, nothing it ships enters the table either — so
 a rig installed at 0.5.0 and later upgraded **without a readable manifest** has
-66 of its 79 agent-os paths unrecognised at this release, 38 of them paths the
-table has no row for at all. Every one is kept and reported as yours, so no edit
-is lost and no file is silently skipped, but almost nothing would be refreshed
-either. **Commit `.claude/.rig-manifest.json`** — that single habit makes the
+most of its agent-os files unrecognised, and many of them are paths the table has
+no row for at all. Every one is kept and reported as yours, so no edit is lost
+and no file is silently skipped, but almost nothing would be refreshed either. **Commit `.claude/.rig-manifest.json`** — that single habit makes the
 table irrelevant to you, and it is what `README.md` puts in bold.
 
 ### Added
