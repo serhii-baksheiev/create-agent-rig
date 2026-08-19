@@ -41,7 +41,13 @@ async function runInit(rawArgs: string[]): Promise<number> {
   try {
     ({ values } = parseArgs({
       args: rawArgs,
-      options: { 'dry-run': { type: 'boolean' }, force: { type: 'boolean' } },
+      // `--no-color` for the same reason it is accepted on `upgrade`: USAGE
+      // offers it without scoping it to one command.
+      options: {
+        'dry-run': { type: 'boolean' },
+        force: { type: 'boolean' },
+        'no-color': { type: 'boolean' },
+      },
       allowPositionals: false,
     }));
   } catch (error) {
@@ -123,7 +129,7 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   const lines: string[] = [
     `agent-rig upgrade — ${plan.kind} rig in ${repoDir}`,
     plan.bootstrapped
-      ? `  no manifest here (a pre-0.4.0 rig) — matching files against released versions`
+      ? `  no manifest here (deleted, or a rig installed before 0.4.0) — matching files against released versions`
       : `  installed by ${plan.fromVersion}`,
     `  upgrading to ${plan.toVersion}`,
     '',
@@ -141,11 +147,23 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     }
   }
 
-  const unchanged = of('unchanged').length;
+  // Every action printed above is accounted for here. `wiring` and `deleted`
+  // each print their own line and were in none of the buckets, so a reader
+  // counted lines and was told a smaller number. They appear only when they
+  // occurred: a plan without them reads exactly as it always has.
+  const occasional = [
+    ['wiring', (n: number) => `${n} wiring handed over`],
+    ['deleted', (n: number) => `${n} you removed (left removed)`],
+  ] as const;
+  const extra = occasional
+    .map(([verdict, phrase]) => [of(verdict).length, phrase] as const)
+    .filter(([count]) => count > 0)
+    .map(([count, phrase]) => phrase(count));
   lines.push(
     '',
     `  ${of('update').length} to replace, ${of('new').length} new, ` +
-      `${of('conflict').length} yours (kept), ${unchanged} already current`,
+      `${of('conflict').length} yours (kept), ` +
+      [...extra, `${of('unchanged').length} already current`].join(', '),
   );
   return `${lines.join('\n')}\n`;
 }
@@ -155,7 +173,15 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   try {
     ({ values } = parseArgs({
       args: rawArgs,
-      options: { 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' } },
+      // `--no-color` is advertised in USAGE without scoping it to one command, so
+      // every command accepts it. Neither `upgrade` nor `init` colours its
+      // output today, which is why this only has to parse: refusing a flag the
+      // help offers costs the reader more than honouring it costs us.
+      options: {
+        'dry-run': { type: 'boolean' },
+        yes: { type: 'boolean' },
+        'no-color': { type: 'boolean' },
+      },
       allowPositionals: false,
     }));
   } catch (error) {
