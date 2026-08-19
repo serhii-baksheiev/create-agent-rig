@@ -10,6 +10,8 @@
  * comparisons, sections and path components.
  */
 import { execFileSync } from 'node:child_process';
+
+import { withoutGitLocation } from '../../scripts/git-env.mjs';
 import {
   closeSync,
   constants,
@@ -52,8 +54,30 @@ export function editFragments(input) {
     typeof rawCommand !== 'string' &&
     !(Array.isArray(rawCommand) && rawCommand.every((part) => typeof part === 'string'))
   ) {
-    process.stderr.write('edit-input: cannot safely inspect patch — apply_patch command has an unsupported shape\n');
-    return [];
+    // 🔴 **"I could not look" is not "there was nothing to look at."** This
+    // returned `[]`, which every consumer reads as a clean patch — so a
+    // credential in a payload whose container the normalizer does not recognise
+    // landed, while stderr said out loud that nothing had been inspected. The
+    // stream nothing gates on is not where a refusal belongs.
+    //
+    // It now answers exactly as the over-length branch below does, and for the
+    // same reason: a bound or a shape the guard can DETECT is a decision it can
+    // report, not a crash. `.claude/rules/invariants.md`'s fail-open rule covers
+    // the hook throwing or being handed something it cannot parse at all —
+    // "a crashed guard that blocks everything gets deleted within the hour" —
+    // and this branch is neither. Two opposite answers to one question, ten
+    // lines apart, was the real defect.
+    return [
+      {
+        filePath: '',
+        fragment: '',
+        inspectionRefusal:
+          'the apply_patch command arrived in a shape this guard cannot read — it is a ' +
+          'string, or a list of strings, and nothing else. Nothing was inspected, so ' +
+          'nothing about this patch is vouched for.',
+        appliesToAll: true,
+      },
+    ];
   }
   const command = typeof rawCommand === 'string' ? rawCommand : rawCommand.join('\n');
   if (command.length > MAX_PATCH_CHARACTERS) {
@@ -88,7 +112,12 @@ function patchFragments(command, payloadCwd) {
     const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
       ? path.resolve(payloadCwd)
       : process.cwd();
-    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000 }).trim());
+    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000, // Git hands its hooks an absolute GIT_DIR, so an inherited one answers about the
+      // HOOK's repository rather than the session's. Every other git call site in this
+      // rig strips it — gate-stop-dod, preflight, decision-router, queue/checkout — and
+      // this one did not, which is how the resolved root became an ancestor of the real
+      // path and the purity test stopped matching.
+      env: withoutGitLocation() }).trim());
     budget.patchCwd = realpathSync(requestedCwd);
     if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
   } catch { /* moved inspection below refuses without a trusted root and cwd */ }

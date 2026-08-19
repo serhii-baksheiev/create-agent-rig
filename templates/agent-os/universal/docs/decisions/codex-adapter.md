@@ -34,10 +34,39 @@ output. Generated projects rely on review for subsequent local parity. Rollback
 is deleting the derived Codex files from the generated project and reverting the
 generator change; Claude files remain usable.
 
-Hook launch also depends on `git rev-parse --show-toplevel`. If Git is absent or
-the session is outside a worktree, the generated command exits before the hook
-runs and therefore cannot return the blocking exit code. This is a known
-fail-open boundary of the portable root lookup visible in `.codex/hooks.json`.
+Hook launch also depends on `git rev-parse --show-toplevel`, and that lookup has
+two failure modes rather than one. Both are visible in `.codex/hooks.json`.
+
+The mild one: if Git is absent or the session is outside a worktree, the
+generated command exits before the hook runs and therefore cannot return the
+blocking exit code — a fail-open boundary.
+
+🔴 The sharp one, stated because a reader who only saw the first would infer
+cover that is not there: **the root is resolved from the session's working
+directory, which the agent controls, so the hook that runs is whichever file
+sits at that path.** An agent that creates a repository of its own and works
+from inside it supplies its own `.claude/hooks/*.mjs`. Measured on this branch:
+the emitted `guard-bash` command exits 2 on a force-push payload from the real
+repository root, and exits 0 from an agent-created repository holding a no-op
+hook of the same name. That is guard *substitution*, not merely fail-open.
+
+It is documented rather than fixed, deliberately, and the reasoning is worth
+keeping because the obvious alternatives are worse. Codex provides no
+project-root variable for repo-local hooks — the equivalent of Claude Code's
+`$CLAUDE_PROJECT_DIR` does not exist, and the [official hooks
+documentation](https://learn.chatgpt.com/docs/hooks) *recommends* resolving from
+the Git root for exactly this case, with commands run in the session `cwd`. So
+this adapter follows the documented pattern rather than inventing one. Pinning an
+absolute path at install time would diverge from that pattern and break a rig
+that is moved, copied or checked out as a worktree, and it would buy protection
+only against an agent that deliberately builds a decoy repository — the
+"determined evasion" `.claude/rules/invariants.md` puts outside every guard's
+threat model: *the guard targets drift, not an adversary.*
+
+What this costs is worth naming: under Codex the hook layer is drift-resistant,
+not adversary-resistant, and it is one layer less than under Claude Code, where
+the harness sets the root. The layers behind it — review, the test suite, CI —
+are unchanged.
 
 ## Schema and executable contracts
 
@@ -45,7 +74,13 @@ The emitted agent fields are `name`, `description`, `sandbox_mode`, and
 `developer_instructions`, matching the documented Codex custom-agent TOML.
 For hooks, the [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks)
 documents `tool_input.command` for both `Bash` and `apply_patch` and requires a
-string `command` when a hook replaces that input. The guards therefore accept
+string `command` when a hook replaces that input. The same document is what makes
+the `Bash`-only tool-name gate in `guard-bash` and `block-no-verify` correct
+rather than narrow: Codex's canonical matcher name for its shell/exec tool **is**
+`Bash`, and its editing tool is `apply_patch`, which also matches the `Edit` and
+`Write` aliases. Recorded here because it is an external fact no test in this
+repository can pin, and a reader who assumes otherwise will widen those gates to
+names the platform never sends. The guards therefore accept
 that documented string form and fail open on unsupported command shapes.
 Hook output is the JSON `description` plus event arrays accepted by
 `.codex/hooks.json`; command portability is carried by generated POSIX and

@@ -180,6 +180,81 @@ describe('guard-secret-file: a credential value is refused wherever it is being 
   });
 });
 
+// 🔴 A payload the normalizer cannot READ is not a payload it may DROP. For an
+// `apply_patch` whose `command` is neither a string nor an array of strings,
+// `editFragments` returned no fragments at all — and a hook handed no fragments
+// finds nothing to refuse, so the credential inside the shape it could not parse
+// was written. The over-length branch ten lines above it in the same file already
+// answers this situation the other way: a fragment carrying `inspectionRefusal`
+// and `appliesToAll`, which every consumer fails closed on.
+//
+// This is not the fail-open case of `.claude/rules/invariants.md`. That rule is
+// about the guard THROWING — an error it cannot reason about. This is a condition
+// the guard detected, named in its own diagnostic, and then declined to act on.
+describe('guard-secret-file: an apply_patch command it cannot read is refused, not dropped', () => {
+  const patchLines = (addition: string) => [
+    '*** Begin Patch',
+    '*** Add File: notes.md',
+    `+${addition}`,
+    '*** End Patch',
+  ];
+  const credentialLine = `AWS_KEY=${CLOUD_ACCESS_KEY}`;
+  const withCommand = (command: unknown) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: { command },
+  });
+
+  it('blocks a credential in a command given as one string', async () => {
+    await deny(withCommand(patchLines(credentialLine).join('\n')), 'string command');
+  });
+
+  it('blocks a credential in a command given as an array of strings', async () => {
+    await deny(withCommand(patchLines(credentialLine)), 'array-of-strings command');
+  });
+
+  it('refuses a command array holding a non-string element rather than inspecting nothing', async () => {
+    const result = await deny(
+      withCommand([
+        '*** Begin Patch',
+        '*** Add File: notes.md',
+        42,
+        `+${credentialLine}`,
+        '*** End Patch',
+      ]),
+      'array with one non-string element',
+    );
+    expect(result.stderr).toMatch(/cannot safely inspect/i);
+  });
+
+  it('refuses a command given as an object rather than inspecting nothing', async () => {
+    const result = await deny(
+      withCommand({ patch: patchLines(credentialLine).join('\n') }),
+      'object command',
+    );
+    expect(result.stderr).toMatch(/cannot safely inspect/i);
+  });
+
+  it('names the unreadable command shape as its reason, and still prints no credential', async () => {
+    const result = await deny(
+      withCommand({ patch: patchLines(credentialLine).join('\n') }),
+      'object command',
+    );
+    expect(result.stderr).toMatch(/shape|form/i);
+    // A size refusal and a credential finding are different diagnoses; borrowing
+    // either one sends the reader to fix something that is not wrong.
+    expect(result.stderr).not.toMatch(/is a credential file/);
+    expect(result.stderr).not.toContain(CLOUD_ACCESS_KEY);
+  });
+
+  it('leaves a well-formed patch that carries no credential allowed', async () => {
+    await allow(
+      withCommand(patchLines('export const greet = () => "hello";')),
+      'ordinary apply_patch',
+    );
+  });
+});
+
 describe('guard-secret-file: the ordinary work of the day stays allowed', () => {
   it('allows a Write to .env.example, which is how a project states what it needs', async () => {
     await allow(write('.env.example', `JIRA_API_TOKEN=${'your-token-here'}\n`), '.env.example');

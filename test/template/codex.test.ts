@@ -219,12 +219,14 @@ function runGuardInput(
     cwd: string;
   },
   timeout?: number,
+  /** Extra environment for the child — used to simulate a git hook's inherited GIT_DIR. */
+  env?: Record<string, string>,
 ): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [path.join(hooksDir, script)],
-      { timeout },
+      { timeout, env: env ? { ...process.env, ...env } : process.env },
       (error, _stdout, stderr) =>
         resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
     );
@@ -239,7 +241,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     ['a mixed array', ['*** Begin Patch', 42, '*** End Patch']],
     ['an object', { patch: '*** Begin Patch\n*** End Patch' }],
   ])(
-    'fails open with a diagnostic when apply_patch command is supplied as %s',
+    'refuses, rather than failing open, when apply_patch command is supplied as %s',
     async (_label, command) => {
       const result = await runGuardInput('guard-core-purity.mjs', {
         hook_event_name: 'PreToolUse',
@@ -248,8 +250,59 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         cwd: repoRoot,
       });
 
-      expect(result.code).toBe(0);
-      expect(result.stderr).toMatch(/cannot safely inspect.*patch|apply_patch.*command/i);
+      // 🔴 This assertion was `toBe(0)` and is deliberately reversed, which is
+      // the one thing a test edit may not do quietly. The old contract let a
+      // credential land: `guard-secret-file` allowed a patch whose container the
+      // normalizer could not read, while stderr announced that nothing had been
+      // inspected. Measured before the change — string 2, all-string array 2,
+      // array with one non-string 0, object 0.
+      //
+      // The rule cited for failing open (`invariants.md`) covers a guard that
+      // THROWS or is handed something it cannot parse at all. This shape is one
+      // the normalizer detects and names, and the branch ten lines below it in
+      // `edit-input.mjs` already refuses the same class. Two opposite answers to
+      // one question was the defect; this is the side that does not lose a
+      // credential.
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/shape|form/i);
+    },
+  );
+
+  // ⚠ CONFLICT, stated rather than resolved here: the case above pins that an
+  // unreadable `command` resolves to ALLOW, and this one pins that it resolves to
+  // a refusal fragment every consumer fails closed on. Both cannot hold. The
+  // decision recorded for this branch is to refuse — the shape is a condition the
+  // normalizer detects and reports, not an error it threw — which makes the case
+  // above the one that has to change. It is left untouched deliberately: weakening
+  // an existing test is not a call this file makes on its own.
+  it.each([
+    ['a number', 42],
+    ['a mixed array', ['*** Begin Patch', 42, '*** End Patch']],
+    ['an object', { patch: '*** Begin Patch\n*** End Patch' }],
+  ])(
+    'returns an inspection refusal that applies to the whole patch when command is %s',
+    async (_label, command) => {
+      const editInput = (await import(
+        pathToFileURL(path.join(hooksDir, 'lib', 'edit-input.mjs')).href
+      )) as {
+        editFragments(input: unknown): Array<{
+          filePath: string;
+          fragment: string;
+          inspectionRefusal?: string;
+          appliesToAll?: boolean;
+        }>;
+      };
+
+      const fragments = editInput.editFragments({
+        tool_name: 'apply_patch',
+        cwd: repoRoot,
+        tool_input: { command },
+      });
+
+      expect(fragments).toHaveLength(1);
+      expect(fragments[0]).toMatchObject({ appliesToAll: true });
+      expect(fragments[0]?.inspectionRefusal).toMatch(/shape|form/i);
+      expect(fragments[0]?.inspectionRefusal).not.toMatch(/limit|size/i);
     },
   );
 
@@ -645,6 +698,64 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/core/i);
     } finally {
       await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  // 🔴 Found by this repository's own pre-commit hook, which is the only place the
+  // suite runs with a git hook's environment inherited. Every other git call site
+  // in the rig strips the variables that locate a repository (`git-env.mjs`,
+  // `withoutGitLocation`) — gate-stop-dod, preflight, decision-router,
+  // queue/checkout — and this one did not, so `git rev-parse --show-toplevel`
+  // answered about the HOOK's repository and the guard fell open. Same lesson the
+  // baseline-commit incident already paid for.
+  it('resolves the repository root even when a git hook has exported GIT_DIR', async () => {
+    // A REAL repository, not an empty directory: with an invalid GIT_DIR the git
+    // call merely fails and the fallback saves the guard, which is the wrong
+    // reason to pass. A git hook exports a VALID one — that is the case that
+    // resolves the wrong root successfully.
+    const foreign = await mkdtemp(path.join(tmpdir(), 'foreign-repo-'));
+    await exec('git', ['init', '-q', foreign]);
+    const nested = await mkdtemp(
+      path.join(
+        repoRoot,
+        'templates',
+        'skeleton',
+        'node-service',
+        'packages',
+        'core',
+        'src',
+        '.codex-gitdir-',
+      ),
+    );
+    await writeFile(
+      path.join(nested, 'impure.ts'),
+      "import { readFile } from 'node:fs/promises';\n",
+    );
+
+    try {
+      const result = await runGuardInput(
+        'guard-core-purity.mjs',
+        {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: [
+              '*** Begin Patch',
+              '*** Update File: impure.ts',
+              '*** Move to: moved.ts',
+              '*** End Patch',
+            ].join('\n'),
+          },
+          cwd: nested,
+        },
+        undefined,
+        { GIT_DIR: path.join(foreign, '.git'), GIT_WORK_TREE: foreign },
+      );
+
+      expect(result.code).toBe(2);
+    } finally {
+      await rm(nested, { recursive: true, force: true });
+      await rm(foreign, { recursive: true, force: true });
     }
   });
 
