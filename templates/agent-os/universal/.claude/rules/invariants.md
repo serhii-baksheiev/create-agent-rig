@@ -173,6 +173,12 @@ in this repository — so by the rule above, as they sit here, they are checks
 without tests. That is deliberate and it has a boundary: it holds only while they
 are untouched.
 
+This is the one narrow exception for a generator-authored hook: it may cite the
+generator's upstream tests **only while unchanged downstream**, and its hook
+header must identify the upstream generator tests as absent locally. That pointer
+records the evidence used to author the inherited snapshot; it does not turn the
+absent test into a local check.
+
 **The moment you edit one, its test is yours.** A guard whose behaviour has
 changed and whose test lives somewhere else is precisely the "quietly stopped
 matching" case this rule names, and nothing here would catch it. The same applies

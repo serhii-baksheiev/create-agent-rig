@@ -94,10 +94,11 @@ function windowsHookCommand(command) {
 }
 
 function codexHooks(settings) {
-  // Codex canonicalizes shell and unified-exec hook input as `Bash`, preserves
-  // lifecycle event names such as Stop and SessionStart, and aliases
-  // apply_patch as Edit/Write. Keep the Claude names; only add the edit surface
-  // that Claude settings cannot name. See https://learn.chatgpt.com/docs/hooks.
+  // Codex reports shell and unified-exec hook input as `Bash`, preserves
+  // lifecycle event names such as Stop and SessionStart, and reports canonical
+  // `apply_patch` input even when its Edit/Write matcher aliases select it. Keep
+  // the Claude aliases and add the canonical edit spelling so the generated
+  // wiring states the input guards receive. See https://learn.chatgpt.com/docs/hooks.
   const source = JSON.parse(settings);
   const hooks = {};
   for (const [event, groups] of Object.entries(source.hooks ?? {})) {

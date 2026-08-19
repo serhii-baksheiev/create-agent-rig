@@ -263,6 +263,18 @@ describe('guard-secret-file: it fails open on anything it does not understand', 
 // A hook nobody calls is decoration, and a hook installed without the module it
 // imports is worse — it throws on a missing import at every single edit.
 describe('guard-secret-file: the wiring that makes it run at all', () => {
+  it('names every covered edit tool in autonomy.md’s mechanical refusal sentence', async () => {
+    const autonomy = await readFile(
+      path.join(universal, '.claude', 'rules', 'autonomy.md'),
+      'utf8',
+    );
+    const mechanicalSentence = autonomy.match(/\*\*mechanical\*\*:\s*([\s\S]*?)\.\s*⚠/)?.[1] ?? '';
+
+    expect(mechanicalSentence).toContain('`Write`');
+    expect(mechanicalSentence).toContain('`Edit`');
+    expect(mechanicalSentence).toContain('`apply_patch`');
+  });
+
   it('is registered in settings.json under a PreToolUse matcher covering Write and Edit', async () => {
     const settings = JSON.parse(
       await readFile(path.join(universal, '.claude', 'settings.json'), 'utf8'),
@@ -334,6 +346,17 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     expect(source).toMatch(/LIMITS/);
     expect(source).toMatch(/fragment/i);
     expect(source).toMatch(/FAILS OPEN/i);
+  });
+
+  it('includes unsupported apply_patch command shapes in its existing fail-open limit', async () => {
+    const source = await readFile(hook, 'utf8');
+    expect(source).toMatch(/There are FOUR:/);
+
+    const failOpenLimit =
+      source.match(/\/\/ {3}- It FAILS OPEN[\s\S]*?(?=\n\/\/\n\/\/ Failing open)/)?.[0] ?? '';
+    expect(failOpenLimit).toMatch(
+      /(?:unsupported|unrecognised|unrecognized)[\s\S]{0,40}`?apply_patch`?[\s\S]{0,40}command[\s\S]{0,20}(?:shape|form)|`?apply_patch`?[\s\S]{0,40}command[\s\S]{0,20}(?:shape|form)[\s\S]{0,40}(?:unsupported|unrecognised|unrecognized)/i,
+    );
   });
 });
 

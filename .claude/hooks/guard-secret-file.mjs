@@ -55,7 +55,10 @@
 //     cap; this hook cannot, and that asymmetry is the point.
 //   - It FAILS OPEN — see guard-secret-file.test.ts › "allows a payload that is
 //     not JSON at all" and its neighbours. An unparseable payload, a missing
-//     field, an internal throw — all allow the edit. A crashed guard that blocks everything gets deleted
+//     field, an unsupported `apply_patch` command shape, or an internal throw
+//     all allow the edit. The command-shape case is pinned upstream by
+//     codex.test.ts › "fails open with a diagnostic when apply_patch command is
+//     supplied as %s". A crashed guard that blocks everything gets deleted
 //     within the hour. What catches the rest is whatever this project has put
 //     behind it: review always, a commit-time check once one exists.
 //

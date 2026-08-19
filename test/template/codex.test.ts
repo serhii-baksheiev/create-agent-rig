@@ -169,11 +169,13 @@ function runGuardInput(
     tool_input: { command: unknown };
     cwd: string;
   },
+  timeout?: number,
 ): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [path.join(hooksDir, script)],
+      { timeout },
       (error, _stdout, stderr) =>
         resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
     );
@@ -651,6 +653,48 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
           '*** Move to: packages/core/src/directory.ts',
           '*** End Patch',
         ].join('\n'),
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/not a regular file|cannot safely inspect/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('quickly refuses a FIFO move source instead of blocking on it', async () => {
+    if (process.platform === 'win32') return;
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-fifo-move-'));
+    const core = path.join(scratch, 'packages', 'core', 'src');
+    const source = path.join(core, 'source.ts');
+
+    try {
+      await mkdir(core, { recursive: true });
+      await exec('git', ['init', '--quiet'], { cwd: scratch });
+      try {
+        await exec('mkfifo', [source]);
+      } catch (error) {
+        const stderr = (error as { stderr?: string }).stderr ?? '';
+        if (/operation not supported/i.test(stderr)) return;
+        throw error;
+      }
+      const result = await runGuardInput(
+        'guard-core-purity.mjs',
+        {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: [
+              '*** Begin Patch',
+              '*** Update File: packages/core/src/source.ts',
+              '*** Move to: packages/core/src/moved.ts',
+              '*** End Patch',
+            ].join('\n'),
+          },
+          cwd: scratch,
+        },
+        1_000,
       );
 
       expect(result.code).toBe(2);
