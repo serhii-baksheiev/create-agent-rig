@@ -59,8 +59,13 @@ about it here, so the two gates never file competing opinions on one paragraph.
    reader has. This is a blocker **by rule**, so you do not have to prove the claim
    wrong; an unbacked claim about behaviour is the finding.
 
-   ⚠ A pointer into a test suite the reader's project does not carry is item 2, not
-   backing. In a generated rig the generator's own `test/` is not there.
+   ⚠ A pointer into a test suite the reader's project does not carry is normally
+   item 2, not backing. There is one narrow inherited-snapshot exception from
+   `invariants.md`: a generator-authored hook may point to upstream generator
+   tests that are absent locally **only while the hook is unchanged downstream**
+   and its hook header identifies those tests as absent locally. If that hook is
+   edited downstream or appears as changed in the current diff, the exception
+   expires and the local test is yours; then an absent pointer is item 2 again.
 
    🔴 Three things this is not. It is not item 1: that one is about enforcement the
    mechanism does not provide, this one is about any claim with nothing behind it,

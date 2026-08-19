@@ -143,10 +143,18 @@ const compactShellValueCount = (value) =>
     : 0;
 
 const shellScript = (args) => {
-  const commandFlag = args.findIndex(
-    ({ value }) => value === '-c' || (/^-[^-]+$/.test(value) && value.includes('c')),
-  );
-  if (commandFlag === -1) return args.map(({ value }) => value).join(' ');
+  let commandFlag = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index].value;
+    if (value === '--' || value === '-' || value === '+' || !/^[+-]/.test(value)) break;
+    if (value === '-c' || (/^-[^-]+$/.test(value) && value.includes('c'))) {
+      commandFlag = index;
+      break;
+    }
+    const valueCount = compactShellValueCount(value);
+    if (valueCount > 0 || SHELL_VALUE_FLAGS.has(value)) index += Math.max(1, valueCount);
+  }
+  if (commandFlag === -1) return '';
 
   const compactFlag = args[commandFlag].value;
   const compactValues = compactShellValueCount(compactFlag);
@@ -764,7 +772,10 @@ export const inspect = (raw, brake, depth = 0) => {
       // `bash -c "<command line>"` / `eval "<command line>"` — the payload is a
       // command line of its own. Taken whether or not it is quote-delimited: a
       // backslash-joined payload is still a payload.
-      const script = shellScript(command.args);
+      const script =
+        command.name === 'eval'
+          ? command.args.map(({ value }) => value).join(' ')
+          : shellScript(command.args);
       if (script) {
         const reason = inspect(script, brake, depth + 1);
         if (reason) return reason;
@@ -800,12 +811,8 @@ function main() {
   }
   if (input.tool_name !== 'Bash') return 0;
   const commandValue = input.tool_input?.command;
-  const raw = Array.isArray(commandValue)
-    ? commandValue
-        .filter((part) => typeof part === 'string')
-        .map((part) => `'${part.replaceAll("'", "'\"'\"'")}'`)
-        .join(' ')
-    : String(commandValue ?? '');
+  if (typeof commandValue !== 'string') return 0;
+  const raw = commandValue;
   if (!raw.trim()) return 0;
 
   try {

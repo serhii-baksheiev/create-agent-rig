@@ -60,6 +60,60 @@ describe('copyTree', () => {
     expect(await mapped).toEqual(items.map((item) => item * 2));
   });
 
+  it('stops claiming new work and waits for started work before rejecting', async () => {
+    const originalError = new Error('worker failed');
+    const started: number[] = [];
+    let releaseFailure!: () => void;
+    const failureGate = new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    let releaseSibling!: () => void;
+    const siblingGate = new Promise<void>((resolve) => {
+      releaseSibling = resolve;
+    });
+    let announceTwoStarted!: () => void;
+    const twoStarted = new Promise<void>((resolve) => {
+      announceTwoStarted = resolve;
+    });
+    let announceSiblingSettled!: () => void;
+    const siblingSettled = new Promise<void>((resolve) => {
+      announceSiblingSettled = resolve;
+    });
+    let siblingHasSettled = false;
+
+    const mapped = mapConcurrent([0, 1, 2], 2, async (item) => {
+      started.push(item);
+      if (started.length === 2) announceTwoStarted();
+      if (item === 0) {
+        await failureGate;
+        throw originalError;
+      }
+      if (item === 1) {
+        await siblingGate;
+        siblingHasSettled = true;
+        announceSiblingSettled();
+      }
+      return item;
+    });
+    let rejectedBeforeSiblingSettled = false;
+    void mapped.catch(() => {
+      rejectedBeforeSiblingSettled = !siblingHasSettled;
+    });
+
+    await twoStarted;
+    releaseFailure();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseSibling();
+    await siblingSettled;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    await expect(mapped).rejects.toBe(originalError);
+    expect({ rejectedBeforeSiblingSettled, started }).toEqual({
+      rejectedBeforeSiblingSettled: false,
+      started: [0, 1],
+    });
+  });
+
   it('copies a nested tree', async () => {
     const src = await makeSrc({
       'a.txt': 'A',

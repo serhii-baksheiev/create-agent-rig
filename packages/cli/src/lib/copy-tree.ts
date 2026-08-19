@@ -59,16 +59,26 @@ export async function mapConcurrent<T, R>(
     throw new RangeError('concurrency limit must be positive');
   const results = new Array<R>(items.length);
   let next = 0;
+  let failed = false;
+  let firstError: unknown;
 
   const run = async (): Promise<void> => {
-    while (next < items.length) {
+    while (!failed && next < items.length) {
       const index = next;
       next += 1;
-      results[index] = await worker(items[index]!);
+      try {
+        results[index] = await worker(items[index]!);
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          firstError = error;
+        }
+      }
     }
   };
 
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => run()));
+  if (failed) throw firstError;
   return results;
 }
 

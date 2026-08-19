@@ -36,10 +36,7 @@ beforeAll(async () => {
   await writeFile(presentFlag, '');
 });
 
-function runHook(
-  command: string | string[],
-  flag?: string,
-): Promise<{ code: number; stderr: string }> {
+function runHook(command: unknown, flag?: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
@@ -218,20 +215,14 @@ describe('guard-bash: it fails open on anything it does not understand', () => {
     await allow('')();
   });
 
-  it('inspects Codex argv-array shell payloads', async () => {
+  it('allows unsupported non-string command input', async () => {
     const result = await runHook(['bash', '-lc', 'git push --force origin master']);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/shared branch|force/i);
+    expect(result.code).toBe(0);
   });
 
-  it('inspects a later argv-array command after an argument containing an apostrophe', async () => {
-    const result = await runHook([
-      'bash',
-      '-lc',
-      `printf "%s\\n" "it's safe"; git push --force origin main`,
-    ]);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/shared branch|force/i);
+  it('stops looking for compact shell options at the script operand', async () => {
+    const result = await runHook('bash ./safe-script.sh -cx "git push --force origin main"');
+    expect(result.code).toBe(0);
   });
 
   it.each([

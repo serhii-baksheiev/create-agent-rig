@@ -50,17 +50,22 @@ describe('createProject', () => {
     await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).resolves.toBeTruthy();
   });
 
-  it('ships a .gitignore in every target (npm publish strips dotfile originals)', async () => {
-    for (const target of ['aws-serverless', 'node-service']) {
-      const { projectDir } = await createProject(`gi-${target}`, { cwd: work, target });
+  it.each(['aws-serverless', 'node-service'])(
+    'ships a .gitignore in the %s target (npm publish strips dotfile originals)',
+    async (target) => {
+      const { projectDir } = await createProject(`gi-${target}`, {
+        cwd: work,
+        target,
+        git: false,
+      });
       const gitignore = await readFile(path.join(projectDir, '.gitignore'), 'utf8');
       expect(gitignore).toContain('node_modules');
       // the un-dotted source name must not leak into the generated project
       await expect(readFile(path.join(projectDir, 'gitignore'), 'utf8')).rejects.toThrow();
       // npm packaging metadata must not leak either
       await expect(readFile(path.join(projectDir, '.npmignore'), 'utf8')).rejects.toThrow();
-    }
-  });
+    },
+  );
 
   it('refuses an invalid project name', async () => {
     await expect(createProject('My App!', { cwd: work })).rejects.toThrow(CreateError);
