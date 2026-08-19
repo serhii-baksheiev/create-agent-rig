@@ -67,6 +67,26 @@ describe('the released-hash table — what a manifest-less rig is measured again
     );
   });
 
+  /**
+   * `presentInEveryRelease` takes `versions[0]` as the oldest release, and that
+   * is the value deciding whether a manifest-less rig keeps a deletion. The
+   * builder sorts before writing, so position and age agree — this is what keeps
+   * them agreeing, because nothing else would notice a row inserted anywhere but
+   * the end. The positional read itself is pinned in
+   * `packages/cli/test/history.test.ts` › "reads the baseline by position, so an
+   * out-of-order table moves it".
+   */
+  it('ships its versions oldest first, because the baseline is read by position', async () => {
+    const history = await readHistory();
+    const sorted = [...history.versions].sort((a, b) => (isBelow(a, b) ? -1 : 1));
+    expect(history.versions, 'out of order — the baseline is versions[0]').toEqual(sorted);
+    // and the comparison used above can actually tell the two apart, so a green
+    // assertion is evidence rather than a tautology over a one-element array
+    expect(history.versions.length).toBeGreaterThan(1);
+    const scrambled = [...history.versions].reverse();
+    expect(scrambled).not.toEqual(sorted);
+  });
+
   it('maps a template path to where the file installs, dropping the layer', () => {
     expect(installRelPath('templates/agent-os/universal/.claude/rules/workflow.md')).toBe(
       '.claude/rules/workflow.md',
