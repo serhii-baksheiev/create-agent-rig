@@ -173,7 +173,8 @@ inside the block; both forms are the contract.
     }
   ],
   "advisories": [],
-  "evidence": ["read the validator and both call sites"]
+  "evidence": ["read the validator and both call sites"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -187,6 +188,8 @@ inside the block; both forms are the contract.
   and the caller is what checks: the `loop` skill runs
   `node .claude/scripts/verdict.mjs check <report> check-premises` on what you
   return. Nothing in this skill runs it — this skill writes nothing at all.
+- **`headSha` is the commit you read** — `git rev-parse HEAD` in the checkout
+  you examined. A premise check answers about a tree, and the tree moves.
 
 ## Examples — the three shapes this actually catches
 

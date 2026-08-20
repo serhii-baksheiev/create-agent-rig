@@ -3,10 +3,17 @@
  * The verdict CLI — what a gate runs before it believes a reviewer.
  *
  *   node .claude/scripts/verdict.mjs check <file> [gate]   # `-` reads stdin
+ *   node .claude/scripts/verdict.mjs coverage <commit>    # reads the run journal
  *
- * It reads a gate's report, hands it to `lib/verdict.mjs`, and either prints the
- * parsed verdict on stdout (exit 0) or refuses with a diagnosis on stderr
+ * `check` reads a gate's report, hands it to `lib/verdict.mjs`, and either prints
+ * the parsed verdict on stdout (exit 0) or refuses with a diagnosis on stderr
  * (exit 1). All the deciding lives in the module; this file is the call site.
+ *
+ * `coverage` answers the question one report cannot: did every reviewer this
+ * round asked for actually answer, for the commit being merged? It compares the
+ * three sets the run journal already holds — routed, launched, answered — through
+ * `lib/gate-coverage.mjs`, and it is a READ. It never launches a reviewer and it
+ * never writes.
  *
  * 🔴 **Name the gate you launched.** The module reads the report's LAST block
  * (its limit 3), so a capture holding two reviewers' answers end to end says
@@ -27,11 +34,15 @@
 
 import { readFileSync } from 'node:fs';
 
-import { parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
+import { coverageOf } from './lib/gate-coverage.mjs';
+import { isCommitId, parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
+import { readRun } from './run-journal.mjs';
 
 const USAGE =
   'usage: node .claude/scripts/verdict.mjs check <file> [gate]   ' +
-  '(`-` reads the report from stdin)\n';
+  '(`-` reads the report from stdin)\n' +
+  '       node .claude/scripts/verdict.mjs coverage <commit>   ' +
+  '(reads the run journal in $RIG_RUN_DIR)\n';
 
 const refuse = (message) => {
   process.stderr.write(message);
@@ -58,6 +69,92 @@ const [subcommand, source, expectedGate] = process.argv.slice(2);
 // either: an operator told the subcommand is unknown goes looking for a typo
 // that is not there.
 if (subcommand === undefined) refuse(USAGE);
+
+if (subcommand === 'coverage') {
+  // The four cases and the fix each one needs, said in the line that names the
+  // reviewer — a single "missing" list makes the reader guess between
+  // relaunching a reviewer and going to read why one stayed silent.
+  const CASES = [
+    ['neverLaunched', 'the route asked for it and the fan-out never launched it — launch it'],
+    ['unanswered', 'launched, and it did not answer — no verdict of its own parsed'],
+    ['unattributed', 'it answered, and its verdict named no commit — so it cannot say it answered for this one'],
+    ['stale', 'it answered for another commit — the head moved after the verdict'],
+  ];
+
+  const commit = source;
+  // The same two arms `check` keeps apart: the subcommand was right and the
+  // argument was not supplied. Reporting the opposite sends the operator
+  // looking for a typo that is not there.
+  if (commit === undefined) {
+    refuse(
+      'verdict: `coverage` needs the commit the round is about; no commit was given. ' +
+        'It is the head the reviewers were launched against — `git rev-parse HEAD` in the ' +
+        `reviewed checkout.\n${USAGE}`,
+    );
+  }
+
+  // The one commit field this command owns, and the only one shaped before it is
+  // compared: the journal is the other way in and `recordDecision` takes any
+  // non-blank string, which is why `sameCommit` enforces its own floor and
+  // ceiling rather than trusting an upstream check. Without this arm
+  // `coverage <a-full-sha>garbage` prefix-matched its way to "covered" — the
+  // answer that ends in a merge.
+  if (!isCommitId(commit)) {
+    refuse(
+      `verdict: \`${safeForDiagnosis(commit)}\` is not a commit to ask about. ` +
+        'It is 7 to 64 hex characters (0-9a-f), the same shape a verdict may name — ' +
+        '`git rev-parse HEAD` in the reviewed checkout.\n',
+    );
+  }
+
+  const runDir = process.env.RIG_RUN_DIR;
+  if (!runDir) {
+    // 🔴 Exit 0 with nothing printed is indistinguishable from a clean round,
+    // and an unattended session reads it as one. The skip is the honest answer —
+    // this run kept no trace — and it has to be said out loud.
+    process.stdout.write(
+      'verdict: coverage skipped — no run directory is declared (RIG_RUN_DIR is unset), so ' +
+        'this run journalled no fan-out and no verdicts. Nothing was checked, which is not ' +
+        'the same as nothing being outstanding.\n',
+    );
+    process.exit(0);
+  }
+
+  let decisions;
+  try {
+    ({ decisions } = readRun({ runDir }));
+  } catch (error) {
+    refuse(
+      `verdict: the run journal in ${runDir} could not be read, so coverage was not ` +
+        `checked (${error?.message ?? 'unknown error'}).\n`,
+    );
+  }
+
+  const coverage = coverageOf({ records: decisions, headSha: commit });
+  if (coverage.ok) {
+    process.stdout.write(
+      `verdict: coverage complete for ${safeForDiagnosis(commit)} — ` +
+        `${coverage.launched.length} reviewer(s) launched, every one of them answered for ` +
+        'that commit.\n',
+    );
+    process.exit(0);
+  }
+
+  const lines = [];
+  if (coverage.reason !== undefined) lines.push(`  ${coverage.reason}`);
+  for (const [key, why] of CASES) {
+    // Through the sanitiser like every other quoted value here: the names come
+    // from the fan-out record, which `recordDecision` checks as strings and
+    // nothing more, and a name carrying a cursor sequence repaints this refusal
+    // as a pass for whoever is watching the scrollback.
+    for (const reviewer of coverage[key]) lines.push(`  ${safeForDiagnosis(reviewer)} — ${why}`);
+  }
+  refuse(
+    `verdict: the fan-out for ${safeForDiagnosis(commit)} is not covered.\n` +
+      `${lines.join('\n')}\n`,
+  );
+}
+
 if (subcommand !== 'check') {
   refuse(`verdict: \`${subcommand}\` is not a subcommand of this tool.\n${USAGE}`);
 }

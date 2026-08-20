@@ -67,7 +67,8 @@ nothing after it. It is what the calling gate reads.
     }
   ],
   "advisories": [],
-  "evidence": ["cdk diff against the deployed stage"]
+  "evidence": ["cdk diff against the deployed stage"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -78,3 +79,9 @@ nothing after it. It is what the calling gate reads.
 - A `HOLD` naming no blocker is **refused**, and so is a `SHIP` carrying one:
   `node .claude/scripts/verdict.mjs check <report> cdk-diff-reviewer` is what
   refuses them.
+- **`headSha` is the commit you reviewed** — `git rev-parse HEAD` in the
+  checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
+  <commit>` tell "this gate answered for the commit being merged" from "it
+  answered two pushes ago". A verdict naming no commit is counted as neither
+  covered nor missing, so `pr-ship` holds on it — and only `pr-ship`: no hook
+  runs that check, so a session that skips the gate skips this with it.

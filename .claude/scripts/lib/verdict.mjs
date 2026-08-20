@@ -70,7 +70,9 @@
  *    one.** A caller that read absence as "the head I am holding" would take a
  *    verdict about a diff nobody named as a verdict about the diff it is about
  *    to merge, so a caller that needs the answer keyed to a commit handles
- *    absence itself.
+ *    absence itself — `lib/gate-coverage.mjs` is the one that does, and it puts
+ *    such a verdict in its own list rather than counting it either way. When
+ *    present the value is a commit SHAPE, not free text: see `isCommitId`.
  */
 
 /** Every word any gate in this rulebook may return. */
@@ -166,11 +168,14 @@ const DIAGNOSIS_LIMIT = 120;
  * worst they buy is a misread within those backticks. Escape sequences are the ones
  * that rewrite the operator's screen, and those are what this removes.
  *
- * ⚠ **The CLI's own argv is not passed through it.** The report's path and the
- * subcommand are printed exactly as the caller wrote them, because their whole job
- * is to be pasted back into a command; the expected-gate argument IS sanitised,
- * because it is printed beside a reviewer-written gate as one of two names the
- * operator compares, and a value that can repaint that comparison defeats it.
+ * ⚠ **Two of the CLI's own arguments are passed through it, and two are not.**
+ * The report's path and the subcommand are printed exactly as the caller wrote
+ * them, because their whole job is to be pasted back into a command. The
+ * expected-gate argument IS sanitised, because it is printed beside a
+ * reviewer-written gate as one of two names the operator compares, and a value
+ * that can repaint that comparison defeats it. So is `coverage`'s commit
+ * argument, which is printed beside journal-written reviewer names for the same
+ * reason.
  *
  * It never throws — it is called only where something has already gone wrong, and a
  * sanitiser that throws there turns a diagnosis into a crash the caller reads as
@@ -209,6 +214,29 @@ const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isText = (value) => typeof value === 'string' && value.trim() !== '';
+
+/**
+ * A commit id, checked as a SHAPE rather than as text (AR-79).
+ *
+ * `headSha` arrived as "any non-blank text". **No consumer interpolates it
+ * today** — the only reader compares it as a string (`lib/gate-coverage.mjs`),
+ * and the merge criterion takes its SHA from `gh pr view --json headRefOid`, not
+ * from a verdict. The shape is fixed here so that the first consumer that does
+ * put it in an argument position inherits the check instead of having to
+ * remember it; `--upload-pack=…`, a leading `-` and `../…` are not commits, and
+ * a field that only ever holds commits is the cheap way to keep them out.
+ *
+ * ⚠ **This covers the value inside a verdict block, and nothing else.**
+ * `run-journal.mjs` takes `headSha` on a decision record as any non-blank
+ * string, and `pr-ship`'s fan-out record reaches it without passing through
+ * `parseVerdict` at all — so a commit id that never came from a reviewer's block
+ * is not shaped by this.
+ *
+ * **Checked on the raw value — never trimmed, never lowercased.** A value that
+ * needs rewriting to pass is a value the reviewer did not write, and rewriting it
+ * silently is how a near-miss becomes a match.
+ */
+export const isCommitId = (value) => typeof value === 'string' && /^[0-9a-f]{7,64}$/i.test(value);
 
 /**
  * The last fenced ```json block, as one of three answers: `{ raw }` for a block
@@ -398,10 +426,11 @@ export function parseVerdict(text) {
   }
 
   const headSha = parsed.headSha;
-  if (headSha !== undefined && !isText(headSha)) {
+  if (headSha !== undefined && !isCommitId(headSha)) {
     problems.push(
       `\`headSha\` is \`${safeForDiagnosis(headSha)}\`, which is not a commit this verdict ` +
-        'could have answered for. It is optional, and a line of text when present.',
+        'could have answered for. It is optional, and 7 to 64 hex characters (0-9a-f) when ' +
+        'present — nothing else, and with no surrounding space.',
     );
   }
 
