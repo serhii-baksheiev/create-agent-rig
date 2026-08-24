@@ -52,7 +52,7 @@ were being paid for that word.
 
 ## What was built instead
 
-`lib/gate-coverage.mjs` compares the three sets the journal already holds —
+`.claude/scripts/lib/gate-coverage.mjs` compares the three sets the journal already holds —
 routed, launched, answered — and `pr-ship` runs it through
 `verdict.mjs coverage <commit>` before its own verdict. It sits in the layer that
 already knows the head commit, is allowed to run git, and is allowed to throw.

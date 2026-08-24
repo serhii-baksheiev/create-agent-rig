@@ -27,13 +27,6 @@
  * and an unconsumed route are the unreadable-round answers; each reason names the
  * evidence boundary the journal could not establish.
  *
- * Pure by design: the records and the commit come from the caller, so the rule
- * has one implementation and the CLI is only its call site. The purity is pinned
- * by `test/template/gate-coverage.test.ts` › "reads no clock, no environment and
- * no filesystem" — which lives in the generator that produced this project and
- * does not ship with the module, exactly as `.claude/rules/invariants.md` says of
- * the hooks. Edit this file here and that pin does not move with you.
- *
  * 🔴 **A round is judged against its OWN route, not the run's last one.** The
  * answers are scoped to the records after the last fan-out; the route needs the
  * mirror of that, and not having it made the refusal above vacuous in the case it
@@ -156,6 +149,7 @@ export const coverageOf = ({ records, headSha } = {}) => {
   let routeOfRound = null;
   let fanOutAt = -1;
   let launchedNames = [];
+  let fanOutHead = null;
 
   for (let index = 0; index < journal.length; index += 1) {
     const record = journal[index];
@@ -172,6 +166,7 @@ export const coverageOf = ({ records, headSha } = {}) => {
     if (gate === FAN_OUT) {
       fanOutAt = index;
       launchedNames = namesOf(record?.reviewers);
+      fanOutHead = typeof record?.headSha === 'string' ? record.headSha : null;
       routeOfRound = pendingRoute;
       pendingRoute = null;
     }
@@ -212,6 +207,36 @@ export const coverageOf = ({ records, headSha } = {}) => {
         'this run journalled no reviewer fan-out, so there is no set to check the verdicts ' +
         'against. That is not a round with nothing outstanding — it is a round nothing can ' +
         'read, and the two look identical from the lists alone.',
+    };
+  }
+
+  if (fanOutHead === null) {
+    return {
+      ok: false,
+      routed: [],
+      launched: [],
+      neverLaunched: [],
+      unanswered: [],
+      unattributed: [],
+      stale: [],
+      reason:
+        'the last reviewer fan-out names no head commit, so it cannot be coverage of ' +
+        'this one. Rerun the fan-out step for this head and record the commit it launched.',
+    };
+  }
+
+  if (!sameCommit(fanOutHead, target)) {
+    return {
+      ok: false,
+      routed: [],
+      launched: [],
+      neverLaunched: [],
+      unanswered: [],
+      unattributed: [],
+      stale: [],
+      reason:
+        'the last reviewer fan-out names a different head commit, so its launched set ' +
+        'does not cover this one. Rerun the fan-out step for this head before reading verdicts.',
     };
   }
 

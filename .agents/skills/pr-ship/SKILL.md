@@ -287,15 +287,16 @@ blockers.
    node .claude/scripts/verdict.mjs coverage "$(git rev-parse HEAD)"
    ```
 
-   Exit 0 is coverage; **exit 1 is a `HOLD`**, and its lines name each reviewer
-   and which of four cases it is — never launched (launch it), launched and
-   silent (go and read why), answered without naming a commit, or answered for
-   another commit (the head moved under the round). A blocker of yours, in the
-   same list as a failing check.
+   For a **declared run**, exit 0 is coverage. **Exit 1 is a `HOLD`.** A
+   reason-only unreadable-round failure prints the evidence boundary and remedy;
+   reviewer lists cover the four comparable cases — never launched (launch it),
+   launched and silent (go and read why), answered without naming a commit, or
+   answered for another commit (the head moved under the round). Record either
+   kind as a blocker of yours, in the same list as a failing check.
 
    Two limits, stated because a step that looks mechanical is trusted like one.
-   It reads **this run's journal**, so with no `RIG_RUN_DIR` it says it was
-   skipped and exits 0 — an honest nothing, not a pass. And it cannot see a
+   It reads **this run's journal**, so with unset `RIG_RUN_DIR` the check is
+   skipped; exit 0 is then an honest nothing, not coverage. And it cannot see a
    round that never reached this skill at all: a session that skips `pr-ship`
    skips its coverage check with it (`docs/decisions/gate-coverage.md`).
 6. **DoD walk.** Check the Definition of Done list in

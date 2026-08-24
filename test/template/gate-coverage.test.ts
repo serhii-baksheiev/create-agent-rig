@@ -37,6 +37,15 @@ const prShipPath = path.join(
   'pr-ship',
   'SKILL.md',
 );
+const gateCoverageDecisionPath = path.join(
+  repoRoot,
+  'templates',
+  'agent-os',
+  'universal',
+  'docs',
+  'decisions',
+  'gate-coverage.md',
+);
 
 /** One record as `readRun` hands it back: the journal's own fields, plus the writer's. */
 type JournalRecord = Record<string, unknown>;
@@ -271,6 +280,51 @@ describe('a route left unconsumed after the final fan-out makes this round unrea
   });
 });
 
+describe('the fan-out record itself belongs to the head being checked', () => {
+  const expectFanOutHeadRefusal = (coverage: Coverage): void => {
+    expect(coverage.ok).toBe(false);
+    // A route and launched set from another or unattributed head cannot be
+    // turned into facts about this head merely because fresh verdict records
+    // happen to follow them.
+    expect(coverage.routed).toEqual([]);
+    expect(coverage.launched).toEqual([]);
+    expect(coverage.neverLaunched).toEqual([]);
+    expect(coverage.unanswered).toEqual([]);
+    expect(coverage.unattributed).toEqual([]);
+    expect(coverage.stale).toEqual([]);
+    expect(typeof coverage.reason, 'the fan-out head refusal names no reason').toBe('string');
+    expect(coverage.reason).toMatch(/fan.?out.*(?:head|commit)/i);
+    expect(coverage.reason).toMatch(/rerun.*fan.?out.*(?:this|current).*(?:head|commit)/i);
+  };
+
+  it('refuses an older fan-out even when every later verdict names the requested head', async () => {
+    const coverage = await coverageOf(
+      journal(
+        routed(['code-reviewer', 'prose-reviewer']),
+        fanOut(['code-reviewer', 'prose-reviewer'], OLDER),
+        answered('code-reviewer'),
+        answered('prose-reviewer'),
+      ),
+    );
+
+    expectFanOutHeadRefusal(coverage);
+    expect(coverage.reason).toMatch(/(?:older|different|another|does not match)/i);
+  });
+
+  it('refuses a fan-out that names no head instead of attributing it from fresh verdicts', async () => {
+    const coverage = await coverageOf(
+      journal(
+        routed(['code-reviewer']),
+        { ...fanOut(['code-reviewer']), headSha: undefined },
+        answered('code-reviewer'),
+      ),
+    );
+
+    expectFanOutHeadRefusal(coverage);
+    expect(coverage.reason).toMatch(/(?:missing|absent|unattributed|names no)/i);
+  });
+});
+
 describe('the shipped gate instructions name every unreadable-round branch', () => {
   it('does not claim reason belongs only to missing fan-out', async () => {
     const header = (await readFile(modulePath, 'utf8')).split('/** The gate name')[0] ?? '';
@@ -283,6 +337,31 @@ describe('the shipped gate instructions name every unreadable-round branch', () 
   it('requires a fan-out record even when the launched set is empty', async () => {
     const source = await readFile(prShipPath, 'utf8');
     expect(source).toMatch(/record[^\n]*fan.?out[^\n]*even when[^\n]*(?:set|list)[^\n]*empty/i);
+  });
+
+  it('distinguishes declared-run coverage from an undeclared-run skip at exit zero', async () => {
+    const source = await readFile(prShipPath, 'utf8');
+    expect(source).toMatch(/\bdeclared run\b[\s\S]{0,180}\bexit 0\b[\s\S]{0,100}\bcoverage\b/i);
+    expect(source).toMatch(
+      /(?=[\s\S]{0,180}(?:unset|no) `?RIG_RUN_DIR`?)(?=[\s\S]{0,180}\bexit 0\b)(?=[\s\S]{0,180}\bskip(?:ped)?\b)/i,
+    );
+  });
+
+  it('describes reason-only unreadable-round failures beside reviewer-list failures', async () => {
+    const source = await readFile(prShipPath, 'utf8');
+    expect(source).toMatch(
+      /exit 1[\s\S]*(?:reason-only|reason without a reviewer)[\s\S]*unreadable[\s\S]*(?:reviewer lists|reviewer-list)/i,
+    );
+  });
+
+  it('does not point a shipped module at a generator-only test path', async () => {
+    const header = (await readFile(modulePath, 'utf8')).split('/** The gate name')[0] ?? '';
+    expect(header).not.toContain('test/template/gate-coverage.test.ts');
+  });
+
+  it('names the shipped module path exactly in the canonical decision', async () => {
+    const decision = await readFile(gateCoverageDecisionPath, 'utf8');
+    expect(decision).toContain('.claude/scripts/lib/gate-coverage.mjs');
   });
 });
 
@@ -1038,7 +1117,7 @@ describe('an abbreviated commit id and a full one are the same commit', () => {
     coverageOf(
       journal(
         routed(['code-reviewer']),
-        fanOut(['code-reviewer']),
+        fanOut(['code-reviewer'], argument),
         answered('code-reviewer', { headSha: verdictSha }),
       ),
       argument,
