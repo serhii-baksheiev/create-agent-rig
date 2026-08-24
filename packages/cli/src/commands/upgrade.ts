@@ -29,7 +29,7 @@ export type UpgradeVerdict =
   | 'conflict'
   /** The manifest says we installed it; the user removed it. Stays removed. */
   | 'deleted'
-  /** `settings.json` that is not replaceable: the released file is handed over. */
+  /** Hook wiring that is not replaceable: the released file is handed over. */
   | 'wiring';
 
 export interface UpgradeAction {
@@ -49,8 +49,10 @@ export interface UpgradePlan {
   /** True when provenance came from the hash history rather than a manifest. */
   bootstrapped: boolean;
   actions: UpgradeAction[];
-  /** The wiring `settings.json` would carry, when it differs from the disk. */
+  /** The first handed-over wiring file's released bytes, for CLI display. */
   wiring: string | null;
+  /** Released wiring bytes handed over, keyed by their own path. */
+  wiringByPath: Map<string, string>;
   /** New bytes per path — the report's payload, not part of the report. */
   contents: Map<string, string>;
   /** The manifest to leave behind once the plan is applied. */
@@ -71,6 +73,8 @@ export interface UpgradeResult {
 }
 
 const SETTINGS = '.claude/settings.json';
+const CODEX_HOOKS = '.codex/hooks.json';
+const WIRING_PATHS = new Set([SETTINGS, CODEX_HOOKS]);
 
 /** The universal layer's architecture group — installed by `create`, never by `init`. */
 const ARCHITECTURE_ONLY = [
@@ -209,7 +213,7 @@ function isReleasedVersion(
  *
  * The one question the hash arms cannot answer. They prove the bytes belong to
  * the rig; they do not prove the replacement wires the same hooks, and
- * `settings.json` has two flavours that differ in exactly that. A hook file
+ * Wiring files have flavours that differ in exactly that. A hook file
  * still on disk with nothing wired to it is the quiet failure
  * `lib/init-settings.ts` names: the rules claim it is enforced and nothing ever
  * calls it.
@@ -267,8 +271,8 @@ export async function planUpgrade(
   // The one case where the raw name cannot be kept is a directory the manifest
   // reader would refuse — `My App` produced `{"name":"My App"}`, which
   // `parseManifest` voids, so the manifest this command exists to write was
-  // written and immediately unreadable and every later run reported "no
-  // manifest here (a pre-0.4.0 rig)". The condition is that reader's own
+  // written and immediately unreadable, and every later run fell back to
+  // matching against released versions. The condition is that reader's own
   // exported predicate, not a second copy of its rule.
   //
   // 🔴 All three branches were bought by a defect, and two of those defects
@@ -305,6 +309,7 @@ export async function planUpgrade(
   const contents = new Map<string, string>();
   const nextFiles: Record<string, string> = {};
   let wiring: string | null = null;
+  const wiringByPath = new Map<string, string>();
 
   for (const file of files) {
     const current = await readIfPresent(repoDir, file.rel);
@@ -336,7 +341,7 @@ export async function planUpgrade(
       continue;
     }
 
-    // The two limits that keep `settings.json`'s new replaceability from
+    // The two limits that keep wiring files' new replaceability from
     // disarming the rig, both measured rather than reasoned about.
     //
     // 1. The released-hash fallback is not enough for THIS file. Every other
@@ -351,10 +356,10 @@ export async function planUpgrade(
     //    gated on the wiring itself: if the replacement would stop calling a
     //    hook still sitting in `.claude/hooks/`, it is handed over. That check
     //    does not care which flavour anything claims to be.
-    const isSettings = file.rel === SETTINGS;
+    const isWiring = WIRING_PATHS.has(file.rel);
     const wouldUnwireAnInstalledHook =
-      isSettings && (await unwiresAnInstalledHook(repoDir, current, file.content));
-    const vouched = isSettings
+      isWiring && (await unwiresAnInstalledHook(repoDir, current, file.content));
+    const vouched = isWiring
       ? recorded !== undefined && sha256(current) === recorded
       : (recorded !== undefined && sha256(current) === recorded) ||
         isReleasedVersion(history, file.rel, current, ctx);
@@ -369,14 +374,15 @@ export async function planUpgrade(
         templatePath: file.source,
         // Every other replacement is routine; this one rewrites what calls the
         // guards, so it says so rather than arriving as one more `~` line.
-        ...(isSettings ? { reason: 'the hook wiring, replaced — you never edited it' } : {}),
+        ...(isWiring ? { reason: 'the hook wiring, replaced — you never edited it' } : {}),
       });
       nextFiles[file.rel] = sha256(file.content);
-    } else if (isSettings) {
+    } else if (isWiring) {
       // Nothing vouches for these bytes, or replacing them would silence a hook
       // that is still installed. Either way this is the one file whose conflict
       // is a merge rather than a choice, so the released file is handed over.
       wiring = file.content;
+      wiringByPath.set(file.rel, file.content);
       actions.push({
         rel: file.rel,
         verdict: 'wiring',
@@ -428,6 +434,7 @@ export async function planUpgrade(
     bootstrapped: manifest === null,
     actions,
     wiring,
+    wiringByPath,
     contents,
     manifest: {
       version: await packageVersion(),

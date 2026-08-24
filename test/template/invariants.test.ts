@@ -122,6 +122,22 @@ describe('rules/invariants.md — the pattern, stated once', () => {
     // the brief's whole thesis: an inherited rule is invisibly wrong
     expect(content).toMatch(/example|not universal|delete it|yours/i);
   });
+
+  it('limits upstream test pointers to unchanged generator-authored hooks that disclose the exception', async () => {
+    const content = await rule();
+    const inheritedHooks =
+      content.match(/## About the hooks you were given\n([\s\S]*?)(?=\n## )/)?.[1] ?? '';
+
+    expect(inheritedHooks).toMatch(/exception/i);
+    expect(inheritedHooks).toMatch(/generator-authored|authored by (?:the )?generator/i);
+    expect(inheritedHooks).toMatch(
+      /(?:cite|point to)[^.]{0,120}(?:generator|upstream)[^.]{0,50}tests?/i,
+    );
+    expect(inheritedHooks).toMatch(/only while[^.]{0,100}(?:unchanged|untouched)/i);
+    expect(inheritedHooks).toMatch(
+      /hook[^.]{0,100}(?:header|source|comment)[^.]{0,100}(?:upstream|generator)[^.]{0,50}tests?/i,
+    );
+  });
 });
 
 describe('the new-invariant skill — the generator', () => {

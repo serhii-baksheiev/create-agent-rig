@@ -55,6 +55,15 @@ describe('initProject — the install', () => {
     expect(await readFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'utf8')).toContain(
       'TDD',
     );
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(
+      await readFile(path.join(repo, 'CLAUDE.md'), 'utf8'),
+    );
+    await expect(
+      readFile(path.join(repo, '.agents', 'skills', 'pr-ship', 'SKILL.md'), 'utf8'),
+    ).resolves.toBeTruthy();
+    await expect(
+      readFile(path.join(repo, '.codex', 'agents', 'code-reviewer.toml'), 'utf8'),
+    ).resolves.toBeTruthy();
     // it never brought architecture rules
     await expect(
       readFile(path.join(repo, '.claude', 'rules', 'architecture.md')),
@@ -65,6 +74,12 @@ describe('initProject — the install', () => {
     await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
     await expect(initProject(repo, {})).rejects.toThrow(InitError);
     expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# mine');
+  });
+
+  it('refuses to clobber an existing AGENTS.md', async () => {
+    await writeFile(path.join(repo, 'AGENTS.md'), '# mine');
+    await expect(initProject(repo, {})).rejects.toThrow(InitError);
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe('# mine');
   });
 
   it('never overwrites a pre-existing process file it did not write', async () => {
@@ -109,6 +124,9 @@ describe('initProject — the hooks are actually wired', () => {
     const settings = await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8');
     expect(settings).not.toContain('guard-core-purity');
     expect(settings).not.toContain('guard-web-boundary');
+    const codexHooks = await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8');
+    expect(codexHooks).toContain('guard-bash');
+    expect(codexHooks).not.toContain('guard-core-purity');
   });
 
   it('keeps a settings.json the repo already had, and reports it as kept', async () => {
@@ -119,6 +137,14 @@ describe('initProject — the hooks are actually wired', () => {
       '{"mine":true}',
     );
     expect(result.skipped).toContain('.claude/settings.json');
+  });
+
+  it('keeps Codex hook wiring the repo already had, and reports it as kept', async () => {
+    await mkdir(path.join(repo, '.codex'), { recursive: true });
+    await writeFile(path.join(repo, '.codex', 'hooks.json'), '{"mine":true}');
+    const result = await initProject(repo, {});
+    expect(await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{"mine":true}');
+    expect(result.skipped).toContain('.codex/hooks.json');
   });
 
   it('lists the wiring in the plan, so a dry run shows it too', async () => {
@@ -228,7 +254,9 @@ describe('initManifest — one list, used by the plan and the install alike', ()
     const rels = (await initManifest()).map((f) => f.rel);
     expect(rels).toContain('.claude/rules/workflow.md');
     expect(rels).toContain('CLAUDE.md');
+    expect(rels).toContain('AGENTS.md');
     expect(rels).toContain('.claude/settings.json');
+    expect(rels).toContain('.codex/hooks.json');
     expect(rels).not.toContain('.claude/rules/architecture.md');
   });
 });

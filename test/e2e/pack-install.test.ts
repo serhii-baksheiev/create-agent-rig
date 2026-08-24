@@ -50,6 +50,9 @@ describe('npm pack → install → generate (the publish path)', () => {
       expect(packedPaths).not.toContain(`templates/skeleton/${target}/apps/web/next-env.d.ts`);
     }
     expect(packedPaths).toContain('templates/agent-os/universal/.claude/settings.json');
+    expect(packedPaths).toContain('templates/agent-os/universal/AGENTS.md');
+    expect(packedPaths).toContain('templates/agent-os/universal/.codex/hooks.json');
+    expect(packedPaths).toContain('templates/agent-os/universal/.agents/skills/pr-ship/SKILL.md');
     expect(packedPaths).toContain('templates/agent-os/universal/.claude/skills/pr-ship/SKILL.md');
     expect(packedPaths).toContain(
       'templates/agent-os/stack/aws-cdk/.claude/skills/post-deploy-verify/SKILL.md',
@@ -72,6 +75,9 @@ describe('npm pack → install → generate (the publish path)', () => {
         '.github/workflows/ci.yml',
         'pnpm-lock.yaml',
         'CLAUDE.md',
+        'AGENTS.md',
+        '.codex/hooks.json',
+        '.agents/skills/pr-ship/SKILL.md',
       ]) {
         await expect(
           readFile(path.join(projectDir, p), 'utf8'),

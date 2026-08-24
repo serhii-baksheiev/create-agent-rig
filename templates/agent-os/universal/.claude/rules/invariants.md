@@ -63,9 +63,38 @@ That is enough, because it stops the normal path cold and the layers behind it
 enforcement has to describe its enforcement precisely, or the first surprise
 costs it all its credibility.
 
-**Fail closed on a match, fail open on an error.** If the hook itself throws or
-gets a payload it does not understand, it must allow the edit. A crashed guard
-that blocks everything gets deleted within the hour.
+**Fail closed on a match, fail open on an error.** If the hook itself throws, or
+is handed a payload it cannot even tell apart from noise, it must allow the edit.
+A crashed guard that blocks everything gets deleted within the hour.
+
+**Refusing to inspect is a third outcome, not a match and not an error** — and it
+has two members, which the first version of this rule collapsed into one.
+
+- **A bound was crossed.** The payload is readable and inspecting it safely would
+  cost more than the guard is allowed to spend. It blocks, names the limit, and
+  tells the caller to split the change and retry — which is advice they can act
+  on, because a smaller edit really does fit.
+- **The container is unreadable.** The guard can see *what* it was handed and
+  cannot read it: an `apply_patch` command that is neither a string nor a list of
+  strings, a `tool_input` that is not an object at all. It blocks, names the
+  shape it expected, and tells the caller to resend in that shape. It must **not**
+  say "split and retry": nothing about splitting changes a container, and a
+  remedy the caller cannot act on turns a refusal into a loop.
+
+🔴 **The line between "unreadable" and "not understood" is whether the guard can
+detect it**, and getting it backwards costs a credential either way. A field that
+is simply ABSENT is the fail-open case — the guard has nothing to judge, exactly
+as it has nothing to judge when a `Write` carries no content. A field that is
+PRESENT in a shape the guard does not accept is the refusal case: it was handed
+something, it could tell that it could not read it, and reporting that is the
+one thing it is for. This distinction was written after a guard reported out
+loud that it had not looked and returned the value meaning "there was nothing to
+look at" — the edit landed, with a credential in it.
+
+**The remedy belongs to the refusal, not to the guard that prints it.** Carry it
+as a field beside the reason, decided where the reason is decided. Choosing it
+by pattern-matching the reason's wording works until somebody rewords the reason,
+and then every copy of the guard silently prints the wrong advice.
 
 **A guard that fails open must do provably bounded work — and this is the rule
 that cost the most to learn.**
@@ -172,6 +201,12 @@ They arrive with their tests **in the generator that produced this project**, no
 in this repository — so by the rule above, as they sit here, they are checks
 without tests. That is deliberate and it has a boundary: it holds only while they
 are untouched.
+
+This is the one narrow exception for a generator-authored hook: it may cite the
+generator's upstream tests **only while unchanged downstream**, and its hook
+header must identify the upstream generator tests as absent locally. That pointer
+records the evidence used to author the inherited snapshot; it does not turn the
+absent test into a local check.
 
 **The moment you edit one, its test is yours.** A guard whose behaviour has
 changed and whose test lives somewhere else is precisely the "quietly stopped

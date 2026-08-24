@@ -13,7 +13,7 @@ import { packageVersion } from './lib/version.js';
 
 const USAGE = `Usage: create-agent-rig <dir> [options]
 
-Scaffolds a new project into <dir>: agent operating system (.claude/, CLAUDE.md)
+Scaffolds a new project into <dir>: a Claude Code + Codex agent operating system
 plus a runnable code skeleton. Refuses to write into a non-empty directory.
 
 Options
@@ -27,7 +27,8 @@ Options
 
 Also: create-agent-rig init [--dry-run]
   Install the process layer (rules, gates, stop rules — no architecture
-  assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md.
+  assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md
+  or AGENTS.md.
   --force is deprecated: it refuses and points at upgrade, which refreshes a
   rig file by file. It is removed in 0.6.
 
@@ -36,11 +37,17 @@ Also: create-agent-rig upgrade [--dry-run] [--yes]
   installed and you did not touch; everything else is reported, never merged.`;
 
 async function runInit(rawArgs: string[]): Promise<number> {
-  let values: { 'dry-run'?: boolean; force?: boolean };
+  let values: { 'dry-run'?: boolean; force?: boolean; 'no-color'?: boolean };
   try {
     ({ values } = parseArgs({
       args: rawArgs,
-      options: { 'dry-run': { type: 'boolean' }, force: { type: 'boolean' } },
+      // `--no-color` for the same reason it is accepted on `upgrade`: USAGE
+      // offers it without scoping it to one command.
+      options: {
+        'dry-run': { type: 'boolean' },
+        force: { type: 'boolean' },
+        'no-color': { type: 'boolean' },
+      },
       allowPositionals: false,
     }));
   } catch (error) {
@@ -56,9 +63,11 @@ async function runInit(rawArgs: string[]): Promise<number> {
   // overlays. Say so before anything is written, so it is visible on --dry-run
   // too.
   //
-  // It is a manifest read, so a pre-0.4.0 rig with no manifest gets no advisory
-  // even when it came from `create` — the same limit `recordInstall` carries,
-  // and stated in both places because either one alone reads as wider.
+  // It is a manifest read, so any rig without a READABLE manifest gets no
+  // advisory even when it came from `create` — one never written, one deleted,
+  // and one present but voided by `parseManifest` all reach here alike. The
+  // same limit `recordInstall` carries, stated in both places because either
+  // one alone reads as wider.
   const existing = await readManifest(cwd);
 
   const plan = await planInit(cwd);
@@ -91,13 +100,15 @@ async function runInit(rawArgs: string[]): Promise<number> {
       '.\n',
   );
 
-  // The one kept file that silently disables everything else: without this
-  // wiring the hooks sit on disk and are never called, while the rules claim
-  // they are enforced. Say so loudly, and hand over the exact entries.
-  if (result.skipped.includes('.claude/settings.json')) {
-    const wiring = (await initFileContents(cwd)).get('.claude/settings.json') ?? '';
+  // A kept harness config silently disables that harness's enforcement: the
+  // hooks sit on disk and are never called, while the rules claim they are.
+  // Say so loudly, and hand over the exact entries for each affected harness.
+  const generated = await initFileContents(cwd);
+  for (const wiringPath of ['.claude/settings.json', '.codex/hooks.json']) {
+    if (!result.skipped.includes(wiringPath)) continue;
+    const wiring = generated.get(wiringPath) ?? '';
     process.stdout.write(
-      `\n!  .claude/settings.json already exists — it was kept, so the rig's hooks are NOT wired.\n` +
+      `\n!  ${wiringPath} already exists — it was kept, so the rig's hooks are NOT wired there.\n` +
         `   Until you merge these entries into it, nothing enforces the rules:\n\n` +
         wiring.replace(/^/gm, '   ') +
         '\n',
@@ -120,7 +131,7 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   const lines: string[] = [
     `agent-rig upgrade — ${plan.kind} rig in ${repoDir}`,
     plan.bootstrapped
-      ? `  no manifest here (a pre-0.4.0 rig) — matching files against released versions`
+      ? `  no readable manifest here (deleted, never written, or unparseable) — matching files against released versions`
       : `  installed by ${plan.fromVersion}`,
     `  upgrading to ${plan.toVersion}`,
     '',
@@ -138,21 +149,51 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     }
   }
 
-  const unchanged = of('unchanged').length;
+  // Every one of `UpgradeVerdict`'s six members is accounted for here.
+  // `wiring` and `deleted` each print their own line and were in none of the
+  // buckets, so a reader counted lines and was told a smaller number.
+  // (`unchanged` is counted and prints nothing — the sum is over actions, not
+  // over printed lines.) The two appear only when they occurred, so a plan
+  // without them renders exactly as it always has. Pinned by, in cli-report.test.ts,
+  // "renders a plan with no wiring action exactly as it does today".
+  // `deleted` before `wiring`, the relative order the plan prints them in.
+  // ⚠ Only their order relative to EACH OTHER matches: the plan prints
+  // `deleted` before `conflict` and the summary prints it after, so this is not
+  // a plan-ordered line. Pinned by, in cli-report.test.ts,
+  // "lists the two occasional buckets in the order the plan prints them".
+  const occasional = [
+    ['deleted', (n: number) => `${n} you removed (left removed)`],
+    ['wiring', (n: number) => `${n} wiring handed over`],
+  ] as const;
+  const extra = occasional
+    .map(([verdict, phrase]) => [of(verdict).length, phrase] as const)
+    .filter(([count]) => count > 0)
+    .map(([count, phrase]) => phrase(count));
   lines.push(
     '',
     `  ${of('update').length} to replace, ${of('new').length} new, ` +
-      `${of('conflict').length} yours (kept), ${unchanged} already current`,
+      `${of('conflict').length} yours (kept), ` +
+      [...extra, `${of('unchanged').length} already current`].join(', '),
   );
   return `${lines.join('\n')}\n`;
 }
 
 async function runUpgrade(rawArgs: string[]): Promise<number> {
-  let values: { 'dry-run'?: boolean; yes?: boolean };
+  let values: { 'dry-run'?: boolean; yes?: boolean; 'no-color'?: boolean };
   try {
     ({ values } = parseArgs({
       args: rawArgs,
-      options: { 'dry-run': { type: 'boolean' }, yes: { type: 'boolean' } },
+      // `--no-color` is advertised in USAGE without scoping it to one command, so
+      // every command accepts it. Refusing a flag the help offers costs the
+      // reader more than honouring it costs us — and honouring it is only a
+      // parse here, because the sole palette lives on the `create` path below.
+      // Pinned by, in cli-report.test.ts,
+      // "upgrade accepts --no-color and prints plain output".
+      options: {
+        'dry-run': { type: 'boolean' },
+        yes: { type: 'boolean' },
+        'no-color': { type: 'boolean' },
+      },
       allowPositionals: false,
     }));
   } catch (error) {
@@ -167,15 +208,17 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // The one thing this command will not do for you — printed with the plan,
   // because the dry run is where a reader decides whether there is work here,
   // and a report that mentions entries it never shows is not a plan.
-  if (plan.wiring !== null) {
-    process.stdout.write(
-      `\n!  .claude/settings.json was handed over rather than replaced — the reason is\n` +
-        `   on its line above. It is where your own hooks live, so it is never\n` +
-        `   overwritten on anything but proof the rig wrote those exact bytes.\n` +
-        `   This version wires them like this; merge in what is missing:\n\n` +
-        plan.wiring.replace(/^/gm, '   ') +
-        '\n',
-    );
+  if (plan.wiringByPath.size > 0) {
+    for (const [wiringPath, wiring] of plan.wiringByPath) {
+      process.stdout.write(
+        `\n!  ${wiringPath} was handed over rather than replaced — the reason is\n` +
+          `   on its line above. It is hook wiring, so it is never overwritten\n` +
+          `   without proof the rig wrote those exact bytes.\n` +
+          `   This version wires it like this; merge in what is missing:\n\n` +
+          wiring.replace(/^/gm, '   ') +
+          '\n',
+      );
+    }
   }
 
   if (values['dry-run'] === true) {

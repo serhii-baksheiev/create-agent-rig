@@ -15,10 +15,22 @@
     ".claude/hooks/gate-stop-dod.mjs",
     ".claude/hooks/inject-rules.mjs",
     ".claude/hooks/guard-secret-file.mjs",
+    ".claude/hooks/lib/edit-input.mjs",
     ".claude/skills/pr-ship/SKILL.md",
     ".claude/skills/loop/SKILL.md",
     ".claude/skills/check-premises/SKILL.md",
     ".claude/skills/worktree-task/SKILL.md",
+    ".agents/skills/new-invariant/SKILL.md",
+    ".agents/skills/new-invariant/guard-invariant.example.mjs",
+    ".agents/skills/new-invariant/guard-invariant.example.test.mjs",
+    ".agents/skills/pr-ship/SKILL.md",
+    ".agents/skills/loop/SKILL.md",
+    ".agents/skills/check-premises/SKILL.md",
+    ".agents/skills/worktree-task/SKILL.md",
+    ".codex/agents/test-writer.toml",
+    ".codex/agents/code-reviewer.toml",
+    ".codex/agents/security-scanner.toml",
+    ".codex/agents/prose-reviewer.toml",
     ".claude/scripts/detect-missed-gate.mjs",
     ".claude/scripts/decision-router.mjs",
     ".claude/scripts/reconcile-external-prs.mjs",
@@ -44,6 +56,7 @@
     "journal/README.md",
     "docs/decisions/gate-coverage.md",
     "docs/decisions/fail-open-guards.md",
+    "docs/decisions/codex-adapter.md",
     "docs/decisions/closing-a-task.md",
     "docs/decisions/review-lanes.md",
     "docs/decisions/run-directory.md",
@@ -58,6 +71,8 @@
   ],
   "meta": [
     ".claude/settings.json",
-    "CLAUDE.md"
+    ".codex/hooks.json",
+    "CLAUDE.md",
+    "AGENTS.md"
   ]
 }

@@ -2,7 +2,7 @@
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
 >
-> **Status (0.4.0, published; queue moved to Jira `AR` on 16 Aug 2026).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6), the port brief (§7.7) and the upgrade brief (§7.8). **Published on npm** — `0.1.0` through `0.4.0` are live and `0.4.0` is `latest`; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. An installed rig is brought forward by `create-agent-rig upgrade` rather than by a procedure in a release note. `0.4.0` shipped **untagged** by the owner's decision, which the Operator queue carries as a live cost for 0.5.0. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
+> **Status (0.5.0 prepared, publish pending the owner; queue moved to Jira `AR` on 16 Aug 2026).** Phases 0–7 are all shipped, plus the factory extraction (§7.5, §7.6), the port brief (§7.7) and the upgrade brief (§7.8). **Published on npm** — `0.1.0` through `0.4.0` are live and `0.4.0` is `latest` until the owner publishes `0.5.0` — step 8 of the checklist in `CHANGELOG.md`, which step 9 then closes by smoking the published artifact; neither is an agent's to take; `npx create-agent-rig` resolves from the registry, and the git path still works unchanged. An installed rig is brought forward by `create-agent-rig upgrade` rather than by a procedure in a release note. Releases here ship **untagged** — a standing owner decision, since the owner publishes by hand; `CHANGELOG.md` step 7 records what that costs the released-hash table and AR-35 carries the fix. Detailed field notes and per-brief findings live in `NOTES.md`; this file is the map, `NOTES.md` is the log.
 
 ---
 
@@ -362,7 +362,7 @@ In practice: open an empty file and write the rule in your own words rather than
 - ~~Tool name~~ — **decided: `create-agent-rig`, unscoped.**
 - ~~Second target~~ — **decided: `node-service`** (plus a static web frontend in both targets).
 - ~~Repository hosting~~ — **decided: `github.com/serhii-baksheiev/create-agent-rig`** (remote + CI live).
-- **npm registry publish** — done through `0.4.0`, which is the current `latest`. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
+- **npm registry publish** — done through `0.4.0`, the current `latest`; `0.5.0` is prepared and waiting on the owner. Each release is an owner action, because `npm publish` needs 2FA and is irreversible: an agent prepares the release and stops at that command. The release checklist lives in `CHANGELOG.md`.
 - **A recorded demo** (asciinema/GIF of `demo.sh`) for the README — owner action; the static frame is in place.
 - **`--with-*` options / a third target** — deliberately deferred; only unlock on real Phase-11 usage data (§6, §10). (The `worktree` rule is no longer parked — `worktree-task` shipped in 0.3.0.)
 - **Side task (outside this repo):** audit the reference project's own skills for `context: fork` + `allowed-tools`.

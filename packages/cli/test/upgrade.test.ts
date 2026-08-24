@@ -16,6 +16,7 @@ let repo: string;
 
 const WORKFLOW = '.claude/rules/workflow.md';
 const SETTINGS = '.claude/settings.json';
+const CODEX_HOOKS = '.codex/hooks.json';
 const STOP_FLAG = '.claude/scripts/stop-flag.mjs';
 
 const abs = (rel: string): string => path.join(repo, ...rel.split('/'));
@@ -179,6 +180,18 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     expect(await read(SETTINGS)).toBe(mine);
   });
 
+  it('hands over Codex hook wiring the user edited, and writes none of it', async () => {
+    await installRig();
+    const mine = '{\n  "hooks": {"PreToolUse": []}\n}\n';
+    await write(CODEX_HOOKS, mine);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, CODEX_HOOKS)).toBe('wiring');
+
+    await applyUpgrade(repo, plan);
+    expect(await read(CODEX_HOOKS)).toBe(mine);
+  });
+
   it('does not tell the user their own settings.json was edited since it was installed', async () => {
     // `init` keeps a pre-existing settings.json and deliberately does not record
     // it, so there is no recorded hash — the same state the conflict arm already
@@ -267,8 +280,10 @@ describe('a rig that came from `create`, not from `init`', () => {
 // A `create` rig's directory name is only a legal project name until someone
 // renames the directory or clones it under another name. The manifest an
 // upgrade bootstraps from that basename is then written and immediately voided:
-// its own reader refuses the value, so every later run reports "no manifest
-// here (a pre-0.4.0 rig)" — the release's whole point, lost silently.
+// its own reader refuses the value, so every later run falls back to matching
+// against released versions — the release's whole point, lost silently. This is
+// the third population the plan header has to be true for: the file is on disk
+// and unreadable, which is why that line says "no READABLE manifest".
 describe('a `create` rig upgraded from a directory name that is not a project name', () => {
   let project: string;
 

@@ -3,9 +3,13 @@
 // an agent (or a human using the agent) cannot write an impure line into
 // packages/core/src/ even if it wants to.
 //
-// Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
+// Contract (Claude Code and Codex): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason.
+// Generator-owned coverage for the neutral bounded-inspection refusal lives upstream in
+// codex.test.ts › "$guard blocks with a neutral, actionable size-limit refusal"; generated
+// projects do not carry that suite, and a downstream edit requires a local replacement test.
 import { readFileSync } from 'node:fs';
+import { editFragments } from './lib/edit-input.mjs';
 
 /** The only non-relative import the core may use: its schema/validation library. */
 const ALLOWED_PACKAGES = ['zod'];
@@ -31,17 +35,27 @@ function main() {
   } catch {
     return 0; // unparseable payload: not ours to judge
   }
-  const toolName = input.tool_name;
-  const toolInput = input.tool_input ?? {};
-  if (toolName !== 'Write' && toolName !== 'Edit') return 0;
-
-  const filePath = String(toolInput.file_path ?? '').replaceAll('\\', '/');
-  if (!CORE_PATH.test(filePath) || !CODE_FILE.test(filePath)) return 0;
-
-  const fragment = String(
-    (toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '',
+  const fragments = editFragments(input);
+  const blocked = fragments.find(
+    ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
   );
-  const violations = findViolations(fragment);
+  const globalRefusal = blocked?.inspectionRefusal;
+  if (globalRefusal) {
+    process.stderr.write(
+      `BLOCKED — cannot safely inspect this edit: ${globalRefusal}\n` +
+        // The remedy has to match the refusal: splitting cannot change a
+        // container shape, and a fixed line sent the agent into a retry loop
+        // on the one path it could not retry out of.
+        `${blocked.remedy ?? 'Split it into a smaller patch and retry.'}\n`,
+    );
+    return 2;
+  }
+
+  const violations = fragments.flatMap(({ filePath, fragment, inspectionRefusal }) => {
+    if (!CORE_PATH.test(filePath) || !CODE_FILE.test(filePath)) return [];
+    if (inspectionRefusal) return [`cannot safely inspect this move — ${inspectionRefusal}`];
+    return findViolations(fragment);
+  });
   if (violations.length === 0) return 0;
 
   process.stderr.write(

@@ -36,7 +36,7 @@ beforeAll(async () => {
   await writeFile(presentFlag, '');
 });
 
-function runHook(command: string, flag?: string): Promise<{ code: number; stderr: string }> {
+function runHook(command: unknown, flag?: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
@@ -213,6 +213,31 @@ describe('guard-bash: it fails open on anything it does not understand', () => {
     });
     expect(nonBash).toBe(0);
     await allow('')();
+  });
+
+  it('allows unsupported non-string command input', async () => {
+    const result = await runHook(['bash', '-lc', 'git push --force origin master']);
+    expect(result.code).toBe(0);
+  });
+
+  it('stops looking for compact shell options at the script operand', async () => {
+    const result = await runHook('bash ./safe-script.sh -cx "git push --force origin main"');
+    expect(result.code).toBe(0);
+  });
+
+  it.each([
+    'bash -cx',
+    'bash -c -x',
+    'bash -c +x',
+    'bash -c +o nounset',
+    'bash -cO extglob',
+    'bash -coO nounset extglob',
+    'bash -c -oO nounset extglob',
+    'bash -c +oO nounset extglob',
+  ])('inspects the script argument passed through %s', async (shell) => {
+    const result = await runHook(`${shell} "git push --force origin main"`);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/shared branch|force/i);
   });
 
   it('allows a malformed payload', async () => {

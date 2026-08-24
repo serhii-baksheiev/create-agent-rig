@@ -2,6 +2,7 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
+import { mapConcurrent } from '../lib/copy-tree.js';
 import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
 import { substituteContent } from '../lib/substitute.js';
@@ -54,6 +55,8 @@ export interface InitResult {
 }
 
 const SETTINGS = '.claude/settings.json';
+const CODEX_HOOKS = '.codex/hooks.json';
+const MAPS = ['CLAUDE.md', 'AGENTS.md'] as const;
 
 async function loadManifest(): Promise<Manifest> {
   const raw = await readFile(path.join(agentOsUniversalDir(), 'layers.json'), 'utf8');
@@ -102,15 +105,19 @@ export async function initManifest(): Promise<InitFile[]> {
   const universal = agentOsUniversalDir();
   const override = agentOsInitDir();
 
-  const files: InitFile[] = [];
-  for (const rel of [...manifest.process, 'CLAUDE.md']) {
-    const overridden = path.join(override, rel);
-    files.push({
-      rel,
-      source: (await exists(overridden)) ? overridden : path.join(universal, rel),
-    });
-  }
+  const files = await mapConcurrent<string, InitFile>(
+    [...manifest.process, ...MAPS],
+    16,
+    async (rel) => {
+      const overridden = path.join(override, rel);
+      return {
+        rel,
+        source: (await exists(overridden)) ? overridden : path.join(universal, rel),
+      };
+    },
+  );
   files.push({ rel: SETTINGS, source: null });
+  files.push({ rel: CODEX_HOOKS, source: null });
   return files;
 }
 
@@ -136,20 +143,33 @@ export async function initFileContents(
 
   const files = await initManifest();
   const contents = new Map<string, string>();
-  for (const { rel, source } of files) {
-    if (source === null) continue;
-    contents.set(rel, substituteContent(await readFile(source, 'utf8'), ctx));
+  const sourceFiles = files.filter(
+    (file): file is InitFile & { source: string } => file.source !== null,
+  );
+  const rendered = await mapConcurrent(sourceFiles, 16, async ({ rel, source }) => ({
+    rel,
+    content: substituteContent(await readFile(source, 'utf8'), ctx),
+  }));
+  for (const { rel, content } of rendered) {
+    contents.set(rel, content);
   }
 
   const installedHooks = new Set(
     files.map((f) => f.rel).filter((rel) => rel.startsWith('.claude/hooks/')),
   );
-  const shipped = JSON.parse(
-    await readFile(path.join(agentOsUniversalDir(), SETTINGS), 'utf8'),
-  ) as unknown;
+  const [shippedSettings, shippedCodexHooks] = await Promise.all([
+    readFile(path.join(agentOsUniversalDir(), SETTINGS), 'utf8'),
+    readFile(path.join(agentOsUniversalDir(), CODEX_HOOKS), 'utf8'),
+  ]);
+  const shipped = JSON.parse(shippedSettings) as unknown;
   contents.set(
     SETTINGS,
     `${JSON.stringify(settingsForInstalledHooks(shipped, installedHooks), null, 2)}\n`,
+  );
+  const shippedCodex = JSON.parse(shippedCodexHooks) as unknown;
+  contents.set(
+    CODEX_HOOKS,
+    `${JSON.stringify(settingsForInstalledHooks(shippedCodex, installedHooks), null, 2)}\n`,
   );
   return contents;
 }
@@ -166,10 +186,11 @@ export async function initInstallSet(
 
 export async function planInit(repoDir: string): Promise<InitPlan> {
   const files = (await initManifest()).map((f) => f.rel);
-  const conflicts: string[] = [];
-  for (const rel of files) {
-    if (await exists(path.join(repoDir, rel))) conflicts.push(rel);
-  }
+  const conflicts = (
+    await mapConcurrent(files, 16, async (rel) =>
+      (await exists(path.join(repoDir, rel))) ? rel : null,
+    )
+  ).filter((rel): rel is string => rel !== null);
   return { files: files.map((p) => ({ path: p })), conflicts };
 }
 
@@ -180,35 +201,44 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   if (options.force) throw new InitError(FORCE_DEPRECATED);
 
   const files = (await initManifest()).map((f) => f.rel);
+  const previous = await readManifest(repoDir);
 
   // Refuse to clobber an existing CLAUDE.md — init edits someone's working
   // repository (brief §4, non-negotiable).
-  if (files.includes('CLAUDE.md')) {
-    if (await exists(path.join(repoDir, 'CLAUDE.md'))) {
+  for (const map of MAPS) {
+    if (files.includes(map) && (await exists(path.join(repoDir, map)))) {
+      // A create rig whose CLAUDE.md was deleted is the legacy route into init.
+      // Its generated AGENTS.md must not newly close that route, but only the
+      // manifest can distinguish that file from a user's own Codex guidance.
+      if (
+        map === 'AGENTS.md' &&
+        previous?.files[map] !== undefined &&
+        sha256(await readFile(path.join(repoDir, map), 'utf8')) === previous.files[map]
+      ) {
+        continue;
+      }
       throw new InitError(
-        'This repo already has a CLAUDE.md. Refusing to overwrite it. ' +
+        `This repo already has an ${map}. Refusing to overwrite it. ` +
           'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.',
       );
     }
   }
 
   const contents = await initFileContents(repoDir);
-  const written: string[] = [];
-  const skipped: string[] = [];
   const plannedCount = files.length;
-
-  for (const rel of files) {
+  const actions = await mapConcurrent(files, 16, async (rel) => {
     const dest = path.join(repoDir, rel);
     if (await exists(dest)) {
       // never overwrite a file init did not write (a user's own copy)
-      skipped.push(rel);
-      continue;
+      return { rel, verdict: 'skipped' as const };
     }
-    if (options.dryRun) continue;
+    if (options.dryRun) return { rel, verdict: 'planned' as const };
     await mkdir(path.dirname(dest), { recursive: true });
     await writeFile(dest, contents.get(rel) ?? '');
-    written.push(rel);
-  }
+    return { rel, verdict: 'written' as const };
+  });
+  const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);
+  const skipped = actions.filter(({ verdict }) => verdict === 'skipped').map(({ rel }) => rel);
 
   if (!options.dryRun) await recordInstall(repoDir, written, contents);
 
@@ -233,9 +263,12 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * it wrote; it does not get to re-describe how the rig was installed.
  *
  * ⚠ **The limit, stated because the fix reads as wider than it is:** this
- * preserves a manifest, so a rig that has none — anything from before 0.4.0 —
- * still gets `kind: 'init'`, no stacks and an empty region, and the advisory in
- * `runInit` stays silent for the same reason. `upgrade`'s `detectInstall`
+ * preserves a manifest, so a rig without a READABLE one still gets
+ * `kind: 'init'`, no stacks and an empty region, and the advisory in `runInit`
+ * stays silent for the same reason. That is three populations, not one: a rig
+ * from before 0.4.0 never had a manifest, a deleted manifest is a documented
+ * recovery step, and one on disk that `parseManifest` voids reads as absent to
+ * `readManifest` alike. `upgrade`'s `detectInstall`
  * recovers all three from the files on disk, so those values are not
  * unavailable, only unavailable *here*: reaching for it would point
  * `commands/init` at `commands/upgrade`, which already imports this module.

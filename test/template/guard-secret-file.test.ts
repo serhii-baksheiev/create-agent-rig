@@ -67,6 +67,16 @@ const edit = (filePath: string, newString: string) => ({
   tool_input: { file_path: filePath, old_string: 'x', new_string: newString },
 });
 
+const applyPatch = (filePath: string, addition: string) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'apply_patch',
+  tool_input: {
+    command: ['*** Begin Patch', `*** Add File: ${filePath}`, `+${addition}`, '*** End Patch'].join(
+      '\n',
+    ),
+  },
+});
+
 const deny = async (payload: unknown, why: string): Promise<HookResult> => {
   const result = await runHook(payload);
   expect(result.code, `should BLOCK: ${why}\nstderr: ${result.stderr}`).toBe(2);
@@ -104,6 +114,10 @@ describe('guard-secret-file: a credential-named path is refused whatever is in i
     await deny(write(`${repoRoot}/config/secrets/prod.txt`, 'anything at all\n'), 'absolute path');
   });
 
+  it('blocks apply_patch from adding a credential-named file', async () => {
+    await deny(applyPatch('config/secrets/prod.txt', 'documented placeholder'), 'apply_patch path');
+  });
+
   it('names the path it refused and where a credential belongs instead', async () => {
     const result = await deny(write('jira.env', 'anything at all\n'), 'jira.env');
     expect(result.stderr).toContain('jira.env');
@@ -127,6 +141,13 @@ describe('guard-secret-file: a credential value is refused wherever it is being 
   // that only ever looked at `content` would pass every Edit in the session.
   it('blocks an Edit whose new_string carries a credential value', async () => {
     await deny(edit('packages/core/src/thing.ts', `const key = '${GITHUB_PAT}';`), 'Edit');
+  });
+
+  it('blocks apply_patch when an added line carries a credential value', async () => {
+    await deny(
+      applyPatch('notes.md', `const key = '${GITHUB_PAT}';`),
+      'apply_patch credential value',
+    );
   });
 
   it('names which shape it matched and the line it is on', async () => {
@@ -159,6 +180,81 @@ describe('guard-secret-file: a credential value is refused wherever it is being 
   });
 });
 
+// 🔴 A payload the normalizer cannot READ is not a payload it may DROP. For an
+// `apply_patch` whose `command` is neither a string nor an array of strings,
+// `editFragments` returned no fragments at all — and a hook handed no fragments
+// finds nothing to refuse, so the credential inside the shape it could not parse
+// was written. The over-length branch ten lines above it in the same file already
+// answers this situation the other way: a fragment carrying `inspectionRefusal`
+// and `appliesToAll`, which every consumer fails closed on.
+//
+// This is not the fail-open case of `.claude/rules/invariants.md`. That rule is
+// about the guard THROWING — an error it cannot reason about. This is a condition
+// the guard detected, named in its own diagnostic, and then declined to act on.
+describe('guard-secret-file: an apply_patch command it cannot read is refused, not dropped', () => {
+  const patchLines = (addition: string) => [
+    '*** Begin Patch',
+    '*** Add File: notes.md',
+    `+${addition}`,
+    '*** End Patch',
+  ];
+  const credentialLine = `AWS_KEY=${CLOUD_ACCESS_KEY}`;
+  const withCommand = (command: unknown) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: { command },
+  });
+
+  it('blocks a credential in a command given as one string', async () => {
+    await deny(withCommand(patchLines(credentialLine).join('\n')), 'string command');
+  });
+
+  it('blocks a credential in a command given as an array of strings', async () => {
+    await deny(withCommand(patchLines(credentialLine)), 'array-of-strings command');
+  });
+
+  it('refuses a command array holding a non-string element rather than inspecting nothing', async () => {
+    const result = await deny(
+      withCommand([
+        '*** Begin Patch',
+        '*** Add File: notes.md',
+        42,
+        `+${credentialLine}`,
+        '*** End Patch',
+      ]),
+      'array with one non-string element',
+    );
+    expect(result.stderr).toMatch(/cannot safely inspect/i);
+  });
+
+  it('refuses a command given as an object rather than inspecting nothing', async () => {
+    const result = await deny(
+      withCommand({ patch: patchLines(credentialLine).join('\n') }),
+      'object command',
+    );
+    expect(result.stderr).toMatch(/cannot safely inspect/i);
+  });
+
+  it('names the unreadable command shape as its reason, and still prints no credential', async () => {
+    const result = await deny(
+      withCommand({ patch: patchLines(credentialLine).join('\n') }),
+      'object command',
+    );
+    expect(result.stderr).toMatch(/shape|form/i);
+    // A size refusal and a credential finding are different diagnoses; borrowing
+    // either one sends the reader to fix something that is not wrong.
+    expect(result.stderr).not.toMatch(/is a credential file/);
+    expect(result.stderr).not.toContain(CLOUD_ACCESS_KEY);
+  });
+
+  it('leaves a well-formed patch that carries no credential allowed', async () => {
+    await allow(
+      withCommand(patchLines('export const greet = () => "hello";')),
+      'ordinary apply_patch',
+    );
+  });
+});
+
 describe('guard-secret-file: the ordinary work of the day stays allowed', () => {
   it('allows a Write to .env.example, which is how a project states what it needs', async () => {
     await allow(write('.env.example', `JIRA_API_TOKEN=${'your-token-here'}\n`), '.env.example');
@@ -186,7 +282,7 @@ describe('guard-secret-file: the ordinary work of the day stays allowed', () => 
     ['Bash', { command: `echo ${CLOUD_ACCESS_KEY} >> notes.md` }],
     ['Grep', { pattern: GITHUB_PAT, path: '.' }],
   ])(
-    'allows a %s call carrying the same credential payload — the matcher is Write|Edit',
+    'allows a %s call carrying the same credential payload — the matcher is edit-only',
     async (toolName, toolInput) => {
       await allow(
         { hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput },
@@ -242,6 +338,18 @@ describe('guard-secret-file: it fails open on anything it does not understand', 
 // A hook nobody calls is decoration, and a hook installed without the module it
 // imports is worse — it throws on a missing import at every single edit.
 describe('guard-secret-file: the wiring that makes it run at all', () => {
+  it('names every covered edit tool in autonomy.md’s mechanical refusal sentence', async () => {
+    const autonomy = await readFile(
+      path.join(universal, '.claude', 'rules', 'autonomy.md'),
+      'utf8',
+    );
+    const mechanicalSentence = autonomy.match(/\*\*mechanical\*\*:\s*([\s\S]*?)\.\s*⚠/)?.[1] ?? '';
+
+    expect(mechanicalSentence).toContain('`Write`');
+    expect(mechanicalSentence).toContain('`Edit`');
+    expect(mechanicalSentence).toContain('`apply_patch`');
+  });
+
   it('is registered in settings.json under a PreToolUse matcher covering Write and Edit', async () => {
     const settings = JSON.parse(
       await readFile(path.join(universal, '.claude', 'settings.json'), 'utf8'),
@@ -268,12 +376,26 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
     expect(layers.process).toContain('.claude/hooks/guard-secret-file.mjs');
     expect(layers.process).toContain('.claude/scripts/lib/secrets.mjs');
   });
+
+  it('registers apply_patch and consumes the shared edit normalizer', async () => {
+    const settings = JSON.parse(
+      await readFile(path.join(universal, '.claude', 'settings.json'), 'utf8'),
+    ) as { hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> } };
+    const group = settings.hooks.PreToolUse.find((candidate) =>
+      candidate.hooks.some((entry) => entry.command.includes('guard-secret-file.mjs')),
+    );
+    expect(group?.matcher.split('|').map((part) => part.trim())).toContain('apply_patch');
+
+    const source = await readFile(hook, 'utf8');
+    expect(source).toMatch(/from ['"]\.\/lib\/edit-input\.mjs['"]/);
+    expect(source).toMatch(/editFragments\(input\)/);
+  });
 });
 
 // `.claude/rules/invariants.md`, "State the limits — and test them": a limits
 // comment is the guard's own claim about how far it can be trusted, and nothing
 // checks prose, so it drifts — into overstatement, which is the direction that
-// gets someone hurt. The hook's header names three limits. These are them.
+// gets someone hurt. The hook's header names four limits. These are them.
 describe('guard-secret-file: the limits it states, asserted rather than asserted-in-prose', () => {
   it('does not see a credential split across two edits, because it is shown one fragment at a time', async () => {
     // The halves are innocuous apart and a credential together. Each edit is
@@ -299,6 +421,21 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     expect(source).toMatch(/LIMITS/);
     expect(source).toMatch(/fragment/i);
     expect(source).toMatch(/FAILS OPEN/i);
+  });
+
+  it('separates the shapes it refuses from the payloads it still fails open on', async () => {
+    const source = await readFile(hook, 'utf8');
+    expect(source).toMatch(/There are FOUR:/);
+
+    const failOpenLimit =
+      source.match(/\/\/ {3}- It FAILS OPEN[\s\S]*?(?=\n\/\/\n\/\/ Failing open)/)?.[0] ?? '';
+    // The limit must say REFUSES for a present-but-unreadable command shape —
+    // this assertion used to require the opposite, and kept a false claim green
+    // after the behaviour was reversed.
+    expect(failOpenLimit).toMatch(/refuse/i);
+    expect(failOpenLimit).toMatch(/shape/i);
+    // and the pointer it carries has to name a test that exists
+    expect(failOpenLimit).toMatch(/refuses, rather than failing open/);
   });
 });
 
