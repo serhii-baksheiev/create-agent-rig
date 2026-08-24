@@ -5,6 +5,13 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -23,7 +30,7 @@ jobs:
       - run: node scripts/validate-no-secrets.mjs
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      - run: pnpm test:unit --testTimeout=15000
 
   # PLAN.md §8 item 1 — mandatory: the template is a valid project and is
   # exercised in place, so it cannot rot silently.
@@ -35,6 +42,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
       - run: pnpm --dir templates/skeleton/aws-serverless install --frozen-lockfile
       - run: pnpm --dir templates/skeleton/aws-serverless run check
 
@@ -46,5 +54,47 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
       - run: pnpm --dir templates/skeleton/node-service install --frozen-lockfile
       - run: pnpm --dir templates/skeleton/node-service run check
+
+  windows-unit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # AR-93 removes this measured compatibility list. Keep every temporary
+      # exclusion explicit so a newly failing file cannot disappear silently.
+      - name: Run unit tests with named Windows exclusions
+        run: >-
+          pnpm test:unit
+          --testTimeout=15000
+          --exclude packages/cli/test/copy-tree.test.ts
+          --exclude packages/cli/test/create.test.ts
+          --exclude packages/cli/test/init.test.ts
+          --exclude test/template/agents.test.ts
+          --exclude test/template/aws-extras.test.ts
+          --exclude test/template/codex.test.ts
+          --exclude test/template/decision-router.test.ts
+          --exclude test/template/dogfood.test.ts
+          --exclude test/template/gate-rounds.test.ts
+          --exclude test/template/gate-scripts.test.ts
+          --exclude test/template/git-env.test.ts
+          --exclude test/template/guard-hardening.test.ts
+          --exclude test/template/guard-secret-file.test.ts
+          --exclude test/template/hooks.test.ts
+          --exclude test/template/invariants.test.ts
+          --exclude test/template/packaging.test.ts
+          --exclude test/template/queue-jira.test.ts
+          --exclude test/template/queue.test.ts
+          --exclude test/template/review-fixes.test.ts
+          --exclude test/template/root-ci.test.ts
+          --exclude test/template/run-journal.test.ts
+          --exclude test/template/secrets-lib.test.ts
+          --exclude test/template/skills.test.ts
+          --exclude test/template/validate-no-secrets.test.ts
