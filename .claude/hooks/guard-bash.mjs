@@ -28,7 +28,7 @@
 // test/template/guard-hardening.test.ts › "check mode rejects prose drift without
 // rewriting it". The executable Not caught cases are also run by that file's
 // "documents each remaining limit, and each really is one" test; Scope cases by
-// "exercises one representative command for every documented Scope limit".
+// "declares and exercises every command behaviour named by each Scope sentence".
 //
 // <!-- limits:start -->
 // Not caught:

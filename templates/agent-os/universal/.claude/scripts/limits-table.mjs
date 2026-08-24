@@ -18,8 +18,10 @@ const assertSingleLine = (value, location) => {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`malformed LIMITS fixture: ${location} must be a non-empty string`);
   }
-  if (/[\r\n]/.test(value)) {
-    throw new Error(`malformed LIMITS fixture: ${location} contains a carriage return or line feed`);
+  if (/[\r\n\u2028\u2029]/u.test(value)) {
+    throw new Error(
+      `malformed LIMITS fixture: ${location} contains a carriage return, line feed, line separator, or paragraph separator`,
+    );
   }
 };
 
@@ -48,6 +50,21 @@ const readTable = async (hookName) => {
   ]) {
     for (const [index, entry] of entries.entries()) {
       assertSingleLine(entry?.prose, `${section}[${index}].prose`);
+      if (section === 'scope') {
+        if (!Array.isArray(entry?.variants) || entry.variants.length === 0) {
+          throw new Error(`malformed LIMITS fixture: ${section}[${index}].variants must be non-empty`);
+        }
+        for (const [variantIndex, variant] of entry.variants.entries()) {
+          const location = `${section}[${index}].variants[${variantIndex}]`;
+          assertSingleLine(variant?.command, `${location}.command`);
+          if (variant?.decision !== 'allow' && variant?.decision !== 'deny') {
+            throw new Error(`malformed LIMITS fixture: ${location}.decision must be allow or deny`);
+          }
+          if (variant.brake !== undefined && typeof variant.brake !== 'boolean') {
+            throw new Error(`malformed LIMITS fixture: ${location}.brake must be a boolean`);
+          }
+        }
+      }
     }
   }
   assertSingleLine(table.footer, 'footer');

@@ -28,23 +28,50 @@
   "scope": [
     {
       "prose": "deletes: only `rm` is examined; `find -delete`, `dd`, `shred`, `truncate`, `mv`, `rsync --delete` and `chmod -R 000` are not",
-      "command": "find . -delete"
+      "variants": [
+        { "command": "rm -rf /", "decision": "deny" },
+        { "command": "find . -delete", "decision": "allow" },
+        { "command": "dd if=/dev/zero of=artifact.bin", "decision": "allow" },
+        { "command": "shred artifact.bin", "decision": "allow" },
+        { "command": "truncate -s 0 artifact.bin", "decision": "allow" },
+        { "command": "mv artifact.bin /tmp/artifact.bin", "decision": "allow" },
+        { "command": "rsync --delete source/ destination/", "decision": "allow" },
+        { "command": "chmod -R 000 .", "decision": "allow" }
+      ]
     },
     {
       "prose": "production deploys: only a workflow dispatch is examined; a direct infrastructure CLI deploy or registry publish is not caught",
-      "command": "npm publish"
+      "variants": [
+        { "command": "gh workflow run deploy.yml -f environment=production", "decision": "deny" },
+        { "command": "infra deploy production", "decision": "allow" },
+        { "command": "npm publish", "decision": "allow" }
+      ]
     },
     {
       "prose": "direct pushes: only commands that name the branch are examined; bare `git push` and `git push origin HEAD` are not caught unless the kill switch is on",
-      "command": "git push"
+      "variants": [
+        { "command": "git push origin main", "decision": "deny" },
+        { "command": "git push", "decision": "allow" },
+        { "command": "git push origin HEAD", "decision": "allow" },
+        { "command": "git push", "decision": "deny", "brake": true },
+        { "command": "git push origin HEAD", "decision": "deny", "brake": true }
+      ]
     },
     {
       "prose": "branch deletion: `git push --delete` is caught; `git branch -D main`, `git update-ref -d` and direct API deletion are not",
-      "command": "git branch -D main"
+      "variants": [
+        { "command": "git push --delete origin main", "decision": "deny" },
+        { "command": "git branch -D main", "decision": "allow" },
+        { "command": "git update-ref -d refs/heads/main", "decision": "allow" },
+        { "command": "gh api --method DELETE repos/acme/app/git/refs/heads/main", "decision": "allow" }
+      ]
     },
     {
       "prose": "a command carried as a flag value, such as `find ... -exec` or `env -S`, is not followed",
-      "command": "env -S 'rm -rf /'"
+      "variants": [
+        { "command": "find . -exec sh -c 'rm -rf /' \\;", "decision": "allow" },
+        { "command": "env -S 'rm -rf /'", "decision": "allow" }
+      ]
     }
   ],
   "footer": "The list is **not exhaustive**. The guard targets drift, not an adversary; review and CI remain behind it."

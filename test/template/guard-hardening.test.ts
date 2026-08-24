@@ -34,7 +34,11 @@ const dogfoodLimitsTable = path.join(repoRoot, '.claude', 'scripts', 'limits-tab
 
 const LIMITS = JSON.parse(readFileSync(limitsFixture, 'utf8')) as {
   notCaught: Array<{ prose: string; command?: string; mentioned: string }>;
-  scope: Array<{ prose: string; command: string }>;
+  scope: Array<{
+    prose: string;
+    command?: string;
+    variants?: Array<{ command: string; decision: 'allow' | 'deny'; brake?: boolean }>;
+  }>;
   footer: string;
 };
 const guardBashLimits = LIMITS;
@@ -618,9 +622,11 @@ describe('the limits table is generated from the behavioural fixture', () => {
 
 describe('the limits-table writer treats fixtures and hook files as untrusted input', () => {
   it.each([
-    ['prose', { ...runtimeValueLimit, prose: 'first line\n// injected second line' }],
-    ['footer', 'first line\r// injected second line'],
-  ])('rejects a newline in fixture %s', async (field, injected) => {
+    ['LF in prose', 'prose', { ...runtimeValueLimit, prose: 'first line\n// injected' }],
+    ['CR in footer', 'footer', 'first line\r// injected'],
+    ['U+2028 in prose', 'prose', { ...runtimeValueLimit, prose: 'first line\u2028// injected' }],
+    ['U+2029 in footer', 'footer', 'first line\u2029// injected'],
+  ])('rejects the %s line separator', async (_name, field, injected) => {
     const sandbox = await limitsTableSandbox();
     const table =
       field === 'prose'
@@ -631,7 +637,9 @@ describe('the limits-table writer treats fixtures and hook files as untrusted in
 
     const result = await runLimitsTable(sandbox.script, ['guard-bash']);
     expect(result.code, result.stdout + result.stderr).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/carriage|line feed|newline|CR|LF/i);
+    expect(result.stdout + result.stderr).toMatch(
+      /carriage|line feed|line separator|paragraph separator|newline|CR|LF|U\+2028|U\+2029/i,
+    );
     expect(await readFile(sandbox.hook, 'utf8')).toBe(before);
   });
 
@@ -740,8 +748,57 @@ describe('the guard does provably bounded work, and says what it cannot see', ()
     expect(source).toMatch(/not exhaustive|drift, not an adversary/i);
   });
 
-  it('exercises one representative command for every documented Scope limit', async () => {
-    for (const limit of guardBashLimits.scope) await allow(limit.command);
+  it('declares and exercises every command behaviour named by each Scope sentence', async () => {
+    const expectedVariants = [
+      [
+        { command: 'rm -rf /', decision: 'deny' },
+        { command: 'find . -delete', decision: 'allow' },
+        { command: 'dd if=/dev/zero of=artifact.bin', decision: 'allow' },
+        { command: 'shred artifact.bin', decision: 'allow' },
+        { command: 'truncate -s 0 artifact.bin', decision: 'allow' },
+        { command: 'mv artifact.bin /tmp/artifact.bin', decision: 'allow' },
+        { command: 'rsync --delete source/ destination/', decision: 'allow' },
+        { command: 'chmod -R 000 .', decision: 'allow' },
+      ],
+      [
+        { command: 'gh workflow run deploy.yml -f environment=production', decision: 'deny' },
+        { command: 'infra deploy production', decision: 'allow' },
+        { command: 'npm publish', decision: 'allow' },
+      ],
+      [
+        { command: 'git push origin main', decision: 'deny' },
+        { command: 'git push', decision: 'allow' },
+        { command: 'git push origin HEAD', decision: 'allow' },
+        { command: 'git push', decision: 'deny', brake: true },
+        { command: 'git push origin HEAD', decision: 'deny', brake: true },
+      ],
+      [
+        { command: 'git push --delete origin main', decision: 'deny' },
+        { command: 'git branch -D main', decision: 'allow' },
+        { command: 'git update-ref -d refs/heads/main', decision: 'allow' },
+        {
+          command: 'gh api --method DELETE repos/acme/app/git/refs/heads/main',
+          decision: 'allow',
+        },
+      ],
+      [
+        { command: "find . -exec sh -c 'rm -rf /' \\;", decision: 'allow' },
+        { command: "env -S 'rm -rf /'", decision: 'allow' },
+      ],
+    ] as const;
+
+    expect(guardBashLimits.scope).toHaveLength(expectedVariants.length);
+    for (const variants of expectedVariants) {
+      for (const variant of variants) {
+        const environment = 'brake' in variant && variant.brake ? brakeOn : noBrake;
+        if (variant.decision === 'deny') await deny(variant.command, environment);
+        else await allow(variant.command, environment);
+      }
+    }
+    for (const [index, limit] of guardBashLimits.scope.entries()) {
+      const variants = expectedVariants[index];
+      expect(limit.variants, `Scope fixture entry ${index + 1}: ${limit.prose}`).toEqual(variants);
+    }
   });
 
   it('states the heredoc budget as a limit, in the direction it actually errs', async () => {
