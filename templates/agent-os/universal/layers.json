@@ -36,6 +36,7 @@
     ".claude/scripts/reconcile-external-prs.mjs",
     ".claude/scripts/stop-flag.mjs",
     ".claude/scripts/git-env.mjs",
+    ".claude/scripts/limits-table.mjs",
     ".claude/scripts/preflight.mjs",
     ".claude/scripts/run-journal.mjs",
     ".claude/scripts/run-state.mjs",

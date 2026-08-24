@@ -24,54 +24,40 @@
 //
 // ── The limits, stated exactly — and TESTED ──────────────────────────────────
 //
-// This block is a credibility claim, so `test/template/guard-hardening.test.ts`
-// asserts each line twice: that the limit is documented here, and that the
-// command really does pass. A limits comment nothing checks drifts into fiction,
-// which is what happened the first time — an earlier version of this list was
-// understated in six ways.
+// This block is generated from the LIMITS fixture. See
+// test/template/guard-hardening.test.ts › "check mode rejects prose drift without
+// rewriting it". The executable Not caught cases are also run by that file's
+// "documents each remaining limit, and each really is one" test.
 //
+// <!-- limits:start -->
 // Not caught:
 //   - a value that only exists at runtime: `git push --force origin $BRANCH`;
-//   - a user-defined alias, or a wrapper script that shells out:
-//     `./scripts/deploy-prod.sh`;
-//   - a command assembled at runtime: `eval "$(printf ...)"`;
-//   - brace expansion: `git push --force origin mai{n..n}` really does push to
-//     `main`, and the guard does not expand it;
-//   - more than 32 heredocs in one command: past that budget the bodies are read
-//     as commands, so a script with 33+ heredocs can be falsely BLOCKED on its
-//     own data. The budget exists because each lookahead scans forward, and an
-//     unbounded number of them is the quadratic hazard that once killed the hook.
-//     Erring toward a false block past the budget is the safe direction — but it
-//     is a limit, so it is written here rather than discovered.
+//   - a user-defined alias, or a wrapper script that shells out: `./scripts/deploy-prod.sh`;
+//   - a command assembled at runtime: `eval "$(printf 'git push --force origin main')"`;
+//   - brace expansion: `git push --force origin mai{n..n}` really does push to `main`, and the guard does not expand it;
+//   - more than 32 heredocs in one command: past that budget the bodies are inspected as commands, so ordinary data can be falsely blocked;
 //
-// That last one is here BY CHOICE, and the choice is the point. Expanding braces
-// needs a cross-product, and a bound per group is not a bound on the result: the
-// implementation that did it could be made to overflow the stack, which the
-// fail-open catch below turned into "allow" for every rule at once. A guard that
-// can be disarmed by ten characters is worse than one with a documented gap.
-// See .claude/rules/invariants.md, "A guard that fails open must do provably
-// bounded work".
+// And the SCOPE of each rule:
+//   - deletes: only `rm` is examined; `find -delete`, `dd`, `shred`, `truncate`, `mv`, `rsync --delete` and `chmod -R 000` are not;
+//   - production deploys: only a workflow dispatch is examined; a direct infrastructure CLI deploy or registry publish is not caught;
+//   - direct pushes: only commands that name the branch are examined; bare `git push` and `git push origin HEAD` are not caught unless the kill switch is on;
+//   - branch deletion: `git push --delete` is caught; `git branch -D main`, `git update-ref -d` and direct API deletion are not;
+//   - a command carried as a flag value, such as `find ... -exec` or `env -S`, is not followed;
 //
-// And the SCOPE of each rule, because "refuses the Never tier" reads wider than
-// what is actually inspected:
-//   - deletes: only `rm` is examined. `find -delete`, `dd`, `shred`, `truncate`,
-//     `mv`, `rsync --delete` and `chmod -R 000` are not;
-//   - production deploys: only a workflow dispatch (`gh workflow run`, `gh api
-//     …/dispatches`). A deploy driven straight from an infrastructure CLI, or a
-//     registry publish, is not caught — and on a target whose own deploy command
-//     IS such a CLI, that is the ordinary spelling, not an exotic one;
-//   - direct pushes: only when the command NAMES the branch. Bare `git push` and
-//     `git push origin HEAD` depend on the checked-out branch, which this guard
-//     cannot know without running git. While the kill switch is on they are
-//     refused for that reason; the rest of the time they are not;
-//   - branch deletion: `git push --delete` is caught; `git branch -D main`,
-//     `git update-ref -d` and `gh api -X DELETE …/refs/heads/main` are not;
-//   - a command carried as a flag value (`find … -exec`, `env -S`) is not
-//     followed.
+// The list is **not exhaustive**. The guard targets drift, not an adversary; review and CI remain behind it.
+// <!-- limits:end -->
 //
-// The list is **not exhaustive**. The guard targets DRIFT — the ordinary spelling
-// written without thinking — not an adversary, and circumventing it is itself a
-// Never-tier violation. The layers behind it are review and CI.
+// The brace and heredoc limits are here BY CHOICE. Expanding braces needs a
+// cross-product, and a bound per group is not a bound on the result. The prior
+// implementation could overflow the stack, which the fail-open catch below
+// turned into "allow" for every rule at once. A guard that can be disarmed by ten
+// characters is worse than one with a documented gap. The heredoc budget errs
+// toward a false block because each lookahead scans forward and an unbounded
+// number recreates the quadratic hazard that once killed the hook. See
+// .claude/rules/invariants.md, "A guard that fails open must do provably bounded
+// work", and test/template/guard-hardening.test.ts › "a brace decoy no longer
+// disarms anything" / "states the heredoc budget as a limit, in the direction it
+// actually errs".
 //
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason. Fails open on anything it cannot

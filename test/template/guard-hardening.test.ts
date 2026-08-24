@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,6 +28,74 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const hook = path.join(universal, '.claude', 'hooks', 'guard-bash.mjs');
 const scripts = path.join(universal, '.claude', 'scripts');
+const limitsTable = path.join(scripts, 'limits-table.mjs');
+const dogfoodLimitsTable = path.join(repoRoot, '.claude', 'scripts', 'limits-table.mjs');
+
+/* limits-fixture:start
+{
+  "guard-bash": {
+    "notCaught": [
+      {
+        "prose": "a value that only exists at runtime: `git push --force origin $BRANCH`",
+        "command": "git push --force origin $BRANCH",
+        "mentioned": "runtime|\\$BRANCH"
+      },
+      {
+        "prose": "a user-defined alias, or a wrapper script that shells out: `./scripts/deploy-prod.sh`",
+        "command": "./scripts/deploy-prod.sh",
+        "mentioned": "alias|wrapper script"
+      },
+      {
+        "prose": "a command assembled at runtime: `eval \"$(printf 'git push --force origin main')\"`",
+        "command": "eval \"$(printf 'git push --force origin main')\"",
+        "mentioned": "assembled at runtime|eval \"\\$\\("
+      },
+      {
+        "prose": "brace expansion: `git push --force origin mai{n..n}` really does push to `main`, and the guard does not expand it",
+        "command": "git push --force origin mai{n..n}",
+        "mentioned": "brace"
+      },
+      {
+        "prose": "more than 32 heredocs in one command: past that budget the bodies are inspected as commands, so ordinary data can be falsely blocked",
+        "mentioned": "32 heredocs|heredoc.*budget"
+      }
+    ],
+    "scope": [
+      {
+        "prose": "deletes: only `rm` is examined; `find -delete`, `dd`, `shred`, `truncate`, `mv`, `rsync --delete` and `chmod -R 000` are not"
+      },
+      {
+        "prose": "production deploys: only a workflow dispatch is examined; a direct infrastructure CLI deploy or registry publish is not caught"
+      },
+      {
+        "prose": "direct pushes: only commands that name the branch are examined; bare `git push` and `git push origin HEAD` are not caught unless the kill switch is on"
+      },
+      {
+        "prose": "branch deletion: `git push --delete` is caught; `git branch -D main`, `git update-ref -d` and direct API deletion are not"
+      },
+      {
+        "prose": "a command carried as a flag value, such as `find ... -exec` or `env -S`, is not followed"
+      }
+    ],
+    "footer": "The list is **not exhaustive**. The guard targets drift, not an adversary; review and CI remain behind it."
+  }
+}
+limits-fixture:end */
+const LIMITS = JSON.parse(
+  /\/\* limits-fixture:start\n([\s\S]*?)\nlimits-fixture:end \*\//.exec(
+    readFileSync(fileURLToPath(import.meta.url), 'utf8'),
+  )?.[1] ?? '',
+) as Record<
+  string,
+  {
+    notCaught: Array<{ prose: string; command?: string; mentioned: string }>;
+    scope: Array<{ prose: string }>;
+    footer: string;
+  }
+>;
+const guardBashLimits = LIMITS['guard-bash'];
+if (!guardBashLimits?.notCaught[0]) throw new Error('guard-bash LIMITS fixture is required');
+const runtimeValueLimit = guardBashLimits.notCaught[0];
 
 let noBrake: Record<string, string>;
 let brakeOn: Record<string, string>;
@@ -73,6 +142,48 @@ const deny = async (command: string, env?: Record<string, string>) =>
   expect((await runHook(command, env ?? noBrake)).code, `should DENY: ${command}`).toBe(2);
 const allow = async (command: string, env?: Record<string, string>) =>
   expect((await runHook(command, env ?? noBrake)).code, `should ALLOW: ${command}`).toBe(0);
+
+function runLimitsTable(
+  script: string,
+  args: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [script, ...args], (error, stdout, stderr) => {
+      resolve({
+        code: error ? ((error as { code?: number }).code ?? 1) : 0,
+        stdout: String(stdout),
+        stderr: String(stderr),
+      });
+    });
+  });
+}
+
+async function limitsTableSandbox(): Promise<{ script: string; hook: string }> {
+  const root = await mkdtemp(path.join(tmpdir(), 'limits-table-'));
+  const sandboxScripts = path.join(
+    root,
+    'templates',
+    'agent-os',
+    'universal',
+    '.claude',
+    'scripts',
+  );
+  const sandboxHooks = path.join(root, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
+  const sandboxTests = path.join(root, 'test', 'template');
+  await mkdir(sandboxScripts, { recursive: true });
+  await mkdir(sandboxHooks, { recursive: true });
+  await mkdir(sandboxTests, { recursive: true });
+
+  const script = path.join(sandboxScripts, 'limits-table.mjs');
+  const sandboxHook = path.join(sandboxHooks, 'guard-bash.mjs');
+  await writeFile(script, await readFile(limitsTable, 'utf8'));
+  await writeFile(sandboxHook, await readFile(hook, 'utf8'));
+  await writeFile(
+    path.join(sandboxTests, 'guard-hardening.test.ts'),
+    await readFile(fileURLToPath(import.meta.url), 'utf8'),
+  );
+  return { script, hook: sandboxHook };
+}
 
 // ── The three total bypasses ─────────────────────────────────────────────────
 
@@ -458,6 +569,67 @@ describe('the shared brake still has exactly one implementation', () => {
 
 // ── The limits, and the rule that made this round necessary ──────────────────
 
+describe('the limits table is generated from the behavioural fixture', () => {
+  it('checks the synced dogfood hook from its shallower script location', async () => {
+    const result = await runLimitsTable(dogfoodLimitsTable, ['guard-bash', '--check']);
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+  });
+
+  it('renders the guard limits between the owned markers', async () => {
+    const sandbox = await limitsTableSandbox();
+    const result = await runLimitsTable(sandbox.script, ['guard-bash']);
+    expect(result.code, result.stderr).toBe(0);
+
+    const source = await readFile(sandbox.hook, 'utf8');
+    const start = source.indexOf('// <!-- limits:start -->');
+    const end = source.indexOf('// <!-- limits:end -->');
+    expect(start, 'the generated block needs an opening ownership marker').toBeGreaterThan(-1);
+    expect(end, 'the generated block needs a closing ownership marker').toBeGreaterThan(start);
+    const generated = source.slice(start, end);
+    expect(generated).toMatch(/Not caught:/);
+    expect(generated).toMatch(/SCOPE/);
+
+    let cursor = -1;
+    for (const entry of [
+      ...guardBashLimits.notCaught,
+      ...guardBashLimits.scope,
+      { prose: guardBashLimits.footer },
+    ]) {
+      const position = generated.indexOf(entry.prose);
+      expect(
+        position,
+        `generated prose is missing or out of order: ${entry.prose}`,
+      ).toBeGreaterThan(cursor);
+      cursor = position;
+    }
+  });
+
+  it('check mode rejects prose drift without rewriting it', async () => {
+    const sandbox = await limitsTableSandbox();
+    const written = await runLimitsTable(sandbox.script, ['guard-bash']);
+    expect(written.code, written.stderr).toBe(0);
+
+    const original = await readFile(sandbox.hook, 'utf8');
+    const drifted = original.replace(
+      runtimeValueLimit.prose,
+      'a stale hand-written account of the runtime-value limit',
+    );
+    expect(drifted).not.toBe(original);
+    await writeFile(sandbox.hook, drifted);
+
+    const checked = await runLimitsTable(sandbox.script, ['guard-bash', '--check']);
+    expect(checked.code, checked.stdout + checked.stderr).not.toBe(0);
+    expect(checked.stdout + checked.stderr).toMatch(/drift|out of date/i);
+    expect(await readFile(sandbox.hook, 'utf8')).toBe(drifted);
+  });
+
+  it('refuses a hook with no LIMITS fixture', async () => {
+    const result = await runLimitsTable(limitsTable, ['not-a-real-hook']);
+    expect(result.code, result.stdout + result.stderr).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/unknown|fixture|not-a-real-hook/i);
+  });
+});
+
 describe('the guard does provably bounded work, and says what it cannot see', () => {
   it('carries no unbounded construct — the shape all three bypasses shared', async () => {
     const source = (await readFile(hook, 'utf8')).replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
@@ -496,15 +668,9 @@ describe('the guard does provably bounded work, and says what it cannot see', ()
 
   it('documents each remaining limit, and each really is one', async () => {
     const source = await readFile(hook, 'utf8');
-    const limits: Array<[string, RegExp]> = [
-      ['git push --force origin $BRANCH', /runtime|\$BRANCH/],
-      ['git push --force origin mai{n..n}', /brace/i],
-      ['./scripts/deploy-prod.sh', /alias|wrapper script/i],
-      ['eval "$(printf \'git push --force origin main\')"', /assembled at runtime|eval "\$\(/],
-    ];
-    for (const [command, mentioned] of limits) {
-      expect(source, `must document: ${command}`).toMatch(mentioned);
-      await allow(command);
+    for (const limit of guardBashLimits.notCaught) {
+      expect(source, `must document: ${limit.prose}`).toMatch(new RegExp(limit.mentioned, 'i'));
+      if (limit.command) await allow(limit.command);
     }
     expect(source).toMatch(/not exhaustive|drift, not an adversary/i);
   });
