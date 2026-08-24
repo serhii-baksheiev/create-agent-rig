@@ -5,6 +5,13 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -23,7 +30,7 @@ jobs:
       - run: node scripts/validate-no-secrets.mjs
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      - run: pnpm test:unit
 
   # PLAN.md §8 item 1 — mandatory: the template is a valid project and is
   # exercised in place, so it cannot rot silently.
@@ -35,6 +42,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
       - run: pnpm --dir templates/skeleton/aws-serverless install --frozen-lockfile
       - run: pnpm --dir templates/skeleton/aws-serverless run check
 
@@ -46,5 +54,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
       - run: pnpm --dir templates/skeleton/node-service install --frozen-lockfile
       - run: pnpm --dir templates/skeleton/node-service run check
+
+  windows-unit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:unit

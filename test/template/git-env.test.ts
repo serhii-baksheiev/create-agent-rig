@@ -1,10 +1,13 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { GIT_LOCATION_VARS as varsInTheCli } from '../../packages/cli/src/lib/git-env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const execFileAsync = promisify(execFile);
 
 // The modules under test are plain .mjs — one ships to generated projects, the
 // other runs before the TypeScript build exists — so they are loaded the same
@@ -23,6 +26,66 @@ const withoutGitLocation = await load(
   'templates/agent-os/universal/.claude/scripts/preflight.mjs',
   'withoutGitLocation',
 );
+
+const runPrepare = async (ci: string | undefined): Promise<string[]> => {
+  // Exercise the real entrypoint from an isolated checkout-shaped fixture.
+  // Keeping the fixture below this repository lets Node resolve the root's
+  // TypeScript without copying or installing dependencies during the test.
+  const fixture = await mkdtemp(path.join(repoRoot, '.prepare-test-'));
+  try {
+    const scripts = path.join(fixture, 'scripts');
+    const cli = path.join(fixture, 'packages', 'cli');
+    const bin = path.join(fixture, 'bin');
+    const calls = path.join(fixture, 'git-calls.jsonl');
+    await Promise.all([
+      mkdir(path.join(fixture, '.git')),
+      mkdir(scripts),
+      mkdir(cli, { recursive: true }),
+      mkdir(bin),
+    ]);
+    await writeFile(
+      path.join(cli, 'tsconfig.build.json'),
+      JSON.stringify({ compilerOptions: { noEmit: true }, files: ['input.ts'] }),
+    );
+    await writeFile(path.join(cli, 'input.ts'), 'export {};\n');
+    await writeFile(
+      path.join(bin, 'git-script.mjs'),
+      "import { appendFileSync } from 'node:fs';\n" +
+        "appendFileSync(process.env.GIT_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n');\n",
+    );
+    await writeFile(path.join(bin, 'git'), "#!/usr/bin/env node\nimport './git-script.mjs';\n");
+    await chmod(path.join(bin, 'git'), 0o755);
+    await writeFile(path.join(bin, 'git.cmd'), '@node "%~dp0\\git-script.mjs" %*\r\n');
+    await writeFile(
+      path.join(scripts, 'prepare.mjs'),
+      await readFile(path.join(repoRoot, 'scripts', 'prepare.mjs'), 'utf8'),
+    );
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      GIT_CALLS: calls,
+    };
+    if (ci === undefined) delete env.CI;
+    else env.CI = ci;
+    await execFileAsync(process.execPath, [path.join(scripts, 'prepare.mjs')], { env });
+
+    try {
+      return (await readFile(calls, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as string[])
+        .flat();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return [];
+      throw error;
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+};
 
 // The defect these guard: a process started under a git hook inherits an
 // absolute GIT_DIR, and any git command it spawns then acts on ANOTHER
@@ -53,6 +116,14 @@ describe('prepare.mjs — git config must not be written into another repository
   it('is importable without side effects', async () => {
     const source = await readFile(path.join(repoRoot, 'scripts', 'prepare.mjs'), 'utf8');
     expect(source).toMatch(/import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href/);
+  });
+
+  it('does not configure checkout hooks when CI is set', async () => {
+    expect(await runPrepare('true')).toEqual([]);
+  });
+
+  it('still configures checkout hooks outside CI', async () => {
+    expect(await runPrepare(undefined)).toEqual(['config', 'core.hooksPath', '.husky']);
   });
 });
 

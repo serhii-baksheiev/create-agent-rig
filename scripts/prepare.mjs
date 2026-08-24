@@ -36,7 +36,7 @@ export const gitConfigEnv = (env = process.env) => {
 
 function main() {
   // 1. Wire up the pre-commit hook when working inside the git checkout.
-  if (existsSync(path.join(root, '.git'))) {
+  if (!process.env.CI && existsSync(path.join(root, '.git'))) {
     spawnSync('git', ['config', 'core.hooksPath', '.husky'], {
       cwd: root,
       env: gitConfigEnv(),
