@@ -18,6 +18,35 @@ const job = (yaml: string, name: string): string => {
 const runCommands = (yaml: string): string[] =>
   [...yaml.matchAll(/^\s*- run:\s*(.+)$/gm)].map((match) => match[1]?.trim() ?? '');
 
+const commandText = (yaml: string): string => yaml.replace(/\r?\n\s*/g, ' ');
+
+const WINDOWS_INCOMPATIBLE_TESTS = [
+  'packages/cli/test/copy-tree.test.ts',
+  'packages/cli/test/create.test.ts',
+  'packages/cli/test/init.test.ts',
+  'test/template/agents.test.ts',
+  'test/template/aws-extras.test.ts',
+  'test/template/codex.test.ts',
+  'test/template/decision-router.test.ts',
+  'test/template/dogfood.test.ts',
+  'test/template/gate-rounds.test.ts',
+  'test/template/gate-scripts.test.ts',
+  'test/template/git-env.test.ts',
+  'test/template/guard-hardening.test.ts',
+  'test/template/guard-secret-file.test.ts',
+  'test/template/hooks.test.ts',
+  'test/template/invariants.test.ts',
+  'test/template/packaging.test.ts',
+  'test/template/queue-jira.test.ts',
+  'test/template/queue.test.ts',
+  'test/template/review-fixes.test.ts',
+  'test/template/root-ci.test.ts',
+  'test/template/run-journal.test.ts',
+  'test/template/secrets-lib.test.ts',
+  'test/template/skills.test.ts',
+  'test/template/validate-no-secrets.test.ts',
+] as const;
+
 const expensiveWorkflow = async (): Promise<string> => {
   const names = (await readdir(workflowsDir)).filter((name) => /\.ya?ml$/.test(name));
   const candidates: string[] = [];
@@ -46,10 +75,15 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
 
   it('runs lint, typecheck and unit tests instead of the expensive full suite', async () => {
     const commands = runCommands(job(await workflow('ci.yml'), 'ci'));
-    expect(commands).toEqual(
-      expect.arrayContaining(['pnpm lint', 'pnpm typecheck', 'pnpm test:unit']),
-    );
+    expect(commands).toEqual(expect.arrayContaining(['pnpm lint', 'pnpm typecheck']));
+    expect(commands.some((command) => command.startsWith('pnpm test:unit'))).toBe(true);
     expect(commands).not.toContain('pnpm test');
+  });
+
+  it('gives unit tests 15 seconds under Linux CI load', async () => {
+    expect(commandText(job(await workflow('ci.yml'), 'ci'))).toMatch(
+      /pnpm test:unit\b[^\n]*--test-?timeout(?:=|\s+)15000\b/i,
+    );
   });
 
   it.each(['template-aws-serverless', 'template-node-service'])(
@@ -69,7 +103,15 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
       .map((match) => match[0])
       .filter((candidate) => /^ {4}runs-on:\s*windows-latest\s*$/m.test(candidate));
     expect(windowsJobs, 'workflow has no windows-latest job').toHaveLength(1);
-    expect(runCommands(windowsJobs[0] ?? '')).toContain('pnpm test:unit');
+    expect(commandText(windowsJobs[0] ?? '')).toMatch(/\bpnpm test:unit\b/);
+  });
+
+  it('names every temporary Windows exclusion individually', async () => {
+    const windows = job(await workflow('ci.yml'), 'windows-unit');
+    const exclusions = [...commandText(windows).matchAll(/--exclude(?:=|\s+)["']?([^\s"']+)/g)]
+      .map((match) => match[1] ?? '')
+      .sort();
+    expect(exclusions).toEqual([...WINDOWS_INCOMPATIBLE_TESTS].sort());
   });
 });
 
