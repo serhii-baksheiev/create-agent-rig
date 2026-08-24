@@ -171,6 +171,7 @@ blockers.
    🔴 **Record the set you launched, as you launch it.** The router journals the
    set it *routed*; the triggers above may only add, so what you actually
    launched is a different list and this is the only place that knows it:
+   **Record the fan-out even when the launched set is empty.**
 
    ```sh
    node --input-type=module -e '
@@ -277,11 +278,33 @@ blockers.
    exhausted trace must cost this round its record and nothing else. A round is
    counted and capped, so a crash here spends one on a journal that was never
    the thing under review.
-5. **DoD walk.** Check the Definition of Done list in
+5. 🔴 **Coverage — check your own fan-out before you believe it.** You recorded
+   what the route asked for, what you launched and what came back; this is the
+   step that compares them, and it is the only one that does — nothing else in
+   this gate would notice a reviewer that never answered:
+
+   ```sh
+   node .claude/scripts/verdict.mjs coverage "$(git rev-parse HEAD)"
+   ```
+
+   For a **declared run**, exit 0 is coverage. **Exit 1 is a `HOLD`.** A
+   reason-only unreadable-round failure always prints the evidence boundary;
+   remedies appear only when recovery is unambiguous. Reviewer lists cover the
+   four comparable cases — never launched (launch it),
+   launched and silent (go and read why), answered without naming a commit, or
+   answered for another commit (the head moved under the round). Record either
+   kind as a blocker of yours, in the same list as a failing check.
+
+   Two limits, stated because a step that looks mechanical is trusted like one.
+   It reads **this run's journal**, so with unset `RIG_RUN_DIR` the check is
+   skipped; exit 0 is then an honest nothing, not coverage. And it cannot see a
+   round that never reached this skill at all: a session that skips `pr-ship`
+   skips its coverage check with it (`docs/decisions/gate-coverage.md`).
+6. **DoD walk.** Check the Definition of Done list in
    `.claude/rules/workflow.md` item by item — test-first evidence, nothing
    skipped or weakened, boundaries respected, docs updated, autonomy tier
    honored.
-6. **Named checks only.** The merge criterion is the project's *named* required
+7. **Named checks only.** The merge criterion is the project's *named* required
    checks, all green. "Some checks passed" is not a criterion; an unnamed
    green wall hides a red brick. Two traps here, both observed in the wild:
    status watchers can exit while checks are **still unregistered** — poll the
@@ -317,7 +340,8 @@ the author, then **exactly one** fenced `json` block, and nothing after it.
     }
   ],
   "advisories": [],
-  "evidence": ["lane: model", "reviewers: code-reviewer, prose-reviewer"]
+  "evidence": ["lane: model", "reviewers: code-reviewer, prose-reviewer"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -330,6 +354,9 @@ the author, then **exactly one** fenced `json` block, and nothing after it.
   pr-ship` — and fix what it refuses. Nothing downstream re-checks the gate's
   own answer, so this call is the only thing between a malformed verdict and
   whoever acts on it.
+- **`headSha` is the commit you gated** — `git rev-parse HEAD`, the same one
+  step 5 asked coverage about. It is what stops this verdict being read later
+  as an answer about a commit that has since moved.
 
 ## Boundaries
 

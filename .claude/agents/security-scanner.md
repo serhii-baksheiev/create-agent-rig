@@ -58,7 +58,8 @@ the human who has to fix the finding.
     }
   ],
   "advisories": [],
-  "evidence": ["grepped for the pattern across services/"]
+  "evidence": ["grepped for the pattern across services/"],
+  "headSha": "9c1f0a7d4b3e2c5a8f6d0b9e7c4a1f2d3e5b6c70"
 }
 ```
 
@@ -71,3 +72,9 @@ the human who has to fix the finding.
   `node .claude/scripts/verdict.mjs check <report> <this gate>` is what refuses
   them, and the gate name is what stops your answer being read as somebody
   else's.
+- **`headSha` is the commit you reviewed** — `git rev-parse HEAD` in the
+  checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
+  <commit>` tell "this gate answered for the commit being merged" from "it
+  answered two pushes ago". A verdict naming no commit is counted as neither
+  covered nor missing, so `pr-ship` holds on it — and only `pr-ship`: no hook
+  runs that check, so a session that skips the gate skips this with it.
