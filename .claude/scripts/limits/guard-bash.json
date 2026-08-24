@@ -6,9 +6,9 @@
       "mentioned": "runtime|\\$BRANCH"
     },
     {
-      "prose": "a user-defined alias, or a wrapper script that shells out: `./scripts/deploy-prod.sh`",
+      "prose": "a wrapper script that shells out: `./scripts/deploy-prod.sh`",
       "command": "./scripts/deploy-prod.sh",
-      "mentioned": "alias|wrapper script"
+      "mentioned": "wrapper script"
     },
     {
       "prose": "a command assembled at runtime: `eval \"$(printf 'git push --force origin main')\"`",

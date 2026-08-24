@@ -24,16 +24,20 @@
 //
 // ── The limits, stated exactly — and TESTED ──────────────────────────────────
 //
+// The upstream generator tests are absent locally in generated projects; see
+// test/template/guard-hardening.test.ts › "runs in a shipped repo that has no generator test tree".
+// The pointers below identify the generator evidence for this inherited hook snapshot.
+//
 // This block is generated from the LIMITS fixture. See
 // test/template/guard-hardening.test.ts › "check mode rejects prose drift without
 // rewriting it". The executable Not caught cases are also run by that file's
-// "documents each remaining limit, and each really is one" test; Scope cases by
+// "documents and exercises the complete Not caught inventory" test; Scope cases by
 // "declares and exercises every command behaviour named by each Scope sentence".
 //
 // <!-- limits:start -->
 // Not caught:
 //   - a value that only exists at runtime: `git push --force origin $BRANCH`;
-//   - a user-defined alias, or a wrapper script that shells out: `./scripts/deploy-prod.sh`;
+//   - a wrapper script that shells out: `./scripts/deploy-prod.sh`;
 //   - a command assembled at runtime: `eval "$(printf 'git push --force origin main')"`;
 //   - brace expansion: `git push --force origin mai{n..n}` really does push to `main`, and the guard does not expand it;
 //   - more than 32 heredocs in one command: past that budget the bodies are inspected as commands, so ordinary data can be falsely blocked;

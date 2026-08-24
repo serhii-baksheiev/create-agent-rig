@@ -739,13 +739,51 @@ describe('the guard does provably bounded work, and says what it cannot see', ()
     // could never reach the cap. Remove the cap and this call throws RangeError.
   });
 
-  it('documents each remaining limit, and each really is one', async () => {
+  it('documents and exercises the complete Not caught inventory', async () => {
+    const expectedNotCaught = [
+      {
+        prose: 'a value that only exists at runtime: `git push --force origin $BRANCH`',
+        command: 'git push --force origin $BRANCH',
+        mentioned: 'runtime|\\$BRANCH',
+      },
+      {
+        prose: 'a wrapper script that shells out: `./scripts/deploy-prod.sh`',
+        command: './scripts/deploy-prod.sh',
+        mentioned: 'wrapper script',
+      },
+      {
+        prose:
+          'a command assembled at runtime: `eval "$(printf \'git push --force origin main\')"`',
+        command: 'eval "$(printf \'git push --force origin main\')"',
+        mentioned: 'assembled at runtime|eval "\\$\\(',
+      },
+      {
+        prose:
+          'brace expansion: `git push --force origin mai{n..n}` really does push to `main`, and the guard does not expand it',
+        command: 'git push --force origin mai{n..n}',
+        mentioned: 'brace',
+      },
+      {
+        prose:
+          'more than 32 heredocs in one command: past that budget the bodies are inspected as commands, so ordinary data can be falsely blocked',
+        mentioned: '32 heredocs|heredoc.*budget',
+      },
+    ] as const;
+
     const source = await readFile(hook, 'utf8');
-    for (const limit of guardBashLimits.notCaught) {
+    expect(guardBashLimits.notCaught).toEqual(expectedNotCaught);
+    for (const limit of expectedNotCaught) {
       expect(source, `must document: ${limit.prose}`).toMatch(new RegExp(limit.mentioned, 'i'));
-      if (limit.command) await allow(limit.command);
+      if ('command' in limit) await allow(limit.command);
     }
     expect(source).toMatch(/not exhaustive|drift, not an adversary/i);
+  });
+
+  it('marks upstream generator test pointers as absent locally in generated projects', async () => {
+    const header = (await readFile(hook, 'utf8')).split('// <!-- limits:start -->')[0];
+    expect(header).toMatch(/upstream generator tests are absent locally in generated projects/i);
+    expect.soft(header).toContain('documents and exercises the complete Not caught inventory');
+    expect.soft(header).toContain('runs in a shipped repo that has no generator test tree');
   });
 
   it('declares and exercises every command behaviour named by each Scope sentence', async () => {
