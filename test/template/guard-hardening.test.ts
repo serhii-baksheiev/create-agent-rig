@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -29,72 +29,16 @@ const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const hook = path.join(universal, '.claude', 'hooks', 'guard-bash.mjs');
 const scripts = path.join(universal, '.claude', 'scripts');
 const limitsTable = path.join(scripts, 'limits-table.mjs');
+const limitsFixture = path.join(scripts, 'limits', 'guard-bash.json');
 const dogfoodLimitsTable = path.join(repoRoot, '.claude', 'scripts', 'limits-table.mjs');
 
-/* limits-fixture:start
-{
-  "guard-bash": {
-    "notCaught": [
-      {
-        "prose": "a value that only exists at runtime: `git push --force origin $BRANCH`",
-        "command": "git push --force origin $BRANCH",
-        "mentioned": "runtime|\\$BRANCH"
-      },
-      {
-        "prose": "a user-defined alias, or a wrapper script that shells out: `./scripts/deploy-prod.sh`",
-        "command": "./scripts/deploy-prod.sh",
-        "mentioned": "alias|wrapper script"
-      },
-      {
-        "prose": "a command assembled at runtime: `eval \"$(printf 'git push --force origin main')\"`",
-        "command": "eval \"$(printf 'git push --force origin main')\"",
-        "mentioned": "assembled at runtime|eval \"\\$\\("
-      },
-      {
-        "prose": "brace expansion: `git push --force origin mai{n..n}` really does push to `main`, and the guard does not expand it",
-        "command": "git push --force origin mai{n..n}",
-        "mentioned": "brace"
-      },
-      {
-        "prose": "more than 32 heredocs in one command: past that budget the bodies are inspected as commands, so ordinary data can be falsely blocked",
-        "mentioned": "32 heredocs|heredoc.*budget"
-      }
-    ],
-    "scope": [
-      {
-        "prose": "deletes: only `rm` is examined; `find -delete`, `dd`, `shred`, `truncate`, `mv`, `rsync --delete` and `chmod -R 000` are not"
-      },
-      {
-        "prose": "production deploys: only a workflow dispatch is examined; a direct infrastructure CLI deploy or registry publish is not caught"
-      },
-      {
-        "prose": "direct pushes: only commands that name the branch are examined; bare `git push` and `git push origin HEAD` are not caught unless the kill switch is on"
-      },
-      {
-        "prose": "branch deletion: `git push --delete` is caught; `git branch -D main`, `git update-ref -d` and direct API deletion are not"
-      },
-      {
-        "prose": "a command carried as a flag value, such as `find ... -exec` or `env -S`, is not followed"
-      }
-    ],
-    "footer": "The list is **not exhaustive**. The guard targets drift, not an adversary; review and CI remain behind it."
-  }
-}
-limits-fixture:end */
-const LIMITS = JSON.parse(
-  /\/\* limits-fixture:start\n([\s\S]*?)\nlimits-fixture:end \*\//.exec(
-    readFileSync(fileURLToPath(import.meta.url), 'utf8'),
-  )?.[1] ?? '',
-) as Record<
-  string,
-  {
-    notCaught: Array<{ prose: string; command?: string; mentioned: string }>;
-    scope: Array<{ prose: string }>;
-    footer: string;
-  }
->;
-const guardBashLimits = LIMITS['guard-bash'];
-if (!guardBashLimits?.notCaught[0]) throw new Error('guard-bash LIMITS fixture is required');
+const LIMITS = JSON.parse(readFileSync(limitsFixture, 'utf8')) as {
+  notCaught: Array<{ prose: string; command?: string; mentioned: string }>;
+  scope: Array<{ prose: string; command: string }>;
+  footer: string;
+};
+const guardBashLimits = LIMITS;
+if (!guardBashLimits.notCaught[0]) throw new Error('guard-bash LIMITS fixture is required');
 const runtimeValueLimit = guardBashLimits.notCaught[0];
 
 let noBrake: Record<string, string>;
@@ -158,7 +102,7 @@ function runLimitsTable(
   });
 }
 
-async function limitsTableSandbox(): Promise<{ script: string; hook: string }> {
+async function limitsTableSandbox(): Promise<{ script: string; hook: string; fixture: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'limits-table-'));
   const sandboxScripts = path.join(
     root,
@@ -170,7 +114,7 @@ async function limitsTableSandbox(): Promise<{ script: string; hook: string }> {
   );
   const sandboxHooks = path.join(root, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
   const sandboxTests = path.join(root, 'test', 'template');
-  await mkdir(sandboxScripts, { recursive: true });
+  await mkdir(path.join(sandboxScripts, 'limits'), { recursive: true });
   await mkdir(sandboxHooks, { recursive: true });
   await mkdir(sandboxTests, { recursive: true });
 
@@ -182,7 +126,34 @@ async function limitsTableSandbox(): Promise<{ script: string; hook: string }> {
     path.join(sandboxTests, 'guard-hardening.test.ts'),
     await readFile(fileURLToPath(import.meta.url), 'utf8'),
   );
+  const fixture = path.join(sandboxScripts, 'limits', 'guard-bash.json');
+  await writeFile(fixture, `${JSON.stringify(guardBashLimits, null, 2)}\n`);
+  return { script, hook: sandboxHook, fixture };
+}
+
+async function shippedLimitsTableSandbox(): Promise<{ script: string; hook: string }> {
+  const root = await mkdtemp(path.join(tmpdir(), 'shipped-limits-table-'));
+  const sandboxScripts = path.join(root, '.claude', 'scripts');
+  const sandboxHooks = path.join(root, '.claude', 'hooks');
+  await mkdir(path.join(sandboxScripts, 'limits'), { recursive: true });
+  await mkdir(sandboxHooks, { recursive: true });
+
+  const script = path.join(sandboxScripts, 'limits-table.mjs');
+  const sandboxHook = path.join(sandboxHooks, 'guard-bash.mjs');
+  await writeFile(script, await readFile(dogfoodLimitsTable, 'utf8'));
+  await writeFile(
+    sandboxHook,
+    await readFile(path.join(repoRoot, '.claude', 'hooks', 'guard-bash.mjs')),
+  );
+  await writeFile(
+    path.join(sandboxScripts, 'limits', 'guard-bash.json'),
+    `${JSON.stringify(guardBashLimits, null, 2)}\n`,
+  );
   return { script, hook: sandboxHook };
+}
+
+async function replaceSandboxFixtures(fixture: string, fixtures: unknown): Promise<void> {
+  await writeFile(fixture, `${JSON.stringify(fixtures, null, 2)}\n`);
 }
 
 // ── The three total bypasses ─────────────────────────────────────────────────
@@ -570,6 +541,21 @@ describe('the shared brake still has exactly one implementation', () => {
 // ── The limits, and the rule that made this round necessary ──────────────────
 
 describe('the limits table is generated from the behavioural fixture', () => {
+  it('ships one canonical machine-readable fixture instead of an inline test copy', async () => {
+    const fixture = JSON.parse(await readFile(limitsFixture, 'utf8')) as unknown;
+    expect(fixture).toEqual(guardBashLimits);
+    const retiredInlineMarker = ['limits', 'fixture:start'].join('-');
+    expect(await readFile(fileURLToPath(import.meta.url), 'utf8')).not.toContain(
+      retiredInlineMarker,
+    );
+  });
+
+  it('runs in a shipped repo that has no generator test tree', async () => {
+    const sandbox = await shippedLimitsTableSandbox();
+    const result = await runLimitsTable(sandbox.script, ['guard-bash', '--check']);
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+  });
+
   it('checks the synced dogfood hook from its shallower script location', async () => {
     const result = await runLimitsTable(dogfoodLimitsTable, ['guard-bash', '--check']);
     expect(result.code, result.stdout + result.stderr).toBe(0);
@@ -630,6 +616,85 @@ describe('the limits table is generated from the behavioural fixture', () => {
   });
 });
 
+describe('the limits-table writer treats fixtures and hook files as untrusted input', () => {
+  it.each([
+    ['prose', { ...runtimeValueLimit, prose: 'first line\n// injected second line' }],
+    ['footer', 'first line\r// injected second line'],
+  ])('rejects a newline in fixture %s', async (field, injected) => {
+    const sandbox = await limitsTableSandbox();
+    const table =
+      field === 'prose'
+        ? { ...guardBashLimits, notCaught: [injected, ...guardBashLimits.notCaught.slice(1)] }
+        : { ...guardBashLimits, footer: injected };
+    await replaceSandboxFixtures(sandbox.fixture, table);
+    const before = await readFile(sandbox.hook, 'utf8');
+
+    const result = await runLimitsTable(sandbox.script, ['guard-bash']);
+    expect(result.code, result.stdout + result.stderr).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/carriage|line feed|newline|CR|LF/i);
+    expect(await readFile(sandbox.hook, 'utf8')).toBe(before);
+  });
+
+  it.each(['limits:start', 'limits:end'])('rejects a duplicate %s marker', async (marker) => {
+    const sandbox = await limitsTableSandbox();
+    const source = await readFile(sandbox.hook, 'utf8');
+    const duplicated = `${source}\n// <!-- ${marker} -->\n`;
+    await writeFile(sandbox.hook, duplicated);
+
+    const result = await runLimitsTable(sandbox.script, ['guard-bash']);
+    expect(result.code, result.stdout + result.stderr).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/duplicate|exactly one|marker/i);
+    expect(await readFile(sandbox.hook, 'utf8')).toBe(duplicated);
+  });
+
+  it.each(['../hooks/guard-bash', '/tmp/guard-bash', 'guard-bash/../../victim'])(
+    'rejects unsafe hook name %s before resolving a path',
+    async (unsafeName) => {
+      const sandbox = await shippedLimitsTableSandbox();
+      const before = await readFile(sandbox.hook, 'utf8');
+      const result = await runLimitsTable(sandbox.script, [unsafeName]);
+      expect(result.code, result.stdout + result.stderr).not.toBe(0);
+      expect(result.stdout + result.stderr).toMatch(/unsafe|hook name/i);
+      expect(await readFile(sandbox.hook, 'utf8')).toBe(before);
+    },
+  );
+
+  it('refuses a symlink hook without altering its target', async () => {
+    const sandbox = await shippedLimitsTableSandbox();
+    const target = path.join(path.dirname(sandbox.hook), 'outside-target.mjs');
+    const targetSource = (await readFile(sandbox.hook, 'utf8')).replace(
+      runtimeValueLimit.prose,
+      'stale prose in a file outside the owned hook',
+    );
+    await writeFile(target, targetSource);
+    await unlink(sandbox.hook);
+    await symlink(target, sandbox.hook);
+
+    const result = await runLimitsTable(sandbox.script, ['guard-bash']);
+    expect(result.code, result.stdout + result.stderr).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/symlink/i);
+    expect(await readFile(target, 'utf8')).toBe(targetSource);
+  });
+
+  it('publishes a replacement atomically instead of truncating the hook in place', async () => {
+    const sandbox = await limitsTableSandbox();
+    const drifted = (await readFile(sandbox.hook, 'utf8')).replace(
+      runtimeValueLimit.prose,
+      'stale prose that requires regeneration',
+    );
+    await writeFile(sandbox.hook, drifted);
+    const before = await stat(sandbox.hook);
+
+    const result = await runLimitsTable(sandbox.script, ['guard-bash']);
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    const after = await stat(sandbox.hook);
+    expect(after.ino, 'same-directory rename must replace the file, not truncate it').not.toBe(
+      before.ino,
+    );
+    expect(await readFile(sandbox.hook, 'utf8')).toContain(runtimeValueLimit.prose);
+  });
+});
+
 describe('the guard does provably bounded work, and says what it cannot see', () => {
   it('carries no unbounded construct — the shape all three bypasses shared', async () => {
     const source = (await readFile(hook, 'utf8')).replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
@@ -673,6 +738,10 @@ describe('the guard does provably bounded work, and says what it cannot see', ()
       if (limit.command) await allow(limit.command);
     }
     expect(source).toMatch(/not exhaustive|drift, not an adversary/i);
+  });
+
+  it('exercises one representative command for every documented Scope limit', async () => {
+    for (const limit of guardBashLimits.scope) await allow(limit.command);
   });
 
   it('states the heredoc budget as a limit, in the direction it actually errs', async () => {

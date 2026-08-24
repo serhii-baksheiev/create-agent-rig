@@ -1,0 +1,51 @@
+{
+  "notCaught": [
+    {
+      "prose": "a value that only exists at runtime: `git push --force origin $BRANCH`",
+      "command": "git push --force origin $BRANCH",
+      "mentioned": "runtime|\\$BRANCH"
+    },
+    {
+      "prose": "a user-defined alias, or a wrapper script that shells out: `./scripts/deploy-prod.sh`",
+      "command": "./scripts/deploy-prod.sh",
+      "mentioned": "alias|wrapper script"
+    },
+    {
+      "prose": "a command assembled at runtime: `eval \"$(printf 'git push --force origin main')\"`",
+      "command": "eval \"$(printf 'git push --force origin main')\"",
+      "mentioned": "assembled at runtime|eval \"\\$\\("
+    },
+    {
+      "prose": "brace expansion: `git push --force origin mai{n..n}` really does push to `main`, and the guard does not expand it",
+      "command": "git push --force origin mai{n..n}",
+      "mentioned": "brace"
+    },
+    {
+      "prose": "more than 32 heredocs in one command: past that budget the bodies are inspected as commands, so ordinary data can be falsely blocked",
+      "mentioned": "32 heredocs|heredoc.*budget"
+    }
+  ],
+  "scope": [
+    {
+      "prose": "deletes: only `rm` is examined; `find -delete`, `dd`, `shred`, `truncate`, `mv`, `rsync --delete` and `chmod -R 000` are not",
+      "command": "find . -delete"
+    },
+    {
+      "prose": "production deploys: only a workflow dispatch is examined; a direct infrastructure CLI deploy or registry publish is not caught",
+      "command": "npm publish"
+    },
+    {
+      "prose": "direct pushes: only commands that name the branch are examined; bare `git push` and `git push origin HEAD` are not caught unless the kill switch is on",
+      "command": "git push"
+    },
+    {
+      "prose": "branch deletion: `git push --delete` is caught; `git branch -D main`, `git update-ref -d` and direct API deletion are not",
+      "command": "git branch -D main"
+    },
+    {
+      "prose": "a command carried as a flag value, such as `find ... -exec` or `env -S`, is not followed",
+      "command": "env -S 'rm -rf /'"
+    }
+  ],
+  "footer": "The list is **not exhaustive**. The guard targets drift, not an adversary; review and CI remain behind it."
+}
