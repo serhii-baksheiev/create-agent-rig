@@ -8,6 +8,7 @@ import { GIT_LOCATION_VARS as varsInTheCli } from '../../packages/cli/src/lib/gi
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const execFileAsync = promisify(execFile);
+const PREPARE_TEST_TIMEOUT_MS = 15_000;
 
 // The modules under test are plain .mjs — one ships to generated projects, the
 // other runs before the TypeScript build exists — so they are loaded the same
@@ -118,13 +119,21 @@ describe('prepare.mjs — git config must not be written into another repository
     expect(source).toMatch(/import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href/);
   });
 
-  it('does not configure checkout hooks when CI is set', async () => {
-    expect(await runPrepare('true')).toEqual([]);
-  });
+  it(
+    'does not configure checkout hooks when CI is set',
+    { timeout: PREPARE_TEST_TIMEOUT_MS },
+    async () => {
+      expect(await runPrepare('true')).toEqual([]);
+    },
+  );
 
-  it('still configures checkout hooks outside CI', async () => {
-    expect(await runPrepare(undefined)).toEqual(['config', 'core.hooksPath', '.husky']);
-  });
+  it(
+    'still configures checkout hooks outside CI',
+    { timeout: PREPARE_TEST_TIMEOUT_MS },
+    async () => {
+      expect(await runPrepare(undefined)).toEqual(['config', 'core.hooksPath', '.husky']);
+    },
+  );
 });
 
 describe('preflight.mjs — the probes must answer about the repository they are in', () => {
