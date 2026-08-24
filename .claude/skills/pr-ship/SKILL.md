@@ -288,8 +288,9 @@ blockers.
    ```
 
    For a **declared run**, exit 0 is coverage. **Exit 1 is a `HOLD`.** A
-   reason-only unreadable-round failure prints the evidence boundary and remedy;
-   reviewer lists cover the four comparable cases — never launched (launch it),
+   reason-only unreadable-round failure always prints the evidence boundary;
+   remedies appear only when recovery is unambiguous. Reviewer lists cover the
+   four comparable cases — never launched (launch it),
    launched and silent (go and read why), answered without naming a commit, or
    answered for another commit (the head moved under the round). Record either
    kind as a blocker of yours, in the same list as a failing check.

@@ -24,8 +24,9 @@
  * fan-out has not been shown to be covered, it has been shown to be unreadable —
  * and four empty lists are exactly what a clean round looks like. That case
  * answers `ok: false` and says why in `reason`. A missing fan-out, a missing route,
- * and an unconsumed route are the unreadable-round answers; each reason names the
- * evidence boundary the journal could not establish.
+ * an unconsumed route, a fan-out missing its head commit, and a fan-out for a different head
+ * commit are the unreadable-round answers; each reason names the evidence boundary the journal
+ * could not establish.
  *
  * 🔴 **A round is judged against its OWN route, not the run's last one.** The
  * answers are scoped to the records after the last fan-out; the route needs the

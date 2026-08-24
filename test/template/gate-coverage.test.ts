@@ -334,6 +334,20 @@ describe('the shipped gate instructions name every unreadable-round branch', () 
     expect(header).toMatch(/(?:unconsumed|left over) route/i);
   });
 
+  it('names a fan-out with no head as its own unreadable boundary', async () => {
+    const header = (await readFile(modulePath, 'utf8')).split('/** The gate name')[0] ?? '';
+    expect(header).toMatch(
+      /fan.?out (?:missing (?:a |its )?(?:head|commit)|(?:with|that names)[^\n]*(?:no|absent)[^\n]*(?:head|commit))/i,
+    );
+  });
+
+  it('names a fan-out for a different head as its own unreadable boundary', async () => {
+    const header = (await readFile(modulePath, 'utf8')).split('/** The gate name')[0] ?? '';
+    expect(header).toMatch(
+      /fan.?out[^\n]*(?:different|mismatch(?:ed)?|other)[^\n]*(?:head|commit)/i,
+    );
+  });
+
   it('requires a fan-out record even when the launched set is empty', async () => {
     const source = await readFile(prShipPath, 'utf8');
     expect(source).toMatch(/record[^\n]*fan.?out[^\n]*even when[^\n]*(?:set|list)[^\n]*empty/i);
@@ -351,6 +365,21 @@ describe('the shipped gate instructions name every unreadable-round branch', () 
     const source = await readFile(prShipPath, 'utf8');
     expect(source).toMatch(
       /exit 1[\s\S]*(?:reason-only|reason without a reviewer)[\s\S]*unreadable[\s\S]*(?:reviewer lists|reviewer-list)/i,
+    );
+  });
+
+  it('does not promise that every reason-only boundary has a remedy', async () => {
+    const source = await readFile(prShipPath, 'utf8');
+    expect(source).not.toMatch(/reason-only[^.]*prints? the evidence boundary and remedy/i);
+  });
+
+  it('always prints the boundary but offers a remedy only when recovery is unambiguous', async () => {
+    const source = await readFile(prShipPath, 'utf8');
+    expect(source).toMatch(
+      /reason-only[\s\S]{0,180}(?:always|each)[\s\S]{0,100}(?:evidence )?boundary/i,
+    );
+    expect(source).toMatch(
+      /remed(?:y|ies)[\s\S]{0,100}only when[\s\S]{0,100}(?:unambiguous|available|safe)/i,
     );
   });
 
