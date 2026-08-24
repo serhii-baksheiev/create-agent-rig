@@ -27,6 +27,16 @@ const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.c
 const modulePath = path.join(scriptsDir, 'lib', 'gate-coverage.mjs');
 const cliPath = path.join(scriptsDir, 'verdict.mjs');
 const runJournalPath = path.join(scriptsDir, 'run-journal.mjs');
+const prShipPath = path.join(
+  repoRoot,
+  'templates',
+  'agent-os',
+  'universal',
+  '.claude',
+  'skills',
+  'pr-ship',
+  'SKILL.md',
+);
 
 /** One record as `readRun` hands it back: the journal's own fields, plus the writer's. */
 type JournalRecord = Record<string, unknown>;
@@ -184,6 +194,98 @@ describe('the fan-out a coverage answer is about is the last one', () => {
   });
 });
 
+// AR-118: a route after the last fan-out has two honest readings and the
+// journal cannot choose between them. Either the fan-out record for that route
+// is missing, or the router was rerun after a completed fan-out. Treating the
+// earlier fan-out as if it consumed the later route silently joins two rounds.
+// The only safe recovery is the same under both readings: rerun the fan-out for
+// this head and write the record that makes the round boundary explicit.
+describe('a route left unconsumed after the final fan-out makes this round unreadable', () => {
+  const expectAmbiguousRoundReason = (reason: string | undefined): void => {
+    expect(typeof reason, 'the unreadable round names no reason').toBe('string');
+    expect(reason).toMatch(/fan.?out.*(?:missing|not (?:written|recorded))|missing.*fan.?out/i);
+    expect(reason).toMatch(/router.*(?:re-?ran|ran again)|routing.*after.*fan.?out/i);
+    expect(reason).toMatch(/rerun.*fan.?out.*(?:this|current).*(?:head|commit)/i);
+  };
+
+  it('refuses a non-empty route after the final fan-out without inventing coverage facts', async () => {
+    const coverage = await coverageOf(
+      journal(
+        routed(['code-reviewer']),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer'),
+        routed(['security-scanner']),
+      ),
+    );
+
+    expect(coverage.ok).toBe(false);
+    // The pending route is recorded fact and may be returned. There is no
+    // fan-out that can safely be paired with it, so none of the comparison
+    // lists may be manufactured from the completed round before it.
+    expect(coverage.routed).toEqual(['security-scanner']);
+    expect(coverage.launched).toEqual([]);
+    expect(coverage.neverLaunched).toEqual([]);
+    expect(coverage.unanswered).toEqual([]);
+    expect(coverage.unattributed).toEqual([]);
+    expect(coverage.stale).toEqual([]);
+    expectAmbiguousRoundReason(coverage.reason);
+  });
+
+  it('refuses an empty route after the final fan-out instead of losing it to a truthy check', async () => {
+    const coverage = await coverageOf(
+      journal(
+        routed(['code-reviewer']),
+        fanOut(['code-reviewer']),
+        answered('code-reviewer'),
+        routed([], 'deterministic'),
+      ),
+    );
+
+    expect(coverage.ok).toBe(false);
+    expect(coverage.routed).toEqual([]);
+    expect(coverage.launched).toEqual([]);
+    expect(coverage.neverLaunched).toEqual([]);
+    expect(coverage.unanswered).toEqual([]);
+    expect(coverage.unattributed).toEqual([]);
+    expect(coverage.stale).toEqual([]);
+    expectAmbiguousRoundReason(coverage.reason);
+  });
+
+  it('accepts two honest route to fan-out to answers rounds with no route left over', async () => {
+    const coverage = await coverageOf(
+      journal(
+        routed(['code-reviewer']),
+        fanOut(['code-reviewer'], OLDER),
+        answered('code-reviewer', { headSha: OLDER }),
+        routed(['code-reviewer', 'prose-reviewer']),
+        fanOut(['code-reviewer', 'prose-reviewer']),
+        answered('code-reviewer'),
+        answered('prose-reviewer'),
+      ),
+    );
+
+    expect(coverage.ok).toBe(true);
+    expect(coverage.routed).toEqual(['code-reviewer', 'prose-reviewer']);
+    expect(coverage.launched).toEqual(['code-reviewer', 'prose-reviewer']);
+    expect('reason' in coverage).toBe(false);
+  });
+});
+
+describe('the shipped gate instructions name every unreadable-round branch', () => {
+  it('does not claim reason belongs only to missing fan-out', async () => {
+    const header = (await readFile(modulePath, 'utf8')).split('/** The gate name')[0] ?? '';
+    expect(header).not.toMatch(/present on no other answer/i);
+    expect(header).toMatch(/missing fan.?out/i);
+    expect(header).toMatch(/missing route/i);
+    expect(header).toMatch(/(?:unconsumed|left over) route/i);
+  });
+
+  it('requires a fan-out record even when the launched set is empty', async () => {
+    const source = await readFile(prShipPath, 'utf8');
+    expect(source).toMatch(/record[^\n]*fan.?out[^\n]*even when[^\n]*(?:set|list)[^\n]*empty/i);
+  });
+});
+
 describe('a reviewer nobody started is not a reviewer that stayed silent', () => {
   // The two need opposite responses — launch it, versus go and read why it said
   // nothing — and a single "missing" list makes the round that has to tell them
@@ -260,16 +362,13 @@ describe('a reviewer that was launched and returned nothing is named', () => {
     // any record after the fan-out would report a reviewer answered because the
     // session wrote something else.
     const coverage = await coverageOf(
-      journal(
-        fanOut(['prose-reviewer']),
-        { gate: 'pr-ship', verdict: 'SHIP', why: null, blockers: [], headSha: HEAD },
-        {
-          gate: 'review-routing:model',
-          verdict: 'route',
-          why: null,
-          reviewers: ['prose-reviewer'],
-        },
-      ),
+      journal(routed(['prose-reviewer']), fanOut(['prose-reviewer']), {
+        gate: 'pr-ship',
+        verdict: 'SHIP',
+        why: null,
+        blockers: [],
+        headSha: HEAD,
+      }),
     );
     expect(coverage.unanswered).toEqual(['prose-reviewer']);
     expect(coverage.ok).toBe(false);

@@ -171,6 +171,7 @@ blockers.
    🔴 **Record the set you launched, as you launch it.** The router journals the
    set it *routed*; the triggers above may only add, so what you actually
    launched is a different list and this is the only place that knows it:
+   **Record the fan-out even when the launched set is empty.**
 
    ```sh
    node --input-type=module -e '

@@ -23,8 +23,9 @@
  * 🔴 **No fan-out record is not a clean round.** A run whose journal records no
  * fan-out has not been shown to be covered, it has been shown to be unreadable —
  * and four empty lists are exactly what a clean round looks like. That case
- * answers `ok: false` and says why in `reason`, which is present on no other
- * answer.
+ * answers `ok: false` and says why in `reason`. A missing fan-out, a missing route,
+ * and an unconsumed route are the unreadable-round answers; each reason names the
+ * evidence boundary the journal could not establish.
  *
  * Pure by design: the records and the commit come from the caller, so the rule
  * has one implementation and the CLI is only its call site. The purity is pinned
@@ -44,8 +45,10 @@
  * previous fan-out and the last one**: the route that produced the fan-out being
  * judged.
  *
- * A route journalled *after* the last fan-out belongs to a round that has not
- * launched yet, and is not read here.
+ * 🔴 **An unconsumed route after the last fan-out is an unreadable boundary.**
+ * The journal cannot say whether this round's fan-out record is missing or the
+ * router was re-run after a completed fan-out. Both readings refuse coverage;
+ * re-running the fan-out for this head records the boundary either one needs.
  */
 
 /** The gate name `pr-ship` writes its fan-out under. */
@@ -172,6 +175,23 @@ export const coverageOf = ({ records, headSha } = {}) => {
       routeOfRound = pendingRoute;
       pendingRoute = null;
     }
+  }
+
+  if (pendingRoute !== null) {
+    return {
+      ok: false,
+      routed: uniq(pendingRoute),
+      launched: [],
+      neverLaunched: [],
+      unanswered: [],
+      unattributed: [],
+      stale: [],
+      reason:
+        'a routed reviewer set was journalled after the last fan-out, so the round ' +
+        'boundary is unreadable: either this round\'s fan-out record is missing, or the ' +
+        'router ran again after the fan-out. Rerun the fan-out step for this head so ' +
+        'the round it belongs to has a record.',
+    };
   }
 
   const routeRecorded = routeOfRound !== null;
