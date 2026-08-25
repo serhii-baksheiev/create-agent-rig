@@ -178,11 +178,18 @@ Two rules that follow from it:
   that goes red in both directions — a copy that gains an entry the source
   lacks, and a source that gains one the copy lacks — and put that check in
   before adding prose or a memory note about keeping them aligned. The shape is
-  in `test/template/correspondence.test.ts` ›
+  in the generator's `test/template/correspondence.test.ts` (absent in a
+  generated rig): the check itself, ›
   "every point the module knows is named by the loop or pr-ship skill, and vice versa"
   and ›
-  "the pr-ship fan-out bullets name exactly the floor of each lane, and only known lanes",
-  each of which mutates one side and asserts the check names the offender.
+  "the pr-ship fan-out bullets name exactly the floor of each lane, and only known lanes";
+  and the proof that it names the offender, one mutation per side, ›
+  "reports a point named in prose that no script knows (mutation: BEFORE_MERGE)",
+  › "reports a point the module knows that no prose mentions (mutation: extended POINTS)",
+  › "reports a reviewer added to a bullet the floor does not include (mutation: prose)"
+  and › "reports a floor widened in the mapping that the prose does not carry (mutation: mapping)".
+  What such a check costs is written where the check is, in the header of the
+  file that carries it.
 
 ## The worked example — and it is one project's answer, not a law
 

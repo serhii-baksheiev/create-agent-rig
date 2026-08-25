@@ -928,16 +928,16 @@ export const route = ({ files, elevatedPaths } = {}) => {
 };
 
 /**
- * Who the expensive lane fans out to — `code-reviewer` first, always, and the
- * conditional gates `pr-ship` already names, decided from the same paths.
- */
-/**
  * The floor each lane sets, and nothing else — what `pr-ship` step 4 launches
  * before any trigger adds to it. Exported as the ONE spelling of that fact:
- * `pr-ship/SKILL.md` restates it in prose, and
+ * `pr-ship/SKILL.md` restates it in prose, and the generator's
  * test/template/correspondence.test.ts › "the pr-ship fan-out bullets name
  * exactly the floor of each lane, and only known lanes" keeps the two in step
- * in both directions (AR-137).
+ * in both directions (AR-137). Only the `model` entry has a runtime consumer
+ * (`reviewersFor` below, which the router calls); the other two are checked
+ * against the prose alone — `route()` launches nothing on those lanes itself.
+ * Cost of the check: a floor change touches this function and one bullet, and
+ * the bullet must keep its `- \`lane\` → …` shape or the parse fails by name.
  */
 export const reviewersForLane = (lane) => {
   if (lane === 'model') return ['code-reviewer'];
@@ -945,6 +945,10 @@ export const reviewersForLane = (lane) => {
   return [];
 };
 
+/**
+ * Who the expensive lane fans out to — `code-reviewer` first, always, and the
+ * conditional gates `pr-ship` already names, decided from the same paths.
+ */
 const reviewersFor = (files, risks) => {
   const reviewers = [...reviewersForLane('model')];
 

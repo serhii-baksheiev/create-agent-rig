@@ -1,3 +1,15 @@
+// AR-137: two duplicated mechanical facts, each with one source and a
+// two-direction correspondence check against the prose that must restate it.
+//
+// Limits, stated: the points parser reads exactly the `loop` and `pr-ship`
+// skills, by the spellings `--point X` / `point: X` — a point named elsewhere,
+// or spelled otherwise, is invisible to it. The floor parser needs the
+// `**Reviewer fan-out.**` anchor and the `- \`lane\` → …` bullet shape; if either
+// moves, the parse fails by a named assertion rather than passing on nothing.
+// That is the maintenance cost of the check, and it is the whole of it.
+//
+// It runs off the Windows lane: it imports revalidate.mjs and decision-router.mjs,
+// which do not load there (their own tests sit in the same exclusion list).
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';

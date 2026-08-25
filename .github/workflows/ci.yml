@@ -81,6 +81,7 @@ jobs:
           --exclude test/template/aws-extras.test.ts
           --exclude test/template/close-transitioned.test.ts
           --exclude test/template/codex.test.ts
+          --exclude test/template/correspondence.test.ts
           --exclude test/template/decision-router.test.ts
           --exclude test/template/dogfood.test.ts
           --exclude test/template/gate-rounds.test.ts
