@@ -34,7 +34,15 @@
  * offers") for the loop's write-back.
  *
  * The aggregates are `queue/core.mjs` › beforePrRevalidationOf and
- * beforeCloseRevalidationOf; this file is the I/O around them. Exit 2 on `hold`, 0 on `continue` and `unverifiable`, 1 when
+ * beforeCloseRevalidationOf; this file is the I/O around them.
+ *
+ * `outcome --point <P> --ticket <id> --action-changed true|false [--note …]`
+ * (AR-136) is the second half of the evidence: after the re-read, it appends a
+ * `revalidation-outcome` record whose `answers` is the seq of the latest
+ * `revalidation` for that ticket and point in this run — the join a report
+ * needs, made by the writer rather than guessed by the reader. It refuses
+ * without a run, without a matching revalidation, and with any word but
+ * `true`/`false`, and writes nothing then. Exit 2 on `hold`, 0 on `continue` and `unverifiable`, 1 when
  * the arguments cannot be acted on (unknown point, no ticket, a base that is
  * not a revision) — and then nothing is journalled, because a refusal is not
  * an answer.
@@ -62,10 +70,23 @@ const revisionOrNull = (value) =>
   typeof value === 'string' && value !== '' && !value.startsWith('-') ? value : null;
 
 const parseArgs = (argv) => {
-  const args = { point: null, ticket: null, base: 'origin/master', config: null, json: false, bad: null };
+  const args = {
+    outcome: false,
+    point: null,
+    ticket: null,
+    base: 'origin/master',
+    config: null,
+    json: false,
+    actionChanged: null,
+    note: null,
+    bad: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--json') args.json = true;
+    if (i === 0 && arg === 'outcome') args.outcome = true;
+    else if (arg === '--json') args.json = true;
+    else if (arg === '--action-changed') args.actionChanged = argv[++i] ?? null;
+    else if (arg === '--note') args.note = argv[++i] ?? null;
     else if (arg === '--point') args.point = argv[++i] ?? null;
     else if (arg === '--ticket') {
       // The id reaches git-free paths only, but on github-issues it becomes a
@@ -139,12 +160,54 @@ const refuse = (message) => {
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   if (args.bad !== null) refuse(`unrecognised or unusable argument: ${args.bad}`);
-  if (!POINTS.includes(args.point)) {
-    refuse(`unknown point: ${args.point ?? '(none)'}. This script knows ${POINTS.join(', ')}.`);
+  // An outcome may answer any point, SELECT included — that one is written by
+  // `queue/index.mjs next`, so it is not in POINTS, which names what THIS
+  // script can revalidate.
+  const known = args.outcome ? ['SELECT', ...POINTS] : POINTS;
+  if (!known.includes(args.point)) {
+    refuse(`unknown point: ${args.point ?? '(none)'}. This script knows ${known.join(', ')}.`);
   }
   if (!args.ticket) refuse('--ticket is required: the item whose take-up this branch is.');
 
   const runDir = process.env.RIG_RUN_DIR || null;
+
+  if (args.outcome) {
+    if (!runDir) refuse('outcome needs RIG_RUN_DIR: an outcome answers a revalidation in a run, and there is none.');
+    if (args.actionChanged !== 'true' && args.actionChanged !== 'false') {
+      refuse(`--action-changed must be true or false, got ${args.actionChanged ?? '(none)'}.`);
+    }
+    const { events } = readRun({ runDir });
+    const target = [...events]
+      .reverse()
+      .find(
+        (e) =>
+          e.kind === 'revalidation' &&
+          String(e.data?.ticket) === String(args.ticket) &&
+          e.data?.point === args.point,
+      );
+    if (!target) {
+      refuse(`no revalidation of ${args.ticket} at ${args.point} in ${runDir} for this outcome to answer.`);
+    }
+    const record = recordEvent({
+      runDir,
+      kind: 'revalidation-outcome',
+      data: {
+        ticket: args.ticket,
+        point: args.point,
+        actionChanged: args.actionChanged === 'true',
+        note: args.note,
+        answers: target.seq,
+      },
+      now: new Date().toISOString(),
+    });
+    process.stdout.write(
+      args.json
+        ? `${JSON.stringify(record, null, 2)}\n`
+        : `revalidation-outcome: ${args.ticket} at ${args.point} answers seq ${target.seq} — actionChanged ${args.actionChanged}\n`,
+    );
+    process.exit(0);
+  }
+
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
   const config = loadConfig(configPath);
@@ -172,7 +235,7 @@ if (invokedDirectly()) {
     const aggregate = beforeCloseRevalidationOf({ ticket: args.ticket, task, state: actual });
     const result = {
       ...aggregate,
-      task: { changed: task.changed, from: task.from ?? null, to: task.to ?? null },
+      task: { changed: task.changed, from: task.task?.from ?? task.from ?? null, to: task.task?.to ?? task.to ?? null },
       state: { expected: 'in-progress', actual },
       dependants,
       dependantState,
@@ -217,7 +280,7 @@ if (invokedDirectly()) {
   const aggregate = beforePrRevalidationOf({ ticket: args.ticket, task, mainChanged });
   const result = {
     ...aggregate,
-    task: { changed: task.changed, from: task.from ?? null, to: task.to ?? null },
+    task: { changed: task.changed, from: task.task?.from ?? task.from ?? null, to: task.task?.to ?? task.to ?? null },
     main: { base: args.base, mergeBase, cited, changed: mainChanged },
   };
 

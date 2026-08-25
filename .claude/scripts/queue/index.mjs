@@ -232,8 +232,8 @@ const renderNext = (result, stop, revalidation = null) => {
   // cheap, and the no-marker case is in the JSON and the event log, not here.
   if (revalidation?.changed === true) {
     lines.push(
-      `revalidate: ${revalidation.ticket} changed since take-up (${revalidation.source} ` +
-        `${revalidation.from} → ${revalidation.to}) — re-read the item before acting`,
+      `revalidate: ${revalidation.ticket} hold — ${revalidation.source.join(', ')} ` +
+        `(${revalidation.task.from} → ${revalidation.task.to}) — re-read the item before acting`,
     );
   }
   if (result.skipped.length > 0) {

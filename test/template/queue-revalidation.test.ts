@@ -32,14 +32,16 @@ const { withoutGitLocation } = (await import(
 const T1 = '2026-08-24T20:56:23.474Z';
 const T2 = '2026-08-25T09:00:00.000Z';
 
+// AR-136 [RX4]: one shape at every point — `source` is a list of source names
+// (never a bare string or null), `action` is the hold vocabulary the other two
+// points already use, and the compared markers sit under `task`.
 interface Revalidation {
   ticket: string;
   point: 'SELECT';
   changed: boolean | null;
-  source: string | null;
-  action: 'continue' | 'refresh' | 'unverifiable';
-  from: string | null;
-  to: string | null;
+  source: string[];
+  action: 'hold' | 'continue' | 'unverifiable';
+  task: { from: string | null; to: string | null };
 }
 
 interface EventRecord {
@@ -251,15 +253,14 @@ describe('revalidationOf decides, purely, whether the item moved since take-up',
       ticket: 'AR-1',
       point: 'SELECT',
       changed: null,
-      source: null,
+      source: [],
       action: 'unverifiable',
-      from: T1,
-      to: null,
+      task: { from: T1, to: null },
     });
     expect(revalidationOf({ ticket: { id: 'AR-1' }, snapshot: undefined })).toMatchObject({
       changed: null,
       action: 'unverifiable',
-      from: null,
+      task: { from: null },
     });
   });
 
@@ -269,16 +270,14 @@ describe('revalidationOf decides, purely, whether the item moved since take-up',
       ticket: 'AR-1',
       point: 'SELECT',
       changed: false,
-      source: 'updatedAt',
+      source: [],
       action: 'continue',
-      from: null,
-      to: T1,
+      task: { from: null, to: T1 },
     });
     expect(revalidationOf({ ticket: ticket(T1), snapshot: null })).toMatchObject({
       changed: false,
       action: 'continue',
-      from: null,
-      to: T1,
+      task: { from: null, to: T1 },
     });
   });
 
@@ -286,23 +285,21 @@ describe('revalidationOf decides, purely, whether the item moved since take-up',
     const { revalidationOf } = await load('core.mjs');
     expect(revalidationOf({ ticket: ticket(T1), snapshot: T1 })).toMatchObject({
       changed: false,
-      source: 'updatedAt',
+      source: [],
       action: 'continue',
-      from: T1,
-      to: T1,
+      task: { from: T1, to: T1 },
     });
   });
 
-  it('asks for a refresh when the marker moved past the snapshot', async () => {
+  it('holds, naming task:updatedAt, when the marker moved past the snapshot', async () => {
     const { revalidationOf } = await load('core.mjs');
     expect(revalidationOf({ ticket: ticket(T2), snapshot: T1 })).toEqual({
       ticket: 'AR-1',
       point: 'SELECT',
       changed: true,
-      source: 'updatedAt',
-      action: 'refresh',
-      from: T1,
-      to: T2,
+      source: ['task:updatedAt'],
+      action: 'hold',
+      task: { from: T1, to: T2 },
     });
   });
 
@@ -363,38 +360,42 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
       ticket: 'AR-1',
       point: 'SELECT',
       changed: false,
-      source: 'updatedAt',
+      source: [],
       action: 'continue',
-      from: null,
-      to: T1,
+      task: { from: null, to: T1 },
     });
     expect((await stateOf(runDir)).takeUps).toEqual({ 'AR-1': T1 });
     const events = await revalidationEvents(runDir);
     expect(events).toHaveLength(1);
-    expect(events[0]!.data).toMatchObject({
+    expect(events[0]!.data).toEqual({
       ticket: 'AR-1',
       point: 'SELECT',
       changed: false,
-      source: 'updatedAt',
+      source: [],
       action: 'continue',
+      task: { from: null, to: T1 },
     });
   });
 
-  it('a moved marker asks for a refresh, re-snapshots, and journals the change', async () => {
+  it('a moved marker holds on task:updatedAt, re-snapshots, and journals the change', async () => {
     const { dir, configPath, runDir, env, setUpdated } = await jiraProject();
     await nextJson(configPath, dir, env);
     await setUpdated(T2);
     const out = await nextJson(configPath, dir, env);
     expect(out.revalidation).toMatchObject({
       changed: true,
-      action: 'refresh',
-      from: T1,
-      to: T2,
+      source: ['task:updatedAt'],
+      action: 'hold',
+      task: { from: T1, to: T2 },
     });
     expect((await stateOf(runDir)).takeUps).toEqual({ 'AR-1': T2 });
     const events = await revalidationEvents(runDir);
     expect(events).toHaveLength(2);
-    expect(events[1]!.data).toMatchObject({ changed: true, action: 'refresh' });
+    expect(events[1]!.data).toMatchObject({
+      changed: true,
+      source: ['task:updatedAt'],
+      action: 'hold',
+    });
   });
 
   it('the same marker twice continues quietly', async () => {
@@ -403,9 +404,9 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     const out = await nextJson(configPath, dir, env);
     expect(out.revalidation).toMatchObject({
       changed: false,
+      source: [],
       action: 'continue',
-      from: T1,
-      to: T1,
+      task: { from: T1, to: T1 },
     });
   });
 
@@ -420,6 +421,7 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     expect(second.code, second.out).toBe(0);
     const line = second.stdout.split('\n').find((l) => l.startsWith('revalidate: AR-1'));
     expect(line, second.stdout).toBeDefined();
+    expect(line).toMatch(/^revalidate: AR-1 hold — task:updatedAt/);
     expect(line).toContain('re-read');
   });
 
@@ -429,8 +431,9 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     expect(out.revalidation).toMatchObject({
       point: 'SELECT',
       changed: null,
-      source: null,
+      source: [],
       action: 'unverifiable',
+      task: { from: null, to: null },
     });
     expect(await stateOf(runDir)).not.toHaveProperty('takeUps');
     const events = await revalidationEvents(runDir);
@@ -483,21 +486,39 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
       path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
       'utf8',
     );
-    const block = skill.match(
-      /```bash\n(node --input-type=module -e '[^`]*revalidation-outcome[^`]*)```/,
-    );
-    expect(block, 'the loop skill carries no revalidation-outcome command').not.toBeNull();
+    // AR-136: the command is `revalidate.mjs outcome`, not an inline recordEvent.
+    const block = skill.match(/```bash\n([^`]*revalidate\.mjs outcome --point SELECT[^`]*)```/);
+    expect(block, 'the loop skill carries no `revalidate.mjs outcome` command').not.toBeNull();
     const command = block![1]!
-      .replace('<item-id>', 'AR-1')
-      .replace('<true | false>', 'true')
-      .replace('<what changed, or why it changes nothing>', 'a late comment re-scoped it');
+      .replace(/<item-id>/g, 'AR-1')
+      .replace(/<true ?\| ?false>/g, 'true')
+      .replace(/<[^>]*(what changed|why)[^>]*>/g, 'a late comment re-scoped it');
+    expect(command, 'a placeholder the test does not know').not.toMatch(/<[^>]+>/);
     const project = await mkdtemp(path.join(tmpdir(), 'outcome-'));
-    await mkdir(path.join(project, '.claude', 'scripts'), { recursive: true });
-    await cp(
-      path.join(scriptsDir, 'run-journal.mjs'),
-      path.join(project, '.claude', 'scripts', 'run-journal.mjs'),
+    await mkdir(path.join(project, '.claude'), { recursive: true });
+    await cp(scriptsDir, path.join(project, '.claude', 'scripts'), { recursive: true });
+    await writeFile(
+      path.join(project, '.claude', 'queue.json'),
+      JSON.stringify({ adapter: 'plan-md' }),
     );
     const runDir = await mkdtemp(path.join(tmpdir(), 'run-'));
+    // The event the outcome answers — its seq is what the outcome must carry.
+    const { recordEvent } = (await loadScript('run-journal.mjs')) as {
+      recordEvent: (input: unknown) => { seq: number };
+    };
+    const answered = recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: {
+        ticket: 'AR-1',
+        point: 'SELECT',
+        changed: true,
+        source: ['task:updatedAt'],
+        action: 'hold',
+        task: { from: T1, to: T2 },
+      },
+      now: T2,
+    });
     const result = await new Promise<{ code: number; out: string }>((resolve) => {
       execFile(
         'sh',
@@ -511,9 +532,14 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line) as EventRecord);
-    expect(events).toHaveLength(1);
-    expect(events[0]!.kind).toBe('revalidation-outcome');
-    expect(events[0]!.data).toMatchObject({ ticket: 'AR-1', point: 'SELECT', altered: true });
+    expect(events).toHaveLength(2);
+    expect(events[1]!.kind).toBe('revalidation-outcome');
+    expect(events[1]!.data).toMatchObject({
+      ticket: 'AR-1',
+      point: 'SELECT',
+      actionChanged: true,
+      answers: answered.seq,
+    });
   });
 
   it('without a run directory it neither revalidates nor writes', async () => {
