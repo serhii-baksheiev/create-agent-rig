@@ -14,7 +14,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
-import { hygieneOf, selectNext, stopConditionOf } from './core.mjs';
+import { hygieneOf, revalidationOf, selectNext, stopConditionOf } from './core.mjs';
 // One resolver, imported rather than re-derived: writer and reader disagreeing
 // about which checkout they are in is the whole of the worktree defect. It lives
 // apart from `state.mjs` so the read path does not drag the tier computation —
@@ -222,12 +222,20 @@ const parseArgs = (argv) => {
   return args;
 };
 
-const renderNext = (result, stop) => {
+const renderNext = (result, stop, revalidation = null) => {
   if (stop) {
     const label = stop.kind.replaceAll('-', ' ');
     return `queue: ${label}${stop.success ? '' : ' (needs attention)'}\n  ${stop.why}\n`;
   }
   const lines = [`next: ${result.ticket.id} — ${result.ticket.title} [${result.ticket.tier}]`];
+  // Only a marker that MOVED earns a line: the unchanged case stays quiet and
+  // cheap, and the no-marker case is in the JSON and the event log, not here.
+  if (revalidation?.changed === true) {
+    lines.push(
+      `revalidate: ${revalidation.ticket} changed since take-up (${revalidation.source} ` +
+        `${revalidation.from} → ${revalidation.to}) — re-read the item before acting`,
+    );
+  }
   if (result.skipped.length > 0) {
     lines.push('', 'skipped:');
     for (const skip of result.skipped) lines.push(`  ${skip.id} — ${skip.reason}`);
@@ -366,8 +374,9 @@ if (invokedDirectly()) {
   // and must keep working exactly as before.
   let readState;
   let stopInputsOf;
+  let recordTakeUp;
   try {
-    ({ readState, stopInputsOf } = await import('../run-state.mjs'));
+    ({ readState, stopInputsOf, recordTakeUp } = await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
       `run state: ${error.message}\n` +
@@ -524,6 +533,14 @@ if (invokedDirectly()) {
   // a default derived from `projectRoot` would land the trace inside the very
   // template tree this repository publishes.
   const runDir = process.env.RIG_RUN_DIR;
+  // Revalidation at SELECT (AR-133): the selected item against the marker this
+  // run recorded at its last take-up. Computed only under a declared run —
+  // there is no snapshot to compare against anywhere else — and `null` in the
+  // output then, so a reader can tell "not compared" from "compared, unchanged".
+  const revalidation =
+    runDir && result.ticket
+      ? revalidationOf({ ticket: result.ticket, snapshot: runState.takeUps?.[result.ticket.id] })
+      : null;
   if (runDir) {
     let journal = null;
     try {
@@ -537,6 +554,27 @@ if (invokedDirectly()) {
         // an argument, which is what keeps its records reproducible.
         now: new Date().toISOString(),
       });
+      if (revalidation) {
+        // The selection decision keeps its place as the run's first record; the
+        // evidence log comes next, and only then (below, after the journal) does
+        // the baseline move — a snapshot written before its event would leave a
+        // crashed run with a marker and no record of what it was compared against.
+        if (typeof journal.recordEvent === 'function') {
+          journal.recordEvent({
+            runDir,
+            kind: 'revalidation',
+            data: revalidation,
+            now: new Date().toISOString(),
+          });
+        } else {
+          // A rig carrying a run journal older than this CLI: the selection
+          // stands, the comparison was made, only its record has nowhere to go.
+          process.stderr.write(
+            'run journal: this journal predates revalidation events, so the ' +
+              'revalidation was not recorded.\n',
+          );
+        }
+      }
     } catch (error) {
       // 🔴 Two failures wearing one face, and treating them alike was a defect
       // this gate caught. The journal asks the module which one this is — never
@@ -572,9 +610,24 @@ if (invokedDirectly()) {
     }
   }
 
+  if (revalidation) {
+    // Its own try, after the journal's: a state file that cannot be written is
+    // not the journal failing, and the selection stands either way — the
+    // comparison was made and recorded; only the next baseline is lost.
+    try {
+      recordTakeUp(runDir, { id: result.ticket.id, updatedAt: result.ticket.updatedAt });
+    } catch (error) {
+      process.stderr.write(
+        `run state: the take-up snapshot was NOT recorded in ${runDir} — ${error.message}\n` +
+          '  the selection below stands; the baseline was not moved — the next revalidation ' +
+          'of this item compares against the previous one, if any, or has none.\n',
+      );
+    }
+  }
+
   process.stdout.write(
     args.json
-      ? `${JSON.stringify({ ticket: result.ticket, skipped: result.skipped, stop }, null, 2)}\n`
-      : renderNext(result, stop),
+      ? `${JSON.stringify({ ticket: result.ticket, skipped: result.skipped, stop, revalidation }, null, 2)}\n`
+      : renderNext(result, stop, revalidation),
   );
 }

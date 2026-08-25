@@ -103,6 +103,13 @@ export const toTicket = (issue) => {
     blocks,
     priority: PRIORITY[String(fields.priority?.name ?? '').toLowerCase()] ?? 999,
     createdAt: toIso(fields.created),
+    // The take-up marker for revalidation at SELECT (`core.mjs` › revalidationOf):
+    // the tracker's own last-modified field. That it moves on every status
+    // change, edit and comment is Jira's contract, assumed and not checked
+    // here. `null` when the search did not carry it — never `''`, which would
+    // compare equal to itself and read as "unchanged" where the truth is "not
+    // looked".
+    updatedAt: toIso(fields.updated),
     // Flattened from the document description — the same text this adapter
     // already reads internally, now visible to the shared hygiene checks.
     body: descriptionTextOf(issue) || null,
@@ -214,7 +221,16 @@ const request = async (route, { method = 'GET', body = null, env = process.env }
 // decides how hard this is to notice: sending the joined form the retired query
 // parameter wanted answers `400 Invalid request payload`, not a 200 with empty
 // fields. It fails loudly, so a wrong value here cannot sit undetected.
-const FIELDS = ['summary', 'status', 'labels', 'priority', 'created', 'issuelinks', 'description'];
+const FIELDS = [
+  'summary',
+  'status',
+  'labels',
+  'priority',
+  'created',
+  'updated',
+  'issuelinks',
+  'description',
+];
 
 // --- the adapter contract ------------------------------------------------------
 

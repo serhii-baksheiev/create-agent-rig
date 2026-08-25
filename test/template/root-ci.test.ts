@@ -38,6 +38,7 @@ const WINDOWS_INCOMPATIBLE_TESTS = [
   'test/template/invariants.test.ts',
   'test/template/packaging.test.ts',
   'test/template/queue-jira.test.ts',
+  'test/template/queue-revalidation.test.ts',
   'test/template/queue.test.ts',
   'test/template/review-fixes.test.ts',
   'test/template/root-ci.test.ts',

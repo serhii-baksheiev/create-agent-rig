@@ -1,6 +1,8 @@
 /**
  * The run's own state — three of the four values `stopConditionOf` asks for and
- * nothing used to answer. The fourth, `killSwitch`, is deliberately not here:
+ * nothing used to answer, plus one value it does not ask for: the take-up
+ * snapshot `takeUps` ({@link recordTakeUp}), which is the run's fact as much as
+ * the other three. The fourth stop input, `killSwitch`, is deliberately not here:
  * it is already mechanical in `guard-bash` and scripted in preflight, and a
  * second answer to "is the brake on" is the disagreement `invariants.md`
  * forbids.
@@ -197,6 +199,28 @@ export const recordEscalation = (runDir) => {
     // this number must not record a streak the state file does not carry.
     return current;
   }
+};
+
+/**
+ * The take-up snapshot: the selected item's `updatedAt` marker, keyed by id, as
+ * seen at SELECT. `queue/core.mjs` › revalidationOf compares the next selection
+ * against it, so a stale take-up is reported rather than silently continued.
+ *
+ * Per run, like everything else here — a snapshot from yesterday's run is not
+ * a take-up this run made. Merged by id, so a second item does not erase the
+ * first; re-recording an id moves its baseline forward. A marker that is not a
+ * string is not recorded at all: `plan-md` has none, and writing `null` would
+ * later compare equal to `null` and read as "unchanged".
+ *
+ * No run directory → nothing written, `null` back, no throw: an attended
+ * selection has no run to snapshot into. (Like {@link recordEscalation} it
+ * refuses to throw there; unlike it, there is no count to hand back, so `null`.)
+ */
+export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
+  if (!runDir || typeof updatedAt !== 'string' || id === undefined || id === null) return null;
+  const state = readState(runDir);
+  const takeUps = typeof state.takeUps === 'object' && state.takeUps !== null ? state.takeUps : {};
+  return updateState(runDir, { takeUps: { ...takeUps, [String(id)]: updatedAt } });
 };
 
 /**

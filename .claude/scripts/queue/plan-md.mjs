@@ -114,6 +114,9 @@ export const parsePlan = (plan) => {
       blocks: [],
       priority: items.length,
       createdAt: null,
+      // A flat list carries no marker at all, so revalidation at SELECT records
+      // `changed: null` for it — a blind spot, never an "unchanged".
+      updatedAt: null,
       triage: MARKERS.triage.test(raw),
       trigger: MARKERS.triggerAuto.test(raw)
         ? 'auto'

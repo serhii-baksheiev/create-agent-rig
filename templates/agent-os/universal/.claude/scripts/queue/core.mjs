@@ -475,6 +475,40 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
 };
 
 /**
+ * Revalidation at SELECT — is the item the run is about to take the item the
+ * last take-up saw?
+ *
+ * The snapshot is the ticket's `updatedAt` marker as recorded at the previous
+ * take-up in THIS run (`run-state.mjs` › recordTakeUp). One string compare on
+ * the tracker's last-modified field, no second network call — the unchanged
+ * case costs nothing. That the field moves on every edit, comment and status
+ * change is the tracker's contract, assumed here and not checked.
+ *
+ * 🔴 **`changed` is three-valued, and `null` is the honest one.** An adapter
+ * with no marker (`plan-md`) cannot say "unchanged"; it can only say it did not
+ * look. Collapsing that into `false` would report a blind spot as a pass, which
+ * is the one thing an evidence log must never do. `true` is reserved for a
+ * marker that moved: a first sight (no snapshot yet) is `false` with the baseline
+ * recorded, not a change.
+ *
+ * `action` says what the run does with it: `refresh` — re-read the item before
+ * acting; `continue` — nothing moved; `unverifiable` — no marker to compare.
+ *
+ * ⚠ Limit: the marker moves on the run's OWN claim and comments too, so a
+ * `true` on a re-offer can be self-inflicted. This function cannot tell who
+ * moved it; the re-read can, and the `loop` skill records that conclusion as a
+ * separate `revalidation-outcome` event.
+ */
+export const revalidationOf = ({ ticket, snapshot = null }) => {
+  const to = typeof ticket?.updatedAt === 'string' ? ticket.updatedAt : null;
+  const from = typeof snapshot === 'string' ? snapshot : null;
+  const base = { ticket: ticket?.id ?? null, point: 'SELECT', from, to };
+  if (to === null) return { ...base, changed: null, source: null, action: 'unverifiable' };
+  const changed = from !== null && from !== to;
+  return { ...base, changed, source: 'updatedAt', action: changed ? 'refresh' : 'continue' };
+};
+
+/**
  * Split the skipped records into the ones holding takeable work back and the
  * ones that are simply out of play.
  *

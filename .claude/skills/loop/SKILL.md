@@ -168,6 +168,42 @@ and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
+**Selection also revalidates the item against this run's own take-up.** `next`
+records the selected item's `updatedAt` marker in the run state (`takeUps`) and,
+when the same item is offered again in the run, compares the two. A marker that
+moved prints a `revalidate:` line and the JSON carries `revalidation.changed:
+true`: **re-read the item before acting on it**, then record what the re-read
+concluded — whether the change altered the action is the evidence this exists to
+collect, and the comparison alone cannot supply it:
+
+```bash
+node --input-type=module -e '
+  const { recordEvent } = await import("./.claude/scripts/run-journal.mjs");
+  console.log(recordEvent({
+    runDir: process.env.RIG_RUN_DIR,
+    kind:   "revalidation-outcome",
+    data:   { ticket: "<item-id>", point: "SELECT", altered: <true | false>, note: "<what changed, or why it changes nothing>" },
+    now:    new Date().toISOString(),
+  }));
+'
+```
+
+Keep the note free of quotes: it sits inside a shell single-quote and a JS
+double-quote, and either character ends the command with a syntax error rather
+than a record. Nothing forces this record — a `revalidation` event with no
+matching outcome means the run skipped it, and the experiment's reader should
+count those.
+
+Under a declared run directory, every selection logs one `revalidation` event
+`{ticket, point: SELECT, changed, source, action}`; an adapter with no marker (`plan-md`) logs `changed: null`,
+never "unchanged". ⚠ The marker also moves on the run's own claim and comments,
+so a `true` on a re-offer can be self-inflicted — the re-read decides, which is
+why the outcome is recorded separately. The behaviour is pinned in the
+generator's `test/template/queue-revalidation.test.ts` — absent in a generated
+rig — › "an adapter with no marker records a blind spot, not \"unchanged\"", ›
+"a moved marker asks for a refresh, re-snapshots, and journals the change" and ›
+"the loop skill's outcome command records what the re-read concluded".
+
 **Then, before the Red step: `check-premises`.** The item was written by someone
 who was not reading the code at the time, and everything downstream — the failing
 test, the implementation, the reviewer comparing diff to item — inherits its
