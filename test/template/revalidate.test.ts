@@ -269,6 +269,7 @@ describe('revalidate.mjs — the CLI contract', () => {
   it.each([
     ['an unknown point', ['--point', 'AFTER_MERGE', '--ticket', 'AR-1']],
     ['a missing ticket', ['--point', 'BEFORE_PR']],
+    ['a ticket that looks like an option', ['--point', 'BEFORE_CLOSE', '--ticket', '--help']],
     [
       'a base that is not a revision',
       ['--point', 'BEFORE_PR', '--ticket', 'AR-1', '--base', 'no-such-ref'],
@@ -524,6 +525,7 @@ interface CloseResult {
   task: { changed: boolean | null; from: string | null; to: string | null };
   state: { expected: 'in-progress'; actual: string | null };
   dependants: string[];
+  dependantState: Record<string, string>;
 }
 
 const T3 = '2026-08-25T11:30:00.000Z';
@@ -554,11 +556,14 @@ const closeProject = async ({
   snapshot = T1,
   status = IN_PROGRESS,
   issuelinks = [] as unknown[],
+  others = [] as unknown[],
 }: {
   updated?: string | null;
   snapshot?: string | null;
   status?: { name: string; statusCategory: { key: string } };
   issuelinks?: unknown[];
+  /** Other issues the offline seam carries — the dependants `find` re-reads. */
+  others?: unknown[];
 } = {}): Promise<CloseProject> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'revalidate-close-'));
   await mkdir(path.join(dir, '.claude'), { recursive: true });
@@ -569,7 +574,10 @@ const closeProject = async ({
       adapter: 'jira',
       options: {
         project: 'AR',
-        issues: [jiraIssue({ status, issuelinks, ...(updated === null ? {} : { updated }) })],
+        issues: [
+          jiraIssue({ status, issuelinks, ...(updated === null ? {} : { updated }) }),
+          ...others,
+        ],
       },
     }),
   );
@@ -751,6 +759,26 @@ describe('BEFORE_CLOSE — the dependants the close would release', () => {
     const p = await closeProject();
     const { result } = await revalidateCloseJson(p);
     expect(result.dependants).toEqual([]);
+    expect(result.dependantState).toEqual({});
+  });
+
+  it("re-reads each dependant's state, and names one the tracker no longer offers", async () => {
+    const done = { name: 'Done', statusCategory: { key: 'done' } };
+    const p = await closeProject({
+      issuelinks: [blocksLink('AR-7'), blocksLink('AR-9'), blocksLink('AR-11')],
+      others: [
+        { ...jiraIssue({ status: done }), key: 'AR-7' },
+        { ...jiraIssue(), key: 'AR-9' },
+      ],
+    });
+    const { code, result } = await revalidateCloseJson(p);
+    // a dependant already closed, or gone, is reported — it is not a hold
+    expect(code).toBe(0);
+    expect(result.dependantState).toEqual({
+      'AR-7': 'closed',
+      'AR-9': 'in-progress',
+      'AR-11': 'missing',
+    });
   });
 });
 

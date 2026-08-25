@@ -214,6 +214,53 @@ describe('find: one item by id, closed included', () => {
     expect(await find('ABC-99', { issues })).toBeNull();
   });
 
+  it('jira asks for the issue BY KEY on the live path, so a Done item still comes back', async () => {
+    const CREDENTIALS = {
+      JIRA_BASE_URL: 'https://example.invalid',
+      JIRA_EMAIL: 'a@b.c',
+      JIRA_API_TOKEN: 'x',
+    };
+    const calls: Array<{ pathname: string; search: string; method: string }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+      const url = new URL(String(input));
+      calls.push({
+        pathname: url.pathname,
+        search: url.search,
+        method: String(init.method ?? 'GET'),
+      });
+      const known = url.pathname.endsWith('/issue/ABC-13');
+      return Promise.resolve({
+        ok: known,
+        status: known ? 200 : 404,
+        statusText: known ? 'OK' : 'Not Found',
+        json: () =>
+          Promise.resolve({
+            key: 'ABC-13',
+            fields: {
+              summary: 's',
+              status: { name: 'Done', statusCategory: { key: 'done' } },
+              labels: [],
+              created: '2026-07-01T00:00:00.000+0000',
+              issuelinks: [],
+            },
+          }),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const { find } = await load('jira.mjs');
+      const found = await find('ABC-13', { env: CREDENTIALS });
+      expect(found).toMatchObject({ id: 'ABC-13', state: 'closed' });
+      // never the search endpoint, whose JQL excludes Done
+      expect(calls.every((c) => !c.pathname.includes('/search'))).toBe(true);
+      expect(calls[0]).toMatchObject({ method: 'GET', pathname: '/rest/api/3/issue/ABC-13' });
+      expect(calls[0]!.search).toContain('fields=');
+      expect(await find('ABC-99', { env: CREDENTIALS })).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it('github asks `gh issue view` with the full field list and maps CLOSED to closed', async () => {
     const bin = await mkdtemp(path.join(tmpdir(), 'stub-gh-find-'));
     const logFile = path.join(bin, 'calls.log');
@@ -234,6 +281,8 @@ describe('find: one item by id, closed included', () => {
       const { find } = await load('github-issues.mjs');
       const found = find('13');
       expect(found).toMatchObject({ id: '13', state: 'closed', updatedAt: '2026-07-02T00:00:00Z' });
+      // a single view carries no cross-index, so no dependants can be named here
+      expect(found.blocks).toEqual([]);
       const log = (await readFile(logFile, 'utf8')).split('\n').filter(Boolean);
       expect(log[0]).toMatch(/^issue view 13 --json .*updatedAt/);
       // and the offline seam, which needs no gh at all
@@ -280,7 +329,7 @@ describe('plan-md close proves the transition by re-parsing the plan', () => {
     return planPath;
   };
 
-  it('reports transitioned: true once the item’s line is gone', async () => {
+  it("reports transitioned: true once the item's line is gone", async () => {
     const planPath = await planFile();
     const { close } = await load('plan-md.mjs');
     const result = close({ id: '2' }, { planPath });

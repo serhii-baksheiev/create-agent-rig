@@ -29,7 +29,9 @@
  * either holds on `task:state` (revalidate.test.ts › "holds on task:state when
  * someone already closed the item", › "holds on task:state when the tracker no
  * longer offers the item"). The result lists the item's dependants (`blocks`)
- * for the loop's write-back.
+ * and re-reads each one's state through the same `find` (revalidate.test.ts ›
+ * "re-reads each dependant's state, and names one the tracker no longer
+ * offers") for the loop's write-back.
  *
  * The aggregates are `queue/core.mjs` › beforePrRevalidationOf and
  * beforeCloseRevalidationOf; this file is the I/O around them. Exit 2 on `hold`, 0 on `continue` and `unverifiable`, 1 when
@@ -65,7 +67,13 @@ const parseArgs = (argv) => {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
     else if (arg === '--point') args.point = argv[++i] ?? null;
-    else if (arg === '--ticket') args.ticket = argv[++i] ?? null;
+    else if (arg === '--ticket') {
+      // The id reaches git-free paths only, but on github-issues it becomes a
+      // `gh` argv element: a value starting with `-` would be read as an option.
+      const value = revisionOrNull(argv[++i]);
+      if (value === null) args.bad = arg;
+      else args.ticket = value;
+    }
     else if (arg === '--config') args.config = argv[++i] ?? null;
     else if (arg === '--base') {
       const value = revisionOrNull(argv[++i]);
@@ -153,12 +161,21 @@ if (invokedDirectly()) {
         : { changed: null, from: baseline, to: ticket?.updatedAt ?? null };
     // Not found is not "in progress": the tracker no longer offers the item.
     const actual = ticket ? ticket.state : 'missing';
+    // The dependants' state is RE-READ, not copied off the item: what this close
+    // releases is only what is still waiting, and a dependant somebody closed
+    // ahead of its blocker is reported as such for the write-back.
+    const dependants = Array.isArray(ticket?.blocks) ? ticket.blocks : [];
+    const dependantState = {};
+    for (const dependant of dependants) {
+      dependantState[dependant] = (await adapter.find(dependant, options))?.state ?? 'missing';
+    }
     const aggregate = beforeCloseRevalidationOf({ ticket: args.ticket, task, state: actual });
     const result = {
       ...aggregate,
       task: { changed: task.changed, from: task.from ?? null, to: task.to ?? null },
       state: { expected: 'in-progress', actual },
-      dependants: Array.isArray(ticket?.blocks) ? ticket.blocks : [],
+      dependants,
+      dependantState,
     };
     if (runDir) {
       recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });

@@ -288,12 +288,24 @@ export const search = async ({ project = null, jql = null, limit = 100, env = pr
  * items because selection must never take one; the close point needs to see
  * exactly that one. Honours the same offline `issues` seam.
  */
-export const find = async (
-  id,
-  { issues = null, project = null, jql = null, limit = 100, env = process.env } = {},
-) => {
-  const raw = issues ?? (await search({ project, jql, limit, env })).issues;
-  return raw.map(toTicket).find((ticket) => String(ticket.id) === String(id)) ?? null;
+export const find = async (id, { issues = null, env = process.env } = {}) => {
+  if (issues) {
+    return issues.map(toTicket).find((ticket) => String(ticket.id) === String(id)) ?? null;
+  }
+  // 🔴 By key, never through `search`: `buildJql` carries `statusCategory != Done`
+  // for selection's sake, so a search can never return the closed item this
+  // point exists to see. A 404 is "the tracker has no such item" — `null`;
+  // every other failure is raised as it is.
+  try {
+    const issue = await request(
+      `/rest/api/3/issue/${encodeURIComponent(String(id))}?fields=${FIELDS.join(',')}`,
+      { env },
+    );
+    return issue ? toTicket(issue) : null;
+  } catch (error) {
+    if (/ 404 /.test(String(error?.message))) return null;
+    throw error;
+  }
 };
 
 export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) => !b.resolved);

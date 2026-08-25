@@ -678,11 +678,16 @@ three poisons the only channel by which this project learns.
 
   It compares the item's marker against this run's last validation and its
   state against the `in-progress` a close expects, journals one `revalidation`
-  event at `point: BEFORE_CLOSE`, and lists the item's dependants for the
-  write-back below — pinned in the generator's `test/template/revalidate.test.ts`
-  (absent in a generated rig) › "appends exactly one BEFORE_CLOSE revalidation
-  event after the BEFORE_PR one, and does not end the run" and › "runs the
-  BEFORE_CLOSE revalidation before the close call and reads a hold as a stop". A
+  event at `point: BEFORE_CLOSE`, and lists the item's dependants with each
+  one's state re-read for the write-back below — pinned in the generator's
+  `test/template/revalidate.test.ts` (absent in a generated rig) › "appends
+  exactly one BEFORE_CLOSE revalidation event after the BEFORE_PR one, and does
+  not end the run", › "runs the BEFORE_CLOSE revalidation before the close call
+  and reads a hold as a stop" and › "re-reads each dependant's state, and names
+  one the tracker no longer offers". On a `github-issues` queue that list is
+  empty: a single `gh issue view` carries no cross-index, so `find` answers no
+  `blocks` there (`test/template/close-transitioned.test.ts` › "github asks `gh
+  issue view` with the full field list and maps CLOSED to closed"). A
   hold (exit 2) stops the close: re-read the item, record the outcome as §2
   does, and close only if the re-read leaves the action standing. Then call the
   adapter's `close(ticket, { prUrl, transitionId })` with the merged PR linked,
