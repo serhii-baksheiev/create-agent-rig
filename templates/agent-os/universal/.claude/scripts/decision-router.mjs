@@ -931,8 +931,22 @@ export const route = ({ files, elevatedPaths } = {}) => {
  * Who the expensive lane fans out to — `code-reviewer` first, always, and the
  * conditional gates `pr-ship` already names, decided from the same paths.
  */
+/**
+ * The floor each lane sets, and nothing else — what `pr-ship` step 4 launches
+ * before any trigger adds to it. Exported as the ONE spelling of that fact:
+ * `pr-ship/SKILL.md` restates it in prose, and
+ * test/template/correspondence.test.ts › "the pr-ship fan-out bullets name
+ * exactly the floor of each lane, and only known lanes" keeps the two in step
+ * in both directions (AR-137).
+ */
+export const reviewersForLane = (lane) => {
+  if (lane === 'model') return ['code-reviewer'];
+  if (lane === 'fast-path') return ['prose-reviewer'];
+  return [];
+};
+
 const reviewersFor = (files, risks) => {
-  const reviewers = ['code-reviewer'];
+  const reviewers = [...reviewersForLane('model')];
 
   let wantsProse = false;
   for (const file of files) {

@@ -168,9 +168,21 @@ Two rules that follow from it:
   deliberately coarse and stop trying to out-parse the input. Where a false block
   interrupts ordinary work, stay narrow and specific. Uniform precision
   everywhere is how a guard ends up simultaneously too loose and too annoying.
-- **One mechanism, one implementation.** If two files enforce the same
-  invariant, they will disagree — and the one nobody is looking at is the one
-  that is wrong. Export it from a single module and import it.
+- **One mechanism, one implementation.** And one spelling of a fact. If two
+  files enforce the same invariant, they will disagree — and the one nobody is
+  looking at is the one that is wrong. Export it from a single module and import
+  it. The same holds for any mechanically expressible fact two artifacts encode
+  — a list, a vocabulary, a set of paths, a lane's reviewer floor: prefer one
+  source that the others derive from or are generated from. Where a second copy
+  has to stay (prose a reader needs), put a correspondence check between the two
+  that goes red in both directions — a copy that gains an entry the source
+  lacks, and a source that gains one the copy lacks — and put that check in
+  before adding prose or a memory note about keeping them aligned. The shape is
+  in `test/template/correspondence.test.ts` ›
+  "every point the module knows is named by the loop or pr-ship skill, and vice versa"
+  and ›
+  "the pr-ship fan-out bullets name exactly the floor of each lane, and only known lanes",
+  each of which mutates one side and asserts the check names the offender.
 
 ## The worked example — and it is one project's answer, not a law
 
