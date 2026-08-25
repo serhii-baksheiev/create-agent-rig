@@ -221,7 +221,7 @@ if (invokedDirectly()) {
     const task =
       ticket && baseline !== null
         ? revalidationOf({ ticket, snapshot: baseline })
-        : { changed: null, from: baseline, to: ticket?.updatedAt ?? null };
+        : { changed: null, task: { from: baseline, to: ticket?.updatedAt ?? null } };
     // Not found is not "in progress": the tracker no longer offers the item.
     const actual = ticket ? ticket.state : 'missing';
     // The dependants' state is RE-READ, not copied off the item: what this close
@@ -235,7 +235,7 @@ if (invokedDirectly()) {
     const aggregate = beforeCloseRevalidationOf({ ticket: args.ticket, task, state: actual });
     const result = {
       ...aggregate,
-      task: { changed: task.changed, from: task.task?.from ?? task.from ?? null, to: task.task?.to ?? task.to ?? null },
+      task: { changed: task.changed, from: task.task.from, to: task.task.to },
       state: { expected: 'in-progress', actual },
       dependants,
       dependantState,
@@ -269,7 +269,7 @@ if (invokedDirectly()) {
   // At SELECT a missing snapshot is the first sight and becomes the baseline;
   // here it is a comparison that cannot be made — the run never recorded a
   // take-up for this item, so `null`, not the SELECT point's `false`.
-  const unverifiable = { changed: null, from: snapshot, to: ticket?.updatedAt ?? null };
+  const unverifiable = { changed: null, task: { from: snapshot, to: ticket?.updatedAt ?? null } };
   const task = ticket && snapshot !== null ? revalidationOf({ ticket, snapshot }) : unverifiable;
 
   const branchPaths = pathsOf(git(['diff', '--name-only', '-z', mergeBase, 'HEAD']));
@@ -280,7 +280,7 @@ if (invokedDirectly()) {
   const aggregate = beforePrRevalidationOf({ ticket: args.ticket, task, mainChanged });
   const result = {
     ...aggregate,
-    task: { changed: task.changed, from: task.task?.from ?? task.from ?? null, to: task.task?.to ?? task.to ?? null },
+    task: { changed: task.changed, from: task.task.from, to: task.task.to },
     main: { base: args.base, mergeBase, cited, changed: mainChanged },
   };
 

@@ -177,11 +177,13 @@ concluded — whether the change altered the action is the evidence this exists 
 collect, and the comparison alone cannot supply it:
 
 ```bash
-node .claude/scripts/revalidate.mjs outcome --point SELECT --ticket <item-id> --action-changed <true | false> --note "<what changed, or why it changes nothing>"
+node .claude/scripts/revalidate.mjs outcome --point SELECT --ticket <item-id> --action-changed <true | false> --note '<what changed, or why it changes nothing>'
 ```
 
 It appends one `revalidation-outcome` record whose `answers` names the
-revalidation it resolves, so the report can pair the two without guessing.
+revalidation it resolves, so the report can pair the two without guessing. The
+note is stored verbatim from argv, so keep it in single quotes: inside double
+quotes the shell expands a backtick or a `$` before the command sees it.
 Nothing forces this record — a `revalidation` event with no matching outcome is
 counted as `unresolved`, which is the honest word for a re-read the run skipped.
 
@@ -195,7 +197,7 @@ the run's own claim and comments, so a `true` on a re-offer can be self-inflicte
 — the re-read decides, which is why the outcome is recorded separately, and a
 hold the re-read overturns is counted as a false hold with its source named. The
 four-week view is `node .claude/scripts/revalidation-report.mjs --since <date>`,
-over every run directory on this machine. The behaviour is pinned in the
+over this rig's `.claude/runs/` (or a `--runs <dir>`). The behaviour is pinned in the
 generator's `test/template/queue-revalidation.test.ts` — absent in a generated
 rig — › "an adapter with no marker records a blind spot, not \"unchanged\"", ›
 "a moved marker holds on task:updatedAt, re-snapshots, and journals the change"
@@ -688,7 +690,7 @@ three poisons the only channel by which this project learns.
   issue view` with the full field list and maps CLOSED to closed"). A
   hold (exit 2) stops the close: re-read the item, record the outcome with
   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_CLOSE --ticket
-  <item-id> --action-changed <true | false> --note "…"`, and close only if the
+  <item-id> --action-changed <true | false> --note '…'`, and close only if the
   re-read leaves the action standing. Then call the
   adapter's `close(ticket, { prUrl, transitionId })` with the merged PR linked,
   immediately after the post-merge verdict — not in a cleanup pass — and read

@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /**
- * The Revalidation Experiment's report — what the evidence log says, over
- * every run on this machine since a date (AR-136).
+ * The Revalidation Experiment's report — what the evidence log says, over the
+ * run directories of this rig since a date (AR-136).
  *
  *   node .claude/scripts/revalidation-report.mjs --since <ISO date> [--runs <dir>] [--json]
  *
- * It reads `<runs>/<run-id>/` through `run-journal.mjs` › readRun — the same
+ * It reads `<runs>/<run-id>/` — `--runs <dir>`, or by default `.claude/runs/`
+ * under the MAIN checkout, resolved through `queue/checkout.mjs` so a report
+ * run from a linked worktree reads the runs the loop actually declared
+ * (revalidation-evidence.test.ts › "reads the main checkout's runs by default,
+ * even from a linked worktree") — through `run-journal.mjs` › readRun, the same
  * reader every gate uses, with the same refusal: a journal whose sequence is
  * broken is not read. Such a run is COUNTED under `skipped`, with the reason,
  * never dropped silently; a report that quietly narrowed its own base would be
@@ -26,9 +30,10 @@
  * hold that changed nothing is noise, and the report says so by name.
  */
 
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRun } from './run-journal.mjs';
 
 export const POINTS = Object.freeze(['SELECT', 'BEFORE_PR', 'BEFORE_CLOSE']);
@@ -63,7 +68,9 @@ export const reportOf = ({ runs, since }) => {
     }
     for (const event of events) {
       if (event.kind !== 'revalidation') continue;
-      if (Date.parse(event.at) < sinceMs) continue;
+      // Written as "inside the window", so an `at` that does not parse falls
+      // OUT — the NaN comparison would otherwise count it in.
+      if (!(Date.parse(event.at) >= sinceMs)) continue;
       const bucket = points[event.data?.point];
       if (!bucket) continue;
       bucket.opportunities += 1;
@@ -147,7 +154,6 @@ const invokedDirectly = () => {
   };
   return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
 };
-import { realpathSync } from 'node:fs';
 
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
@@ -159,7 +165,9 @@ if (invokedDirectly()) {
   if (!args.since || Number.isNaN(Date.parse(args.since))) {
     refuse(`--since needs an ISO date (got ${args.since ?? '(none)'}); a report with no window reports nothing honest.`);
   }
-  const runsDir = args.runs ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'runs');
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const runsDir =
+    args.runs ?? join(mainCheckoutRoot(join(scriptsDir, '..', '..')), '.claude', 'runs');
   let runs;
   try {
     runs = readRuns(runsDir);

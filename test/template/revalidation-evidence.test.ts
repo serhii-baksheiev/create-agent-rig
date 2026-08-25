@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -795,11 +795,70 @@ describe('D. the loop skill points at the outcome command and the report', () =>
     expect(s9).toMatch(/revalidate\.mjs outcome --point BEFORE_CLOSE/);
   });
 
+  it('pr-ship step 1 records the outcome of a BEFORE_PR hold with the same command', async () => {
+    const skill = await read(path.join(universal, '.claude', 'skills', 'pr-ship', 'SKILL.md'));
+    expect(skill).toMatch(/revalidate\.mjs outcome --point BEFORE_PR/);
+  });
+
   it('the README or the loop skill names revalidation-report.mjs --since', async () => {
     const readme = existsSync(path.join(repoRoot, 'README.md'))
       ? await read(repoRoot, 'README.md')
       : '';
     const skill = await read(loopSkill);
     expect(`${readme}\n${skill}`).toMatch(/revalidation-report\.mjs --since/);
+  });
+});
+
+describe('the report finds the runs where the loop declared them', () => {
+  const SINCE = '2026-08-20T00:00:00.000Z';
+  const AFTER = '2026-08-21T12:00:00.000Z';
+  const git = (args: string[], cwd: string) =>
+    new Promise<void>((resolve, reject) => {
+      execFile('git', args, { cwd, env: withoutGitLocation() }, (error, _out, stderr) =>
+        error ? reject(new Error(`git ${args.join(' ')} failed: ${stderr}`)) : resolve(),
+      );
+    });
+
+  it("reads the main checkout's runs by default, even from a linked worktree", async () => {
+    // A rig with the scripts installed, one run recorded in ITS .claude/runs, and
+    // a linked worktree that carries no runs at all — the report run from the
+    // worktree must still read the run, or a session in a worktree would report
+    // a rig with no revalidations.
+    const root = await mkdtemp(path.join(tmpdir(), 'report-main-'));
+    const main = path.join(root, 'main');
+    await mkdir(path.join(main, '.claude'), { recursive: true });
+    await cp(scriptsDir, path.join(main, '.claude', 'scripts'), { recursive: true });
+    await git(['init', '-q', '-b', 'master'], main);
+    // The scripts are committed so the linked worktree carries them; the run
+    // directory is created AFTER the commit so only the main checkout has it.
+    await git(['add', '-A'], main);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], main);
+    const runDir = path.join(main, '.claude', 'runs', 'run-x');
+    await mkdir(runDir, { recursive: true });
+    journal.recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: {
+        ticket: 'AR-1',
+        point: 'SELECT',
+        changed: false,
+        source: [],
+        action: 'continue',
+        task: { from: T1, to: T1 },
+      },
+      now: AFTER,
+    });
+    const worktree = path.join(root, 'wt');
+    await git(['worktree', 'add', '-q', worktree, '-b', 'wt'], main);
+    expect(existsSync(path.join(worktree, '.claude', 'runs'))).toBe(false);
+    const script = path.join(worktree, '.claude', 'scripts', 'revalidation-report.mjs');
+    const result = await node(script, ['--since', SINCE, '--json'], worktree, withoutGitLocation());
+    expect(result.code, result.out).toBe(0);
+    const data = JSON.parse(result.stdout) as {
+      runs: { read: number };
+      totals: { opportunities: number };
+    };
+    expect(data.runs.read).toBe(1);
+    expect(data.totals.opportunities).toBe(1);
   });
 });
