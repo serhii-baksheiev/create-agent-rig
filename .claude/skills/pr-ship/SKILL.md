@@ -42,10 +42,29 @@ blockers.
    removes is the honest failure mode, a run that keeps re-reviewing because no
    check ever went red; it does not stop a session that skips it.
 
-1. **The diff first.** Establish what is actually shipping: fetch, then diff
+1. **The diff first — and the branch's own premises next.** Establish what is actually shipping: fetch, then diff
    against the **remote** default branch (`origin/<default>`), not a local
    copy that may be behind — diagnosing from stale local code produces
    confidently-wrong reviews. Everything below is scoped to this diff.
+
+   Then, on the fetched ref, ask whether the branch is still the branch the run
+   took up (AR-134):
+
+   ```sh
+   node .claude/scripts/revalidate.mjs --point BEFORE_PR --ticket <item-id> --base origin/<default>
+   ```
+
+   It compares two sources and names each one that moved: the item's `updatedAt`
+   against the take-up snapshot `next` recorded (`task:updatedAt`), and what the
+   default branch changed since this branch forked, on the paths the branch
+   touches or a `check-premises` record in this run cited (`main:<path>`). It
+   journals one `revalidation` event at `point: BEFORE_PR`; **exit code 2 is a HOLD**, with one blocker per named source: re-read the item, or the default
+   branch on that path, and come back through step 0. Exit 0 with
+   `unverifiable` means the task side could not be compared — no take-up
+   snapshot in this run, or no marker — and is stated in the evidence, not read
+   as a pass. Exit 1 is the command refusing (unknown point, no ticket, a base
+   that is not a revision): fix the call. Its limits are its own header's; the
+   cited-path set is a labelled assumption, not a recorded fact.
 2. **Route the diff before you spend on it.** This gate always ran its most
    expensive path, so a typo fix in a README bought the same fan-out as a
    rewrite of the storage layer. The dispatcher decides which lane the change

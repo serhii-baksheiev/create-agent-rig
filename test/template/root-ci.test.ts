@@ -40,6 +40,7 @@ const WINDOWS_INCOMPATIBLE_TESTS = [
   'test/template/queue-jira.test.ts',
   'test/template/queue-revalidation.test.ts',
   'test/template/queue.test.ts',
+  'test/template/revalidate.test.ts',
   'test/template/review-fixes.test.ts',
   'test/template/root-ci.test.ts',
   'test/template/run-journal.test.ts',
