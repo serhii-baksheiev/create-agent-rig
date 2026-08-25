@@ -556,9 +556,9 @@ if (invokedDirectly()) {
       });
       if (revalidation) {
         // The selection decision keeps its place as the run's first record; the
-        // evidence log comes next, and only then does the baseline move — a
-        // snapshot written before its event would leave a crashed run with a
-        // marker and no record of what it was compared against.
+        // evidence log comes next, and only then (below, after the journal) does
+        // the baseline move — a snapshot written before its event would leave a
+        // crashed run with a marker and no record of what it was compared against.
         if (typeof journal.recordEvent === 'function') {
           journal.recordEvent({
             runDir,
@@ -574,7 +574,6 @@ if (invokedDirectly()) {
               'revalidation was not recorded.\n',
           );
         }
-        recordTakeUp(runDir, { id: result.ticket.id, updatedAt: result.ticket.updatedAt });
       }
     } catch (error) {
       // 🔴 Two failures wearing one face, and treating them alike was a defect
@@ -608,6 +607,20 @@ if (invokedDirectly()) {
         process.stderr.write(`run journal: ${error.message}\n`);
         process.exit(1);
       }
+    }
+  }
+
+  if (revalidation) {
+    // Its own try, after the journal's: a state file that cannot be written is
+    // not the journal failing, and the selection stands either way — the
+    // comparison was made and recorded; only the next baseline is lost.
+    try {
+      recordTakeUp(runDir, { id: result.ticket.id, updatedAt: result.ticket.updatedAt });
+    } catch (error) {
+      process.stderr.write(
+        `run state: the take-up snapshot was NOT recorded in ${runDir} — ${error.message}\n` +
+          '  the selection below stands; the next revalidation of this item has no baseline.\n',
+      );
     }
   }
 

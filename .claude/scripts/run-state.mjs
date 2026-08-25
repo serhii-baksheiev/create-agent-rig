@@ -1,6 +1,8 @@
 /**
  * The run's own state — three of the four values `stopConditionOf` asks for and
- * nothing used to answer. The fourth, `killSwitch`, is deliberately not here:
+ * nothing used to answer, plus one value it does not ask for: the take-up
+ * snapshot `takeUps` ({@link recordTakeUp}), which is the run's fact as much as
+ * the other three. The fourth stop input, `killSwitch`, is deliberately not here:
  * it is already mechanical in `guard-bash` and scripted in preflight, and a
  * second answer to "is the brake on" is the disagreement `invariants.md`
  * forbids.

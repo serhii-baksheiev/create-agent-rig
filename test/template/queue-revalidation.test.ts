@@ -462,6 +462,60 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     expect(await read(runDir, 'state.json')).toContain('takeUps');
   });
 
+  it('a state file that cannot be written loses the baseline, not the selection', async () => {
+    const { dir, configPath, runDir, env } = await jiraProject();
+    // A directory where the file goes: the write-then-rename inside updateState
+    // fails, and the journal beside it is untouched.
+    await mkdir(path.join(runDir, 'state.json'));
+    const result = await runCli(['next', '--json', '--config', configPath], dir, env);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toMatch(/run state: the take-up snapshot was NOT recorded/);
+    expect(result.out).not.toMatch(/run journal:/);
+    const parsed = JSON.parse(result.stdout) as { revalidation: { changed: boolean | null } };
+    expect(parsed.revalidation.changed).toBe(false);
+    expect(await revalidationEvents(runDir)).toHaveLength(1);
+  });
+
+  it("the loop skill's outcome command records what the re-read concluded", async () => {
+    // The command is run AS THE SKILL PRINTS IT, placeholders filled: a snippet
+    // that drifts from the module's signature fails here, not in a run.
+    const skill = await readFile(
+      path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
+      'utf8',
+    );
+    const block = skill.match(
+      /```bash\n(node --input-type=module -e '[^`]*revalidation-outcome[^`]*)```/,
+    );
+    expect(block, 'the loop skill carries no revalidation-outcome command').not.toBeNull();
+    const command = block![1]!
+      .replace('<item-id>', 'AR-1')
+      .replace('<true | false>', 'true')
+      .replace('<what changed, or why it changes nothing>', 'a late comment re-scoped it');
+    const project = await mkdtemp(path.join(tmpdir(), 'outcome-'));
+    await mkdir(path.join(project, '.claude', 'scripts'), { recursive: true });
+    await cp(
+      path.join(scriptsDir, 'run-journal.mjs'),
+      path.join(project, '.claude', 'scripts', 'run-journal.mjs'),
+    );
+    const runDir = await mkdtemp(path.join(tmpdir(), 'run-'));
+    const result = await new Promise<{ code: number; out: string }>((resolve) => {
+      execFile(
+        'sh',
+        ['-c', command],
+        { cwd: project, env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir } },
+        (error, stdout, stderr) => resolve({ code: error ? 1 : 0, out: stdout + stderr }),
+      );
+    });
+    expect(result.code, result.out).toBe(0);
+    const events = (await readFile(path.join(runDir, 'events.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as EventRecord);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('revalidation-outcome');
+    expect(events[0]!.data).toMatchObject({ ticket: 'AR-1', point: 'SELECT', altered: true });
+  });
+
   it('without a run directory it neither revalidates nor writes', async () => {
     const { dir, configPath, runDir, env } = await jiraProject();
     const bare = { ...env };
