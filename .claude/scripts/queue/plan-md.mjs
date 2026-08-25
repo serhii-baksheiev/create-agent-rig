@@ -193,6 +193,10 @@ export const claim = (ticket) => ({
     'its own worktree and say so in the journal.',
 });
 
+/** One item by position; a flat list has no closed state, so an absent line is `null`. */
+export const find = (id, options = {}) =>
+  parsePlan(readPlan(options)).find((ticket) => ticket.id === String(id)) ?? null;
+
 export const close = (ticket, { prUrl = null, planPath: p } = {}) => {
   const file = p ?? 'PLAN.md';
   const before = readFileSync(file, 'utf8');

@@ -161,6 +161,103 @@ describe('github close proves the transition by asking gh for the state', () => 
     const result = close({ id: '13' });
     expect(result).toMatchObject({ ok: true, transitioned: false });
   });
+
+  it('leaves the in-progress label on an issue whose close did not land', async () => {
+    await installGh('OPEN');
+    const { close } = await load('github-issues.mjs');
+    close({ id: '13' });
+    const log = await argvLog();
+    expect(log.some((line) => line.includes('--remove-label'))).toBe(false);
+  });
+
+  it('removes the in-progress label only after the read-back says CLOSED', async () => {
+    await installGh('CLOSED');
+    const { close } = await load('github-issues.mjs');
+    close({ id: '13' });
+    const log = await argvLog();
+    const viewAt = log.findIndex((line) => line.startsWith('issue view 13'));
+    const labelAt = log.findIndex((line) => line.includes('--remove-label in-progress'));
+    expect(labelAt, log.join('\n')).toBeGreaterThan(viewAt);
+  });
+});
+
+// The close point must see an item somebody already closed, which is exactly
+// the item `listEligible` drops for selection's sake — so the contract carries
+// `find`, and each adapter decides how to reach past its own filter.
+describe('find: one item by id, closed included', () => {
+  it('is part of the adapter contract, so a fourth adapter cannot forget it', async () => {
+    const { ADAPTER_CONTRACT } = await load('core.mjs');
+    expect(ADAPTER_CONTRACT).toContain('find');
+  });
+
+  it('jira maps a done issue to a closed ticket through the offline seam', async () => {
+    const { find } = await load('jira.mjs');
+    const issues = [
+      {
+        key: 'ABC-13',
+        fields: {
+          summary: 's',
+          status: { name: 'Done', statusCategory: { key: 'done' } },
+          labels: [],
+          created: '2026-07-01T00:00:00.000+0000',
+          updated: '2026-07-02T00:00:00.000+0000',
+          issuelinks: [],
+        },
+      },
+    ];
+    const found = await find('ABC-13', { issues });
+    expect(found).toMatchObject({
+      id: 'ABC-13',
+      state: 'closed',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    });
+    expect(await find('ABC-99', { issues })).toBeNull();
+  });
+
+  it('github asks `gh issue view` with the full field list and maps CLOSED to closed', async () => {
+    const bin = await mkdtemp(path.join(tmpdir(), 'stub-gh-find-'));
+    const logFile = path.join(bin, 'calls.log');
+    await writeFile(
+      path.join(bin, 'gh'),
+      [
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> "${logFile}"`,
+        `printf '%s\\n' '{"number":13,"title":"t","body":"","state":"CLOSED","labels":[],"url":null,"createdAt":null,"updatedAt":"2026-07-02T00:00:00Z"}'`,
+        'exit 0',
+        '',
+      ].join('\n'),
+    );
+    await chmod(path.join(bin, 'gh'), 0o755);
+    const original = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${original ?? ''}`;
+    try {
+      const { find } = await load('github-issues.mjs');
+      const found = find('13');
+      expect(found).toMatchObject({ id: '13', state: 'closed', updatedAt: '2026-07-02T00:00:00Z' });
+      const log = (await readFile(logFile, 'utf8')).split('\n').filter(Boolean);
+      expect(log[0]).toMatch(/^issue view 13 --json .*updatedAt/);
+      // and the offline seam, which needs no gh at all
+      expect(
+        find('7', { issues: [{ number: 7, title: 'x', state: 'OPEN', labels: [] }] }),
+      ).toMatchObject({
+        id: '7',
+        state: 'open',
+      });
+      expect(find('8', { issues: [] })).toBeNull();
+    } finally {
+      if (original === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = original;
+    }
+  });
+
+  it('plan-md finds a line by position and answers null for one that is not there', async () => {
+    const { find } = await load('plan-md.mjs');
+    const dir = await mkdtemp(path.join(tmpdir(), 'plan-find-'));
+    const planPath = path.join(dir, 'PLAN.md');
+    await writeFile(planPath, '# P\n\n## Agent queue\n\n- keep me\n\n## Journal\n');
+    expect(find('1', { planPath })).toMatchObject({ id: '1', title: 'keep me', state: 'open' });
+    expect(find('2', { planPath })).toBeNull();
+  });
 });
 
 describe('plan-md close proves the transition by re-parsing the plan', () => {

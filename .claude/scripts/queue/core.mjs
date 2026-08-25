@@ -55,6 +55,10 @@
  */
 export const ADAPTER_CONTRACT = [
   'listEligible',
+  // One item by id, WITHOUT the closed filter `listEligible` applies: the close
+  // point has to see an item somebody already closed (AR-135). Each adapter
+  // owns how — the decision is not made above the seam.
+  'find',
   'resolveBlockers',
   'claim',
   'close',

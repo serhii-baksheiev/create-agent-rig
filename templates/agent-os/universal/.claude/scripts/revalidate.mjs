@@ -23,10 +23,13 @@
  * `task:updatedAt` against the LAST VALIDATION — the `task.to` of this run's
  * latest `revalidation` event for the item, falling back to the take-up
  * snapshot — and `task:state`, which is expected `in-progress` at close and
- * is a change when someone closed the item or moved it back. The item is
- * looked up without the closed filter selection applies, because an item
- * already closed is exactly a case this point exists to catch. The result
- * lists the item's dependants (`blocks`) for the loop's write-back.
+ * is a change when someone closed the item or moved it back. The item comes
+ * from the adapter's `find`, which sees closed items where `listEligible`
+ * drops them; one the tracker no longer offers at all reads `missing`, and
+ * either holds on `task:state` (revalidate.test.ts › "holds on task:state when
+ * someone already closed the item", › "holds on task:state when the tracker no
+ * longer offers the item"). The result lists the item's dependants (`blocks`)
+ * for the loop's write-back.
  *
  * The aggregates are `queue/core.mjs` › beforePrRevalidationOf and
  * beforeCloseRevalidationOf; this file is the I/O around them. Exit 2 on `hold`, 0 on `continue` and `unverifiable`, 1 when
@@ -46,6 +49,7 @@ import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
+import { readRun, recordEvent } from './run-journal.mjs';
 import { readState } from './run-state.mjs';
 import { beforeCloseRevalidationOf, beforePrRevalidationOf, revalidationOf } from './queue/core.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
@@ -86,10 +90,9 @@ const pathsOf = (raw) => raw.split('\0').filter(Boolean);
  * The paths a `check-premises` record in this run named. Only that gate: a
  * reviewer blocker names where a finding is, not what the task rests on.
  */
-const citedByPremises = async (runDir) => {
+const citedByPremises = (runDir) => {
   if (!runDir) return [];
-  const journal = await import('./run-journal.mjs');
-  const { decisions } = journal.readRun({ runDir });
+  const { decisions } = readRun({ runDir });
   return decisions
     .filter((record) => record.gate === 'check-premises')
     .flatMap((record) => (Array.isArray(record.blockers) ? record.blockers : []))
@@ -97,30 +100,10 @@ const citedByPremises = async (runDir) => {
     .filter((file) => typeof file === 'string' && file !== '');
 };
 
-/**
- * The item, WITHOUT selection's closed filter: `listEligible` drops closed
- * items because selection must not take them, and the close point must see
- * one. Each adapter maps raw records through its own `toTicket`; the offline
- * `options.issues` seam is honoured where the adapter has one.
- */
-const lookupTicket = async (adapter, id, options) => {
-  const wanted = String(id);
-  if (adapter.name === 'jira') {
-    const issues = options?.issues ?? (await adapter.search(options)).issues;
-    return issues.map(adapter.toTicket).find((ticket) => String(ticket.id) === wanted) ?? null;
-  }
-  if (adapter.name === 'github-issues' && Array.isArray(options?.issues)) {
-    return options.issues.map((issue) => adapter.toTicket(issue)).find((t) => String(t.id) === wanted) ?? null;
-  }
-  const tickets = await adapter.listEligible(options);
-  return tickets.find((ticket) => String(ticket.id) === wanted) ?? null;
-};
-
 /** The last validation's marker for this item: the latest revalidation event, any point. */
-const lastValidationOf = async (runDir, id) => {
+const lastValidationOf = (runDir, id) => {
   if (!runDir) return null;
-  const journal = await import('./run-journal.mjs');
-  const { events } = journal.readRun({ runDir });
+  const { events } = readRun({ runDir });
   const last = [...events]
     .reverse()
     .find((e) => e.kind === 'revalidation' && String(e.data?.ticket) === String(id));
@@ -161,9 +144,9 @@ if (invokedDirectly()) {
   const options = optionsWithPlanPath(config.options, configPath);
 
   if (args.point === 'BEFORE_CLOSE') {
-    const ticket = await lookupTicket(adapter, args.ticket, options);
+    const ticket = await adapter.find(args.ticket, options);
     const takeUp = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
-    const baseline = (await lastValidationOf(runDir, args.ticket)) ?? takeUp;
+    const baseline = lastValidationOf(runDir, args.ticket) ?? takeUp;
     const task =
       ticket && baseline !== null
         ? revalidationOf({ ticket, snapshot: baseline })
@@ -178,8 +161,7 @@ if (invokedDirectly()) {
       dependants: Array.isArray(ticket?.blocks) ? ticket.blocks : [],
     };
     if (runDir) {
-      const journal = await import('./run-journal.mjs');
-      journal.recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+      recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
     }
     if (args.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -212,7 +194,7 @@ if (invokedDirectly()) {
 
   const branchPaths = pathsOf(git(['diff', '--name-only', '-z', mergeBase, 'HEAD']));
   const mainPaths = pathsOf(git(['diff', '--name-only', '-z', mergeBase, args.base]));
-  const cited = [...new Set([...branchPaths, ...(await citedByPremises(runDir))])];
+  const cited = [...new Set([...branchPaths, ...citedByPremises(runDir)])];
   const mainChanged = mainPaths.filter((path) => cited.includes(path));
 
   const aggregate = beforePrRevalidationOf({ ticket: args.ticket, task, mainChanged });
@@ -223,8 +205,7 @@ if (invokedDirectly()) {
   };
 
   if (runDir) {
-    const journal = await import('./run-journal.mjs');
-    journal.recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+    recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
   }
 
   if (args.json) {

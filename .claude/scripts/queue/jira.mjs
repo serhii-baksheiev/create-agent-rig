@@ -283,6 +283,19 @@ export const search = async ({ project = null, jql = null, limit = 100, env = pr
     env,
   });
 
+/**
+ * One item by key, mapped raw — closed included. `listEligible` drops closed
+ * items because selection must never take one; the close point needs to see
+ * exactly that one. Honours the same offline `issues` seam.
+ */
+export const find = async (
+  id,
+  { issues = null, project = null, jql = null, limit = 100, env = process.env } = {},
+) => {
+  const raw = issues ?? (await search({ project, jql, limit, env })).issues;
+  return raw.map(toTicket).find((ticket) => String(ticket.id) === String(id)) ?? null;
+};
+
 export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) => !b.resolved);
 
 /**

@@ -689,6 +689,30 @@ describe('BEFORE_CLOSE — the task source compares against the LAST validation'
 });
 
 describe('BEFORE_CLOSE — the state source: in-progress is the only state a close expects', () => {
+  it('holds on task:state when the tracker no longer offers the item', async () => {
+    const p = await closeProject();
+    const { code, stdout, out } = await run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_CLOSE',
+        '--ticket',
+        'AR-9',
+        '--config',
+        p.configPath,
+        '--json',
+      ],
+      p.dir,
+      p.env,
+    );
+    expect(code, out).toBe(2);
+    const result = JSON.parse(stdout) as CloseResult;
+    expect(result.state).toEqual({ expected: 'in-progress', actual: 'missing' });
+    expect(result.source).toEqual(['task:state']);
+    expect(result.task.changed).toBeNull();
+  });
+
   it('holds on task:state when someone already closed the item', async () => {
     const p = await closeProject({ status: DONE });
     const { code, result, out } = await revalidateCloseJson(p);

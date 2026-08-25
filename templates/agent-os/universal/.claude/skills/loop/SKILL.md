@@ -679,18 +679,30 @@ three poisons the only channel by which this project learns.
   It compares the item's marker against this run's last validation and its
   state against the `in-progress` a close expects, journals one `revalidation`
   event at `point: BEFORE_CLOSE`, and lists the item's dependants for the
-  write-back below. A hold (exit 2) stops the close: re-read the item, record
-  the outcome as §2 does, and close only if the re-read leaves the action
-  standing. Then call the adapter's `close(ticket, { prUrl, transitionId })`
-  with the merged PR linked, immediately after the post-merge verdict — not in
-  a cleanup pass — and read its answer: `ok: true` says the call ran, and only
-  `transitioned` set to `true` says the close landed, because every adapter
-  reads the item back after the transition
-  (`jira`: the status category after the POST; `github-issues`: `gh issue view
-  --json state`; `plan-md`: the line was there and is gone). A close whose result
-  says `transitioned: false` is not a close; it is reported, and the item stays
-  claimed. **Record the tier in the same step**, because the next selection
-  rations on it:
+  write-back below — pinned in the generator's `test/template/revalidate.test.ts`
+  (absent in a generated rig) › "appends exactly one BEFORE_CLOSE revalidation
+  event after the BEFORE_PR one, and does not end the run" and › "runs the
+  BEFORE_CLOSE revalidation before the close call and reads a hold as a stop". A
+  hold (exit 2) stops the close: re-read the item, record the outcome as §2
+  does, and close only if the re-read leaves the action standing. Then call the
+  adapter's `close(ticket, { prUrl, transitionId })` with the merged PR linked,
+  immediately after the post-merge verdict — not in a cleanup pass — and read
+  its answer: `ok: true` says the call ran, and only `transitioned` set to
+  `true` says the close landed, because every adapter reads the item back after
+  the transition — `jira` the status category after the POST, `github-issues`
+  `gh issue view --json state`, `plan-md` the line being there and then gone
+  (the generator's `test/template/close-transitioned.test.ts` › "GETs the issue
+  status after the transition POST and reports transitioned: true when the
+  category is done", › "runs `issue view <id> --json state` after `issue close`
+  and reports transitioned: true on CLOSED", › "reports transitioned: true once
+  the item's line is gone"). A close whose result says `transitioned: false` is
+  not a close: report it, and leave the item as the adapter left it — `jira` its
+  status, `github-issues` its `in-progress` label, which comes off only after a
+  read-back that says CLOSED (› "leaves the in-progress label on an issue whose
+  close did not land"), `plan-md` nothing, because the line was never there. The
+  tier below is recorded only for a close that transitioned; a close that did
+  not is not the "something landed" the escalation streak resets on. **Record
+  the tier in the same step**, because the next selection rations on it:
 
   ```bash
   node --input-type=module -e '
