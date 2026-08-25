@@ -509,6 +509,30 @@ export const revalidationOf = ({ ticket, snapshot = null }) => {
 };
 
 /**
+ * Revalidation at BEFORE_PR — the aggregate over two sources, pure.
+ *
+ * `task` is what {@link revalidationOf} returned for the ticket against the
+ * take-up snapshot; `mainChanged` is the list of cited paths the default branch
+ * changed since the branch forked (`revalidate.mjs` computes it from git). One
+ * source name per finding — `task:updatedAt`, `main:<path>` — so a hold names
+ * exactly what moved, never "something changed".
+ *
+ * `changed` keeps the three values of the SELECT point: `true` when any source
+ * moved; `null` when nothing moved but the task could not be checked (no
+ * snapshot, no marker, no run) — a blind spot on one side is not a clean pass
+ * on both; `false` only when both sides were compared and neither moved.
+ */
+export const beforePrRevalidationOf = ({ ticket, task = { changed: null }, mainChanged = [] }) => {
+  const source = [
+    ...(task?.changed === true ? ['task:updatedAt'] : []),
+    ...mainChanged.map((path) => `main:${path}`),
+  ];
+  const changed = source.length > 0 ? true : task?.changed === null ? null : false;
+  const action = changed === true ? 'hold' : changed === null ? 'unverifiable' : 'continue';
+  return { ticket, point: 'BEFORE_PR', changed, source, action };
+};
+
+/**
  * Split the skipped records into the ones holding takeable work back and the
  * ones that are simply out of play.
  *

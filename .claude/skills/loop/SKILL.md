@@ -233,6 +233,35 @@ Exit 1 means it did not answer: a stop verdict naming no premise, or no block at
 That is `incomplete` — neither "the premises hold" nor a reason to escalate — so run
 the pass again rather than reading the silence as a pass.
 
+**Then journal the block that parsed**, exactly as `pr-ship` journals a reviewer's —
+the paths a premise check names are what `revalidate.mjs` reads at BEFORE_PR as the
+task's cited paths, and a verdict held only in context cites nothing after a
+compaction:
+
+```sh
+node --input-type=module -e '
+  const runDir = process.env.RIG_RUN_DIR;
+  if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+  if (!process.argv[1]) process.exit(0); // `check` printed nothing: nothing to record
+  const journal = await import("./.claude/scripts/run-journal.mjs");
+  const v = JSON.parse(process.argv[1]);
+  try {
+    console.log(journal.recordDecision({
+      runDir,
+      gate:     "check-premises",
+      verdict:  v.verdict,
+      blockers: v.blockers,
+      headSha:  v.headSha,
+      now:      new Date().toISOString(),
+    }));
+  } catch (error) {
+    // The same split pr-ship makes: an exhausted trace is over, the task is not.
+    if (!journal.isTraceExhausted?.(error)) throw error;
+    process.stderr.write(`run journal: ${error.message}\n  the premise verdict above was NOT recorded.\n`);
+  }
+' "$(node .claude/scripts/verdict.mjs check <report> check-premises)"
+```
+
 ## 3. What keeps the loop running, and what stops it
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
