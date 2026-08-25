@@ -495,7 +495,7 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
  * marker that moved: a first sight (no snapshot yet) is `false` with the baseline
  * recorded, not a change.
  *
- * `action` says what the run does with it: `refresh` — re-read the item before
+ * `action` says what the run does with it: `hold` — re-read the item before
  * acting; `continue` — nothing moved; `unverifiable` — no marker to compare.
  *
  * ⚠ Limit: the marker moves on the run's OWN claim and comments too, so a
@@ -506,10 +506,18 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
 export const revalidationOf = ({ ticket, snapshot = null }) => {
   const to = typeof ticket?.updatedAt === 'string' ? ticket.updatedAt : null;
   const from = typeof snapshot === 'string' ? snapshot : null;
-  const base = { ticket: ticket?.id ?? null, point: 'SELECT', from, to };
-  if (to === null) return { ...base, changed: null, source: null, action: 'unverifiable' };
+  // One shape at every point (AR-136): `source` is the list of what moved,
+  // `action` the same three words BEFORE_PR and BEFORE_CLOSE use, and the two
+  // markers sit under `task` — so a reader of the evidence log needs one parser.
+  const base = { ticket: ticket?.id ?? null, point: 'SELECT', task: { from, to } };
+  if (to === null) return { ...base, changed: null, source: [], action: 'unverifiable' };
   const changed = from !== null && from !== to;
-  return { ...base, changed, source: 'updatedAt', action: changed ? 'refresh' : 'continue' };
+  return {
+    ...base,
+    changed,
+    source: changed ? ['task:updatedAt'] : [],
+    action: changed ? 'hold' : 'continue',
+  };
 };
 
 /**

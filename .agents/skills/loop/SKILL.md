@@ -177,32 +177,32 @@ concluded — whether the change altered the action is the evidence this exists 
 collect, and the comparison alone cannot supply it:
 
 ```bash
-node --input-type=module -e '
-  const { recordEvent } = await import("./.claude/scripts/run-journal.mjs");
-  console.log(recordEvent({
-    runDir: process.env.RIG_RUN_DIR,
-    kind:   "revalidation-outcome",
-    data:   { ticket: "<item-id>", point: "SELECT", altered: <true | false>, note: "<what changed, or why it changes nothing>" },
-    now:    new Date().toISOString(),
-  }));
-'
+node .claude/scripts/revalidate.mjs outcome --point SELECT --ticket <item-id> --action-changed <true | false> --note '<what changed, or why it changes nothing>'
 ```
 
-Keep the note free of quotes: it sits inside a shell single-quote and a JS
-double-quote, and either character ends the command with a syntax error rather
-than a record. Nothing forces this record — a `revalidation` event with no
-matching outcome means the run skipped it, and the experiment's reader should
-count those.
+It appends one `revalidation-outcome` record whose `answers` names the
+revalidation it resolves, so the report can pair the two without guessing. The
+note is stored verbatim from argv, so keep it in single quotes: inside double
+quotes the shell expands a backtick or a `$` before the command sees it.
+Nothing forces this record — a `revalidation` event with no matching outcome is
+counted as `unresolved`, which is the honest word for a re-read the run skipped.
 
 Under a declared run directory, every selection logs one `revalidation` event
-`{ticket, point: SELECT, changed, source, action}`; an adapter with no marker (`plan-md`) logs `changed: null`,
-never "unchanged". ⚠ The marker also moves on the run's own claim and comments,
-so a `true` on a re-offer can be self-inflicted — the re-read decides, which is
-why the outcome is recorded separately. The behaviour is pinned in the
+`{ticket, point: SELECT, changed, source, action, task}` — the same shape the
+BEFORE_PR and BEFORE_CLOSE points write. **No-change is always recorded**, one
+line per selection and no sampling: the rule is explicit so the report's
+`opportunities` is a count and not an estimate. An adapter with no marker
+(`plan-md`) logs `changed: null`, never "unchanged". ⚠ The marker also moves on
+the run's own claim and comments, so a `true` on a re-offer can be self-inflicted
+— the re-read decides, which is why the outcome is recorded separately, and a
+hold the re-read overturns is counted as a false hold with its source named. The
+four-week view is `node .claude/scripts/revalidation-report.mjs --since <date>`,
+over this rig's `.claude/runs/` (or a `--runs <dir>`). The behaviour is pinned in the
 generator's `test/template/queue-revalidation.test.ts` — absent in a generated
 rig — › "an adapter with no marker records a blind spot, not \"unchanged\"", ›
-"a moved marker asks for a refresh, re-snapshots, and journals the change" and ›
-"the loop skill's outcome command records what the re-read concluded".
+"a moved marker holds on task:updatedAt, re-snapshots, and journals the change"
+and › "the loop skill's outcome command records what the re-read concluded", and
+in `test/template/revalidation-evidence.test.ts`.
 
 **Then, before the Red step: `check-premises`.** The item was written by someone
 who was not reading the code at the time, and everything downstream — the failing
@@ -688,8 +688,10 @@ three poisons the only channel by which this project learns.
   empty: a single `gh issue view` carries no cross-index, so `find` answers no
   `blocks` there (`test/template/close-transitioned.test.ts` › "github asks `gh
   issue view` with the full field list and maps CLOSED to closed"). A
-  hold (exit 2) stops the close: re-read the item, record the outcome as §2
-  does, and close only if the re-read leaves the action standing. Then call the
+  hold (exit 2) stops the close: re-read the item, record the outcome with
+  `node .claude/scripts/revalidate.mjs outcome --point BEFORE_CLOSE --ticket
+  <item-id> --action-changed <true | false> --note '…'`, and close only if the
+  re-read leaves the action standing. Then call the
   adapter's `close(ticket, { prUrl, transitionId })` with the merged PR linked,
   immediately after the post-merge verdict — not in a cleanup pass — and read
   its answer: `ok: true` says the call ran, and only `transitioned` set to

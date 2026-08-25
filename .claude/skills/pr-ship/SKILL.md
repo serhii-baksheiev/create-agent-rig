@@ -59,7 +59,10 @@ blockers.
    default branch changed since this branch forked, on the paths the branch
    touches or a `check-premises` record in this run cited (`main:<path>`). It
    journals one `revalidation` event at `point: BEFORE_PR`; **exit code 2 is a HOLD**, with one blocker per named source: re-read the item, or the default
-   branch on that path, and come back through step 0. Exit 0 with
+   branch on that path, record what the re-read concluded —
+   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket <item-id> --action-changed <true | false> --note '…'`
+   — and come back through step 0. A hold with no outcome is counted by the
+   report as a re-read the run skipped. Exit 0 with
    `unverifiable` means the task side could not be compared — no take-up
    snapshot in this run, or no marker — and is stated in the evidence, not read
    as a pass. Exit 1 is the command refusing (unknown point, no ticket, a base
