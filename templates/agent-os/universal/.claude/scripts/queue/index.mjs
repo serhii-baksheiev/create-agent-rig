@@ -619,7 +619,8 @@ if (invokedDirectly()) {
     } catch (error) {
       process.stderr.write(
         `run state: the take-up snapshot was NOT recorded in ${runDir} — ${error.message}\n` +
-          '  the selection below stands; the next revalidation of this item has no baseline.\n',
+          '  the selection below stands; the baseline was not moved — the next revalidation ' +
+          'of this item compares against the previous one, if any, or has none.\n',
       );
     }
   }

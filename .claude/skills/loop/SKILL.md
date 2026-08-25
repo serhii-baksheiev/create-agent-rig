@@ -188,8 +188,14 @@ node --input-type=module -e '
 '
 ```
 
-Every selection logs one `revalidation` event `{ticket, point: SELECT, changed,
-source, action}`; an adapter with no marker (`plan-md`) logs `changed: null`,
+Keep the note free of quotes: it sits inside a shell single-quote and a JS
+double-quote, and either character ends the command with a syntax error rather
+than a record. Nothing forces this record — a `revalidation` event with no
+matching outcome means the run skipped it, and the experiment's reader should
+count those.
+
+Under a declared run directory, every selection logs one `revalidation` event
+`{ticket, point: SELECT, changed, source, action}`; an adapter with no marker (`plan-md`) logs `changed: null`,
 never "unchanged". ⚠ The marker also moves on the run's own claim and comments,
 so a `true` on a re-offer can be self-inflicted — the re-read decides, which is
 why the outcome is recorded separately. The behaviour is pinned in the
