@@ -26,6 +26,7 @@ const WINDOWS_INCOMPATIBLE_TESTS = [
   'packages/cli/test/init.test.ts',
   'test/template/agents.test.ts',
   'test/template/aws-extras.test.ts',
+  'test/template/close-transitioned.test.ts',
   'test/template/codex.test.ts',
   'test/template/decision-router.test.ts',
   'test/template/dogfood.test.ts',

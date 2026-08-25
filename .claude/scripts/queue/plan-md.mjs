@@ -193,10 +193,20 @@ export const claim = (ticket) => ({
     'its own worktree and say so in the journal.',
 });
 
+/** One item by position; a flat list has no closed state, so an absent line is `null`. */
+export const find = (id, options = {}) =>
+  parsePlan(readPlan(options)).find((ticket) => ticket.id === String(id)) ?? null;
+
 export const close = (ticket, { prUrl = null, planPath: p } = {}) => {
   const file = p ?? 'PLAN.md';
-  writeFileSync(file, closeInPlan(readFileSync(file, 'utf8'), ticket.id));
-  return { ok: true, prUrl };
+  const before = readFileSync(file, 'utf8');
+  const present = parsePlan(before).some((item) => item.id === String(ticket.id));
+  writeFileSync(file, closeInPlan(before, ticket.id));
+  // `transitioned` means the line was there and is now gone — an id the plan
+  // never carried closed nothing, and saying otherwise would publish a close
+  // that changed no state (AR-135).
+  const gone = !parsePlan(readFileSync(file, 'utf8')).some((item) => item.id === String(ticket.id));
+  return { ok: true, prUrl, transitioned: present && gone };
 };
 
 /** A flat list has no comment thread; the journal is where this lands. */

@@ -55,6 +55,10 @@
  */
 export const ADAPTER_CONTRACT = [
   'listEligible',
+  // One item by id, WITHOUT the closed filter `listEligible` applies: the close
+  // point has to see an item somebody already closed (AR-135). Each adapter
+  // owns how — the decision is not made above the seam.
+  'find',
   'resolveBlockers',
   'claim',
   'close',
@@ -530,6 +534,25 @@ export const beforePrRevalidationOf = ({ ticket, task = { changed: null }, mainC
   const changed = source.length > 0 ? true : task?.changed === null ? null : false;
   const action = changed === true ? 'hold' : changed === null ? 'unverifiable' : 'continue';
   return { ticket, point: 'BEFORE_PR', changed, source, action };
+};
+
+/**
+ * Revalidation at BEFORE_CLOSE — the aggregate over the item's marker and its
+ * state, pure. `task` is what {@link revalidationOf} returned against the last
+ * validation; `state` is the item's neutral state now. At close the item is
+ * expected `in-progress`: `closed` means someone else published it, `open`
+ * means someone moved it back, and either is a change the close must not
+ * paper over. Same three-valued `changed` and the same actions as BEFORE_PR;
+ * `task:updatedAt` is named before `task:state`.
+ */
+export const beforeCloseRevalidationOf = ({ ticket, task = { changed: null }, state = null }) => {
+  const source = [
+    ...(task?.changed === true ? ['task:updatedAt'] : []),
+    ...(state !== 'in-progress' ? ['task:state'] : []),
+  ];
+  const changed = source.length > 0 ? true : task?.changed === null ? null : false;
+  const action = changed === true ? 'hold' : changed === null ? 'unverifiable' : 'continue';
+  return { ticket, point: 'BEFORE_CLOSE', changed, source, action };
 };
 
 /**

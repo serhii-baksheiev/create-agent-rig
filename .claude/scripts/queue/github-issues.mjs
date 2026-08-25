@@ -156,12 +156,31 @@ export const claim = (ticket) => {
   return { ok: true };
 };
 
+/**
+ * One issue by number, closed included — `gh issue view` sees every state,
+ * where `listEligible` drops CLOSED for selection's sake. The offline `issues`
+ * seam is honoured. `blocks` is empty here: the cross-index needs the whole
+ * list, and a single view does not carry it.
+ */
+export const find = (id, { issues = null } = {}) => {
+  const raw = issues
+    ? (issues.find((issue) => String(issue.number) === String(id)) ?? null)
+    : ghJson(['issue', 'view', String(id), '--json', FIELDS]);
+  return raw ? toTicket(raw, {}) : null;
+};
+
 export const close = (ticket, { prUrl = null } = {}) => {
   const note = prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.';
   ghText(['issue', 'comment', ticket.id, '--body', note]);
   ghText(['issue', 'close', ticket.id]);
-  ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
-  return { ok: true };
+  // Read back, never inferred: `gh issue close` exits 0 on an issue that was
+  // already closed, or that a workflow reopened a moment later (AR-135). The
+  // claim label goes only once the read-back says CLOSED — a close that did
+  // not land leaves the item claimed, exactly as it was found.
+  const after = ghJson(['issue', 'view', ticket.id, '--json', 'state']);
+  const transitioned = String(after?.state ?? '').toUpperCase() === 'CLOSED';
+  if (transitioned) ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
+  return { ok: true, transitioned };
 };
 
 export const comment = (ticket, body) => {

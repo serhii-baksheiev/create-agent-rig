@@ -243,9 +243,9 @@ describe('the git fixture itself', () => {
 });
 
 describe('revalidate.mjs — the CLI contract', () => {
-  it('names BEFORE_PR as its only point', async () => {
+  it('enumerates its points, frozen', async () => {
     const { POINTS } = await loadScript('revalidate.mjs');
-    expect(POINTS).toEqual(['BEFORE_PR']);
+    expect(POINTS).toEqual(['BEFORE_PR', 'BEFORE_CLOSE']);
     expect(Object.isFrozen(POINTS)).toBe(true);
   });
 
@@ -269,6 +269,7 @@ describe('revalidate.mjs — the CLI contract', () => {
   it.each([
     ['an unknown point', ['--point', 'AFTER_MERGE', '--ticket', 'AR-1']],
     ['a missing ticket', ['--point', 'BEFORE_PR']],
+    ['a ticket that looks like an option', ['--point', 'BEFORE_CLOSE', '--ticket', '--help']],
     [
       'a base that is not a revision',
       ['--point', 'BEFORE_PR', '--ticket', 'AR-1', '--base', 'no-such-ref'],
@@ -504,5 +505,412 @@ describe('the skills that run it say so', () => {
   it('loop journals the check-premises verdict through recordDecision', async () => {
     const skill = await read(skillsDir, 'loop', 'SKILL.md');
     expect(skill).toMatch(/recordDecision\([\s\S]{0,400}gate:\s*['"]check-premises['"]/);
+  });
+});
+
+// AR-135 [RX3] Revalidate BEFORE_CLOSE. The PR merged; the run is about to
+// publish the item as Done. Two things can have happened in between that the
+// merge cannot see: the ticket moved (a late comment, an edit — `updatedAt`
+// against the LAST validation, not the take-up), or somebody moved its state
+// (already closed it, or pushed it back to open). Either one means the close
+// would publish a state the board does not agree with. No git is involved: the
+// branch is gone, the merge is the fact, and the question is only about the item.
+
+interface CloseResult {
+  ticket: string;
+  point: 'BEFORE_CLOSE';
+  changed: boolean | null;
+  source: string[];
+  action: 'hold' | 'continue' | 'unverifiable';
+  task: { changed: boolean | null; from: string | null; to: string | null };
+  state: { expected: 'in-progress'; actual: string | null };
+  dependants: string[];
+  dependantState: Record<string, string>;
+}
+
+const T3 = '2026-08-25T11:30:00.000Z';
+
+const IN_PROGRESS = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
+const DONE = { name: 'Done', statusCategory: { key: 'done' } };
+const TO_DO = { name: 'To Do', statusCategory: { key: 'new' } };
+
+const blocksLink = (key: string) => ({
+  type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' },
+  outwardIssue: { key, fields: { status: { statusCategory: { key: 'new' } } } },
+});
+
+interface CloseProject {
+  dir: string;
+  configPath: string;
+  runDir: string;
+  env: NodeJS.ProcessEnv;
+}
+
+/**
+ * A plain directory — deliberately NOT a git repository — holding only the
+ * queue config, plus a run directory. `snapshot` is `takeUps[AR-1]`; `null`
+ * writes no state.json at all.
+ */
+const closeProject = async ({
+  updated = T1,
+  snapshot = T1,
+  status = IN_PROGRESS,
+  issuelinks = [] as unknown[],
+  others = [] as unknown[],
+}: {
+  updated?: string | null;
+  snapshot?: string | null;
+  status?: { name: string; statusCategory: { key: string } };
+  issuelinks?: unknown[];
+  /** Other issues the offline seam carries — the dependants `find` re-reads. */
+  others?: unknown[];
+} = {}): Promise<CloseProject> => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'revalidate-close-'));
+  await mkdir(path.join(dir, '.claude'), { recursive: true });
+  const configPath = path.join(dir, '.claude', 'queue.json');
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      adapter: 'jira',
+      options: {
+        project: 'AR',
+        issues: [
+          jiraIssue({ status, issuelinks, ...(updated === null ? {} : { updated }) }),
+          ...others,
+        ],
+      },
+    }),
+  );
+  const runDir = await mkdtemp(path.join(tmpdir(), 'run-close-'));
+  if (snapshot !== null) {
+    await writeFile(
+      path.join(runDir, 'state.json'),
+      JSON.stringify({ takeUps: { 'AR-1': snapshot } }),
+    );
+  }
+  return { dir, configPath, runDir, env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir } };
+};
+
+const revalidateClose = (
+  p: Pick<CloseProject, 'dir' | 'configPath' | 'env'>,
+  extra: string[] = [],
+) =>
+  run(
+    process.execPath,
+    [
+      revalidateScript,
+      '--point',
+      'BEFORE_CLOSE',
+      '--ticket',
+      'AR-1',
+      '--config',
+      p.configPath,
+      ...extra,
+    ],
+    p.dir,
+    p.env,
+  );
+
+const revalidateCloseJson = async (
+  p: Pick<CloseProject, 'dir' | 'configPath' | 'env'>,
+  extra: string[] = [],
+): Promise<{ code: number; result: CloseResult; out: string }> => {
+  const { code, stdout, out } = await revalidateClose(p, [...extra, '--json']);
+  expect(stdout, out).not.toBe('');
+  return { code, result: JSON.parse(stdout) as CloseResult, out };
+};
+
+/** The BEFORE_PR event the run wrote earlier: its `task.to` is the last validation. */
+const recordBeforePr = (runDir: string, to: string) =>
+  (journal as unknown as { recordEvent: (input: unknown) => unknown }).recordEvent({
+    runDir,
+    kind: 'revalidation',
+    data: { ticket: 'AR-1', point: 'BEFORE_PR', task: { to } },
+    now: NOW,
+  });
+
+describe('revalidate.mjs knows BEFORE_CLOSE', () => {
+  it('names BEFORE_PR and BEFORE_CLOSE as its points, frozen', async () => {
+    const { POINTS } = await loadScript('revalidate.mjs');
+    expect(POINTS).toEqual(['BEFORE_PR', 'BEFORE_CLOSE']);
+    expect(Object.isFrozen(POINTS)).toBe(true);
+  });
+
+  it('needs no git: runs in a plain directory and ignores --base there', async () => {
+    const p = await closeProject();
+    expect(existsSync(path.join(p.dir, '.git'))).toBe(false);
+    const { code, result, out } = await revalidateCloseJson(p, ['--base', 'no-such-ref']);
+    expect(code, out).toBe(0);
+    expect(result).toMatchObject({ ticket: 'AR-1', point: 'BEFORE_CLOSE', action: 'continue' });
+    expect(result).not.toHaveProperty('main');
+  });
+});
+
+describe('BEFORE_CLOSE — the task source compares against the LAST validation', () => {
+  it('continues when the marker equals the last BEFORE_PR event, even though take-up is older', async () => {
+    const p = await closeProject({ updated: T2, snapshot: T1 });
+    recordBeforePr(p.runDir, T2);
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(0);
+    expect(result).toMatchObject({
+      changed: false,
+      action: 'continue',
+      source: [],
+      task: { changed: false, from: T2, to: T2 },
+    });
+  });
+
+  it('holds when the marker moved past the last BEFORE_PR event, with `from` being that event', async () => {
+    const p = await closeProject({ updated: T3, snapshot: T1 });
+    recordBeforePr(p.runDir, T2);
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(2);
+    expect(result).toMatchObject({
+      changed: true,
+      action: 'hold',
+      source: ['task:updatedAt'],
+      task: { changed: true, from: T2, to: T3 },
+    });
+  });
+
+  it('falls back to the take-up snapshot when no revalidation event exists', async () => {
+    const p = await closeProject({ updated: T1, snapshot: T1 });
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(0);
+    expect(result).toMatchObject({
+      action: 'continue',
+      task: { changed: false, from: T1, to: T1 },
+    });
+  });
+
+  it('is unverifiable when there is neither an event nor a take-up snapshot', async () => {
+    const p = await closeProject({ snapshot: null });
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(0);
+    expect(result).toMatchObject({
+      changed: null,
+      action: 'unverifiable',
+      source: [],
+      task: { changed: null, from: null, to: T1 },
+    });
+  });
+});
+
+describe('BEFORE_CLOSE — the state source: in-progress is the only state a close expects', () => {
+  it('holds on task:state when the tracker no longer offers the item', async () => {
+    const p = await closeProject();
+    const { code, stdout, out } = await run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_CLOSE',
+        '--ticket',
+        'AR-9',
+        '--config',
+        p.configPath,
+        '--json',
+      ],
+      p.dir,
+      p.env,
+    );
+    expect(code, out).toBe(2);
+    const result = JSON.parse(stdout) as CloseResult;
+    expect(result.state).toEqual({ expected: 'in-progress', actual: 'missing' });
+    expect(result.source).toEqual(['task:state']);
+    expect(result.task.changed).toBeNull();
+  });
+
+  it('holds on task:state when someone already closed the item', async () => {
+    const p = await closeProject({ status: DONE });
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(2);
+    expect(result).toMatchObject({
+      changed: true,
+      action: 'hold',
+      source: ['task:state'],
+      state: { expected: 'in-progress', actual: 'closed' },
+    });
+  });
+
+  it('holds on task:state when the item was moved back to open', async () => {
+    const p = await closeProject({ status: TO_DO });
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(2);
+    expect(result.source).toEqual(['task:state']);
+    expect(result.state).toEqual({ expected: 'in-progress', actual: 'open' });
+  });
+
+  it('reports the expected state on continue too', async () => {
+    const p = await closeProject();
+    const { result } = await revalidateCloseJson(p);
+    expect(result.state).toEqual({ expected: 'in-progress', actual: 'in-progress' });
+  });
+});
+
+describe('BEFORE_CLOSE — the dependants the close would release', () => {
+  it('lists the keys this item blocks', async () => {
+    const p = await closeProject({ issuelinks: [blocksLink('AR-7'), blocksLink('AR-9')] });
+    const { result } = await revalidateCloseJson(p);
+    expect(result.dependants).toEqual(['AR-7', 'AR-9']);
+  });
+
+  it('is an empty list when nothing waits on it', async () => {
+    const p = await closeProject();
+    const { result } = await revalidateCloseJson(p);
+    expect(result.dependants).toEqual([]);
+    expect(result.dependantState).toEqual({});
+  });
+
+  it("re-reads each dependant's state, and names one the tracker no longer offers", async () => {
+    const done = { name: 'Done', statusCategory: { key: 'done' } };
+    const p = await closeProject({
+      issuelinks: [blocksLink('AR-7'), blocksLink('AR-9'), blocksLink('AR-11')],
+      others: [
+        { ...jiraIssue({ status: done }), key: 'AR-7' },
+        { ...jiraIssue(), key: 'AR-9' },
+      ],
+    });
+    const { code, result } = await revalidateCloseJson(p);
+    // a dependant already closed, or gone, is reported — it is not a hold
+    expect(code).toBe(0);
+    expect(result.dependantState).toEqual({
+      'AR-7': 'closed',
+      'AR-9': 'in-progress',
+      'AR-11': 'missing',
+    });
+  });
+});
+
+describe('BEFORE_CLOSE — what it prints and what it journals', () => {
+  it('text mode on hold names both sources on one line', async () => {
+    const p = await closeProject({ updated: T3, snapshot: T1, status: DONE });
+    const { code, stdout } = await revalidateClose(p);
+    expect(code).toBe(2);
+    expect(stdout).toMatch(/^revalidate BEFORE_CLOSE: AR-1 hold — task:updatedAt, task:state/m);
+  });
+
+  it('text mode on continue says so', async () => {
+    const p = await closeProject();
+    const { code, stdout } = await revalidateClose(p);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/^revalidate BEFORE_CLOSE: AR-1 continue/m);
+  });
+
+  it('appends exactly one BEFORE_CLOSE revalidation event after the BEFORE_PR one, and does not end the run', async () => {
+    const p = await closeProject({ updated: T3, snapshot: T1 });
+    recordBeforePr(p.runDir, T2);
+    const { result } = await revalidateCloseJson(p);
+    const events = revalidationEvents(p.runDir);
+    expect(events).toHaveLength(2);
+    expect(events[1]!.data).toEqual(result);
+    expect(events[1]!.data).toMatchObject({ point: 'BEFORE_CLOSE', action: 'hold' });
+    expect(journal.readRun({ runDir: p.runDir }).ended).toBe(false);
+  });
+
+  it('is unverifiable without a run dir, and writes nothing', async () => {
+    const p = await closeProject();
+    const env = { ...p.env };
+    delete env.RIG_RUN_DIR;
+    const { code, result, out } = await revalidateCloseJson({ ...p, env });
+    expect(code, out).toBe(0);
+    expect(result).toMatchObject({ action: 'unverifiable', task: { changed: null } });
+    expect(existsSync(path.join(p.runDir, 'events.jsonl'))).toBe(false);
+  });
+});
+
+describe('beforeCloseRevalidationOf aggregates task and state, purely', () => {
+  const load = async () =>
+    (await loadQueue('core.mjs')) as {
+      beforeCloseRevalidationOf: (input: {
+        ticket: string;
+        task: { changed: boolean | null };
+        state: string | null;
+      }) => Omit<CloseResult, 'task' | 'state' | 'dependants'>;
+    };
+
+  it('holds on a task change, naming task:updatedAt', async () => {
+    const { beforeCloseRevalidationOf } = await load();
+    expect(
+      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: true }, state: 'in-progress' }),
+    ).toEqual({
+      ticket: 'AR-1',
+      point: 'BEFORE_CLOSE',
+      changed: true,
+      source: ['task:updatedAt'],
+      action: 'hold',
+    });
+  });
+
+  it('holds on a closed state, naming task:state', async () => {
+    const { beforeCloseRevalidationOf } = await load();
+    expect(
+      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: false }, state: 'closed' }),
+    ).toEqual({
+      ticket: 'AR-1',
+      point: 'BEFORE_CLOSE',
+      changed: true,
+      source: ['task:state'],
+      action: 'hold',
+    });
+  });
+
+  it('names task:updatedAt before task:state when both moved', async () => {
+    const { beforeCloseRevalidationOf } = await load();
+    expect(
+      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: true }, state: 'open' }).source,
+    ).toEqual(['task:updatedAt', 'task:state']);
+  });
+
+  it('continues when the task compared unchanged and the state is in-progress', async () => {
+    const { beforeCloseRevalidationOf } = await load();
+    expect(
+      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: false }, state: 'in-progress' }),
+    ).toEqual({
+      ticket: 'AR-1',
+      point: 'BEFORE_CLOSE',
+      changed: false,
+      source: [],
+      action: 'continue',
+    });
+  });
+
+  it('is unverifiable when the task could not be compared and the state is in-progress', async () => {
+    const { beforeCloseRevalidationOf } = await load();
+    expect(
+      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: null }, state: 'in-progress' }),
+    ).toEqual({
+      ticket: 'AR-1',
+      point: 'BEFORE_CLOSE',
+      changed: null,
+      source: [],
+      action: 'unverifiable',
+    });
+  });
+});
+
+describe('the loop skill closes through the BEFORE_CLOSE check', () => {
+  const closingSection = async (): Promise<string> => {
+    const skill = await read(skillsDir, 'loop', 'SKILL.md');
+    const start = skill.indexOf('## 9.');
+    expect(start, 'section 9 is missing').toBeGreaterThan(-1);
+    return skill.slice(start);
+  };
+
+  it('runs the BEFORE_CLOSE revalidation before the close call and reads a hold as a stop', async () => {
+    const section = await closingSection();
+    const check = section.indexOf('node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE');
+    expect(check, 'no BEFORE_CLOSE command in the closing section').toBeGreaterThan(-1);
+    const closeCall = section.indexOf('close(', check);
+    expect(closeCall, 'the close call is not after the check').toBeGreaterThan(check);
+    expect(section.slice(check)).toMatch(
+      /hold[^\n]*(stops|halts|blocks)[^\n]*close|(stops|halts|blocks)[^\n]*close[^\n]*hold/i,
+    );
+  });
+
+  it('says the close result’s `transitioned` is what proves the close', async () => {
+    const section = await closingSection();
+    expect(section).toMatch(/transitioned/);
+    expect(section).toMatch(/close[\s\S]{0,400}`transitioned`|`transitioned`[\s\S]{0,400}close/);
   });
 });

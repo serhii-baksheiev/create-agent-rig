@@ -79,6 +79,7 @@ jobs:
           --exclude packages/cli/test/init.test.ts
           --exclude test/template/agents.test.ts
           --exclude test/template/aws-extras.test.ts
+          --exclude test/template/close-transitioned.test.ts
           --exclude test/template/codex.test.ts
           --exclude test/template/decision-router.test.ts
           --exclude test/template/dogfood.test.ts
