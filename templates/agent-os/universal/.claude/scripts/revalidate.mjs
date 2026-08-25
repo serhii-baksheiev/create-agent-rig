@@ -27,7 +27,9 @@
  *
  * ⚠ It reads `<base>` as it is in this checkout and never updates the remote
  * ref itself; `pr-ship` step 1 does that before calling this. A stale ref
- * makes this compare against yesterday's main and report `continue`.
+ * makes this compare against yesterday's main and report `continue` — see
+ * revalidate.test.ts › "reads the ref as it is: a stale origin/master reports
+ * continue".
  */
 
 import { execFileSync } from 'node:child_process';

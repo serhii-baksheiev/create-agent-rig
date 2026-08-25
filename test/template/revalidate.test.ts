@@ -102,7 +102,7 @@ const git = async (args: string[], cwd: string): Promise<string> => {
  */
 const gitFixture = async (): Promise<{
   clone: string;
-  moveMain: (files: string[]) => Promise<void>;
+  moveMain: (files: string[], options?: { fetch?: boolean }) => Promise<void>;
 }> => {
   const root = await mkdtemp(path.join(tmpdir(), 'revalidate-git-'));
   const origin = path.join(root, 'origin.git');
@@ -121,7 +121,7 @@ const gitFixture = async (): Promise<{
   await writeFile(path.join(clone, 'a.txt'), 'a.txt on the branch\n');
   await git(['commit', '-q', '-a', '-m', 'branch touches a.txt'], clone);
 
-  const moveMain = async (files: string[]): Promise<void> => {
+  const moveMain = async (files: string[], { fetch = true } = {}): Promise<void> => {
     if (!existsSync(other)) await git(['clone', '-q', origin, other], root);
     await git(['pull', '-q', 'origin', 'master'], other);
     for (const name of files) {
@@ -130,7 +130,9 @@ const gitFixture = async (): Promise<{
     await git(['add', '-A'], other);
     await git(['commit', '-q', '-m', `main touches ${files.join(',')}`], other);
     await git(['push', '-q', 'origin', 'HEAD:master'], other);
-    await git(['fetch', '-q', 'origin'], clone);
+    // `fetch: false` leaves the clone's origin/master where it was — the stale
+    // ref the script's header names as its limit.
+    if (fetch) await git(['fetch', '-q', 'origin'], clone);
   };
   return { clone, moveMain };
 };
@@ -155,7 +157,7 @@ interface Project {
   configPath: string;
   runDir: string;
   env: NodeJS.ProcessEnv;
-  moveMain: (files: string[]) => Promise<void>;
+  moveMain: (files: string[], options?: { fetch?: boolean }) => Promise<void>;
   /** `null` means the issue carries NO `updated` field at all. */
   setUpdated: (updated: string | null) => Promise<void>;
 }
@@ -250,6 +252,18 @@ describe('revalidate.mjs — the CLI contract', () => {
   it('never fetches: the source text carries no `fetch`', async () => {
     const source = await read(revalidateScript);
     expect(source).not.toMatch(/fetch/);
+  });
+
+  it('reads the ref as it is: a stale origin/master reports continue', async () => {
+    const p = await project();
+    await p.moveMain(['a.txt'], { fetch: false });
+    const { code, result, out } = await revalidateJson(p);
+    expect(code, out).toBe(0);
+    expect(result.action).toBe('continue');
+    expect(result.main.changed).toEqual([]);
+    // and once the ref is current, the same path is the hold it should be
+    await p.moveMain(['a.txt'], { fetch: true });
+    expect((await revalidateJson(p)).result.source).toEqual(['main:a.txt']);
   });
 
   it.each([

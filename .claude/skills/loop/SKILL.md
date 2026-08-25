@@ -245,14 +245,20 @@ node --input-type=module -e '
   if (!process.argv[1]) process.exit(0); // `check` printed nothing: nothing to record
   const journal = await import("./.claude/scripts/run-journal.mjs");
   const v = JSON.parse(process.argv[1]);
-  console.log(journal.recordDecision({
-    runDir,
-    gate:     "check-premises",
-    verdict:  v.verdict,
-    blockers: v.blockers,
-    headSha:  v.headSha,
-    now:      new Date().toISOString(),
-  }));
+  try {
+    console.log(journal.recordDecision({
+      runDir,
+      gate:     "check-premises",
+      verdict:  v.verdict,
+      blockers: v.blockers,
+      headSha:  v.headSha,
+      now:      new Date().toISOString(),
+    }));
+  } catch (error) {
+    // The same split pr-ship makes: an exhausted trace is over, the task is not.
+    if (!journal.isTraceExhausted?.(error)) throw error;
+    process.stderr.write(`run journal: ${error.message}\n  the premise verdict above was NOT recorded.\n`);
+  }
 ' "$(node .claude/scripts/verdict.mjs check <report> check-premises)"
 ```
 
