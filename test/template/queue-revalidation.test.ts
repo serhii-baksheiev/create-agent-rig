@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -436,6 +436,30 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     const events = await revalidationEvents(runDir);
     expect(events).toHaveLength(1);
     expect(events[0]!.data).toMatchObject({ changed: null, action: 'unverifiable' });
+  });
+
+  it('a run journal that predates revalidation events keeps the selection and says the record was lost', async () => {
+    const { dir, configPath, runDir, env } = await jiraProject();
+    // The CLI resolves `../run-journal.mjs` from its own location, so the stale
+    // module has to sit in a copy of the scripts tree, not in the project.
+    const scripts = await mkdtemp(path.join(tmpdir(), 'stale-journal-'));
+    await cp(path.dirname(queueDir), scripts, { recursive: true });
+    await writeFile(
+      path.join(scripts, 'run-journal.mjs'),
+      'export const recordDecision = () => ({});\nexport const isTraceExhausted = () => false;\n',
+    );
+    const result = await runNode(
+      path.join(scripts, 'queue', 'index.mjs'),
+      ['next', '--json', '--config', configPath],
+      dir,
+      env,
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toMatch(/predates revalidation events/);
+    expect(result.out).not.toMatch(/is not a function/);
+    const parsed = JSON.parse(result.stdout) as { revalidation: { changed: boolean | null } };
+    expect(parsed.revalidation.changed).toBe(false);
+    expect(await read(runDir, 'state.json')).toContain('takeUps');
   });
 
   it('without a run directory it neither revalidates nor writes', async () => {

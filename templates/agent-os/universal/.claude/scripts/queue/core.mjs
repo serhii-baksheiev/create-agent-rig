@@ -479,9 +479,10 @@ export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = 
  * last take-up saw?
  *
  * The snapshot is the ticket's `updatedAt` marker as recorded at the previous
- * take-up in THIS run (`run-state.mjs` › recordTakeUp); the tracker bumps it on
- * every edit, comment and status change, so one string compare covers all
- * three without a second network call — the unchanged case costs nothing.
+ * take-up in THIS run (`run-state.mjs` › recordTakeUp). One string compare on
+ * the tracker's last-modified field, no second network call — the unchanged
+ * case costs nothing. That the field moves on every edit, comment and status
+ * change is the tracker's contract, assumed here and not checked.
  *
  * 🔴 **`changed` is three-valued, and `null` is the honest one.** An adapter
  * with no marker (`plan-md`) cannot say "unchanged"; it can only say it did not

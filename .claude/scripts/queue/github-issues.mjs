@@ -75,8 +75,10 @@ export const toTicket = (issue, states = {}) => {
     blocks: [],
     priority: priorityLabel ? Number(priorityLabel[1]) : 999,
     createdAt: issue.createdAt ?? null,
-    // The take-up marker for revalidation at SELECT — GitHub bumps it on edits,
-    // comments and state changes alike. `null` when the listing did not carry it.
+    // The take-up marker for revalidation at SELECT: the tracker's own
+    // last-modified field, whose contract (moves on edits, comments and state
+    // changes) is assumed and not checked here. `null` when the listing did not
+    // carry it.
     updatedAt: issue.updatedAt ?? null,
     // The body travels on the neutral shape so the hygiene checks live in one
     // place (core.mjs) instead of once per adapter. This adapter also parses it

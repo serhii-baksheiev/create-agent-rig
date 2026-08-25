@@ -104,10 +104,11 @@ export const toTicket = (issue) => {
     priority: PRIORITY[String(fields.priority?.name ?? '').toLowerCase()] ?? 999,
     createdAt: toIso(fields.created),
     // The take-up marker for revalidation at SELECT (`core.mjs` › revalidationOf):
-    // Jira bumps `updated` on every status change, edit and comment, so one
-    // field stands in for "state/comments/updated". `null` when the search did
-    // not carry it — never `''`, which would compare equal to itself and read as
-    // "unchanged" where the truth is "not looked".
+    // the tracker's own last-modified field. That it moves on every status
+    // change, edit and comment is Jira's contract, assumed and not checked
+    // here. `null` when the search did not carry it — never `''`, which would
+    // compare equal to itself and read as "unchanged" where the truth is "not
+    // looked".
     updatedAt: toIso(fields.updated),
     // Flattened from the document description — the same text this adapter
     // already reads internally, now visible to the shared hygiene checks.

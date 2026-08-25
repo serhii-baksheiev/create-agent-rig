@@ -211,7 +211,8 @@ export const recordEscalation = (runDir) => {
  * later compare equal to `null` and read as "unchanged".
  *
  * No run directory → nothing written, `null` back, no throw: an attended
- * selection has no run to snapshot into, exactly as {@link recordEscalation}.
+ * selection has no run to snapshot into. (Like {@link recordEscalation} it
+ * refuses to throw there; unlike it, there is no count to hand back, so `null`.)
  */
 export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
   if (!runDir || typeof updatedAt !== 'string' || id === undefined || id === null) return null;
