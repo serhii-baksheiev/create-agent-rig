@@ -35,8 +35,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRun } from './run-journal.mjs';
+import { POINTS } from './lib/revalidation-points.mjs';
 
-export const POINTS = Object.freeze(['SELECT', 'BEFORE_PR', 'BEFORE_CLOSE']);
+export { POINTS };
 
 const emptyCounts = () => ({
   opportunities: 0,

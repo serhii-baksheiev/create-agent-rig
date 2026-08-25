@@ -28,6 +28,7 @@ const WINDOWS_INCOMPATIBLE_TESTS = [
   'test/template/aws-extras.test.ts',
   'test/template/close-transitioned.test.ts',
   'test/template/codex.test.ts',
+  'test/template/correspondence.test.ts',
   'test/template/decision-router.test.ts',
   'test/template/dogfood.test.ts',
   'test/template/gate-rounds.test.ts',

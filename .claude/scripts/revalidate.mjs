@@ -61,10 +61,12 @@ import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
 import { readRun, recordEvent } from './run-journal.mjs';
 import { readState } from './run-state.mjs';
+import { POINTS as ALL_POINTS, REVALIDATES } from './lib/revalidation-points.mjs';
 import { beforeCloseRevalidationOf, beforePrRevalidationOf, revalidationOf } from './queue/core.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 
-export const POINTS = Object.freeze(['BEFORE_PR', 'BEFORE_CLOSE']);
+// Derived from the one source, never restated here (AR-137).
+export const POINTS = REVALIDATES;
 
 const revisionOrNull = (value) =>
   typeof value === 'string' && value !== '' && !value.startsWith('-') ? value : null;
@@ -163,7 +165,7 @@ if (invokedDirectly()) {
   // An outcome may answer any point, SELECT included — that one is written by
   // `queue/index.mjs next`, so it is not in POINTS, which names what THIS
   // script can revalidate.
-  const known = args.outcome ? ['SELECT', ...POINTS] : POINTS;
+  const known = args.outcome ? ALL_POINTS : POINTS;
   if (!known.includes(args.point)) {
     refuse(`unknown point: ${args.point ?? '(none)'}. This script knows ${known.join(', ')}.`);
   }

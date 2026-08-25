@@ -43,6 +43,7 @@
     ".claude/scripts/revalidate.mjs",
     ".claude/scripts/revalidation-report.mjs",
     ".claude/scripts/lib/gate-coverage.mjs",
+    ".claude/scripts/lib/revalidation-points.mjs",
     ".claude/scripts/lib/verdict.mjs",
     ".claude/scripts/lib/secrets.mjs",
     ".claude/scripts/queue/core.mjs",
