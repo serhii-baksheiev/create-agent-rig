@@ -168,6 +168,17 @@ and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
+**Selection also revalidates the item against this run's own take-up.** `next`
+records the selected item's `updatedAt` marker in the run state (`takeUps`) and,
+when the same item is offered again in the run, compares the two; a marker that
+moved prints a `revalidate:` line and the JSON carries `revalidation.changed:
+true` — re-read the item before acting on it. Every selection logs one
+`revalidation` event `{ticket, point: SELECT, changed, source, action}`; an
+adapter with no marker (`plan-md`) logs `changed: null`, never "unchanged" — see
+`test/template/queue-revalidation.test.ts` › "an adapter with no marker records
+a blind spot, not \"unchanged\"" and › "a moved marker asks for a refresh,
+re-snapshots, and journals the change".
+
 **Then, before the Red step: `check-premises`.** The item was written by someone
 who was not reading the code at the time, and everything downstream — the failing
 test, the implementation, the reviewer comparing diff to item — inherits its

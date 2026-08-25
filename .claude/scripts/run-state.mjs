@@ -200,6 +200,27 @@ export const recordEscalation = (runDir) => {
 };
 
 /**
+ * The take-up snapshot: the selected item's `updatedAt` marker, keyed by id, as
+ * seen at SELECT. `queue/core.mjs` › revalidationOf compares the next selection
+ * against it, so a stale take-up is reported rather than silently continued.
+ *
+ * Per run, like everything else here — a snapshot from yesterday's run is not
+ * a take-up this run made. Merged by id, so a second item does not erase the
+ * first; re-recording an id moves its baseline forward. A marker that is not a
+ * string is not recorded at all: `plan-md` has none, and writing `null` would
+ * later compare equal to `null` and read as "unchanged".
+ *
+ * No run directory → nothing written, `null` back, no throw: an attended
+ * selection has no run to snapshot into, exactly as {@link recordEscalation}.
+ */
+export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
+  if (!runDir || typeof updatedAt !== 'string' || id === undefined || id === null) return null;
+  const state = readState(runDir);
+  const takeUps = typeof state.takeUps === 'object' && state.takeUps !== null ? state.takeUps : {};
+  return updateState(runDir, { takeUps: { ...takeUps, [String(id)]: updatedAt } });
+};
+
+/**
  * The stop inputs, read out of a state object that anything may have written.
  *
  * 🔴 **An uninterpretable value is never "no stop".** The writers here are

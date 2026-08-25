@@ -75,6 +75,9 @@ export const toTicket = (issue, states = {}) => {
     blocks: [],
     priority: priorityLabel ? Number(priorityLabel[1]) : 999,
     createdAt: issue.createdAt ?? null,
+    // The take-up marker for revalidation at SELECT — GitHub bumps it on edits,
+    // comments and state changes alike. `null` when the listing did not carry it.
+    updatedAt: issue.updatedAt ?? null,
     // The body travels on the neutral shape so the hygiene checks live in one
     // place (core.mjs) instead of once per adapter. This adapter also parses it
     // internally for blocker links — the two readings are independent on
@@ -120,7 +123,7 @@ const ghText = (args) =>
 
 const ghJson = (args) => JSON.parse(ghText(args));
 
-const FIELDS = 'number,title,body,state,labels,url,createdAt';
+const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt';
 
 // --- the adapter contract ------------------------------------------------------
 
