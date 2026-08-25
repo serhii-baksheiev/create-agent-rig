@@ -161,7 +161,10 @@ export const close = (ticket, { prUrl = null } = {}) => {
   ghText(['issue', 'comment', ticket.id, '--body', note]);
   ghText(['issue', 'close', ticket.id]);
   ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
-  return { ok: true };
+  // Read back, never inferred: `gh issue close` exits 0 on an issue that was
+  // already closed, or that a workflow reopened a moment later (AR-135).
+  const after = ghJson(['issue', 'view', ticket.id, '--json', 'state']);
+  return { ok: true, transitioned: String(after?.state ?? '').toUpperCase() === 'CLOSED' };
 };
 
 export const comment = (ticket, body) => {

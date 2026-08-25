@@ -533,6 +533,25 @@ export const beforePrRevalidationOf = ({ ticket, task = { changed: null }, mainC
 };
 
 /**
+ * Revalidation at BEFORE_CLOSE — the aggregate over the item's marker and its
+ * state, pure. `task` is what {@link revalidationOf} returned against the last
+ * validation; `state` is the item's neutral state now. At close the item is
+ * expected `in-progress`: `closed` means someone else published it, `open`
+ * means someone moved it back, and either is a change the close must not
+ * paper over. Same three-valued `changed` and the same actions as BEFORE_PR;
+ * `task:updatedAt` is named before `task:state`.
+ */
+export const beforeCloseRevalidationOf = ({ ticket, task = { changed: null }, state = null }) => {
+  const source = [
+    ...(task?.changed === true ? ['task:updatedAt'] : []),
+    ...(state !== 'in-progress' ? ['task:state'] : []),
+  ];
+  const changed = source.length > 0 ? true : task?.changed === null ? null : false;
+  const action = changed === true ? 'hold' : changed === null ? 'unverifiable' : 'continue';
+  return { ticket, point: 'BEFORE_CLOSE', changed, source, action };
+};
+
+/**
  * Split the skipped records into the ones holding takeable work back and the
  * ones that are simply out of play.
  *

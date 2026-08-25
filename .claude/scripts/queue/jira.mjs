@@ -323,6 +323,13 @@ export const comment = async (ticket, body, { env = process.env } = {}) => {
   return { ok: true };
 };
 
+/**
+ * 🔴 `transitioned` is read back from the tracker, never inferred from the
+ * argument. The first version returned `Boolean(transitionId)` — a fact about
+ * the call, reported as a fact about the issue — so a transition the workflow
+ * rejected, or one that landed in a status outside the `done` category, was
+ * published as a close (AR-135).
+ */
 export const close = async (ticket, { prUrl = null, transitionId = null, env = process.env } = {}) => {
   await comment(ticket, prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.', { env });
   if (transitionId) {
@@ -332,7 +339,13 @@ export const close = async (ticket, { prUrl = null, transitionId = null, env = p
       env,
     });
   }
-  return { ok: true, transitioned: Boolean(transitionId) };
+  const after = await request(`/rest/api/3/issue/${ticket.id}?fields=status`, { env });
+  const fields = after?.fields ?? {};
+  return {
+    ok: true,
+    transitioned: statusCategory(fields) === 'done',
+    status: fields.status?.name ?? null,
+  };
 };
 
 /**

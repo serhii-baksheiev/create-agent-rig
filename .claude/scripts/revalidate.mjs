@@ -19,8 +19,17 @@
  *   record in this run's journal — the files the run said its premises rest
  *   on. An unrelated change on the default branch does not hold.
  *
- * The aggregate is `queue/core.mjs` › beforePrRevalidationOf; this file is the
- * I/O around it. Exit 2 on `hold`, 0 on `continue` and `unverifiable`, 1 when
+ * At BEFORE_CLOSE (AR-135) there is no git and no main: the sources are
+ * `task:updatedAt` against the LAST VALIDATION — the `task.to` of this run's
+ * latest `revalidation` event for the item, falling back to the take-up
+ * snapshot — and `task:state`, which is expected `in-progress` at close and
+ * is a change when someone closed the item or moved it back. The item is
+ * looked up without the closed filter selection applies, because an item
+ * already closed is exactly a case this point exists to catch. The result
+ * lists the item's dependants (`blocks`) for the loop's write-back.
+ *
+ * The aggregates are `queue/core.mjs` › beforePrRevalidationOf and
+ * beforeCloseRevalidationOf; this file is the I/O around them. Exit 2 on `hold`, 0 on `continue` and `unverifiable`, 1 when
  * the arguments cannot be acted on (unknown point, no ticket, a base that is
  * not a revision) — and then nothing is journalled, because a refusal is not
  * an answer.
@@ -38,10 +47,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
 import { readState } from './run-state.mjs';
-import { beforePrRevalidationOf, revalidationOf } from './queue/core.mjs';
+import { beforeCloseRevalidationOf, beforePrRevalidationOf, revalidationOf } from './queue/core.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 
-export const POINTS = Object.freeze(['BEFORE_PR']);
+export const POINTS = Object.freeze(['BEFORE_PR', 'BEFORE_CLOSE']);
 
 const revisionOrNull = (value) =>
   typeof value === 'string' && value !== '' && !value.startsWith('-') ? value : null;
@@ -88,6 +97,37 @@ const citedByPremises = async (runDir) => {
     .filter((file) => typeof file === 'string' && file !== '');
 };
 
+/**
+ * The item, WITHOUT selection's closed filter: `listEligible` drops closed
+ * items because selection must not take them, and the close point must see
+ * one. Each adapter maps raw records through its own `toTicket`; the offline
+ * `options.issues` seam is honoured where the adapter has one.
+ */
+const lookupTicket = async (adapter, id, options) => {
+  const wanted = String(id);
+  if (adapter.name === 'jira') {
+    const issues = options?.issues ?? (await adapter.search(options)).issues;
+    return issues.map(adapter.toTicket).find((ticket) => String(ticket.id) === wanted) ?? null;
+  }
+  if (adapter.name === 'github-issues' && Array.isArray(options?.issues)) {
+    return options.issues.map((issue) => adapter.toTicket(issue)).find((t) => String(t.id) === wanted) ?? null;
+  }
+  const tickets = await adapter.listEligible(options);
+  return tickets.find((ticket) => String(ticket.id) === wanted) ?? null;
+};
+
+/** The last validation's marker for this item: the latest revalidation event, any point. */
+const lastValidationOf = async (runDir, id) => {
+  if (!runDir) return null;
+  const journal = await import('./run-journal.mjs');
+  const { events } = journal.readRun({ runDir });
+  const last = [...events]
+    .reverse()
+    .find((e) => e.kind === 'revalidation' && String(e.data?.ticket) === String(id));
+  const to = last?.data?.task?.to;
+  return typeof to === 'string' ? to : null;
+};
+
 const invokedDirectly = () => {
   if (!process.argv[1]) return false;
   const real = (p) => {
@@ -113,6 +153,46 @@ if (invokedDirectly()) {
   }
   if (!args.ticket) refuse('--ticket is required: the item whose take-up this branch is.');
 
+  const runDir = process.env.RIG_RUN_DIR || null;
+  const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
+  const config = loadConfig(configPath);
+  const adapter = await resolveAdapter(config.adapter ?? 'plan-md');
+  const options = optionsWithPlanPath(config.options, configPath);
+
+  if (args.point === 'BEFORE_CLOSE') {
+    const ticket = await lookupTicket(adapter, args.ticket, options);
+    const takeUp = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
+    const baseline = (await lastValidationOf(runDir, args.ticket)) ?? takeUp;
+    const task =
+      ticket && baseline !== null
+        ? revalidationOf({ ticket, snapshot: baseline })
+        : { changed: null, from: baseline, to: ticket?.updatedAt ?? null };
+    // Not found is not "in progress": the tracker no longer offers the item.
+    const actual = ticket ? ticket.state : 'missing';
+    const aggregate = beforeCloseRevalidationOf({ ticket: args.ticket, task, state: actual });
+    const result = {
+      ...aggregate,
+      task: { changed: task.changed, from: task.from ?? null, to: task.to ?? null },
+      state: { expected: 'in-progress', actual },
+      dependants: Array.isArray(ticket?.blocks) ? ticket.blocks : [],
+    };
+    if (runDir) {
+      const journal = await import('./run-journal.mjs');
+      journal.recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+    }
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      const detail = result.source.length > 0 ? ` — ${result.source.join(', ')}` : '';
+      process.stdout.write(`revalidate BEFORE_CLOSE: ${args.ticket} ${result.action}${detail}\n`);
+      if (result.action === 'hold') {
+        process.stdout.write('  re-read the item before closing it; a late change is not published as Done.\n');
+      }
+    }
+    process.exit(result.action === 'hold' ? 2 : 0);
+  }
+
   let mergeBase;
   try {
     mergeBase = git(['merge-base', args.base, 'HEAD']).trim();
@@ -120,14 +200,9 @@ if (invokedDirectly()) {
     refuse(`--base ${args.base} is not a revision this checkout can compare against: ${error.message}`);
   }
 
-  const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
-  const config = loadConfig(configPath);
-  const adapter = await resolveAdapter(config.adapter ?? 'plan-md');
-  const tickets = await adapter.listEligible(optionsWithPlanPath(config.options, configPath));
+  const tickets = await adapter.listEligible(options);
   const ticket = tickets.find((candidate) => String(candidate.id) === String(args.ticket)) ?? null;
 
-  const runDir = process.env.RIG_RUN_DIR || null;
   const snapshot = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
   // At SELECT a missing snapshot is the first sight and becomes the baseline;
   // here it is a comparison that cannot be made — the run never recorded a

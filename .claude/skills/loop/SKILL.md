@@ -668,9 +668,29 @@ three poisons the only channel by which this project learns.
   that creates the branch or worktree. Not when the PR opens. An item being worked
   while it still reads as available is invisible to the human and re-selectable by
   the very next query.
-- **Closing:** close it with the merged PR linked, immediately after the
-  post-merge verdict — not in a cleanup pass. **Record the tier in the same
-  step**, because the next selection rations on it:
+- **Closing:** first ask whether the item is still the item you took up — a
+  late comment or a status somebody else moved is not published as `Done`
+  underneath it (AR-135):
+
+  ```bash
+  node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id>
+  ```
+
+  It compares the item's marker against this run's last validation and its
+  state against the `in-progress` a close expects, journals one `revalidation`
+  event at `point: BEFORE_CLOSE`, and lists the item's dependants for the
+  write-back below. A hold (exit 2) stops the close: re-read the item, record
+  the outcome as §2 does, and close only if the re-read leaves the action
+  standing. Then call the adapter's `close(ticket, { prUrl, transitionId })`
+  with the merged PR linked, immediately after the post-merge verdict — not in
+  a cleanup pass — and read its answer: `ok: true` says the call ran, and only
+  `transitioned` set to `true` says the close landed, because every adapter
+  reads the item back after the transition
+  (`jira`: the status category after the POST; `github-issues`: `gh issue view
+  --json state`; `plan-md`: the line was there and is gone). A close whose result
+  says `transitioned: false` is not a close; it is reported, and the item stays
+  claimed. **Record the tier in the same step**, because the next selection
+  rations on it:
 
   ```bash
   node --input-type=module -e '
