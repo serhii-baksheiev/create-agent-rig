@@ -1,0 +1,5 @@
+# Hashbang scripts must stay LF on every checkout: a Windows clone with
+# core.autocrlf=true turns `#!/usr/bin/env node\r` into a SyntaxError when
+# vitest import()s the file (AR-5, AR-51; the wider Windows debt is AR-93).
+*.mjs text eol=lf
+*.sh  text eol=lf
