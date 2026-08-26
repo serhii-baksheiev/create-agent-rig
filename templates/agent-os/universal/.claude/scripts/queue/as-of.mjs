@@ -8,6 +8,8 @@
 // rather than a clean one.
 
 import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from '../git-env.mjs';
 
 const git = (args, cwd) =>
@@ -37,3 +39,13 @@ export const changedSinceOf = ({ cwd = process.cwd(), asOf, head = 'HEAD' } = {}
     return null;
   }
 };
+
+/**
+ * The commit a proposal is measured against: what the caller says, or HEAD of
+ * the project this script belongs to. `null` files without one — and hygiene
+ * then reports the proposal as unanswerable rather than current. One
+ * implementation for all three adapters, so they cannot answer differently.
+ */
+const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+export const withAsOf = (proposal) =>
+  proposal.asOf === undefined ? { ...proposal, asOf: headShaOf({ cwd: PROJECT_ROOT }) } : proposal;

@@ -14,10 +14,8 @@
 // be a snapshot that nothing updates when the blocker lands; this cannot go stale,
 // because it is re-resolved from the blockers themselves on every selection.
 import { execFileSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
-import { headShaOf } from './as-of.mjs';
+import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'github-issues';
@@ -244,14 +242,6 @@ export const triageItemFor = (proposal) => {
  * hand out nothing — "queue empty" and "nothing selectable";
  * twenty such stops must produce one proposal with a count of twenty.
  */
-/**
- * The commit a proposal is measured against (AR-116): what the caller says, or
- * HEAD of the project this script belongs to; `null` files without one.
- */
-const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const withAsOf = (proposal) =>
-  proposal.asOf === undefined ? { ...proposal, asOf: headShaOf({ cwd: PROJECT_ROOT }) } : proposal;
-
 /** The proposals on file, as `{ id, body }` — every `triage`-labelled issue. */
 export const listProposals = ({ existing = null } = {}) =>
   (

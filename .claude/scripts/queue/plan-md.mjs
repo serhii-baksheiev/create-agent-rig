@@ -12,10 +12,8 @@
 // has real dependencies, move to an adapter whose tracker can express them
 // (`github-issues`). Ordering the list by hand is not a dependency graph.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
-import { headShaOf } from './as-of.mjs';
+import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
@@ -335,15 +333,6 @@ const bulletFor = (item, proposal, seen) =>
   `part: ${oneLine(proposal.part)} · proof: ${oneLine(proposal.proof)} · ` +
   `${proposal.asOf ? `asOf: ${proposal.asOf} · ` : ''}` +
   `fingerprint: \`${item.fingerprint}\` · seen ×${seen}`;
-
-/**
- * The commit a proposal is measured against (AR-116): what the caller says, or
- * HEAD of the project this script belongs to. `null` files without one — and
- * hygiene then reports the proposal as unanswerable rather than current.
- */
-const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const withAsOf = (proposal) =>
-  proposal.asOf === undefined ? { ...proposal, asOf: headShaOf({ cwd: PROJECT_ROOT }) } : proposal;
 
 /**
  * The proposals on file, as `{ id, body }` — every Operator-queue line carrying

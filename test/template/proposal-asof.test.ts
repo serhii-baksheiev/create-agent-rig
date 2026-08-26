@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -28,6 +28,43 @@ const queueDir = path.join(
 const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).href);
 const git = (args: string[], cwd = repoRoot) =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+/**
+ * A throwaway repository with two commits, so nothing here depends on this
+ * checkout's history — CI clones shallow, and `HEAD~3` does not exist there.
+ */
+const twoCommitRepo = async (): Promise<{
+  dir: string;
+  first: string;
+  second: string;
+  moved: string;
+}> => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'asof-repo-'));
+  const g = (args: string[]) =>
+    execFileSync('git', args, {
+      cwd: dir,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 't',
+        GIT_AUTHOR_EMAIL: 't@t',
+        GIT_COMMITTER_NAME: 't',
+        GIT_COMMITTER_EMAIL: 't@t',
+      },
+    }).trim();
+  g(['init', '-q']);
+  await mkdir(path.join(dir, 'src'), { recursive: true });
+  await writeFile(path.join(dir, 'src', 'a.mjs'), 'export const a = 1;\n');
+  await writeFile(path.join(dir, 'src', 'b.mjs'), 'export const b = 1;\n');
+  g(['add', '.']);
+  g(['commit', '-q', '-m', 'first']);
+  const first = g(['rev-parse', 'HEAD']);
+  await writeFile(path.join(dir, 'src', 'a.mjs'), 'export const a = 2;\n');
+  g(['add', '.']);
+  g(['commit', '-q', '-m', 'second']);
+  const second = g(['rev-parse', 'HEAD']);
+  return { dir, first, second, moved: 'src/a.mjs' };
+};
 
 const proposal = {
   finding: 'journal/2026-08.md — hygiene never looked at queue/core.mjs',
@@ -117,6 +154,30 @@ describe('the pure core decides whether a proposal may have been overtaken', () 
     expect(finding.why).toMatch(/1111111/);
   });
 
+  it('matches a cited path by suffix, the way findings cite them', async () => {
+    const { overtakenOf } = await load('core.mjs');
+    // A finding says `queue/core.mjs`; git says `.claude/scripts/queue/core.mjs`.
+    const finding = overtakenOf({
+      id: 'AR-1',
+      asOf: '1111111',
+      citedPaths: ['queue/core.mjs'],
+      head: '2222222',
+      changedSince: ['.claude/scripts/queue/core.mjs'],
+    });
+    expect(finding).toMatchObject({ kind: 'proposal-possibly-overtaken' });
+    expect(finding.why).toMatch(/\.claude\/scripts\/queue\/core\.mjs/);
+    // A suffix is a path boundary, never a substring: `core.mjs` ≠ `not-core.mjs`.
+    expect(
+      overtakenOf({
+        id: 'AR-1',
+        asOf: '1111111',
+        citedPaths: ['core.mjs'],
+        head: '2222222',
+        changedSince: ['x/not-core.mjs'],
+      }),
+    ).toBeNull();
+  });
+
   it('reports "could not answer" when git could not diff from the asOf, never clean', async () => {
     const { overtakenOf } = await load('core.mjs');
     expect(
@@ -154,14 +215,14 @@ describe('the commit a finding was measured against', () => {
 
   it('lists what changed since a commit, and null when git cannot answer', async () => {
     const { changedSinceOf } = await load('as-of.mjs');
-    const head = git(['rev-parse', 'HEAD']);
-    const older = git(['rev-parse', 'HEAD~3']);
-    const expected = git(['diff', '--name-only', older, head]).split('\n').filter(Boolean);
-    expect(changedSinceOf({ cwd: repoRoot, asOf: older, head })).toEqual(expected);
-    expect(changedSinceOf({ cwd: repoRoot, asOf: head, head })).toEqual([]);
+    const { dir, first, second, moved } = await twoCommitRepo();
+    expect(changedSinceOf({ cwd: dir, asOf: first, head: second })).toEqual([moved]);
+    expect(changedSinceOf({ cwd: dir, asOf: second, head: second })).toEqual([]);
     expect(
-      changedSinceOf({ cwd: repoRoot, asOf: '0000000000000000000000000000000000000000', head }),
+      changedSinceOf({ cwd: dir, asOf: '0000000000000000000000000000000000000000', head: second }),
     ).toBeNull();
+    // Never a revision expression: the argument is a commit or nothing.
+    expect(changedSinceOf({ cwd: dir, asOf: 'HEAD~1', head: second })).toBeNull();
   });
 });
 
@@ -238,17 +299,19 @@ describe('queue hygiene reports the proposal git has overtaken', () => {
       );
     });
 
-  const planWith = async (bullets: string[]): Promise<string> => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'asof-cli-'));
+  // The config sits at `<root>/.claude/queue.json`, which is how the CLI learns
+  // both the plan's location and the checkout whose history it asks git about.
+  const planWith = async (dir: string, bullets: string[]): Promise<string> => {
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
     await writeFile(
-      path.join(dir, 'queue.json'),
-      JSON.stringify({ adapter: 'plan-md', options: { planPath: path.join(dir, 'PLAN.md') } }),
+      path.join(dir, '.claude', 'queue.json'),
+      JSON.stringify({ adapter: 'plan-md' }),
     );
     await writeFile(
       path.join(dir, 'PLAN.md'),
       ['# Plan', '', '## Operator queue', '', ...bullets, '', '## Agent queue', ''].join('\n'),
     );
-    return path.join(dir, 'queue.json');
+    return path.join(dir, '.claude', 'queue.json');
   };
 
   const bullet = (title: string, finding: string, asOf: string | null) =>
@@ -256,16 +319,9 @@ describe('queue hygiene reports the proposal git has overtaken', () => {
     `${asOf ? `asOf: ${asOf} · ` : ''}fingerprint: \`${title}:queue:x\` · seen ×1`;
 
   it('names the overtaken one, the unanswerable one, and stays silent on the current one', async () => {
-    const head = git(['rev-parse', 'HEAD']);
-    const older = git(['rev-parse', 'HEAD~3']);
-    const changed = git(['diff', '--name-only', older, head]).split('\n').filter(Boolean);
-    expect(
-      changed.length,
-      'HEAD~3..HEAD must change something for this test to mean anything',
-    ).toBeGreaterThan(0);
-    const moved = changed[0] as string;
+    const { dir, first: older, second: head, moved } = await twoCommitRepo();
 
-    const cfg = await planWith([
+    const cfg = await planWith(dir, [
       bullet('overtaken', `${moved} does not do X`, older),
       bullet('current', `${moved} does not do X`, head),
       bullet('untouched', 'never/changed/path.mjs does not do X', older),
@@ -289,8 +345,8 @@ describe('queue hygiene reports the proposal git has overtaken', () => {
   });
 
   it('counts the proposals it checked, so an empty report says what it looked at', async () => {
-    const head = git(['rev-parse', 'HEAD']);
-    const cfg = await planWith([bullet('current', 'queue/core.mjs does X', head)]);
+    const { dir, second: head } = await twoCommitRepo();
+    const cfg = await planWith(dir, [bullet('current', 'src/b.mjs does X', head)]);
     const result = await run(['hygiene', '--config', cfg]);
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/0 item\(s\) and 1 proposal\(s\) checked/);

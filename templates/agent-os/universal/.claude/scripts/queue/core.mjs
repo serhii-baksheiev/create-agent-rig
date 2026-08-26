@@ -924,7 +924,13 @@ export const overtakenOf = ({ id, asOf = null, citedPaths = [], head = null, cha
         'clone, or no checkout — so whether the proposal was overtaken is unanswered',
     };
   }
-  const moved = paths.filter((path) => changedSince.includes(path));
+  // By suffix on a path boundary, because findings cite the way people write —
+  // `queue/core.mjs` for `.claude/scripts/queue/core.mjs` — and an exact match
+  // would read that citation as clean, the one direction of miss this exists to
+  // prevent. `x/not-core.mjs` is not a match for `core.mjs`.
+  const moved = changedSince.filter((changed) =>
+    paths.some((cited) => changed === cited || changed.endsWith(`/${cited}`)),
+  );
   if (moved.length === 0) return null;
   return {
     kind: 'proposal-possibly-overtaken',

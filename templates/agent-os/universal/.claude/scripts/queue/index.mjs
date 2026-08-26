@@ -493,13 +493,17 @@ if (invokedDirectly()) {
     // as possibly overtaken. Git runs here, once per distinct `asOf`, against the
     // project this script belongs to; `core.mjs` only decides.
     const proposals = await adapter.listProposals(optionsWithPlanPath(config.options, configPath));
-    const head = headShaOf({ cwd: projectRoot });
+    // The checkout the proposals describe is the project the config names — an
+    // explicit `--config <root>/.claude/queue.json` points at that root — and
+    // this script's own project only when the config implies none.
+    const gitRoot = projectRootOfConfig(configPath) ?? projectRoot;
+    const head = headShaOf({ cwd: gitRoot });
     const changedByAsOf = new Map();
     const overtaken = proposals
       .map((proposal) => {
         const asOf = asOfOf(proposal.body);
         if (asOf && !changedByAsOf.has(asOf)) {
-          changedByAsOf.set(asOf, changedSinceOf({ cwd: projectRoot, asOf, head: head ?? 'HEAD' }));
+          changedByAsOf.set(asOf, changedSinceOf({ cwd: gitRoot, asOf, head: head ?? 'HEAD' }));
         }
         return overtakenOf({
           id: proposal.id,

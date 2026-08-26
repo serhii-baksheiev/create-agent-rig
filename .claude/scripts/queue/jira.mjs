@@ -17,10 +17,8 @@
 //
 //     { "adapter": "jira", "options": { "project": "ABC" } }
 //     { "adapter": "jira", "options": { "jql": "project = ABC AND ..." } }
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
-import { headShaOf } from './as-of.mjs';
+import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'jira';
@@ -423,14 +421,6 @@ export const triageItemFor = (proposal) => {
 };
 
 /** File the proposal, or increment the one already carrying this fingerprint. */
-/**
- * The commit a proposal is measured against (AR-116): what the caller says, or
- * HEAD of the project this script belongs to; `null` files without one.
- */
-const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const withAsOf = (proposal) =>
-  proposal.asOf === undefined ? { ...proposal, asOf: headShaOf({ cwd: PROJECT_ROOT }) } : proposal;
-
 /**
  * The proposals on file, as `{ id, body }` — every `triage`-labelled issue, the
  * body being its DESCRIPTION, which is where the fingerprint and `asOf` were
