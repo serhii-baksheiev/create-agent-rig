@@ -130,7 +130,7 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     });
   });
 
-  it('an allow entry that is not under a rulebook prefix makes the flag unreadable — `.` cannot widen the list to everything', async () => {
+  it('an allow entry that widens the rulebook — a prefix of a rulebook prefix such as `.` — makes the flag unreadable', async () => {
     await arm(JSON.stringify({ item: 'AR-51', runDir: '/runs/1', allow: ['.'] }));
     const { readUnattended } = await load();
     const mode = readUnattended(env());

@@ -136,7 +136,7 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
     expect(header).toMatch(/CLAUDE_PROJECT_DIR/);
   });
 
-  it('a flag whose allow-list reaches outside the rulebook is unreadable, so `--allow .` cannot disarm it', async () => {
+  it('a flag whose allow-list widens the rulebook is unreadable, so `--allow .` cannot disarm it', async () => {
     await armed(['.']);
     const result = await run(write(`${root}/.claude/hooks/guard-bash.mjs`));
     expect(result.code).toBe(2);

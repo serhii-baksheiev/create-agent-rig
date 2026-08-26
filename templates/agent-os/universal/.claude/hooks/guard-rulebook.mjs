@@ -35,8 +35,8 @@
 //     set a flag is exactly as free as before — › "only a flag arms it — an
 //     exported RIG_UNATTENDED=1 with no flag changes nothing";
 //   - it judges paths, not content: a README that merely mentions
-//     `.claude/hooks/guard-bash.mjs` is not a rulebook edit — › "does not fire
-//     on prose that merely mentions a rulebook path";
+//     `.claude/hooks/guard-bash.mjs` is not a rulebook edit — › "guards the
+//     path, not prose that mentions a guarded path";
 //   - it compares paths as text: the repo-relative tail is what is left after
 //     stripping `CLAUDE_PROJECT_DIR` (falling back to the working directory
 //     when the harness does not set it) from the front of the tool's absolute
@@ -49,10 +49,13 @@
 //   - an `allow` prefix is a string prefix of the repo-relative path and may
 //     not widen the rulebook — an entry that is itself a prefix of a rulebook
 //     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
-//     and the guard refuses — › "a flag whose allow-list reaches outside the
-//     rulebook is unreadable, so `--allow .` cannot disarm it";
-//   - fail-open on its own errors and on a payload it cannot parse, fail-closed
-//     on a flag it cannot read: the guard targets drift, not an adversary.
+//     and the guard refuses — › "a flag whose allow-list widens the rulebook is
+//     unreadable, so `--allow .` cannot disarm it";
+//   - fail-open on its own errors and on a payload it cannot parse — › "allows
+//     an empty payload object" and › "allows non-JSON stdin" — and fail-closed
+//     on a flag it cannot read — › "blocks a rulebook edit when the flag exists
+//     but cannot be read, and names the file": the guard targets drift, not an
+//     adversary.
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { readFileSync } from 'node:fs';

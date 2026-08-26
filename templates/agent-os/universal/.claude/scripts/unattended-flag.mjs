@@ -37,8 +37,7 @@
 // the writer refuses it and a flag carrying one is unreadable. An entry outside
 // the rulebook (`src/`, `.claude/skills/loop/`) is harmless — such a path is
 // never judged — and items name those all the time, so it is kept, not
-// refused — › "an allow entry that is not under a rulebook prefix makes the
-// flag unreadable — `.` cannot widen the list to everything".
+// refused — › "an allow entry that widens the rulebook — a prefix of a rulebook prefix such as `.` — makes the flag unreadable".
 //
 // Bounded: the file is read up to 64 KiB, `allow` is capped at 64 entries, and
 // both limits are refusals, never silent truncation.
@@ -162,7 +161,8 @@ export const writeUnattended = ({ item, runDir = null, allow = [] } = {}, env = 
   if (wide !== undefined) {
     throw new Error(
       `allow entry ${JSON.stringify(wide)} widens the rulebook — it is a prefix of one of ${RULEBOOK_PREFIXES.join(', ')}; ` +
-        'an allow-list narrows the rulebook, never widens it',
+        'an allow-list narrows the rulebook, never widens it. A directory entry needs its trailing slash ' +
+        '(`.claude/hooks/`, not `.claude/hooks`).',
     );
   }
   const [path] = unattendedFlags(env);
