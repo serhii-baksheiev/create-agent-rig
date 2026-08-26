@@ -24,7 +24,7 @@
 // owner holds every marked item, since it cannot confirm a match.
 import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
-import { recordEscalation } from '../run-state.mjs';
+import { recordEscalation, recordTakeUp } from '../run-state.mjs';
 
 export const name = 'jira';
 
@@ -457,7 +457,7 @@ export const proposeTriage = async (
   if (!project) {
     throw new Error('filing a triage proposal needs options.project');
   }
-  await request('/rest/api/3/issue', {
+  const created = await request('/rest/api/3/issue', {
     method: 'POST',
     body: {
       fields: {
@@ -474,5 +474,29 @@ export const proposeTriage = async (
     },
     env,
   });
-  return { ok: true, filed: item.title, item };
+  // The proposal's own baseline (AR-138): its marker as filed, recorded as a
+  // take-up in the run that filed it, so the next run that is offered it
+  // compares against something. Read back rather than assumed — the marker is
+  // the tracker's, and `created` carries only the key. No run directory →
+  // nothing recorded, and the proposal is still filed.
+  //
+  // 🔴 Best-effort, and it says so: the proposal is FILED by now, and a throw
+  // here — a read-back the tracker refused, a stale or unwritable run
+  // directory in `updateState` — would tell the caller the filing failed when
+  // it succeeded, and the natural response (file again) double-files. The same
+  // defect `recordEscalation` closes for escalations; announced on stderr,
+  // because a baseline silently missing reads as a first sight later.
+  const id = created?.key ?? null;
+  if (id && env.RIG_RUN_DIR) {
+    try {
+      const after = await request(`/rest/api/3/issue/${id}?fields=updated`, { env });
+      recordTakeUp(env.RIG_RUN_DIR, { id, updatedAt: toIso(after?.fields?.updated) });
+    } catch (error) {
+      process.stderr.write(
+        `proposeTriage: ${id} is filed, but its baseline was NOT recorded in ` +
+          `${env.RIG_RUN_DIR} — ${error.message}\n`,
+      );
+    }
+  }
+  return { ok: true, filed: item.title, id, item };
 };

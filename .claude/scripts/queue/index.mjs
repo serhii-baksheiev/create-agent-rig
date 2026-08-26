@@ -384,8 +384,9 @@ if (invokedDirectly()) {
   let readState;
   let stopInputsOf;
   let recordTakeUp;
+  let previousTakeUp;
   try {
-    ({ readState, stopInputsOf, recordTakeUp } = await import('../run-state.mjs'));
+    ({ readState, stopInputsOf, recordTakeUp, previousTakeUp } = await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
       `run state: ${error.message}\n` +
@@ -580,10 +581,27 @@ if (invokedDirectly()) {
   // run recorded at its last take-up. Computed only under a declared run —
   // there is no snapshot to compare against anywhere else — and `null` in the
   // output then, so a reader can tell "not compared" from "compared, unchanged".
-  const revalidation =
-    runDir && result.ticket
-      ? revalidationOf({ ticket: result.ticket, snapshot: runState.takeUps?.[result.ticket.id] })
-      : null;
+  //
+  // The baseline is this run's take-up when it has one; otherwise the newest
+  // earlier run's (AR-138) — an item taken up yesterday and re-offered today
+  // used to compare against nothing and report a first sight. `baseline` says
+  // which it was (`this-run` | `previous-run` | null), and `baselineRun` names
+  // the earlier run, so the report can tell the three apart. A rig whose
+  // run-state module predates `previousTakeUp` keeps the per-run behaviour.
+  let revalidation = null;
+  if (runDir && result.ticket) {
+    const own = runState.takeUps?.[result.ticket.id];
+    const prior =
+      own === undefined && typeof previousTakeUp === 'function'
+        ? previousTakeUp(runDir, result.ticket.id)
+        : null;
+    const snapshot = own ?? prior?.updatedAt ?? null;
+    revalidation = {
+      ...revalidationOf({ ticket: result.ticket, snapshot }),
+      baseline: own !== undefined ? 'this-run' : prior ? 'previous-run' : null,
+      ...(prior ? { baselineRun: prior.runDir } : {}),
+    };
+  }
   if (runDir) {
     let journal = null;
     try {

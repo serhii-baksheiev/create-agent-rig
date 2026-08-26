@@ -49,8 +49,8 @@
  * per run is the caller's part of the contract, and the `loop` skill states it.
  */
 
-import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { opendirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const STATE = 'state.json';
@@ -221,6 +221,80 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
   const state = readState(runDir);
   const takeUps = typeof state.takeUps === 'object' && state.takeUps !== null ? state.takeUps : {};
   return updateState(runDir, { takeUps: { ...takeUps, [String(id)]: updatedAt } });
+};
+
+/**
+ * The take-up an EARLIER run recorded for this item, or null (AR-138).
+ *
+ * {@link recordTakeUp} is per run on purpose, and that left a hole RX1
+ * measured: an item taken up yesterday and re-offered today compared against
+ * nothing and reported a first sight, however far its marker had moved. So
+ * when this run has no take-up for the item, SELECT asks the sibling run
+ * directories — newest first by name, which is the `YYYYMMDD-HHMMSS` the
+ * `loop` skill declares — and takes the first that recorded one. The answer
+ * names the run it came from, so the revalidation event can say whose
+ * baseline it compared against.
+ *
+ * 🔴 A sibling is a run only by NAME — `YYYYMMDD-HHMMSS`, the shape the `loop`
+ * skill declares — and so is the run asking. The first version took every
+ * sibling directory, and two measurements showed why that is wrong. On CI,
+ * with `RIG_RUN_DIR` under a shared temp root, a neighbouring test's scratch
+ * directory carrying a `state.json` was read as yesterday's run, and a first
+ * sight came back as a hold against a marker nobody had taken up. Locally,
+ * the same temp root held 454 000 entries, and every SELECT paid a 540 ms
+ * directory read for a question it could not answer. So a run declared under
+ * another naming looks at no siblings at all, and the limit is the mirror
+ * image: an earlier run declared under another naming is not seen here.
+ *
+ * Bounded and fail-soft: the runs root is walked through one directory handle
+ * and at most 10 000 entries are looked at, whatever is in there; at most 200
+ * candidate runs are read, an unreadable state is skipped rather than trusted,
+ * and the answer is `null` for no run directory, an unnamed one, or no runs
+ * root. Never this run's own state — that is {@link readState}'s answer, and
+ * the caller asks it first.
+ */
+const RUN_DIR_NAME = /^\d{8}-\d{6}$/;
+const RUNS_ROOT_ENTRY_BUDGET = 10_000;
+const RUNS_READ_CAP = 200;
+
+export const previousTakeUp = (runDir, id) => {
+  if (!runDir || id === undefined || id === null) return null;
+  const root = dirname(runDir);
+  const self = basename(runDir);
+  if (!RUN_DIR_NAME.test(self)) return null;
+  const names = [];
+  let dir;
+  try {
+    dir = opendirSync(root);
+  } catch {
+    return null;
+  }
+  try {
+    for (let seen = 0; seen < RUNS_ROOT_ENTRY_BUDGET; seen += 1) {
+      const entry = dir.readSync();
+      if (entry === null) break;
+      if (entry.isDirectory() && entry.name !== self && RUN_DIR_NAME.test(entry.name)) {
+        names.push(entry.name);
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    dir.closeSync();
+  }
+  names.sort().reverse();
+  for (const name of names.slice(0, RUNS_READ_CAP)) {
+    const candidate = join(root, name);
+    let state;
+    try {
+      state = JSON.parse(readFileSync(statePathIn(candidate), 'utf8'));
+    } catch {
+      continue;
+    }
+    const updatedAt = state?.takeUps?.[String(id)];
+    if (typeof updatedAt === 'string') return { updatedAt, runDir: candidate };
+  }
+  return null;
 };
 
 /**
