@@ -65,6 +65,9 @@ export const ADAPTER_CONTRACT = [
   'comment',
   'escalate',
   'proposeTriage',
+  // The proposals on file, as `{ id, body }`, so hygiene can read each one's
+  // `asOf` and cited paths back (AR-116). Reads only — never a selection input.
+  'listProposals',
 ];
 
 /**
@@ -829,4 +832,105 @@ export const validateProposal = (proposal) => {
     );
   }
   return proposal;
+};
+
+/**
+ * The commit a proposal was measured against, read back out of its body — or
+ * null when the body carries none (AR-116).
+ *
+ * Seven to forty hex characters, after the literal `asOf: `. An absent marker is
+ * `null`, never "HEAD": the hygiene finding for it is "unanswerable", and a
+ * default that quietly said "current" is the failure this field exists to name.
+ */
+const AS_OF_IN_BODY = /(?:^|[\s(`"'])asOf: ([0-9a-f]{7,40})(?![0-9a-z])/;
+
+export const asOfOf = (body) => {
+  const text = typeof body === 'string' ? body : '';
+  const match = AS_OF_IN_BODY.exec(text.slice(0, 20_000));
+  return match ? match[1] : null;
+};
+
+/**
+ * The repository paths a proposal's text cites, in order of first mention.
+ *
+ * A path here is a token ending in a source or document extension, with any
+ * directory prefix — `queue/core.mjs`, `.claude/rules/workflow.md`,
+ * `journal/2026-08.md`. It is a text scan, so a path named indirectly ("the
+ * router") is invisible, and a bare word with an extension counts even when it
+ * is not a file — the finding it feeds says "possibly", for exactly this reason.
+ *
+ * Bounded: one pass over at most 20 000 characters, at most 200 matches.
+ */
+const PATH_IN_TEXT =
+  /(?<![\w./-])((?:[\w.-]+\/)*[\w-][\w.-]*\.(?:mjs|cjs|js|ts|tsx|md|mdx|json|ya?ml|sh|txt))(?![\w/])/g;
+
+export const citedPathsOf = (text) => {
+  const source = (typeof text === 'string' ? text : '').slice(0, 20_000);
+  const seen = new Set();
+  let match;
+  while (seen.size < 200 && (match = PATH_IN_TEXT.exec(source)) !== null) {
+    seen.add(match[1]);
+  }
+  PATH_IN_TEXT.lastIndex = 0;
+  return [...seen];
+};
+
+/**
+ * Has the code a proposal describes moved since the proposal was written?
+ *
+ * Pure: `changedSince` is the list of paths git reports changed between `asOf`
+ * and `head`, or `null` when git could not answer — an unknown commit, a
+ * shallow clone, no checkout at all. The caller runs git; this decides.
+ *
+ * Why it exists: AR-47 and AR-87 both escalated PREMISE FALSE because the merge
+ * that falsified each landed after the proposal was filed, and selection hands
+ * out the oldest proposal first. Nothing on the item said which commit the
+ * finding described, so nothing could say it had been overtaken.
+ *
+ * Every answer short of "clean" is a finding. A proposal without `asOf` is
+ * reported as unanswerable, never as current; one citing no path cannot be
+ * checked by path and says so; a git that could not diff is reported as such.
+ * Silence means: filed against HEAD, or every cited path unchanged since.
+ */
+export const overtakenOf = ({ id, asOf = null, citedPaths = [], head = null, changedSince = null }) => {
+  if (!asOf) {
+    return {
+      kind: 'proposal-asof-missing',
+      id,
+      why:
+        'the proposal does not say which commit it was measured against, so whether ' +
+        'the code it describes has moved since cannot be answered — unanswerable, ' +
+        'not clean',
+    };
+  }
+  const paths = Array.isArray(citedPaths) ? citedPaths : [];
+  if (paths.length === 0) {
+    return {
+      kind: 'proposal-cites-no-path',
+      id,
+      why:
+        `measured against ${asOf}, but its text names no repository path, so a change ` +
+        'that overtook it cannot be seen by path — read it before acting on it',
+    };
+  }
+  const current = typeof head === 'string' && (head.startsWith(asOf) || asOf.startsWith(head));
+  if (current) return null;
+  if (changedSince === null) {
+    return {
+      kind: 'proposal-asof-unanswerable',
+      id,
+      why:
+        `git could not list what changed since ${asOf} — an unknown commit, a shallow ` +
+        'clone, or no checkout — so whether the proposal was overtaken is unanswered',
+    };
+  }
+  const moved = paths.filter((path) => changedSince.includes(path));
+  if (moved.length === 0) return null;
+  return {
+    kind: 'proposal-possibly-overtaken',
+    id,
+    why:
+      `measured against ${asOf}, and ${moved.join(', ')} changed since — re-read the ` +
+      'proposal against the code before taking it; its premise may have rotted',
+  };
 };
