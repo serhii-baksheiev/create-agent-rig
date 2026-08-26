@@ -399,6 +399,54 @@ describe('🔴 invariant 2 — the agent never creates its own queue items', () 
     expect(() => adapter.triageItemFor({ finding: 'x' })).toThrow(/part|change|proof/i);
   });
 
+  // AR-142: a proposal may carry what it MEASURED and what it INFERRED from that,
+  // as two paired fields. An inference that names a surface the measurement never
+  // touched is the AR-5 shape — "one hashbang fails, so every .mjs fails" — and it
+  // is refused at filing time, naming both fields and the path with nothing
+  // behind it.
+  const fourParts = {
+    finding: 'a Windows-only SyntaxError on a CRLF hashbang',
+    part: '.claude/hooks/guard-bash.mjs',
+    change: 'strip the CR before the import',
+    proof: 'the windows-unit job is green on the next head',
+  };
+  const measured = 'probed .claude/hooks/guard-bash.mjs on Windows: the hashbang import fails';
+
+  it('refuses a proposal whose inference names a surface its measurement did not touch', async () => {
+    const { validateProposal } = await load('core.mjs');
+    const inferred =
+      'so .claude/scripts/preflight.mjs and every .mjs on the platform fail the same way';
+    expect(() => validateProposal({ ...fourParts, measured, inferred })).toThrow(
+      /measured[\s\S]*inferred|inferred[\s\S]*measured/,
+    );
+    expect(() => validateProposal({ ...fourParts, measured, inferred })).toThrow(
+      '.claude/scripts/preflight.mjs',
+    );
+  });
+
+  it('files a proposal whose inference stays inside what it measured', async () => {
+    const { validateProposal } = await load('core.mjs');
+    const proposal = {
+      ...fourParts,
+      measured,
+      inferred: 'so .claude/hooks/guard-bash.mjs needs its line endings normalised',
+    };
+    expect(validateProposal(proposal)).toBe(proposal);
+  });
+
+  it('refuses one of the two fields without the other', async () => {
+    const { validateProposal } = await load('core.mjs');
+    expect(() => validateProposal({ ...fourParts, measured })).toThrow(/inferred/);
+    expect(() =>
+      validateProposal({ ...fourParts, inferred: 'so guard-bash.mjs needs a fix' }),
+    ).toThrow(/measured/);
+  });
+
+  it('a proposal with neither field files as today', async () => {
+    const { validateProposal } = await load('core.mjs');
+    expect(validateProposal(fourParts)).toBe(fourParts);
+  });
+
   it('carries a stable fingerprint so twenty identical stops file one item', async () => {
     const adapter = await load('plan-md.mjs');
     const input = {
@@ -1854,6 +1902,25 @@ describe('plan-md files a triage proposal instead of instructing a human to file
     expect(result.filed).toBeTruthy();
     const operator = sectionOf(await read(planPath), 'Operator queue');
     expect(operator).toContain(triageItemFor(queueEmpty).fingerprint);
+  });
+
+  it('records what the proposal measured and what it inferred in the filed body', async () => {
+    const { proposeTriage } = await load('plan-md.mjs');
+    const planPath = await withPlan();
+    const paired = {
+      ...queueEmpty,
+      measured: 'probed .claude/hooks/guard-bash.mjs on Windows: the hashbang import fails',
+      inferred: 'so .claude/hooks/guard-bash.mjs needs its line endings normalised',
+    };
+
+    const result = proposeTriage(paired, { planPath });
+
+    expect(result.ok).toBe(true);
+    const operator = sectionOf(await read(planPath), 'Operator queue');
+    expect(operator).toContain('measured:');
+    expect(operator).toContain('inferred:');
+    expect(operator).toContain(paired.measured);
+    expect(operator).toContain(paired.inferred);
   });
 
   it('🔴 leaves the Agent queue byte-identical — the loop never files its own work', async () => {
