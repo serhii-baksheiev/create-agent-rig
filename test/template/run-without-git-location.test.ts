@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -40,6 +41,36 @@ describe('scripts/run-without-git-location.mjs', () => {
   it("propagates the child's exit code", () => {
     const result = run([process.execPath, '-e', 'process.exit(3)']);
     expect(result.status).toBe(3);
+  });
+
+  // The shim branch exists for pnpm.cmd on Windows and is measured only there:
+  // a `.cmd` on PATH runs, and an argument the shell would re-parse is refused.
+  it.skipIf(process.platform !== 'win32')('runs a .cmd shim on Windows', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'shim-'));
+    await writeFile(path.join(dir, 'hello.cmd'), '@echo off\r\nexit /b 0\r\n');
+    const result = run(['hello'], { ...hookEnv, PATH: `${dir};${process.env.PATH ?? ''}` });
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'refuses an argument a shell would re-parse when the command is a shim',
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'shim-'));
+      await writeFile(path.join(dir, 'hello.cmd'), '@echo off\r\nexit /b 0\r\n');
+      const result = run(['hello', 'a b'], {
+        ...hookEnv,
+        PATH: `${dir};${process.env.PATH ?? ''}`,
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/no quoting is attempted/);
+    },
+  );
+
+  it('never uses a shell for a command that is an executable, on any platform', async () => {
+    const { resolvesToShim } = (await import(pathToFileURL(runner).href)) as {
+      resolvesToShim: (command: string) => boolean;
+    };
+    expect(resolvesToShim(process.execPath)).toBe(false);
   });
 
   it('refuses with no command', () => {
