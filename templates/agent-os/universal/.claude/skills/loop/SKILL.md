@@ -88,11 +88,12 @@ mkdir -p "$RIG_RUN_DIR"
 ```
 
 ⚠ **That export reaches the commands THIS shell runs and nothing else.** A
-`PreToolUse` hook is spawned by the harness with the harness's environment —
-measured on AR-51: a hook dumped 71 variables and not one `RIG_*` — and in
-some harnesses the export does not even survive to the next Bash call, which
-is why every command in this skill can also take the run directory per
-invocation. What a hook CAN see is a file, so the unattended signal is one:
+`PreToolUse` hook is spawned by the harness with the harness's own environment,
+never with a variable the session exported (measured on AR-51; the figures are
+in the journal), and in some harnesses the export does not even survive to the
+next Bash call, which is why every command in this skill can also take the run
+directory per invocation. What a hook CAN see is a file, so the unattended
+signal is one:
 
 ```bash
 # at claim time, from the paths the item names (repo-relative prefixes, with
@@ -108,7 +109,7 @@ path starts with an allowed prefix; with no flag the guard does nothing. An
 item that needs a rulebook path names it here — a decision made at claim
 time, never a default — and the stop step below turns the flag off. Pinned in
 the generator's `test/template/guard-rulebook.test.ts` — absent in a generated
-rig — › "blocks a rulebook write when the flag is on and the allow-list is empty".
+rig — › "blocks a hook-config edit with an empty allow-list, naming path, item and the rule".
 
 ⚠ **The export outlives the run's own calls.** Everything the session spawns
 inherits it — and a test suite that spawns the queue CLI would write fixture

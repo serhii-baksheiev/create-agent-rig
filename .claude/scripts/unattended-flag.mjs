@@ -6,10 +6,11 @@
 //   node .claude/scripts/unattended-flag.mjs off
 //
 // It is a FILE, not an environment variable, for a reason that was measured
-// before this module was written: a `PreToolUse` hook is spawned by the harness
-// with the harness's environment — a throwaway hook dumped 71 variables and not
-// one `RIG_*` — and an `export` in a Bash tool call does not even survive to the
-// next call. The kill switch (`stop-flag.mjs`) is a file for the same reason,
+// before this module was written (the measurement is on AR-51 and in the
+// journal): a `PreToolUse` hook is spawned by the harness with the harness's
+// own environment, never with a variable the session exported — and in some
+// harnesses an `export` does not even survive to the next Bash call. The kill
+// switch (`stop-flag.mjs`) is a file for the same reason,
 // and this module copies its shape: machine-level, under BOTH homes, so a
 // worktree sees it and a `$HOME` set from `.claude/settings.json` cannot hide it.
 //
