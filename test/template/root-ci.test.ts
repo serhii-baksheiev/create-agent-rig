@@ -54,6 +54,9 @@ const WINDOWS_INCOMPATIBLE_TESTS = [
   'test/template/root-ci.test.ts',
   'test/template/run-journal.test.ts',
   'test/template/secrets-lib.test.ts',
+  // AR-140: a `gh` stub on PATH is a `#!/bin/sh` script, which Windows does
+  // not execute (as AR-138's twin).
+  'test/template/self-inflicted-marker.test.ts',
   'test/template/skills.test.ts',
   'test/template/validate-no-secrets.test.ts',
 ] as const;

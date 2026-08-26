@@ -225,9 +225,17 @@ BEFORE_PR and BEFORE_CLOSE points write. **No-change is always recorded**, one
 line per selection and no sampling: the rule is explicit so the report's
 `opportunities` is a count and not an estimate. An adapter with no marker
 (`plan-md`) logs `changed: null`, never "unchanged". ⚠ The marker also moves on
-the run's own claim and comments, so a `true` on a re-offer can be self-inflicted
+the run's own claim and comments. The `jira` and `github-issues` adapters
+re-record the take-up after each write they make — claim, comment, close,
+escalate — so a move made through the adapter is not a hold (AR-140: before
+that, 3 of 3 BEFORE_PR catches in one run were the run's own comments); a
+comment posted by any other route — a REST call by hand, a connector — still
+moves it like anyone else's, and a `true` can still be self-inflicted that way
 — the re-read decides, which is why the outcome is recorded separately, and a
-hold the re-read overturns is counted as a false hold with its source named. The
+hold the re-read overturns is counted as a false hold with its source named.
+Pinned in the generator's `test/template/self-inflicted-marker.test.ts` — absent
+in a generated rig — › "comment leaves the take-up at the marker the write
+produced". The
 four-week view is `node .claude/scripts/revalidation-report.mjs --since <date>`,
 over this rig's `.claude/runs/` (or a `--runs <dir>`). The behaviour is pinned in the
 generator's `test/template/queue-revalidation.test.ts` — absent in a generated

@@ -219,7 +219,17 @@ if (invokedDirectly()) {
   if (args.point === 'BEFORE_CLOSE') {
     const ticket = await adapter.find(args.ticket, options);
     const takeUp = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
-    const baseline = lastValidationOf(runDir, args.ticket) ?? takeUp;
+    // The NEWER of the two, not the last validation first (AR-140): an adapter
+    // re-records the take-up after each write of its own, and a comment posted
+    // after BEFORE_PR would otherwise hold this close on the run's own move.
+    // ISO strings compare as text; a missing side yields to the other.
+    const lastValidation = lastValidationOf(runDir, args.ticket);
+    const baseline =
+      lastValidation !== null && takeUp !== null
+        ? takeUp > lastValidation
+          ? takeUp
+          : lastValidation
+        : (lastValidation ?? takeUp);
     const task =
       ticket && baseline !== null
         ? revalidationOf({ ticket, snapshot: baseline })

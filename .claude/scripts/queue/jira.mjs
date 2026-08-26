@@ -323,6 +323,37 @@ export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) =
  * worked while it still reads as available is invisible to the human and
  * re-selectable by the very next query.
  */
+/**
+ * Re-record the item's marker after a write of this adapter's own (AR-140).
+ *
+ * Every write here — a claim, a comment, a close, an escalation — moves the
+ * tracker's `updated`, and the next revalidation compared against the take-up
+ * from before it: measured at 3 of 3 BEFORE_PR catches in one run, every one a
+ * hold on the run's own comment. So the marker is read back after the write
+ * and recorded as the take-up in the declared run; a hold that still fires is
+ * a move by something other than this adapter.
+ *
+ * ⚠ Limit: only writes made THROUGH this adapter re-baseline. A comment the
+ * session posts by another route — a REST call by hand, a connector — moves
+ * the marker like anyone else's, and the next check holds on it.
+ *
+ * Best-effort, like `proposeTriage`'s baseline: the write has landed by now,
+ * and a read-back the tracker refused or a stale run directory is announced on
+ * stderr, never thrown — a thrown write is retried and lands twice.
+ */
+const rebaseline = async (ticket, env) => {
+  if (!env?.RIG_RUN_DIR) return;
+  try {
+    const after = await request(`/rest/api/3/issue/${ticket.id}?fields=updated`, { env });
+    recordTakeUp(env.RIG_RUN_DIR, { id: ticket.id, updatedAt: toIso(after?.fields?.updated) });
+  } catch (error) {
+    process.stderr.write(
+      `${ticket.id}: the write landed, but its marker was NOT re-recorded in ` +
+        `${env.RIG_RUN_DIR} — ${error.message}\n`,
+    );
+  }
+};
+
 export const claim = async (ticket, { transitionId = null, env = process.env } = {}) => {
   if (!transitionId) {
     const available = await request(`/rest/api/3/issue/${ticket.id}/transitions`, { env });
@@ -342,6 +373,7 @@ export const claim = async (ticket, { transitionId = null, env = process.env } =
     body: { transition: { id: transitionId } },
     env,
   });
+  await rebaseline(ticket, env);
   return { ok: true };
 };
 
@@ -353,6 +385,7 @@ export const comment = async (ticket, body, { env = process.env } = {}) => {
     },
     env,
   });
+  await rebaseline(ticket, env);
   return { ok: true };
 };
 
@@ -374,6 +407,7 @@ export const close = async (ticket, { prUrl = null, transitionId = null, env = p
   }
   const after = await request(`/rest/api/3/issue/${ticket.id}?fields=status`, { env });
   const fields = after?.fields ?? {};
+  await rebaseline(ticket, env);
   return {
     ok: true,
     transitioned: statusCategory(fields) === 'done',
@@ -393,6 +427,7 @@ export const escalate = async (ticket, diagnosis, { env = process.env } = {}) =>
     body: { update: { labels: [{ add: 'escalated' }] } },
     env,
   });
+  await rebaseline(ticket, env);
   // Counted through the one recorder, never a counter of this adapter's own —
   // "twice in a row" has to mean the same thing on every tracker.
   recordEscalation(env.RIG_RUN_DIR);

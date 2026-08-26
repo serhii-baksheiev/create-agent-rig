@@ -563,10 +563,12 @@ export const selectNext = (
  * `action` says what the run does with it: `hold` — re-read the item before
  * acting; `continue` — nothing moved; `unverifiable` — no marker to compare.
  *
- * ⚠ Limit: the marker moves on the run's OWN claim and comments too, so a
- * `true` on a re-offer can be self-inflicted. This function cannot tell who
- * moved it; the re-read can, and the `loop` skill records that conclusion as a
- * separate `revalidation-outcome` event.
+ * ⚠ Limit: the marker moves on the run's OWN claim and comments too. The
+ * tracker adapters re-record the take-up after each write they make (AR-140),
+ * so a move made THROUGH the adapter is not a hold — one made by any other
+ * route (a hand-posted comment, a connector) still is. This function cannot
+ * tell who moved it; the re-read can, and the `loop` skill records that
+ * conclusion as a separate `revalidation-outcome` event.
  */
 export const revalidationOf = ({ ticket, snapshot = null }) => {
   const to = typeof ticket?.updatedAt === 'string' ? ticket.updatedAt : null;

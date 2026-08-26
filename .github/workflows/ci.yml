@@ -103,5 +103,6 @@ jobs:
           --exclude test/template/root-ci.test.ts
           --exclude test/template/run-journal.test.ts
           --exclude test/template/secrets-lib.test.ts
+          --exclude test/template/self-inflicted-marker.test.ts
           --exclude test/template/skills.test.ts
           --exclude test/template/validate-no-secrets.test.ts
