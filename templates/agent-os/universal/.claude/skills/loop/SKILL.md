@@ -370,10 +370,13 @@ Four of them deserve their reasons repeated:
   queue**: the elevated spacing (a normal or prose-only item lands), a blocker (its item
   closes), in-progress (the other session finishes), a trigger (a human
   declares it — and for a `trigger-auto` item that declaration is **written**,
-  §2, so this is the one hold that needs a command rather than only time). The
+  §2, so this is the one hold that needs a command rather than only time), and
+  an owner (§2: the item is another repository's, and a human moves it or
+  re-marks it — neither time nor interleaving frees it). The
   stop line names how many and by which, because the two endings ask the owner
   for opposite things: an empty queue wants refilling, a held one wants
-  interleaving or simply time. 🔴 **A parked cause outranks a holding one on the
+  interleaving, time, or — for a trigger or an owner — a human act the line
+  names. 🔴 **A parked cause outranks a holding one on the
   same item** — an escalated item is left claimed on purpose, so it arrives
   carrying `in-progress` too. **Neither ending is an invitation to refill the
   queue or invent work.** Why the two are split, and how the parked pile grows

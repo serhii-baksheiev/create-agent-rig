@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -78,6 +79,72 @@ describe('the owner marker is one label, read the same way by every tracker', ()
     });
     expect(toTicket(issue(['owner-rig-platform'])).owner).toBe('rig-platform');
     expect(toTicket(issue([])).owner).toBeNull();
+  });
+});
+
+describe('plan-md reads the same fact out of an inline marker', () => {
+  it('maps `[owner:<name>]` onto ticket.owner and strips it from the title', async () => {
+    const { parsePlan } = await load('plan-md.mjs');
+    const plan = '# P\n\n## Agent queue\n\n- Do the thing [owner:rig-platform]\n- Plain item\n';
+    const items = parsePlan(plan);
+    expect(items[0]).toMatchObject({ owner: 'rig-platform', title: 'Do the thing' });
+    expect(items[1]).toMatchObject({ owner: null, title: 'Plain item' });
+  });
+});
+
+describe('the CLI hands options.owner to selection and to hygiene', () => {
+  const run = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
+    new Promise((resolve) => {
+      execFile(process.execPath, [path.join(queueDir, 'index.mjs'), ...args], {}, (e, out, err) =>
+        resolve({
+          code: e && typeof e.code === 'number' ? e.code : 0,
+          stdout: String(out),
+          stderr: String(err),
+        }),
+      );
+    });
+
+  const rig = async (owner: string | null): Promise<string> => {
+    const { mkdir, mkdtemp, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(path.join(tmpdir(), 'owner-cli-'));
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.claude', 'queue.json'),
+      JSON.stringify({ adapter: 'plan-md', options: owner === null ? {} : { owner } }),
+    );
+    await writeFile(
+      path.join(dir, 'PLAN.md'),
+      '# P\n\n## Agent queue\n\n- Foreign work [owner:rig-platform]\n\n## Operator queue\n',
+    );
+    return path.join(dir, '.claude', 'queue.json');
+  };
+
+  it('`next` holds the foreign item as owner, and `hygiene` names the mismatch', async () => {
+    const cfg = await rig('create-agent-rig');
+    const next = await run(['next', '--config', cfg, '--json']);
+    expect(next.code, next.stderr).toBe(0);
+    const parsed = JSON.parse(next.stdout);
+    expect(parsed.ticket).toBeNull();
+    expect(parsed.stop.kind).toBe('nothing-selectable');
+    expect(parsed.skipped[0].causes).toEqual(['owner']);
+
+    const hygiene = await run(['hygiene', '--config', cfg]);
+    expect(hygiene.code, hygiene.stderr).toBe(0);
+    expect(hygiene.stdout).toMatch(/\[owner-mismatch\] 1 — owned by rig-platform/);
+  });
+
+  it('`next` takes the item when the checkout is the owner it names', async () => {
+    const cfg = await rig('rig-platform');
+    const next = await run(['next', '--config', cfg, '--json']);
+    expect(next.code, next.stderr).toBe(0);
+    expect(JSON.parse(next.stdout).ticket?.title).toBe('Foreign work');
+  });
+
+  it('a checkout with no options.owner holds the marked item too', async () => {
+    const cfg = await rig(null);
+    const next = await run(['next', '--config', cfg, '--json']);
+    expect(JSON.parse(next.stdout).skipped[0].causes).toEqual(['owner']);
   });
 });
 

@@ -1254,7 +1254,9 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       'trigger-auto',
       'trigger-human',
       // AR-132: another repository's item, freed only by a human moving or
-      // re-marking it — real work, so never reported as `queue-empty`.
+      // re-marking it. Held rather than parked so the stop line can name that
+      // act; reporting it as `queue-empty` would send the owner to refill a
+      // queue whose item merely sits in the wrong place.
       'owner',
     ]);
     expect(Object.isFrozen(HOLDING_CAUSES)).toBe(true);

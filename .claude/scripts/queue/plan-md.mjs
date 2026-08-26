@@ -61,6 +61,9 @@ const MARKERS = {
   triage: /\[triage\]/i,
   triggerAuto: /\[trigger-auto\]/i,
   triggerHuman: /\[trigger-human\]/i,
+  // `[owner:<name>]` — the repository the item belongs to (AR-132), the same
+  // fact the tracker adapters read out of an `owner-<name>` label.
+  owner: /\[owner:([^\]\s]+)\]/i,
 };
 
 /**
@@ -92,7 +95,7 @@ export const parsePlan = (plan) => {
     if (!match) continue;
     const raw = match[1];
     const title = raw
-      .replace(/\[(elevated|triage|trigger-auto|trigger-human)\]/gi, '')
+      .replace(/\[(elevated|triage|trigger-auto|trigger-human|owner:[^\]\s]+)\]/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
     items.push({
@@ -124,6 +127,7 @@ export const parsePlan = (plan) => {
         : MARKERS.triggerHuman.test(raw)
           ? 'human'
           : null,
+      owner: MARKERS.owner.exec(raw)?.[1] ?? null,
     });
   }
   return items;
