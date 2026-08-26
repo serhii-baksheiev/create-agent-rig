@@ -62,9 +62,25 @@
 //     exists and cannot be used announces —
 //     see hooks.test.ts › "stays silent when there is no config at all — nothing to gate is the design, not a swallowed error"
 import { execSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from '../scripts/git-env.mjs';
+
+// 🔴 The tree this gate measures is the project the hook BELONGS to — the
+// directory above `.claude/hooks/` — never the directory the session happens
+// to be in. Observed twice in one session (AR-119): reviewing another branch
+// in a worktree under `.claude/worktrees/`, the gate ran the suite in the
+// worktree the shell had last cd-ed into and reported THAT branch's failing
+// test as this session's own Definition-of-Done failure. Reviewing a foreign
+// branch in a worktree is a first-class motion here, so an inherited cwd is
+// the wrong tree often enough to matter. `git status` and every check run
+// with this as their `cwd`, and both refusals name it, so a failure that is
+// still foreign is visible at a glance.
+//   see hooks.test.ts › "runs the checks in the project root, so a check reading the tree sees the session project"
+//   see hooks.test.ts › "asks \"is the tree clean?\" about the project, not about the cwd"
+//   see hooks.test.ts › "names the tree it measured in the refusal, so a foreign failure is visible at a glance"
+const PROJECT_ROOT = realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
 
 // The default total budget, and the allowance for everything that happens
 // OUTSIDE it.
@@ -183,6 +199,7 @@ function main() {
     // and the reason the bound can be generous. The options object stays terse
     // on purpose; a sibling test matches it by a bounded window.
     const status = execSync('git status --porcelain', {
+      cwd: PROJECT_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       env: withoutGitLocation(),
@@ -252,6 +269,7 @@ function main() {
     // that did not fit instead of blaming it for spending what an earlier one
     // spent. One path, and no branch that only a race can reach.
     const result = spawnSync(command, {
+      cwd: PROJECT_ROOT,
       shell: true,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -277,7 +295,8 @@ function main() {
       // unknown, and an unmeasured Definition of Done is not a passed one.
       const timedOut = result.error.code === 'ETIMEDOUT';
       process.stderr.write(
-        `STOP GATED — \`${command}\` produced no verdict: ${result.error.message}\n` +
+        `STOP GATED — \`${command}\` produced no verdict (measured in ${PROJECT_ROOT}): ` +
+          `${result.error.message}\n` +
           (timedOut
             ? `It did not finish inside the ${budget.ms} ms budget for the whole suite ` +
               `(RIG_DOD_BUDGET_MS lowers it; raising it means raising this hook's default ` +
@@ -297,7 +316,7 @@ function main() {
         .slice(-15)
         .join('\n');
       process.stderr.write(
-        `STOP GATED — a Definition of Done check fails: ${command}\n` +
+        `STOP GATED — a Definition of Done check fails (measured in ${PROJECT_ROOT}): ${command}\n` +
           (tail.trim() ? `${tail}\n` : '') +
           `Fix the failure before ending the session. If this failure has resisted ` +
           `repeated attempts, follow the stop rules instead: end with a written ` +
