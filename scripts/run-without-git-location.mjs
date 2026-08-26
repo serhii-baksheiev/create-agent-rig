@@ -11,6 +11,12 @@
 //
 // The list of variables is `GIT_LOCATION_VARS` in .claude/scripts/git-env.mjs —
 // imported, never restated, so there is one spelling of it (invariants.md).
+//
+// Limits: on Windows the command goes through a shell, because `pnpm` there is
+// a `.cmd` shim that spawnSync cannot execute directly — the hook's arguments
+// are literal words, so no quoting is at stake. That branch is not exercised by
+// this repository's tests (no Windows job runs husky); it is stated, not
+// measured. Everywhere else the argv array reaches the command unparsed.
 import { spawnSync } from 'node:child_process';
 import { withoutGitLocation } from '../.claude/scripts/git-env.mjs';
 
@@ -19,7 +25,11 @@ if (!command) {
   process.stderr.write('usage: run-without-git-location.mjs <command> [args…]\n');
   process.exit(2);
 }
-const result = spawnSync(command, args, { stdio: 'inherit', env: withoutGitLocation() });
+const result = spawnSync(command, args, {
+  stdio: 'inherit',
+  env: withoutGitLocation(),
+  shell: process.platform === 'win32',
+});
 if (result.error) {
   process.stderr.write(`run-without-git-location: ${result.error.message}\n`);
   process.exit(127);

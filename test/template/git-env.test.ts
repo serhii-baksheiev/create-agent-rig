@@ -261,6 +261,12 @@ describe('the stop gate sanitises through the shared list, not a fourth copy', (
 // The sweep that would have caught this in one pass instead of four: a call
 // site that forgets the sanitised environment is unprotected, and no amount of
 // care in the shared module can detect that.
+// Limit of the matcher below, stated so it is not read as cover: it reads one
+// window per call — from the call site to the next blank line, at most 400
+// characters — so a `withoutGitLocation` token anywhere in that window clears a
+// `...process.env` spread even when the two belong to different calls, and a
+// spread past the window is not seen. It catches the shape that hit this repo;
+// it does not prove a call site clean.
 describe('every authored git spawn passes an explicit environment', () => {
   const files = [
     'packages/cli/src/commands/create.ts',
