@@ -199,7 +199,7 @@ export const ownerOfLabels = (labels) => {
  * terminology, not from `parked`, not from a migration marker such as
  * `legacy-backlog` — which is retired, and which hygiene reports on any open item
  * still carrying it. A label that looks like "old" is no evidence that the work
- * is unnecessary; the audit behind this vocabulary found the opposite.
+ * is unnecessary — the owner's migration audit on AR-144 closed nothing as obsolete.
  */
 export const LIFECYCLE_LABELS = Object.freeze(['keep-core', 're-scope', 'obsolete']);
 

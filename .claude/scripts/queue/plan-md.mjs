@@ -66,7 +66,8 @@ const MARKERS = {
   // because the name is compared exactly to `options.owner`.
   owner: /\[owner:([^\]\s]+)\]/,
   // AR-144: the lifecycle vocabulary and the scheduling flag, the same words the
-  // tracker adapters read as labels. Case-insensitive like the other markers.
+  // tracker adapters read as labels. Case-insensitive, as the tier and trigger
+  // markers are (the owner marker is case-exact, because it is compared to a name).
   keepCore: /\[keep-core\]/i,
   reScope: /\[re-scope\]/i,
   obsolete: /\[obsolete\]/i,
