@@ -2,6 +2,7 @@
   "adapter": "jira",
   "options": {
     "project": "AR",
-    "maxGateRounds": 3
+    "maxGateRounds": 3,
+    "owner": "create-agent-rig"
   }
 }

@@ -127,6 +127,18 @@ not deleting the old marker, and the silent resolution goes to the **less**
 restrictive gate. Until that is fixed, treat a double-marked item as
 human-gated by hand.
 
+🔴 **An item marked for another repository is held, never taken.** A label
+`owner-<name>` names the repository an item belongs to; the checkout names
+itself in `options.owner` of `.claude/queue.json`, and a mismatch — or an
+owned item in a checkout that declares no owner — is the holding cause `owner`,
+reported by `hygiene` as `owner-mismatch`. It clears the way `trigger-human`
+does: a human moves the item or re-marks it. An unmarked item is unconditional.
+Two items of another product once entered this queue as normal spacers and
+escalated `PREMISE FALSE` back to back — a run-level stop spent on work that
+was never this checkout's (AR-132). Pinned in the generator's
+`test/template/queue-owner.test.ts` — absent in a generated rig — › "holds an
+item whose owner is another repository, with the cause named".
+
 **For a `trigger-auto` item, record the declaration** — it has to outlive the
 turn it was made in, or the next selection holds the item back again:
 

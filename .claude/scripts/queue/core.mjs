@@ -87,6 +87,7 @@ export const SKIP_CAUSES = Object.freeze([
   'trigger-auto',
   'trigger-human',
   'spacing',
+  'owner',
 ]);
 
 /**
@@ -127,7 +128,49 @@ export const HOLDING_CAUSES = Object.freeze([
   'spacing',
   'trigger-auto',
   'trigger-human',
+  // Another repository's item (AR-132). It clears the way `trigger-human`
+  // does — a human moves the item or re-marks it — never by this checkout
+  // doing anything, and never by refilling the queue.
+  'owner',
 ]);
+
+/**
+ * The repository an item belongs to, read out of its labels: `owner-<name>`,
+ * one word for one fact on every tracker. `null` when there is none — and
+ * absence means unconditional, exactly as it does for the trigger markers.
+ * A bare `owner-` names nobody and is read as no marker.
+ *
+ * Why (AR-132): AR-129 and AR-130 were Rig Platform items sitting in this
+ * repository's project. Both were selected as normal spacers and both escalated
+ * PREMISE FALSE at the first premise check, consecutively — a run-level stop,
+ * spent on work that was never this checkout's to do.
+ */
+export const ownerOfLabels = (labels) => {
+  for (const label of Array.isArray(labels) ? labels : []) {
+    if (typeof label === 'string' && label.startsWith('owner-') && label.length > 6) {
+      return label.slice(6);
+    }
+  }
+  return null;
+};
+
+/**
+ * Why an owned item is not this checkout's, or null when it is (or claims no
+ * owner). One predicate for selection and for hygiene, so the two cannot
+ * disagree about the same item. A checkout that declares no owner cannot
+ * confirm a match, and "could not look" is never "it is fine".
+ */
+const ownerMismatchOf = (ticket, owner) => {
+  if (!ticket.owner) return null;
+  if (owner === null || owner === undefined || owner === '') {
+    return (
+      `owned by ${ticket.owner}, and this checkout declares no owner ` +
+      '(options.owner in .claude/queue.json) — a match cannot be confirmed'
+    );
+  }
+  if (ticket.owner === owner) return null;
+  return `owned by ${ticket.owner}, and this checkout is ${owner}`;
+};
 
 /**
  * Is this item takeable, and if not, why not?
@@ -137,7 +180,7 @@ export const HOLDING_CAUSES = Object.freeze([
  * `cause` tag, so the stop line can say what is holding the queue back without
  * reading the prose back.
  */
-export const selectionOf = (ticket, { triggersFired = null } = {}) => {
+export const selectionOf = (ticket, { triggersFired = null, owner = null } = {}) => {
   const reasons = [];
   const causes = [];
   const labels = ticket.labels ?? [];
@@ -188,6 +231,11 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
   // that claim, and it would be false for the item most likely to carry both:
   // one an owner tightened from auto-gated to human-gated without deleting the
   // old marker, where the silent resolution goes to the LESS restrictive gate.
+  // Another repository's item is held, not taken (AR-132). The marker is the
+  // adapter's `owner` field; a checkout names itself in `options.owner`.
+  const foreign = ownerMismatchOf(ticket, owner);
+  if (foreign) reject('owner', `${foreign} — moving or re-marking it is a human act`);
+
   if (ticket.trigger === 'human') {
     reject(
       'trigger-human',
@@ -217,9 +265,18 @@ export const selectionOf = (ticket, { triggersFired = null } = {}) => {
  * Reported, never silently corrected: a loop that quietly rewrites the queue's
  * own metadata removes the evidence that the metadata is unreliable.
  */
-export const hygieneOf = (ticket) => {
+export const hygieneOf = (ticket, { owner = null } = {}) => {
   const labels = ticket.labels ?? [];
   const open = (ticket.blockedBy ?? []).filter((blocker) => !blocker.resolved);
+
+  const foreign = ownerMismatchOf(ticket, owner);
+  if (foreign) {
+    return {
+      kind: 'owner-mismatch',
+      id: ticket.id,
+      why: `${foreign} — it sits in this queue but is not this repository's to do`,
+    };
+  }
 
   if (labels.includes('blocked') && open.length === 0) {
     return {
@@ -451,12 +508,15 @@ export const gateRoundVerdict = (rounds, max = DEFAULT_MAX_GATE_ROUNDS) => {
  * items back to back — one unreviewed schema or permissions change is
  * recoverable; a chain of them compounding overnight is not.
  */
-export const selectNext = (tickets, { lastCompletedTier = null, triggersFired = null } = {}) => {
+export const selectNext = (
+  tickets,
+  { lastCompletedTier = null, triggersFired = null, owner = null } = {},
+) => {
   const skipped = [];
   const candidates = [];
 
   for (const ticket of tickets) {
-    const selection = selectionOf(ticket, { triggersFired });
+    const selection = selectionOf(ticket, { triggersFired, owner });
     if (!selection.eligible) {
       skipped.push({
         id: ticket.id,
@@ -692,6 +752,18 @@ const triggerNote = (held) => {
 };
 
 /**
+ * The owner remedy (AR-132), present only when the pile carries the tag: an item
+ * another repository owns is freed by a human moving or re-marking it — never by
+ * waiting, and never by refilling this queue.
+ */
+const ownerNote = (held) =>
+  held.includes('owner')
+    ? ' An item held as owner belongs to another repository (its `owner-<name>` ' +
+      "label is not this checkout's `options.owner`): a human moves it to that " +
+      "repository's queue or re-marks it; nothing this checkout does frees it."
+    : '';
+
+/**
  * Should the whole run stop? Checked in severity order, because a regression must
  * not be reported as an empty queue.
  *
@@ -769,7 +841,7 @@ export const stopConditionOf = ({
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
-          `session finishes.${triggerNote(held)} Otherwise the action is to ` +
+          `session finishes.${triggerNote(held) + ownerNote(held)} Otherwise the action is to ` +
           'interleave or to wait, never to refill and never to invent work.',
       };
     }

@@ -171,7 +171,9 @@ function compose() {
       {
         ...JSON.parse(out.get('.claude/queue.json')),
         adapter: 'jira',
-        options: { project: 'AR', maxGateRounds: 3 },
+        // `owner` is this checkout's name for the `owner-<name>` marker
+        // (AR-132): an AR item marked for another repository is held here.
+        options: { project: 'AR', maxGateRounds: 3, owner: 'create-agent-rig' },
       },
       null,
       2,
