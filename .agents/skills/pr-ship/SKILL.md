@@ -27,8 +27,15 @@ blockers.
      is *gate rounds exhausted*, quoting the round count in its `note`. Do not
      run the fan-out.
    - **1** — the command itself failed (unreadable config, unreadable counter,
-     detached checkout). This is **not** an exhausted cap: fix the cause and run
-     step 0 again. Treating it as exhaustion escalates a healthy item.
+     detached checkout), **or the checkout cannot ship**: a dirty working tree,
+     a branch with no upstream, or commits the upstream has not seen. Nothing
+     was counted. This is **not** an exhausted cap: fix the cause — commit and
+     push — and run step 0 again. Treating it as exhaustion escalates a healthy
+     item. The refusal exists because two rounds were once counted ahead of a
+     commit pre-commit then refused, so the counter and the fan-out's verdicts
+     named a head that never shipped (AR-141) — pinned in the generator's
+     `test/template/gate-rounds.test.ts` — absent in a generated rig — ›
+     "refuses to count a round on a dirty tree, and counts nothing".
 
    The cap is **2 by default**, and no shipped `.claude/queue.json` carries the key
    — the default lives in `core.mjs` as `DEFAULT_MAX_GATE_ROUNDS`. A project that

@@ -28,7 +28,7 @@ import { changedSinceOf, headShaOf } from './as-of.mjs';
 // about which checkout they are in is the whole of the worktree defect. It lives
 // apart from `state.mjs` so the read path does not drag the tier computation —
 // and `detect-missed-gate.mjs` behind it — into a CLI that never calls either.
-import { mainCheckoutRoot } from './checkout.mjs';
+import { checkoutIsShippable, mainCheckoutRoot } from './checkout.mjs';
 
 const ADAPTERS = {
   'plan-md': './plan-md.mjs',
@@ -324,6 +324,15 @@ if (invokedDirectly()) {
       const verdictFor = (rounds) => gateRoundVerdict(rounds, config.options?.maxGateRounds);
       verdictFor(0);
 
+      // 🔴 And refuse a checkout that cannot ship BEFORE counting (AR-141): a
+      // dirty tree or an unpushed HEAD means the round — and the fan-out's
+      // verdicts — would name a head that never reaches CI. Two rounds were once
+      // counted ahead of a commit pre-commit then refused. Thrown, so it lands
+      // in the exit-1 path below: not an exhausted cap, nothing counted.
+      const gitRoot = projectRootOfConfig(configPath) ?? projectRoot;
+      const shippable = checkoutIsShippable(gitRoot);
+      if (!shippable.ok) throw new Error(`${shippable.why} (nothing was counted)`);
+
       const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
       const verdict = verdictFor(rounds);
 
@@ -357,8 +366,8 @@ if (invokedDirectly()) {
       process.stderr.write(
         `gate-round could not run: ${error.message}\n` +
           '  This is NOT an exhausted cap (that is exit 2). Fix the cause and run step ' +
-          '0 again: a bad config, a bad cap or a detached checkout is refused before ' +
-          'any round is counted, so retrying costs nothing.\n',
+          '0 again: a bad config, a bad cap, a detached checkout, a dirty tree or an ' +
+          'unpushed HEAD is refused before any round is counted, so retrying costs nothing.\n',
       );
       process.exit(1);
     }
