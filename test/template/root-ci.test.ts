@@ -48,6 +48,9 @@ const WINDOWS_INCOMPATIBLE_TESTS = [
   'test/template/revalidation-baseline.test.ts',
   'test/template/revalidation-evidence.test.ts',
   'test/template/review-fixes.test.ts',
+  // AR-139: loads preflight.mjs, which every other importer of it already keeps
+  // off this lane (it does not parse there — AR-93's debt, not this test's).
+  'test/template/rig-run-dir-scrub.test.ts',
   'test/template/root-ci.test.ts',
   'test/template/run-journal.test.ts',
   'test/template/secrets-lib.test.ts',

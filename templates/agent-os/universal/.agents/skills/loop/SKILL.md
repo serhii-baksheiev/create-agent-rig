@@ -53,13 +53,13 @@ state-vs-queue split exists to prevent.
 node .claude/scripts/preflight.mjs
 ```
 
-Three items are scripted (kill switch absent · local default branch matches the
-remote · the last deploy concluded successfully) and the script **prints the ones
-it did not check, every time**. Paste the block into the journal: a checklist that
+Four items are scripted (kill switch absent · `RIG_RUN_DIR` not already
+exported · local default branch matches the remote · the last deploy concluded
+successfully) and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
 leaves no record cannot tell you it was skipped.
 
 Verdicts: **STOP** → do not start, deal with the cause. **CAUTION** → start,
-knowing which ground is soft. **GO** → the scripted three are clean; the rest are
+knowing which ground is soft. **GO** → the scripted four are clean; the rest are
 still yours.
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you
@@ -86,6 +86,17 @@ everything that already happened — so this goes in preflight or not at all:
 export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
 mkdir -p "$RIG_RUN_DIR"
 ```
+
+⚠ **The export outlives the run's own calls.** Everything the session spawns
+inherits it — and a test suite that spawns the queue CLI would write fixture
+records into this run's trace (AR-139: 38 fixture selections and 22 fixture
+revalidation events in one session, two tests exiting 1). So preflight refuses
+to start on a `RIG_RUN_DIR` already exported. The generator's own test harness
+also scrubs the variable before any test file loads — its `test/setup-env.ts`,
+pinned by its `test/template/rig-run-dir-scrub.test.ts` › "holds with the
+variable exported around the whole vitest process" — and **neither file ships
+into a generated rig**: here, nothing scrubs it, and a rig's own test setup is
+the place to do the same.
 
 🔴 **One directory per run, never shared and never reused — and the journal
 cannot enforce this for you.** A collision or an already-ended directory is
