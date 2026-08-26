@@ -45,8 +45,13 @@
 // `lib/`), and EVERY file directly in `.husky/` when that directory exists — a
 // husky hook is never in the manifest, so it is `owned` whenever ownership can
 // be read at all, and a stray file there (a README, a dotfile) is audited like a
-// hook: exempt it with a reason rather than teaching this script which names are
-// not hooks. A `.claude/hooks/` that is missing or unreadable is a FAIL and the
+// hook — the generator's `test/template/doctor.test.ts` › "audits every file in
+// .husky/ as a hook — a stray README there is a finding until it is exempted
+// with a reason" pins it: exempt it with a reason rather than teaching this
+// script which names are not hooks. One entry that cannot be stat'ed (a
+// dangling symlink) is reported by name and the rest of the listing survives —
+// › "a dangling symlink among the hooks is reported by name as unreadable, and
+// never nulls the listing". A `.claude/hooks/` that is missing or unreadable is a FAIL and the
 // run is STOP — a doctor that looked nowhere must never say clean — and so is
 // an exemption file that is present but not readable JSON. When `.husky/` is absent the report says so rather than
 // staying silent about a directory it never looked at — the generator's
@@ -274,10 +279,24 @@ export const collectHooks = (root) => {
 
 export const report = (root) => {
   const { hooks, scopes, problems } = collectHooks(root);
-  const exemptionsPath = path.join(root, ...EXEMPTIONS_REL.split('/'));
+  // One read, two outcomes: absent is an empty list, present-but-unreadable is a
+  // finding. Testing for existence first and reading second would be two truths.
   let exemptions = {};
-  if (existsSync(exemptionsPath)) {
-    const parsed = readJson(exemptionsPath);
+  let raw = null;
+  try {
+    raw = readFileSync(path.join(root, ...EXEMPTIONS_REL.split('/')), 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      problems.push(problem(EXEMPTIONS_REL, `present but unreadable — ${error?.code ?? 'read failed'}`));
+    }
+  }
+  if (raw !== null) {
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) exemptions = parsed;
     else problems.push(problem(EXEMPTIONS_REL, 'present but unreadable — not JSON, or not an object of path → reason'));
   }
@@ -288,7 +307,9 @@ export const report = (root) => {
   const lines = [
     `**doctor** — verdict: ${audit.verdict}`,
     '',
-    ...audit.hooks.map((hook) => `- ${hook.mark} · ${hook.rel} — ${hook.detail}`),
+    // Names come from the file system, reasons from a repo file; both are
+    // stripped of control bytes here, once, where they reach the terminal.
+    ...audit.hooks.map((hook) => `- ${hook.mark} · ${printable(hook.rel)} — ${printable(hook.detail)}`),
     ...(absent.length > 0
       ? ['', `_Not present, so not audited: ${absent.join(', ')}._`]
       : []),

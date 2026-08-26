@@ -290,6 +290,26 @@ describe('the CLI audits a rig on disk', () => {
     expect(stdout).not.toMatch(/\u001b/);
   });
 
+  it('a dangling symlink among the hooks is reported by name as unreadable, and never nulls the listing', async () => {
+    const dir = await rig();
+    const { symlink } = await import('node:fs/promises');
+    await symlink('/nope/never-there', path.join(dir, '.husky', 'post-merge'));
+    const { code, stdout } = await run(['--root', dir]);
+    expect(code).toBe(1);
+    expect(stdout).toMatch(/- FAIL · \.husky\/post-merge — .*cannot be read/);
+    // the rest of the listing survived the one bad entry
+    expect(stdout).toMatch(/- pass · \.claude\/hooks\/guard-a\.mjs/);
+    expect(stdout).toMatch(/- FAIL · \.husky\/pre-commit/);
+  });
+
+  it('audits every file in .husky/ as a hook — a stray README there is a finding until it is exempted with a reason', async () => {
+    const dir = await rig();
+    await writeFile(path.join(dir, '.husky', 'README'), 'not a hook\n');
+    const first = await run(['--root', dir, '--json']);
+    const rels = JSON.parse(first.stdout).hooks as Array<{ rel: string; mark: string }>;
+    expect(rels.find((h) => h.rel === '.husky/README')).toMatchObject({ mark: 'FAIL' });
+  });
+
   it('an exemption naming a file that does not exist is a stale-exemption FAIL', async () => {
     const dir = await rig();
     await writeFile(path.join(dir, '.claude', 'hooks', 'guard-b.test.mjs'), '// test\n');
