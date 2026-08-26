@@ -15,6 +15,9 @@ import { describe, expect, it } from 'vitest';
 // sunk two rounds into shipping.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(repoRoot, '.claude/scripts/git-env.mjs')).href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 const queueDir = path.join(
   repoRoot,
   'templates',
@@ -182,7 +185,8 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       env: {
-        ...process.env,
+        // Sanitised: a hook-exported GIT_DIR would aim this at the shared repo (AR-148).
+        ...withoutGitLocation(),
         GIT_AUTHOR_NAME: 't',
         GIT_AUTHOR_EMAIL: 't@t',
         GIT_COMMITTER_NAME: 't',

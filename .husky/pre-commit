@@ -5,4 +5,7 @@
 # "what would this commit contain". It is the layer a PreToolUse hook cannot
 # cover, because a human editing a file never reaches one (AR-49 b).
 node scripts/validate-no-secrets.mjs --staged || exit 1
-pnpm lint && pnpm typecheck && pnpm test:unit
+# The checks run with git's exported location (GIT_DIR, GIT_INDEX_FILE, …)
+# removed: the sweep above needs it, and a test fixture that inherits it acts on
+# THIS repository instead of its temp one (AR-148; the list lives in git-env.mjs).
+node scripts/run-without-git-location.mjs pnpm lint && node scripts/run-without-git-location.mjs pnpm typecheck && node scripts/run-without-git-location.mjs pnpm test:unit

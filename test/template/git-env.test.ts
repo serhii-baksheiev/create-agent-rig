@@ -280,6 +280,10 @@ describe('every authored git spawn passes an explicit environment', () => {
     'test/template/codex.test.ts',
     'templates/agent-os/universal/.claude/hooks/lib/edit-input.mjs',
     '.claude/hooks/lib/edit-input.mjs',
+    // AR-148: both spawn git from fixtures under the pre-commit hook's own
+    // environment, and acted on the shared repository (journal/2026-08.md).
+    'test/template/gate-rounds.test.ts',
+    'test/template/proposal-asof.test.ts',
   ];
 
   it.each(files)('%s', async (rel) => {
@@ -291,6 +295,11 @@ describe('every authored git spawn passes an explicit environment', () => {
       const from = call.index ?? 0;
       const window = source.slice(from, from + 400).split('\n\n')[0]!;
       if (!/env[:\s]/.test(window)) offences.push(window.split('\n')[0]!.trim());
+      // AR-148: an `env` that merely spreads the inherited environment is the
+      // same defect with an `env` token in front of it — `{ ...process.env,
+      // GIT_AUTHOR_NAME: 't' }` still carries the hook's GIT_DIR into the child.
+      else if (/\.\.\.process\.env\b/.test(window) && !/withoutGitLocation/.test(window))
+        offences.push(window.split('\n')[0]!.trim());
     }
     expect(offences, `${rel}: git spawned with the inherited environment`).toEqual([]);
   });

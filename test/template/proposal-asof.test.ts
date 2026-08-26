@@ -26,8 +26,13 @@ const queueDir = path.join(
   'queue',
 );
 const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).href);
+// Sanitised: under a git hook the inherited GIT_DIR/GIT_INDEX_FILE would aim
+// these spawns at the shared repository (AR-148).
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(repoRoot, '.claude/scripts/git-env.mjs')).href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 const git = (args: string[], cwd = repoRoot) =>
-  execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  execFileSync('git', args, { cwd, encoding: 'utf8', env: withoutGitLocation() }).trim();
 
 /**
  * A throwaway repository with two commits, so nothing here depends on this
@@ -45,7 +50,7 @@ const twoCommitRepo = async (): Promise<{
       cwd: dir,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...withoutGitLocation(),
         GIT_AUTHOR_NAME: 't',
         GIT_AUTHOR_EMAIL: 't@t',
         GIT_COMMITTER_NAME: 't',
