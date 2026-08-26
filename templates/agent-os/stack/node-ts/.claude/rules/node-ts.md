@@ -69,11 +69,15 @@ gh api "repos/{owner}/{repo}/actions/runs?head_sha=$SHA" \
 # here after a bounded wait (a few minutes) is not registered, not pending
 ```
 
+⚠ The names differ in case between the two queries: `workflow_runs[].name`
+is the **workflow** name (`CI`, `E2E`), the check-runs filter above reads the
+**job** name (`ci`, `e2e`). Searching the runs list for `ci` finds nothing.
+
 Then the rule, **per required check by name**, never per head: a check with
 no run after the wait is **retriggered**, and the PR is **never merged on an
 older head's green**. The retrigger depends on the workflow — `ci.yml` has no
-`workflow_dispatch`, so an empty commit (`git commit --allow-empty`) is its
-only trigger; `e2e.yml` has one, so
+`workflow_dispatch`, so an empty commit (`git commit --allow-empty`) is the
+simplest trigger it has; `e2e.yml` has one, so
 `gh workflow run e2e.yml --ref <branch>` re-runs it on the same head. Pinned
 in the generator's `test/template/pr-flow.test.ts` — absent in a generated
 rig — › "node-ts names the head that gets no run at all, and says it is
