@@ -31,7 +31,9 @@ blockers.
      a branch with no upstream, or commits the upstream has not seen. Nothing
      was counted. This is **not** an exhausted cap: fix the cause — commit and
      push — and run step 0 again. Treating it as exhaustion escalates a healthy
-     item. The refusal exists because two rounds were once counted ahead of a
+     item. A rig with no remote can never pass this step — by design: the PR
+     flow, and this gate with it, begins when the project has a remote
+     (`workflow.md`, "PR flow"). The refusal exists because two rounds were once counted ahead of a
      commit pre-commit then refused, so the counter and the fan-out's verdicts
      named a head that never shipped (AR-141) — pinned in the generator's
      `test/template/gate-rounds.test.ts` — absent in a generated rig — ›

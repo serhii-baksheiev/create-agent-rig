@@ -99,8 +99,10 @@ export const mainCheckoutRoot = (startDir) => {
  * the upstream has not seen. `{ ok: true }` otherwise; a git that cannot answer
  * is reported as such, never as clean.
  *
- * Bounded: three git calls, each with a timeout, and the porcelain output is
- * read only for emptiness.
+ * Bounded: two git calls, each with a timeout, and the porcelain output is
+ * read only for emptiness. The upstream question has one catch for three
+ * states — a detached HEAD, a branch with no upstream, an upstream that is
+ * gone — and names none of them apart; the refusal is right for all three.
  */
 export const checkoutIsShippable = (root) => {
   const git = (args) =>
