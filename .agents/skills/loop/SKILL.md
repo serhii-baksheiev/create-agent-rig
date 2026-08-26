@@ -225,9 +225,18 @@ BEFORE_PR and BEFORE_CLOSE points write. **No-change is always recorded**, one
 line per selection and no sampling: the rule is explicit so the report's
 `opportunities` is a count and not an estimate. An adapter with no marker
 (`plan-md`) logs `changed: null`, never "unchanged". ⚠ The marker also moves on
-the run's own claim and comments, so a `true` on a re-offer can be self-inflicted
+the run's own claim and comments. The `jira` and `github-issues` adapters
+re-record the take-up after each write they make — claim, comment, close,
+escalate — so a move made through the adapter is not a hold (AR-140, from the
+journal's RX3/RX4 entry: every BEFORE_PR catch of that run was the run's own
+comment, counted by `revalidation-report.mjs`); a
+comment posted by any other route — a REST call by hand, a connector — still
+moves it like anyone else's, and a `true` can still be self-inflicted that way
 — the re-read decides, which is why the outcome is recorded separately, and a
-hold the re-read overturns is counted as a false hold with its source named. The
+hold the re-read overturns is counted as a false hold with its source named.
+Pinned in the generator's `test/template/self-inflicted-marker.test.ts` — absent
+in a generated rig — › "%s leaves the take-up at the marker the write produced",
+an `it.each` over claim, comment, close and escalate. The
 four-week view is `node .claude/scripts/revalidation-report.mjs --since <date>`,
 over this rig's `.claude/runs/` (or a `--runs <dir>`). The behaviour is pinned in the
 generator's `test/template/queue-revalidation.test.ts` — absent in a generated
@@ -736,7 +745,12 @@ three poisons the only channel by which this project learns.
   node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id>
   ```
 
-  It compares the item's marker against this run's last validation and its
+  It compares the item's marker against the newer of this run's last
+  validation and its take-up — an adapter re-records the take-up after each
+  write of its own (§2, AR-140), so a comment posted after BEFORE_PR does not
+  hold the close; pinned in the generator's
+  `test/template/self-inflicted-marker.test.ts` › "continues when the run’s own
+  write moved the marker after the last validation" — and its
   state against the `in-progress` a close expects, journals one `revalidation`
   event at `point: BEFORE_CLOSE`, and lists the item's dependants with each
   one's state re-read for the write-back below — pinned in the generator's

@@ -154,8 +154,29 @@ export const listEligible = ({ limit = 100, issues = null } = {}) => {
 export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) => !b.resolved);
 
 /** `To Do → In Progress` before the first file is edited, not when the PR opens. */
+/**
+ * Re-record the item's marker after a write of this adapter's own (AR-140) —
+ * the same rule and the same limit as `jira.mjs` › rebaseline: only writes
+ * made through this adapter re-baseline, and a read-back that fails is
+ * announced, never thrown.
+ */
+const rebaseline = (ticket) => {
+  const runDir = process.env.RIG_RUN_DIR;
+  if (!runDir) return;
+  try {
+    const after = ghJson(['issue', 'view', ticket.id, '--json', 'updatedAt']);
+    recordTakeUp(runDir, { id: ticket.id, updatedAt: after?.updatedAt ?? null });
+  } catch (error) {
+    process.stderr.write(
+      `#${ticket.id}: the write landed, but its marker was NOT re-recorded in ${runDir} — ` +
+        `${error.message}\n`,
+    );
+  }
+};
+
 export const claim = (ticket) => {
   ghText(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
+  rebaseline(ticket);
   return { ok: true };
 };
 
@@ -183,11 +204,13 @@ export const close = (ticket, { prUrl = null } = {}) => {
   const after = ghJson(['issue', 'view', ticket.id, '--json', 'state']);
   const transitioned = String(after?.state ?? '').toUpperCase() === 'CLOSED';
   if (transitioned) ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
+  rebaseline(ticket);
   return { ok: true, transitioned };
 };
 
 export const comment = (ticket, body) => {
   ghText(['issue', 'comment', ticket.id, '--body', body]);
+  rebaseline(ticket);
   return { ok: true };
 };
 
@@ -199,6 +222,7 @@ export const comment = (ticket, body) => {
 export const escalate = (ticket, diagnosis, { env = process.env } = {}) => {
   ghText(['issue', 'comment', ticket.id, '--body', diagnosis]);
   ghText(['issue', 'edit', ticket.id, '--add-label', 'escalated']);
+  rebaseline(ticket);
   // Counted through the one recorder, never a counter of this adapter's own —
   // "twice in a row" has to mean the same thing on every tracker.
   recordEscalation(env.RIG_RUN_DIR);
