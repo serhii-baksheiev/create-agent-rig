@@ -21,15 +21,17 @@
 //   - `owned`    — the hash differs, or the manifest has no entry for the file:
 //                  authored or edited here, so its test is this project's.
 //   - `unknown`  — there is no manifest to read (a pre-0.4.0 rig, or the
-//                  generator's own checkout). Reported as `unknown`, never as a
-//                  pass: "could not look" is not "it is fine".
+//                  generator's own checkout). A hook with a test beside it still
+//                  passes — the test is there whoever owns it; one without is
+//                  reported `unknown`, never as a pass: "could not look" is not
+//                  "it is fine".
 //
 // The manifest is the only ownership source this script reads. The generator's
 // CLI also carries a hash history of every release for manifest-less rigs; it
 // lives in the CLI, and a rig script that re-implemented it would be a second
 // copy of a table nobody here maintains (`invariants.md`, "one mechanism, one
-// implementation"). A rig without a manifest gets `unknown` and the advice to
-// run `upgrade`, which writes one.
+// implementation"). A rig without a manifest gets `unknown` on every untested
+// hook and the advice to run `upgrade`, which writes one.
 //
 // A test neighbour is `<hook>.test.mjs` in the same directory — the shape
 // `.claude/skills/new-invariant/guard-invariant.example.test.mjs` prescribes and
@@ -43,7 +45,9 @@
 // `lib/`), and every file directly in `.husky/` when that directory exists — a
 // husky hook is never in the manifest, so it is `owned` whenever ownership can
 // be read at all. When `.husky/` is absent the report says so rather than
-// staying silent about a directory it never looked at.
+// staying silent about a directory it never looked at — the generator's
+// `test/template/doctor.test.ts` › "names an absent .husky/ instead of staying
+// silent about it" pins the line.
 //
 // 🔴 What this script does NOT check is printed at the end of every report, the
 // same way `preflight.mjs` prints its unchecked items: a script that half-checks

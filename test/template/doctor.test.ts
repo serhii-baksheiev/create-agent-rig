@@ -244,6 +244,14 @@ describe('the CLI audits a rig on disk', () => {
     expect(parsed.unchecked.length).toBeGreaterThan(0);
   });
 
+  it('names an absent .husky/ instead of staying silent about it', async () => {
+    const dir = await rig();
+    await rm(path.join(dir, '.husky'), { recursive: true, force: true });
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/_Not present, so not audited: \.husky\._/);
+    expect(stdout).not.toMatch(/\.husky\/pre-commit/);
+  });
+
   it('an exemption naming a file that does not exist is a stale-exemption FAIL', async () => {
     const dir = await rig();
     await writeFile(path.join(dir, '.claude', 'hooks', 'guard-b.test.mjs'), '// test\n');
