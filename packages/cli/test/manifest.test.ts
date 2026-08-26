@@ -106,6 +106,34 @@ describe('the install manifest — the evidence upgrade reads', () => {
     it('voids the manifest when it is a stack overlay name', () => {
       expect(hostile({ stacks: ['node-ts', payload] })).toBeNull();
     });
+
+    it('voids the manifest when it is the version', () => {
+      expect(hostile({ version: payload })).toBeNull();
+    });
+  });
+
+  // AR-128: `version` was the one field checked by type alone. `index.ts`
+  // prints it raw as `installed by ${plan.fromVersion}` in the upgrade plan
+  // header — the screen a maintainer reads immediately before typing `--yes` —
+  // so a version carrying a newline or an ANSI escape could forge plan lines
+  // the CLI never composed. Same delivery as the other values: the manifest is
+  // committed and travels in pull requests.
+  describe.each([
+    ['a newline that forges a plan line', '0.5.0\n      delete: .claude/hooks/guard-bash.mjs'],
+    ['a carriage return that overwrites the line', '0.5.0\r      nothing to do'],
+    ['an ANSI escape that recolours the report', '0.5.0\u001b[2K\u001b[32mall clean'],
+    ['a NUL byte', '0.5.0\u0000'],
+    ['an empty string', ''],
+  ] as const)('a manifest version carrying %s', (_shape, payload) => {
+    it('voids the manifest as a whole', () => {
+      expect(parseManifest(JSON.stringify({ ...sample(), version: payload }))).toBeNull();
+    });
+  });
+
+  it('still accepts every version string the rig itself writes', () => {
+    for (const version of ['0.5.0', '0.5.1', '1.0.0', '0.6.0-rc.1', '0.0.0-dev']) {
+      expect(parseManifest(JSON.stringify({ ...sample(), version }))).not.toBeNull();
+    }
   });
 
   // The regression fence for the tightening above: every value the rig itself
