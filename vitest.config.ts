@@ -16,6 +16,11 @@ export default defineConfig({
           name: 'template',
           include: ['test/template/**/*.test.ts'],
           setupFiles: ['test/setup-env.ts'],
+          // The figure ci.yml passes as --testTimeout (test/template/vitest-timeouts.test.ts
+          // pins the two equal). Tests here spawn stub `gh` subprocesses, and under a
+          // full parallel `pnpm test` with e2e beside them some crossed vitest's 5 s
+          // default while passing alone — the measurements are on AR-143.
+          testTimeout: 15_000,
         },
       },
       {
