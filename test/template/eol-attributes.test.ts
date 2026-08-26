@@ -34,14 +34,8 @@ describe('line-ending attributes (.gitattributes)', () => {
 
   it('pins the template hooks the same way', () => {
     expectPinnedToLf('templates/agent-os/universal/.claude/hooks/guard-bash.mjs');
-    const shFiles = git('ls-files', '--', '*.sh').split('\n').filter(Boolean);
-    if (shFiles.length === 0) {
-      console.warn(
-        'no tracked *.sh file in this repository; the *.sh half of this test is not exercised',
-      );
-      return;
-    }
-    expectPinnedToLf(shFiles[0] as string);
+    // `demo.sh` is tracked; naming it keeps this half from silently not running.
+    expectPinnedToLf('demo.sh');
   });
 
   it('no tracked *.mjs carries a CR', () => {
