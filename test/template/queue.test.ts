@@ -1260,7 +1260,7 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       'owner',
       // AR-144: takeable work waiting on a human rewrite, or on a human un-park.
       're-scope',
-      'parked',
+      'deferred',
     ]);
     expect(Object.isFrozen(HOLDING_CAUSES)).toBe(true);
 
@@ -1346,7 +1346,7 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
     'trigger-human': /marker|hand(?:s|ed) it over/i,
     // AR-144: two lifecycle holds, each freed by one human act on the item.
     're-scope': /rewrites it.*removes the label/i,
-    parked: /un-parks it/i,
+    deferred: /un-parks it/i,
   };
 
   it('names a remedy for every cause that can hold an item back', async () => {

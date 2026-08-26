@@ -98,11 +98,15 @@ export const SKIP_CAUSES = Object.freeze([
   'trigger-human',
   'spacing',
   'owner',
-  // AR-144: the lifecycle vocabulary. `re-scope` and `parked` hold takeable
-  // work back until a human acts; `obsolete` is out of play until a human
-  // closes it with the evidence — see `lifecycleOf` below.
+  // AR-144: the lifecycle vocabulary. `re-scope` and `deferred` (the `parked`
+  // label) hold takeable work back until a human acts; `obsolete` is out of play
+  // until a human closes it with the evidence — see `lifecycleOf` below.
+  // 🔴 The cause for the `parked` LABEL is `deferred`, not `parked`: this module
+  // already uses "parked" for the out-of-play pile (`partitionSkipped`), and a
+  // parked-labelled item is the opposite — held, takeable, waiting on an un-park.
+  // One word for two states is how a stop line gets read backwards.
   're-scope',
-  'parked',
+  'deferred',
   'obsolete',
 ]);
 
@@ -153,7 +157,7 @@ export const HOLDING_CAUSES = Object.freeze([
   // here: it waits on a human CLOSE, so it is out of play, and reporting it as
   // "held" would tell the owner to wait for something that only they can do.
   're-scope',
-  'parked',
+  'deferred',
 ]);
 
 /**
@@ -220,8 +224,10 @@ export const lifecycleOf = (labels) => {
 };
 
 /** The lifecycle labels an item carries, for the contradiction check. */
-const lifecycleLabelsOn = (labels) =>
-  LIFECYCLE_LABELS.filter((label) => (Array.isArray(labels) ? labels : []).includes(label));
+const lifecycleLabelsOn = (labels) => {
+  const list = Array.isArray(labels) ? labels : [];
+  return LIFECYCLE_LABELS.filter((label) => list.includes(label));
+};
 
 /**
  * Why an owned item is not this checkout's, or null when it is (or claims no
@@ -317,7 +323,7 @@ export const selectionOf = (ticket, { triggersFired = null, owner = null } = {})
     );
   }
   if (ticket.parked === true) {
-    reject('parked', 'parked: valid work deliberately not active now — a human un-parks it');
+    reject('deferred', 'parked (deferred): valid work deliberately not active now — a human un-parks it');
   }
   if (ticket.lifecycle === 'obsolete') {
     reject(
@@ -908,9 +914,9 @@ const lifecycleNote = (held) =>
       'a human rewrites it against the current code and removes the label; the ' +
       'loop never invents the new scope.'
     : '') +
-  (held.includes('parked')
-    ? ' An item held as parked is valid work deliberately not active now: a human ' +
-      'un-parks it; nothing this run does frees it.'
+  (held.includes('deferred')
+    ? ' An item held as deferred carries the parked label — valid work deliberately ' +
+      'not active now: a human un-parks it; nothing this run does frees it.'
     : '');
 
 /**

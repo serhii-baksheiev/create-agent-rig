@@ -12,7 +12,7 @@
 // has real dependencies, move to an adapter whose tracker can express them
 // (`github-issues`). Ordering the list by hand is not a dependency graph.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+import { duplicateOf, fingerprintOf, validateProposal, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
@@ -139,17 +139,19 @@ export const parsePlan = (plan) => {
           ? 'human'
           : null,
       owner: MARKERS.owner.exec(raw)?.[1] ?? null,
-      // The same precedence `core.mjs` › lifecycleOf applies to labels: the most
-      // restrictive marker wins, and hygiene cannot report the contradiction here
-      // because a flat list carries no labels for it to read.
-      lifecycle: MARKERS.obsolete.test(raw)
-        ? 'obsolete'
-        : MARKERS.reScope.test(raw)
-          ? 're-scope'
-          : MARKERS.keepCore.test(raw)
-            ? 'keep-core'
-            : null,
-      parked: MARKERS.parked.test(raw),
+      // The markers present, handed to the one precedence rule (`core.mjs` ›
+      // lifecycleOf) rather than re-deriving it here. Hygiene cannot report a
+      // contradiction on this adapter: a flat list carries no labels for it to read.
+      ...lifecycleOf(
+        [
+          ['keep-core', MARKERS.keepCore],
+          ['re-scope', MARKERS.reScope],
+          ['obsolete', MARKERS.obsolete],
+          ['parked', MARKERS.parked],
+        ]
+          .filter(([, marker]) => marker.test(raw))
+          .map(([label]) => label),
+      ),
     });
   }
   return items;

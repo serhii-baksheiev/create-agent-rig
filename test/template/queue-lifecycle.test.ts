@@ -140,10 +140,10 @@ describe('selection holds a re-scope or parked item, and keeps an obsolete one o
     const { selectionOf } = await load('core.mjs');
     const parked = selectionOf(ticket({ parked: true }), {});
     expect(parked.eligible).toBe(false);
-    expect(parked.causes).toEqual(['parked']);
+    expect(parked.causes).toEqual(['deferred']);
     expect(parked.reasons.join(' ')).toMatch(/parked/);
     expect(selectionOf(ticket({ lifecycle: 'keep-core', parked: true }), {}).causes).toEqual([
-      'parked',
+      'deferred',
     ]);
   });
 
@@ -167,9 +167,11 @@ describe('selection holds a re-scope or parked item, and keeps an obsolete one o
 
   it('holds re-scope and parked, but obsolete is out of play, and every holding cause is a skip cause', async () => {
     const { HOLDING_CAUSES, SKIP_CAUSES } = await load('core.mjs');
-    for (const cause of ['re-scope', 'parked', 'obsolete']) expect(SKIP_CAUSES).toContain(cause);
+    for (const cause of ['re-scope', 'deferred', 'obsolete']) expect(SKIP_CAUSES).toContain(cause);
     expect(HOLDING_CAUSES).toContain('re-scope');
-    expect(HOLDING_CAUSES).toContain('parked');
+    // the parked LABEL is the cause `deferred`: "parked" is the out-of-play pile
+    expect(HOLDING_CAUSES).toContain('deferred');
+    expect(HOLDING_CAUSES).not.toContain('parked');
     expect(HOLDING_CAUSES).not.toContain('obsolete');
     for (const cause of HOLDING_CAUSES as string[]) expect(SKIP_CAUSES).toContain(cause);
   });
@@ -311,7 +313,7 @@ describe('the CLI reads the markers out of a plan-md rig', () => {
     expect(parsed.stop.kind).toBe('nothing-selectable');
     expect(parsed.skipped.map((s: { causes: string[] }) => s.causes)).toEqual([
       ['re-scope'],
-      ['parked'],
+      ['deferred'],
     ]);
 
     const hygiene = await run(['hygiene', '--config', cfg]);

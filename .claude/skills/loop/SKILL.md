@@ -174,7 +174,12 @@ means the same thing — three of lifecycle, one of scheduling:
 - `parked` — valid work deliberately not active now. The **scheduling** axis,
   orthogonal to the three above: `keep-core + parked` is the ordinary shape of a
   deferred item and means "still needed, not now". It is the holding cause
-  `parked`, freed by a human un-parking it.
+  **`deferred`**, freed by a human un-parking it. The cause is not spelled
+  `parked` on purpose: §3 already uses that word for the **out-of-play pile** —
+  items waiting on a human that no session will take — and a parked-labelled
+  item is the opposite, held and takeable. So the stop line reads "held by
+  deferred" for the label, and "are parked" for the pile; `obsolete` lands in
+  the pile, the `parked` label never does.
 
 The rule under all four: **nothing infers `obsolete`** — not age, not a key
 range, old terminology, `parked`, absence from a roadmap, or a migration marker.
