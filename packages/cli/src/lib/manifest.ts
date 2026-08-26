@@ -66,6 +66,14 @@ export function parseManifest(raw: string): RigManifest | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
   const m = parsed as Partial<RigManifest>;
   if (typeof m.version !== 'string') return null;
+  // The same value check its siblings get (AR-128). `version` is printed raw
+  // in the upgrade plan header — `installed by ${plan.fromVersion}`, the screen
+  // read immediately before `--yes` — so a version carrying a newline or an
+  // ANSI escape could forge plan lines the CLI never composed. A version this
+  // rig writes is the package's own (`0.5.0`, `0.6.0-rc.1`), which the
+  // substitution whitelist admits; semver build metadata (`+`) is not, and a
+  // manifest carrying one is voided rather than printed.
+  if (!isSafeSubstitutionValue(m.version)) return null;
   if (m.kind !== 'create' && m.kind !== 'init') return null;
   const project = m.project as Partial<RigProject> | undefined;
   if (
