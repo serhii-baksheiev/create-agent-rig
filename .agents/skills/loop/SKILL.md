@@ -180,9 +180,18 @@ and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
-**Selection also revalidates the item against this run's own take-up.** `next`
+**Selection also revalidates the item against its last take-up.** `next`
 records the selected item's `updatedAt` marker in the run state (`takeUps`) and,
-when the same item is offered again in the run, compares the two. A marker that
+when the item is offered again, compares the two — against this run's take-up
+when it has one, otherwise against the newest earlier run's under `.claude/runs/`
+(AR-138: before that, an item taken up yesterday compared against nothing and
+read as a first sight). A proposal the loop files carries its own baseline: the
+`jira` and `github-issues` adapters record the filed item's marker as a take-up
+in the run that filed it. The event names which it used — `baseline:
+this-run | previous-run | null` — pinned in the generator's
+`test/template/revalidation-baseline.test.ts` — absent in a generated rig — ›
+"holds when the marker moved past the earlier run’s take-up, and names that
+baseline". A marker that
 moved prints a `revalidate:` line and the JSON carries `revalidation.changed:
 true`: **re-read the item before acting on it**, then record what the re-read
 concluded — whether the change altered the action is the evidence this exists to

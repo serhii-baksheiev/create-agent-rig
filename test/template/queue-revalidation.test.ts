@@ -363,6 +363,9 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
       source: [],
       action: 'continue',
       task: { from: null, to: T1 },
+      // AR-138: a first sight names no baseline at all — neither this run's
+      // nor an earlier run's — which is what makes it a first sight.
+      baseline: null,
     });
     expect((await stateOf(runDir)).takeUps).toEqual({ 'AR-1': T1 });
     const events = await revalidationEvents(runDir);
@@ -374,6 +377,7 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
       source: [],
       action: 'continue',
       task: { from: null, to: T1 },
+      baseline: null,
     });
   });
 

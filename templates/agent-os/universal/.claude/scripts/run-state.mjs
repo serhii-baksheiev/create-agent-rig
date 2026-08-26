@@ -49,8 +49,8 @@
  * per run is the caller's part of the contract, and the `loop` skill states it.
  */
 
-import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const STATE = 'state.json';
@@ -221,6 +221,52 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
   const state = readState(runDir);
   const takeUps = typeof state.takeUps === 'object' && state.takeUps !== null ? state.takeUps : {};
   return updateState(runDir, { takeUps: { ...takeUps, [String(id)]: updatedAt } });
+};
+
+/**
+ * The take-up an EARLIER run recorded for this item, or null (AR-138).
+ *
+ * {@link recordTakeUp} is per run on purpose, and that left a hole RX1
+ * measured: an item taken up yesterday and re-offered today compared against
+ * nothing and reported a first sight, however far its marker had moved. So
+ * when this run has no take-up for the item, SELECT asks the sibling run
+ * directories — newest first by name, which is the `YYYYMMDD-HHMMSS` the
+ * `loop` skill declares — and takes the first that recorded one. The answer
+ * names the run it came from, so the revalidation event can say whose
+ * baseline it compared against.
+ *
+ * Bounded and fail-soft: one `readdirSync` of the runs root, at most 200
+ * directories read, an unreadable state skipped rather than trusted, and
+ * `null` for no run directory or no runs root. Never this run's own state —
+ * that is {@link readState}'s answer, and the caller asks it first.
+ */
+export const previousTakeUp = (runDir, id) => {
+  if (!runDir || id === undefined || id === null) return null;
+  const root = dirname(runDir);
+  const self = basename(runDir);
+  let names;
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name !== self)
+      .map((entry) => entry.name)
+      .sort()
+      .reverse()
+      .slice(0, 200);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const candidate = join(root, name);
+    let state;
+    try {
+      state = JSON.parse(readFileSync(statePathIn(candidate), 'utf8'));
+    } catch {
+      continue;
+    }
+    const updatedAt = state?.takeUps?.[String(id)];
+    if (typeof updatedAt === 'string') return { updatedAt, runDir: candidate };
+  }
+  return null;
 };
 
 /**

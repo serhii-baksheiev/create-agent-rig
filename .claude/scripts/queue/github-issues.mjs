@@ -16,7 +16,7 @@
 import { execFileSync } from 'node:child_process';
 import { duplicateOf, fingerprintOf, ownerOfLabels, validateProposal } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
-import { recordEscalation } from '../run-state.mjs';
+import { recordEscalation, recordTakeUp } from '../run-state.mjs';
 
 export const name = 'github-issues';
 
@@ -267,6 +267,16 @@ export const proposeTriage = (rawProposal, { existing = null } = {}) => {
     return { ok: true, incremented: String(duplicate.number), item };
   }
 
-  ghText(['issue', 'create', '--title', item.title, '--body', item.body, '--label', 'triage']);
-  return { ok: true, filed: item.title, item };
+  const url = ghText(['issue', 'create', '--title', item.title, '--body', item.body, '--label', 'triage']);
+  // The proposal's own baseline (AR-138), as in jira.mjs: `gh issue create`
+  // prints the new issue's URL, whose last segment is its number; the marker
+  // is read back with `gh issue view`. No run directory → nothing recorded.
+  // ⚠ Limit: the shell is not stubbed under test, so this branch is pinned by
+  // the jira twin and by reading, not by a test of its own.
+  const id = /\/(\d+)\s*$/.exec(String(url ?? ''))?.[1] ?? null;
+  if (id && process.env.RIG_RUN_DIR) {
+    const after = ghJson(['issue', 'view', id, '--json', 'updatedAt']);
+    recordTakeUp(process.env.RIG_RUN_DIR, { id, updatedAt: after?.updatedAt ?? null });
+  }
+  return { ok: true, filed: item.title, id, item };
 };
