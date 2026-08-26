@@ -23,6 +23,14 @@ const DOCUMENTED_ABSENT: Record<string, string> = {
   '.claude/gate-rounds.json':
     'runtime state, written by the first gate round and gitignored — shipping one ' +
     'would start every branch mid-cap',
+  // AR-5: doctor reads the install manifest the CLI writes and an exemption list
+  // the project authors; neither is a template file.
+  '.claude/.rig-manifest.json':
+    'written by the create/init/upgrade commands from the bytes they installed — a ' +
+    'copy in the template would record somebody else’s install',
+  '.claude/doctor-exemptions.json':
+    'authored by the project: an exemption is a file AND a reason, and a shipped ' +
+    'list would exempt hooks nobody here decided to exempt',
 };
 
 async function installed(): Promise<Map<string, string>> {
