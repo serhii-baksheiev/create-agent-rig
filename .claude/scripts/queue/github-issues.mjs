@@ -271,12 +271,19 @@ export const proposeTriage = (rawProposal, { existing = null } = {}) => {
   // The proposal's own baseline (AR-138), as in jira.mjs: `gh issue create`
   // prints the new issue's URL, whose last segment is its number; the marker
   // is read back with `gh issue view`. No run directory → nothing recorded.
-  // ⚠ Limit: the shell is not stubbed under test, so this branch is pinned by
-  // the jira twin and by reading, not by a test of its own.
+  // Best-effort for the same reason as there: the issue exists by now, and a
+  // throw would make the caller file it again.
   const id = /\/(\d+)\s*$/.exec(String(url ?? ''))?.[1] ?? null;
   if (id && process.env.RIG_RUN_DIR) {
-    const after = ghJson(['issue', 'view', id, '--json', 'updatedAt']);
-    recordTakeUp(process.env.RIG_RUN_DIR, { id, updatedAt: after?.updatedAt ?? null });
+    try {
+      const after = ghJson(['issue', 'view', id, '--json', 'updatedAt']);
+      recordTakeUp(process.env.RIG_RUN_DIR, { id, updatedAt: after?.updatedAt ?? null });
+    } catch (error) {
+      process.stderr.write(
+        `proposeTriage: #${id} is filed, but its baseline was NOT recorded in ` +
+          `${process.env.RIG_RUN_DIR} — ${error.message}\n`,
+      );
+    }
   }
   return { ok: true, filed: item.title, id, item };
 };

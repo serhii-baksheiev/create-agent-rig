@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 /**
  * AR-138 — the take-up baseline crosses runs, and a proposal's baseline is the
@@ -38,11 +38,22 @@ const jiraIssue = (updated: string) => ({
   },
 });
 
+/** Every temp tree this file creates, removed at the end so none of them is a candidate baseline for a later run of the suite. */
+const created: string[] = [];
+const scratch = async (prefix: string): Promise<string> => {
+  const dir = await mkdtemp(path.join(tmpdir(), prefix));
+  created.push(dir);
+  return dir;
+};
+afterAll(async () => {
+  await Promise.all(created.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
 /** A runs root with N earlier run directories, each holding the state given. */
 const runsRoot = async (
   previous: Array<Record<string, unknown> | 'unreadable'>,
 ): Promise<{ root: string; runDir: string; dirs: string[] }> => {
-  const root = await mkdtemp(path.join(tmpdir(), 'runs-'));
+  const root = await scratch('runs-');
   const dirs: string[] = [];
   for (const [i, state] of previous.entries()) {
     const dir = path.join(root, `20260820-00000${i}`);
@@ -83,6 +94,27 @@ describe('the take-up baseline reaches back into earlier runs', () => {
     expect(previousTakeUp(runDir, 'AR-1')).toEqual({ updatedAt: T1, runDir: dirs[0] });
   });
 
+  it('reads only siblings named like a run, so a scratch directory beside the run is not yesterday', async () => {
+    // CI measured this: under a shared temp root, a neighbouring test's
+    // `takeup-*` directory carrying a state.json was read as an earlier run.
+    const { previousTakeUp } = await load('run-state.mjs');
+    const { root, runDir } = await runsRoot([]);
+    const stray = path.join(root, 'takeup-abc123');
+    await mkdir(stray, { recursive: true });
+    await writeFile(path.join(stray, 'state.json'), JSON.stringify({ takeUps: { 'AR-1': T1 } }));
+    expect(previousTakeUp(runDir, 'AR-1')).toBeNull();
+  });
+
+  it('a run declared under another naming looks at no siblings at all', async () => {
+    // Measured locally: a temp root of 454 000 entries cost every SELECT a
+    // 540 ms directory read for a question it could not answer.
+    const { previousTakeUp } = await load('run-state.mjs');
+    const { root } = await runsRoot([{ takeUps: { 'AR-1': T1 } }]);
+    const unnamed = path.join(root, 'run-abc123');
+    await mkdir(unnamed, { recursive: true });
+    expect(previousTakeUp(unnamed, 'AR-1')).toBeNull();
+  });
+
   it('answers null with no run directory, and null when the runs root does not exist', async () => {
     const { previousTakeUp } = await load('run-state.mjs');
     expect(previousTakeUp(undefined, 'AR-1')).toBeNull();
@@ -94,7 +126,7 @@ describe('the take-up baseline reaches back into earlier runs', () => {
 describe('selection compares against the earlier run when this run has no take-up yet', () => {
   const nextJson = async (updated: string, previous: Record<string, unknown>[]) => {
     const { withoutGitLocation } = await load('git-env.mjs');
-    const dir = await mkdtemp(path.join(tmpdir(), 'baseline-'));
+    const dir = await scratch('baseline-');
     await mkdir(path.join(dir, '.claude'), { recursive: true });
     const configPath = path.join(dir, '.claude', 'queue.json');
     await writeFile(
@@ -197,7 +229,7 @@ describe('a proposal the loop files carries its own baseline', () => {
   it('jira records the filed item’s marker as a take-up in the declared run', async () => {
     const { proposeTriage } = await loadQueue('jira.mjs');
     const { readState } = await load('run-state.mjs');
-    const runDir = await mkdtemp(path.join(tmpdir(), 'run-'));
+    const runDir = await scratch('run-');
     const result = await proposeTriage(proposal, {
       project: 'AR',
       env: { ...CREDENTIALS, RIG_RUN_DIR: runDir },
@@ -207,9 +239,135 @@ describe('a proposal the loop files carries its own baseline', () => {
     expect(calls.some((c) => c.method === 'GET' && c.url.includes('/issue/AR-9'))).toBe(true);
   });
 
+  const captureStderr = async <T>(
+    body: () => Promise<T>,
+  ): Promise<{ result: T; stderr: string }> => {
+    const chunks: string[] = [];
+    const real = process.stderr.write;
+    process.stderr.write = ((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      return { result: await body(), stderr: chunks.join('') };
+    } finally {
+      process.stderr.write = real;
+    }
+  };
+
+  it('jira stays filed when the run directory is stale — announced, never thrown', async () => {
+    const { proposeTriage } = await loadQueue('jira.mjs');
+    const stale = path.join(tmpdir(), 'run-dir-that-was-never-created');
+    const { result, stderr } = await captureStderr(() =>
+      proposeTriage(proposal, { project: 'AR', env: { ...CREDENTIALS, RIG_RUN_DIR: stale } }),
+    );
+    expect(result).toMatchObject({ ok: true, id: 'AR-9' });
+    expect(stderr).toMatch(/AR-9 is filed, but its baseline was NOT recorded/);
+  });
+
+  it('jira stays filed when the read-back fails — announced, never thrown', async () => {
+    const { proposeTriage } = await loadQueue('jira.mjs');
+    const runDir = await scratch('run-');
+    const stubbed = globalThis.fetch;
+    globalThis.fetch = ((input: string, init: { method?: string } = {}) =>
+      (init.method ?? 'GET') === 'GET' && String(input).includes('/issue/AR-9')
+        ? Promise.resolve({
+            ok: false,
+            status: 503,
+            statusText: 'Service Unavailable',
+            json: () => Promise.resolve({}),
+          })
+        : stubbed(input, init)) as unknown as typeof globalThis.fetch;
+    const { result, stderr } = await captureStderr(() =>
+      proposeTriage(proposal, { project: 'AR', env: { ...CREDENTIALS, RIG_RUN_DIR: runDir } }),
+    );
+    expect(result).toMatchObject({ ok: true, id: 'AR-9' });
+    expect(stderr).toMatch(/NOT recorded .*503/);
+  });
+
   it('jira files without a run directory and records nothing, rather than refusing to file', async () => {
     const { proposeTriage } = await loadQueue('jira.mjs');
     const result = await proposeTriage(proposal, { project: 'AR', env: { ...CREDENTIALS } });
     expect(result).toMatchObject({ ok: true, id: 'AR-9' });
+  });
+});
+
+describe('github-issues records the filed proposal’s marker through gh', () => {
+  /**
+   * A `gh` on PATH that answers the two calls `proposeTriage` makes after the
+   * dedupe listing: `issue create` prints the new URL, `issue view --json
+   * updatedAt` prints the marker; `issue list` prints an empty list.
+   */
+  const withStubGh = async <T>(body: () => Promise<T>): Promise<T> => {
+    const bin = await realpath(await scratch('stub-gh-'));
+    await writeFile(
+      path.join(bin, 'gh'),
+      [
+        '#!/bin/sh',
+        'case "$1 $2" in',
+        '  "issue list") echo "[]" ;;',
+        '  "issue create") echo "https://example.invalid/o/r/issues/42" ;;',
+        '  "issue view") echo \'{"updatedAt":"2026-08-26T09:00:00Z"}\' ;;',
+        '  *) exit 1 ;;',
+        'esac',
+        '',
+      ].join('\n'),
+    );
+    await chmod(path.join(bin, 'gh'), 0o755);
+    const savedPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${savedPath ?? ''}`;
+    try {
+      return await body();
+    } finally {
+      process.env['PATH'] = savedPath;
+    }
+  };
+
+  const withRunDir = async <T>(runDir: string | undefined, body: () => Promise<T>): Promise<T> => {
+    const saved = process.env['RIG_RUN_DIR'];
+    if (runDir === undefined) delete process.env['RIG_RUN_DIR'];
+    else process.env['RIG_RUN_DIR'] = runDir;
+    try {
+      return await body();
+    } finally {
+      if (saved === undefined) delete process.env['RIG_RUN_DIR'];
+      else process.env['RIG_RUN_DIR'] = saved;
+    }
+  };
+
+  const proposal = {
+    finding: 'journal line',
+    part: 'skill',
+    change: 'a change',
+    proof: 'an observation',
+    asOf: null,
+  };
+
+  it('records the new issue’s updatedAt as a take-up in the declared run, keyed by its number', async () => {
+    const { proposeTriage } = await loadQueue('github-issues.mjs');
+    const { readState } = await load('run-state.mjs');
+    const runDir = await scratch('run-');
+    const result = await withStubGh(() => withRunDir(runDir, async () => proposeTriage(proposal)));
+    expect(result).toMatchObject({ ok: true, id: '42' });
+    expect(readState(runDir).takeUps).toEqual({ '42': '2026-08-26T09:00:00Z' });
+  });
+
+  it('stays filed when the run directory is stale — announced, never thrown', async () => {
+    const { proposeTriage } = await loadQueue('github-issues.mjs');
+    const stale = path.join(tmpdir(), 'run-dir-that-was-never-created');
+    const chunks: string[] = [];
+    const real = process.stderr.write;
+    process.stderr.write = ((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let result: unknown;
+    try {
+      result = await withStubGh(() => withRunDir(stale, async () => proposeTriage(proposal)));
+    } finally {
+      process.stderr.write = real;
+    }
+    expect(result).toMatchObject({ ok: true, id: '42' });
+    expect(chunks.join('')).toMatch(/#42 is filed, but its baseline was NOT recorded/);
   });
 });

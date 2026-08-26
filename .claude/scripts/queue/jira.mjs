@@ -479,10 +479,24 @@ export const proposeTriage = async (
   // compares against something. Read back rather than assumed — the marker is
   // the tracker's, and `created` carries only the key. No run directory →
   // nothing recorded, and the proposal is still filed.
+  //
+  // 🔴 Best-effort, and it says so: the proposal is FILED by now, and a throw
+  // here — a read-back the tracker refused, a stale or unwritable run
+  // directory in `updateState` — would tell the caller the filing failed when
+  // it succeeded, and the natural response (file again) double-files. The same
+  // defect `recordEscalation` closes for escalations; announced on stderr,
+  // because a baseline silently missing reads as a first sight later.
   const id = created?.key ?? null;
   if (id && env.RIG_RUN_DIR) {
-    const after = await request(`/rest/api/3/issue/${id}?fields=updated`, { env });
-    recordTakeUp(env.RIG_RUN_DIR, { id, updatedAt: toIso(after?.fields?.updated) });
+    try {
+      const after = await request(`/rest/api/3/issue/${id}?fields=updated`, { env });
+      recordTakeUp(env.RIG_RUN_DIR, { id, updatedAt: toIso(after?.fields?.updated) });
+    } catch (error) {
+      process.stderr.write(
+        `proposeTriage: ${id} is filed, but its baseline was NOT recorded in ` +
+          `${env.RIG_RUN_DIR} — ${error.message}\n`,
+      );
+    }
   }
   return { ok: true, filed: item.title, id, item };
 };

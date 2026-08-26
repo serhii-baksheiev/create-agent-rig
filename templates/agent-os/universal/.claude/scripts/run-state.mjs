@@ -49,7 +49,7 @@
  * per run is the caller's part of the contract, and the `loop` skill states it.
  */
 
-import { readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { opendirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -235,27 +235,55 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
  * names the run it came from, so the revalidation event can say whose
  * baseline it compared against.
  *
- * Bounded and fail-soft: one `readdirSync` of the runs root, at most 200
- * directories read, an unreadable state skipped rather than trusted, and
- * `null` for no run directory or no runs root. Never this run's own state —
- * that is {@link readState}'s answer, and the caller asks it first.
+ * 🔴 A sibling is a run only by NAME — `YYYYMMDD-HHMMSS`, the shape the `loop`
+ * skill declares — and so is the run asking. The first version took every
+ * sibling directory, and two measurements showed why that is wrong. On CI,
+ * with `RIG_RUN_DIR` under a shared temp root, a neighbouring test's scratch
+ * directory carrying a `state.json` was read as yesterday's run, and a first
+ * sight came back as a hold against a marker nobody had taken up. Locally,
+ * the same temp root held 454 000 entries, and every SELECT paid a 540 ms
+ * directory read for a question it could not answer. So a run declared under
+ * another naming looks at no siblings at all, and the limit is the mirror
+ * image: an earlier run declared under another naming is not seen here.
+ *
+ * Bounded and fail-soft: the runs root is walked through one directory handle
+ * and at most 10 000 entries are looked at, whatever is in there; at most 200
+ * candidate runs are read, an unreadable state is skipped rather than trusted,
+ * and the answer is `null` for no run directory, an unnamed one, or no runs
+ * root. Never this run's own state — that is {@link readState}'s answer, and
+ * the caller asks it first.
  */
+const RUN_DIR_NAME = /^\d{8}-\d{6}$/;
+const RUNS_ROOT_ENTRY_BUDGET = 10_000;
+const RUNS_READ_CAP = 200;
+
 export const previousTakeUp = (runDir, id) => {
   if (!runDir || id === undefined || id === null) return null;
   const root = dirname(runDir);
   const self = basename(runDir);
-  let names;
+  if (!RUN_DIR_NAME.test(self)) return null;
+  const names = [];
+  let dir;
   try {
-    names = readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name !== self)
-      .map((entry) => entry.name)
-      .sort()
-      .reverse()
-      .slice(0, 200);
+    dir = opendirSync(root);
   } catch {
     return null;
   }
-  for (const name of names) {
+  try {
+    for (let seen = 0; seen < RUNS_ROOT_ENTRY_BUDGET; seen += 1) {
+      const entry = dir.readSync();
+      if (entry === null) break;
+      if (entry.isDirectory() && entry.name !== self && RUN_DIR_NAME.test(entry.name)) {
+        names.push(entry.name);
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    dir.closeSync();
+  }
+  names.sort().reverse();
+  for (const name of names.slice(0, RUNS_READ_CAP)) {
     const candidate = join(root, name);
     let state;
     try {

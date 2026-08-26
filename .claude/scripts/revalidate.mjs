@@ -268,7 +268,10 @@ if (invokedDirectly()) {
   const ticket = tickets.find((candidate) => String(candidate.id) === String(args.ticket)) ?? null;
 
   const snapshot = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
-  // At SELECT a missing snapshot is the first sight and becomes the baseline;
+  // At SELECT a missing snapshot is a first sight only when no earlier run
+  // took the item up either — `queue/index.mjs` asks `previousTakeUp` (AR-138);
+  // here the question is this run's own take-up, which SELECT wrote — and it
+  // becomes the baseline;
   // here it is a comparison that cannot be made — the run never recorded a
   // take-up for this item, so `null`, not the SELECT point's `false`.
   const unverifiable = { changed: null, task: { from: snapshot, to: ticket?.updatedAt ?? null } };
