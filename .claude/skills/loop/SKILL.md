@@ -25,7 +25,7 @@ Selection never reads a tracker directly. It goes through
 ```bash
 node .claude/scripts/queue/index.mjs next      # the item to take, and why the rest were skipped
 node .claude/scripts/queue/index.mjs next --json
-node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies
+node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies, overtaken proposals
 ```
 
 - **`plan-md`** (default) — the Agent queue in `PLAN.md`. The only adapter that
@@ -621,6 +621,18 @@ node --input-type=module -e '
 ```
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
+
+**The filed item also records the commit it was measured against** — an `asOf:`
+line, HEAD of this checkout unless the call passes its own `asOf` (`null` files
+without one). It is there for `hygiene`, which lists the proposals on file and
+reports one whose cited paths changed since its `asOf` as
+`proposal-possibly-overtaken`, one with no `asOf` as `proposal-asof-missing`, and
+one git cannot diff from as `proposal-asof-unanswerable` — never as clean. Two
+proposals in a row once escalated `PREMISE FALSE` because the merge that
+falsified each landed after it was filed, and selection hands out the oldest
+first (AR-116). The behaviour is pinned in the generator's
+`test/template/proposal-asof.test.ts` — absent in a generated rig — ›
+"names the overtaken one, the unanswerable one, and stays silent on the current one".
 
 **All three adapters write it themselves** — `jira` and `github-issues` create a
 `triage`-labelled issue, `plan-md` appends a bullet to the **Operator queue**, and

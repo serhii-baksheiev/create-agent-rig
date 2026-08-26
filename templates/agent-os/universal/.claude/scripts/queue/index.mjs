@@ -4,7 +4,7 @@
 //   node .claude/scripts/queue/index.mjs next            # the item to take, and why
 //   node .claude/scripts/queue/index.mjs next --json
 //   node .claude/scripts/queue/index.mjs list            # every item, with skip reasons
-//   node .claude/scripts/queue/index.mjs hygiene         # stale labels and link anomalies
+//   node .claude/scripts/queue/index.mjs hygiene         # stale labels, link anomalies, overtaken proposals
 //   node .claude/scripts/queue/index.mjs gate-round --branch <b>   # count a gate round
 //
 // The adapter comes from `.claude/queue.json` (`{"adapter": "plan-md"}`) and
@@ -14,7 +14,16 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
-import { hygieneOf, revalidationOf, selectNext, stopConditionOf } from './core.mjs';
+import {
+  asOfOf,
+  citedPathsOf,
+  hygieneOf,
+  overtakenOf,
+  revalidationOf,
+  selectNext,
+  stopConditionOf,
+} from './core.mjs';
+import { changedSinceOf, headShaOf } from './as-of.mjs';
 // One resolver, imported rather than re-derived: writer and reader disagreeing
 // about which checkout they are in is the whole of the worktree defect. It lives
 // apart from `state.mjs` so the read path does not drag the tier computation —
@@ -479,12 +488,39 @@ if (invokedDirectly()) {
   }
 
   if (args.command === 'hygiene') {
-    const findings = tickets.map(hygieneOf).filter(Boolean);
+    // The proposals on file are checked too (AR-116): a proposal names the commit
+    // it was measured against, and one whose cited paths moved since is reported
+    // as possibly overtaken. Git runs here, once per distinct `asOf`, against the
+    // project this script belongs to; `core.mjs` only decides.
+    const proposals = await adapter.listProposals(optionsWithPlanPath(config.options, configPath));
+    // The checkout the proposals describe is the project the config names — an
+    // explicit `--config <root>/.claude/queue.json` points at that root — and
+    // this script's own project only when the config implies none.
+    const gitRoot = projectRootOfConfig(configPath) ?? projectRoot;
+    const head = headShaOf({ cwd: gitRoot });
+    const changedByAsOf = new Map();
+    const overtaken = proposals
+      .map((proposal) => {
+        const asOf = asOfOf(proposal.body);
+        if (asOf && !changedByAsOf.has(asOf)) {
+          changedByAsOf.set(asOf, changedSinceOf({ cwd: gitRoot, asOf, head: head ?? 'HEAD' }));
+        }
+        return overtakenOf({
+          id: proposal.id,
+          asOf,
+          citedPaths: citedPathsOf(proposal.body),
+          head,
+          changedSince: asOf ? changedByAsOf.get(asOf) : null,
+        });
+      })
+      .filter(Boolean);
+    const findings = [...tickets.map(hygieneOf).filter(Boolean), ...overtaken];
     process.stdout.write(
       args.json
         ? `${JSON.stringify({ findings }, null, 2)}\n`
         : findings.length === 0
-          ? `queue hygiene: ${tickets.length} item(s) checked — nothing stale.\n`
+          ? `queue hygiene: ${tickets.length} item(s) and ${proposals.length} proposal(s) ` +
+            'checked — nothing stale.\n'
           : `${findings.map((f) => `  [${f.kind}] ${f.id} — ${f.why}`).join('\n')}\n`,
     );
     process.exit(0);

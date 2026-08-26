@@ -18,6 +18,7 @@
 //     { "adapter": "jira", "options": { "project": "ABC" } }
 //     { "adapter": "jira", "options": { "jql": "project = ABC AND ..." } }
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'jira';
@@ -408,6 +409,7 @@ export const triageItemFor = (proposal) => {
       `- how the next run proves it — ${proposal.proof}`,
       '',
       `fingerprint: ${fingerprint}`,
+      ...(proposal.asOf ? [`asOf: ${proposal.asOf}`] : []),
       '',
       'The loop proposes; the owner patches. Self-applying a change to its own',
       'rulebook is how an unattended run drifts irreversibly.',
@@ -419,22 +421,27 @@ export const triageItemFor = (proposal) => {
 };
 
 /** File the proposal, or increment the one already carrying this fingerprint. */
+/**
+ * The proposals on file, as `{ id, body }` — every `triage`-labelled issue, the
+ * body being its DESCRIPTION, which is where the fingerprint and `asOf` were
+ * written. An earlier dedupe mapped candidates through `toTicket` — which emits
+ * no body at all — so the predicate was always false and twenty identical stops
+ * filed twenty issues against the tracker.
+ */
+export const listProposals = async ({ existing = null, env = process.env } = {}) =>
+  existing ??
+  (await search({ jql: 'labels = triage ORDER BY created DESC', env })).issues.map((issue) => ({
+    id: issue.key,
+    body: descriptionTextOf(issue),
+  }));
+
 export const proposeTriage = async (
-  proposal,
+  rawProposal,
   { project = null, existing = null, env = process.env } = {},
 ) => {
+  const proposal = withAsOf(rawProposal);
   const item = triageItemFor(proposal);
-  // Compared against the issue's DESCRIPTION, which is where the fingerprint was
-  // written. The previous version mapped candidates through `toTicket` — which
-  // emits no body at all — so the predicate was always false and twenty identical
-  // stops filed twenty issues against the tracker.
-  const found =
-    existing ??
-    (await search({ jql: 'labels = triage ORDER BY created DESC', env })).issues.map((issue) => ({
-      id: issue.key,
-      body: descriptionTextOf(issue),
-    }));
-  const duplicate = duplicateOf(item, found);
+  const duplicate = duplicateOf(item, await listProposals({ existing, env }));
 
   if (duplicate) {
     await comment(duplicate, `Seen again (fingerprint ${item.fingerprint}). Incrementing.`, { env });

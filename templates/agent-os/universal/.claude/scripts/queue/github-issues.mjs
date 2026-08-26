@@ -15,6 +15,7 @@
 // because it is re-resolved from the blockers themselves on every selection.
 import { execFileSync } from 'node:child_process';
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'github-issues';
@@ -222,6 +223,7 @@ export const triageItemFor = (proposal) => {
       `- **how the next run proves it** — ${proposal.proof}`,
       '',
       `fingerprint: ${fingerprint}`,
+      ...(proposal.asOf ? [`asOf: ${proposal.asOf}`] : []),
       '',
       'The loop proposes; the owner patches. Self-applying a change to its own',
       'rulebook is how an unattended run drifts irreversibly — and it collides with',
@@ -240,15 +242,17 @@ export const triageItemFor = (proposal) => {
  * hand out nothing — "queue empty" and "nothing selectable";
  * twenty such stops must produce one proposal with a count of twenty.
  */
-export const proposeTriage = (proposal, { existing = null } = {}) => {
-  const item = triageItemFor(proposal);
-  const found =
+/** The proposals on file, as `{ id, body }` — every `triage`-labelled issue. */
+export const listProposals = ({ existing = null } = {}) =>
+  (
     existing ??
-    ghJson(['issue', 'list', '--label', 'triage', '--state', 'all', '--limit', '100', '--json', FIELDS]);
-  const duplicate = duplicateOf(
-    item,
-    found.map((issue) => ({ id: String(issue.number), body: issue.body })),
-  );
+    ghJson(['issue', 'list', '--label', 'triage', '--state', 'all', '--limit', '100', '--json', FIELDS])
+  ).map((issue) => ({ id: String(issue.number), body: issue.body }));
+
+export const proposeTriage = (rawProposal, { existing = null } = {}) => {
+  const proposal = withAsOf(rawProposal);
+  const item = triageItemFor(proposal);
+  const duplicate = duplicateOf(item, listProposals({ existing }));
 
   if (duplicate) {
     ghText([

@@ -13,6 +13,7 @@
 // (`github-issues`). Ordering the list by hand is not a dependency graph.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
@@ -257,6 +258,7 @@ export const triageItemFor = (proposal) => {
       `- **how the next run proves it** — ${proposal.proof}`,
       '',
       `fingerprint: ${fingerprint}`,
+      ...(proposal.asOf ? [`asOf: ${proposal.asOf}`] : []),
       '',
       'The loop proposes; the owner patches. Self-applying a change to its own',
       'rulebook is how an unattended run drifts irreversibly.',
@@ -329,7 +331,24 @@ export const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 const bulletFor = (item, proposal, seen) =>
   `- **${oneLine(item.title)}** — finding: ${oneLine(proposal.finding)} · ` +
   `part: ${oneLine(proposal.part)} · proof: ${oneLine(proposal.proof)} · ` +
+  `${proposal.asOf ? `asOf: ${proposal.asOf} · ` : ''}` +
   `fingerprint: \`${item.fingerprint}\` · seen ×${seen}`;
+
+/**
+ * The proposals on file, as `{ id, body }` — every Operator-queue line carrying
+ * this adapter's trailing field shape, the whole line as the body so `asOfOf`
+ * and `citedPathsOf` can read it. An absent Operator queue lists nothing.
+ */
+export const listProposals = ({ planPath: p } = {}) => {
+  const plan = readFileSync(p ?? 'PLAN.md', 'utf8');
+  const { found, lines, start, end } = sectionRange(plan, OPERATOR_QUEUE);
+  if (!found) return [];
+  const proposals = [];
+  for (let i = start; i < end; i += 1) {
+    if (TAIL.test(lines[i])) proposals.push({ id: String(i), body: lines[i] });
+  }
+  return proposals;
+};
 
 /**
  * File a proposal into the **Operator queue** — never the Agent queue.
@@ -400,7 +419,8 @@ const bulletFor = (item, proposal, seen) =>
  *   the bullet stays unselectable — but a reader sees it under the wrong
  *   heading.
  */
-export const proposeTriage = (proposal, { planPath: p } = {}) => {
+export const proposeTriage = (rawProposal, { planPath: p } = {}) => {
+  const proposal = withAsOf(rawProposal);
   const item = triageItemFor(proposal);
   const file = p ?? 'PLAN.md';
   const plan = readFileSync(file, 'utf8');

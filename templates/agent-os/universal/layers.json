@@ -51,6 +51,7 @@
     ".claude/scripts/queue/github-issues.mjs",
     ".claude/scripts/queue/jira.mjs",
     ".claude/scripts/queue/index.mjs",
+    ".claude/scripts/queue/as-of.mjs",
     ".claude/scripts/queue/checkout.mjs",
     ".claude/scripts/queue/state.mjs",
     ".claude/scripts/queue/gate-rounds.mjs",
