@@ -96,6 +96,7 @@ jobs:
           --exclude test/template/queue-revalidation.test.ts
           --exclude test/template/queue.test.ts
           --exclude test/template/revalidate.test.ts
+          --exclude test/template/revalidation-baseline.test.ts
           --exclude test/template/revalidation-evidence.test.ts
           --exclude test/template/review-fixes.test.ts
           --exclude test/template/root-ci.test.ts

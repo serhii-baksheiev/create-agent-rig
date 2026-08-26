@@ -43,6 +43,9 @@ const WINDOWS_INCOMPATIBLE_TESTS = [
   'test/template/queue-revalidation.test.ts',
   'test/template/queue.test.ts',
   'test/template/revalidate.test.ts',
+  // AR-138: a `gh` stub on PATH is a `#!/bin/sh` script, which Windows does
+  // not execute, so the real `gh` runs and refuses without a token.
+  'test/template/revalidation-baseline.test.ts',
   'test/template/revalidation-evidence.test.ts',
   'test/template/review-fixes.test.ts',
   'test/template/root-ci.test.ts',
