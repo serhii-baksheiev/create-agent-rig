@@ -131,7 +131,11 @@ describe('the CLI hands options.owner to selection and to hygiene', () => {
 
     const hygiene = await run(['hygiene', '--config', cfg]);
     expect(hygiene.code, hygiene.stderr).toBe(0);
-    expect(hygiene.stdout).toMatch(/\[owner-mismatch\] 1 — owned by rig-platform/);
+    // The tail discriminates the wiring: with `options.owner` unread, the line
+    // would say "declares no owner" instead of naming this checkout.
+    expect(hygiene.stdout).toMatch(
+      /\[owner-mismatch\] 1 — owned by rig-platform, and this checkout is create-agent-rig/,
+    );
   });
 
   it('`next` takes the item when the checkout is the owner it names', async () => {
@@ -141,10 +145,14 @@ describe('the CLI hands options.owner to selection and to hygiene', () => {
     expect(JSON.parse(next.stdout).ticket?.title).toBe('Foreign work');
   });
 
-  it('a checkout with no options.owner holds the marked item too', async () => {
+  it('a checkout with no options.owner holds the marked item too, and hygiene says why', async () => {
     const cfg = await rig(null);
     const next = await run(['next', '--config', cfg, '--json']);
     expect(JSON.parse(next.stdout).skipped[0].causes).toEqual(['owner']);
+    const hygiene = await run(['hygiene', '--config', cfg]);
+    expect(hygiene.stdout).toMatch(
+      /\[owner-mismatch\] 1 — owned by rig-platform, and this checkout declares no owner/,
+    );
   });
 });
 

@@ -62,8 +62,9 @@ const MARKERS = {
   triggerAuto: /\[trigger-auto\]/i,
   triggerHuman: /\[trigger-human\]/i,
   // `[owner:<name>]` — the repository the item belongs to (AR-132), the same
-  // fact the tracker adapters read out of an `owner-<name>` label.
-  owner: /\[owner:([^\]\s]+)\]/i,
+  // fact the tracker adapters read out of an `owner-<name>` label. Case-exact,
+  // because the name is compared exactly to `options.owner`.
+  owner: /\[owner:([^\]\s]+)\]/,
 };
 
 /**
