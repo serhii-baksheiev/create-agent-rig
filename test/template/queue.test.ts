@@ -1253,6 +1253,11 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       'spacing',
       'trigger-auto',
       'trigger-human',
+      // AR-132: another repository's item, freed only by a human moving or
+      // re-marking it. Held rather than parked so the stop line can name that
+      // act; reporting it as `queue-empty` would send the owner to refill a
+      // queue whose item merely sits in the wrong place.
+      'owner',
     ]);
     expect(Object.isFrozen(HOLDING_CAUSES)).toBe(true);
 
@@ -1315,6 +1320,7 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
   // both ways: a holding cause with no phrase, and a phrase with no prose.
   const REMEDY_FOR: Record<string, RegExp> = {
     blocked: /blocker|its item closes/i,
+    owner: /another repository.*(moves it|re-marks it)/i,
     'in-progress': /another session|the other session|finishes|releases/i,
     spacing: /normal item|interleave/i,
     // 🔴 This was ONE entry — `trigger: /declare|declares/i` — and it is exactly

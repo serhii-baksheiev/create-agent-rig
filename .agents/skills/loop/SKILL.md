@@ -127,6 +127,18 @@ not deleting the old marker, and the silent resolution goes to the **less**
 restrictive gate. Until that is fixed, treat a double-marked item as
 human-gated by hand.
 
+🔴 **An item marked for another repository is held, never taken.** A label
+`owner-<name>` names the repository an item belongs to; the checkout names
+itself in `options.owner` of `.claude/queue.json`, and a mismatch — or an
+owned item in a checkout that declares no owner — is the holding cause `owner`,
+reported by `hygiene` as `owner-mismatch`. It clears the way `trigger-human`
+does: a human moves the item or re-marks it. An unmarked item is unconditional.
+Two items of another product once entered this queue as normal spacers and
+escalated `PREMISE FALSE` back to back — a run-level stop spent on work that
+was never this checkout's (AR-132). Pinned in the generator's
+`test/template/queue-owner.test.ts` — absent in a generated rig — › "holds an
+item whose owner is another repository, with the cause named".
+
 **For a `trigger-auto` item, record the declaration** — it has to outlive the
 turn it was made in, or the next selection holds the item back again:
 
@@ -358,10 +370,13 @@ Four of them deserve their reasons repeated:
   queue**: the elevated spacing (a normal or prose-only item lands), a blocker (its item
   closes), in-progress (the other session finishes), a trigger (a human
   declares it — and for a `trigger-auto` item that declaration is **written**,
-  §2, so this is the one hold that needs a command rather than only time). The
+  §2, so this is the one hold that needs a command rather than only time), and
+  an owner (§2: the item is another repository's, and a human moves it or
+  re-marks it — neither time nor interleaving frees it). The
   stop line names how many and by which, because the two endings ask the owner
   for opposite things: an empty queue wants refilling, a held one wants
-  interleaving or simply time. 🔴 **A parked cause outranks a holding one on the
+  interleaving, time, or — for a trigger or an owner — a human act the line
+  names. 🔴 **A parked cause outranks a holding one on the
   same item** — an escalated item is left claimed on purpose, so it arrives
   carrying `in-progress` too. **Neither ending is an invitation to refill the
   queue or invent work.** Why the two are split, and how the parked pile grows

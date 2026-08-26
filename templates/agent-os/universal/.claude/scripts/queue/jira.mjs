@@ -17,7 +17,12 @@
 //
 //     { "adapter": "jira", "options": { "project": "ABC" } }
 //     { "adapter": "jira", "options": { "jql": "project = ABC AND ..." } }
-import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+//     { "adapter": "jira", "options": { "project": "ABC", "owner": "my-repo" } }
+//
+// `owner` names this checkout for the `owner-<name>` label (AR-132): an item
+// marked for another repository is held, and a checkout that declares no
+// owner holds every marked item, since it cannot confirm a match.
+import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
@@ -120,6 +125,8 @@ export const toTicket = (issue) => {
       : labels.includes('trigger-human')
         ? 'human'
         : null,
+    // The repository this item belongs to (AR-132): `owner-<name>`, or null.
+    owner: ownerOfLabels(labels),
   };
 };
 

@@ -13,9 +13,12 @@ why a parked cause outranks a holding one. It is not loaded into any session.
   by a condition that clears when _something else happens_: the elevated spacing
   (a normal item lands — or an elevated one whose paths were all documents, see
   `spacing-rations-mechanisms.md`), a blocker (its item closes), `in-progress`
-  (the other session finishes), a trigger (a human declares it).
+  (the other session finishes), a trigger (a human declares it), an owner (the
+  item is marked for another repository and a human moves or re-marks it —
+  AR-132).
 
-An empty queue wants refilling. A held one wants interleaving, or simply time.
+An empty queue wants refilling. A held one wants interleaving, time, or — for a
+trigger or an owner — the human act the stop line names.
 Reporting the second as the first sends the owner to write tickets that already
 exist; reporting the first as the second tells them to wait for nothing.
 

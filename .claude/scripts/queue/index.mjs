@@ -514,7 +514,11 @@ if (invokedDirectly()) {
         });
       })
       .filter(Boolean);
-    const findings = [...tickets.map(hygieneOf).filter(Boolean), ...overtaken];
+    const owner = config.options?.owner ?? null;
+    const findings = [
+      ...tickets.map((ticket) => hygieneOf(ticket, { owner })).filter(Boolean),
+      ...overtaken,
+    ];
     process.stdout.write(
       args.json
         ? `${JSON.stringify({ findings }, null, 2)}\n`
@@ -546,6 +550,9 @@ if (invokedDirectly()) {
     // impossible to retract, so "not this time" would again require editing the
     // generated file this move exists to get out of.
     triggersFired: runState.triggersFired ?? config.triggersFired ?? null,
+    // This checkout's name, for the owner marker (AR-132). Absent means the
+    // checkout cannot confirm a match, and an owned item is held.
+    owner: config.options?.owner ?? null,
   });
   // The skipped records travel with the count: without them "nothing left" and
   // "everything left is held back" both print as an empty queue, and only one of
