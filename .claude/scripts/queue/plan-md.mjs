@@ -284,6 +284,7 @@ export const triageItemFor = (proposal) => {
       `- **part to change** — ${proposal.part}`,
       `- **proposed change** — ${proposal.change}`,
       `- **how the next run proves it** — ${proposal.proof}`,
+      ...(proposal.measured ? [`- **measured** — ${proposal.measured}`, `- **inferred** — ${proposal.inferred}`] : []),
       '',
       `fingerprint: ${fingerprint}`,
       ...(proposal.asOf ? [`asOf: ${proposal.asOf}`] : []),
@@ -359,6 +360,7 @@ export const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 const bulletFor = (item, proposal, seen) =>
   `- **${oneLine(item.title)}** — finding: ${oneLine(proposal.finding)} · ` +
   `part: ${oneLine(proposal.part)} · proof: ${oneLine(proposal.proof)} · ` +
+  `${proposal.measured ? `measured: ${oneLine(proposal.measured)} · inferred: ${oneLine(proposal.inferred)} · ` : ''}` +
   `${proposal.asOf ? `asOf: ${proposal.asOf} · ` : ''}` +
   `fingerprint: \`${item.fingerprint}\` · seen ×${seen}`;
 
