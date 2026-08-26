@@ -21,19 +21,26 @@ import { existsSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { delimiter, join } from 'node:path';
 
-/** Every path that arms the brake. The machine-level default is always first. */
-export const stopFlags = (env = process.env) => {
-  // BOTH homes: `homedir()` honours $HOME, which `.claude/settings.json` can set —
-  // pointing it at an empty directory disarmed the brake. `userInfo()` reads the
-  // password database and ignores the environment, so the operator's real flag is
-  // always among the paths checked.
-  const homes = new Set([homedir()]);
+/**
+ * BOTH homes, env-derived first: `$HOME` (what `.claude/settings.json` can set —
+ * pointing it at an empty directory once disarmed the brake) and the password
+ * database's, which ignores the environment, so the operator's real flag is
+ * always among the paths checked. Shared with the unattended flag (AR-51): one
+ * lookup, one place to be wrong.
+ */
+export const homesOf = (env = process.env) => {
+  const homes = new Set([env.HOME || homedir()]);
   try {
     homes.add(userInfo().homedir);
   } catch {
     // no password entry — the env-derived home is all there is
   }
-  const paths = [...homes].map((home) => join(home, '.claude', '__PROJECT_NAME__-loop-STOP'));
+  return [...homes];
+};
+
+/** Every path that arms the brake. The machine-level default is always first. */
+export const stopFlags = (env = process.env) => {
+  const paths = homesOf(env).map((home) => join(home, '.claude', '__PROJECT_NAME__-loop-STOP'));
   const extra = env.AGENT_LOOP_STOP;
   if (extra) {
     // Filtered and CAPPED before the spread, never after. Spreading an

@@ -108,6 +108,14 @@ own cost figures are read next to the lane they do not cover.
   at runtime instead of writing it out, or the check reports its own test data as
   a leak.
 - touch production data outside a reviewed migration
+- edit the rulebook from an **unattended** run outside the item's allow-list — `guard-rulebook` refuses it.
+  The rulebook: the hooks, their wiring, `.claude/queue.json`, the queue
+  adapters, the router, the gate sweep, the rules, `CLAUDE.md`. Mechanical:
+  the hook refuses the edit while the unattended flag the `loop` skill writes
+  at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), and does
+  nothing in an attended session. ⚠ It sees edit tool calls only — a
+  shell redirect into `.claude/settings.json` is not one — and the flag, not
+  the run, is what arms it; its header states the rest of its limits.
 
 ## Stop rules — by work-state, not by feelings
 

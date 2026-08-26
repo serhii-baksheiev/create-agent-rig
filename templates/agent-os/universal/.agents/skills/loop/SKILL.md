@@ -87,6 +87,31 @@ export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
 mkdir -p "$RIG_RUN_DIR"
 ```
 
+⚠ **That export reaches the commands THIS shell runs and nothing else.** A
+`PreToolUse` hook is spawned by the harness with the harness's own environment,
+never with a variable the session exported — pinned in the generator's
+`test/template/guard-rulebook.test.ts` (absent in a generated rig) › "only a
+flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
+and in some harnesses the export does not even survive to the next Bash call,
+which is why every command in this skill can also take the run directory per
+invocation. What a hook CAN see is a file, so the unattended signal is one:
+
+```bash
+# at claim time, from the paths the item names (repo-relative prefixes, with
+# their trailing slash); the guard refuses every other rulebook edit while it is on
+node .claude/scripts/unattended-flag.mjs on --item <item-id> --run-dir "$RIG_RUN_DIR" --allow <prefix> [<prefix>…]
+```
+
+`guard-rulebook` reads it (`.claude/rules/autonomy.md`, "Never"): with the flag
+on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under `.claude/hooks/`,
+`.claude/settings.json`, `.claude/queue.json`, `.claude/scripts/queue/`, the
+router, the gate sweep, `.claude/rules/` or `CLAUDE.md` is refused unless its
+path starts with an allowed prefix; with no flag the guard does nothing. An
+item that needs a rulebook path names it here — a decision made at claim
+time, never a default — and the stop step below turns the flag off. Pinned in
+the generator's `test/template/guard-rulebook.test.ts` — absent in a generated
+rig — › "blocks a hook-config edit with an empty allow-list, naming path, item and the rule".
+
 ⚠ **The export outlives the run's own calls.** Everything the session spawns
 inherits it — and a test suite that spawns the queue CLI would write fixture
 records into this run's trace (AR-139: 38 fixture selections and 22 fixture
@@ -687,6 +712,14 @@ node --input-type=module -e '
 If no run directory was declared, there is nothing to close and this step is
 skipped — say so in the journal entry rather than leaving the reader to guess
 which of the two happened.
+
+**And turn the unattended flag off** — it outlives the run otherwise, and the
+next attended session would find its rulebook edits refused in the name of an
+item nobody is working:
+
+```bash
+node .claude/scripts/unattended-flag.mjs off
+```
 
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an

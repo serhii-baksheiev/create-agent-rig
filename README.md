@@ -105,6 +105,11 @@ wired by both `.claude/settings.json` and `.codex/hooks.json`:
   environment access, or a non-allowlisted import into the pure domain core;
 - **`guard-web-boundary`** — refuses `db`/service imports from the frontend;
   the web talks to the backend over HTTP only;
+- **`guard-rulebook`** — in an unattended run (a flag file the `loop` skill
+  writes at claim time), refuses an edit to the rulebook — hooks, wiring,
+  `queue.json`, the queue adapters, the router, the gate sweep, the rules,
+  `CLAUDE.md` — outside the current item's allow-list; does nothing in an
+  attended session.
 - **`guard-secret-file`** — refuses an edit that writes a credential: either the
   path names one (`jira.env`, `id_rsa`, anything under `secrets/`) or the text
   carries a credential VALUE. Both arms read one vocabulary,

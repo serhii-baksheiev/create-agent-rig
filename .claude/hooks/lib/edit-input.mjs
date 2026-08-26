@@ -45,6 +45,8 @@ const MAX_TOTAL_HUNK_LINES = 10_000;
 const MAX_OUTPUT_LINES = 20_000;
 const MAX_SPLICE_OPERATIONS = 1_000;
 const MAX_PATCH_SECTIONS = 128;
+/** A MultiEdit is capped before it is mapped — bounded work, never a spread of input. */
+const MAX_MULTI_EDITS = 256;
 const MAX_PATCH_PATH_COMPONENTS = 512;
 
 export function editFragments(input) {
@@ -57,6 +59,27 @@ export function editFragments(input) {
         fragment: String(
           (toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '',
         ),
+      },
+    ];
+  }
+  // Claude Code's other two edit surfaces (AR-51). `MultiEdit` carries one
+  // file and a list of edits — one fragment per edit, same path — and
+  // `NotebookEdit` carries a cell's new source. Before this, both reached every
+  // guard through the unanchored `Write|Edit` matcher and yielded no fragment,
+  // so a `Date.now()` in a MultiEdit to the core passed unchecked.
+  if (toolName === 'MultiEdit') {
+    if (!Array.isArray(toolInput.edits)) return [];
+    const filePath = normalisePath(toolInput.file_path);
+    return toolInput.edits.slice(0, MAX_MULTI_EDITS).map((edit) => ({
+      filePath,
+      fragment: String(edit?.new_string ?? ''),
+    }));
+  }
+  if (toolName === 'NotebookEdit') {
+    return [
+      {
+        filePath: normalisePath(toolInput.notebook_path),
+        fragment: String(toolInput.new_source ?? ''),
       },
     ];
   }

@@ -74,9 +74,9 @@ const ELEVATED_PATHS = [
   // as rulebook, so `isDecisionRecord` in `detect-missed-gate.mjs` is the other
   // half, and a declaration without it reports clean over every record.
   //
-  // BOTH the source and the synced copy, which departs from the convention of
-  // the lines above (`.claude/` and the root `CLAUDE.md` are synced too, and
-  // only their sources are declared). The reason is the reader, not the sweep:
+  // BOTH the source and the synced copy — the convention `.claude/` joined
+  // under AR-51 (its entry is the last in this list), while the root `CLAUDE.md` is still
+  // declared only through its source. The reason here is the reader, not the sweep:
   // `elevatedPathsIn` compares with a start-anchored `startsWith`, so neither
   // path covers the other, and a decision record is the one synced artifact a
   // human is expected to open at its root path — a finding naming only the
@@ -98,6 +98,13 @@ const ELEVATED_PATHS = [
   // covered by a declaration itself.
   'templates/agent-os/stack/aws-cdk/.claude/rules/',
   'templates/agent-os/stack/node-ts/.claude/rules/',
+  // The composed copy of the rulebook — what actually RUNS in this checkout.
+  // Until AR-51 only the template sources above were declared, on the ground
+  // that the drift test catches an edit to the synced copy. It does, at commit
+  // time; the gate sweep reads THIS list at merge time, and a merge that
+  // rewrote `.claude/hooks/` here while the templates stayed put would have
+  // failed the drift test AND passed the sweep. Declaring both closes that.
+  '.claude/',
 ];
 
 const withElevatedPaths = (claudeMd) =>
