@@ -1,5 +1,6 @@
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { execFile, execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -172,12 +173,99 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       });
     });
 
-  const config = async (contents: unknown = { adapter: 'plan-md' }): Promise<string> => {
+  // A config at `<repo>/.claude/queue.json` inside a committed, pushed temp
+  // repository: since AR-141 the command refuses to count on a checkout that
+  // cannot ship, and it finds that checkout from the config's root.
+  const gitIn = (cwd: string, args: string[]) =>
+    execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 't',
+        GIT_AUTHOR_EMAIL: 't@t',
+        GIT_COMMITTER_NAME: 't',
+        GIT_COMMITTER_EMAIL: 't@t',
+      },
+    }).trim();
+
+  const repo = async (): Promise<string> => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gate-cli-'));
-    const file = path.join(dir, 'queue.json');
+    const remote = await mkdtemp(path.join(tmpdir(), 'gate-remote-'));
+    gitIn(remote, ['init', '--bare', '-q']);
+    gitIn(dir, ['init', '-q', '-b', 'main']);
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.gitignore'),
+      '.claude/*.gate-rounds.json\n.claude/queue.state.json\n',
+    );
+    await writeFile(path.join(dir, 'README.md'), 'x\n');
+    gitIn(dir, ['add', '-A']);
+    gitIn(dir, ['commit', '-q', '-m', 'init']);
+    gitIn(dir, ['remote', 'add', 'origin', remote]);
+    gitIn(dir, ['push', '-q', '-u', 'origin', 'main']);
+    return dir;
+  };
+
+  const config = async (contents: unknown = { adapter: 'plan-md' }): Promise<string> => {
+    const dir = await repo();
+    const file = path.join(dir, '.claude', 'queue.json');
     await writeFile(file, typeof contents === 'string' ? contents : JSON.stringify(contents));
+    gitIn(dir, ['add', '-A']);
+    gitIn(dir, ['commit', '-q', '-m', 'config']);
+    gitIn(dir, ['push', '-q']);
     return file;
   };
+
+  // AR-141: a round names a head; a head that is not committed and pushed is
+  // not one the reviewers or CI will ever see.
+  describe('refuses to count on a checkout that cannot ship', () => {
+    const countsFile = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');
+
+    it('refuses to count a round on a dirty tree, and counts nothing', async () => {
+      const cfg = await config();
+      await writeFile(path.join(path.dirname(cfg), '..', 'scratch.txt'), 'uncommitted');
+      const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/working tree is dirty/);
+      expect(result.stderr).toMatch(/nothing was counted/);
+      expect(result.stderr).toMatch(/NOT an exhausted cap/);
+      expect(existsSync(countsFile(cfg))).toBe(false);
+    });
+
+    it('refuses to count a round on a HEAD its upstream has not seen', async () => {
+      const cfg = await config();
+      const dir = path.join(path.dirname(cfg), '..');
+      await writeFile(path.join(dir, 'more.txt'), 'x');
+      gitIn(dir, ['add', '-A']);
+      gitIn(dir, ['commit', '-q', '-m', 'unpushed']);
+      const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/1 commit\(s\) ahead of its upstream/);
+      expect(existsSync(countsFile(cfg))).toBe(false);
+    });
+
+    it('refuses to count a round on a branch with no upstream', async () => {
+      const cfg = await config();
+      const dir = path.join(path.dirname(cfg), '..');
+      gitIn(dir, ['checkout', '-q', '-b', 'fix/a']);
+      const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/no upstream/);
+      expect(existsSync(countsFile(cfg))).toBe(false);
+    });
+
+    it('counts once the branch is committed and pushed', async () => {
+      const cfg = await config();
+      const dir = path.join(path.dirname(cfg), '..');
+      gitIn(dir, ['checkout', '-q', '-b', 'fix/a']);
+      gitIn(dir, ['push', '-q', '-u', 'origin', 'fix/a']);
+      const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/round 1 of 2/);
+    });
+  });
 
   it('counts a round and exits 0 while inside the cap', async () => {
     const cfg = await config();

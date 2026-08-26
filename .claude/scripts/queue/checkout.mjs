@@ -87,3 +87,61 @@ export const mainCheckoutRoot = (startDir) => {
     );
   }
 };
+
+/**
+ * Is this checkout in a state a gate round may be counted against (AR-141)?
+ *
+ * A round is counted per branch and the fan-out's verdicts name a head. On one
+ * branch two rounds were counted before a commit that pre-commit then refused,
+ * so the counter and the records named a head that never shipped. The three
+ * states that make a head unshippable are decidable from git alone: a dirty
+ * working tree (tracked or untracked), a branch with no upstream, and commits
+ * the upstream has not seen. `{ ok: true }` otherwise; a git that cannot answer
+ * is reported as such, never as clean.
+ *
+ * Bounded: two git calls, each with a timeout, and the porcelain output is
+ * read only for emptiness. The upstream question has one catch for three
+ * states — a detached HEAD, a branch with no upstream, an upstream that is
+ * gone — and names none of them apart; the refusal is right for all three.
+ */
+export const checkoutIsShippable = (root) => {
+  const git = (args) =>
+    execFileSync('git', args, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: withoutGitLocation(),
+      timeout: 30_000,
+    }).trim();
+  let status;
+  try {
+    status = git(['status', '--porcelain']);
+  } catch (error) {
+    return { ok: false, why: `git could not read the working tree at ${root}: ${error.message}` };
+  }
+  if (status !== '') {
+    return {
+      ok: false,
+      why: 'the working tree is dirty — a round counted now would name a head that has not ' +
+        'been committed; commit (and push) first',
+    };
+  }
+  let ahead;
+  try {
+    ahead = git(['rev-list', '--count', '@{upstream}..HEAD']);
+  } catch {
+    return {
+      ok: false,
+      why: 'HEAD has no upstream — push the branch first, so the round names a head the ' +
+        'reviewers and CI can see',
+    };
+  }
+  if (ahead !== '0') {
+    return {
+      ok: false,
+      why: `HEAD is ${ahead} commit(s) ahead of its upstream — push first, so the round names ` +
+        'the head that ships',
+    };
+  }
+  return { ok: true };
+};
