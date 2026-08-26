@@ -275,7 +275,12 @@ describe('the JQL it builds', () => {
 
   it('an explicit jql in the config wins over the built one', async () => {
     const { buildJql } = await load('jira.mjs');
-    expect(buildJql({ project: 'ABC', jql: 'project = OTHER' })).toBe('project = OTHER');
+    // AR-51: an override may narrow the query, never point it at another board —
+    // so the fixture names the same key. The earlier fixture (`project = OTHER`)
+    // is exactly the case buildJql now refuses; jira-jql-validation.test.ts pins it.
+    expect(buildJql({ project: 'ABC', jql: 'project = ABC AND labels = x' })).toBe(
+      'project = ABC AND labels = x',
+    );
   });
 
   it('refuses to guess when neither a project nor a jql is configured', async () => {

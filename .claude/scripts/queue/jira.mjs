@@ -166,8 +166,51 @@ export const EXCLUDED_LABELS = ['triage', 'operator-queue'];
  * innermost groups. `AND` binds tighter than `OR` in JQL, so the flat form means
  * `(a AND b) OR empty`, which is the intent.
  */
+/**
+ * A Jira project key: one uppercase letter, then up to nine of [A-Z0-9_].
+ * Exported so the refusal below can name the rule it applied (AR-51).
+ */
+export const PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,9}$/;
+
+/**
+ * The one place `options.project` and `options.jql` from `.claude/queue.json`
+ * reach the query. Both used to be interpolated raw (AR-51): a committed
+ * `queue.json` — a file a pull request can edit — could make this adapter read
+ * another board, or anything the JQL grammar allows. A project key is now
+ * validated against PROJECT_KEY, and an explicit `jql` must begin with
+ * `project = <KEY>` — the same key when `options.project` is also given — so
+ * an override can narrow the query but never point it elsewhere.
+ */
+/** The project key a config names — options.project, or the key options.jql leads with. */
+export const projectKeyOf = ({ project = null, jql = null } = {}) => {
+  buildJql({ project, jql }); // the same refusals, once
+  if (project) return String(project);
+  return /^\s*project\s*=\s*([A-Z][A-Z0-9_]{1,9})\b/.exec(String(jql))[1];
+};
+
 export const buildJql = ({ project = null, jql = null } = {}) => {
-  if (jql) return jql;
+  if (project !== null && project !== undefined && !PROJECT_KEY.test(String(project))) {
+    throw new Error(
+      `options.project ${JSON.stringify(project)} is not a Jira project key — it must match ` +
+        `${PROJECT_KEY.source}. It is interpolated into JQL, so anything else is refused, not quoted.`,
+    );
+  }
+  if (jql) {
+    const lead = /^\s*project\s*=\s*([A-Z][A-Z0-9_]{1,9})\b/.exec(String(jql));
+    if (!lead) {
+      throw new Error(
+        'options.jql must begin with `project = <KEY>` (a key matching ' +
+          `${PROJECT_KEY.source}) — a query that does not name its project can read any board.`,
+      );
+    }
+    if (project && lead[1] !== project) {
+      throw new Error(
+        `options.jql names project ${lead[1]} while options.project is ${project} — an override ` +
+          'may narrow the query, never point it at another board.',
+      );
+    }
+    return jql;
+  }
   if (!project) {
     throw new Error(
       'the jira adapter needs either options.project or options.jql in ' +
@@ -494,12 +537,15 @@ export const triageItemFor = (proposal) => {
  * no body at all — so the predicate was always false and twenty identical stops
  * filed twenty issues against the tracker.
  */
-export const listProposals = async ({ existing = null, env = process.env } = {}) =>
-  existing ??
-  (await search({ jql: 'labels = triage ORDER BY created DESC', env })).issues.map((issue) => ({
-    id: issue.key,
-    body: descriptionTextOf(issue),
-  }));
+export const listProposals = async ({ existing = null, project = null, jql = null, env = process.env } = {}) => {
+  if (existing) return existing;
+  // Project-qualified, like every query this adapter sends (AR-51): the key is
+  // options.project, or the one options.jql leads with — `buildJql` refuses
+  // both when they disagree, so the triage query can only read this board.
+  const key = projectKeyOf({ project, jql });
+  const response = await search({ jql: `project = ${key} AND labels = triage ORDER BY created DESC`, env });
+  return response.issues.map((issue) => ({ id: issue.key, body: descriptionTextOf(issue) }));
+};
 
 export const proposeTriage = async (
   rawProposal,
@@ -507,7 +553,7 @@ export const proposeTriage = async (
 ) => {
   const proposal = withAsOf(rawProposal);
   const item = triageItemFor(proposal);
-  const duplicate = duplicateOf(item, await listProposals({ existing, env }));
+  const duplicate = duplicateOf(item, await listProposals({ existing, project, env }));
 
   if (duplicate) {
     await comment(duplicate, `Seen again (fingerprint ${item.fingerprint}). Incrementing.`, { env });

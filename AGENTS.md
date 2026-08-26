@@ -144,6 +144,7 @@ templates/agent-os/stack/aws-cdk/.claude/skills/
 templates/agent-os/stack/node-ts/.claude/hooks/
 templates/agent-os/stack/aws-cdk/.claude/rules/
 templates/agent-os/stack/node-ts/.claude/rules/
+.claude/
 ```
 
 The entries that earn their place first are the ones that *disarm* the rest —

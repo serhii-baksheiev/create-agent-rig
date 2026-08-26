@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|apply_patch",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|apply_patch",
         "hooks": [
           {
             "type": "command",
@@ -19,6 +19,11 @@
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-secret-file.mjs\"",
             "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBnAHUAYQByAGQALQBzAGUAYwByAGUAdAAtAGYAaQBsAGUALgBtAGoAcwAnADsAIAAmACAAbgBvAGQAZQAgACQAaABvAG8AawBQAGEAdABoADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA="
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/guard-rulebook.mjs\"",
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -EncodedCommand JAByAGUAcABvAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AOwAgACQAaABvAG8AawBQAGEAdABoACAAPQAgAEoAbwBpAG4ALQBQAGEAdABoACAAJAByAGUAcABvAFIAbwBvAHQAIAAnAC4AYwBsAGEAdQBkAGUALwBoAG8AbwBrAHMALwBnAHUAYQByAGQALQByAHUAbABlAGIAbwBvAGsALgBtAGoAcwAnADsAIAAmACAAbgBvAGQAZQAgACQAaABvAG8AawBQAGEAdABoADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA="
           }
         ]
       },

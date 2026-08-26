@@ -233,6 +233,18 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     }
   });
 
+  // AR-51. The rulebook the synced `.claude/` tree carries is what
+  // `guard-rulebook` protects from an unattended run — and the sweep can only
+  // see a merge that touched it if the composed CLAUDE.md declares it. The
+  // template-side directories are declared; the synced copy at the root was not.
+  it('declares the synced .claude/ tree itself as an elevated path', async () => {
+    const sync = await readFile(path.join(repoRoot, 'scripts', 'sync-agent-os.mjs'), 'utf8');
+    const block = /const ELEVATED_PATHS = \[([\s\S]*?)\n\];/.exec(sync);
+    expect(block, 'ELEVATED_PATHS array not found in sync-agent-os.mjs').not.toBeNull();
+    const entries = [...block![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    expect(entries).toContain('.claude/');
+  });
+
   it('the blocking hooks are active in this repo', async () => {
     const settings = JSON.parse(
       await readFile(path.join(repoRoot, '.claude', 'settings.json'), 'utf8'),
