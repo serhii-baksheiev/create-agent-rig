@@ -1059,7 +1059,48 @@ export const validateProposal = (proposal) => {
         'run would prove it worked)',
     );
   }
+  checkInferenceAgainstMeasurement(proposal);
   return proposal;
+};
+
+/**
+ * What a proposal MEASURED and what it INFERRED from that, as two paired
+ * optional fields (AR-142).
+ *
+ * A proposal whose premise was never true had no check at filing, only at
+ * take-up: AR-124 was filed, promoted and claimed before anyone found that its
+ * platform conclusion rested on a probe that had touched one hook. So the two
+ * halves are named separately, and an inference that cites a path the
+ * measurement does not cite is refused here, with both fields and the path
+ * named — the author has to either measure that surface or stop claiming it.
+ *
+ * A "surface" is a cited path, read by `citedPathsOf`: a text scan, so a
+ * surface named indirectly ("the platform") is invisible to this check — it
+ * catches the path-shaped overreach and nothing subtler. Neither field given
+ * files as before; one without the other is refused, because a measurement
+ * without its inference (or the reverse) is exactly the half-formed shape the
+ * pairing exists to make visible.
+ */
+const checkInferenceAgainstMeasurement = ({ measured, inferred } = {}) => {
+  const has = (value) => typeof value === 'string' && value.trim().length > 0;
+  if (!has(measured) && !has(inferred)) return;
+  if (!has(measured) || !has(inferred)) {
+    const present = has(measured) ? 'measured' : 'inferred';
+    const absent = has(measured) ? 'inferred' : 'measured';
+    throw new Error(
+      `a proposal that names what it ${present} must also name what it ${absent}: ` +
+        `\`${present}\` is given and \`${absent}\` is not — the two are a pair`,
+    );
+  }
+  const touched = new Set(citedPathsOf(measured));
+  const overreach = citedPathsOf(inferred).filter((path) => !touched.has(path));
+  if (overreach.length > 0) {
+    throw new Error(
+      `a proposal's inference names a surface its measurement did not touch: ` +
+        `\`inferred\` cites ${overreach.join(', ')}, which \`measured\` does not. ` +
+        'Measure that surface, or keep the inference inside what was measured.',
+    );
+  }
 };
 
 /**

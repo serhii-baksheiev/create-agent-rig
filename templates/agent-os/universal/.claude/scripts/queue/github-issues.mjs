@@ -249,6 +249,7 @@ export const triageItemFor = (proposal) => {
       `- **part to change** — ${proposal.part}`,
       `- **proposed change** — ${proposal.change}`,
       `- **how the next run proves it** — ${proposal.proof}`,
+      ...(proposal.measured ? [`- **measured** — ${proposal.measured}`, `- **inferred** — ${proposal.inferred}`] : []),
       '',
       `fingerprint: ${fingerprint}`,
       ...(proposal.asOf ? [`asOf: ${proposal.asOf}`] : []),
