@@ -328,8 +328,9 @@ export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) =
  *
  * Every write here — a claim, a comment, a close, an escalation — moves the
  * tracker's `updated`, and the next revalidation compared against the take-up
- * from before it: measured at 3 of 3 BEFORE_PR catches in one run, every one a
- * hold on the run's own comment. So the marker is read back after the write
+ * from before it — the generator's journal records one run whose every
+ * BEFORE_PR catch was a hold on its own comment (`revalidation-report.mjs`
+ * over that run). So the marker is read back after the write
  * and recorded as the take-up in the declared run; a hold that still fires is
  * a move by something other than this adapter.
  *
@@ -405,9 +406,14 @@ export const close = async (ticket, { prUrl = null, transitionId = null, env = p
       env,
     });
   }
-  const after = await request(`/rest/api/3/issue/${ticket.id}?fields=status`, { env });
+  // One read-back for both facts the close needs: the status that proves the
+  // transition, and the marker the write produced (AR-140) — `comment` above
+  // already re-baselined once; this is the read after the transition.
+  const after = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
   const fields = after?.fields ?? {};
-  await rebaseline(ticket, env);
+  if (env?.RIG_RUN_DIR) {
+    recordTakeUp(env.RIG_RUN_DIR, { id: ticket.id, updatedAt: toIso(fields.updated) });
+  }
   return {
     ok: true,
     transitioned: statusCategory(fields) === 'done',
