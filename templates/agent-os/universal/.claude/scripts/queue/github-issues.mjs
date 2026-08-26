@@ -14,7 +14,7 @@
 // be a snapshot that nothing updates when the blocker lands; this cannot go stale,
 // because it is re-resolved from the blockers themselves on every selection.
 import { execFileSync } from 'node:child_process';
-import { duplicateOf, fingerprintOf, ownerOfLabels, validateProposal } from './core.mjs';
+import { duplicateOf, fingerprintOf, lifecycleOf, ownerOfLabels, validateProposal } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
 
@@ -95,6 +95,8 @@ export const toTicket = (issue, states = {}) => {
         : null,
     // The repository this item belongs to (AR-132): `owner-<name>`, or null.
     owner: ownerOfLabels(labels),
+    // The lifecycle and the scheduling flag (AR-144), read above the seam.
+    ...lifecycleOf(labels),
   };
 };
 

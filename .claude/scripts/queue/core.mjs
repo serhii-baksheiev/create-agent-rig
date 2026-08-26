@@ -14,8 +14,10 @@
 //   {
 //     id, title, url,
 //     state:     'open' | 'in-progress' | 'closed',
-//     labels:    string[],                       // informational, never decisive
+//     labels:    string[],                       // informational — see the note below
 //     tier:      'normal' | 'elevated',
+//     lifecycle: 'keep-core' | 're-scope' | 'obsolete' | null,   // AR-144, from labels
+//     parked:    boolean,                        // scheduling, orthogonal to lifecycle
 //     blockedBy: [{ id, resolved }],             // FROM LINKS — see invariant 1
 //     blocks:    string[],                       // ids this one unblocks
 //     priority:  number,                         // lower is more urgent
@@ -48,6 +50,14 @@
 //
 // `raw` is the adapter's own record of the line or record it parsed. It is
 // deliberately NOT read by this file: it exists for the adapter's writes.
+//
+// **"Labels are informational, never decisive" is a statement about
+// DEPENDENCIES** (invariant 1 below): a `blocked`/`ready` label is a snapshot of
+// a fact the links carry authoritatively. It is not a ban on reading labels at
+// all — `tier`, `trigger`, `triage`, `owner`, and (AR-144) `lifecycle` and
+// `parked` are facts that exist ONLY as a marker, so the marker is the source
+// and the adapter maps it onto a named field. The rule is: a label is never
+// read in place of a source that says the same thing better.
 
 /**
  * The operations every adapter provides. A second tracker is an adapter, not a
@@ -88,6 +98,12 @@ export const SKIP_CAUSES = Object.freeze([
   'trigger-human',
   'spacing',
   'owner',
+  // AR-144: the lifecycle vocabulary. `re-scope` and `parked` hold takeable
+  // work back until a human acts; `obsolete` is out of play until a human
+  // closes it with the evidence — see `lifecycleOf` below.
+  're-scope',
+  'parked',
+  'obsolete',
 ]);
 
 /**
@@ -132,6 +148,12 @@ export const HOLDING_CAUSES = Object.freeze([
   // does — a human moves the item or re-marks it — never by this checkout
   // doing anything, and never by refilling the queue.
   'owner',
+  // AR-144: both are real, takeable work waiting on one human act — a rewrite
+  // that removes `re-scope`, or an un-park. `obsolete` is deliberately NOT
+  // here: it waits on a human CLOSE, so it is out of play, and reporting it as
+  // "held" would tell the owner to wait for something that only they can do.
+  're-scope',
+  'parked',
 ]);
 
 /**
@@ -153,6 +175,53 @@ export const ownerOfLabels = (labels) => {
   }
   return null;
 };
+
+/**
+ * The lifecycle vocabulary (AR-144), closed and ordered from least to most
+ * restrictive. It says what the ITEM is, never when it runs:
+ *
+ * - `keep-core` — the problem and the responsibility are valid for the current
+ *   project and the item is executable as written. A statement, not a condition.
+ * - `re-scope` — the problem is valid but the item is NOT executable literally:
+ *   a path, mechanism, boundary or acceptance criterion drifted. A short-lived
+ *   quarantine: a human re-reads the code, rewrites the item, removes the label.
+ *   The loop surfaces it (hygiene) and never invents the new scope itself.
+ * - `obsolete` — the responsibility is gone or fully superseded. A human verdict:
+ *   the loop never applies it and never closes an item because it believes
+ *   another mechanism supersedes it. Closing as obsolete needs a comment naming
+ *   the evidence or the replacement.
+ *
+ * `parked` is a separate axis — SCHEDULING, not lifecycle: valid work
+ * deliberately not active now. `keep-core + parked` is the normal shape of a
+ * deferred item and means "still needed, not now"; the hold is the `parked`.
+ *
+ * 🔴 None of these is inferred. Not from age, not from a key range, not from old
+ * terminology, not from `parked`, not from a migration marker such as
+ * `legacy-backlog` — which is retired, and which hygiene reports on any open item
+ * still carrying it. A label that looks like "old" is no evidence that the work
+ * is unnecessary; the audit behind this vocabulary found the opposite.
+ */
+export const LIFECYCLE_LABELS = Object.freeze(['keep-core', 're-scope', 'obsolete']);
+
+/**
+ * Read the lifecycle and the scheduling flag out of a label list — one
+ * function for every tracker adapter, so the semantics live above the seam.
+ *
+ * Several lifecycle labels on one item is a contradiction hygiene reports
+ * (`contradictory-lifecycle-labels`); selection meanwhile takes the MOST
+ * restrictive reading, because the permissive one is how an item marked
+ * `obsolete` by one hand and `keep-core` by another gets worked.
+ */
+export const lifecycleOf = (labels) => {
+  const list = Array.isArray(labels) ? labels : [];
+  let lifecycle = null;
+  for (const label of LIFECYCLE_LABELS) if (list.includes(label)) lifecycle = label;
+  return { lifecycle, parked: list.includes('parked') };
+};
+
+/** The lifecycle labels an item carries, for the contradiction check. */
+const lifecycleLabelsOn = (labels) =>
+  LIFECYCLE_LABELS.filter((label) => (Array.isArray(labels) ? labels : []).includes(label));
 
 /**
  * Why an owned item is not this checkout's, or null when it is (or claims no
@@ -236,6 +305,28 @@ export const selectionOf = (ticket, { triggersFired = null, owner = null } = {})
   const foreign = ownerMismatchOf(ticket, owner);
   if (foreign) reject('owner', `${foreign} — moving or re-marking it is a human act`);
 
+  // AR-144: the lifecycle vocabulary, read from the adapter's `lifecycle` and
+  // `parked` fields (`lifecycleOf`). `keep-core` never rejects — it is a
+  // statement that the item is executable, not a condition on taking it.
+  if (ticket.lifecycle === 're-scope') {
+    reject(
+      're-scope',
+      're-scope: the problem is valid but the item is not executable as written — ' +
+        'a human rewrites it against the current code and removes the label; the ' +
+        'loop never invents the new scope',
+    );
+  }
+  if (ticket.parked === true) {
+    reject('parked', 'parked: valid work deliberately not active now — a human un-parks it');
+  }
+  if (ticket.lifecycle === 'obsolete') {
+    reject(
+      'obsolete',
+      'obsolete: a human verdict — a human closes it, with a comment naming the ' +
+        'evidence or the replacement; the loop neither takes it nor closes it',
+    );
+  }
+
   if (ticket.trigger === 'human') {
     reject(
       'trigger-human',
@@ -275,6 +366,41 @@ export const hygieneOf = (ticket, { owner = null } = {}) => {
       kind: 'owner-mismatch',
       id: ticket.id,
       why: `${foreign} — it sits in this queue but is not this repository's to do`,
+    };
+  }
+
+  // AR-144: the retired migration marker, and the lifecycle contradictions.
+  // Reported, never corrected: which label is the wrong one is a human call.
+  if (labels.includes('legacy-backlog') && ticket.state !== 'closed') {
+    return {
+      kind: 'stale-legacy-backlog-label',
+      id: ticket.id,
+      why:
+        'still carries legacy-backlog, which is retired — it says nothing about ' +
+        'whether the work is needed. Re-mark it keep-core, re-scope or obsolete ' +
+        '(and parked if deferred); the loop infers none of those from it',
+    };
+  }
+  const lifecycles = lifecycleLabelsOn(labels);
+  if (lifecycles.length > 1) {
+    return {
+      kind: 'contradictory-lifecycle-labels',
+      id: ticket.id,
+      why:
+        `carries ${lifecycles.join(' and ')} at once, and an item has one lifecycle — ` +
+        `selection reads the most restrictive (${lifecycleOf(labels).lifecycle}); ` +
+        'a human removes the wrong one',
+    };
+  }
+  if (ticket.lifecycle === 're-scope' && ticket.state !== 'closed') {
+    return {
+      kind: 're-scope-pending',
+      id: ticket.id,
+      why:
+        'marked re-scope: the problem is valid but the item is not executable as ' +
+        'written. It waits on a human rewrite against the current code — a ' +
+        'quarantine, not a backlog category, so it is reported until the label ' +
+        'comes off',
     };
   }
 
@@ -712,7 +838,12 @@ const parkedNote = (parked) =>
     ? ''
     : ` A further ${parked.length} item(s) are parked — ${breakdownOf(parked)}. ` +
       'Those are not work this run can take and they wait on a human, never on ' +
-      'time.';
+      'time' +
+      (parked.includes('obsolete')
+        ? '; an obsolete item waits on a human close with a comment naming the ' +
+          'evidence or the replacement, which the loop never writes'
+        : '') +
+      '.';
 
 /**
  * The trigger remedies, composed from the tags actually present.
@@ -764,6 +895,23 @@ const ownerNote = (held) =>
       "label is not this checkout's `options.owner`): a human moves it to that " +
       "repository's queue or re-marks it; nothing this checkout does frees it."
     : '';
+
+/**
+ * The lifecycle remedies (AR-144), each present only when its tag is in the pile.
+ * Both are human acts on the item itself — neither time nor interleaving frees
+ * them, and the loop must not perform either: rewriting a `re-scope` item is
+ * authoring its own work, and un-parking is a scheduling decision.
+ */
+const lifecycleNote = (held) =>
+  (held.includes('re-scope')
+    ? ' An item held as re-scope is valid work that is not executable as written: ' +
+      'a human rewrites it against the current code and removes the label; the ' +
+      'loop never invents the new scope.'
+    : '') +
+  (held.includes('parked')
+    ? ' An item held as parked is valid work deliberately not active now: a human ' +
+      'un-parks it; nothing this run does frees it.'
+    : '');
 
 /**
  * Should the whole run stop? Checked in severity order, because a regression must
@@ -843,7 +991,7 @@ export const stopConditionOf = ({
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
-          `session finishes.${triggerNote(held) + ownerNote(held)} Otherwise the action is to ` +
+          `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held)} Otherwise the action is to ` +
           'interleave or to wait, never to refill and never to invent work.',
       };
     }

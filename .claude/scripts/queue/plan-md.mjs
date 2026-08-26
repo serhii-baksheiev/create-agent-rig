@@ -65,6 +65,12 @@ const MARKERS = {
   // fact the tracker adapters read out of an `owner-<name>` label. Case-exact,
   // because the name is compared exactly to `options.owner`.
   owner: /\[owner:([^\]\s]+)\]/,
+  // AR-144: the lifecycle vocabulary and the scheduling flag, the same words the
+  // tracker adapters read as labels. Case-insensitive like the other markers.
+  keepCore: /\[keep-core\]/i,
+  reScope: /\[re-scope\]/i,
+  obsolete: /\[obsolete\]/i,
+  parked: /\[parked\]/i,
 };
 
 /**
@@ -96,7 +102,10 @@ export const parsePlan = (plan) => {
     if (!match) continue;
     const raw = match[1];
     const title = raw
-      .replace(/\[(elevated|triage|trigger-auto|trigger-human|owner:[^\]\s]+)\]/gi, '')
+      .replace(
+        /\[(elevated|triage|trigger-auto|trigger-human|keep-core|re-scope|obsolete|parked|owner:[^\]\s]+)\]/gi,
+        '',
+      )
       .replace(/\s+/g, ' ')
       .trim();
     items.push({
@@ -129,6 +138,17 @@ export const parsePlan = (plan) => {
           ? 'human'
           : null,
       owner: MARKERS.owner.exec(raw)?.[1] ?? null,
+      // The same precedence `core.mjs` › lifecycleOf applies to labels: the most
+      // restrictive marker wins, and hygiene cannot report the contradiction here
+      // because a flat list carries no labels for it to read.
+      lifecycle: MARKERS.obsolete.test(raw)
+        ? 'obsolete'
+        : MARKERS.reScope.test(raw)
+          ? 're-scope'
+          : MARKERS.keepCore.test(raw)
+            ? 'keep-core'
+            : null,
+      parked: MARKERS.parked.test(raw),
     });
   }
   return items;
