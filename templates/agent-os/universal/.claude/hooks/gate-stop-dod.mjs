@@ -76,11 +76,15 @@ import { withoutGitLocation } from '../scripts/git-env.mjs';
 // branch in a worktree is a first-class motion here, so an inherited cwd is
 // the wrong tree often enough to matter. `git status` and every check run
 // with this as their `cwd`, and both refusals name it, so a failure that is
-// still foreign is visible at a glance.
+// still foreign is visible at a glance. It is the session's ROOT, not its
+// branch: a session started at the main checkout whose own task lives in a
+// `worktree-task` worktree is measured at the main checkout, and the refusal
+// says so. Resolved inside `main()`, so a throw here reaches the backstop
+// and announces itself like every other fault of the gate's own.
 //   see hooks.test.ts › "runs the checks in the project root, so a check reading the tree sees the session project"
-//   see hooks.test.ts › "asks \"is the tree clean?\" about the project, not about the cwd"
+//   see hooks.test.ts › "asks "is the tree clean?" about the project, not about the cwd"
 //   see hooks.test.ts › "names the tree it measured in the refusal, so a foreign failure is visible at a glance"
-const PROJECT_ROOT = realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
+const projectRootOf = () => realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
 
 // The default total budget, and the allowance for everything that happens
 // OUTSIDE it.
@@ -170,6 +174,8 @@ function main() {
   }
   if (input.hook_event_name !== 'Stop' && input.hook_event_name !== 'SubagentStop') return 0;
   if (input.stop_hook_active) return 0;
+
+  const PROJECT_ROOT = projectRootOf();
 
   try {
     // The environment loses the variables that locate a repository first. A
