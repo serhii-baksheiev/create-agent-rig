@@ -229,6 +229,17 @@ returns one fenced `json` verdict like every other gate, and this loop is its ca
 node .claude/scripts/verdict.mjs check <report> check-premises
 ```
 
+**`<report>` is a file you write, not one the harness leaves behind.** The
+subagent's answer arrives as text in the conversation; its transcript on disk is
+a JSONL file whose last fenced block does not parse, so pointing the check at it
+exits 1 whatever the reviewer said. Save the whole answer to a file under the run
+directory — `$RIG_RUN_DIR/check-premises.md`, one file per gate so two answers
+never overwrite each other — and pass that path (`-` reads stdin instead). The
+same holds for every `<report>` in this skill, as `pr-ship` already does for its
+reviewers (AR-117). Pinned in the generator's `test/template/loop-report-file.test.ts`
+— absent in a generated rig — › "states that the report is a file the session
+writes from the subagent answer, before the first check".
+
 Exit 1 means it did not answer: a stop verdict naming no premise, or no block at all.
 That is `incomplete` — neither "the premises hold" nor a reason to escalate — so run
 the pass again rather than reading the silence as a pass.
@@ -616,7 +627,8 @@ node --input-type=module -e '
     part:    "<skill | agent | hook | rule | CLAUDE.md | workflow>",
     change:  "<concretely enough to diff>",
     proof:   "<the observation that would differ next run>",
-  }));
+  }, { project: "<KEY>" }));   // jira only — the project key from .claude/queue.json;
+                               // plan-md and github-issues take no second argument
 '
 ```
 
@@ -645,9 +657,9 @@ rather than a step in the procedure: `plan-md` returns it when the plan file has
 no `## Operator queue` heading, because a proposal then has nowhere to land that
 the selection query cannot reach. Add the heading — never the Agent queue.
 
-One adapter needs more than the snippet above carries: `jira` requires
-`options.project` and throws rather than filing without it. It fails loudly, so
-nothing is lost — but called exactly as written, it does not file.
+One adapter needs the second argument the snippet above carries: `jira` requires
+`options.project` and throws rather than filing without it — loudly, so nothing
+is lost, but a call that drops it files nothing (AR-117).
 
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on
