@@ -116,15 +116,25 @@ describe('jira re-records the marker after each write of its own', () => {
     });
   });
 
-  it('a stale run directory is announced, never thrown, and the write still succeeds', async () => {
-    const adapter = await loadQueue('jira.mjs');
-    const stale = path.join(tmpdir(), 'run-dir-that-was-never-created');
-    const { result, stderr } = await captureStderr(() =>
-      adapter.comment(ticket, 'a note', { env: { ...CREDENTIALS, RIG_RUN_DIR: stale } }),
-    );
-    expect(result).toEqual({ ok: true });
-    expect(stderr).toMatch(/AR-1.*marker was NOT re-recorded/);
-  });
+  it.each(['claim', 'comment', 'close', 'escalate'])(
+    '%s on a stale run directory is announced, never thrown, and the write still succeeds',
+    async (op) => {
+      // Round 2 of AR-140 measured why every write needs this: close wrote its
+      // marker outside the announce path once, and threw after the transition.
+      const adapter = await loadQueue('jira.mjs');
+      const stale = path.join(tmpdir(), 'run-dir-that-was-never-created');
+      const env = { ...CREDENTIALS, RIG_RUN_DIR: stale };
+      const { result, stderr } = await captureStderr(async () => {
+        if (op === 'claim') return adapter.claim(ticket, { env });
+        if (op === 'comment') return adapter.comment(ticket, 'a note', { env });
+        if (op === 'close')
+          return adapter.close(ticket, { prUrl: 'https://x/1', transitionId: '41', env });
+        return adapter.escalate(ticket, 'a diagnosis', { env });
+      });
+      expect(result).toMatchObject({ ok: true });
+      expect(stderr).toMatch(/AR-1.*marker was NOT re-recorded/);
+    },
+  );
 });
 
 describe('github-issues re-records the marker after each write of its own', () => {

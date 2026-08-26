@@ -342,17 +342,31 @@ export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) =
  * and a read-back the tracker refused or a stale run directory is announced on
  * stderr, never thrown — a thrown write is retried and lands twice.
  */
-const rebaseline = async (ticket, env) => {
-  if (!env?.RIG_RUN_DIR) return;
+const recordMarker = (ticket, updatedAt, env) => {
   try {
-    const after = await request(`/rest/api/3/issue/${ticket.id}?fields=updated`, { env });
-    recordTakeUp(env.RIG_RUN_DIR, { id: ticket.id, updatedAt: toIso(after?.fields?.updated) });
+    recordTakeUp(env.RIG_RUN_DIR, { id: ticket.id, updatedAt });
   } catch (error) {
     process.stderr.write(
       `${ticket.id}: the write landed, but its marker was NOT re-recorded in ` +
         `${env.RIG_RUN_DIR} — ${error.message}\n`,
     );
   }
+};
+
+const rebaseline = async (ticket, env) => {
+  if (!env?.RIG_RUN_DIR) return;
+  let updatedAt;
+  try {
+    const after = await request(`/rest/api/3/issue/${ticket.id}?fields=updated`, { env });
+    updatedAt = toIso(after?.fields?.updated);
+  } catch (error) {
+    process.stderr.write(
+      `${ticket.id}: the write landed, but its marker was NOT re-recorded in ` +
+        `${env.RIG_RUN_DIR} — ${error.message}\n`,
+    );
+    return;
+  }
+  recordMarker(ticket, updatedAt, env);
 };
 
 export const claim = async (ticket, { transitionId = null, env = process.env } = {}) => {
@@ -411,9 +425,10 @@ export const close = async (ticket, { prUrl = null, transitionId = null, env = p
   // already re-baselined once; this is the read after the transition.
   const after = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
   const fields = after?.fields ?? {};
-  if (env?.RIG_RUN_DIR) {
-    recordTakeUp(env.RIG_RUN_DIR, { id: ticket.id, updatedAt: toIso(fields.updated) });
-  }
+  // Through the same announce-never-throw path as `rebaseline`: the round
+  // that inlined `recordTakeUp` here reintroduced a throw on a stale run
+  // directory after the transition had landed.
+  if (env?.RIG_RUN_DIR) recordMarker(ticket, toIso(fields.updated), env);
   return {
     ok: true,
     transitioned: statusCategory(fields) === 'done',
