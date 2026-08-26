@@ -42,9 +42,13 @@
 // a list that outlives what it exempts is how a check goes quiet by accident.
 //
 // Scope: every `.mjs` directly in `.claude/hooks/` (not `*.test.mjs`, not
-// `lib/`), and every file directly in `.husky/` when that directory exists — a
+// `lib/`), and EVERY file directly in `.husky/` when that directory exists — a
 // husky hook is never in the manifest, so it is `owned` whenever ownership can
-// be read at all. When `.husky/` is absent the report says so rather than
+// be read at all, and a stray file there (a README, a dotfile) is audited like a
+// hook: exempt it with a reason rather than teaching this script which names are
+// not hooks. A `.claude/hooks/` that is missing or unreadable is a FAIL and the
+// run is STOP — a doctor that looked nowhere must never say clean — and so is
+// an exemption file that is present but not readable JSON. When `.husky/` is absent the report says so rather than
 // staying silent about a directory it never looked at — the generator's
 // `test/template/doctor.test.ts` › "names an absent .husky/ instead of staying
 // silent about it" pins the line.
@@ -104,6 +108,15 @@ export const verdictOf = (marks) => {
   return 'GO';
 };
 
+/**
+ * Control bytes stripped before a string from a repo file reaches the terminal
+ * (the same concern `queue/core.mjs` › printable has): an exemption reason
+ * carrying an escape sequence could repaint the line above it. Printable
+ * Unicode stays — a reason is prose.
+ */
+// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+export const printable = (text) => String(text).replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+
 const reasonOf = (exemptions, rel) => {
   if (!exemptions || typeof exemptions !== 'object' || Array.isArray(exemptions)) return undefined;
   return Object.prototype.hasOwnProperty.call(exemptions, rel) ? exemptions[rel] : undefined;
@@ -140,7 +153,7 @@ export const auditHooks = ({ hooks = [], exemptions = {} } = {}) => {
       detail = 'unchanged since install — tested upstream, in the generator that produced it';
     } else if (exempt) {
       mark = 'exempt';
-      detail = `no test neighbour; exempt — ${reason.trim()}`;
+      detail = `no test neighbour; exempt — ${printable(reason.trim())}`;
     } else if (ownership === 'owned') {
       mark = 'FAIL';
       detail =
@@ -158,7 +171,7 @@ export const auditHooks = ({ hooks = [], exemptions = {} } = {}) => {
     for (const rel of Object.keys(exemptions)) {
       if (seen.has(rel)) continue;
       results.push({
-        rel,
+        rel: printable(rel),
         ownership: 'absent',
         hasTest: false,
         mark: 'FAIL',
@@ -187,35 +200,66 @@ export const manifestFilesOf = (root) => {
   return files;
 };
 
+/**
+ * The files directly in `dir`: `{ names, unreadable }`, or `null` when the
+ * directory itself cannot be listed. One entry that cannot be stat'ed (a dangling
+ * symlink) is reported by name, never allowed to null the whole listing.
+ */
 const listFiles = (dir) => {
+  let entries;
   try {
-    return readdirSync(dir)
-      .filter((name) => statSync(path.join(dir, name)).isFile())
-      .sort();
+    entries = readdirSync(dir).sort();
   } catch {
     return null;
   }
+  const names = [];
+  const unreadable = [];
+  for (const name of entries) {
+    try {
+      if (statSync(path.join(dir, name)).isFile()) names.push(name);
+    } catch {
+      unreadable.push(name);
+    }
+  }
+  return { names, unreadable };
 };
+
+/** A finding the audit itself raises — a scope it could not read. */
+const problem = (rel, detail) => ({ rel, ownership: 'absent', hasTest: false, mark: 'FAIL', detail });
 
 /** Every hook in scope, as `{ rel, ownership, hasTest }`, plus the scopes it looked at. */
 export const collectHooks = (root) => {
   const files = manifestFilesOf(root);
   const hooks = [];
   const scopes = [];
-  const hookNames = listFiles(path.join(root, ...HOOKS_DIR.split('/')));
-  scopes.push({ dir: HOOKS_DIR, present: hookNames !== null });
-  for (const name of hookNames ?? []) {
+  const problems = [];
+  const hookDir = listFiles(path.join(root, ...HOOKS_DIR.split('/')));
+  scopes.push({ dir: HOOKS_DIR, present: hookDir !== null });
+  if (hookDir === null) {
+    // Not a rig, or not the directory the caller meant: never a clean report.
+    problems.push(problem(HOOKS_DIR, `not found or unreadable under ${root} — nothing was audited`));
+  }
+  for (const name of hookDir?.names ?? []) {
     if (!name.endsWith('.mjs') || name.endsWith('.test.mjs')) continue;
     hooks.push(`${HOOKS_DIR}/${name}`);
   }
-  const huskyNames = listFiles(path.join(root, HUSKY_DIR));
-  scopes.push({ dir: HUSKY_DIR, present: huskyNames !== null });
-  for (const name of huskyNames ?? []) {
+  const husky = listFiles(path.join(root, HUSKY_DIR));
+  scopes.push({ dir: HUSKY_DIR, present: husky !== null });
+  for (const name of husky?.names ?? []) {
     if (name.endsWith('.test.mjs')) continue;
     hooks.push(`${HUSKY_DIR}/${name}`);
   }
+  for (const [dir, listing] of [
+    [HOOKS_DIR, hookDir],
+    [HUSKY_DIR, husky],
+  ]) {
+    for (const name of listing?.unreadable ?? []) {
+      problems.push(problem(`${dir}/${printable(name)}`, 'cannot be read (a dangling symlink?) — not audited, not a pass'));
+    }
+  }
   return {
     scopes,
+    problems,
     hooks: hooks.map((rel) => {
       const actual = sha256(readFileSync(path.join(root, ...rel.split('/'))));
       const recorded = files === null ? null : files[rel];
@@ -229,10 +273,18 @@ export const collectHooks = (root) => {
 };
 
 export const report = (root) => {
-  const { hooks, scopes } = collectHooks(root);
-  const exemptions = readJson(path.join(root, ...EXEMPTIONS_REL.split('/'))) ?? {};
-  const audit = auditHooks({ hooks, exemptions });
-  const absent = scopes.filter((scope) => !scope.present).map((scope) => scope.dir);
+  const { hooks, scopes, problems } = collectHooks(root);
+  const exemptionsPath = path.join(root, ...EXEMPTIONS_REL.split('/'));
+  let exemptions = {};
+  if (existsSync(exemptionsPath)) {
+    const parsed = readJson(exemptionsPath);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) exemptions = parsed;
+    else problems.push(problem(EXEMPTIONS_REL, 'present but unreadable — not JSON, or not an object of path → reason'));
+  }
+  const audited = auditHooks({ hooks, exemptions });
+  const all = [...problems, ...audited.hooks];
+  const audit = { verdict: verdictOf(all.map((r) => r.mark)), hooks: all };
+  const absent = scopes.filter((scope) => !scope.present && scope.dir !== HOOKS_DIR).map((scope) => scope.dir);
   const lines = [
     `**doctor** — verdict: ${audit.verdict}`,
     '',
@@ -262,7 +314,12 @@ const invokedDirectly = () => {
 if (invokedDirectly()) {
   const args = process.argv.slice(2);
   const rootIndex = args.indexOf('--root');
-  const root = path.resolve(rootIndex === -1 ? process.cwd() : (args[rootIndex + 1] ?? process.cwd()));
+  const rootArg = rootIndex === -1 ? null : args[rootIndex + 1];
+  if (rootIndex !== -1 && (rootArg === undefined || rootArg.startsWith('--'))) {
+    process.stderr.write('doctor: --root needs a directory — auditing the working directory instead would be a guess\n');
+    process.exit(1);
+  }
+  const root = path.resolve(rootArg ?? process.cwd());
   const result = report(root);
   process.stdout.write(
     args.includes('--json')

@@ -252,6 +252,44 @@ describe('the CLI audits a rig on disk', () => {
     expect(stdout).not.toMatch(/\.husky\/pre-commit/);
   });
 
+  it('a root with no .claude/hooks/ is a STOP, not a clean report — a doctor that looked nowhere never says GO', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'doctor-empty-'));
+    const { code, stdout } = await run(['--root', dir]);
+    expect(code).toBe(1);
+    expect(stdout).toMatch(/^\*\*doctor\*\* — verdict: STOP/);
+    expect(stdout).toMatch(/- FAIL · \.claude\/hooks — .*not found/);
+  });
+
+  it('refuses --root with no value instead of quietly auditing the working directory', async () => {
+    const { code, stderr } = await run(['--root']);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/--root needs a directory/);
+  });
+
+  it('a malformed exemption file is a FAIL that names the file, not a silent empty list', async () => {
+    const dir = await rig();
+    await writeFile(path.join(dir, '.claude', 'doctor-exemptions.json'), '{ not json');
+    const { code, stdout } = await run(['--root', dir]);
+    expect(code).toBe(1);
+    expect(stdout).toMatch(/- FAIL · \.claude\/doctor-exemptions\.json — .*unreadable/);
+  });
+
+  it('strips control characters from an exemption reason before it reaches the terminal', async () => {
+    const dir = await rig();
+    await writeFile(path.join(dir, '.claude', 'guard-b.test.mjs'), '');
+    await writeFile(
+      path.join(dir, '.claude', 'doctor-exemptions.json'),
+      JSON.stringify({
+        '.husky/pre-commit': 'shell hook\u001b[2K\rpass · forged',
+        '.claude/hooks/guard-b.mjs': 'ok',
+      }),
+    );
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/- exempt · \.husky\/pre-commit — .*shell hook\[2Kpass · forged/);
+    // eslint-disable-next-line no-control-regex -- the escape byte is what must be gone
+    expect(stdout).not.toMatch(/\u001b/);
+  });
+
   it('an exemption naming a file that does not exist is a stale-exemption FAIL', async () => {
     const dir = await rig();
     await writeFile(path.join(dir, '.claude', 'hooks', 'guard-b.test.mjs'), '// test\n');
