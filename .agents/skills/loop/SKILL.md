@@ -713,7 +713,8 @@ node --input-type=module -e '
     part:    "<skill | agent | hook | rule | CLAUDE.md | workflow>",
     change:  "<concretely enough to diff>",
     proof:   "<the observation that would differ next run>",
-    // optional, and a pair: what the probe touched, and what is concluded from it
+    // a pair: what the probe touched, and what is concluded from it. The
+    // mechanism accepts a proposal without them; this procedure does not.
     measured: "<the paths the probe actually exercised>",
     inferred: "<the conclusion, citing only surfaces named in measured>",
   }, { project: "<KEY>" }));   // jira only — the project key from .claude/queue.json;
@@ -731,10 +732,22 @@ are separate, and `validateProposal` refuses an `inferred` that cites a path
 `measured` does not, naming both fields and the path; one field without the
 other is refused too, and neither files as before. The surface is a cited path
 (`citedPathsOf`), so a conclusion that names no path passes this check — it
-catches the path-shaped overreach and nothing subtler. Pinned in the generator's
+catches the path-shaped overreach and nothing subtler.
+
+⚠ **The pair is how a proposal opts into the check, and a proposal filed without
+it is not checked at all** — `validateProposal` keeps the four-part contract, so
+the AR-124 shape with neither field still files as it always did. That is the
+stated limit, not an oversight: making the fields mandatory would refuse every
+proposal the three adapters already file, and the loop is the author this rule
+is for. So **every proposal this loop files carries both fields** — the snippet
+above supplies them, and a stop that cannot say what it measured has nothing
+to propose. A reviewer reading a filed proposal without the pair reads a
+proposal that skipped this procedure. Pinned in the generator's
 `test/template/queue.test.ts` — absent in a generated rig — › "refuses a
-proposal whose inference names a surface its measurement did not touch" and ›
-"files a proposal whose inference stays inside what it measured".
+proposal whose inference names a surface its measurement did not touch", ›
+"files a proposal whose inference stays inside what it measured", › "refuses one
+of the two fields without the other" and › "a proposal with neither field files
+as today".
 
 **The filed item also records the commit it was measured against** — an `asOf:`
 line, HEAD of this checkout unless the call passes its own `asOf` (`null` files
