@@ -41,8 +41,8 @@ How that pile grows is the adapter's business, and the stop line does not guess:
 
 | adapter                                  | what lands in the parked pile                         |
 | ---------------------------------------- | ----------------------------------------------------- |
-| tracker-backed (`github-issues`, `jira`) | an escalated item and a filed proposal both stay open |
-| `plan-md`                                | only a `[triage]` line sitting in the Agent queue     |
+| tracker-backed (`github-issues`, `jira`) | an escalated item, a filed proposal (both stay open), and an item labelled `obsolete` (AR-144) |
+| `plan-md`                                | a `[triage]` or an `[obsolete]` line sitting in the Agent queue — nothing else, because a flat list has no per-item state |
 
 Under `plan-md` a filed proposal goes to the Operator queue, where selection
 never looks, and an escalation leaves **no mark on the queue at all** — a flat
