@@ -95,6 +95,31 @@ export const checkDefaultBranchFresh = () => {
   }
 };
 
+/**
+ * `RIG_RUN_DIR` must not already be exported when preflight runs (AR-139).
+ *
+ * Preflight walks BEFORE this run declares its directory (`loop` §1), so a
+ * value already in the environment is a leak — an `export` that outlived an
+ * earlier run, or a shell that inherited one. Everything the run then spawns
+ * inherits it too: the queue CLI under test, the gate scripts, and the real
+ * run's append-only trace receives their fixture records. Measured at 38
+ * fixture selections and 22 fixture revalidation events, plus two tests
+ * exiting 1 and blamed on load. A hard failure, because starting on it puts
+ * this run's stops in somebody else's file.
+ */
+export const checkRunDirNotExported = (env = process.env) => {
+  const value = env.RIG_RUN_DIR;
+  return value
+    ? {
+        ok: false,
+        detail:
+          `RIG_RUN_DIR is already exported (${value}) — a leak from an earlier run. ` +
+          '`unset RIG_RUN_DIR`, then declare this run\'s own directory; an inherited ' +
+          "one lands this run's trace and stop conditions in somebody else's file",
+      }
+    : { ok: true, detail: 'not exported' };
+};
+
 /** The last deploy must have concluded successfully — never start on a broken runtime. */
 export const checkLastDeploy = ({ workflow = 'deploy' } = {}) => {
   try {
@@ -172,6 +197,7 @@ const invokedDirectly = () => {
 if (invokedDirectly()) {
   const checks = {
     killSwitch: checkKillSwitch(),
+    runDirNotExported: checkRunDirNotExported(),
     defaultBranchFresh: checkDefaultBranchFresh(),
     lastDeploy: checkLastDeploy(),
   };
