@@ -59,7 +59,7 @@ successfully) and the script **prints the ones it did not check, every time**. P
 leaves no record cannot tell you it was skipped.
 
 Verdicts: **STOP** → do not start, deal with the cause. **CAUTION** → start,
-knowing which ground is soft. **GO** → the scripted three are clean; the rest are
+knowing which ground is soft. **GO** → the scripted four are clean; the rest are
 still yours.
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you
@@ -91,11 +91,12 @@ mkdir -p "$RIG_RUN_DIR"
 inherits it — and a test suite that spawns the queue CLI would write fixture
 records into this run's trace (AR-139: 38 fixture selections and 22 fixture
 revalidation events in one session, two tests exiting 1). So preflight refuses
-to start on a `RIG_RUN_DIR` already exported, and this repository's test harness
-scrubs the variable before any test file loads (`test/setup-env.ts`, pinned by
-the generator's `test/template/rig-run-dir-scrub.test.ts` — absent in a
-generated rig — › "holds with the variable exported around the whole vitest
-process"). A generated rig's own test setup is the place to do the same.
+to start on a `RIG_RUN_DIR` already exported. The generator's own test harness
+also scrubs the variable before any test file loads — its `test/setup-env.ts`,
+pinned by its `test/template/rig-run-dir-scrub.test.ts` › "holds with the
+variable exported around the whole vitest process" — and **neither file ships
+into a generated rig**: here, nothing scrubs it, and a rig's own test setup is
+the place to do the same.
 
 🔴 **One directory per run, never shared and never reused — and the journal
 cannot enforce this for you.** A collision or an already-ended directory is

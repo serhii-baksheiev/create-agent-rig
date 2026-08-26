@@ -11,7 +11,7 @@
 // reason it is safe to script half a checklist. The honest objection to a partial
 // script — "a script that half-checks is worse than a list the run actually
 // reads" — is true exactly while the boundary is invisible. A silent script would
-// let a GO on three items read as a pass on six.
+// let a GO on four items read as a pass on seven.
 //
 // 🔴 **`unknown` never becomes `pass`.** A probe that could not run tells you
 // nothing, and "I could not look" recorded as "it is fine" is the failure this
