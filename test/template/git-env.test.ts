@@ -261,6 +261,12 @@ describe('the stop gate sanitises through the shared list, not a fourth copy', (
 // The sweep that would have caught this in one pass instead of four: a call
 // site that forgets the sanitised environment is unprotected, and no amount of
 // care in the shared module can detect that.
+// Limit of the matcher below, stated so it is not read as cover: it reads one
+// window per call — from the call site to the next blank line, at most 400
+// characters — so a `withoutGitLocation` token anywhere in that window clears a
+// `...process.env` spread even when the two belong to different calls, and a
+// spread past the window is not seen. It catches the shape that hit this repo;
+// it does not prove a call site clean.
 describe('every authored git spawn passes an explicit environment', () => {
   const files = [
     'packages/cli/src/commands/create.ts',
@@ -280,6 +286,10 @@ describe('every authored git spawn passes an explicit environment', () => {
     'test/template/codex.test.ts',
     'templates/agent-os/universal/.claude/hooks/lib/edit-input.mjs',
     '.claude/hooks/lib/edit-input.mjs',
+    // AR-148: both spawn git from fixtures under the pre-commit hook's own
+    // environment, and acted on the shared repository (journal/2026-08.md).
+    'test/template/gate-rounds.test.ts',
+    'test/template/proposal-asof.test.ts',
   ];
 
   it.each(files)('%s', async (rel) => {
@@ -291,6 +301,11 @@ describe('every authored git spawn passes an explicit environment', () => {
       const from = call.index ?? 0;
       const window = source.slice(from, from + 400).split('\n\n')[0]!;
       if (!/env[:\s]/.test(window)) offences.push(window.split('\n')[0]!.trim());
+      // AR-148: an `env` that merely spreads the inherited environment is the
+      // same defect with an `env` token in front of it — `{ ...process.env,
+      // GIT_AUTHOR_NAME: 't' }` still carries the hook's GIT_DIR into the child.
+      else if (/\.\.\.process\.env\b/.test(window) && !/withoutGitLocation/.test(window))
+        offences.push(window.split('\n')[0]!.trim());
     }
     expect(offences, `${rel}: git spawned with the inherited environment`).toEqual([]);
   });
