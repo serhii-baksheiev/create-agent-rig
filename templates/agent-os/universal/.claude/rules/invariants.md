@@ -236,6 +236,17 @@ If a hook matters enough to keep, it is worth ten minutes to copy the shape from
 `.claude/skills/new-invariant/guard-invariant.example.test.mjs` and pin the
 behaviour you actually rely on.
 
+**That boundary is audited, not remembered.** `node .claude/scripts/doctor.mjs`
+reads `.claude/.rig-manifest.json` and asks of every hook in `.claude/hooks/` (and
+`.husky/`, when it exists) whether the project owns it — the bytes differ from
+what the generator installed, or the manifest has no entry — and, if so, whether
+`<hook>.test.mjs` sits beside it. A shipped, unchanged hook is not a finding; an
+owned hook with no neighbour is; a rig with no manifest gets `unknown` for every
+hook that has no test neighbour, never a pass. Exemptions are an explicit list with reasons in
+`.claude/doctor-exemptions.json`, and the report ends with what the script did
+not check. Pinned in the generator's `test/template/doctor.test.ts` — absent in a
+generated rig — › "an owned hook without a test is a FAIL, and the run is STOP".
+
 ## Adding one
 
 Use the `new-invariant` skill. It asks what the invariant is (it will not invent

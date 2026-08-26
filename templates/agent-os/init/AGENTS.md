@@ -105,9 +105,9 @@ it a hook via the `new-invariant` skill.
   this repository once it has a remote. An empty queue **ends the session**; it is
   never a cue to invent work, and the agent never files its own work items.
 
-## Three things this install left for you to finish
+## Four things this install left for you to finish
 
-All three are one-liners, and all three are inert until you do them.
+All four are one-liners, and all four are inert until you do them.
 
 1. **The Definition-of-Done gate has nothing to run.** `gate-stop-dod` executes
    the commands listed in `.claude/hooks/dod-checks.json`, and `init` ships no
@@ -130,7 +130,6 @@ All three are one-liners, and all three are inert until you do them.
    # the run journal's per-run trace
    .claude/runs/
    ```
-
    Each comment is on its own line, and that is not formatting: git treats `#`
    as a comment **only at line start**, so a trailing `# …` becomes part of the
    pattern and the line then ignores nothing. It fails silently — you find out
@@ -144,6 +143,15 @@ All three are one-liners, and all three are inert until you do them.
    tier starts deciding another's, and a merge conflict lands in a file nobody
    edited on purpose. `.claude/queue.json` is the opposite: that one is
    configuration and belongs in the repository.
+
+4. **`doctor` reads two files this install does not ship.**
+   `node .claude/scripts/doctor.mjs` decides who owns each hook from
+   `.claude/.rig-manifest.json` — which `init` wrote next to the files it
+   installed, so commit it — and reads exemptions from
+   `.claude/doctor-exemptions.json`, a file you author (`{ "<path>": "<reason>" }`)
+   only when a hook you own is deliberately left without a test neighbour.
+   Without the manifest every hook that has no test neighbour reports `unknown`,
+   which is not a pass.
 
 ## The elevated paths of this project
 
