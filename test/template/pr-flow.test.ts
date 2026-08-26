@@ -73,4 +73,36 @@ describe('the concrete merge command lives in stack/*, not universal', () => {
     expect(nodeTs).toMatch(/gh\b/);
     expect(nodeTs).toMatch(/SHA|head/i);
   });
+
+  // AR-149: a head that never receives a run for a required check is a third
+  // state beside "pending" and "concluded" — the rule must say what to do with
+  // it, and the answer is retrigger, never "merge on the last head's green".
+  const mergeCriterionSection = async (): Promise<string> => {
+    const nodeTs = await readFile(path.join(stack('node-ts'), 'node-ts.md'), 'utf8');
+    const start = nodeTs.indexOf('## Confirming the merge criterion');
+    expect(start, 'the merge-criterion section exists').toBeGreaterThanOrEqual(0);
+    const rest = nodeTs.slice(start + 3);
+    const next = rest.indexOf('\n## ');
+    return next === -1 ? nodeTs.slice(start) : nodeTs.slice(start, start + 3 + next);
+  };
+
+  it('node-ts names the head that gets no run at all, and says it is retriggered rather than waited on', async () => {
+    const section = await mergeCriterionSection();
+    expect(section).toMatch(/no run|never registers|not registered/i);
+    expect(section).toMatch(/retrigger/i);
+    expect(section).toMatch(/empty commit/i);
+    expect(section).toMatch(/workflow_dispatch/);
+    expect(section).toMatch(/head_sha|--json headSha/);
+    expect(section).toMatch(/older head|previous head|another head/i);
+  });
+
+  it('the no-run branch is stated per required check, not per head', async () => {
+    const section = await mergeCriterionSection();
+    expect(section).toMatch(/per (required )?check|each required check|by name/i);
+  });
+
+  it('universal workflow.md still names no concrete command', async () => {
+    const workflow = await readFile(path.join(universal, 'workflow.md'), 'utf8');
+    expect(workflow).not.toMatch(/workflow_dispatch|head_sha/);
+  });
 });
