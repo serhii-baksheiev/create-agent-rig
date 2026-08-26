@@ -416,8 +416,9 @@ perfectly good reason having produced something nobody should build on.
 🔴 **What `documented-stall` requires is the STAGE and the wall, not a full
 inventory of findings** — and this had to be settled, because the two readings
 disagreed the first time a stop arrived without an inventory. An exhausted
-gate-round cap names its stage (the gate) and its wall (two rounds of fixes did not
-converge), while the individual blockers behind it are not persisted anywhere until
+gate-round cap names its stage (the gate) and its wall (the branch's rounds are
+spent — the count, not a verdict on whether the fixes were converging, which the
+counter never measured; AR-115), while the individual blockers behind it are not persisted anywhere until
 per-round verdicts exist. That is a `documented-stall`: the record locates the wall
 and the next reader knows where to look.
 

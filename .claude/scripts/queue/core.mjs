@@ -399,8 +399,10 @@ const clearsSpacing = (lastCompletedTier) =>
  * than it should have".
  *
  * Two is the cap because the second round is what verifies the first round's fixes.
- * A third means they are not converging, which is a diagnosis for a human rather
- * than another pass to buy.
+ * A third is a decision for a human rather than another pass to buy — and the
+ * refusal says only that the count is spent, never that the fixes "are not
+ * converging": on one branch a granted third round found that round 2's fix had
+ * opened the mirror of the bug it closed (AR-115).
  */
 export const DEFAULT_MAX_GATE_ROUNDS = 2;
 

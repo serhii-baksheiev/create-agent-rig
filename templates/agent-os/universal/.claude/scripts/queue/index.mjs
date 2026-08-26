@@ -333,9 +333,9 @@ if (invokedDirectly()) {
         `GATE ROUNDS EXHAUSTED — ${verdict.rounds} rounds on ${args.branch}, cap is ` +
           `${verdict.max}: ${verdict.stop}.\n` +
           '  Do not run another round. The item stops here and goes back to a human ' +
-          'with the round count and whatever the last gate reported — the fixes are ' +
-          'not converging, and another pass buys a full reviewer fan-out to discover ' +
-          'that again.\n' +
+          'with the round count and whatever the last gate reported. Whether those ' +
+          'rounds were paying off is the reader\'s judgement — this command measured ' +
+          'only the count (AR-115).\n' +
           '  Raising the cap to get one more pass on THIS item is the move this ' +
           'refusal exists to prevent.\n',
       );
@@ -344,7 +344,7 @@ if (invokedDirectly()) {
       // 🔴 Exit 1, never 2, and the message says so. Exit 2 means one thing only —
       // the rounds are spent — because `pr-ship` acts on it by ending the task. A
       // broken config, an unreadable counter or a detached checkout must not be
-      // read as a converging-failure stall.
+      // read as a spent cap.
       process.stderr.write(
         `gate-round could not run: ${error.message}\n` +
           '  This is NOT an exhausted cap (that is exit 2). Fix the cause and run step ' +

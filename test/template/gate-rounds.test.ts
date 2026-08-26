@@ -205,6 +205,23 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     expect(third.stderr).toMatch(/documented-stall/);
   });
 
+  // AR-115: the refusal states the cap, not a verdict on convergence. On one branch
+  // the blockers went 8 -> 3 -> 8 and the granted third round found that round 2's
+  // fix had opened the mirror of the bug it closed — a message asserting "the fixes
+  // are not converging" argued against the round that paid, having measured nothing.
+  it('states the round count and the cap, and passes no judgement on convergence', async () => {
+    const cfg = await config();
+    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+
+    const third = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    expect(third.code).toBe(2);
+    expect(third.stderr).toMatch(/3 rounds on fix\/a, cap is 2/);
+    expect(third.stderr).not.toMatch(/converg/i);
+    expect(third.stderr).not.toMatch(/thrash/i);
+    expect(third.stderr).toMatch(/this command measured only the count/);
+  });
+
   it('exits 1 on its own failures, and says it is not an exhausted cap', async () => {
     const broken = await run(['gate-round', '--branch', 'fix/a', '--config', await config('{')]);
     expect(broken.code).toBe(1);
