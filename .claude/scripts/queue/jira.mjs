@@ -179,7 +179,11 @@ export const PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,9}$/;
  * another board, or anything the JQL grammar allows. A project key is now
  * validated against PROJECT_KEY, and an explicit `jql` must begin with
  * `project = <KEY>` — the same key when `options.project` is also given — so
- * an override can narrow the query but never point it elsewhere.
+ * an override has to NAME this board. ⚠ Naming is not confinement: a query
+ * that leads with `project = AR` may still say `OR project = X` after it, and
+ * the credential's own scope is what bounds that. The residual is accepted
+ * because `.claude/queue.json` is part of the rulebook (`guard-rulebook`) and
+ * a declared elevated path, so a change widening it reaches the model lane.
  */
 /** The project key a config names — options.project, or the key options.jql leads with. */
 export const projectKeyOf = ({ project = null, jql = null } = {}) => {
@@ -549,11 +553,11 @@ export const listProposals = async ({ existing = null, project = null, jql = nul
 
 export const proposeTriage = async (
   rawProposal,
-  { project = null, existing = null, env = process.env } = {},
+  { project = null, jql = null, existing = null, env = process.env } = {},
 ) => {
   const proposal = withAsOf(rawProposal);
   const item = triageItemFor(proposal);
-  const duplicate = duplicateOf(item, await listProposals({ existing, project, env }));
+  const duplicate = duplicateOf(item, await listProposals({ existing, project, jql, env }));
 
   if (duplicate) {
     await comment(duplicate, `Seen again (fingerprint ${item.fingerprint}). Incrementing.`, { env });

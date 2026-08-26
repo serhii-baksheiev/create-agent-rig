@@ -89,11 +89,12 @@ mkdir -p "$RIG_RUN_DIR"
 
 ⚠ **That export reaches the commands THIS shell runs and nothing else.** A
 `PreToolUse` hook is spawned by the harness with the harness's own environment,
-never with a variable the session exported (measured on AR-51; the figures are
-in the journal), and in some harnesses the export does not even survive to the
-next Bash call, which is why every command in this skill can also take the run
-directory per invocation. What a hook CAN see is a file, so the unattended
-signal is one:
+never with a variable the session exported — pinned in the generator's
+`test/template/guard-rulebook.test.ts` (absent in a generated rig) › "only a
+flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
+and in some harnesses the export does not even survive to the next Bash call,
+which is why every command in this skill can also take the run directory per
+invocation. What a hook CAN see is a file, so the unattended signal is one:
 
 ```bash
 # at claim time, from the paths the item names (repo-relative prefixes, with

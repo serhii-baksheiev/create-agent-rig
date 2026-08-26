@@ -130,6 +130,40 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     });
   });
 
+  it('an allow entry that is not under a rulebook prefix makes the flag unreadable — `.` cannot widen the list to everything', async () => {
+    await arm(JSON.stringify({ item: 'AR-51', runDir: '/runs/1', allow: ['.'] }));
+    const { readUnattended } = await load();
+    const mode = readUnattended(env());
+    expect(mode).toMatchObject({ on: true, unreadable: true });
+    expect(mode.why).toMatch(/allow/);
+    expect(mode.why).toMatch(/rulebook/);
+  });
+
+  it('writeUnattended refuses an allow entry that widens the rulebook, keeps one outside it, and the CLI exits 1 on the wide one', async () => {
+    const { writeUnattended, readUnattended, clearUnattended } = await load();
+    expect(() =>
+      writeUnattended({ item: 'AR-51', runDir: '/runs/1', allow: ['.claude/'] }, env()),
+    ).toThrow(/rulebook/);
+    expect(() =>
+      writeUnattended({ item: 'AR-51', runDir: '/runs/1', allow: ['.claude/scripts/'] }, env()),
+    ).toThrow(/rulebook/);
+    // outside the rulebook is harmless — items name such paths all the time
+    writeUnattended(
+      { item: 'AR-51', runDir: '/runs/1', allow: ['src/', '.claude/scripts/queue/'] },
+      env(),
+    );
+    expect(readUnattended(env())).toMatchObject({
+      on: true,
+      allow: ['src/', '.claude/scripts/queue/'],
+    });
+    clearUnattended(env());
+    expect(readUnattended(env())).toEqual({ on: false });
+    const result = await runCli(['on', '--item', 'AR-51', '--allow', '.'], home);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/rulebook/);
+    expect(readUnattended(env())).toEqual({ on: false });
+  });
+
   it('trims whitespace around allow entries', async () => {
     await arm(
       JSON.stringify({

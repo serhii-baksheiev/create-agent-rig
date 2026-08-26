@@ -19,6 +19,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const hookPath = path.join(universal, '.claude', 'hooks', 'guard-rulebook.mjs');
+const hooksDir = path.dirname(hookPath);
 const FLAG_NAME = '__PROJECT_NAME__-loop-UNATTENDED';
 
 interface HookResult {
@@ -28,11 +29,15 @@ interface HookResult {
 }
 
 /** Feed a payload to the hook exactly as the harness does — JSON on stdin, env only. */
-function runHookFull(payload: object | string, env?: Record<string, string>): Promise<HookResult> {
+function runHookFull(
+  payload: object | string,
+  env?: Record<string, string>,
+  script = 'guard-rulebook.mjs',
+): Promise<HookResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
-      [hookPath],
+      [path.join(hooksDir, script)],
       { env: { ...process.env, ...env } },
       (error, stdout, stderr) => {
         const code = error ? ((error as { code?: number }).code ?? 1) : 0;
@@ -91,6 +96,53 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(home, { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });
+});
+
+describe('guard-rulebook: its stated limits hold, each one measured', () => {
+  it('a Bash redirect into the rulebook is not an edit tool call and passes — guard-bash does not cover it either', async () => {
+    await armed([]);
+    const payload = {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'echo [] > .claude/hooks/dod-checks.json' },
+    };
+    const here = await run(payload);
+    expect(here.code, here.stderr).toBe(0);
+    const bash = await runHookFull(payload, env(), 'guard-bash.mjs');
+    expect(bash.code, bash.stderr).toBe(0);
+  });
+
+  it('only a flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing', async () => {
+    const result = await runHookFull(write(`${root}/.claude/hooks/guard-bash.mjs`), {
+      ...env(),
+      RIG_UNATTENDED: '1',
+      RIG_ALLOWED_PATHS: '',
+    });
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('compares paths as text: a root spelled differently from the file path is not judged (documented, fails open)', async () => {
+    await armed([]);
+    const result = await runHookFull(write(`/private${root}/.claude/hooks/guard-bash.mjs`), {
+      HOME: home,
+      CLAUDE_PROJECT_DIR: root,
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const header = (await readFile(path.join(hooksDir, 'guard-rulebook.mjs'), 'utf8'))
+      .split('\n')
+      .slice(0, 70)
+      .join('\n');
+    expect(header).toMatch(/symlink|spelled/i);
+    expect(header).toMatch(/CLAUDE_PROJECT_DIR/);
+  });
+
+  it('a flag whose allow-list reaches outside the rulebook is unreadable, so `--allow .` cannot disarm it', async () => {
+    await armed(['.']);
+    const result = await run(write(`${root}/.claude/hooks/guard-bash.mjs`));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/unreadable/);
+    expect(result.stderr).toMatch(/allow/);
+  });
 });
 
 describe('guard-rulebook: attended sessions are untouched', () => {

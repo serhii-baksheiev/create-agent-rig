@@ -75,7 +75,7 @@ const ELEVATED_PATHS = [
   // half, and a declaration without it reports clean over every record.
   //
   // BOTH the source and the synced copy — the convention `.claude/` joined
-  // under AR-51 (see its entry above), while the root `CLAUDE.md` is still
+  // under AR-51 (its entry is the last in this list), while the root `CLAUDE.md` is still
   // declared only through its source. The reason here is the reader, not the sweep:
   // `elevatedPathsIn` compares with a start-anchored `startsWith`, so neither
   // path covers the other, and a decision record is the one synced artifact a

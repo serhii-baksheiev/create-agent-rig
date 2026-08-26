@@ -20,39 +20,46 @@
 //      names the flag; an edit outside the rulebook still passes. Refusing to
 //      inspect is not allowing (`.claude/rules/invariants.md`).
 //
-// Limits — stated here, tested in the generator's `test/template/guard-rulebook.test.ts`:
+// Limits — each stated here and each measured in the generator's
+// `test/template/guard-rulebook.test.ts` (absent in a generated rig), by the
+// test named beside it:
 //   - it sees one edit at a time, as text, before it lands — a rulebook file
 //     rewritten through a Bash redirect (`echo … > .claude/settings.json`), a
 //     generated file, or `git checkout` of another branch is not an edit tool
-//     call and never reaches it; `guard-bash` does not cover that either;
+//     call and never reaches it, and `guard-bash` does not cover that either —
+//     › "a Bash redirect into the rulebook is not an edit tool call and passes
+//     — guard-bash does not cover it either";
 //   - the flag in either home arms it (the env-derived one and the password
-//     database one, like the kill switch), and only a flag arms it — an
-//     attended session that never set one is exactly as free as before;
+//     database one, like the kill switch), and ONLY a flag arms it: an
+//     exported variable changes nothing, and an attended session that never
+//     set a flag is exactly as free as before — › "only a flag arms it — an
+//     exported RIG_UNATTENDED=1 with no flag changes nothing";
 //   - it judges paths, not content: a README that merely mentions
-//     `.claude/hooks/guard-bash.mjs` is not a rulebook edit;
-//   - an `allow` prefix is matched as a string prefix of the repo-relative
-//     path, so `.claude/scripts/queue/` allows the whole directory, while the
-//     same prefix without its slash would also allow any sibling whose name
-//     starts with `queue` — write prefixes with their trailing slash;
+//     `.claude/hooks/guard-bash.mjs` is not a rulebook edit — › "does not fire
+//     on prose that merely mentions a rulebook path";
+//   - it compares paths as text: the repo-relative tail is what is left after
+//     stripping `CLAUDE_PROJECT_DIR` (falling back to the working directory
+//     when the harness does not set it) from the front of the tool's absolute
+//     path, so a root spelled differently from the file path — a symlinked
+//     `/tmp` versus `/private/tmp`, a case difference on a case-insensitive
+//     disk — is not stripped, and the edit is not judged. Documented and
+//     measured, not fixed: the harness spells both from one root — › "compares
+//     paths as text: a root spelled differently from the file path is not
+//     judged (documented, fails open)";
+//   - an `allow` prefix is a string prefix of the repo-relative path and may
+//     not widen the rulebook — an entry that is itself a prefix of a rulebook
+//     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
+//     and the guard refuses — › "a flag whose allow-list reaches outside the
+//     rulebook is unreadable, so `--allow .` cannot disarm it";
 //   - fail-open on its own errors and on a payload it cannot parse, fail-closed
 //     on a flag it cannot read: the guard targets drift, not an adversary.
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { readFileSync } from 'node:fs';
 import { editFragments } from './lib/edit-input.mjs';
-import { readUnattended } from '../scripts/unattended-flag.mjs';
+import { RULEBOOK_PREFIXES, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 
-/** The files that decide what a session may do. Repo-relative prefixes. */
-export const RULEBOOK_PREFIXES = Object.freeze([
-  '.claude/hooks/',
-  '.claude/settings.json',
-  '.claude/queue.json',
-  '.claude/scripts/queue/',
-  '.claude/scripts/decision-router.mjs',
-  '.claude/scripts/detect-missed-gate.mjs',
-  '.claude/rules/',
-  'CLAUDE.md',
-]);
+export { RULEBOOK_PREFIXES, isRulebookPath };
 
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
 
@@ -65,8 +72,6 @@ export const relativeTo = (root, filePath) => {
   if (dir !== '' && file.startsWith(`${dir}/`)) return file.slice(dir.length + 1);
   return file.replace(/^\.\//, '');
 };
-
-export const isRulebookPath = (rel) => RULEBOOK_PREFIXES.some((prefix) => rel === prefix || rel.startsWith(prefix));
 
 export const isAllowed = (rel, allow) =>
   (Array.isArray(allow) ? allow : []).some((prefix) => prefix !== '' && (rel === prefix || rel.startsWith(prefix)));

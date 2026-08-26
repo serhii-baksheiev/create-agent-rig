@@ -86,7 +86,9 @@ them all; they are one rulebook.
   difference is worth keeping straight.
 - **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
   the core the moment it lands; `guard-web-boundary` keeps the frontend off the
-  backend; `guard-secret-file` refuses an edit that writes a credential — by the
+  backend; `guard-rulebook` refuses an edit to the rulebook itself from an
+  unattended run outside the item's allow-list (a flag file the `loop` skill
+  writes; attended sessions are untouched); `guard-secret-file` refuses an edit that writes a credential — by the
   file's name or by a value in its text, from the one vocabulary in
   `.claude/scripts/lib/secrets.mjs`; `block-no-verify` refuses pre-commit
   bypasses; `guard-bash` refuses
