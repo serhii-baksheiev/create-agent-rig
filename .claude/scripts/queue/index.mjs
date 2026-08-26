@@ -333,9 +333,9 @@ if (invokedDirectly()) {
         `GATE ROUNDS EXHAUSTED — ${verdict.rounds} rounds on ${args.branch}, cap is ` +
           `${verdict.max}: ${verdict.stop}.\n` +
           '  Do not run another round. The item stops here and goes back to a human ' +
-          'with the round count and whatever the last gate reported — the fixes are ' +
-          'not converging, and another pass buys a full reviewer fan-out to discover ' +
-          'that again.\n' +
+          'with the round count and whatever the last gate reported. Whether those ' +
+          'rounds were paying off is the reader\'s judgement — this command measured ' +
+          'only the count (AR-115).\n' +
           '  Raising the cap to get one more pass on THIS item is the move this ' +
           'refusal exists to prevent.\n',
       );
