@@ -404,12 +404,16 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     }
   }
 
-  function runStopHook(payload: object, extraEnv: NodeJS.ProcessEnv = {}): Promise<HookResult> {
+  function runStopHook(
+    payload: object,
+    extraEnv: NodeJS.ProcessEnv = {},
+    cwd: string = projectDir,
+  ): Promise<HookResult> {
     return new Promise((resolve, reject) => {
       const child = execFile(
         process.execPath,
         [path.join(projectDir, '.claude', 'hooks', 'gate-stop-dod.mjs')],
-        { cwd: projectDir, env: { ...gitEnv(), ...extraEnv } },
+        { cwd, env: { ...gitEnv(), ...extraEnv } },
         (error, stdout, stderr) => {
           const code = error ? ((error as { code?: number }).code ?? 1) : 0;
           resolve({ code, stderr, stdout });
@@ -425,6 +429,62 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
 
   afterEach(async () => {
     if (projectDir) await rmP(projectDir, { recursive: true, force: true });
+  });
+
+  // AR-119: observed twice in one session reviewing another branch in a
+  // worktree under .claude/worktrees/ — the gate ran the checks in the worktree
+  // the session had last cd-ed into and reported that branch's failing test as
+  // this session's own Definition-of-Done failure. The project is where the
+  // hook lives, not where the shell happens to be.
+  describe('measures the project the hook belongs to, not the directory the session cd-ed into', () => {
+    const elsewhereRepo = async (dirty: boolean): Promise<string> => {
+      const elsewhere = await mkdtemp(path.join(tmpdir(), 'dod-elsewhere-'));
+      const git = (...args: string[]) =>
+        new Promise<void>((resolve, reject) => {
+          execFile('git', args, { cwd: elsewhere, env: gitEnv() }, (error) =>
+            error ? reject(error) : resolve(),
+          );
+        });
+      await git('init', '--quiet');
+      if (dirty) await fsp.writeFile(path.join(elsewhere, 'dirty.txt'), 'uncommitted\n');
+      return elsewhere;
+    };
+
+    it('runs the checks in the project root, so a check reading the tree sees the session project', async () => {
+      // The check passes only in the project: marker.txt exists there and nowhere else.
+      await setUpProject({
+        checks: ["node -e \"process.exit(require('fs').existsSync('marker.txt') ? 0 : 1)\""],
+        dirty: true,
+      });
+      await writeF(path.join(projectDir, 'marker.txt'), 'here');
+      const elsewhere = await elsewhereRepo(true);
+      try {
+        const result = await runStopHook(stop(), {}, elsewhere);
+        expect(result.code, result.stderr).toBe(0);
+      } finally {
+        await rmP(elsewhere, { recursive: true, force: true });
+      }
+    });
+
+    it('asks "is the tree clean?" about the project, not about the cwd', async () => {
+      // The project is clean and the check would fail: the gate must stop
+      // instantly, however dirty the directory the session sits in.
+      await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: false });
+      const elsewhere = await elsewhereRepo(true);
+      try {
+        const result = await runStopHook(stop(), {}, elsewhere);
+        expect(result.code, result.stderr).toBe(0);
+      } finally {
+        await rmP(elsewhere, { recursive: true, force: true });
+      }
+    });
+
+    it('names the tree it measured in the refusal, so a foreign failure is visible at a glance', async () => {
+      await setUpProject({ checks: ['node -e "process.exit(1)"'], dirty: true });
+      const result = await runStopHook(stop());
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain(`measured in ${await fsp.realpath(projectDir)}`);
+    });
   });
 
   it('refuses the stop while a named DoD check fails', async () => {
