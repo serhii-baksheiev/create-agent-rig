@@ -150,6 +150,48 @@ was never this checkout's (AR-132). Pinned in the generator's
 `test/template/queue-owner.test.ts` — absent in a generated rig — › "holds an
 item whose owner is another repository, with the cause named".
 
+🔴 **An item's lifecycle is a label a human wrote, and the loop infers none of
+it** (AR-144). Four words, read by `lifecycleOf` in `core.mjs` so every adapter
+means the same thing — three of lifecycle, one of scheduling:
+
+- `keep-core` — the problem and the responsibility are valid and the item is
+  executable as written. A statement about the item, never a condition on taking
+  it: a bare `keep-core` item is selected like an unmarked one.
+- `re-scope` — the problem is valid but the item is **not executable
+  literally**: a path, a mechanism, a boundary or an acceptance criterion has
+  drifted. It is the holding cause `re-scope`, reported by `hygiene` as
+  `re-scope-pending` until it clears — and it clears **only** by a human
+  re-reading the code, rewriting the item and removing the label. It is a
+  short-lived quarantine, not a backlog category, and never a synonym for
+  obsolete, low priority or parked. The loop surfaces it and never rewrites it:
+  a re-aimed item is work the agent authored (§8).
+- `obsolete` — the responsibility is gone or fully superseded by a proven
+  mechanism. A **human verdict, terminal**: the loop never applies it and never
+  closes an item because it believes another mechanism supersedes it. Closing as
+  obsolete needs external evidence and a comment naming the replacement or the
+  reason — so an obsolete item is out of play (the cause `obsolete`), not held,
+  and the stop line says so.
+- `parked` — valid work deliberately not active now. The **scheduling** axis,
+  orthogonal to the three above: `keep-core + parked` is the ordinary shape of a
+  deferred item and means "still needed, not now". It is the holding cause
+  **`deferred`**, freed by a human un-parking it. The cause is not spelled
+  `parked` on purpose: §3 already uses that word for the **out-of-play pile** —
+  items waiting on a human that no session will take — and a parked-labelled
+  item is the opposite, held and takeable. So the stop line reads "held by
+  deferred" for the label, and "are parked" for the pile; `obsolete` lands in
+  the pile, the `parked` label never does.
+
+The rule under all four: **nothing infers `obsolete`** — not age, not a key
+range, old terminology, `parked`, absence from a roadmap, or a migration marker.
+`legacy-backlog` is that marker, retired: `hygiene` reports an open item still
+carrying it (`stale-legacy-backlog-label`), and two lifecycle labels on one item
+(`contradictory-lifecycle-labels`) — selection meanwhile reads the most
+restrictive one. Reported, never corrected: which label is wrong is the human's
+call. Pinned in the generator's `test/template/queue-lifecycle.test.ts` — absent
+in a generated rig — › "holds a re-scope item and says a human rewrites it" and
+› "refuses an obsolete item and says a human closes it with a comment naming the
+evidence".
+
 **For a `trigger-auto` item, record the declaration** — it has to outlive the
 turn it was made in, or the next selection holds the item back again:
 

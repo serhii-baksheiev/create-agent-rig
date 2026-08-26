@@ -22,7 +22,7 @@
 // `owner` names this checkout for the `owner-<name>` label (AR-132): an item
 // marked for another repository is held, and a checkout that declares no
 // owner holds every marked item, since it cannot confirm a match.
-import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels } from './core.mjs';
+import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
 
@@ -127,6 +127,9 @@ export const toTicket = (issue) => {
         : null,
     // The repository this item belongs to (AR-132): `owner-<name>`, or null.
     owner: ownerOfLabels(labels),
+    // The lifecycle and the scheduling flag (AR-144): `lifecycleOf` above the seam
+    // owns the semantics; this adapter only hands it the labels.
+    ...lifecycleOf(labels),
   };
 };
 

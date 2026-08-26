@@ -12,7 +12,7 @@
 // has real dependencies, move to an adapter whose tracker can express them
 // (`github-issues`). Ordering the list by hand is not a dependency graph.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { duplicateOf, fingerprintOf, validateProposal } from './core.mjs';
+import { duplicateOf, fingerprintOf, validateProposal, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
@@ -65,6 +65,13 @@ const MARKERS = {
   // fact the tracker adapters read out of an `owner-<name>` label. Case-exact,
   // because the name is compared exactly to `options.owner`.
   owner: /\[owner:([^\]\s]+)\]/,
+  // AR-144: the lifecycle vocabulary and the scheduling flag, the same words the
+  // tracker adapters read as labels. Case-insensitive, as the tier and trigger
+  // markers are (the owner marker is case-exact, because it is compared to a name).
+  keepCore: /\[keep-core\]/i,
+  reScope: /\[re-scope\]/i,
+  obsolete: /\[obsolete\]/i,
+  parked: /\[parked\]/i,
 };
 
 /**
@@ -96,7 +103,10 @@ export const parsePlan = (plan) => {
     if (!match) continue;
     const raw = match[1];
     const title = raw
-      .replace(/\[(elevated|triage|trigger-auto|trigger-human|owner:[^\]\s]+)\]/gi, '')
+      .replace(
+        /\[(elevated|triage|trigger-auto|trigger-human|keep-core|re-scope|obsolete|parked|owner:[^\]\s]+)\]/gi,
+        '',
+      )
       .replace(/\s+/g, ' ')
       .trim();
     items.push({
@@ -129,6 +139,19 @@ export const parsePlan = (plan) => {
           ? 'human'
           : null,
       owner: MARKERS.owner.exec(raw)?.[1] ?? null,
+      // The markers present, handed to the one precedence rule (`core.mjs` ›
+      // lifecycleOf) rather than re-deriving it here. Hygiene cannot report a
+      // contradiction on this adapter: a flat list carries no labels for it to read.
+      ...lifecycleOf(
+        [
+          ['keep-core', MARKERS.keepCore],
+          ['re-scope', MARKERS.reScope],
+          ['obsolete', MARKERS.obsolete],
+          ['parked', MARKERS.parked],
+        ]
+          .filter(([, marker]) => marker.test(raw))
+          .map(([label]) => label),
+      ),
     });
   }
   return items;

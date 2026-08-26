@@ -15,7 +15,9 @@ why a parked cause outranks a holding one. It is not loaded into any session.
   `spacing-rations-mechanisms.md`), a blocker (its item closes), `in-progress`
   (the other session finishes), a trigger (a human declares it), an owner (the
   item is marked for another repository and a human moves or re-marks it —
-  AR-132).
+  AR-132), a `re-scope` item (a human rewrites it against the current code and
+  removes the label — AR-144), and a `deferred` item (it carries the `parked`
+  label and a human un-parks it — AR-144).
 
 An empty queue wants refilling. A held one wants interleaving, time, or — for a
 trigger or an owner — the human act the stop line names.
@@ -26,14 +28,21 @@ exist; reporting the first as the second tells them to wait for nothing.
 
 Parked items are out of play and waiting on a human. They are not work this run
 can take, and they are not why the queue is empty — so they are named separately,
-by cause and count.
+by cause and count. An `obsolete` item (AR-144) is one of them: it waits on a
+human close with a comment naming the evidence, which the loop never writes.
+
+⚠ "Parked" here is the pile, not the `parked` **label**. The label (AR-144) means
+"valid work, deliberately not now" — takeable, held, freed by an un-park — so its
+cause is spelled `deferred`, and it is never in this pile. The two were named
+before each other existed; this note is the reconciliation rather than a rename,
+because the pile word runs through the stop line, the tests and this record.
 
 How that pile grows is the adapter's business, and the stop line does not guess:
 
 | adapter                                  | what lands in the parked pile                         |
 | ---------------------------------------- | ----------------------------------------------------- |
-| tracker-backed (`github-issues`, `jira`) | an escalated item and a filed proposal both stay open |
-| `plan-md`                                | only a `[triage]` line sitting in the Agent queue     |
+| tracker-backed (`github-issues`, `jira`) | an escalated item, a filed proposal (both stay open), and an item labelled `obsolete` (AR-144) |
+| `plan-md`                                | a `[triage]` or an `[obsolete]` line sitting in the Agent queue — nothing else, because a flat list has no per-item state |
 
 Under `plan-md` a filed proposal goes to the Operator queue, where selection
 never looks, and an escalation leaves **no mark on the queue at all** — a flat
