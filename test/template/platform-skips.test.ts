@@ -9,7 +9,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
  * AR-93: a skip on a platform is legitimate only for a capability genuinely
  * absent there — and then it is named, justified in its reason, and COUNTED,
  * so the number is one a reader watches rather than a vague allowance. Every
- * such site goes through one of the two helpers below (never a bare
+ * such site goes through one of the five helpers below (never a bare
  * `it.skipIf(process.platform === 'win32')`), and this pins how many there are.
  * A new site is added here on the day it is written, with its reason.
  */

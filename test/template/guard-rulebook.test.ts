@@ -180,6 +180,37 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
     );
   });
 
+  it('blocks a missing rulebook file through a payload-only symlink alias with an existing protected parent', async () => {
+    const protectedParent = path.join(root, '.claude', 'hooks');
+    const missingTarget = path.join(protectedParent, 'new-hook.mjs');
+    await mkdir(protectedParent, { recursive: true });
+    expect(existsSync(missingTarget), 'the final protected target is a missing-file case').toBe(
+      false,
+    );
+    await armed([]);
+    const alias = await aliasedRoot();
+    const canonicalRoot = await realpath(root);
+
+    // On origin/master the guard compared this alias spelling only as text: it
+    // could not strip the canonical checkout root and returned 0. The security
+    // gate reproduced that prior behaviour; nearest-existing-parent
+    // canonicalisation is what lets the missing tail remain guarded now.
+    const aliasedTarget = `${alias}/.claude/hooks/new-hook.mjs`;
+    const result = await runHookFull(write(aliasedTarget), {
+      HOME: home,
+      CLAUDE_PROJECT_DIR: canonicalRoot,
+    });
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks/new-hook.mjs');
+    expect(existsSync(missingTarget), 'the PreToolUse guard must not create the target').toBe(
+      false,
+    );
+    expect(existsSync(aliasedTarget), 'the alias spelling must still resolve to no file').toBe(
+      false,
+    );
+  });
+
   it('does not universally claim that every path outside the rulebook is never judged', async () => {
     const prose = (await hookHeader()).replace(/^\/\/?\s?/gm, '').replace(/\s+/g, ' ');
     expect(prose).not.toMatch(/paths outside the rulebook are never judged/i);
