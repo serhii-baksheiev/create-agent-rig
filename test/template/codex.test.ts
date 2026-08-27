@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { needsGitRoot, skipUnless } from '../helpers/env.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
@@ -246,8 +246,6 @@ function runGuardInput(
 }
 
 describe('Codex apply_patch cannot bypass architecture guards', () => {
-  beforeEach((ctx) => skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason));
-
   // 🔴 The remedy an operator is shown, pinned across all three guards. It used
   // to be chosen by `/shape/i.test(reason)` in six copies — correct only by
   // coincidence of wording — and nothing asserted either string, so reverting
@@ -385,7 +383,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     },
   );
 
-  it('blocks impurity added to core', async () => {
+  it('blocks impurity added to core', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const result = await runGuard(
       'guard-core-purity.mjs',
       [
@@ -400,7 +399,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.stderr).toMatch(/core/i);
   });
 
-  it('blocks a backend import added to the web app', async () => {
+  it('blocks a backend import added to the web app', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const result = await runGuard(
       'guard-web-boundary.mjs',
       [
@@ -441,7 +441,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.code).toBe(2);
   });
 
-  it('protects an Add destination hidden behind an in-repository parent symlink', async () => {
+  it('protects an Add destination hidden behind an in-repository parent symlink', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-symlink-add-destination-'));
     const alias = path.join(scratch, 'alias');
     const core = path.join(
@@ -473,7 +474,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('protects a Move destination hidden behind an in-repository parent symlink', async () => {
+  it('protects a Move destination hidden behind an in-repository parent symlink', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-symlink-move-destination-'));
     const source = path.join(scratch, 'impure.ts');
     const alias = path.join(scratch, 'alias');
@@ -624,7 +626,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('does not inspect removed patch lines as newly introduced code', async () => {
+  it('does not inspect removed patch lines as newly introduced code', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const result = await runGuard(
       'guard-core-purity.mjs',
       [
@@ -714,7 +717,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('treats a final-component symlink as a recognized unsafe-source refusal', async () => {
+  it('treats a final-component symlink as a recognized unsafe-source refusal', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const outside = await mkdtemp(path.join(tmpdir(), 'codex-final-symlink-target-'));
     const inside = await mkdtemp(path.join(repoRoot, '.codex-final-symlink-'));
     const target = path.join(outside, 'private.ts');
@@ -742,7 +746,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('diagnoses a missing move source but leaves the guard fail-open', async () => {
+  it('diagnoses a missing move source but leaves the guard fail-open', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const result = await runGuard(
       'guard-core-purity.mjs',
       [
@@ -758,7 +763,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.stderr).not.toMatch(/BLOCKED/i);
   });
 
-  it('blocks a move-only patch that carries existing impurity into core', async () => {
+  it('blocks a move-only patch that carries existing impurity into core', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-impure-move-'));
     const source = path.join(scratch, 'impure.ts');
     await writeFile(source, "import { readFile } from 'node:fs/promises';\n");
@@ -787,7 +793,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
   // queue/checkout — and this one did not, so `git rev-parse --show-toplevel`
   // answered about the HOOK's repository and the guard fell open. Same lesson the
   // baseline-commit incident already paid for.
-  it('resolves the repository root even when a git hook has exported GIT_DIR', async () => {
+  it('resolves the repository root even when a git hook has exported GIT_DIR', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     // A REAL repository, not an empty directory: with an invalid GIT_DIR the git
     // call merely fails and the fallback saves the guard, which is the wrong
     // reason to pass. A git hook exports a VALID one — that is the case that
@@ -844,7 +851,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('resolves a relative move source from the hook payload cwd', async () => {
+  it('resolves a relative move source from the hook payload cwd', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const nested = await mkdtemp(
       path.join(
         repoRoot,
@@ -1120,7 +1128,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(refusals[0]?.inspectionRefusal).not.toMatch(/outside|cannot be resolved safely/i);
   });
 
-  it('caps aggregate source inspection across many move sections', async () => {
+  it('caps aggregate source inspection across many move sections', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-many-moves-'));
     const sections: string[] = [];
 
@@ -1145,7 +1154,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('does not inspect later move sources after refusing the aggregate moved-byte budget', async () => {
+  it('does not inspect later move sources after refusing the aggregate moved-byte budget', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-move-budget-stop-'));
     const fullBudget = path.join(scratch, 'full-budget.ts');
     const overBudget = path.join(scratch, 'over-budget.ts');
@@ -1177,7 +1187,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('blocks a move whose patch context does not match its source', async () => {
+  it('blocks a move whose patch context does not match its source', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-context-mismatch-'));
     const source = path.join(scratch, 'actual.ts');
     await writeFile(source, 'export const actual = true;\n');
@@ -1202,7 +1213,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('blocks a move hunk that exceeds the hunk-line ceiling', async () => {
+  it('blocks a move hunk that exceeds the hunk-line ceiling', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-hunk-lines-'));
     const source = path.join(scratch, 'small.ts');
     await writeFile(source, 'same\n');
@@ -1227,7 +1239,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('caps total hunk lines across one move', async () => {
+  it('caps total hunk lines across one move', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-total-hunks-'));
     const source = path.join(scratch, 'small.ts');
     await writeFile(source, 'export {};\n');
@@ -1255,7 +1268,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('caps the total output lines produced by move inspection', async () => {
+  it('caps the total output lines produced by move inspection', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-output-lines-'));
     const source = path.join(scratch, 'many-lines.ts');
     await writeFile(source, `${Array.from({ length: 20_001 }, () => 'safe').join('\n')}\n`);
@@ -1278,7 +1292,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('caps aggregate output lines across multiple move sections', async () => {
+  it('caps aggregate output lines across multiple move sections', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-aggregate-output-lines-'));
     const sections: string[] = [];
 
@@ -1303,7 +1318,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('does not inspect later move sources after refusing the aggregate output-line budget', async () => {
+  it('does not inspect later move sources after refusing the aggregate output-line budget', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-output-budget-stop-'));
     const first = path.join(scratch, 'first.ts');
     const overBudget = path.join(scratch, 'over-budget.ts');
@@ -1335,7 +1351,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('caps the number of splice operations across one move', async () => {
+  it('caps the number of splice operations across one move', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-splice-budget-'));
     const source = path.join(scratch, 'small.ts');
     await writeFile(source, 'export {};\n');
@@ -1360,7 +1377,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('blocks a move when the context-comparison budget is exhausted', async () => {
+  it('blocks a move when the context-comparison budget is exhausted', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-comparison-budget-'));
     const source = path.join(scratch, 'repetitive.ts');
     const content = `${Array.from({ length: 12_000 }, () => 'same').join('\n')}\n`;
@@ -1414,7 +1432,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     for (const guard of guards) expect(guard).toMatch(/inspectionRefusal/);
   });
 
-  it('removes the occurrence selected by the complete hunk, not the first matching line', async () => {
+  it('removes the occurrence selected by the complete hunk, not the first matching line', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-exact-move-'));
     const source = path.join(scratch, 'duplicate.ts');
     await writeFile(
@@ -1461,8 +1480,6 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 });
 
 describe('Codex oversized apply_patch inspection refusals', () => {
-  beforeEach((ctx) => skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason));
-
   it.each([
     {
       guard: 'guard-core-purity.mjs',
