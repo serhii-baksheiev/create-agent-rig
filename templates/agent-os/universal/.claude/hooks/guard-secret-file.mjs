@@ -125,8 +125,8 @@ function main() {
   // below never matches, every path stays absolute, and a checkout that happens
   // to live under a directory called `secrets` has EVERY edit refused. That is
   // the "deleted within the hour" outcome `.claude/rules/invariants.md` warns
-  // about — see guard-secret-file.test.ts (absent in a generated rig) › "judges the repo-relative path even
-  // when the project directory is given with a trailing slash".
+  // about — see guard-secret-file.test.ts (absent in a generated rig) ›
+  // "judges the repo-relative path even when the project directory is given %s".
   const projectDir = String(process.env.CLAUDE_PROJECT_DIR ?? '')
     .replaceAll('\\', '/')
     .replace(/\/+$/, '');

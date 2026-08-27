@@ -2,11 +2,12 @@
 // PreToolUse hook: in an UNATTENDED run, the rulebook is never edited outside
 // the current item's allow-list (AR-51).
 //
-// The rulebook is the set of files that decide what this session may do — the
-// hooks, their wiring, the queue config and adapters, the router and the gate
-// sweep, the rules, `CLAUDE.md`. Every one of them was editable by the run it
-// governs: a Write to `.claude/hooks/dod-checks.json` with `[]` switched the
-// stop gate off, and nothing refused it until the merge sweep, long after.
+// The rulebook is the set of files that decide what this session may do — hooks
+// and settings wiring, the queue config and selector, all scripts, rules, skills
+// and agents, the `.codex/` configuration, the integrity manifest, `AGENTS.md`
+// and `CLAUDE.md`. Every one of them was editable by the run it governs: a
+// Write to `.claude/hooks/dod-checks.json` with `[]` switched the stop gate
+// off, and nothing refused it until the merge sweep, long after.
 //
 // How it decides — and it is deliberately dumb:
 //   1. No unattended flag on disk (`.claude/scripts/unattended-flag.mjs`) → an

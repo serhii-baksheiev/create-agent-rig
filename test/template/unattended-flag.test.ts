@@ -430,6 +430,16 @@ describe('the CLI the loop skill calls', () => {
 });
 
 describe('the process layer declares the new files', () => {
+  it('explains exact protected-prefix refusal separately from proper-prefix widening', async () => {
+    const source = await readFile(scriptPath, 'utf8');
+    const explanation =
+      source.match(/\/\*\*\n \* Does this allow entry widen[\s\S]*?\*\//)?.[0] ?? '';
+    expect(explanation).toMatch(/exact[\s-]+(?:protected[\s-]+)?prefix/i);
+    expect(explanation).toMatch(/proper[\s-]+prefix/i);
+    expect(explanation).toMatch(/(?:all|every)[\s\S]*\.claude\/scripts\//i);
+    expect(explanation).not.toMatch(/\.claude\/scripts\/queue\/[\s\S]*exactly a rulebook prefix/i);
+  });
+
   it('layers.json `process` lists unattended-flag.mjs and guard-rulebook.mjs', async () => {
     const layers = JSON.parse(await readFile(path.join(universal, 'layers.json'), 'utf8')) as {
       process: string[];

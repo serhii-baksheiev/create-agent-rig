@@ -379,6 +379,24 @@ describe('guard-rulebook: fails open on a payload it cannot understand', () => {
 });
 
 describe('guard-rulebook: wired, bounded in its own words, and written into the rules', () => {
+  it('names every protected rulebook family in its header', async () => {
+    const source = await readFile(hookPath, 'utf8');
+    const header = source.split(/^import /m)[0] ?? '';
+    const { RULEBOOK_PREFIXES } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const familyOf = (prefix: string) => {
+      if (prefix.includes('manifest')) return 'manifest';
+      return prefix
+        .replace(/^\.claude\//, '')
+        .replace(/^\./, '')
+        .split(/[/.]/)[0]!;
+    };
+    const families = [...new Set((RULEBOOK_PREFIXES as readonly string[]).map(familyOf))];
+    const missing = families.filter((family) => !header.includes(family));
+    expect(missing, 'guard-rulebook header omits protected families').toEqual([]);
+  });
+
   it('is wired into settings.json on a matcher covering every edit surface', async () => {
     const settings = JSON.parse(
       await readFile(path.join(universal, '.claude', 'settings.json'), 'utf8'),

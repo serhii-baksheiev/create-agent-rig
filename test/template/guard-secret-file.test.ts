@@ -451,6 +451,25 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
 // checks prose, so it drifts — into overstatement, which is the direction that
 // gets someone hurt. The hook's header names four limits. These are them.
 describe('guard-secret-file: the limits it states, asserted rather than asserted-in-prose', () => {
+  it('keeps every named test pointer literally greppable in its referenced test file', async () => {
+    const source = await readFile(hook, 'utf8');
+    const prose = source
+      .split('\n')
+      .map((line) => line.replace(/^\s*\/\/ ?/, ''))
+      .join('\n');
+    const pointers = [
+      ...prose.matchAll(/\b(?:see|by)\s+([a-z0-9-]+\.test\.ts)[\s\S]*?›\s*"([^"]+)"/gi),
+    ].map(([, file, name]) => ({ file: file!, name: name!.replace(/\s+/g, ' ').trim() }));
+    expect(pointers.length, 'the hook names no upstream test pointers').toBeGreaterThan(0);
+
+    const missing: string[] = [];
+    for (const { file, name } of pointers) {
+      const testSource = await readFile(path.join(repoRoot, 'test', 'template', file), 'utf8');
+      if (!testSource.includes(name)) missing.push(`${file} › ${name}`);
+    }
+    expect(missing, 'test pointers must be literal source substrings').toEqual([]);
+  });
+
   it('does not see a credential split across two edits, because it is shown one fragment at a time', async () => {
     // The halves are innocuous apart and a credential together. Each edit is
     // allowed — not because the guard judged them safe, but because it never

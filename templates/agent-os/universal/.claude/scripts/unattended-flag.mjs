@@ -83,11 +83,13 @@ export const isRulebookPath = (rel) =>
   RULEBOOK_PREFIXES.some((prefix) => rel === prefix || rel.startsWith(prefix));
 
 /**
- * Does this allow entry widen the rulebook — is it a proper prefix of a rulebook
- * prefix, so that it would admit the whole prefix and more? `.claude/scripts/`
- * widens (it covers `.claude/scripts/queue/` and its siblings); `src/` does not
- * (it covers nothing the guard judges); `.claude/scripts/queue/` does not (it is
- * exactly a rulebook prefix, the ordinary allow entry).
+ * Does this allow entry widen the rulebook? It is unsafe when it is an
+ * exact protected prefix deliberately unavailable as an allow root (`.agents/`,
+ * `.claude/scripts/`, `.codex/`), or when it is a proper prefix of any
+ * rulebook prefix and would therefore admit that prefix plus siblings. All
+ * protected script paths sit under `.claude/scripts/`; a narrower path such as
+ * `.claude/scripts/queue/` is an ordinary allow entry and does not widen it.
+ * `src/` also does not widen it because the guard judges nothing there.
  */
 export const isWidening = (entry) =>
   typeof entry !== 'string' ||
