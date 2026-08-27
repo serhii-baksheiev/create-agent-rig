@@ -1,0 +1,17 @@
+{
+  "case": "envelope-foreign-major",
+  "definition": "Envelope",
+  "valid": false,
+  "expectedKeyword": "const",
+  "expectedInstancePath": "/contractMajor",
+  "value": {
+    "contractMajor": 2,
+    "messageId": "message-foreign-major",
+    "messageType": "project.note",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-foreign-major",
+    "requestedIntent": "notify"
+  }
+}

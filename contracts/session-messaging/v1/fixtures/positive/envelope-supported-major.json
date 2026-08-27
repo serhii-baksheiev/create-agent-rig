@@ -1,0 +1,26 @@
+{
+  "case": "envelope-supported-major",
+  "definition": "Envelope",
+  "valid": true,
+  "baseline": "non-enterprise",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-001",
+    "messageType": "project.note",
+    "payload": { "text": "hello" },
+    "sender": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "projectId": "create-agent-rig",
+      "instanceId": "codex-local-a"
+    },
+    "recipient": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "projectId": "create-agent-rig",
+      "instanceId": "codex-local-b"
+    },
+    "correlationId": "correlation-001",
+    "requestedIntent": "notify"
+  }
+}

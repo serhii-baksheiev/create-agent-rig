@@ -1,0 +1,17 @@
+{
+  "case": "receipt-routed-with-decline-reason",
+  "definition": "DeliveryReceipt",
+  "valid": false,
+  "expectedKeyword": "not",
+  "expectedInstancePath": "",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-routed-with-decline",
+    "correlationId": "correlation-routed-with-decline",
+    "observedAt": "2026-08-27T18:15:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "notify",
+    "outcome": "routed",
+    "declineReason": "a non-terminal outcome cannot decline"
+  }
+}

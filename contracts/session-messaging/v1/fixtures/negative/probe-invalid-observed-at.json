@@ -1,0 +1,36 @@
+{
+  "case": "probe-invalid-observed-at",
+  "definition": "ProbeResult",
+  "valid": false,
+  "expectedKeyword": "format",
+  "expectedInstancePath": "/observedAt",
+  "value": {
+    "contractMajor": 1,
+    "session": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "instanceId": "codex-local-a"
+    },
+    "trigger": "registration",
+    "mechanism": "local ingress registration probe",
+    "outcome": "notify accepted",
+    "observedAt": "2026-02-30T25:61:00Z",
+    "effectiveCapability": {
+      "deliveryClass": "TURN_BOUNDARY",
+      "supportedIntents": ["notify"],
+      "ingressKind": "local-hook"
+    },
+    "verificationState": "verified",
+    "evidence": {
+      "harness": "codex",
+      "surface": "local-cli",
+      "harnessVersion": "0.1.0",
+      "os": "linux",
+      "observedDate": "2026-08-27",
+      "mechanism": "registration probe",
+      "result": "notify accepted",
+      "evidencePointer": "fixture://probe-invalid-observed-at",
+      "degradationThreshold": 3
+    }
+  }
+}

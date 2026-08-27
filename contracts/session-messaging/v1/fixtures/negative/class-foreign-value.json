@@ -1,0 +1,8 @@
+{
+  "case": "class-foreign-value",
+  "definition": "DeliveryClass",
+  "valid": false,
+  "expectedKeyword": "enum",
+  "expectedInstancePath": "",
+  "value": "STREAM"
+}

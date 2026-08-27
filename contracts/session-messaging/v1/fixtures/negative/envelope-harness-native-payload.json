@@ -1,0 +1,18 @@
+{
+  "case": "envelope-harness-native-payload",
+  "definition": "Envelope",
+  "valid": false,
+  "expectedKeyword": "additionalProperties",
+  "expectedInstancePath": "",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-harness-native",
+    "messageType": "project.note",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-harness-native",
+    "requestedIntent": "notify",
+    "harnessNativePayload": { "threadId": "thread-123" }
+  }
+}

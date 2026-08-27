@@ -1,0 +1,7 @@
+{
+  "case": "class-turn-boundary",
+  "definition": "DeliveryClass",
+  "valid": true,
+  "baseline": "non-enterprise",
+  "value": "TURN_BOUNDARY"
+}

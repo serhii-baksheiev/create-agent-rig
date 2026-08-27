@@ -1,0 +1,16 @@
+{
+  "case": "orthogonal-turn-boundary-wake",
+  "definition": "Envelope",
+  "valid": true,
+  "deliveryClass": "TURN_BOUNDARY",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-turn-boundary-wake",
+    "messageType": "orthogonality.sample",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-turn-boundary-wake",
+    "requestedIntent": "wake"
+  }
+}

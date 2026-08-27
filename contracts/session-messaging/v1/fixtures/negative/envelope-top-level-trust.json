@@ -1,0 +1,18 @@
+{
+  "case": "envelope-top-level-trust",
+  "definition": "Envelope",
+  "valid": false,
+  "expectedKeyword": "additionalProperties",
+  "expectedInstancePath": "",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-trust",
+    "messageType": "project.note",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-trust",
+    "requestedIntent": "notify",
+    "trust": "self-asserted"
+  }
+}
