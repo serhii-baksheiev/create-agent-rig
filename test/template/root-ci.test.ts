@@ -81,12 +81,13 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
     expect(commandText(windowsJobs[0] ?? '')).toMatch(/\bpnpm test:unit\b/);
   });
 
-  it('names every temporary Windows exclusion individually', async () => {
+  it('runs the whole unit suite on Windows, with no file excluded by name', async () => {
+    // AR-93: the exclusion list is gone. A capability genuinely absent there
+    // skips with its reason and is counted in platform-skips.test.ts; a
+    // `--exclude` reappearing here would be a red file hidden, not a fix.
     const windows = job(await workflow('ci.yml'), 'windows-unit');
-    const exclusions = [...commandText(windows).matchAll(/--exclude(?:=|\s+)["']?([^\s"']+)/g)]
-      .map((match) => match[1] ?? '')
-      .sort();
-    expect(exclusions).toEqual([...WINDOWS_INCOMPATIBLE_TESTS].sort());
+    expect(commandText(windows)).not.toMatch(/--exclude/);
+    expect(WINDOWS_INCOMPATIBLE_TESTS).toEqual([]);
   });
 });
 

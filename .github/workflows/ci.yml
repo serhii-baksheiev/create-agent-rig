@@ -68,9 +68,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # AR-93 removes this measured compatibility list. Keep every temporary
-      # exclusion explicit so a newly failing file cannot disappear silently.
-      - name: Run unit tests with named Windows exclusions
-        run: >-
-          pnpm test:unit
-          --testTimeout=15000
+      # The whole unit suite, no exclusions (AR-93). A capability genuinely
+      # absent on Windows skips by name and is counted in
+      # test/template/platform-skips.test.ts; nothing else may skip here.
+      - name: Run the unit suite on Windows
+        run: pnpm test:unit --testTimeout=15000
