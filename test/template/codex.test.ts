@@ -114,6 +114,11 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           );
           expect(hook.command).toContain('CLAUDE_PROJECT_DIR');
           expect(windowsScript).toContain('$env:CLAUDE_PROJECT_DIR = $repoRoot');
+          expect(windowsScript).toContain('$startInfo.RedirectStandardInput = $true');
+          expect(windowsScript).toContain(
+            '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
+          );
+          expect(windowsScript).toContain('exit $child.ExitCode');
           // `command` is what Codex executes on macOS and Linux. Keep it valid
           // for the platform-provided POSIX shell and independent of GNU tools.
           expect(hook.command).toMatch(/node [^\n]*\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/);
