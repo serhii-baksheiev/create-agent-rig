@@ -1,5 +1,9 @@
-# Hashbang scripts must stay LF on every checkout: a Windows clone with
-# core.autocrlf=true turns `#!/usr/bin/env node\r` into a SyntaxError when
-# vitest import()s the file (AR-5, AR-51; the wider Windows debt is AR-93).
+# Every text file is LF on every checkout. A Windows clone with
+# core.autocrlf=true otherwise turns `#!/usr/bin/env node\r` into a SyntaxError
+# when vitest import()s a hashbang script (AR-5, AR-51), and turns every rule
+# file, skill and fixture into CRLF that the tests reading them do not expect
+# (AR-93: 79 failures on windows-latest, most of them `\r\n`). `text=auto`
+# leaves binaries alone; the index carried LF only when this was widened.
+* text=auto eol=lf
 *.mjs text eol=lf
 *.sh  text eol=lf
