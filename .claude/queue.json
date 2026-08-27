@@ -1,8 +1,17 @@
 {
   "adapter": "jira",
+  "board": "AR",
+  "boards": {
+    "AR": {
+      "project": "AR",
+      "owner": "create-agent-rig"
+    },
+    "RP": {
+      "project": "RP",
+      "owner": "rig"
+    }
+  },
   "options": {
-    "project": "AR",
-    "maxGateRounds": 3,
-    "owner": "create-agent-rig"
+    "maxGateRounds": 3
   }
 }

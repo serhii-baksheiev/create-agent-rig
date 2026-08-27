@@ -14,6 +14,8 @@ next-env.d.ts
 # per-checkout queue state: the tier the last close recorded. The queue CONFIG
 # is composed and tracked; this is runtime state and must never be committed.
 .claude/queue.state.json
+# per-checkout board selector (`queue/index.mjs board <name>`); the boards are in the config
+.claude/queue.board
 # gate rounds, one count per branch
 .claude/gate-rounds.json
 # per-run machine trace (.claude/scripts/run-journal.mjs): forensics that churn

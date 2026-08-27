@@ -39,6 +39,19 @@ node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies, o
   (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`) and never from a file in the
   repo; the project or the JQL goes in `.claude/queue.json`.
 
+A config may declare several boards (`boards: { <name>: options }` plus a
+default `board`); the active one is chosen per checkout, not by editing the
+composed file:
+
+```bash
+node .claude/scripts/queue/index.mjs board        # the active board and the declared ones
+node .claude/scripts/queue/index.mjs board RP     # switch this checkout (writes .claude/queue.board, gitignored)
+```
+
+Every command and `revalidate.mjs` read the same resolution, so the adapter
+options a run sees are always the active board's. An undeclared name is refused,
+never read as "no board".
+
 Adding a fourth is an adapter, not a rewrite: `core.mjs` holds every selection
 decision and each adapter only maps its tracker's records onto the neutral shape.
 
