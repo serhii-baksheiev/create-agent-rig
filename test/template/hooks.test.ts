@@ -6,6 +6,7 @@ import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
+import { skipUnless, symlinksAvailable } from '../helpers/env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -1364,8 +1365,14 @@ describe('inject-rules main guard (invocation paths that must not silence it)', 
 
   // Creating a symlink needs a privilege on Windows that an ordinary CI account
   // does not have, so the fixture itself would fail there for a reason that has
-  // nothing to do with the guard. The guard's defect is a POSIX-path one.
-  const onlyWhereSymlinksExist = it.skipIf(process.platform === 'win32');
+  // nothing to do with the guard. The guard's defect is a POSIX-path one. The
+  // skip carries that reason into the report and is counted in
+  // platform-skips.test.ts (AR-93).
+  const onlyWhereSymlinksExist = (name: string, body: () => Promise<void>): void =>
+    it(name, async (ctx) => {
+      skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+      await body();
+    });
 
   // The control, and it must stay green: it proves the copied tree is a working
   // fixture, so a red below points at the guard and not at a broken copy. The

@@ -87,3 +87,14 @@ export const modeBitsDeny = (): { ok: boolean; reason: string } => ({
       ? 'on Windows a chmod mode bit denies nothing and there is no execute bit, so the refusal the test needs never happens'
       : 'running as root: a chmod mode bit does not deny root, so the EACCES the test needs never happens',
 });
+
+/**
+ * Can this process create a symlink? On Windows that needs a privilege an
+ * ordinary CI account does not have, so a fixture built on one fails for a
+ * reason that has nothing to do with the code under test.
+ */
+export const symlinksAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason:
+    'on Windows creating a symlink needs a privilege an ordinary CI account lacks; the fixture cannot be built',
+});
