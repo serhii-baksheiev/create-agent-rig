@@ -530,13 +530,27 @@ sometimes earlier (step 6). Everything before that is mechanical:
    tree, are in the tarball. This is where scaffolders break, and the git path
    cannot catch it.
 3. Version in `package.json` (and the private inner package, kept in step).
-4. `node scripts/build-hash-history.mjs` — regenerate the released-hash table
-   from the tags **after** the version bump, so the version now shipping is the
-   first one it excludes. Forgetting it would leave `upgrade` unable to
-   recognise the previous release. ⚠ With no tag cut (step 7), what excludes the
-   shipping version is the absent tag rather than that filter — and the same
-   absence keeps it out of every later table too, which is the cost step 7
-   states.
+4. **Record where the previous release was published from, then regenerate
+   the released-hash table.** `templates/release-ledger.json` maps each released
+   version to the commit it was published from; the entry for the release
+   _before_ this one is written now, because a commit cannot carry its own sha:
+
+   ```sh
+   npm view create-agent-rig@<previous> gitHead   # → the sha for the ledger
+   node scripts/build-hash-history.mjs             # rebuilds the table from it
+   ```
+
+   The builder reads every `## X.Y.Z` this file lists below the version in
+   `package.json` and **refuses, naming the version and that command**, when
+   the ledger has no entry for one — it never drops a release silently, since a
+   dropped release is one `upgrade` can no longer recognise. A value of `null`
+   is the one other answer: the published bytes are not recoverable from git
+   (0.1.0 was published from a commit whose `package.json` already read
+   0.2.0), so that version deliberately gets no row. Pinned in
+   `test/template/hash-history.test.ts` › "throws for a released version the
+   ledger does not mention, naming the version and the npm command" and ›
+   "points at a commit whose package.json carries that version".
+
 5. This file, and `PLAN.md` if the plan's claims changed.
 6. **`pnpm test` again — this run, not step 1, is the one that can catch a
    stale hash table.** The check compares the table against the versions this
@@ -545,33 +559,13 @@ sometimes earlier (step 6). Everything before that is mechanical:
    guard that can only fire after the thing it guards has changed has to be run
    after it.
 7. **Tagging is not part of this project's release process** — standing owner
-   decision, recorded at 0.5.0: the owner publishes by hand and does not tag. So
-   this step is deliberately _not_ performed, and the cost is stated here rather
-   than discovered later.
-
-   Step 4 builds the table from `v*` tags, so an untagged release never enters
-   it. That is free for the release being prepared and **not free for the one
-   after it**: step 6 fails as soon as the CHANGELOG lists an untagged release
-   _below_ the version being prepared, and its message says "stale table", which
-   running the builder cannot satisfy. Measured against this repository at
-   0.5.0 preparation: with `0.5.0` untagged, a `0.5.0` bump passes and an
-   `0.6.0` bump fails. The check is
-   `test/template/hash-history.test.ts` › "covers every released version below
-   the one being prepared". **AR-35 carries the fix**, and which shape it takes
-   is that item's to decide, not this note's.
-
-   **What a releaser may do when step 6 fails, stated so it is not inferred:**
-   stop, and land AR-35 first. Cutting the missing tag after the fact is _not_
-   the sanctioned way out — it would put the table's honesty back on a step this
-   process does not perform, which is the whole reason the decision is recorded
-   here.
-
-   If a tag is ever cut anyway, the older warning still applies: check first
-   that it does not exist (`git ls-remote --tags origin`), because a leftover
-   from an abandoned attempt is a published ref, deleting or moving one is an
-   **owner** action, and a tag on the wrong commit makes the next table **name a
-   version whose bytes it does not carry**. `v0.4.0` is in exactly that state —
-   it points at 0.3.2's content.
+   decision, recorded at 0.5.0: the owner publishes by hand and does not tag.
+   Since 0.6.0 (AR-35) that costs nothing: the table is built from the ledger in
+   step 4, not from tags, and a `v*` tag is neither required nor trusted. One
+   that exists and points elsewhere than the ledger — `v0.4.0` does, at 0.3.2's
+   content — is printed as a warning by the builder and changes nothing:
+   `test/template/hash-history.test.ts` › "builds the table from the ledger
+   alone — tags are a warning source, never an input".
 
 8. **Owner:** `npm publish`.
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
