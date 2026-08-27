@@ -223,6 +223,9 @@ describe('this repository declares itself as the owner its queue items name', ()
   it('composes options.owner into .claude/queue.json', async () => {
     const { readFile } = await import('node:fs/promises');
     const config = JSON.parse(await readFile(path.join(repoRoot, '.claude', 'queue.json'), 'utf8'));
-    expect(config.options.owner).toBe('create-agent-rig');
+    // Per board, because each board spells this checkout's name its own way
+    // (`owner-create-agent-rig` on AR, `owner-rig` on RP); the default board
+    // is the one asserted, not whatever a local selector has switched to.
+    expect(config.boards[config.board].owner).toBe('create-agent-rig');
   });
 });

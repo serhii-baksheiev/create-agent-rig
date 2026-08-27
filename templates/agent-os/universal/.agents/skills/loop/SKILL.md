@@ -39,6 +39,26 @@ node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies, o
   (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`) and never from a file in the
   repo; the project or the JQL goes in `.claude/queue.json`.
 
+A config may declare several boards (`boards: { <name>: options }` plus a
+default `board`); the active one is chosen per checkout, not by editing the
+composed file:
+
+```bash
+node .claude/scripts/queue/index.mjs board        # the active board and the declared ones
+node .claude/scripts/queue/index.mjs board RP     # switch this checkout: writes .claude/queue.board
+```
+
+The selector is per-checkout runtime state, the same class as
+`.claude/queue.state.json`: it needs its own `.gitignore` line, which a generated
+project ships and an `init`-installed rig adds by hand. An undeclared name is
+refused, never read as "no board" (see `test/template/queue-board.test.ts` ›
+"refuses a board nobody declared instead of falling back" — in the generator,
+absent in a generated rig). It is a rulebook path for `guard-rulebook`: an
+unattended run cannot switch boards through an edit tool, and the `board`
+command's own write is a shell write the guard never sees. `.claude/queue.state.json`
+stays per config, not per board: the tier the last close recorded rations the
+next selection whichever board it lands on.
+
 Adding a fourth is an adapter, not a rewrite: `core.mjs` holds every selection
 decision and each adapter only maps its tracker's records onto the neutral shape.
 
@@ -750,7 +770,7 @@ node --input-type=module -e '
     // mechanism accepts a proposal without them; this procedure does not.
     measured: "<the paths the probe actually exercised>",
     inferred: "<the conclusion, citing only surfaces named in measured>",
-  }, { project: "<KEY>" }));   // jira only — the project key from .claude/queue.json;
+  }, { project: "<KEY>" }));   // jira only — the ACTIVE board's key: `queue/index.mjs board --json` → options.project;
                                // plan-md and github-issues take no second argument
 '
 ```

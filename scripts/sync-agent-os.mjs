@@ -178,9 +178,17 @@ function compose() {
       {
         ...JSON.parse(out.get('.claude/queue.json')),
         adapter: 'jira',
-        // `owner` is this checkout's name for the `owner-<name>` marker
-        // (AR-132): an AR item marked for another repository is held here.
-        options: { project: 'AR', maxGateRounds: 3, owner: 'create-agent-rig' },
+        // The boards this repository's loop can run on; the active one is the
+        // per-checkout selector `.claude/queue.board` (`queue/index.mjs board
+        // <name>`), falling back to `board`. `owner` is this checkout's name for
+        // the `owner-<name>` marker (AR-132): an item marked for another
+        // repository is held here — and each board spells that name its own way.
+        board: 'AR',
+        boards: {
+          AR: { project: 'AR', owner: 'create-agent-rig' },
+          RP: { project: 'RP', owner: 'rig' },
+        },
+        options: { maxGateRounds: 3 },
       },
       null,
       2,

@@ -16,6 +16,8 @@ templates/skeleton/*/apps/web/out/
 # per-checkout queue state: the tier the last close recorded. The queue CONFIG
 # is composed and tracked; this is runtime state and must never be committed.
 .claude/queue.state.json
+# per-checkout board selector (`queue/index.mjs board <name>`); the boards are in the config
+.claude/queue.board
 # per-checkout gate rounds, one count per branch. Its own file so the counter
 # cannot damage the tier above — a review round measured that cost.
 .claude/gate-rounds.json

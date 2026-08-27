@@ -930,9 +930,13 @@ describe('the queue this repository reads, and the one a generated project gets'
     JSON.parse(await readFile(path.join(repoRoot, ...parts), 'utf8')) as Record<string, unknown>;
 
   it('reads its own board through the jira adapter', async () => {
+    // The default board, not the resolved one: `loadConfig` on this path would
+    // honour a developer's own `.claude/queue.board` selector, and the test
+    // must not depend on which board this checkout happens to be switched to.
     expect(await jsonAt('.claude', 'queue.json')).toMatchObject({
       adapter: 'jira',
-      options: { project: 'AR' },
+      board: 'AR',
+      boards: { AR: { project: 'AR' } },
     });
   });
 
