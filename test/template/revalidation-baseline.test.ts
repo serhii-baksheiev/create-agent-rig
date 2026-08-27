@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { stubCommand } from '../helpers/stub-command.js';
 
 /**
  * AR-138 — the take-up baseline crosses runs, and a proposal's baseline is the
@@ -299,27 +300,17 @@ describe('github-issues records the filed proposal’s marker through gh', () =>
    * updatedAt` prints the marker; `issue list` prints an empty list.
    */
   const withStubGh = async <T>(body: () => Promise<T>): Promise<T> => {
-    const bin = await realpath(await scratch('stub-gh-'));
-    await writeFile(
-      path.join(bin, 'gh'),
-      [
-        '#!/bin/sh',
-        'case "$1 $2" in',
-        '  "issue list") echo "[]" ;;',
-        '  "issue create") echo "https://example.invalid/o/r/issues/42" ;;',
-        '  "issue view") echo \'{"updatedAt":"2026-08-26T09:00:00Z"}\' ;;',
-        '  *) exit 1 ;;',
-        'esac',
-        '',
-      ].join('\n'),
+    const stub = await stubCommand(
+      'gh',
+      `if (args[0] === 'issue' && args[1] === 'list') return { stdout: '[]\\n' };
+       if (args[0] === 'issue' && args[1] === 'create') return { stdout: 'https://example.invalid/o/r/issues/42\\n' };
+       if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"updatedAt":"2026-08-26T09:00:00Z"}\\n' };
+       return { exitCode: 1 };`,
     );
-    await chmod(path.join(bin, 'gh'), 0o755);
-    const savedPath = process.env['PATH'];
-    process.env['PATH'] = `${bin}${path.delimiter}${savedPath ?? ''}`;
     try {
       return await body();
     } finally {
-      process.env['PATH'] = savedPath;
+      stub.restore();
     }
   };
 

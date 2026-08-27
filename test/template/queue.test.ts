@@ -16,7 +16,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { needsGit, needsNonRoot, skipUnless } from '../helpers/env.js';
+import { modeBitsDeny, needsGit, skipUnless } from '../helpers/env.js';
+import { stubCommand } from '../helpers/stub-command.js';
 
 // Extraction brief §4: `loop-driver` is the most valuable artifact in the source
 // tree and the only one that cannot be copied — its selection logic assumes one
@@ -3105,7 +3106,7 @@ describe('reading the state — only a truly absent file means "nothing has clos
   });
 
   it('refuses a state file it is not allowed to read instead of reading it as absent', async (ctx) => {
-    skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
     const { loadState } = await load('index.mjs');
     const dir = await scratch();
     const statePath = path.join(dir, 'queue.state.json');
@@ -3262,6 +3263,9 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       '# P\n\n```elevated-paths\npackages/db/src/\n.claude/\n```\n',
     );
     await writeFile(path.join(main, '.claude', 'queue.json'), '{"adapter":"plan-md"}\n');
+    // A rig ships this too: without it a Windows `git worktree add` checks the
+    // hashbang scripts out CRLF, and import() of them is a SyntaxError.
+    await writeFile(path.join(main, '.gitattributes'), '* text=auto eol=lf\n');
     await git(['add', '-A'], main);
     await git(
       ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-m', 'seed'],
@@ -3387,19 +3391,25 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
      * `null` installs no binary at all, which is the "git is not installed" case.
      * PATH is restored in `finally`: every other test in this file spawns git.
      */
-    const withStubGit = async (script: string | null, body: () => void): Promise<void> => {
-      const bin = await scratch('stub-git-');
-      if (script !== null) {
-        await writeFile(path.join(bin, 'git'), script);
-        await chmod(path.join(bin, 'git'), 0o755);
+    const withStubGit = async (handler: string | null, body: () => void): Promise<void> => {
+      if (handler === null) {
+        // no binary at all: PATH is a directory with nothing in it
+        const bin = await scratch('stub-git-');
+        const original = process.env['PATH'];
+        process.env['PATH'] = bin;
+        try {
+          body();
+        } finally {
+          if (original === undefined) delete process.env['PATH'];
+          else process.env['PATH'] = original;
+        }
+        return;
       }
-      const original = process.env['PATH'];
-      process.env['PATH'] = bin;
+      const stub = await stubCommand('git', handler);
       try {
         body();
       } finally {
-        if (original === undefined) delete process.env['PATH'];
-        else process.env['PATH'] = original;
+        stub.restore();
       }
     };
 
@@ -3440,12 +3450,11 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
      * see this defect at all.
      */
     const localisedGit =
-      '#!/bin/sh\n' +
-      'case "${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}" in\n' +
-      '  C|POSIX) echo "fatal: not a git repository (or any of the parent directories): .git" >&2 ;;\n' +
-      '  *) echo "fatal : ni ceci ni aucun de ses répertoires parents n\'est un dépôt git : .git" >&2 ;;\n' +
-      'esac\n' +
-      'exit 128\n';
+      "const lang = process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || 'C';" +
+      'process.stderr.write(/^(C|POSIX)(\\.|$)/.test(lang)' +
+      "  ? 'fatal: not a git repository (or any of the parent directories): .git\\n'" +
+      '  : "fatal : ni ceci ni aucun de ses répertoires parents n\'est un dépôt git : .git\\n");' +
+      'return { exitCode: 128 };';
 
     // The same fallback, asked in another language. `withoutGitLocation` keeps
     // `LC_ALL`/`LANG` deliberately — it strips repository *location* and
@@ -3496,9 +3505,7 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       const dir = await scratch('dubious-');
       const resolve = await resolver();
       await withStubGit(
-        '#!/bin/sh\n' +
-          'echo "fatal: detected dubious ownership in repository at \'/work\'" >&2\n' +
-          'exit 128\n',
+        'process.stderr.write("fatal: detected dubious ownership in repository at \'/work\'\\n"); return { exitCode: 128 };',
         () => {
           expect(() => resolve(dir)).toThrow(/dubious ownership/i);
         },
@@ -3521,9 +3528,8 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
      */
     const envHandedToGit = async (
       capture: (file: string) => string = (file) =>
-        // 🔴 `/usr/bin/env` by absolute path. PATH is the stub directory and
-        // nothing else, so a bare `env` is not found and the dump stays empty.
-        `/usr/bin/env > ${JSON.stringify(file)}`,
+        // the whole environment the stub received, one NAME=value per line
+        `require('node:fs').writeFileSync(${JSON.stringify(file)}, Object.entries(process.env).map(([k, v]) => k + '=' + v).join('\\n') + '\\n');`,
     ): Promise<Map<string, string>> => {
       const dir = await scratch('child-env-');
       const dump = path.join(dir, 'env.txt');
@@ -3545,8 +3551,7 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       Object.assign(process.env, injected);
       try {
         await withStubGit(
-          `#!/bin/sh\n${capture(dump)}\n` +
-            `printf '%s\\n' ${JSON.stringify(path.join(dir, '.git'))}\n`,
+          `${capture(dump)} return { stdout: ${JSON.stringify(JSON.stringify(path.join(dir, '.git') + '\n'))} };`,
           () => {
             resolve(dir);
           },
@@ -3573,9 +3578,9 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
       new Set((await envHandedToGit()).keys());
 
     it('the child-environment probe refuses a capture that measured nothing', async () => {
-      await expect(envHandedToGit((file) => `: > ${JSON.stringify(file)}`)).rejects.toThrow(
-        /captured nothing usable/i,
-      );
+      await expect(
+        envHandedToGit((file) => `require('node:fs').writeFileSync(${JSON.stringify(file)}, '');`),
+      ).rejects.toThrow(/captured nothing usable/i);
     });
 
     // Pinned at the process boundary because the behavioural test above admits
@@ -4741,10 +4746,12 @@ describe('an escalation is recorded rather than remembered', () => {
    * Prepended rather than replacing PATH: `/bin/sh` still has to be findable.
    */
   const withStubGh = async <T>(body: () => T | Promise<T>): Promise<T> => {
-    const bin = await realpath(await mkdtemp(path.join(tmpdir(), 'stub-gh-')));
-    await writeFile(path.join(bin, 'gh'), '#!/bin/sh\nexit 0\n');
-    await chmod(path.join(bin, 'gh'), 0o755);
-    return withEnv({ PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}` }, body);
+    const stub = await stubCommand('gh', 'return {};');
+    try {
+      return await body();
+    } finally {
+      stub.restore();
+    }
   };
 
   /**
@@ -4935,7 +4942,7 @@ describe('an escalation is recorded rather than remembered', () => {
     it.for(ADAPTER_FILES)(
       '%s escalates when the run directory is unwritable',
       async (file, ctx) => {
-        skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
+        skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
         const runDir = await newRunDir();
         const usual = await withEnv({ RIG_RUN_DIR: runDir }, () => escalateOn(file));
 
@@ -4966,7 +4973,7 @@ describe('an escalation is recorded rather than remembered', () => {
     });
 
     it('says on stderr that the count went unrecorded, when the directory is unwritable', async (ctx) => {
-      skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
+      skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
       const { stderr } = await withUnwritableRunDir((blocked) =>
         withCapturedOutput(() =>
           withEnv({ RIG_RUN_DIR: blocked }, () => escalateOn('plan-md.mjs')),
@@ -4992,7 +4999,7 @@ describe('an escalation is recorded rather than remembered', () => {
     });
 
     it('leaves the count it could not raise exactly as it found it', async (ctx) => {
-      skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
+      skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
       const after = await withUnwritableRunDir(
         async (blocked) => {
           await withCapturedOutput(() =>
@@ -5084,7 +5091,7 @@ describe('an escalation is recorded rather than remembered', () => {
     });
 
     it('hands back the count that is really on disk when it could not write', async (ctx) => {
-      skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
+      skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
       const record = await recorder();
 
       const counted = await withUnwritableRunDir(
@@ -5298,7 +5305,8 @@ describe('the run state never writes through a path it did not create', () => {
     await expect(attempt(() => updateState(runDir, { escalations: 3 }))).rejects.toThrow();
   });
 
-  it('leaves the state file readable only by the run that owns it', async () => {
+  it('leaves the state file readable only by the run that owns it', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
     const { updateState } = await loadRunState();
     const runDir = await newRunDir();
 

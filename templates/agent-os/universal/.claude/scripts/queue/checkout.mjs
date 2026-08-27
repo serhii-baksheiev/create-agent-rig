@@ -14,7 +14,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 // The sanitiser is IMPORTED, never re-derived. This repo had already ruled on
 // which git variables to strip, exported the answer with its stated limit, and
@@ -76,7 +76,9 @@ export const mainCheckoutRoot = (startDir) => {
         env: { ...withoutGitLocation(), LC_ALL: 'C', LANGUAGE: '' },
       },
     ).trim();
-    return gitDir ? dirname(gitDir) : startDir;
+    // `resolve`, because git answers with forward slashes on Windows
+    // (`C:/Users/...`) and every caller compares against a native path.
+    return gitDir ? resolve(dirname(gitDir)) : startDir;
   } catch (error) {
     if (error?.code === 'ENOENT') return startDir; // git is not installed
     const stderr = String(error?.stderr ?? '');

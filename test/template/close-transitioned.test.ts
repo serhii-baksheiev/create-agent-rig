@@ -1,8 +1,9 @@
-import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
 
 // AR-135 [RX3]: a close that returns `ok: true` after a POST that "succeeded" is
 // a claim, not a fact — a Jira workflow can accept the transition and leave the
@@ -109,34 +110,25 @@ describe('jira close proves the transition by reading the issue back', () => {
 });
 
 describe('github close proves the transition by asking gh for the state', () => {
-  let original: string | undefined;
   let bin: string;
   let logFile: string;
 
   /** A `gh` on PATH that logs its argv one call per line and answers `issue view`. */
+  let stub: StubHandle | undefined;
   const installGh = async (state: 'CLOSED' | 'OPEN'): Promise<void> => {
     bin = await mkdtemp(path.join(tmpdir(), 'stub-gh-'));
     logFile = path.join(bin, 'calls.log');
-    await writeFile(
-      path.join(bin, 'gh'),
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$*" >> "${logFile}"`,
-        'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then',
-        `  printf '{"state":"${state}"}\\n'`,
-        'fi',
-        'exit 0',
-        '',
-      ].join('\n'),
+    stub = await stubCommand(
+      'gh',
+      `require('node:fs').appendFileSync(${JSON.stringify(logFile)}, args.join(' ') + '\\n');
+       if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"state":"${state}"}\\n' };
+       return {};`,
     );
-    await chmod(path.join(bin, 'gh'), 0o755);
-    original = process.env['PATH'];
-    process.env['PATH'] = `${bin}${path.delimiter}${original ?? ''}`;
   };
 
   afterEach(() => {
-    if (original === undefined) delete process.env['PATH'];
-    else process.env['PATH'] = original;
+    stub?.restore();
+    stub = undefined;
   });
 
   const argvLog = async (): Promise<string[]> =>
@@ -264,19 +256,13 @@ describe('find: one item by id, closed included', () => {
   it('github asks `gh issue view` with the full field list and maps CLOSED to closed', async () => {
     const bin = await mkdtemp(path.join(tmpdir(), 'stub-gh-find-'));
     const logFile = path.join(bin, 'calls.log');
-    await writeFile(
-      path.join(bin, 'gh'),
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$*" >> "${logFile}"`,
-        `printf '%s\\n' '{"number":13,"title":"t","body":"","state":"CLOSED","labels":[],"url":null,"createdAt":null,"updatedAt":"2026-07-02T00:00:00Z"}'`,
-        'exit 0',
-        '',
-      ].join('\n'),
+    const payload =
+      '{"number":13,"title":"t","body":"","state":"CLOSED","labels":[],"url":null,"createdAt":null,"updatedAt":"2026-07-02T00:00:00Z"}';
+    const stub = await stubCommand(
+      'gh',
+      `require('node:fs').appendFileSync(${JSON.stringify(logFile)}, args.join(' ') + '\\n');
+       return { stdout: ${JSON.stringify(payload + '\n')} };`,
     );
-    await chmod(path.join(bin, 'gh'), 0o755);
-    const original = process.env['PATH'];
-    process.env['PATH'] = `${bin}${path.delimiter}${original ?? ''}`;
     try {
       const { find } = await load('github-issues.mjs');
       const found = find('13');
@@ -294,8 +280,7 @@ describe('find: one item by id, closed included', () => {
       });
       expect(find('8', { issues: [] })).toBeNull();
     } finally {
-      if (original === undefined) delete process.env['PATH'];
-      else process.env['PATH'] = original;
+      stub.restore();
     }
   });
 

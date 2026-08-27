@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { stubCommand } from '../helpers/stub-command.js';
 
 /**
  * AR-140 — the adapter records the marker its own write produced, so a
@@ -139,29 +140,20 @@ describe('jira re-records the marker after each write of its own', () => {
 
 describe('github-issues re-records the marker after each write of its own', () => {
   const withStubGh = async <T>(body: () => Promise<T>): Promise<T> => {
-    const bin = await realpath(await scratch('stub-gh-'));
     // `issue view` answers the marker; `--json state` (close's read-back) gets
     // both fields, which is what the adapter asks for.
-    await writeFile(
-      path.join(bin, 'gh'),
-      [
-        '#!/bin/sh',
-        'case "$1 $2" in',
-        '  "issue view") echo \'{"state":"CLOSED","updatedAt":"2026-08-26T10:00:00Z"}\' ;;',
-        '  *) exit 0 ;;',
-        'esac',
-        '',
-      ].join('\n'),
+    const stub = await stubCommand(
+      'gh',
+      `if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"state":"CLOSED","updatedAt":"2026-08-26T10:00:00Z"}\\n' };
+       return {};`,
     );
-    await chmod(path.join(bin, 'gh'), 0o755);
-    const savedPath = process.env['PATH'];
-    process.env['PATH'] = `${bin}${path.delimiter}${savedPath ?? ''}`;
     try {
       return await body();
     } finally {
-      process.env['PATH'] = savedPath;
+      stub.restore();
     }
   };
+
   const withRunDir = async <T>(runDir: string, body: () => Promise<T>): Promise<T> => {
     const saved = process.env['RIG_RUN_DIR'];
     process.env['RIG_RUN_DIR'] = runDir;

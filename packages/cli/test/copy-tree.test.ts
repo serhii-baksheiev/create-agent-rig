@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { copyTree, mapConcurrent } from '../src/lib/copy-tree.js';
+import { modeBitsDeny, skipUnless } from '../../../test/helpers/env.js';
 
 let work: string;
 
@@ -161,7 +162,8 @@ describe('copyTree', () => {
     expect(await readFile(path.join(dest, 'img.png'))).toEqual(binary);
   });
 
-  it('preserves the executable bit through the content transform', async () => {
+  it('preserves the executable bit through the content transform', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
     const src = await makeSrc({ 'run.sh': '#!/bin/sh\necho TOKEN' });
     await chmod(path.join(src, 'run.sh'), 0o755);
     const dest = path.join(work, 'dest');

@@ -72,3 +72,18 @@ export const needsGitRoot = (repoRoot: string): { ok: boolean; reason: string } 
   ok: hasGitRepo(repoRoot),
   reason: `no git repository at ${repoRoot}: the apply_patch guard resolves the root with git rev-parse, and its move and path inspection refuses without one — this case would pass vacuously`,
 });
+
+/**
+ * Can a mode bit deny this process? Not as root (modes are ignored) and not
+ * on Windows (chmod is a no-op for directories and there is no execute bit),
+ * so a test that needs an EACCES, or an executable bit that survives a copy,
+ * names this as its reason — a capability genuinely absent there, counted
+ * rather than silently green.
+ */
+export const modeBitsDeny = (): { ok: boolean; reason: string } => ({
+  ok: !isRoot() && process.platform !== 'win32',
+  reason:
+    process.platform === 'win32'
+      ? 'on Windows a chmod mode bit denies nothing and there is no execute bit, so the refusal the test needs never happens'
+      : 'running as root: a chmod mode bit does not deny root, so the EACCES the test needs never happens',
+});

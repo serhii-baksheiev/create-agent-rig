@@ -353,7 +353,9 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     dirty?: boolean;
     rawConfig?: string;
   }): Promise<void> {
-    projectDir = await mkdtemp(path.join(tmpdir(), 'dod-gate-'));
+    // realpath: on Windows tmpdir() is the 8.3 short form (RUNNER~1), and the
+    // hook names the tree it measured by the path it was handed
+    projectDir = await fsp.realpath(await mkdtemp(path.join(tmpdir(), 'dod-gate-')));
     const hookDir = path.join(projectDir, '.claude', 'hooks');
     await mkdirP(hookDir, { recursive: true });
     await copyFile(
