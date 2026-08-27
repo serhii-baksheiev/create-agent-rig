@@ -107,6 +107,9 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
     expect(section).toMatch(
       /(does not|cannot) prevent[^\n]{0,100}(direct|arbitrary)[^\n]{0,40}shell|direct[^\n]{0,40}shell[^\n]{0,100}(not prevented|still possible)/i,
     );
+    expect(section).toMatch(
+      /queue\.board[^\n]{0,100}(even (?:when|if)|regardless of)[^\n]{0,80}allow|allow[^\n]{0,80}(never|cannot)[^\n]{0,80}queue\.board/i,
+    );
   });
 
   it('the journal has the field that write-back writes to', async () => {

@@ -396,6 +396,8 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
 
     expect(mechanicalSentence).toContain('`Write`');
     expect(mechanicalSentence).toContain('`Edit`');
+    expect(mechanicalSentence).toContain('`MultiEdit`');
+    expect(mechanicalSentence).toContain('`NotebookEdit`');
     expect(mechanicalSentence).toContain('`apply_patch`');
   });
 

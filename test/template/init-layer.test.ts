@@ -103,14 +103,22 @@ describe('the init layer installs a rig with no dangling references', () => {
       const isProseOrEnforcement =
         rel === 'CLAUDE.md' ||
         rel === 'AGENTS.md' ||
+        rel.startsWith('.claude/agents/') ||
         rel.startsWith('.claude/rules/') ||
         rel.startsWith('.claude/hooks/') ||
+        rel.startsWith('.claude/scripts/') ||
+        rel.startsWith('.codex/agents/') ||
         rel.includes('/skills/');
       if (!isProseOrEnforcement) continue;
+      const artifactDisclosure =
+        /(?:all|every)[\s\S]{0,100}(?:test pointers?|tests? cited)[\s\S]{0,120}absent\s+(?:locally|in\s+(?:a|the)\s+generated\s+rig)/i.test(
+          content.slice(0, 4_000),
+        );
       for (const match of content.matchAll(testPointer)) {
         // This is a local test shape the installed new-invariant skill asks the
         // project to create, not an upstream citation offered as evidence.
         if (match[0].includes('.example.test.')) continue;
+        if (artifactDisclosure) continue;
         const start = Math.max(0, (match.index ?? 0) - 320);
         const end = Math.min(content.length, (match.index ?? 0) + match[0].length + 320);
         if (!absentLocally.test(content.slice(start, end))) offences.push(`${rel} -> ${match[0]}`);

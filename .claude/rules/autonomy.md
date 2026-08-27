@@ -109,8 +109,10 @@ own cost figures are read next to the lane they do not cover.
   a leak.
 - touch production data outside a reviewed migration
 - edit the rulebook from an **unattended** run outside the item's allow-list — `guard-rulebook` refuses it.
-  The rulebook: the hooks, their wiring, `.claude/queue.json` and its board selector `queue.board`, the queue
-  adapters, the router, the gate sweep, the rules, `CLAUDE.md`. Mechanical:
+  The rulebook is both harnesses' instruction, agent, skill, script and hook
+  trees (`CLAUDE.md`, `AGENTS.md`, `.claude/{agents,hooks,rules,scripts,skills}`,
+  `.agents/`, `.codex/`), plus `.claude/settings.json`, the queue config and its
+  always-refused board selector, and the integrity manifest. Mechanical:
   the hook refuses the edit while the unattended flag the `loop` skill writes
   at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), and does
   nothing in an attended session. ⚠ It sees edit tool calls only — a

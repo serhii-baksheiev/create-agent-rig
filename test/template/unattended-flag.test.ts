@@ -216,6 +216,21 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     const { readUnattended } = await load();
     expect(readUnattended(env())).toMatchObject({ on: true, unreadable: true });
   });
+
+  it('never accepts a legacy machine-wide allow-list as scoped authorization', async () => {
+    await arm(JSON.stringify({ item: 'OLD-A', runDir: '/runs/old-a', allow: ['.claude/'] }));
+    const checkout = path.join(home, 'scoped-checkout');
+    await mkdir(checkout, { recursive: true });
+    const { readUnattended } = await load();
+    const mode = readUnattended({
+      ...process.env,
+      HOME: home,
+      CLAUDE_PROJECT_DIR: checkout,
+    });
+    expect(mode).toMatchObject({ on: true, unreadable: true });
+    expect(mode.why).toMatch(/legacy|migrat/i);
+    expect(mode.allow).toBeUndefined();
+  });
 });
 
 describe('writeUnattended / clearUnattended: the file the run arms and disarms', () => {
@@ -262,9 +277,36 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
     // idempotent: nothing left to remove
     expect(clearUnattended(env())).toEqual([]);
   });
+
+  it('safely clears a legacy flag only when its run directory belongs to this checkout', async () => {
+    const { clearUnattended, readUnattended } = await load();
+    const checkout = path.join(home, 'legacy-owner');
+    const runDir = path.join(checkout, '.claude', 'runs', 'old');
+    await mkdir(runDir, { recursive: true });
+    await arm(JSON.stringify({ item: 'OLD-A', runDir, allow: [] }));
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+
+    expect(clearUnattended(scopedEnv)).toEqual([flagPath()]);
+    expect(readUnattended(scopedEnv)).toEqual({ on: false });
+  });
 });
 
 describe('the CLI the loop skill calls', () => {
+  it('refuses scoped off while a foreign legacy record remains, then removes it only explicitly', async () => {
+    const checkout = path.join(home, 'new-checkout');
+    await mkdir(checkout, { recursive: true });
+    await arm(JSON.stringify({ item: 'OLD-FOREIGN', runDir: '/runs/foreign', allow: [] }));
+
+    const scoped = await runCli(['off', '--root', checkout], home);
+    expect(scoped.code).toBe(1);
+    expect(scoped.stderr).toMatch(/legacy|migrat/i);
+    expect(existsSync(flagPath())).toBe(true);
+
+    const legacy = await runCli(['off', '--legacy'], home);
+    expect(legacy.code, legacy.stderr).toBe(0);
+    expect(existsSync(flagPath())).toBe(false);
+  });
+
   it('scopes on/off to --root so concurrent checkout CLIs do not share a flag', async () => {
     const { readUnattended } = await load();
     const checkoutA = path.join(home, 'cli-checkout-a');

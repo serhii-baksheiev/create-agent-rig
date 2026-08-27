@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 /**
  * The Revalidation Experiment's report — what the evidence log says, over the
  * run directories of this rig since a date (AR-136).

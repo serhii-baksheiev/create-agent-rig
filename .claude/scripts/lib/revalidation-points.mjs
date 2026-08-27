@@ -1,5 +1,6 @@
 /**
  * The revalidation points — ONE spelling of the fact (AR-137).
+ * All upstream test pointers in this script name the generator suite, absent in a generated rig.
  *
  * `queue/index.mjs next` writes the SELECT record; `revalidate.mjs` writes the
  * other two and answers outcomes at all three; `revalidation-report.mjs`

@@ -118,7 +118,7 @@ function main() {
   if (mode.unreadable) {
     process.stderr.write(
       `BLOCKED — "${paths[0]}" is part of the rulebook and the unattended flag at ${mode.path} is unreadable (${mode.why}). ` +
-        'Refusing to inspect is not allowing: fix or remove the flag (`node .claude/scripts/unattended-flag.mjs off`), then retry.\n',
+        'Refusing to inspect is not allowing: fix it, or clear this checkout with `node .claude/scripts/unattended-flag.mjs off --root "$PWD"`, then retry.\n',
     );
     return 2;
   }

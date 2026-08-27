@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // The unattended flag — how a hook learns that a loop is running, and what the
 // current item is allowed to touch (AR-51).
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 //
-//   node .claude/scripts/unattended-flag.mjs on --item AR-51 --run-dir <dir> --allow <prefix> [<prefix>…]
-//   node .claude/scripts/unattended-flag.mjs off
+//   node .claude/scripts/unattended-flag.mjs on --root <checkout> --item AR-51 --run-dir <dir> --allow <prefix> [<prefix>…]
+//   node .claude/scripts/unattended-flag.mjs off --root <checkout>
+//   node .claude/scripts/unattended-flag.mjs off --legacy  # explicit migration cleanup
 //
 // It is a FILE, not an environment variable: a `PreToolUse` hook is spawned by
 // the harness with the harness's own environment, never with a variable the
-// session exported — the generator's `test/template/guard-rulebook.test.ts` ›
+// session exported — the generator's `test/template/guard-rulebook.test.ts` (absent in a generated rig) ›
 // "only a flag arms it — an exported RIG_UNATTENDED=1 with no flag changes
 // nothing" pins that side of it — and in some harnesses an `export` does not
 // even survive to the next Bash call. The kill switch (`stop-flag.mjs`) is a
@@ -36,15 +38,15 @@
 // rulebook prefix — `.`, `.claude/`, `.claude/scripts/`, `CLAUDE` — would let
 // the flag disarm the guard for a whole tree while it reports itself as on, so
 // the writer refuses it and a flag carrying one is unreadable. An entry outside
-// the rulebook (`src/`, `.claude/skills/loop/`) is harmless — such a path is
-// never judged — and items name those all the time, so it is kept, not
-// refused — › "an allow entry that widens the rulebook — a prefix of a rulebook prefix such as `.` — makes the flag unreadable".
+// the rulebook (`src/`) is harmless because it is never judged; a narrow entry
+// inside it (`.claude/skills/loop/`) authorizes only that subtree. Items name
+// both forms, so they are kept — › "an allow entry that widens the rulebook — a prefix of a rulebook prefix such as `.` — makes the flag unreadable".
 //
 // Bounded: the file is read up to 64 KiB, `allow` is capped at 64 entries, and
 // both limits are refusals, never silent truncation.
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homesOf } from './stop-flag.mjs';
@@ -95,15 +97,19 @@ export const isWidening = (entry) =>
   entry === '.codex/' ||
   RULEBOOK_PREFIXES.some((prefix) => prefix !== entry && prefix.startsWith(entry));
 
-const checkoutId = (env) => {
+const canonicalCheckout = (env) => {
   const declared = typeof env.CLAUDE_PROJECT_DIR === 'string' ? env.CLAUDE_PROJECT_DIR.trim() : '';
   if (declared === '') return null;
-  let canonical;
   try {
-    canonical = realpathSync(declared);
+    return realpathSync(declared);
   } catch {
-    canonical = resolve(declared);
+    return resolve(declared);
   }
+};
+
+const checkoutId = (env) => {
+  const canonical = canonicalCheckout(env);
+  if (canonical === null) return null;
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 };
 
@@ -116,11 +122,8 @@ const scopedBasename = (env) => {
 export const unattendedFlags = (env = process.env) =>
   homesOf(env).map((home) => join(home, '.claude', scopedBasename(env)));
 
-/** Legacy machine-wide candidates are read for upgrade compatibility, never written by scoped runs. */
-const legacyFlags = (env) =>
-  checkoutId(env) === null
-    ? []
-    : homesOf(env).map((home) => join(home, '.claude', FLAG_BASENAME));
+/** Legacy machine-wide candidates are never accepted as scoped authorization. */
+const legacyFlags = (env) => homesOf(env).map((home) => join(home, '.claude', FLAG_BASENAME));
 
 const readCapped = (path) => {
   const fd = openSync(path, 'r');
@@ -137,13 +140,28 @@ const unreadable = (path, why) => ({ on: true, unreadable: true, path, why });
 
 /** The mode the flag declares — see the header for the three answers. */
 export const readUnattended = (env = process.env) => {
-  const path = [...unattendedFlags(env), ...legacyFlags(env)].find((candidate) => {
+  let path = unattendedFlags(env).find((candidate) => {
     try {
       return existsSync(candidate);
     } catch {
       return false;
     }
   });
+  if (!path && checkoutId(env) !== null) {
+    path = legacyFlags(env).find((candidate) => {
+      try {
+        return existsSync(candidate);
+      } catch {
+        return false;
+      }
+    });
+    if (path) {
+      return unreadable(
+        path,
+        'legacy machine-wide unattended flag cannot authorize a scoped checkout; migrate or remove it explicitly',
+      );
+    }
+  }
   if (!path) return { on: false };
   let raw;
   try {
@@ -206,10 +224,40 @@ export const writeUnattended = ({ item, runDir = null, allow = [] } = {}, env = 
   return [path];
 };
 
-/** Remove only this checkout's flags. Returns the paths removed. */
+const pathBelongsToCheckout = (candidate, checkout) => {
+  let resolved;
+  try {
+    resolved = realpathSync(candidate);
+  } catch {
+    resolved = resolve(candidate);
+  }
+  const rel = relative(checkout, resolved);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+};
+
+const legacyBelongsToCheckout = (flagPath, env) => {
+  const checkout = canonicalCheckout(env);
+  if (checkout === null) return false;
+  try {
+    const raw = readCapped(flagPath);
+    if (raw.bytes > MAX_FLAG_BYTES) return false;
+    const parsed = JSON.parse(raw.text);
+    return typeof parsed?.runDir === 'string' && pathBelongsToCheckout(parsed.runDir, checkout);
+  } catch {
+    return false;
+  }
+};
+
+/** Remove this checkout's flags and a provably-owned legacy record. */
 export const clearUnattended = (env = process.env) => {
   const removed = [];
-  for (const path of unattendedFlags(env)) {
+  const candidates = checkoutId(env) === null
+    ? unattendedFlags(env)
+    : [
+        ...unattendedFlags(env),
+        ...legacyFlags(env).filter((path) => legacyBelongsToCheckout(path, env)),
+      ];
+  for (const path of [...new Set(candidates)]) {
     try {
       if (existsSync(path)) {
         rmSync(path);
@@ -217,6 +265,22 @@ export const clearUnattended = (env = process.env) => {
       }
     } catch {
       // a home this process cannot write is not this run's flag to remove
+    }
+  }
+  return removed;
+};
+
+/** Explicit operator migration: remove machine-wide records from both homes. */
+export const clearLegacyUnattended = (env = process.env) => {
+  const removed = [];
+  for (const path of legacyFlags(env)) {
+    try {
+      if (existsSync(path)) {
+        rmSync(path);
+        removed.push(path);
+      }
+    } catch {
+      // a home this process cannot write is reported by the remaining read
     }
   }
   return removed;
@@ -269,7 +333,18 @@ if (invokedDirectly()) {
     process.exit(0);
   }
   if (word === 'off') {
-    const removed = clearUnattended(cliEnv);
+    const legacy = rest.includes('--legacy');
+    const removed = legacy ? clearLegacyUnattended(cliEnv) : clearUnattended(cliEnv);
+    if (!legacy && root) {
+      const remaining = readUnattended(cliEnv);
+      if (remaining.on && remaining.unreadable && /legacy/i.test(remaining.why ?? '')) {
+        process.stderr.write(
+          `unattended-flag off: ${remaining.why} at ${remaining.path}. ` +
+            'Confirm no pre-upgrade run still uses it, then run `off --legacy`.\n',
+        );
+        process.exit(1);
+      }
+    }
     process.stdout.write(removed.length === 0 ? 'no unattended flag was set\n' : `${removed.join('\n')}\n`);
     process.exit(0);
   }

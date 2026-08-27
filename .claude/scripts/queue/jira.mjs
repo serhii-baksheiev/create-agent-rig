@@ -1,4 +1,5 @@
 // Queue adapter: Jira issues, via the REST API.
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 //
 // The second adapter exists to prove the seam holds: everything about *selection*
 // lives in `core.mjs` and is imported, not re-derived. An adapter that answers
