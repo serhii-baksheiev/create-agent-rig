@@ -53,11 +53,13 @@ The selector is per-checkout runtime state, the same class as
 project ships and an `init`-installed rig adds by hand. An undeclared name is
 refused, never read as "no board" (see `test/template/queue-board.test.ts` ›
 "refuses a board nobody declared instead of falling back" — in the generator,
-absent in a generated rig). It is a rulebook path for `guard-rulebook`: an
-unattended run cannot switch boards through an edit tool, and the `board`
-command's own write is a shell write the guard never sees. `.claude/queue.state.json`
-stays per config, not per board: the tier the last close recorded rations the
-next selection whichever board it lands on.
+absent in a generated rig). It is a rulebook path for `guard-rulebook`:
+`.claude/queue.board` is refused even when an item allow-list names it,
+and the `board` command itself refuses a switch while the checkout is unattended. This
+does not prevent an arbitrary direct shell write to the selector — edit-tool
+hooks cannot see one. `.claude/queue.state.json` stays per config, not per board:
+the tier the last close recorded rations the next selection whichever board it
+lands on.
 
 Adding a fourth is an adapter, not a rewrite: `core.mjs` holds every selection
 decision and each adapter only maps its tracker's records onto the neutral shape.
@@ -119,14 +121,15 @@ invocation. What a hook CAN see is a file, so the unattended signal is one:
 ```bash
 # at claim time, from the paths the item names (repo-relative prefixes, with
 # their trailing slash); the guard refuses every other rulebook edit while it is on
-node .claude/scripts/unattended-flag.mjs on --item <item-id> --run-dir "$RIG_RUN_DIR" --allow <prefix> [<prefix>…]
+node .claude/scripts/unattended-flag.mjs on --root "$PWD" --item <item-id> --run-dir "$RIG_RUN_DIR" --allow <prefix> [<prefix>…]
 ```
 
 `guard-rulebook` reads it (`.claude/rules/autonomy.md`, "Never"): with the flag
-on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under `.claude/hooks/`,
-`.claude/settings.json`, `.claude/queue.json`, `.claude/scripts/queue/`, the
-router, the gate sweep, `.claude/rules/` or `CLAUDE.md` is refused unless its
-path starts with an allowed prefix; with no flag the guard does nothing. An
+on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under the generated
+rulebook — both harnesses' rules, skills, agents and hook wiring, plus their
+scripts, queue config and integrity manifest — is refused unless its
+path starts with an allowed prefix; the board selector is the one always-refused
+exception and cannot be admitted by an allow-list. With no flag the guard does nothing. An
 item that needs a rulebook path names it here — a decision made at claim
 time, never a default — and the stop step below turns the flag off. Pinned in
 the generator's `test/template/guard-rulebook.test.ts` — absent in a generated
@@ -738,8 +741,17 @@ next attended session would find its rulebook edits refused in the name of an
 item nobody is working:
 
 ```bash
-node .claude/scripts/unattended-flag.mjs off
+node .claude/scripts/unattended-flag.mjs off --root "$PWD"
 ```
+
+If that command reports a legacy machine-wide flag, it deliberately leaves a
+foreign pre-upgrade authorization in place and the checkout stays fail-closed.
+Inspect the exact reported record and confirm that no pre-upgrade run still uses
+it, then remove only that record with
+`node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>`.
+Run scoped `off --root "$PWD"` again to surface the next record, and repeat the
+inspection one at a time; do not record the flag as off until the scoped command
+succeeds.
 
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an
@@ -873,7 +885,7 @@ three poisons the only channel by which this project learns.
   validation and its take-up — an adapter re-records the take-up after each
   write of its own (§2, AR-140), so a comment posted after BEFORE_PR does not
   hold the close; pinned in the generator's
-  `test/template/self-inflicted-marker.test.ts` › "continues when the run’s own
+  `test/template/self-inflicted-marker.test.ts` (absent in a generated rig) › "continues when the run’s own
   write moved the marker after the last validation" — and its
   state against the `in-progress` a close expects, journals one `revalidation`
   event at `point: BEFORE_CLOSE`, and lists the item's dependants with each
@@ -884,7 +896,7 @@ three poisons the only channel by which this project learns.
   and reads a hold as a stop" and › "re-reads each dependant's state, and names
   one the tracker no longer offers". On a `github-issues` queue that list is
   empty: a single `gh issue view` carries no cross-index, so `find` answers no
-  `blocks` there (`test/template/close-transitioned.test.ts` › "github asks `gh
+  `blocks` there (`test/template/close-transitioned.test.ts` (absent in a generated rig) › "github asks `gh
   issue view` with the full field list and maps CLOSED to closed"). A
   hold (exit 2) stops the close: re-read the item, record the outcome with
   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_CLOSE --ticket
@@ -896,7 +908,7 @@ three poisons the only channel by which this project learns.
   `true` says the close landed, because every adapter reads the item back after
   the transition — `jira` the status category after the POST, `github-issues`
   `gh issue view --json state`, `plan-md` the line being there and then gone
-  (the generator's `test/template/close-transitioned.test.ts` › "GETs the issue
+  (the generator's `test/template/close-transitioned.test.ts` (absent in a generated rig) › "GETs the issue
   status after the transition POST and reports transitioned: true when the
   category is done", › "runs `issue view <id> --json state` after `issue close`
   and reports transitioned: true on CLOSED", › "reports transitioned: true once

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 /**
  * Revalidation at BEFORE_PR — is the branch about to ship still the branch the
  * run took up?

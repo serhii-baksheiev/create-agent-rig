@@ -68,6 +68,21 @@ const edit = (filePath: string, newString: string) => ({
   tool_input: { file_path: filePath, old_string: 'x', new_string: newString },
 });
 
+const multiEdit = (filePath: string, additions: string[]) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'MultiEdit',
+  tool_input: {
+    file_path: filePath,
+    edits: additions.map((newString) => ({ old_string: 'x', new_string: newString })),
+  },
+});
+
+const notebookEdit = (filePath: string, newSource: string) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'NotebookEdit',
+  tool_input: { notebook_path: filePath, new_source: newSource },
+});
+
 const applyPatch = (filePath: string, addition: string) => ({
   hook_event_name: 'PreToolUse',
   tool_name: 'apply_patch',
@@ -142,6 +157,38 @@ describe('guard-secret-file: a credential value is refused wherever it is being 
   // that only ever looked at `content` would pass every Edit in the session.
   it('blocks an Edit whose new_string carries a credential value', async () => {
     await deny(edit('packages/core/src/thing.ts', `const key = '${GITHUB_PAT}';`), 'Edit');
+  });
+
+  it('blocks a MultiEdit when any new_string carries a credential value', async () => {
+    await deny(
+      multiEdit('packages/core/src/thing.ts', [
+        'export const ordinary = true;',
+        `export const key = '${GITHUB_PAT}';`,
+      ]),
+      'MultiEdit',
+    );
+  });
+
+  it('blocks a NotebookEdit whose new_source carries a credential value', async () => {
+    await deny(
+      notebookEdit('notebooks/incident.ipynb', `const key = '${GITHUB_PAT}';`),
+      'NotebookEdit',
+    );
+  });
+
+  it('refuses a MultiEdit beyond the fragment cap instead of silently dropping the tail', async () => {
+    const additions = Array.from(
+      { length: 256 },
+      (_, index) => `export const n${index} = ${index};`,
+    );
+    additions.push(`export const key = '${GITHUB_PAT}';`);
+
+    const result = await deny(
+      multiEdit('packages/core/src/thing.ts', additions),
+      'MultiEdit over the inspection cap',
+    );
+    expect(result.stderr).toMatch(/cannot safely inspect|inspection limit|more than 256/i);
+    expect(result.stderr).not.toContain(GITHUB_PAT);
   });
 
   it('blocks apply_patch when an added line carries a credential value', async () => {
@@ -349,10 +396,12 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
 
     expect(mechanicalSentence).toContain('`Write`');
     expect(mechanicalSentence).toContain('`Edit`');
+    expect(mechanicalSentence).toContain('`MultiEdit`');
+    expect(mechanicalSentence).toContain('`NotebookEdit`');
     expect(mechanicalSentence).toContain('`apply_patch`');
   });
 
-  it('is registered in settings.json under a PreToolUse matcher covering Write and Edit', async () => {
+  it('is registered in settings.json under a PreToolUse matcher covering every edit surface', async () => {
     const settings = JSON.parse(
       await readFile(path.join(universal, '.claude', 'settings.json'), 'utf8'),
     ) as { hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> } };
@@ -366,6 +415,9 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
     const tools = matcher.split('|').map((part) => part.trim());
     expect(tools).toContain('Write');
     expect(tools).toContain('Edit');
+    expect(tools).toContain('MultiEdit');
+    expect(tools).toContain('NotebookEdit');
+    expect(tools).toContain('apply_patch');
   });
 
   it('is classified in layers.json together with the module it imports', async () => {
@@ -397,8 +449,27 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
 // `.claude/rules/invariants.md`, "State the limits — and test them": a limits
 // comment is the guard's own claim about how far it can be trusted, and nothing
 // checks prose, so it drifts — into overstatement, which is the direction that
-// gets someone hurt. The hook's header names four limits. These are them.
+// gets someone hurt. The hook's header names five limits. These are them.
 describe('guard-secret-file: the limits it states, asserted rather than asserted-in-prose', () => {
+  it('keeps every named test pointer literally greppable in its referenced test file', async () => {
+    const source = await readFile(hook, 'utf8');
+    const prose = source
+      .split('\n')
+      .map((line) => line.replace(/^\s*\/\/ ?/, ''))
+      .join('\n');
+    const pointers = [
+      ...prose.matchAll(/\b(?:see|by)\s+([a-z0-9-]+\.test\.ts)[\s\S]*?›\s*"([^"]+)"/gi),
+    ].map(([, file, name]) => ({ file: file!, name: name!.replace(/\s+/g, ' ').trim() }));
+    expect(pointers.length, 'the hook names no upstream test pointers').toBeGreaterThan(0);
+
+    const missing: string[] = [];
+    for (const { file, name } of pointers) {
+      const testSource = await readFile(path.join(repoRoot, 'test', 'template', file), 'utf8');
+      if (!testSource.includes(name)) missing.push(`${file} › ${name}`);
+    }
+    expect(missing, 'test pointers must be literal source substrings').toEqual([]);
+  });
+
   it('does not see a credential split across two edits, because it is shown one fragment at a time', async () => {
     // The halves are innocuous apart and a credential together. Each edit is
     // allowed — not because the guard judged them safe, but because it never
@@ -427,7 +498,17 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
 
   it('separates the shapes it refuses from the payloads it still fails open on', async () => {
     const source = await readFile(hook, 'utf8');
-    expect(source).toMatch(/There are FOUR:/);
+    expect(source).toMatch(/There are FIVE:/);
+
+    const limitsBlock = source.match(/There are FIVE:[\s\S]*?(?=\n\/\/ Failing open)/)?.[0] ?? '';
+    expect([...limitsBlock.matchAll(/^\/\/ {3}-/gm)]).toHaveLength(5);
+    const fragmentCap =
+      limitsBlock.split(/^\/\/ {3}-/m).find((entry) => /MultiEdit|256/.test(entry)) ?? '';
+    expect(fragmentCap).toMatch(/MultiEdit/i);
+    expect(fragmentCap).toMatch(/256/);
+    expect(fragmentCap).toMatch(/refus/i);
+    expect(fragmentCap).toMatch(/guard-secret-file\.test\.ts/);
+    expect(fragmentCap).toMatch(/beyond the fragment cap/i);
 
     const failOpenLimit =
       source.match(/\/\/ {3}- It FAILS OPEN[\s\S]*?(?=\n\/\/\n\/\/ Failing open)/)?.[0] ?? '';

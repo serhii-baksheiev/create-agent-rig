@@ -91,6 +91,11 @@ describe('the released-hash table — what a manifest-less rig is measured again
     );
   });
 
+  it('carries the previous 0.6.0 release bytes into the 0.6.1 package', async () => {
+    const history = await readHistory();
+    expect(history.versions).toContain('0.6.0');
+  });
+
   it('maps a template path to where the file installs, dropping the layer', () => {
     expect(installRelPath('templates/agent-os/universal/.claude/rules/workflow.md')).toBe(
       '.claude/rules/workflow.md',

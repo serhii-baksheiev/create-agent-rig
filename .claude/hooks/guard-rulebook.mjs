@@ -2,11 +2,12 @@
 // PreToolUse hook: in an UNATTENDED run, the rulebook is never edited outside
 // the current item's allow-list (AR-51).
 //
-// The rulebook is the set of files that decide what this session may do — the
-// hooks, their wiring, the queue config and adapters, the router and the gate
-// sweep, the rules, `CLAUDE.md`. Every one of them was editable by the run it
-// governs: a Write to `.claude/hooks/dod-checks.json` with `[]` switched the
-// stop gate off, and nothing refused it until the merge sweep, long after.
+// The rulebook is the set of files that decide what this session may do — hooks
+// and settings wiring, the queue config and selector, all scripts, rules, skills
+// and agents, the `.codex/` configuration, the integrity manifest, `AGENTS.md`
+// and `CLAUDE.md`. Every one of them was editable by the run it governs: a
+// Write to `.claude/hooks/dod-checks.json` with `[]` switched the stop gate
+// off, and nothing refused it until the merge sweep, long after.
 //
 // How it decides — and it is deliberately dumb:
 //   1. No unattended flag on disk (`.claude/scripts/unattended-flag.mjs`) → an
@@ -14,8 +15,12 @@
 //      the rulebook on purpose.
 //   2. Flag present and readable → every edit fragment whose repo-relative path
 //      sits under a rulebook prefix is refused (exit 2) unless it also sits
-//      under one of the item's `allow` prefixes. Paths outside the rulebook are
-//      never judged.
+//      under one of the item's `allow` prefixes. A known path outside the
+//      rulebook is never judged — › "allows a MultiEdit beyond the fragment cap
+//      when its known path is outside the rulebook". A pathless global refusal
+//      for an oversized or unsupported `apply_patch` payload is blocked while
+//      armed because its scope cannot be proved — › "states the pathless
+//      global-refusal limit for oversized and unsupported apply_patch payloads".
 //   3. Flag present and UNREADABLE → a rulebook edit is refused and the reason
 //      names the flag; an edit outside the rulebook still passes. Refusing to
 //      inspect is not allowing (`.claude/rules/invariants.md`).
@@ -37,15 +42,12 @@
 //   - it judges paths, not content: a README that merely mentions
 //     `.claude/hooks/guard-bash.mjs` is not a rulebook edit — › "guards the
 //     path, not prose that mentions a guarded path";
-//   - it compares paths as text: the repo-relative tail is what is left after
-//     stripping `CLAUDE_PROJECT_DIR` (falling back to the working directory
-//     when the harness does not set it) from the front of the tool's absolute
-//     path, so a root spelled differently from the file path — a symlinked
-//     `/tmp` versus `/private/tmp`, a case difference on a case-insensitive
-//     disk — is not stripped, and the edit is not judged. Documented and
-//     measured, not fixed: the harness spells both from one root — › "compares
-//     paths as text: a root spelled differently from the file path is not
-//     judged (documented, fails open)";
+//   - it compares both roots and payload paths in their selected and canonical
+//     spellings, whether selection came from `CLAUDE_PROJECT_DIR` or the
+//     working-directory fallback — › "canonicalizes a differently spelled
+//     checkout root before guarding a canonical payload path", › "blocks when
+//     the checkout root and payload use the same symlink spelling", and
+//     › "blocks an existing rulebook file when only the payload path uses a symlink spelling";
 //   - an `allow` prefix is a string prefix of the repo-relative path and may
 //     not widen the rulebook — an entry that is itself a prefix of a rulebook
 //     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
@@ -58,7 +60,8 @@
 //     adversary.
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { editFragments } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 
@@ -67,6 +70,30 @@ export { RULEBOOK_PREFIXES, isRulebookPath };
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
 
 const toPosix = (value) => String(value ?? '').replaceAll('\\', '/');
+
+const canonicalRoot = (root) => {
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
+};
+
+/** Resolve symlinks in the nearest existing ancestor, preserving a missing tail. */
+const canonicalPath = (filePath) => {
+  let cursor = resolve(filePath);
+  const tail = [];
+  for (;;) {
+    try {
+      return join(realpathSync(cursor), ...tail);
+    } catch {
+      const parent = dirname(cursor);
+      if (parent === cursor) return filePath;
+      tail.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+};
 
 /** The repo-relative tail of an absolute path, or the path itself when it is not under the root. */
 export const relativeTo = (root, filePath) => {
@@ -79,6 +106,11 @@ export const relativeTo = (root, filePath) => {
 export const isAllowed = (rel, allow) =>
   (Array.isArray(allow) ? allow : []).some((prefix) => prefix !== '' && (rel === prefix || rel.startsWith(prefix)));
 
+const protectedRelative = (roots, filePath) =>
+  [...new Set([filePath, canonicalPath(filePath)])]
+    .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)))
+    .find(isRulebookPath);
+
 function main() {
   let input;
   try {
@@ -88,29 +120,57 @@ function main() {
   }
   if (!EDIT_TOOLS.has(input?.tool_name)) return 0;
 
-  const root = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const selectedRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const root = canonicalRoot(selectedRoot);
+  const comparisonRoots = [...new Set([root, selectedRoot])];
+  const unattendedEnv = { ...process.env, CLAUDE_PROJECT_DIR: root };
+  const fragments = editFragments(input);
+  const globalRefusal = fragments.find(
+    ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
+  );
+  if (globalRefusal) {
+    if (globalRefusal.filePath) {
+      const rel = protectedRelative(comparisonRoots, globalRefusal.filePath);
+      if (rel === undefined) return 0;
+    }
+    const mode = readUnattended(unattendedEnv);
+    if (!mode.on) return 0;
+    process.stderr.write(
+      `BLOCKED — cannot safely inspect this unattended edit: ${globalRefusal.inspectionRefusal}\n` +
+        `${globalRefusal.remedy ?? 'Split it into a smaller edit and retry.'}\n`,
+    );
+    return 2;
+  }
   const paths = [];
-  for (const { filePath } of editFragments(input)) {
+  for (const { filePath } of fragments) {
     if (typeof filePath !== 'string' || filePath === '') continue;
-    const rel = relativeTo(root, filePath);
-    if (isRulebookPath(rel) && !paths.includes(rel)) paths.push(rel);
-    if (paths.length >= 64) break;
+    const rel = protectedRelative(comparisonRoots, filePath);
+    if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
   }
   if (paths.length === 0) return 0; // nothing under the rulebook: never judged
 
-  const mode = readUnattended();
+  const mode = readUnattended(unattendedEnv);
   if (!mode.on) return 0; // attended session
 
   if (mode.unreadable) {
     process.stderr.write(
       `BLOCKED — "${paths[0]}" is part of the rulebook and the unattended flag at ${mode.path} is unreadable (${mode.why}). ` +
-        'Refusing to inspect is not allowing: fix or remove the flag (`node .claude/scripts/unattended-flag.mjs off`), then retry.\n',
+        'Refusing to inspect is not allowing: fix it, or clear this checkout with `node .claude/scripts/unattended-flag.mjs off --root "$PWD"`, then retry.\n',
     );
     return 2;
   }
 
-  const refused = paths.filter((rel) => !isAllowed(rel, mode.allow));
+  const refused = paths.filter(
+    (rel) => rel === '.claude/queue.board' || !isAllowed(rel, mode.allow),
+  );
   if (refused.length === 0) return 0;
+  if (refused[0] === '.claude/queue.board') {
+    process.stderr.write(
+      'BLOCKED — ".claude/queue.board" is the checkout board selector and cannot be changed while unattended, even through an item allow-list. ' +
+        'Disarm unattended mode before deliberately switching queues.\n',
+    );
+    return 2;
+  }
   process.stderr.write(
     `BLOCKED — "${refused[0]}" is part of the rulebook, and an unattended run never edits the rulebook outside its item's allow-list ` +
       `(item ${mode.item ?? '(none)'}; allowed prefixes: ${mode.allow.length === 0 ? 'none' : mode.allow.join(', ')}). ` +

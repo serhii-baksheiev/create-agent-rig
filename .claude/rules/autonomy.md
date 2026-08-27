@@ -95,10 +95,10 @@ own cost figures are read next to the lane they do not cover.
 - bypass pre-commit (`--no-verify` is hook-blocked anyway)
 - force-push a shared branch
 - put secrets in code, config, logs, or fixtures. One part of this is
-  **mechanical**: `guard-secret-file` refuses an edit through `Write`, `Edit`, or
-  `apply_patch` that names a credential file or carries a credential value,
+  **mechanical**: `guard-secret-file` refuses an edit through `Write`, `Edit`,
+  `MultiEdit`, `NotebookEdit`, or `apply_patch` that names a credential file or carries a credential value,
   reading its vocabulary from `.claude/scripts/lib/secrets.mjs`. ⚠ **Only that
-  part.** The hook sees what an agent writes through those three tools and
+  part.** The hook sees what an agent writes through those five tools and
   nothing else — its own header states the four blind spots — so whether a
   credential typed by a human, or committed from disk, is also refused depends
   on whether this project has a commit-time check. Look at `.husky/` and the CI
@@ -109,8 +109,10 @@ own cost figures are read next to the lane they do not cover.
   a leak.
 - touch production data outside a reviewed migration
 - edit the rulebook from an **unattended** run outside the item's allow-list — `guard-rulebook` refuses it.
-  The rulebook: the hooks, their wiring, `.claude/queue.json` and its board selector `queue.board`, the queue
-  adapters, the router, the gate sweep, the rules, `CLAUDE.md`. Mechanical:
+  The rulebook is both harnesses' instruction, agent, skill, script and hook
+  trees (`CLAUDE.md`, `AGENTS.md`, `.claude/{agents,hooks,rules,scripts,skills}`,
+  `.agents/`, `.codex/`), plus `.claude/settings.json`, the queue config and its
+  always-refused board selector, and the integrity manifest. Mechanical:
   the hook refuses the edit while the unattended flag the `loop` skill writes
   at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), and does
   nothing in an attended session. ⚠ It sees edit tool calls only — a

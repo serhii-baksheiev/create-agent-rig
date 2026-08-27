@@ -1,6 +1,6 @@
 {
   "name": "@create-agent-rig/cli",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "description": "Generator sources. Built by the root `prepare`/`build` scripts into dist/, which the root package publishes as its bin.",

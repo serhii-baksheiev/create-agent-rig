@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 // doctor — the harness audits itself (AR-5).
 //
 //   node .claude/scripts/doctor.mjs                 # the report, ready to paste
@@ -10,7 +11,9 @@
 // `.claude/rules/invariants.md` — a stated rule, a mechanical check, a test for
 // the check — is decoration with any part missing, and the part a rig loses
 // first is the third: the shipped hooks arrive with their tests in the generator
-// that produced them, and the moment one is edited its test is the rig's own.
+// that produced them. A manifest-backed generator upgrade remains inherited;
+// the test becomes the rig's own when the current hash no longer matches the
+// manifest evidence below.
 //
 // Ownership is read from `.claude/.rig-manifest.json`, the install manifest the
 // generator writes (its `files` map is install-relative path → sha256 of the

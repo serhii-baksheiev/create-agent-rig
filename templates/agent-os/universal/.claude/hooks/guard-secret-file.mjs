@@ -22,18 +22,25 @@
 // so plainly where none does — a limits comment nothing checks drifts into
 // overstatement, which is the direction that gets a reader hurt. ⚠ Those tests live in the GENERATOR this rig came from, not here;
 // `.claude/rules/invariants.md` ("About the hooks you were given") says the same
-// of this hook's own tests, and the moment you edit it they are yours.
+// of this hook's own tests. A manifest-backed generator upgrade remains inherited
+// while `.claude/.rig-manifest.json` matches; once the hash differs, the local test
+// is yours.
 //
-// There are FOUR:
+// There are FIVE:
 //
 //   - It sees ONE edit fragment, not the resulting file. A credential assembled
-//     across two edits is not seen — see guard-secret-file.test.ts › "does not
+//     across two edits is not seen — see guard-secret-file.test.ts (absent in a generated rig) › "does not
 //     see a credential split across two edits, because it is shown one fragment
 //     at a time". This is the same limit every guard in this directory has,
 //     stated in full in `.claude/rules/invariants.md`, "What the enforcement
 //     actually is — stated exactly".
+//   - A `MultiEdit` is capped at 256 fragments and REFUSES before mapping a
+//     longer list, so the tail is never silently dropped — see
+//     guard-secret-file.test.ts (absent in a generated rig) › "refuses a
+//     MultiEdit beyond the fragment cap instead of silently dropping the tail".
 //   - It sees only what the AGENT writes. The `toolName` branch in `main` below
-//     names the complete surface: `Write`, `Edit`, and `apply_patch`; every other
+//     names the complete surface: `Write`, `Edit`, `MultiEdit`, `NotebookEdit`,
+//     and `apply_patch`; every other
 //     tool returns before inspection. A human editing the file, or a
 //     `git commit` of something already on disk, never reaches a PreToolUse hook
 //     at all, and no test here can show that: it is a property of the harness,
@@ -51,15 +58,16 @@
 //     `findSecretValues` applies by default so a fail-open guard cannot be made
 //     to hang. A credential past that point is not seen. ⚠ No test here pins
 //     this one: the case is pinned one layer down, on the module, by
-//     secrets-lib.test.ts › "has a limit even when the caller names none". The CI sweep lifts the
+//     secrets-lib.test.ts (absent in a generated rig) › "has a limit even when the caller names none". The CI sweep lifts the
 //     cap; this hook cannot, and that asymmetry is the point.
 //   - It FAILS OPEN on what it cannot understand — see guard-secret-file.test.ts
+//     (absent in a generated rig)
 //     › "allows a payload that is not JSON at all" and its neighbours. An
 //     unparseable payload, a missing field, or an internal throw all allow the
 //     edit; a crashed guard that blocks everything gets deleted within the hour.
 //
 //     ⚠ **An `apply_patch` command that is PRESENT and is not a shape this guard
-//     reads is the other case, and it now REFUSES** — see codex.test.ts ›
+//     reads is the other case, and it now REFUSES** — see codex.test.ts (absent in a generated rig) ›
 //     "refuses, rather than failing open, when apply_patch command is supplied
 //     as %s". The line between them is whether the guard can tell: an absent
 //     field is a payload it does not understand, a container it detects and
@@ -92,40 +100,27 @@ function main() {
     return 0; // unparseable payload: not ours to judge
   }
 
-  const toolName = input?.tool_name;
-  if (toolName !== 'Write' && toolName !== 'Edit' && toolName !== 'apply_patch') return 0;
+  const editTools = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
+  if (!editTools.has(input?.tool_name)) return 0;
 
-  if (toolName === 'apply_patch') {
-    let refused = false;
-    for (const { filePath, fragment, inspectionRefusal, remedy, appliesToAll } of editFragments(input)) {
-      if (inspectionRefusal) {
-        refused = true;
-        process.stderr.write(
-          `BLOCKED — cannot safely inspect this edit: ${inspectionRefusal}\n` +
-            // The remedy has to match the refusal: splitting cannot change a
-            // container shape, and a fixed line sent the agent into a retry loop
-            // on the one path it could not retry out of.
-            `${remedy ?? 'Split it into a smaller patch and retry.'}\n`,
-        );
-        continue;
-      }
-      if (isCredentialPath(filePath)) {
-        refused = true;
-        process.stderr.write(`BLOCKED — "${filePath}" is a credential file, and this repository never carries one.\n${WHERE_CREDENTIALS_BELONG}\n`);
-        continue;
-      }
-      const findings = findSecretValues(fragment);
-      if (findings.length > 0 || appliesToAll) {
-        refused = true;
-        if (findings.length > 0) process.stderr.write(`BLOCKED — this edit writes a credential value into "${filePath}".\n${WHERE_CREDENTIALS_BELONG}\n`);
-      }
-    }
-    return refused ? 2 : 0;
+  const fragments = editFragments(input);
+  const globalRefusal = fragments.find(
+    ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
+  );
+  if (globalRefusal) {
+    const fallbackRemedy = input?.tool_name === 'apply_patch'
+      ? 'Split it into a smaller patch and retry.'
+      : 'Split it into a smaller edit and retry.';
+    process.stderr.write(
+      `BLOCKED — cannot safely inspect this edit: ${globalRefusal.inspectionRefusal}\n` +
+        `${globalRefusal.remedy ?? fallbackRemedy}\n`,
+    );
+    return 2;
   }
 
-  const toolInput = input?.tool_input ?? {};
-  const filePath = String(toolInput.file_path ?? '').replaceAll('\\', '/');
-  if (filePath === '') return 0; // nothing to judge; fail open
+  if (fragments.length === 0 || fragments.every(({ filePath }) => filePath === '')) {
+    return 0; // nothing to judge; fail open
+  }
 
   // The tool sends an absolute path. Judge the repo-relative tail so a checkout
   // living under a directory literally called `secrets` does not make every edit
@@ -134,41 +129,53 @@ function main() {
   // below never matches, every path stays absolute, and a checkout that happens
   // to live under a directory called `secrets` has EVERY edit refused. That is
   // the "deleted within the hour" outcome `.claude/rules/invariants.md` warns
-  // about — see guard-secret-file.test.ts › "judges the repo-relative path even
-  // when the project directory is given with a trailing slash".
+  // about — see guard-secret-file.test.ts (absent in a generated rig) ›
+  // "judges the repo-relative path even when the project directory is given %s".
   const projectDir = String(process.env.CLAUDE_PROJECT_DIR ?? '')
     .replaceAll('\\', '/')
     .replace(/\/+$/, '');
-  const relativePath =
-    projectDir !== '' && filePath.startsWith(`${projectDir}/`)
-      ? filePath.slice(projectDir.length + 1)
-      : filePath;
+  let refused = false;
+  for (const { filePath, fragment, inspectionRefusal } of fragments) {
+    const relativePath =
+      projectDir !== '' && filePath.startsWith(`${projectDir}/`)
+        ? filePath.slice(projectDir.length + 1)
+        : filePath;
+    if (relativePath === '') continue;
 
-  if (isCredentialPath(relativePath)) {
+    if (inspectionRefusal) {
+      refused = true;
+      process.stderr.write(
+        `BLOCKED — cannot safely inspect this edit to "${relativePath}": ${inspectionRefusal}\n` +
+          'Split it into a smaller edit and retry.\n',
+      );
+      continue;
+    }
+    if (isCredentialPath(relativePath)) {
+      refused = true;
+      process.stderr.write(
+        `BLOCKED — "${relativePath}" is a credential file, and this repository never carries one.\n` +
+          `${WHERE_CREDENTIALS_BELONG}\n` +
+          `If this file is a documented placeholder, name it .env.example — that form stays committable.\n`,
+      );
+      continue;
+    }
+
+    const findings = findSecretValues(fragment);
+    if (findings.length === 0) continue;
+    refused = true;
     process.stderr.write(
-      `BLOCKED — "${relativePath}" is a credential file, and this repository never carries one.\n` +
-        `${WHERE_CREDENTIALS_BELONG}\n` +
-        `If this file is a documented placeholder, name it .env.example — that form stays committable.\n`,
+      `BLOCKED — this edit writes a credential value into "${relativePath}":\n` +
+        findings
+          .map((finding) => `  - ${finding.id} on line ${finding.line} of the text being written`)
+          .join('\n') +
+        `\n${WHERE_CREDENTIALS_BELONG}\n` +
+        // Deliberately NOT the matched text. A guard that prints what it found has
+        // copied the credential into a hook transcript and a terminal scrollback —
+        // it has leaked the secret in the act of refusing it.
+        `The matched value is deliberately not shown; open the line above to see it.\n`,
     );
-    return 2;
   }
-
-  const fragment = String((toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '');
-  const findings = findSecretValues(fragment);
-  if (findings.length === 0) return 0;
-
-  process.stderr.write(
-    `BLOCKED — this edit writes a credential value into "${relativePath}":\n` +
-      findings
-        .map((finding) => `  - ${finding.id} on line ${finding.line} of the text being written`)
-        .join('\n') +
-      `\n${WHERE_CREDENTIALS_BELONG}\n` +
-      // Deliberately NOT the matched text. A guard that prints what it found has
-      // copied the credential into a hook transcript and a terminal scrollback —
-      // it has leaked the secret in the act of refusing it.
-      `The matched value is deliberately not shown; open the line above to see it.\n`,
-  );
-  return 2;
+  return refused ? 2 : 0;
 }
 
 let status;
