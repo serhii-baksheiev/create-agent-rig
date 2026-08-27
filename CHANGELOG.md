@@ -20,12 +20,11 @@ command.
 
 ### Security
 
-- **`guard-rulebook` now covers the whole shared rulebook and both spellings of
-  a symlinked checkout.** `AGENTS.md` and `.codex/hooks.json` are protected
-  alongside the Claude files. When `CLAUDE_PROJECT_DIR` names a checkout through
-  a symlink, an edit whose payload uses that same spelling is judged against the
-  selected root as well as its canonical path; the separately documented limit
-  remains only for a payload that invents an unrelated alias spelling.
+- **`guard-rulebook` now covers the whole shared rulebook and symlink aliases on
+  either side of the comparison.** `AGENTS.md` and `.codex/hooks.json` are
+  protected alongside the Claude files. Checkout roots and payload paths are
+  judged in both their selected and canonical spellings, including a
+  payload-only alias.
 - **Queue board names containing terminal control characters are rejected before
   selection, diagnostics or selector writes.** Ordinary names, including names
   with spaces, remain valid; ANSI, OSC, C1 and DEL bytes from repository-owned

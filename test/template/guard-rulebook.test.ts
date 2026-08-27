@@ -159,7 +159,10 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
     expect(result.code, result.stderr).toBe(2);
   });
 
-  it('still compares the payload file path as text when only that path uses a symlink spelling', async () => {
+  it('blocks an existing rulebook file when only the payload path uses a symlink spelling', async () => {
+    const protectedFile = path.join(root, '.claude', 'hooks', 'guard-bash.mjs');
+    await mkdir(path.dirname(protectedFile), { recursive: true });
+    await writeFile(protectedFile, '// protected\n');
     await armed([]);
     const alias = await aliasedRoot();
     const canonicalRoot = await realpath(root);
@@ -167,10 +170,60 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
       HOME: home,
       CLAUDE_PROJECT_DIR: canonicalRoot,
     });
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.code, result.stderr).toBe(2);
     const header = await hookHeader();
-    expect(header).toMatch(/symlink|spelled/i);
-    expect(header).toMatch(/file path/i);
+    expect(header).toContain(
+      'blocks an existing rulebook file when only the payload path uses a symlink spelling',
+    );
+    expect(header).toMatch(
+      /existing[\s\S]{0,160}(?:payload|file path)[\s\S]{0,160}(?:symlink|alias)|(?:symlink|alias)[\s\S]{0,160}(?:payload|file path)[\s\S]{0,160}existing/i,
+    );
+  });
+
+  it('blocks a missing rulebook file through a payload-only symlink alias with an existing protected parent', async () => {
+    const protectedParent = path.join(root, '.claude', 'hooks');
+    const missingTarget = path.join(protectedParent, 'new-hook.mjs');
+    await mkdir(protectedParent, { recursive: true });
+    expect(existsSync(missingTarget), 'the final protected target is a missing-file case').toBe(
+      false,
+    );
+    await armed([]);
+    const alias = await aliasedRoot();
+    const canonicalRoot = await realpath(root);
+
+    // On origin/master the guard compared this alias spelling only as text: it
+    // could not strip the canonical checkout root and returned 0. The security
+    // gate reproduced that prior behaviour; nearest-existing-parent
+    // canonicalisation is what lets the missing tail remain guarded now.
+    const aliasedTarget = `${alias}/.claude/hooks/new-hook.mjs`;
+    const result = await runHookFull(write(aliasedTarget), {
+      HOME: home,
+      CLAUDE_PROJECT_DIR: canonicalRoot,
+    });
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks/new-hook.mjs');
+    expect(existsSync(missingTarget), 'the PreToolUse guard must not create the target').toBe(
+      false,
+    );
+    expect(existsSync(aliasedTarget), 'the alias spelling must still resolve to no file').toBe(
+      false,
+    );
+  });
+
+  it('does not universally claim that every path outside the rulebook is never judged', async () => {
+    const prose = (await hookHeader()).replace(/^\/\/?\s?/gm, '').replace(/\s+/g, ' ');
+    expect(prose).not.toMatch(/paths outside the rulebook are never judged/i);
+    expect(prose).toMatch(/known path[\s\S]{0,120}outside the rulebook/i);
+  });
+
+  it('states the pathless global-refusal limit for oversized and unsupported apply_patch payloads', async () => {
+    const prose = (await hookHeader()).replace(/^\/\/?\s?/gm, '').replace(/\s+/g, ' ');
+    expect(prose).toMatch(/pathless[\s\S]{0,80}global refusal/i);
+    expect(prose).toMatch(/oversized[\s\S]{0,100}apply_patch|apply_patch[\s\S]{0,100}oversized/i);
+    expect(prose).toMatch(
+      /unsupported[\s\S]{0,100}apply_patch|apply_patch[\s\S]{0,100}unsupported/i,
+    );
   });
 
   it.each(['.', '.claude/', '.claude/scripts/', '.codex/', 'AGENTS', '.claude/.rig-'])(
@@ -205,21 +258,27 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
   });
 
   it('finds the checkout-scoped flag from cwd when the harness omits CLAUDE_PROJECT_DIR', async () => {
-    const { writeUnattended } = await import(
+    const { unattendedFlags, writeUnattended } = await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
     );
-    writeUnattended(
-      { item: 'AR-CWD', runDir: '/runs/cwd', allow: [] },
-      { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: root },
-    );
-    const canonicalRoot = await realpath(root);
-    const result = await runHookFull(
-      write(`${canonicalRoot}/.claude/hooks/guard-bash.mjs`),
-      { HOME: home, CLAUDE_PROJECT_DIR: '' },
-      'guard-rulebook.mjs',
-      root,
-    );
-    expect(result.code, result.stderr).toBe(2);
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: root };
+    try {
+      writeUnattended({ item: 'AR-CWD', runDir: '/runs/cwd', allow: [] }, scopedEnv);
+      const canonicalRoot = await realpath(root);
+      const result = await runHookFull(
+        write(`${canonicalRoot}/.claude/hooks/guard-bash.mjs`),
+        { HOME: home, CLAUDE_PROJECT_DIR: '' },
+        'guard-rulebook.mjs',
+        root,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await Promise.all(
+        [...new Set<string>(unattendedFlags(scopedEnv) as string[])].map((candidate) =>
+          rm(candidate, { force: true }),
+        ),
+      );
+    }
   });
 
   it.each([
@@ -291,7 +350,24 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
 });
 
 describe('guard-rulebook: every edit surface reaches it', () => {
-  it('refuses a MultiEdit beyond the fragment cap instead of missing a guarded tail', async () => {
+  it('refuses a MultiEdit beyond the fragment cap when its known path is in the rulebook', async () => {
+    await armed([]);
+    const result = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: `${root}/.claude/queue.json`,
+        edits: [
+          ...Array.from({ length: 256 }, () => ({ old_string: 'a', new_string: 'b' })),
+          { old_string: 'a', new_string: 'b' },
+        ],
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/cannot safely inspect|inspection limit|more than 256/i);
+  });
+
+  it('allows a MultiEdit beyond the fragment cap when its known path is outside the rulebook', async () => {
     await armed([]);
     const result = await run({
       hook_event_name: 'PreToolUse',
@@ -304,8 +380,36 @@ describe('guard-rulebook: every edit surface reaches it', () => {
         ],
       },
     });
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('does not ignore queue.board as the 65th guarded path behind 64 allowed paths', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    const allowed = Array.from({ length: 64 }, (_, index) => `.claude/rules/allowed-${index}.md`);
+    const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: repoRoot };
+    const { unattendedFlags } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const flag = unattendedFlags(scopedEnv)[0];
+    await mkdir(path.dirname(flag), { recursive: true });
+    await writeFile(
+      flag,
+      JSON.stringify({ item: 'AR-TAIL', runDir: path.join(repoRoot, '.rig-run'), allow: allowed }),
+    );
+    const sections = [...allowed, '.claude/queue.board']
+      .map((rel) => `*** Update File: ${rel}\n@@\n+x`)
+      .join('\n');
+    const result = await runHookFull(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        cwd: repoRoot,
+        tool_input: { command: `*** Begin Patch\n${sections}\n*** End Patch\n` },
+      },
+      scopedEnv,
+    );
     expect(result.code, result.stderr).toBe(2);
-    expect(result.stderr).toMatch(/cannot safely inspect|inspection limit|more than 256/i);
+    expect(result.stderr).toMatch(/queue\.board|board selector/i);
   });
 
   it('blocks a MultiEdit to queue.json', async () => {

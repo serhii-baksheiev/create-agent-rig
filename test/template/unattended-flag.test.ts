@@ -1,10 +1,11 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { fifosAvailable, modeBitsDeny, skipUnless } from '../helpers/env.js';
 
 /**
  * AR-51 — the unattended signal is a FILE, not an env variable.
@@ -45,6 +46,10 @@ interface CliResult {
   stderr: string;
 }
 
+interface BoundedResult extends CliResult {
+  timedOut: boolean;
+}
+
 const runCli = (args: string[], home: string): Promise<CliResult> =>
   new Promise((resolve) => {
     execFile(
@@ -57,9 +62,35 @@ const runCli = (args: string[], home: string): Promise<CliResult> =>
     );
   });
 
+const readInChild = (home: string, timeout = 750): Promise<BoundedResult> =>
+  new Promise((resolve) => {
+    const program = [
+      `const { readUnattended } = await import(${JSON.stringify(pathToFileURL(scriptPath).href)});`,
+      'process.stdout.write(JSON.stringify(readUnattended(process.env)));',
+    ].join('\n');
+    execFile(
+      process.execPath,
+      ['--input-type=module', '--eval', program],
+      {
+        env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: '' },
+        timeout,
+      },
+      (error, stdout, stderr) => {
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout,
+          stderr,
+          timedOut: Boolean((error as { killed?: boolean } | null)?.killed),
+        });
+      },
+    );
+  });
+
 // 🔴 Precondition, not a cleanup: a flag in EITHER home arms the mode, and the
-// real home is one of them. These tests never write there — and if something
-// already has, every "flag absent" case below is meaningless.
+// real home is one of them. Scoped writer cases temporarily mirror there and
+// remove their exact candidate paths in `finally`; a pattern-based global
+// cleanup would race with another test process using the same literal template.
+// A pre-existing legacy record would make every "flag absent" case meaningless.
 const realHomes = new Set([homedir()]);
 try {
   realHomes.add(userInfo().homedir);
@@ -145,6 +176,38 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
   it('is off when no candidate exists', async () => {
     const { readUnattended } = await load();
     expect(readUnattended(env())).toEqual({ on: false });
+  });
+
+  it('is on-but-unreadable when access to an existing flag fails at the stat boundary', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    const configDir = path.dirname(flagPath());
+    await arm(JSON.stringify({ item: 'AR-EACCES', runDir: '/runs/eacces', allow: [] }));
+
+    try {
+      await chmod(configDir, 0o000);
+      const { readUnattended } = await load();
+      expect(readUnattended(env())).toMatchObject({ on: true, unreadable: true });
+    } finally {
+      await chmod(configDir, 0o700);
+      await rm(flagPath(), { force: true });
+    }
+  });
+
+  it('returns promptly and fails closed when a candidate is a FIFO', async (ctx) => {
+    skipUnless(ctx, fifosAvailable().ok, fifosAvailable().reason);
+    await mkdir(path.dirname(flagPath()), { recursive: true });
+    execFileSync('mkfifo', [flagPath()]);
+
+    try {
+      const result = await readInChild(home);
+      expect(result.timedOut, 'readUnattended blocked on a FIFO until the child was killed').toBe(
+        false,
+      );
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ on: true, unreadable: true });
+    } finally {
+      await rm(flagPath(), { force: true });
+    }
   });
 
   it('reads item, runDir and allow from a well-formed flag', async () => {
@@ -267,7 +330,7 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
   const env = () => ({ ...process.env, HOME: home });
 
   it('keeps concurrent worktrees separate and clears only the current checkout record', async () => {
-    const { writeUnattended, clearUnattended, readUnattended } = await load();
+    const { writeUnattended, clearUnattended, readUnattended, unattendedFlags } = await load();
     const checkoutA = path.join(home, 'checkout-a');
     const checkoutB = path.join(home, 'checkout-b');
     await mkdir(checkoutA, { recursive: true });
@@ -275,15 +338,20 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
     const envA = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA };
     const envB = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB };
 
-    writeUnattended({ item: 'AR-A', runDir: '/runs/a', allow: [] }, envA);
-    writeUnattended({ item: 'AR-B', runDir: '/runs/b', allow: [] }, envB);
+    try {
+      writeUnattended({ item: 'AR-A', runDir: '/runs/a', allow: [] }, envA);
+      writeUnattended({ item: 'AR-B', runDir: '/runs/b', allow: [] }, envB);
 
-    expect(readUnattended(envA)).toMatchObject({ on: true, item: 'AR-A', runDir: '/runs/a' });
-    expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
+      expect(readUnattended(envA)).toMatchObject({ on: true, item: 'AR-A', runDir: '/runs/a' });
+      expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
 
-    clearUnattended(envA);
-    expect(readUnattended(envA)).toEqual({ on: false });
-    expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
+      clearUnattended(envA);
+      expect(readUnattended(envA)).toEqual({ on: false });
+      expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
+    } finally {
+      const candidates = [...new Set([...unattendedFlags(envA), ...unattendedFlags(envB)])];
+      await Promise.all(candidates.map((candidate) => rm(candidate, { force: true })));
+    }
   });
 
   it('writes the first candidate, creating <home>/.claude/, and returns the path', async () => {
@@ -306,6 +374,28 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
     expect(readUnattended(env())).toEqual({ on: false });
     // idempotent: nothing left to remove
     expect(clearUnattended(env())).toEqual([]);
+  });
+
+  it('throws instead of reporting success when access prevents removing an existing flag', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    const configDir = path.dirname(flagPath());
+    await arm(JSON.stringify({ item: 'AR-EACCES', runDir: '/runs/eacces', allow: [] }));
+
+    try {
+      await chmod(configDir, 0o000);
+      try {
+        const { clearUnattended } = await load();
+        expect(() => clearUnattended(env())).toThrow(/failed|remove|EACCES/i);
+      } finally {
+        await chmod(configDir, 0o700);
+      }
+      expect(existsSync(flagPath()), 'the inaccessible flag must survive the failed cleanup').toBe(
+        true,
+      );
+    } finally {
+      await chmod(configDir, 0o700).catch(() => {});
+      await rm(flagPath(), { force: true });
+    }
   });
 
   it('safely clears a legacy flag only when its run directory belongs to this checkout', async () => {
@@ -340,6 +430,26 @@ describe('the CLI the loop skill calls', () => {
     }
   });
 
+  it('exits nonzero and leaves an unreadable owned legacy flag in place', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    const checkout = path.join(home, 'legacy-owner-unreadable');
+    const runDir = path.join(checkout, '.claude', 'runs', 'old');
+    await mkdir(runDir, { recursive: true });
+    await arm(JSON.stringify({ item: 'OLD-UNREADABLE', runDir, allow: [] }));
+    await chmod(path.dirname(flagPath()), 0o700);
+
+    try {
+      await chmod(flagPath(), 0o000);
+      const result = await runCli(['off', '--root', checkout], home);
+      expect(existsSync(flagPath()), 'an unreadable legacy record must not be removed').toBe(true);
+      expect(result.code, result.stderr).not.toBe(0);
+      expect(result.stderr).toMatch(/legacy|unreadable|cannot be read|inspect/i);
+    } finally {
+      await chmod(flagPath(), 0o600).catch(() => {});
+      await rm(flagPath(), { force: true });
+    }
+  });
+
   it('removes only the explicitly selected legacy record and leaves another home untouched', async () => {
     const selectedHome = await mkdtemp(path.join(tmpdir(), 'ar51-selected-home-'));
     try {
@@ -361,28 +471,27 @@ describe('the CLI the loop skill calls', () => {
   });
 
   it('scopes on/off to --root so concurrent checkout CLIs do not share a flag', async () => {
-    const { readUnattended } = await load();
+    const { readUnattended, unattendedFlags } = await load();
     const checkoutA = path.join(home, 'cli-checkout-a');
     const checkoutB = path.join(home, 'cli-checkout-b');
     await mkdir(checkoutA, { recursive: true });
     await mkdir(checkoutB, { recursive: true });
 
-    expect((await runCli(['on', '--root', checkoutA, '--item', 'AR-A'], home)).code).toBe(0);
-    expect((await runCli(['on', '--root', checkoutB, '--item', 'AR-B'], home)).code).toBe(0);
-    expect(
-      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA }),
-    ).toMatchObject({ item: 'AR-A' });
-    expect(
-      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB }),
-    ).toMatchObject({ item: 'AR-B' });
+    const envA = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA };
+    const envB = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB };
+    try {
+      expect((await runCli(['on', '--root', checkoutA, '--item', 'AR-A'], home)).code).toBe(0);
+      expect((await runCli(['on', '--root', checkoutB, '--item', 'AR-B'], home)).code).toBe(0);
+      expect(readUnattended(envA)).toMatchObject({ item: 'AR-A' });
+      expect(readUnattended(envB)).toMatchObject({ item: 'AR-B' });
 
-    expect((await runCli(['off', '--root', checkoutA], home)).code).toBe(0);
-    expect(readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA })).toEqual({
-      on: false,
-    });
-    expect(
-      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB }),
-    ).toMatchObject({ item: 'AR-B' });
+      expect((await runCli(['off', '--root', checkoutA], home)).code).toBe(0);
+      expect(readUnattended(envA)).toEqual({ on: false });
+      expect(readUnattended(envB)).toMatchObject({ item: 'AR-B' });
+    } finally {
+      const candidates = [...new Set([...unattendedFlags(envA), ...unattendedFlags(envB)])];
+      await Promise.all(candidates.map((candidate) => rm(candidate, { force: true })));
+    }
   });
 
   it('`on --item … --run-dir … --allow …` writes the flag and prints its path', async () => {
