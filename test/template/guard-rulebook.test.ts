@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { needsGitRoot, skipUnless } from '../helpers/env.js';
 
@@ -34,12 +34,13 @@ function runHookFull(
   payload: object | string,
   env?: Record<string, string>,
   script = 'guard-rulebook.mjs',
+  cwd?: string,
 ): Promise<HookResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [path.join(hooksDir, script)],
-      { env: { ...process.env, ...env } },
+      { env: { ...process.env, ...env }, cwd },
       (error, stdout, stderr) => {
         const code = error ? ((error as { code?: number }).code ?? 1) : 0;
         resolve({ code, stderr, stdout });
@@ -137,13 +138,16 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
     expect(header).toMatch(/CLAUDE_PROJECT_DIR/);
   });
 
-  it('a flag whose allow-list widens the rulebook is unreadable, so `--allow .` cannot disarm it', async () => {
-    await armed(['.']);
-    const result = await run(write(`${root}/.claude/hooks/guard-bash.mjs`));
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/unreadable/);
-    expect(result.stderr).toMatch(/allow/);
-  });
+  it.each(['.', '.claude/', '.claude/scripts/', '.codex/', 'AGENTS', '.claude/.rig-'])(
+    'a flag whose allow-list entry %s widens the rulebook is unreadable',
+    async (entry) => {
+      await armed([entry]);
+      const result = await run(write(`${root}/.claude/hooks/guard-bash.mjs`));
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/unreadable/);
+      expect(result.stderr).toMatch(/allow/);
+    },
+  );
 });
 
 describe('guard-rulebook: attended sessions are untouched', () => {
@@ -154,6 +158,45 @@ describe('guard-rulebook: attended sessions are untouched', () => {
 });
 
 describe('guard-rulebook: an unattended run edits the rulebook only where its item allows', () => {
+  it('finds the checkout-scoped flag from cwd when the harness omits CLAUDE_PROJECT_DIR', async () => {
+    const { writeUnattended } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    writeUnattended(
+      { item: 'AR-CWD', runDir: '/runs/cwd', allow: [] },
+      { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: root },
+    );
+    const canonicalRoot = await realpath(root);
+    const result = await runHookFull(
+      write(`${canonicalRoot}/.claude/hooks/guard-bash.mjs`),
+      { HOME: home, CLAUDE_PROJECT_DIR: '' },
+      'guard-rulebook.mjs',
+      root,
+    );
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it.each([
+    '.claude/hooks/guard-bash.mjs',
+    '.claude/settings.json',
+    '.claude/queue.json',
+    '.claude/queue.board',
+    '.claude/scripts/queue/index.mjs',
+    '.claude/scripts/decision-router.mjs',
+    '.claude/scripts/detect-missed-gate.mjs',
+    '.claude/scripts/unattended-flag.mjs',
+    '.claude/scripts/stop-flag.mjs',
+    '.claude/rules/autonomy.md',
+    '.codex/hooks.json',
+    '.claude/.rig-manifest.json',
+    'CLAUDE.md',
+    'AGENTS.md',
+  ])('blocks the complete rulebook closure at %s', async (rel) => {
+    await armed([]);
+    const result = await run(write(`${root}/${rel}`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
   it('blocks a hook-config edit with an empty allow-list, naming path, item and the rule', async () => {
     await armed([]);
     const result = await run(write(`${root}/.claude/hooks/dod-checks.json`));
@@ -162,6 +205,13 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
     expect(result.stderr).toContain('AR-51');
     expect(result.stderr).toMatch(/unattended/i);
     expect(result.stderr).toMatch(/allow/i);
+  });
+
+  it('never allows the checkout board selector, even when an item names it', async () => {
+    await armed(['.claude/queue.board']);
+    const result = await run(write(`${root}/.claude/queue.board`, 'RP'));
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/board|selector/i);
   });
 
   it('allows an edit under an allowed prefix', async () => {
@@ -192,6 +242,23 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
 });
 
 describe('guard-rulebook: every edit surface reaches it', () => {
+  it('refuses a MultiEdit beyond the fragment cap instead of missing a guarded tail', async () => {
+    await armed([]);
+    const result = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: `${root}/README.md`,
+        edits: [
+          ...Array.from({ length: 256 }, () => ({ old_string: 'a', new_string: 'b' })),
+          { old_string: 'a', new_string: 'b' },
+        ],
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/cannot safely inspect|inspection limit|more than 256/i);
+  });
+
   it('blocks a MultiEdit to queue.json', async () => {
     await armed([]);
     const result = await run({

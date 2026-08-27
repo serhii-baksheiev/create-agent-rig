@@ -367,7 +367,22 @@ if (invokedDirectly()) {
         if (!Object.keys(raw.boards).includes(args.name)) {
           throw new Error(
             `${JSON.stringify(args.name)} is not a declared board. Declared: ` +
-              `${Object.keys(raw.boards).join(', ')}. Nothing was written.`,
+            `${Object.keys(raw.boards).join(', ')}. Nothing was written.`,
+          );
+        }
+        // Loaded only on the mutation path. `next`, `list` and `hygiene` also
+        // run in partial-install diagnostics where this sibling is deliberately
+        // absent; a static import would replace their own actionable refusal
+        // with ERR_MODULE_NOT_FOUND before the command could start.
+        const { readUnattended } = await import('../unattended-flag.mjs');
+        const unattended = readUnattended({
+          ...process.env,
+          CLAUDE_PROJECT_DIR: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+        });
+        if (unattended.on) {
+          throw new Error(
+            'board switching is refused while this checkout is unattended. ' +
+              'The read-only `board` report remains available; disarm the loop before re-aiming its queue.',
           );
         }
         writeFileSync(boardPathFor(configPath), `${args.name}\n`);

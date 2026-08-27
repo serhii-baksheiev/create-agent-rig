@@ -12,8 +12,9 @@
 // nothing" pins that side of it — and in some harnesses an `export` does not
 // even survive to the next Bash call. The kill switch (`stop-flag.mjs`) is a
 // file for the same reason,
-// and this module copies its shape: machine-level, under BOTH homes, so a
-// worktree sees it and a `$HOME` set from `.claude/settings.json` cannot hide it.
+// and this module copies its two-home lookup. Unlike the machine-wide brake,
+// each unattended record is scoped to the canonical checkout, so concurrent
+// worktrees cannot overwrite or clear one another's authorization.
 //
 // The flag is JSON, `{ item, runDir, allow }`. `allow` is the list of
 // repo-relative prefixes the current item may write under even though they are
@@ -41,8 +42,9 @@
 //
 // Bounded: the file is read up to 64 KiB, `allow` is capped at 64 entries, and
 // both limits are refusals, never silent truncation.
+import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homesOf } from './stop-flag.mjs';
@@ -57,16 +59,20 @@ export const MAX_ALLOW_ENTRIES = 64;
  * writer above, to refuse an allow-list that reaches outside them.
  */
 export const RULEBOOK_PREFIXES = Object.freeze([
+  '.agents/',
+  '.claude/.rig-manifest.json',
+  '.claude/agents/',
   '.claude/hooks/',
   '.claude/settings.json',
   '.claude/queue.json',
   // the per-checkout board selector: picks among the boards queue.json declares,
   // so an unattended run must not be able to re-aim itself through it either
   '.claude/queue.board',
-  '.claude/scripts/queue/',
-  '.claude/scripts/decision-router.mjs',
-  '.claude/scripts/detect-missed-gate.mjs',
+  '.claude/scripts/',
   '.claude/rules/',
+  '.claude/skills/',
+  '.codex/',
+  'AGENTS.md',
   'CLAUDE.md',
 ]);
 
@@ -84,11 +90,37 @@ export const isRulebookPath = (rel) =>
 export const isWidening = (entry) =>
   typeof entry !== 'string' ||
   entry === '' ||
+  entry === '.agents/' ||
+  entry === '.claude/scripts/' ||
+  entry === '.codex/' ||
   RULEBOOK_PREFIXES.some((prefix) => prefix !== entry && prefix.startsWith(entry));
 
-/** Every path that arms unattended mode. The env-derived home is first. */
+const checkoutId = (env) => {
+  const declared = typeof env.CLAUDE_PROJECT_DIR === 'string' ? env.CLAUDE_PROJECT_DIR.trim() : '';
+  if (declared === '') return null;
+  let canonical;
+  try {
+    canonical = realpathSync(declared);
+  } catch {
+    canonical = resolve(declared);
+  }
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+};
+
+const scopedBasename = (env) => {
+  const id = checkoutId(env);
+  return id === null ? FLAG_BASENAME : FLAG_BASENAME.replace('-loop-UNATTENDED', `-${id}-loop-UNATTENDED`);
+};
+
+/** Every checkout-scoped path that arms unattended mode. The env-derived home is first. */
 export const unattendedFlags = (env = process.env) =>
-  homesOf(env).map((home) => join(home, '.claude', FLAG_BASENAME));
+  homesOf(env).map((home) => join(home, '.claude', scopedBasename(env)));
+
+/** Legacy machine-wide candidates are read for upgrade compatibility, never written by scoped runs. */
+const legacyFlags = (env) =>
+  checkoutId(env) === null
+    ? []
+    : homesOf(env).map((home) => join(home, '.claude', FLAG_BASENAME));
 
 const readCapped = (path) => {
   const fd = openSync(path, 'r');
@@ -105,7 +137,7 @@ const unreadable = (path, why) => ({ on: true, unreadable: true, path, why });
 
 /** The mode the flag declares — see the header for the three answers. */
 export const readUnattended = (env = process.env) => {
-  const path = unattendedFlags(env).find((candidate) => {
+  const path = [...unattendedFlags(env), ...legacyFlags(env)].find((candidate) => {
     try {
       return existsSync(candidate);
     } catch {
@@ -174,7 +206,7 @@ export const writeUnattended = ({ item, runDir = null, allow = [] } = {}, env = 
   return [path];
 };
 
-/** Remove every flag that exists. Returns the paths removed. */
+/** Remove only this checkout's flags. Returns the paths removed. */
 export const clearUnattended = (env = process.env) => {
   const removed = [];
   for (const path of unattendedFlags(env)) {
@@ -208,6 +240,10 @@ if (invokedDirectly()) {
     const index = rest.indexOf(flag);
     return index === -1 ? null : (rest[index + 1] ?? null);
   };
+  const root = valueOf('--root');
+  const cliEnv = root && !root.startsWith('--')
+    ? { ...process.env, CLAUDE_PROJECT_DIR: root }
+    : process.env;
   if (word === 'on') {
     const item = valueOf('--item');
     if (!item || item.startsWith('--')) {
@@ -224,7 +260,7 @@ if (invokedDirectly()) {
           });
     let path;
     try {
-      [path] = writeUnattended({ item, runDir: valueOf('--run-dir'), allow });
+      [path] = writeUnattended({ item, runDir: valueOf('--run-dir'), allow }, cliEnv);
     } catch (error) {
       process.stderr.write(`unattended-flag on: ${error?.message ?? error}\n`);
       process.exit(1);
@@ -233,7 +269,7 @@ if (invokedDirectly()) {
     process.exit(0);
   }
   if (word === 'off') {
-    const removed = clearUnattended();
+    const removed = clearUnattended(cliEnv);
     process.stdout.write(removed.length === 0 ? 'no unattended flag was set\n' : `${removed.join('\n')}\n`);
     process.exit(0);
   }

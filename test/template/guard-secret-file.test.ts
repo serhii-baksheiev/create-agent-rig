@@ -68,6 +68,21 @@ const edit = (filePath: string, newString: string) => ({
   tool_input: { file_path: filePath, old_string: 'x', new_string: newString },
 });
 
+const multiEdit = (filePath: string, additions: string[]) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'MultiEdit',
+  tool_input: {
+    file_path: filePath,
+    edits: additions.map((newString) => ({ old_string: 'x', new_string: newString })),
+  },
+});
+
+const notebookEdit = (filePath: string, newSource: string) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'NotebookEdit',
+  tool_input: { notebook_path: filePath, new_source: newSource },
+});
+
 const applyPatch = (filePath: string, addition: string) => ({
   hook_event_name: 'PreToolUse',
   tool_name: 'apply_patch',
@@ -142,6 +157,38 @@ describe('guard-secret-file: a credential value is refused wherever it is being 
   // that only ever looked at `content` would pass every Edit in the session.
   it('blocks an Edit whose new_string carries a credential value', async () => {
     await deny(edit('packages/core/src/thing.ts', `const key = '${GITHUB_PAT}';`), 'Edit');
+  });
+
+  it('blocks a MultiEdit when any new_string carries a credential value', async () => {
+    await deny(
+      multiEdit('packages/core/src/thing.ts', [
+        'export const ordinary = true;',
+        `export const key = '${GITHUB_PAT}';`,
+      ]),
+      'MultiEdit',
+    );
+  });
+
+  it('blocks a NotebookEdit whose new_source carries a credential value', async () => {
+    await deny(
+      notebookEdit('notebooks/incident.ipynb', `const key = '${GITHUB_PAT}';`),
+      'NotebookEdit',
+    );
+  });
+
+  it('refuses a MultiEdit beyond the fragment cap instead of silently dropping the tail', async () => {
+    const additions = Array.from(
+      { length: 256 },
+      (_, index) => `export const n${index} = ${index};`,
+    );
+    additions.push(`export const key = '${GITHUB_PAT}';`);
+
+    const result = await deny(
+      multiEdit('packages/core/src/thing.ts', additions),
+      'MultiEdit over the inspection cap',
+    );
+    expect(result.stderr).toMatch(/cannot safely inspect|inspection limit|more than 256/i);
+    expect(result.stderr).not.toContain(GITHUB_PAT);
   });
 
   it('blocks apply_patch when an added line carries a credential value', async () => {
@@ -352,7 +399,7 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
     expect(mechanicalSentence).toContain('`apply_patch`');
   });
 
-  it('is registered in settings.json under a PreToolUse matcher covering Write and Edit', async () => {
+  it('is registered in settings.json under a PreToolUse matcher covering every edit surface', async () => {
     const settings = JSON.parse(
       await readFile(path.join(universal, '.claude', 'settings.json'), 'utf8'),
     ) as { hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> } };
@@ -366,6 +413,9 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
     const tools = matcher.split('|').map((part) => part.trim());
     expect(tools).toContain('Write');
     expect(tools).toContain('Edit');
+    expect(tools).toContain('MultiEdit');
+    expect(tools).toContain('NotebookEdit');
+    expect(tools).toContain('apply_patch');
   });
 
   it('is classified in layers.json together with the module it imports', async () => {

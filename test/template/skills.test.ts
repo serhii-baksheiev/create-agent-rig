@@ -96,6 +96,19 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
     expect(nine).toMatch(/report,\s+not\s+an\s+edit/i);
   });
 
+  it('states the exact board-switch boundary instead of claiming shell writes are prevented', async () => {
+    const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+    const section =
+      /A config may declare several boards[\s\S]*?(?=\nAdding a fourth)/.exec(content)?.[0] ?? '';
+    expect(section, 'the board selector section must still exist').toBeTruthy();
+    expect(section).toMatch(
+      /board[^\n]{0,80}(refuses|blocks)[^\n]{0,80}unattended|unattended[^\n]{0,80}(refuses|blocks)[^\n]{0,80}board/i,
+    );
+    expect(section).toMatch(
+      /(does not|cannot) prevent[^\n]{0,100}(direct|arbitrary)[^\n]{0,40}shell|direct[^\n]{0,40}shell[^\n]{0,100}(not prevented|still possible)/i,
+    );
+  });
+
   it('the journal has the field that write-back writes to', async () => {
     // A required field with nowhere to land is a rule that decays on contact.
     // AR-64 moved the journal out of PLAN.md into `journal/YYYY-MM.md`, so the
