@@ -1,5 +1,6 @@
 {
   "versions": [
+    "0.2.0",
     "0.3.0",
     "0.3.1",
     "0.3.2",
@@ -7,13 +8,13 @@
   ],
   "files": {
     ".claude/agents/cdk-diff-reviewer.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "2286fbc01c0342b9bac9909890876c079615db5b398e3499a0f2fddb1a334098"
       ]
     },
     ".claude/agents/code-reviewer.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "58969edc0820463298002c618b6ec49913e1cb3aa90dec4aed2aec14c7bcfd3b",
         "be3d2992d1f278dde46b555df1840b02f91403db1ec2fd4d489fb5efa940f019",
@@ -27,31 +28,32 @@
       ]
     },
     ".claude/agents/security-scanner.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "43e5d59315483e369ad19f3070175f146e88deabd3a12dc09339ac4fac0f2aee"
       ]
     },
     ".claude/agents/test-writer.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "333feef12383dea51791ae4923c44ba542438de793f0792fb51d96aa15b8b1b8"
       ]
     },
     ".claude/hooks/block-no-verify.mjs": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
+        "c7c86de47b601dcb594ba8d8e23b5624ef8d47dafeddbc1aadd351c72e051d83",
         "ece5a81db41bd48695a1a009239837b682d247baf6d19214eaa859a7519ab246"
       ]
     },
     ".claude/hooks/dod-checks.json": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "413e59fecca1453e54369b1e302925b4f6843273767ebc33ac311fe825cfc4b2"
       ]
     },
     ".claude/hooks/gate-stop-dod.mjs": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "de1f331eaf93bad6ef0e1734789fd3c4ab07550a85ed2d8ff8888bc6f0bcfb0f",
         "9fb8fad4d95756fb2424a97550aa85dfab0ca8dbcf91e6d0385263ba3b929135"
@@ -64,19 +66,19 @@
       ]
     },
     ".claude/hooks/guard-core-purity.mjs": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "e36fbb92ee8395c6686fef582f29f2701747074b3b781bed42fe068f5c000bd7"
       ]
     },
     ".claude/hooks/guard-web-boundary.mjs": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "93d4fa0fd1c18261cc8ef2b1ae2abe3a0200cc4b5a7b1d1d4ae433ca92c514b1"
       ]
     },
     ".claude/hooks/inject-rules.mjs": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "c472419f1076ea3707d640cd5246c0e69a94c55455f6648e2cbaf300a382c8df"
       ]
@@ -88,20 +90,22 @@
       ]
     },
     ".claude/rules/architecture.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "c63ee846180efcf4bacb4a13ca19bdc043c0885103fcea11f702e0685921facf"
       ]
     },
     ".claude/rules/autonomy.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
+        "c3aa6ea4487adf6d542174f491bf469d8f8563ec7c8c4de63fcd82d6a5ca4fba",
         "ce2104ce697d3e5ed9210e85fe0daeb66b432a36868493f06fec54073a5fff31"
       ]
     },
     ".claude/rules/aws-cdk.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
+        "2fab2b4031bda98f0412fd767615abc8035d142888530756130dd7ef8e94da71",
         "e0a283559710d15035668d8b04e47228fce442ac4e37458caca24b429a65b25e"
       ]
     },
@@ -113,13 +117,13 @@
       ]
     },
     ".claude/rules/node-ts.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "3db68a4280cc30655be56fed9385179c378f560f3df55e21952a24066427e845"
       ]
     },
     ".claude/rules/workflow.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "dbe8025e10583e03fee5056e88aa6b73e4399453711d9156d82528a02d6e0402",
         "9e60d0300e856a9b3f81ab748bf2c0a9de27233ad0aa58a8c7141413fa0f3cae"
@@ -186,8 +190,9 @@
       ]
     },
     ".claude/settings.json": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
+        "48212660b2823725c2c9ee785ad739701e4c0e4733b275201a544df1abba28d0",
         "55a6938b4d9967291a26e93301e34e5ffdef74a88f8c773a4d11b5d87d864fff"
       ]
     },
@@ -198,10 +203,12 @@
       ]
     },
     ".claude/skills/loop/SKILL.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
+        "0b028dcdbdbb4802fcb6c7f944decf68175dbde870ae3cecc9d2e4de5c3678bf",
         "e14318a1bf4cbb19edaaabadcf14482bc70bcdcfdc2057231b15685d149db550",
-        "8f687f92fa60d4cc679fa13bff997cec92227f6bc0b90c1dc5b8a5400f2abef0"
+        "8f687f92fa60d4cc679fa13bff997cec92227f6bc0b90c1dc5b8a5400f2abef0",
+        "e442ca58c4249ac10d5759bba2d8360544642e03b2b158e6253e71f5be3767fb"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -223,13 +230,13 @@
       ]
     },
     ".claude/skills/post-deploy-verify/SKILL.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "321ae18feff82f1f8a64e19a6170056dc9b18a71e6f2a80d46293510b9748a46"
       ]
     },
     ".claude/skills/pr-ship/SKILL.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
         "368a50be809f7be865d6d29ab3e54b9d69acd2ea3ba7929c0edeef161c2521b7",
         "75adb84414a330db621ff4f1363b3926f537133199236a9e25bb9880b935e02e"
@@ -248,16 +255,19 @@
       ]
     },
     "CLAUDE.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
+        "955c7f7952ba63429eaebc58c7d6d0559f56c279ce32076b4ff19bd36389a839",
         "8a4f5fab7cbaf3ba2482035f7ddb3cf6e3a3a3313596d25a856506e970d55db7",
         "a247fdd1d198777f4963da42ccc10dfd9c372f4bb0488d2c0201a49d6bfd1910"
       ]
     },
     "PLAN.md": {
-      "since": "0.3.0",
+      "since": "0.2.0",
       "hashes": [
-        "1691fba2791d7d893e366e4a18bc120d4e4a96213bebbfb2a28881e13de74389"
+        "fe7547b40c1ac0d6e2bcba5bf8ae887a03f338c95454a851475cdee1d2b4db31",
+        "1691fba2791d7d893e366e4a18bc120d4e4a96213bebbfb2a28881e13de74389",
+        "e927216c4f179bc42540544f5c70534ce69110dafc3c6fe9a970ac625ebe4678"
       ]
     }
   }
