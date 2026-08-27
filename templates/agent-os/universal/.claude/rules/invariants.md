@@ -216,12 +216,12 @@ are guessing, and a guessed invariant is the one that will fire on honest work.
 
 ## About the hooks you were given
 
-Generator-authored rulebook artifacts — rules, hooks and skills — arrive with
-their tests **in the generator that produced this project**, not in this
-repository. There is one narrow inherited-snapshot exception: such an artifact
-may cite the generator's upstream tests, which are absent locally, only when the
-pointer says they are absent and `.claude/.rig-manifest.json` proves the current
-artifact's hash matches the installed manifest.
+Generator-authored rulebook artifacts — rules, hooks, skills, scripts and agent
+specs — arrive with their tests **in the generator that produced this project**,
+not in this repository. There is one narrow inherited-snapshot exception: such
+an artifact may cite the generator's upstream tests, which are absent locally,
+only when the pointer says they are absent and `.claude/.rig-manifest.json`
+proves the current artifact's hash matches the installed manifest.
 
 A manifest-backed upgrade remains an inherited, generator-owned artifact even
 though the upgrade diff changes its bytes. The exception applies **only while the

@@ -22,7 +22,9 @@
 // so plainly where none does — a limits comment nothing checks drifts into
 // overstatement, which is the direction that gets a reader hurt. ⚠ Those tests live in the GENERATOR this rig came from, not here;
 // `.claude/rules/invariants.md` ("About the hooks you were given") says the same
-// of this hook's own tests, and the moment you edit it they are yours.
+// of this hook's own tests. A manifest-backed generator upgrade remains inherited
+// while `.claude/.rig-manifest.json` matches; once the hash differs, the local test
+// is yours.
 //
 // There are FOUR:
 //

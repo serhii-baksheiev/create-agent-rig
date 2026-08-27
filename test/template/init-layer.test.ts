@@ -127,6 +127,19 @@ describe('the init layer installs a rig with no dangling references', () => {
     expect(offences).toEqual([]);
   });
 
+  it.each([
+    '.claude/hooks/guard-secret-file.mjs',
+    '.claude/scripts/lib/secrets.mjs',
+    '.claude/scripts/doctor.mjs',
+  ])('%s keeps downstream test ownership conditional on manifest evidence', async (rel) => {
+    const content = (await installed()).get(rel);
+    expect(content, `${rel} must be installed`).toBeDefined();
+    expect(content).not.toMatch(
+      /the moment (?:you edit|one is edited)[^.]{0,100}(?:(?:its )?tests?|they)\s+(?:is|are)\s+(?:yours|the rig's own)/i,
+    );
+    expect(content).toMatch(/\.claude\/\.rig-manifest\.json|\.claude\/rules\/invariants\.md/);
+  });
+
   it('substitutes every token — a token in a filename is a dead kill switch', async () => {
     for (const [rel, content] of await installed()) {
       expect(content, rel).not.toContain('__PROJECT_NAME__');
