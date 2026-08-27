@@ -746,9 +746,12 @@ node .claude/scripts/unattended-flag.mjs off --root "$PWD"
 
 If that command reports a legacy machine-wide flag, it deliberately leaves a
 foreign pre-upgrade authorization in place and the checkout stays fail-closed.
-Confirm that no pre-upgrade run still uses the record, then remove it explicitly
-with `node .claude/scripts/unattended-flag.mjs off --legacy`; do not record the
-flag as off until one of those cleanup paths succeeds.
+Inspect the exact reported record and confirm that no pre-upgrade run still uses
+it, then remove only that record with
+`node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>`.
+Run scoped `off --root "$PWD"` again to surface the next record, and repeat the
+inspection one at a time; do not record the flag as off until the scoped command
+succeeds.
 
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an

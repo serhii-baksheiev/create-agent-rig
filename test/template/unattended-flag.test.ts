@@ -112,6 +112,36 @@ describe('unattendedFlags: the same two-home rule as the kill switch', () => {
 describe('readUnattended: what the flag file says, or that it cannot be read', () => {
   const env = () => ({ ...process.env, HOME: home });
 
+  it('fails closed when mirrored checkout-scoped candidates disagree', async (context) => {
+    const checkout = path.join(home, 'mirrored-checkout');
+    await mkdir(checkout, { recursive: true });
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    const { unattendedFlags, readUnattended } = await load();
+    const candidates = [...new Set(unattendedFlags(scopedEnv))];
+    if (candidates.length < 2) {
+      context.skip();
+      return;
+    }
+
+    try {
+      await Promise.all(
+        candidates.map((candidate) => mkdir(path.dirname(candidate), { recursive: true })),
+      );
+      await writeFile(
+        candidates[0]!,
+        JSON.stringify({ item: 'AR-FIRST', runDir: '/runs/first', allow: ['src/first/'] }),
+      );
+      await writeFile(
+        candidates[1]!,
+        JSON.stringify({ item: 'AR-SECOND', runDir: '/runs/second', allow: ['src/second/'] }),
+      );
+
+      expect(readUnattended(scopedEnv)).toMatchObject({ on: true, unreadable: true });
+    } finally {
+      await Promise.all(candidates.map((candidate) => rm(candidate, { force: true })));
+    }
+  });
+
   it('is off when no candidate exists', async () => {
     const { readUnattended } = await load();
     expect(readUnattended(env())).toEqual({ on: false });
@@ -292,19 +322,24 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
 });
 
 describe('the CLI the loop skill calls', () => {
-  it('refuses scoped off while a foreign legacy record remains, then removes it only explicitly', async () => {
-    const checkout = path.join(home, 'new-checkout');
-    await mkdir(checkout, { recursive: true });
-    await arm(JSON.stringify({ item: 'OLD-FOREIGN', runDir: '/runs/foreign', allow: [] }));
+  it('removes only the explicitly selected legacy record and leaves another home untouched', async () => {
+    const selectedHome = await mkdtemp(path.join(tmpdir(), 'ar51-selected-home-'));
+    try {
+      const selected = path.join(selectedHome, '.claude', FLAG_NAME);
+      await mkdir(path.dirname(selected), { recursive: true });
+      await writeFile(
+        selected,
+        JSON.stringify({ item: 'OLD-SELECTED', runDir: '/runs/a', allow: [] }),
+      );
+      await arm(JSON.stringify({ item: 'OLD-UNRELATED', runDir: '/runs/b', allow: [] }));
 
-    const scoped = await runCli(['off', '--root', checkout], home);
-    expect(scoped.code).toBe(1);
-    expect(scoped.stderr).toMatch(/legacy|migrat/i);
-    expect(existsSync(flagPath())).toBe(true);
-
-    const legacy = await runCli(['off', '--legacy'], home);
-    expect(legacy.code, legacy.stderr).toBe(0);
-    expect(existsSync(flagPath())).toBe(false);
+      const legacy = await runCli(['off', '--legacy', '--path', selected], home);
+      expect(legacy.code, legacy.stderr).toBe(0);
+      expect(existsSync(selected)).toBe(false);
+      expect(existsSync(flagPath())).toBe(true);
+    } finally {
+      await rm(selectedHome, { recursive: true, force: true });
+    }
   });
 
   it('scopes on/off to --root so concurrent checkout CLIs do not share a flag', async () => {

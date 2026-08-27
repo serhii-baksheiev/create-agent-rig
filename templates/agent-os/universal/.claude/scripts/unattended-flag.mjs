@@ -5,7 +5,7 @@
 //
 //   node .claude/scripts/unattended-flag.mjs on --root <checkout> --item AR-51 --run-dir <dir> --allow <prefix> [<prefix>…]
 //   node .claude/scripts/unattended-flag.mjs off --root <checkout>
-//   node .claude/scripts/unattended-flag.mjs off --legacy  # explicit migration cleanup
+//   node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>
 //
 // It is a FILE, not an environment variable: a `PreToolUse` hook is spawned by
 // the harness with the harness's own environment, never with a variable the
@@ -46,7 +46,7 @@
 // both limits are refusals, never silent truncation.
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homesOf } from './stop-flag.mjs';
@@ -140,14 +140,32 @@ const unreadable = (path, why) => ({ on: true, unreadable: true, path, why });
 
 /** The mode the flag declares — see the header for the three answers. */
 export const readUnattended = (env = process.env) => {
-  let path = unattendedFlags(env).find((candidate) => {
+  const scoped = checkoutId(env) !== null;
+  const present = unattendedFlags(env).filter((candidate) => {
     try {
       return existsSync(candidate);
     } catch {
       return false;
     }
   });
-  if (!path && checkoutId(env) !== null) {
+  let path = present[0];
+  let mirroredRaw = null;
+  if (scoped && present.length > 1) {
+    const mirrors = [];
+    for (const candidate of present) {
+      try {
+        mirrors.push({ path: candidate, raw: readCapped(candidate) });
+      } catch (error) {
+        return unreadable(candidate, `cannot be read: ${error?.code ?? 'read failed'}`);
+      }
+    }
+    const first = mirrors[0];
+    if (mirrors.some(({ raw }) => raw.bytes !== first.raw.bytes || raw.text !== first.raw.text)) {
+      return unreadable(first.path, 'mirrored checkout-scoped unattended flags disagree');
+    }
+    mirroredRaw = first.raw;
+  }
+  if (!path && scoped) {
     path = legacyFlags(env).find((candidate) => {
       try {
         return existsSync(candidate);
@@ -163,11 +181,13 @@ export const readUnattended = (env = process.env) => {
     }
   }
   if (!path) return { on: false };
-  let raw;
-  try {
-    raw = readCapped(path);
-  } catch (error) {
-    return unreadable(path, `cannot be read: ${error?.code ?? 'read failed'}`);
+  let raw = mirroredRaw;
+  if (raw === null) {
+    try {
+      raw = readCapped(path);
+    } catch (error) {
+      return unreadable(path, `cannot be read: ${error?.code ?? 'read failed'}`);
+    }
   }
   if (raw.bytes > MAX_FLAG_BYTES) return unreadable(path, `larger than ${MAX_FLAG_BYTES} bytes`);
   let parsed;
@@ -201,7 +221,12 @@ export const readUnattended = (env = process.env) => {
   };
 };
 
-/** Write the flag under the env-derived home. Returns the paths written. */
+/**
+ * Write the flag. Scoped records are mirrored into both trusted homes, with the
+ * password-database home first, so a caller whose HOME differs still observes
+ * the target checkout's state. An unscoped legacy-compatible write keeps the
+ * historical first-home behaviour.
+ */
 export const writeUnattended = ({ item, runDir = null, allow = [] } = {}, env = process.env) => {
   if (typeof item !== 'string' || item.trim() === '') {
     throw new Error('the unattended flag needs an item id — a run without an item has nothing to allow');
@@ -218,10 +243,27 @@ export const writeUnattended = ({ item, runDir = null, allow = [] } = {}, env = 
         '(`.claude/hooks/`, not `.claude/hooks`).',
     );
   }
-  const [path] = unattendedFlags(env);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify({ item: item.trim(), runDir, allow: list }, null, 2)}\n`);
-  return [path];
+  const candidates = unattendedFlags(env);
+  const targets = checkoutId(env) === null ? candidates.slice(0, 1) : [...candidates].reverse();
+  const written = [];
+  const content = `${JSON.stringify({ item: item.trim(), runDir, allow: list }, null, 2)}\n`;
+  try {
+    for (const path of targets) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content);
+      written.push(path);
+    }
+  } catch (error) {
+    for (const path of written) {
+      try {
+        rmSync(path);
+      } catch {
+        // best-effort rollback; a surviving record keeps readers fail-closed
+      }
+    }
+    throw error;
+  }
+  return written;
 };
 
 const pathBelongsToCheckout = (candidate, checkout) => {
@@ -270,20 +312,18 @@ export const clearUnattended = (env = process.env) => {
   return removed;
 };
 
-/** Explicit operator migration: remove machine-wide records from both homes. */
-export const clearLegacyUnattended = (env = process.env) => {
-  const removed = [];
-  for (const path of legacyFlags(env)) {
-    try {
-      if (existsSync(path)) {
-        rmSync(path);
-        removed.push(path);
-      }
-    } catch {
-      // a home this process cannot write is reported by the remaining read
-    }
+/** Explicit operator migration: remove exactly the inspected legacy record. */
+export const clearLegacyUnattended = (selectedPath) => {
+  if (typeof selectedPath !== 'string' || selectedPath.trim() === '') {
+    throw new Error('off --legacy requires --path <reported-path>');
   }
-  return removed;
+  const path = resolve(selectedPath);
+  if (basename(path) !== FLAG_BASENAME || basename(dirname(path)) !== '.claude') {
+    throw new Error(`refusing legacy cleanup outside .claude/${FLAG_BASENAME}`);
+  }
+  if (!existsSync(path)) return [];
+  rmSync(path);
+  return [path];
 };
 
 const invokedDirectly = () => {
@@ -334,13 +374,19 @@ if (invokedDirectly()) {
   }
   if (word === 'off') {
     const legacy = rest.includes('--legacy');
-    const removed = legacy ? clearLegacyUnattended(cliEnv) : clearUnattended(cliEnv);
+    let removed;
+    try {
+      removed = legacy ? clearLegacyUnattended(valueOf('--path')) : clearUnattended(cliEnv);
+    } catch (error) {
+      process.stderr.write(`unattended-flag off: ${error?.message ?? error}\n`);
+      process.exit(1);
+    }
     if (!legacy && root) {
       const remaining = readUnattended(cliEnv);
       if (remaining.on && remaining.unreadable && /legacy/i.test(remaining.why ?? '')) {
         process.stderr.write(
           `unattended-flag off: ${remaining.why} at ${remaining.path}. ` +
-            'Confirm no pre-upgrade run still uses it, then run `off --legacy`.\n',
+            'Inspect that exact record; if no pre-upgrade run still uses it, remove it with `off --legacy --path <reported-path>`.\n',
         );
         process.exit(1);
       }

@@ -172,6 +172,33 @@ describe('boards in queue.json', () => {
     clearUnattended(targetEnv);
   });
 
+  it('discovers the target checkout flag even when its state home differs from the caller home', async () => {
+    const { boardPathFor } = await indexModule();
+    const { writeUnattended, clearUnattended } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const caller = await mkdtemp(path.join(tmpdir(), 'queue-board-caller-'));
+    const target = await mkdtemp(path.join(tmpdir(), 'queue-board-target-'));
+    const targetConfigDir = path.join(target, '.claude');
+    const configPath = path.join(targetConfigDir, 'queue.json');
+    const callerHome = await mkdtemp(path.join(tmpdir(), 'queue-board-caller-home-'));
+    const targetHome = await mkdtemp(path.join(tmpdir(), 'queue-board-target-home-'));
+    await mkdir(targetConfigDir, { recursive: true });
+    await writeFile(configPath, JSON.stringify(BOARDS));
+    const targetEnv = { HOME: targetHome, CLAUDE_PROJECT_DIR: target };
+    writeUnattended({ item: 'AR-TARGET-HOME', runDir: '/runs/target', allow: [] }, targetEnv);
+
+    const switched = await runCli(['board', 'RP', '--config', configPath], caller, {
+      HOME: callerHome,
+      CLAUDE_PROJECT_DIR: caller,
+    });
+    expect(switched.code, switched.out).not.toBe(0);
+    expect(switched.out).toMatch(/unattended/i);
+    await expect(readFile(boardPathFor(configPath), 'utf8')).rejects.toThrow();
+
+    clearUnattended(targetEnv);
+  });
+
   it('refuses a cross-checkout switch when the calling checkout is unattended', async () => {
     const { writeUnattended, clearUnattended } = await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
