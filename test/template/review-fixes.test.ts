@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stubCommand } from '../helpers/stub-command.js';
 
 // Regression tests for the blocking findings of the code-review pass over the
 // extraction stack. Each `describe` names the defect it pins, because a
@@ -164,11 +165,12 @@ describe('github-issues: a write operation does not throw on success', () => {
   it('claim/close/comment/escalate succeed against realistic gh output', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'ghstub-'));
     // A stub `gh` that prints what the real one prints: plain text, not JSON.
-    const stub = path.join(dir, 'gh');
-    await writeFile(
-      stub,
-      '#!/bin/sh\ncase "$*" in\n  *"--json"*) echo "[]" ;;\n  *close*) echo "✓ Closed issue #12" ;;\n  *) echo "https://github.com/o/r/issues/12" ;;\nesac\n',
-      { mode: 0o755 },
+    const stub = await stubCommand(
+      'gh',
+      `const line = args.join(' ');
+       if (line.includes('--json')) return { stdout: '[]\\n' };
+       if (line.includes('close')) return { stdout: '\\u2713 Closed issue #12\\n' };
+       return { stdout: 'https://github.com/o/r/issues/12\\n' };`,
     );
     const probe = path.join(dir, 'probe.mjs');
     await writeFile(
@@ -192,6 +194,7 @@ describe('github-issues: a write operation does not throw on success', () => {
         (_e, stdout, stderr) => resolve({ out: stdout + stderr }),
       );
     });
+    stub.restore();
     const parsed = JSON.parse(result.out) as Record<string, string>;
     expect(parsed).toEqual({ claim: 'ok', comment: 'ok', escalate: 'ok', close: 'ok' });
   });

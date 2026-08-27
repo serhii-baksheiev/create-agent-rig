@@ -13,7 +13,8 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { modeBitsDeny, skipUnless } from '../helpers/env.js';
 
 // AR3-4: the run journal — the machine-readable trace BEHIND the human journal
 // in `journal/YYYY-MM.md`, not a replacement for it. The two are opposites and
@@ -1037,6 +1038,8 @@ describe('an unusable journal does not take the queue selection with it', () => 
 // the append can fail. Under a uid that ignores permissions there is nothing to
 // measure, so the case says so instead of passing on a check it never made.
 describe('a journal that cannot be written to loses the trace, not the work', () => {
+  beforeEach((ctx) => skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason));
+
   const rootless = process.getuid === undefined || process.getuid() !== 0;
 
   it.runIf(rootless)('refuses as an exhausted trace when the append cannot land', async () => {

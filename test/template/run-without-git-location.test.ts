@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const runner = path.join(repoRoot, 'scripts', 'run-without-git-location.mjs');
@@ -45,16 +46,17 @@ describe('scripts/run-without-git-location.mjs', () => {
 
   // The shim branch exists for pnpm.cmd on Windows and is measured only there:
   // a `.cmd` on PATH runs, and an argument the shell would re-parse is refused.
-  it.skipIf(process.platform !== 'win32')('runs a .cmd shim on Windows', async () => {
+  it('runs a .cmd shim on Windows', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
     const dir = await mkdtemp(path.join(tmpdir(), 'shim-'));
     await writeFile(path.join(dir, 'hello.cmd'), '@echo off\r\nexit /b 0\r\n');
     const result = run(['hello'], { ...hookEnv, PATH: `${dir};${process.env.PATH ?? ''}` });
     expect(result.status, result.stderr).toBe(0);
   });
 
-  it.skipIf(process.platform !== 'win32')(
-    'refuses an argument a shell would re-parse when the command is a shim',
-    async () => {
+  it('refuses an argument a shell would re-parse when the command is a shim', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    {
       const dir = await mkdtemp(path.join(tmpdir(), 'shim-'));
       await writeFile(path.join(dir, 'hello.cmd'), '@echo off\r\nexit /b 0\r\n');
       const result = run(['hello', 'a b'], {
@@ -63,8 +65,8 @@ describe('scripts/run-without-git-location.mjs', () => {
       });
       expect(result.status).toBe(2);
       expect(result.stderr).toMatch(/no quoting is attempted/);
-    },
-  );
+    }
+  });
 
   it('never uses a shell for a command that is an executable, on any platform', async () => {
     const { resolvesToShim } = (await import(pathToFileURL(runner).href)) as {

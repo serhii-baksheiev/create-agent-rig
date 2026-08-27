@@ -68,41 +68,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # AR-93 removes this measured compatibility list. Keep every temporary
-      # exclusion explicit so a newly failing file cannot disappear silently.
-      - name: Run unit tests with named Windows exclusions
-        run: >-
-          pnpm test:unit
-          --testTimeout=15000
-          --exclude packages/cli/test/copy-tree.test.ts
-          --exclude packages/cli/test/create.test.ts
-          --exclude packages/cli/test/init.test.ts
-          --exclude test/template/agents.test.ts
-          --exclude test/template/aws-extras.test.ts
-          --exclude test/template/close-transitioned.test.ts
-          --exclude test/template/codex.test.ts
-          --exclude test/template/correspondence.test.ts
-          --exclude test/template/decision-router.test.ts
-          --exclude test/template/dogfood.test.ts
-          --exclude test/template/gate-rounds.test.ts
-          --exclude test/template/gate-scripts.test.ts
-          --exclude test/template/git-env.test.ts
-          --exclude test/template/guard-hardening.test.ts
-          --exclude test/template/guard-secret-file.test.ts
-          --exclude test/template/hooks.test.ts
-          --exclude test/template/invariants.test.ts
-          --exclude test/template/packaging.test.ts
-          --exclude test/template/queue-jira.test.ts
-          --exclude test/template/queue-revalidation.test.ts
-          --exclude test/template/queue.test.ts
-          --exclude test/template/revalidate.test.ts
-          --exclude test/template/revalidation-baseline.test.ts
-          --exclude test/template/revalidation-evidence.test.ts
-          --exclude test/template/review-fixes.test.ts
-          --exclude test/template/rig-run-dir-scrub.test.ts
-          --exclude test/template/root-ci.test.ts
-          --exclude test/template/run-journal.test.ts
-          --exclude test/template/secrets-lib.test.ts
-          --exclude test/template/self-inflicted-marker.test.ts
-          --exclude test/template/skills.test.ts
-          --exclude test/template/validate-no-secrets.test.ts
+      # The whole unit suite, no exclusions (AR-93). A capability genuinely
+      # absent on Windows skips through a helper that names the reason, and
+      # test/template/platform-skips.test.ts counts those sites and refuses a
+      # skipIf/runIf keyed on process.platform that bypasses them.
+      - name: Run the unit suite on Windows
+        run: pnpm test:unit --testTimeout=15000

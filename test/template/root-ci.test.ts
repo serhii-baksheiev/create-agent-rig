@@ -20,47 +20,6 @@ const runCommands = (yaml: string): string[] =>
 
 const commandText = (yaml: string): string => yaml.replace(/\r?\n\s*/g, ' ');
 
-const WINDOWS_INCOMPATIBLE_TESTS = [
-  'packages/cli/test/copy-tree.test.ts',
-  'packages/cli/test/create.test.ts',
-  'packages/cli/test/init.test.ts',
-  'test/template/agents.test.ts',
-  'test/template/aws-extras.test.ts',
-  'test/template/close-transitioned.test.ts',
-  'test/template/codex.test.ts',
-  'test/template/correspondence.test.ts',
-  'test/template/decision-router.test.ts',
-  'test/template/dogfood.test.ts',
-  'test/template/gate-rounds.test.ts',
-  'test/template/gate-scripts.test.ts',
-  'test/template/git-env.test.ts',
-  'test/template/guard-hardening.test.ts',
-  'test/template/guard-secret-file.test.ts',
-  'test/template/hooks.test.ts',
-  'test/template/invariants.test.ts',
-  'test/template/packaging.test.ts',
-  'test/template/queue-jira.test.ts',
-  'test/template/queue-revalidation.test.ts',
-  'test/template/queue.test.ts',
-  'test/template/revalidate.test.ts',
-  // AR-138: a `gh` stub on PATH is a `#!/bin/sh` script, which Windows does
-  // not execute, so the real `gh` runs and refuses without a token.
-  'test/template/revalidation-baseline.test.ts',
-  'test/template/revalidation-evidence.test.ts',
-  'test/template/review-fixes.test.ts',
-  // AR-139: loads preflight.mjs, which every other importer of it already keeps
-  // off this lane (it does not parse there — AR-93's debt, not this test's).
-  'test/template/rig-run-dir-scrub.test.ts',
-  'test/template/root-ci.test.ts',
-  'test/template/run-journal.test.ts',
-  'test/template/secrets-lib.test.ts',
-  // AR-140: a `gh` stub on PATH is a `#!/bin/sh` script, which Windows does
-  // not execute (as AR-138's twin).
-  'test/template/self-inflicted-marker.test.ts',
-  'test/template/skills.test.ts',
-  'test/template/validate-no-secrets.test.ts',
-] as const;
-
 const expensiveWorkflow = async (): Promise<string> => {
   const names = (await readdir(workflowsDir)).filter((name) => /\.ya?ml$/.test(name));
   const candidates: string[] = [];
@@ -120,12 +79,12 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
     expect(commandText(windowsJobs[0] ?? '')).toMatch(/\bpnpm test:unit\b/);
   });
 
-  it('names every temporary Windows exclusion individually', async () => {
+  it('runs the whole unit suite on Windows, with no file excluded by name', async () => {
+    // AR-93: the exclusion list is gone. A capability genuinely absent there
+    // skips with its reason and is counted in platform-skips.test.ts; a
+    // `--exclude` reappearing here would be a red file hidden, not a fix.
     const windows = job(await workflow('ci.yml'), 'windows-unit');
-    const exclusions = [...commandText(windows).matchAll(/--exclude(?:=|\s+)["']?([^\s"']+)/g)]
-      .map((match) => match[1] ?? '')
-      .sort();
-    expect(exclusions).toEqual([...WINDOWS_INCOMPATIBLE_TESTS].sort());
+    expect(commandText(windows)).not.toMatch(/--exclude/);
   });
 });
 

@@ -35,6 +35,20 @@ describe('line-ending attributes (.gitattributes)', () => {
     expectPinnedToLf('.claude/hooks/guard-bash.mjs');
   });
 
+  it('pins every text file to LF, so a rule file or a fixture is never CRLF on Windows', (ctx) => {
+    // AR-93: 79 windows-latest failures, most of them a `\r\n` in a .md or .json
+    // the test compared against `\n`. `text=auto` is what leaves binaries alone.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
+    for (const file of ['CLAUDE.md', '.claude/rules/workflow.md', 'package.json']) {
+      const out = checkAttr(file);
+      expect(out, `expected ${file} to carry eol=lf, got:\n${out}`).toContain(`${file}: eol: lf`);
+      // `text=auto` is deliberate here: git decides binary vs text per file.
+      expect(out).toMatch(
+        new RegExp(`${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: text: (auto|set)`),
+      );
+    }
+  });
+
   it('pins the template hooks the same way', () => {
     expectPinnedToLf('templates/agent-os/universal/.claude/hooks/guard-bash.mjs');
     // `demo.sh` is tracked; naming it keeps this half from silently not running.

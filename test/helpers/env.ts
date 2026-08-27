@@ -72,3 +72,47 @@ export const needsGitRoot = (repoRoot: string): { ok: boolean; reason: string } 
   ok: hasGitRepo(repoRoot),
   reason: `no git repository at ${repoRoot}: the apply_patch guard resolves the root with git rev-parse, and its move and path inspection refuses without one — this case would pass vacuously`,
 });
+
+/**
+ * Can a mode bit deny this process? Not as root (modes are ignored) and not
+ * on Windows (chmod is a no-op for directories and there is no execute bit),
+ * so a test that needs an EACCES, or an executable bit that survives a copy,
+ * names this as its reason — a capability genuinely absent there, counted
+ * rather than silently green.
+ */
+export const modeBitsDeny = (): { ok: boolean; reason: string } => ({
+  ok: !isRoot() && process.platform !== 'win32',
+  reason:
+    process.platform === 'win32'
+      ? 'on Windows a chmod mode bit denies nothing and there is no execute bit, so the refusal the test needs never happens'
+      : 'running as root: a chmod mode bit does not deny root, so the EACCES the test needs never happens',
+});
+
+/**
+ * Can this process create a symlink? On Windows that needs a privilege an
+ * ordinary CI account does not have, so a fixture built on one fails for a
+ * reason that has nothing to do with the code under test.
+ */
+export const symlinksAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason:
+    'on Windows creating a symlink needs a privilege an ordinary CI account lacks; the fixture cannot be built',
+});
+
+/** The opposite direction: a branch that exists only on Windows (a `.cmd` shim). */
+export const onlyOnWindows = (): { ok: boolean; reason: string } => ({
+  ok: process.platform === 'win32',
+  reason: 'this branch exists only on Windows (a .cmd shim); there is nothing to measure elsewhere',
+});
+
+/** Do mode bits exist at all here? Windows has none; root sees them, so this is not `modeBitsDeny`. */
+export const modeBitsExist = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason: 'on Windows a file has no POSIX mode bits to read',
+});
+
+/** Can a FIFO be created here? `mkfifo` has no Windows counterpart. */
+export const fifosAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason: 'on Windows there is no mkfifo; the FIFO fixture cannot be built',
+});

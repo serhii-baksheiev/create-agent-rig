@@ -15,7 +15,9 @@ afterEach(async () => {
   await rm(work, { recursive: true, force: true });
 });
 
-describe('createProject', () => {
+// 60 s: each case copies a whole template tree; measured on windows-latest at
+// 6.8 s (9c0eb9c), 10.6 s (fc344a1) and past the 15 s default (48b35fa) — AR-93.
+describe('createProject', { timeout: 60_000 }, () => {
   it('generates the default target into the given directory', async () => {
     const { projectDir } = await createProject('my-app', { cwd: work });
     expect(projectDir).toBe(path.join(work, 'my-app'));

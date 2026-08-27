@@ -5,7 +5,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TestContext } from 'vitest';
-import { hasGitRepo, isRoot, needsGit, needsNonRoot, skipUnless } from '../helpers/env.js';
+import {
+  hasGitRepo,
+  isRoot,
+  modeBitsDeny,
+  needsGit,
+  needsNonRoot,
+  skipUnless,
+} from '../helpers/env.js';
 
 // AR-107: a test that cannot run in this environment says so, by name, instead
 // of failing on a symptom (a missing .git, an EACCES root never sees). These
@@ -71,5 +78,11 @@ describe('test/helpers/env', () => {
     const nonRoot = needsNonRoot();
     expect(nonRoot.ok).toBe(!isRoot());
     expect(nonRoot.reason).toMatch(/root/);
+  });
+
+  it('modeBitsDeny is false as root and on Windows, and names which', () => {
+    const { ok, reason } = modeBitsDeny();
+    expect(ok).toBe(!isRoot() && process.platform !== 'win32');
+    expect(reason).toMatch(process.platform === 'win32' ? /Windows/ : /root/);
   });
 });
