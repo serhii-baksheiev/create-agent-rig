@@ -107,7 +107,13 @@ export const toTicket = (issue) => {
     tier: labels.includes('elevated') ? 'elevated' : 'normal',
     blockedBy,
     blocks,
-    priority: PRIORITY[String(fields.priority?.name ?? '').toLowerCase()] ?? 999,
+    // English names first; a localised board ("Höchste", "Mittel") falls back
+    // to the numeric priority id, which Jira orders the same way. Neither → 999.
+    priority:
+      PRIORITY[String(fields.priority?.name ?? '').toLowerCase()] ??
+      (Number.isFinite(Number(fields.priority?.id)) && Number(fields.priority?.id) > 0
+        ? Number(fields.priority?.id)
+        : 999),
     createdAt: toIso(fields.created),
     // The take-up marker for revalidation at SELECT (`core.mjs` › revalidationOf):
     // the tracker's own last-modified field. That it moves on every status
@@ -251,23 +257,80 @@ export const requireCredentials = (env = process.env) => {
   return { baseUrl, email: env.JIRA_EMAIL, token: env.JIRA_API_TOKEN };
 };
 
-const request = async (route, { method = 'GET', body = null, env = process.env } = {}) => {
+/** Statuses worth one more try: rate-limited, or a gateway that will be back. */
+const TRANSIENT = new Set([429, 502, 503, 504]);
+const MAX_ATTEMPTS = 4;
+const DEFAULT_TIMEOUT_MS = 20_000;
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The wait before the next attempt: `Retry-After` in seconds when the server
+ * names one, otherwise 500 ms doubling per attempt. Bounded by the attempt cap.
+ */
+const retryDelayMs = (response, attempt) => {
+  const header = Number(response?.headers?.get?.('Retry-After'));
+  if (Number.isFinite(header) && header > 0) return header * 1000;
+  return 500 * 2 ** (attempt - 1);
+};
+
+/**
+ * One HTTP call to Jira, with the three things AR-54 added to it:
+ *
+ * - a timeout (`timeoutMs`, default 20 s) through an AbortController — a stalled
+ *   connection used to block selection forever, and a loop that cannot read its
+ *   queue must stop, not hang;
+ * - a retry on 429/502/503/504, at most `MAX_ATTEMPTS`, honouring `Retry-After`;
+ *   401/403/404 and every other status fail at once — a bad credential is not
+ *   transient, and retrying it only delays the diagnosis;
+ * - `retry.sleep` injectable, so a test measures the delay it would have waited
+ *   instead of waiting it.
+ *
+ * Pinned in the generator's `test/template/queue-jira.test.ts` (absent in a
+ * generated rig) › "hands fetch an AbortSignal", › "rejects naming the timeout
+ * and the route when fetch never resolves", › "a 429 followed by a 200 yields
+ * the 200 body", › "sleeps for the Retry-After the 429 carried, in
+ * milliseconds", › "gives up after four consecutive 503s, naming the status and
+ * the attempts" and › "does not retry a 401 — a bad credential is not transient".
+ */
+const request = async (
+  route,
+  { method = 'GET', body = null, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, retry = {} } = {},
+) => {
   const { baseUrl, email, token } = requireCredentials(env);
-  const response = await fetch(`${baseUrl}${route}`, {
-    method,
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`,
-      Accept: 'application/json',
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  if (!response.ok) {
+  const sleep = retry.sleep ?? defaultSleep;
+  for (let attempt = 1; ; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetch(`${baseUrl}${route}`, {
+        method,
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`,
+          Accept: 'application/json',
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error?.name === 'AbortError' || controller.signal.aborted) {
+        throw new Error(`jira ${method} ${route} timed out after ${timeoutMs} ms`, { cause: error });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (response.ok) return response.status === 204 ? null : response.json();
+    if (TRANSIENT.has(response.status) && attempt < MAX_ATTEMPTS) {
+      await sleep(retryDelayMs(response, attempt));
+      continue;
+    }
     // The status alone; never echo the response body, which can carry the token
     // back in an error envelope.
-    throw new Error(`jira ${method} ${route} failed: ${response.status} ${response.statusText}`);
+    const attempts = TRANSIENT.has(response.status) ? ` after ${attempt} attempts` : '';
+    throw new Error(`jira ${method} ${route} failed: ${response.status} ${response.statusText}${attempts}`);
   }
-  return response.status === 204 ? null : response.json();
 };
 
 // `description` is requested because the triage dedupe matches the fingerprint
@@ -328,18 +391,52 @@ export const listEligible = async ({
  * path and not the auth. Both searching call sites (`listEligible` and the
  * `proposeTriage` dedupe) come through here, which is why one fix covers both.
  *
- * Not handled here on purpose: the response also carries `nextPageToken` for
- * cursor pagination, so a board with more open issues than `limit` still loses
- * its tail — as does a retry policy and a request timeout. Those belong together
- * in one change; half a pagination interface with nothing testing it is worse
- * than none.
+ * Pages through `nextPageToken` until the server sends none, or `hardCap`
+ * issues (default 1000) are in hand — the cap is announced on stderr, never
+ * silent, because a board whose tail is dropped is exactly the board the loop
+ * would otherwise believe it had read. `timeoutMs` and `retry` travel down to
+ * every page. Pinned in the generator's `test/template/queue-jira.test.ts`
+ * (absent in a generated rig) › "returns both pages as one list", › "sends the
+ * token from page 1 in the body of the request for page 2" and › "stops at
+ * hardCap and says on stderr that the list was capped".
  */
-export const search = async ({ project = null, jql = null, limit = 100, env = process.env } = {}) =>
-  request('/rest/api/3/search/jql', {
-    method: 'POST',
-    body: { jql: buildJql({ project, jql }), maxResults: limit, fields: FIELDS },
-    env,
-  });
+export const search = async ({
+  project = null,
+  jql = null,
+  limit = 100,
+  env = process.env,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  retry = {},
+  hardCap = 1000,
+} = {}) => {
+  const query = buildJql({ project, jql });
+  const issues = [];
+  let nextPageToken = null;
+  do {
+    const page = await request('/rest/api/3/search/jql', {
+      method: 'POST',
+      body: {
+        jql: query,
+        maxResults: limit,
+        fields: FIELDS,
+        ...(nextPageToken ? { nextPageToken } : {}),
+      },
+      env,
+      timeoutMs,
+      retry,
+    });
+    issues.push(...(page?.issues ?? []).slice(0, Math.max(0, hardCap - issues.length)));
+    nextPageToken = page?.isLast === true ? null : (page?.nextPageToken ?? null);
+    if (issues.length >= hardCap && nextPageToken) {
+      process.stderr.write(
+        `jira search: capped at ${hardCap} issues with more pages available — ` +
+          'the tail of this board was not read; raise hardCap or narrow the JQL\n',
+      );
+      break;
+    }
+  } while (nextPageToken);
+  return { issues };
+};
 
 /**
  * One item by key, mapped raw — closed included. `listEligible` drops closed
@@ -542,23 +639,29 @@ export const triageItemFor = (proposal) => {
  * no body at all — so the predicate was always false and twenty identical stops
  * filed twenty issues against the tracker.
  */
-export const listProposals = async ({ existing = null, project = null, jql = null, env = process.env } = {}) => {
+export const listProposals = async ({
+  existing = null,
+  project = null,
+  jql = null,
+  env = process.env,
+  retry = {},
+} = {}) => {
   if (existing) return existing;
   // Project-qualified, like every query this adapter sends (AR-51): the key is
   // options.project, or the one options.jql leads with — `buildJql` refuses
   // both when they disagree, so the triage query can only read this board.
   const key = projectKeyOf({ project, jql });
-  const response = await search({ jql: `project = ${key} AND labels = triage ORDER BY created DESC`, env });
+  const response = await search({ jql: `project = ${key} AND labels = triage ORDER BY created DESC`, env, retry });
   return response.issues.map((issue) => ({ id: issue.key, body: descriptionTextOf(issue) }));
 };
 
 export const proposeTriage = async (
   rawProposal,
-  { project = null, jql = null, existing = null, env = process.env } = {},
+  { project = null, jql = null, existing = null, env = process.env, retry = {} } = {},
 ) => {
   const proposal = withAsOf(rawProposal);
   const item = triageItemFor(proposal);
-  const duplicate = duplicateOf(item, await listProposals({ existing, project, jql, env }));
+  const duplicate = duplicateOf(item, await listProposals({ existing, project, jql, env, retry }));
 
   if (duplicate) {
     await comment(duplicate, `Seen again (fingerprint ${item.fingerprint}). Incrementing.`, { env });

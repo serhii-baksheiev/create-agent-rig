@@ -421,6 +421,302 @@ describe('the search endpoint it calls', () => {
   });
 });
 
+// AR-54: the three things the endpoint change above deliberately left out —
+// timeout, retry, cursor pagination — plus the two defects they surfaced. The
+// option shapes pinned here are the interface the implementation follows:
+//
+//     search({ ..., timeoutMs })                 default 20000; an AbortSignal
+//                                                reaches fetch as `init.signal`
+//     search({ ..., retry: { sleep } })          `sleep(ms)` is awaited between
+//                                                attempts; tests inject a no-op
+//                                                and read the ms it was given
+//     search({ ..., hardCap })                   default 1000 issues; a capped
+//                                                list is announced on stderr
+//     proposeTriage(p, { ..., retry })           the same options travel down
+//
+// `search()` keeps returning `{ issues }`, now the union of every page.
+describe('hardening beyond the endpoint (AR-54)', () => {
+  const CREDENTIALS = {
+    JIRA_BASE_URL: 'https://example.invalid',
+    JIRA_EMAIL: 'a@b.c',
+    JIRA_API_TOKEN: 'x',
+  };
+
+  interface Call {
+    url: string;
+    method: string;
+    body: Record<string, unknown> | null;
+    signal: AbortSignal | null;
+  }
+
+  /** One scripted response, in the shape `request` reads off `fetch`. */
+  interface Scripted {
+    status: number;
+    statusText?: string;
+    headers?: Record<string, string>;
+    json?: unknown;
+  }
+
+  const calls: Call[] = [];
+  const stderr: string[] = [];
+  let realFetch: typeof globalThis.fetch;
+  let realStderrWrite: typeof process.stderr.write;
+
+  const reply = (scripted: Scripted) => ({
+    ok: scripted.status >= 200 && scripted.status < 300,
+    status: scripted.status,
+    statusText: scripted.statusText ?? '',
+    headers: {
+      get: (name: string) =>
+        scripted.headers?.[name] ?? scripted.headers?.[name.toLowerCase()] ?? null,
+    },
+    json: () => Promise.resolve(scripted.json ?? { issues: [] }),
+    text: () => Promise.resolve(JSON.stringify(scripted.json ?? {})),
+  });
+
+  /** Answer the n-th fetch with the n-th script; the last script repeats. */
+  const scriptFetch = (scripts: Scripted[]) => {
+    globalThis.fetch = ((
+      input: unknown,
+      init: { method?: string; body?: string; signal?: AbortSignal } = {},
+    ) => {
+      calls.push({
+        url: String(input),
+        method: String(init.method ?? 'GET'),
+        body: init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null,
+        signal: init.signal ?? null,
+      });
+      const scripted = scripts[Math.min(calls.length - 1, scripts.length - 1)]!;
+      return Promise.resolve(reply(scripted));
+    }) as unknown as typeof globalThis.fetch;
+  };
+
+  const sleeps: number[] = [];
+  const noSleep = {
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+    },
+  };
+
+  beforeEach(() => {
+    calls.length = 0;
+    sleeps.length = 0;
+    stderr.length = 0;
+    realFetch = globalThis.fetch;
+    realStderrWrite = process.stderr.write;
+    process.stderr.write = ((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    scriptFetch([{ status: 200, json: { issues: [] } }]);
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    process.stderr.write = realStderrWrite;
+  });
+
+  describe('a request times out instead of hanging the loop', () => {
+    it('hands fetch an AbortSignal', async () => {
+      const { search } = await load('jira.mjs');
+      await search({ project: 'AR', env: CREDENTIALS, timeoutMs: 20000 });
+      expect(calls[0]!.signal, 'no signal reached fetch').toBeInstanceOf(AbortSignal);
+    });
+
+    it('rejects naming the timeout and the route when fetch never resolves', async () => {
+      // a fetch that only ever ends by being aborted — like a stalled socket
+      globalThis.fetch = ((input: unknown, init: { signal?: AbortSignal } = {}) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+          });
+        })) as unknown as typeof globalThis.fetch;
+
+      const { search } = await load('jira.mjs');
+      const error = await search({ project: 'AR', env: CREDENTIALS, timeoutMs: 5 }).then(
+        () => new Error('the request resolved; it was supposed to time out'),
+        (thrown: unknown) => thrown as Error,
+      );
+      expect(error.message).toMatch(/timed out|timeout/i);
+      expect(error.message).toMatch(/\b5\s*ms\b|\b5\b/);
+      expect(error.message).toContain('/rest/api/3/search/jql');
+    }, 2000);
+  });
+
+  describe('a transient failure is retried, and the server’s Retry-After is honoured', () => {
+    it('a 429 followed by a 200 yields the 200 body', async () => {
+      scriptFetch([
+        { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '1' } },
+        { status: 200, json: { issues: [issue({ key: 'AR-1' })] } },
+      ]);
+      const { search } = await load('jira.mjs');
+      const response = (await search({ project: 'AR', env: CREDENTIALS, retry: noSleep })) as {
+        issues: Array<{ key: string }>;
+      };
+      expect(calls).toHaveLength(2);
+      expect(response.issues.map((i) => i.key)).toEqual(['AR-1']);
+    });
+
+    it('sleeps for the Retry-After the 429 carried, in milliseconds', async () => {
+      scriptFetch([
+        { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '1' } },
+        { status: 200, json: { issues: [] } },
+      ]);
+      const { search } = await load('jira.mjs');
+      await search({ project: 'AR', env: CREDENTIALS, retry: noSleep });
+      expect(sleeps).toEqual([1000]);
+    });
+
+    it.each([502, 503, 504])('retries a %i like a 429', async (status) => {
+      scriptFetch([
+        { status, statusText: 'Gateway' },
+        { status: 200, json: { issues: [] } },
+      ]);
+      const { search } = await load('jira.mjs');
+      await expect(
+        search({ project: 'AR', env: CREDENTIALS, retry: noSleep }),
+      ).resolves.toBeDefined();
+      expect(calls).toHaveLength(2);
+    });
+
+    it('gives up after four consecutive 503s, naming the status and the attempts', async () => {
+      scriptFetch([{ status: 503, statusText: 'Service Unavailable' }]);
+      const { search } = await load('jira.mjs');
+      const error = await search({ project: 'AR', env: CREDENTIALS, retry: noSleep }).then(
+        () => new Error('the request resolved; it was supposed to give up'),
+        (thrown: unknown) => thrown as Error,
+      );
+      expect(calls, 'one initial attempt plus three retries').toHaveLength(4);
+      expect(error.message).toMatch(/503/);
+      expect(error.message).toMatch(/attempt/i);
+      expect(error.message).toMatch(/\b4\b/);
+    });
+
+    it('does not retry a 401 — a bad credential is not transient', async () => {
+      scriptFetch([{ status: 401, statusText: 'Unauthorized' }]);
+      const { search } = await load('jira.mjs');
+      await expect(search({ project: 'AR', env: CREDENTIALS, retry: noSleep })).rejects.toThrow(
+        /401/,
+      );
+      expect(calls).toHaveLength(1);
+      expect(sleeps).toEqual([]);
+    });
+  });
+
+  describe('search follows the cursor, so a board longer than one page is read whole', () => {
+    const twoPages = (): Scripted[] => [
+      { status: 200, json: { issues: [issue({ key: 'AR-1' })], nextPageToken: 't2' } },
+      { status: 200, json: { issues: [issue({ key: 'AR-2' })], isLast: true } },
+    ];
+
+    it('returns both pages as one list', async () => {
+      scriptFetch(twoPages());
+      const { search } = await load('jira.mjs');
+      const response = (await search({ project: 'AR', env: CREDENTIALS })) as {
+        issues: Array<{ key: string }>;
+      };
+      expect(response.issues.map((i) => i.key)).toEqual(['AR-1', 'AR-2']);
+    });
+
+    it('sends the token from page 1 in the body of the request for page 2', async () => {
+      scriptFetch(twoPages());
+      const { search } = await load('jira.mjs');
+      await search({ project: 'AR', env: CREDENTIALS });
+      expect(calls).toHaveLength(2);
+      expect(calls[0]!.body).not.toHaveProperty('nextPageToken');
+      expect(calls[1]!.body).toMatchObject({ nextPageToken: 't2' });
+    });
+
+    it('stops at hardCap and says on stderr that the list was capped', async () => {
+      scriptFetch(twoPages());
+      const { search } = await load('jira.mjs');
+      const response = (await search({ project: 'AR', env: CREDENTIALS, hardCap: 1 })) as {
+        issues: Array<{ key: string }>;
+      };
+      expect(calls, 'page 2 was fetched past the cap').toHaveLength(1);
+      expect(response.issues.map((i) => i.key)).toEqual(['AR-1']);
+      expect(stderr.join(''), 'nothing announced the cap').toMatch(/capped/i);
+    });
+  });
+
+  describe('a priority the English ladder does not know', () => {
+    it('falls back to the numeric id, so a localised board still sorts', async () => {
+      const { toTicket } = await load('jira.mjs');
+      const withPriority = (priority: unknown) =>
+        (toTicket(issue({ fields: { priority } })) as Ticket).priority;
+      expect(withPriority({ name: 'Höchste', id: '1' })).toBe(1);
+      expect(withPriority({ name: 'Mittel', id: '3' })).toBe(3);
+    });
+
+    it('still sorts last with neither a known name nor an id', async () => {
+      const { toTicket } = await load('jira.mjs');
+      expect(
+        (toTicket(issue({ fields: { priority: { name: 'Höchste' } } })) as Ticket).priority,
+      ).toBe(999);
+    });
+  });
+
+  describe('the triage dedupe reads every page of proposals', () => {
+    it('increments a duplicate that sits on page 2 instead of filing again', async () => {
+      const { proposeTriage, triageItemFor } = await load('jira.mjs');
+      const proposal = {
+        finding: 'queue empty twenty times',
+        part: 'PLAN.md',
+        change: 'seed the queue',
+        proof: 'the next run has work',
+      };
+      const { fingerprint } = triageItemFor(proposal) as { fingerprint: string };
+      const triageIssue = (key: string, text: string) =>
+        issue({ key, fields: { labels: ['triage'], description: text } });
+
+      // Answered by URL rather than by call order: the dedupe search pages, and
+      // the comment that follows a hit must not be fed a search page.
+      globalThis.fetch = ((input: unknown, init: { method?: string; body?: string } = {}) => {
+        const body = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+        calls.push({
+          url: String(input),
+          method: String(init.method ?? 'GET'),
+          body,
+          signal: null,
+        });
+        const route = new URL(String(input)).pathname;
+        if (route === '/rest/api/3/search/jql') {
+          return Promise.resolve(
+            reply(
+              body?.nextPageToken === 't2'
+                ? {
+                    status: 200,
+                    json: {
+                      issues: [triageIssue('AR-2', `fingerprint: ${fingerprint}`)],
+                      isLast: true,
+                    },
+                  }
+                : {
+                    status: 200,
+                    json: {
+                      issues: [triageIssue('AR-1', 'fingerprint: other')],
+                      nextPageToken: 't2',
+                    },
+                  },
+            ),
+          );
+        }
+        return Promise.resolve(reply({ status: 200, json: {} }));
+      }) as unknown as typeof globalThis.fetch;
+
+      const result = (await proposeTriage(proposal, { project: 'AR', env: CREDENTIALS })) as {
+        incremented?: string;
+        filed?: string;
+      };
+      expect(result.filed, 'a duplicate on page 2 was filed as new').toBeUndefined();
+      expect(result.incremented).toBe('AR-2');
+      expect(
+        calls.filter((c) => c.method === 'POST' && new URL(c.url).pathname === '/rest/api/3/issue'),
+      ).toHaveLength(0);
+    });
+  });
+});
+
 describe('credentials and the operations that write', () => {
   it('reads credentials from the environment only — never from a file in the repo', async () => {
     const source = await readFile(path.join(queueDir, 'jira.mjs'), 'utf8');
