@@ -99,10 +99,10 @@ export const symlinksAvailable = (): { ok: boolean; reason: string } => ({
     'on Windows creating a symlink needs a privilege an ordinary CI account lacks; the fixture cannot be built',
 });
 
-/** The opposite direction: a branch that exists only on Windows (a `.cmd` shim). */
+/** The opposite direction: behaviour that exists only on Windows. */
 export const onlyOnWindows = (): { ok: boolean; reason: string } => ({
   ok: process.platform === 'win32',
-  reason: 'this branch exists only on Windows (a .cmd shim); there is nothing to measure elsewhere',
+  reason: 'this behaviour exists only on Windows; there is nothing to measure elsewhere',
 });
 
 /** Is the POSIX shell used by generated hook commands available on this host? */

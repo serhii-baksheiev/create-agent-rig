@@ -6,7 +6,13 @@ import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { describe, expect, it } from 'vitest';
-import { fifosAvailable, needsGitRoot, posixShellAvailable, skipUnless } from '../helpers/env.js';
+import {
+  fifosAvailable,
+  needsGitRoot,
+  onlyOnWindows,
+  posixShellAvailable,
+  skipUnless,
+} from '../helpers/env.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
 // `git init` under pre-commit re-initialises THIS repository rather than the
@@ -158,6 +164,79 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         const child = execFile(
           '/bin/sh',
           ['-c', command!],
+          {
+            cwd: nested,
+            env: {
+              ...withoutGitLocation(process.env),
+              HOME: home,
+              CLAUDE_PROJECT_DIR: '',
+            },
+          },
+          (error, _stdout, stderr) =>
+            resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.end(
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Write',
+            tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
+            cwd: nested,
+          }),
+        );
+      });
+
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/rulebook|unattended/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('anchors a nested-cwd Windows Codex rulebook edit to the canonical repository root', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-root-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-home-'));
+    const nested = path.join(scratch, 'packages', 'core', 'src');
+    try {
+      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+      await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
+        recursive: true,
+      });
+      await mkdir(nested, { recursive: true });
+
+      const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: scratch };
+      const { unattendedFlags } = (await import(
+        pathToFileURL(path.join(scratch, '.claude', 'scripts', 'unattended-flag.mjs')).href
+      )) as { unattendedFlags: (env: Record<string, string>) => string[] };
+      const flag = unattendedFlags(scopedEnv).find((candidate) =>
+        path.resolve(candidate).toLowerCase().startsWith(path.resolve(home).toLowerCase()),
+      );
+      expect(flag).toBeDefined();
+      await mkdir(path.dirname(flag!), { recursive: true });
+      await writeFile(flag!, JSON.stringify({ item: 'RP-54', runDir: '/runs/rp-54', allow: [] }));
+
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: {
+          PreToolUse: Array<{
+            hooks: Array<{ command: string; commandWindows?: string }>;
+          }>;
+        };
+      };
+      const commandWindows = config.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
+        hook.command.includes('guard-rulebook.mjs'),
+      )?.commandWindows;
+      const encoded = commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      expect(encoded).toBeDefined();
+
+      const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+        const child = execFile(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
           {
             cwd: nested,
             env: {
