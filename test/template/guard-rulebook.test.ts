@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -94,10 +94,20 @@ const armed = async (allow: string[], raw?: string) => {
   );
 };
 const run = (payload: object | string) => runHookFull(payload, env());
+const aliasedRoot = async () => {
+  const alias = path.join(home, 'checkout-alias');
+  await symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  return alias;
+};
+const hookHeader = async () =>
+  (await readFile(path.join(hooksDir, 'guard-rulebook.mjs'), 'utf8'))
+    .split('\n')
+    .slice(0, 70)
+    .join('\n');
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), 'ar51-home-'));
-  root = await mkdtemp(path.join(tmpdir(), 'ar51-root-'));
+  root = await realpath(await mkdtemp(path.join(tmpdir(), 'ar51-root-')));
 });
 afterEach(async () => {
   await rm(home, { recursive: true, force: true });
@@ -127,19 +137,30 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
     expect(result.code, result.stderr).toBe(0);
   });
 
-  it('compares paths as text: a root spelled differently from the file path is not judged (documented, fails open)', async () => {
+  it('canonicalizes a differently spelled checkout root before guarding a canonical payload path', async () => {
     await armed([]);
-    const result = await runHookFull(write(`/private${root}/.claude/hooks/guard-bash.mjs`), {
+    const alias = await aliasedRoot();
+    const canonicalRoot = await realpath(root);
+    const result = await runHookFull(write(`${canonicalRoot}/.claude/hooks/guard-bash.mjs`), {
       HOME: home,
-      CLAUDE_PROJECT_DIR: root,
+      CLAUDE_PROJECT_DIR: alias,
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(await hookHeader()).toMatch(/canonical|realpath/i);
+  });
+
+  it('still compares the payload file path as text when only that path uses a symlink spelling', async () => {
+    await armed([]);
+    const alias = await aliasedRoot();
+    const canonicalRoot = await realpath(root);
+    const result = await runHookFull(write(`${alias}/.claude/hooks/guard-bash.mjs`), {
+      HOME: home,
+      CLAUDE_PROJECT_DIR: canonicalRoot,
     });
     expect(result.code, result.stderr).toBe(0);
-    const header = (await readFile(path.join(hooksDir, 'guard-rulebook.mjs'), 'utf8'))
-      .split('\n')
-      .slice(0, 70)
-      .join('\n');
+    const header = await hookHeader();
     expect(header).toMatch(/symlink|spelled/i);
-    expect(header).toMatch(/CLAUDE_PROJECT_DIR/);
+    expect(header).toMatch(/file path/i);
   });
 
   it.each(['.', '.claude/', '.claude/scripts/', '.codex/', 'AGENTS', '.claude/.rig-'])(

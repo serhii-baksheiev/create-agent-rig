@@ -37,15 +37,13 @@
 //   - it judges paths, not content: a README that merely mentions
 //     `.claude/hooks/guard-bash.mjs` is not a rulebook edit — › "guards the
 //     path, not prose that mentions a guarded path";
-//   - it compares paths as text: the repo-relative tail is what is left after
-//     stripping `CLAUDE_PROJECT_DIR` (falling back to the working directory
-//     when the harness does not set it) from the front of the tool's absolute
-//     path, so a root spelled differently from the file path — a symlinked
-//     `/tmp` versus `/private/tmp`, a case difference on a case-insensitive
-//     disk — is not stripped, and the edit is not judged. Documented and
-//     measured, not fixed: the harness spells both from one root — › "compares
-//     paths as text: a root spelled differently from the file path is not
-//     judged (documented, fails open)";
+//   - it canonicalizes the checkout root before comparing paths as text, whether
+//     that root came from `CLAUDE_PROJECT_DIR` or the working-directory fallback
+//     — › "canonicalizes a differently spelled checkout root before guarding a
+//     canonical payload path". It does not resolve the payload file path: when
+//     only that path uses a symlink spelling, the root is not stripped and the
+//     edit is not judged — › "still compares the payload file path as text when
+//     only that path uses a symlink spelling";
 //   - an `allow` prefix is a string prefix of the repo-relative path and may
 //     not widen the rulebook — an entry that is itself a prefix of a rulebook
 //     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
@@ -58,7 +56,7 @@
 //     adversary.
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { editFragments } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 
@@ -67,6 +65,14 @@ export { RULEBOOK_PREFIXES, isRulebookPath };
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
 
 const toPosix = (value) => String(value ?? '').replaceAll('\\', '/');
+
+const canonicalRoot = (root) => {
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
+};
 
 /** The repo-relative tail of an absolute path, or the path itself when it is not under the root. */
 export const relativeTo = (root, filePath) => {
@@ -88,7 +94,7 @@ function main() {
   }
   if (!EDIT_TOOLS.has(input?.tool_name)) return 0;
 
-  const root = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const root = canonicalRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
   const unattendedEnv = { ...process.env, CLAUDE_PROJECT_DIR: root };
   const fragments = editFragments(input);
   const globalRefusal = fragments.find(
