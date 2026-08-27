@@ -322,6 +322,24 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
 });
 
 describe('the CLI the loop skill calls', () => {
+  it('exits nonzero when off --root leaves a checkout-scoped candidate behind', async () => {
+    const checkout = path.join(home, 'unremovable-checkout');
+    await mkdir(checkout, { recursive: true });
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    const { unattendedFlags } = await load();
+    const candidate = unattendedFlags(scopedEnv)[0]!;
+    await mkdir(candidate, { recursive: true });
+
+    try {
+      const result = await runCli(['off', '--root', checkout], home);
+      expect(existsSync(candidate)).toBe(true);
+      expect(result.code, result.stderr).not.toBe(0);
+      expect(result.stderr).toMatch(/remove|remain|failed/i);
+    } finally {
+      await rm(candidate, { recursive: true, force: true });
+    }
+  });
+
   it('removes only the explicitly selected legacy record and leaves another home untouched', async () => {
     const selectedHome = await mkdtemp(path.join(tmpdir(), 'ar51-selected-home-'));
     try {

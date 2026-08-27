@@ -61,7 +61,8 @@ about it here, so the two gates never file competing opinions on one paragraph.
 
    ⚠ A pointer into a test suite the reader's project does not carry is normally
    item 2, not backing. There is one narrow inherited-snapshot exception from
-   `invariants.md`: a generator-authored artifact — rulebook, hook, or skill —
+   `invariants.md`: a generator-authored artifact — rules, hooks, skills,
+   scripts, or agent specs —
    may point to upstream generator tests that are absent locally only when the
    pointer explicitly says the suite is absent locally and
    `.claude/.rig-manifest.json` proves the current artifact's hash matches the

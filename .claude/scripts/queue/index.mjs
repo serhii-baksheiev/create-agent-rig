@@ -354,8 +354,11 @@ if (invokedDirectly()) {
   // and never touches the tracker. Switching is refused on a config that declares
   // no boards — the selector would then be a file nothing reads.
   if (args.command === 'board') {
-    const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
     try {
+      // Resolve before deriving either the checkout root or the selector path.
+      // Otherwise a symlinked `.claude` lets the caller authorize one checkout
+      // while the write follows the link into another unattended checkout.
+      const configPath = realpathSync(args.config ?? join(projectRoot, '.claude', 'queue.json'));
       const raw = JSON.parse(readFileSync(configPath, 'utf8'));
       if (raw?.boards === undefined) {
         throw new Error(`${configPath} declares no boards, so there is nothing to switch between.`);

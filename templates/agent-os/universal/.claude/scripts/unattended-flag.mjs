@@ -293,6 +293,7 @@ const legacyBelongsToCheckout = (flagPath, env) => {
 /** Remove this checkout's flags and a provably-owned legacy record. */
 export const clearUnattended = (env = process.env) => {
   const removed = [];
+  const failures = [];
   const candidates = checkoutId(env) === null
     ? unattendedFlags(env)
     : [
@@ -305,9 +306,12 @@ export const clearUnattended = (env = process.env) => {
         rmSync(path);
         removed.push(path);
       }
-    } catch {
-      // a home this process cannot write is not this run's flag to remove
+    } catch (error) {
+      failures.push(`${path}: ${error?.code ?? error?.message ?? 'remove failed'}`);
     }
+  }
+  if (failures.length > 0) {
+    throw new Error(`failed to remove unattended flag(s): ${failures.join('; ')}`);
   }
   return removed;
 };

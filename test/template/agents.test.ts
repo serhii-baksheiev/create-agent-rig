@@ -148,7 +148,9 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
 
     expect(exception, 'the inherited upstream-pointer exception must still exist').toBeTruthy();
     expect(exception).toMatch(/generator-authored (?:artifact|rulebook|hook|skill)/i);
-    for (const artifact of ['rulebook', 'hook', 'skill']) expect(exception).toMatch(artifact);
+    for (const artifact of ['rules', 'hooks', 'skills', 'scripts', 'agent specs']) {
+      expect(exception, artifact).toMatch(new RegExp(artifact.replace(' ', '\\s+'), 'i'));
+    }
     expect(exception).toMatch(/(?:upstream|generator)[^.]{0,80}tests?[^.]{0,120}absent locally/i);
     expect(exception).toMatch(/(?:pointer|artifact)[^.]{0,120}absent locally/i);
     expect(exception).toContain('.claude/.rig-manifest.json');

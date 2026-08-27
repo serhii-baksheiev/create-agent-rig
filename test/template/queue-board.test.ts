@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -170,6 +170,46 @@ describe('boards in queue.json', () => {
     expect(switched.out).toMatch(/unattended/i);
 
     clearUnattended(targetEnv);
+  });
+
+  it('resolves a symlinked config directory before checking the target unattended state', async () => {
+    const { writeUnattended, clearUnattended } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const caller = await mkdtemp(path.join(tmpdir(), 'queue-board-alias-caller-'));
+    const target = await mkdtemp(path.join(tmpdir(), 'queue-board-alias-target-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'queue-board-alias-home-'));
+    const targetConfigDir = path.join(target, '.claude');
+    const targetConfigPath = path.join(targetConfigDir, 'queue.json');
+    const callerConfigPath = path.join(caller, '.claude', 'queue.json');
+    const targetSelector = path.join(targetConfigDir, 'queue.board');
+    const targetEnv = { HOME: home, CLAUDE_PROJECT_DIR: target };
+
+    try {
+      await mkdir(targetConfigDir, { recursive: true });
+      await writeFile(targetConfigPath, JSON.stringify(BOARDS));
+      await symlink(
+        targetConfigDir,
+        path.join(caller, '.claude'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      writeUnattended({ item: 'AR-ALIASED-TARGET', runDir: '/runs/target', allow: [] }, targetEnv);
+
+      const switched = await runCli(['board', 'RP', '--config', callerConfigPath], caller, {
+        HOME: home,
+        CLAUDE_PROJECT_DIR: caller,
+      });
+      expect(switched.code, switched.out).not.toBe(0);
+      expect(switched.out).toMatch(/unattended/i);
+      await expect(readFile(targetSelector, 'utf8')).rejects.toThrow();
+    } finally {
+      clearUnattended(targetEnv);
+      await Promise.all(
+        [caller, target, home].map((fixturePath) =>
+          rm(fixturePath, { recursive: true, force: true }),
+        ),
+      );
+    }
   });
 
   it('discovers the target checkout flag even when its state home differs from the caller home', async () => {
