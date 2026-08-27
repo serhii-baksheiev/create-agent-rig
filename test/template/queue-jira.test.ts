@@ -654,6 +654,54 @@ describe('hardening beyond the endpoint (AR-54)', () => {
       expect(response.issues.map((i) => i.key)).toEqual(['AR-1']);
     });
 
+    it('falls back to the backoff when Retry-After is an HTTP-date, which it does not parse', async () => {
+      scriptFetch([
+        {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: { 'Retry-After': 'Wed, 21 Oct 2015 07:28:00 GMT' },
+        },
+        { status: 200, json: { issues: [] } },
+      ]);
+      const { search } = await load('jira.mjs');
+      await search({ project: 'AR', env: CREDENTIALS, retry: noSleep });
+      // the first backoff step, not a date parsed into some huge or negative delay
+      expect(sleeps).toEqual([500]);
+    });
+
+    it('keeps walking past an empty page that carries a fresh token', async () => {
+      // The enhanced search endpoint may return a short or empty page while
+      // later pages exist; stopping on it would drop a real tail.
+      scriptFetch([
+        { status: 200, json: { issues: [], nextPageToken: 't2' } },
+        { status: 200, json: { issues: [issue({ key: 'AR-9' })] } },
+      ]);
+      const { search } = await load('jira.mjs');
+      const response = (await search({ project: 'AR', env: CREDENTIALS })) as {
+        issues: Array<{ key: string }>;
+      };
+      expect(calls).toHaveLength(2);
+      expect(response.issues.map((i) => i.key)).toEqual(['AR-9']);
+    });
+
+    it('caps the number of requests outright, and says so on stderr', async () => {
+      // Fresh token on every page, one issue each: neither hardCap nor a
+      // repeated token would stop this; maxPages does, loudly.
+      scriptFetch([
+        { status: 200, json: { issues: [issue({ key: 'AR-1' })], nextPageToken: 't2' } },
+        { status: 200, json: { issues: [issue({ key: 'AR-2' })], nextPageToken: 't3' } },
+        { status: 200, json: { issues: [issue({ key: 'AR-3' })], nextPageToken: 't4' } },
+        { status: 200, json: { issues: [issue({ key: 'AR-4' })], nextPageToken: 't5' } },
+      ]);
+      const { search } = await load('jira.mjs');
+      const response = (await search({ project: 'AR', env: CREDENTIALS, maxPages: 3 })) as {
+        issues: Array<{ key: string }>;
+      };
+      expect(calls, 'the walk did not stop at the request cap').toHaveLength(3);
+      expect(response.issues.map((i) => i.key)).toEqual(['AR-1', 'AR-2', 'AR-3']);
+      expect(stderr.join('')).toMatch(/capped at 3 requests/);
+    });
+
     it(
       'stops paging when a page brings no issues, even if the token repeats',
       { timeout: 3000 },

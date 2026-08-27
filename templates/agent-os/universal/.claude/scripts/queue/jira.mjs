@@ -269,10 +269,11 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 const MAX_RETRY_AFTER_MS = 60_000;
 const retryDelayMs = (response, attempt) => {
-  // Seconds form only; the HTTP-date form is not parsed and falls to backoff.
-  // Capped, because a header is input like any other: `Retry-After: 86400`
-  // must not sleep the loop for a day (› "caps Retry-After so a hostile header
-  // cannot sleep the loop for a day").
+  // Seconds form only; the HTTP-date form is not parsed and falls to backoff
+  // (› "falls back to the backoff when Retry-After is an HTTP-date, which it
+  // does not parse"). Capped, because a header is input like any other:
+  // `Retry-After: 86400` must not sleep the loop for a day (› "caps Retry-After
+  // so a hostile header cannot sleep the loop for a day").
   const header = Number(response?.headers?.get?.('Retry-After'));
   if (Number.isFinite(header) && header > 0) return Math.min(header * 1000, MAX_RETRY_AFTER_MS);
   return 500 * 2 ** (attempt - 1);
@@ -370,7 +371,8 @@ const FIELDS = [
  * unblocks their dependents, so a list read at the start of a run is wrong by the
  * second task. `issues` is the offline seam the tests use. Since AR-54 `limit`
  * is the PAGE size, not a result cap: `search` walks every page up to its own
- * `hardCap`, which this function leaves at the default.
+ * `hardCap`, which this function leaves at the default (› "returns both pages
+ * as one list").
  */
 export const listEligible = async ({
   issues = null,
@@ -404,7 +406,8 @@ export const listEligible = async ({
  * `proposeTriage` dedupe) come through here, which is why one fix covers both.
  *
  * Pages through `nextPageToken` until the server sends none, or `hardCap`
- * issues (default 1000) are in hand — the cap is announced on stderr, never
+ * issues (default 1000) are in hand, or `maxPages` requests (default 100) have
+ * been made — each cap is announced on stderr, never
  * silent, because a board whose tail is dropped is exactly the board the loop
  * would otherwise believe it had read. `timeoutMs` and `retry` travel down to
  * every page. Pinned in the generator's `test/template/queue-jira.test.ts`
@@ -420,16 +423,19 @@ export const search = async ({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retry = {},
   hardCap = 1000,
+  maxPages = 100,
 } = {}) => {
   const query = buildJql({ project, jql });
   const issues = [];
-  // Two bounds beside hardCap, because a cap on issues alone is no bound at
-  // all against a server that repeats a token with an empty page: a page that
-  // brings nothing ends the walk, and so does a token equal to the one just
-  // sent (› "stops paging when a page brings no issues, even if the token
-  // repeats"). Pages are also capped outright, so the walk is finite whatever
-  // the server says.
-  const maxPages = Math.ceil(hardCap / Math.max(1, limit)) + 1;
+  // Bounds beside hardCap, because a cap on issues alone is no bound at all
+  // against a server that repeats a token: a token equal to the one just sent
+  // ends the walk, and so does `maxPages` (default 100 requests), each with a
+  // stderr line. An EMPTY page with a fresh token is NOT a stop — the enhanced
+  // search endpoint may return short or empty pages while later pages exist,
+  // and stopping there drops a real tail (› "keeps walking past an empty page
+  // that carries a fresh token", › "stops paging when a page brings no issues,
+  // even if the token repeats", › "caps the number of requests outright, and
+  // says so on stderr").
   let nextPageToken = null;
   let pages = 0;
   do {
@@ -450,8 +456,19 @@ export const search = async ({
     issues.push(...received.slice(0, Math.max(0, hardCap - issues.length)));
     const sent = nextPageToken;
     nextPageToken = page?.isLast === true ? null : (page?.nextPageToken ?? null);
-    if (received.length === 0 || (nextPageToken && nextPageToken === sent) || pages >= maxPages) {
-      nextPageToken = null;
+    if (nextPageToken && nextPageToken === sent) {
+      process.stderr.write(
+        `jira search: the server repeated page token ${JSON.stringify(sent)} — ` +
+          'stopping the walk; the tail of this board may not have been read\n',
+      );
+      break;
+    }
+    if (nextPageToken && pages >= maxPages) {
+      process.stderr.write(
+        `jira search: capped at ${maxPages} requests with more pages available — ` +
+          'the tail of this board was not read; raise maxPages or narrow the JQL\n',
+      );
+      break;
     }
     if (issues.length >= hardCap && nextPageToken) {
       process.stderr.write(
