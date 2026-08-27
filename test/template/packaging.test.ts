@@ -10,7 +10,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 // Publish brief §8: exactly one package is publishable — the root one.
 describe('the inner package is locked against publication', () => {
-  it('npm publish --dry-run refuses inside packages/cli', async () => {
+  // 60 s: npm through a shell on windows-latest measured past the 15 s default (AR-93).
+  it('npm publish --dry-run refuses inside packages/cli', { timeout: 60_000 }, async () => {
     // npm 10 does NOT honor "private": true on --dry-run (measured), so the
     // real lock is a failing prepublishOnly script; private stays as belt.
     // `npm` is a `.cmd` shim on Windows, which execFile cannot run without a
