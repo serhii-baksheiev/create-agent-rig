@@ -98,3 +98,21 @@ export const symlinksAvailable = (): { ok: boolean; reason: string } => ({
   reason:
     'on Windows creating a symlink needs a privilege an ordinary CI account lacks; the fixture cannot be built',
 });
+
+/** The opposite direction: a branch that exists only on Windows (a `.cmd` shim). */
+export const onlyOnWindows = (): { ok: boolean; reason: string } => ({
+  ok: process.platform === 'win32',
+  reason: 'this branch exists only on Windows (a .cmd shim); there is nothing to measure elsewhere',
+});
+
+/** Do mode bits exist at all here? Windows has none; root sees them, so this is not `modeBitsDeny`. */
+export const modeBitsExist = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason: 'on Windows a file has no POSIX mode bits to read',
+});
+
+/** Can a FIFO be created here? `mkfifo` has no Windows counterpart. */
+export const fifosAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason: 'on Windows there is no mkfifo; the FIFO fixture cannot be built',
+});

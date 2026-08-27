@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { describe, expect, it } from 'vitest';
-import { needsGitRoot, skipUnless } from '../helpers/env.js';
+import { fifosAvailable, needsGitRoot, skipUnless } from '../helpers/env.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
 // `git init` under pre-commit re-initialises THIS repository rather than the
@@ -915,8 +915,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
   });
 
-  it('quickly refuses a FIFO move source instead of blocking on it', async () => {
-    if (process.platform === 'win32') return;
+  it('quickly refuses a FIFO move source instead of blocking on it', async (ctx) => {
+    skipUnless(ctx, fifosAvailable().ok, fifosAvailable().reason);
 
     const scratch = await mkdtemp(path.join(tmpdir(), 'codex-fifo-move-'));
     const core = path.join(scratch, 'packages', 'core', 'src');

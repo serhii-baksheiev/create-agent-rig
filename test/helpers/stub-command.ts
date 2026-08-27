@@ -5,8 +5,8 @@
  * — no shell. On POSIX a `#!/bin/sh` script named `gh` on PATH answers that.
  * On Windows it does not: CreateProcess resolves a bare name to `gh.exe`
  * only, a `.cmd` shim is not executed without a shell, and a shell script is
- * never executed at all (AR-138, AR-140 — the reason eight test files sat on
- * the windows-unit exclusion list; AR-93).
+ * never executed at all (AR-138, AR-140 — why six test files' gh/git stubs
+ * kept them on the windows-unit exclusion list; AR-93).
  *
  * So on win32 the stub IS a real executable: a copy of the running node
  * binary named `<name>.exe`, plus `NODE_OPTIONS=--require <preload>` — the
@@ -14,6 +14,10 @@
  * as `<name>`, answers from the handler, and exits. Any other node child
  * under the same NODE_OPTIONS sees a basename that is not `<name>` and
  * returns at once. Measured in `test/template/stub-command.test.ts`.
+ *
+ * Limit: node reads the stub's first argument before the preload runs, so an
+ * invocation whose first word is a node flag (`--version`, `-c`) is answered
+ * by node, not the handler. No caller here starts with one.
  *
  * The handler is JavaScript source (a function body receiving `args`, the
  * argv after the command name, and returning `{ stdout?, exitCode? }` or
@@ -61,6 +65,11 @@ if (!isStub) {
  * `restore()` in `finally`.
  */
 export const stubCommand = async (name: string, handlerBody: string): Promise<StubHandle> => {
+  // The name reaches a shell line and NODE_OPTIONS unquoted; a word is all a
+  // command name needs to be.
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    throw new Error(`stubCommand: a command name is a word, got ${JSON.stringify(name)}`);
+  }
   const bin = await realpath(await mkdtemp(path.join(tmpdir(), `stub-${name}-`)));
   const preload = path.join(bin, `${name}.preload.cjs`);
   await writeFile(preload, preloadSource(name, handlerBody));
@@ -69,9 +78,10 @@ export const stubCommand = async (name: string, handlerBody: string): Promise<St
   const env: Record<string, string> = {};
   if (process.platform === 'win32') {
     await copyFile(process.execPath, path.join(bin, `${name}.exe`));
-    // Forward slashes: NODE_OPTIONS strips a backslash inside its quotes
-    // (measured: `C:UsersrunneradminAppData...` — AR-93), and node on Windows
-    // accepts a forward-slash path.
+    // Forward slashes: NODE_OPTIONS strips a backslash inside its quotes —
+    // measured on windows-latest at 9c0eb9c, where the preload path arrived as
+    // `C:UsersrunneradminAppData...` (AR-93) — and node accepts a forward-slash
+    // path there.
     const preloadForOptions = preload.replace(/\\/g, '/');
     env['NODE_OPTIONS'] = [savedNodeOptions, `--require "${preloadForOptions}"`]
       .filter(Boolean)
@@ -80,7 +90,7 @@ export const stubCommand = async (name: string, handlerBody: string): Promise<St
     // exec, not `node`: the handler runs in the same binary the test runs in
     await writeFile(
       path.join(bin, name),
-      `#!/bin/sh\n__STUB_COMMAND=${name} NODE_OPTIONS="--require ${preload}" exec "${process.execPath}" "$@"\n`,
+      `#!/bin/sh\n__STUB_COMMAND=${name} NODE_OPTIONS="${[savedNodeOptions, `--require \\"${preload}\\"`].filter(Boolean).join(' ')}" exec "${process.execPath}" "$@"\n`,
     );
     await chmod(path.join(bin, name), 0o755);
   }

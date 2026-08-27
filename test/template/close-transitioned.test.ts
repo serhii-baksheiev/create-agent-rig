@@ -110,14 +110,12 @@ describe('jira close proves the transition by reading the issue back', () => {
 });
 
 describe('github close proves the transition by asking gh for the state', () => {
-  let bin: string;
   let logFile: string;
 
   /** A `gh` on PATH that logs its argv one call per line and answers `issue view`. */
   let stub: StubHandle | undefined;
   const installGh = async (state: 'CLOSED' | 'OPEN'): Promise<void> => {
-    bin = await mkdtemp(path.join(tmpdir(), 'stub-gh-'));
-    logFile = path.join(bin, 'calls.log');
+    logFile = path.join(await mkdtemp(path.join(tmpdir(), 'stub-gh-')), 'calls.log');
     stub = await stubCommand(
       'gh',
       `require('node:fs').appendFileSync(${JSON.stringify(logFile)}, args.join(' ') + '\\n');

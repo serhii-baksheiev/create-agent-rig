@@ -69,7 +69,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # The whole unit suite, no exclusions (AR-93). A capability genuinely
-      # absent on Windows skips by name and is counted in
-      # test/template/platform-skips.test.ts; nothing else may skip here.
+      # absent on Windows skips through a helper that names the reason, and
+      # test/template/platform-skips.test.ts counts those sites and refuses a
+      # skipIf/runIf keyed on process.platform that bypasses them.
       - name: Run the unit suite on Windows
         run: pnpm test:unit --testTimeout=15000

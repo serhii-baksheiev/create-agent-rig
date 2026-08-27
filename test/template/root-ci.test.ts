@@ -20,8 +20,6 @@ const runCommands = (yaml: string): string[] =>
 
 const commandText = (yaml: string): string => yaml.replace(/\r?\n\s*/g, ' ');
 
-const WINDOWS_INCOMPATIBLE_TESTS: readonly string[] = [];
-
 const expensiveWorkflow = async (): Promise<string> => {
   const names = (await readdir(workflowsDir)).filter((name) => /\.ya?ml$/.test(name));
   const candidates: string[] = [];
@@ -87,7 +85,6 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
     // `--exclude` reappearing here would be a red file hidden, not a fix.
     const windows = job(await workflow('ci.yml'), 'windows-unit');
     expect(commandText(windows)).not.toMatch(/--exclude/);
-    expect(WINDOWS_INCOMPATIBLE_TESTS).toEqual([]);
   });
 });
 

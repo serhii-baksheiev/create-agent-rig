@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { modeBitsDeny, needsGit, skipUnless } from '../helpers/env.js';
+import { modeBitsDeny, modeBitsExist, needsGit, skipUnless } from '../helpers/env.js';
 import { stubCommand } from '../helpers/stub-command.js';
 
 // Extraction brief §4: `loop-driver` is the most valuable artifact in the source
@@ -5306,7 +5306,7 @@ describe('the run state never writes through a path it did not create', () => {
   });
 
   it('leaves the state file readable only by the run that owns it', async (ctx) => {
-    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    skipUnless(ctx, modeBitsExist().ok, modeBitsExist().reason);
     const { updateState } = await loadRunState();
     const runDir = await newRunDir();
 
