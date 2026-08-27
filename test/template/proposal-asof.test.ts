@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { needsGit, skipUnless } from '../helpers/env.js';
 
 /**
  * AR-116 — a proposal records the commit it was measured against, and hygiene
@@ -211,7 +212,8 @@ describe('the pure core decides whether a proposal may have been overtaken', () 
 });
 
 describe('the commit a finding was measured against', () => {
-  it('is HEAD of the checkout, and null where there is no checkout', async () => {
+  it('is HEAD of the checkout, and null where there is no checkout', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const { headShaOf } = await load('as-of.mjs');
     expect(headShaOf({ cwd: repoRoot })).toBe(git(['rev-parse', 'HEAD']));
     const empty = await mkdtemp(path.join(tmpdir(), 'asof-'));
@@ -250,7 +252,8 @@ describe('every adapter writes asOf into the filed item and lists its proposals 
     },
   );
 
-  it('plan-md stamps the bullet with the checkout HEAD by default and lists it back', async () => {
+  it('plan-md stamps the bullet with the checkout HEAD by default and lists it back', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const adapter = await load('plan-md.mjs');
     const dir = await mkdtemp(path.join(tmpdir(), 'asof-plan-'));
     const planPath = path.join(dir, 'PLAN.md');

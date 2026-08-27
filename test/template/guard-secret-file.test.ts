@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY, GITHUB_PAT, PEM_HEADER } from './secrets-fixtures.js';
+import { needsGitRoot, skipUnless } from '../helpers/env.js';
 
 // AR-49(b), the PreToolUse half of the "both layers, one shared module" ruling.
 //
@@ -247,7 +248,8 @@ describe('guard-secret-file: an apply_patch command it cannot read is refused, n
     expect(result.stderr).not.toContain(CLOUD_ACCESS_KEY);
   });
 
-  it('leaves a well-formed patch that carries no credential allowed', async () => {
+  it('leaves a well-formed patch that carries no credential allowed', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     await allow(
       withCommand(patchLines('export const greet = () => "hello";')),
       'ordinary apply_patch',

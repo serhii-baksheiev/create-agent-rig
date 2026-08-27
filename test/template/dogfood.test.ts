@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { needsGit, skipUnless } from '../helpers/env.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -189,7 +190,8 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     expect(declared).toContain('templates/agent-os/stack/node-ts/.claude/rules/');
   });
 
-  it('declares every file that declares elevated paths of its own', async () => {
+  it('declares every file that declares elevated paths of its own', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const declared = await loadDeclaredPaths();
     const detector = await loadDetector();
 
@@ -314,7 +316,7 @@ describe('the secrets block the skeletons ship is live in this repository too', 
       );
     });
 
-  it.each([
+  it.for<[string, string]>([
     // the pattern is not root-anchored — a nested one is the same secret
     ['.env', '.env'],
     ['packages/core/.env', '.env'],
@@ -322,7 +324,8 @@ describe('the secrets block the skeletons ship is live in this repository too', 
     ['.env.production', '.env.*'],
     ['id.pem', '*.pem'],
     ['server.key', '*.key'],
-  ])('never lets %s be committed', async (file, pattern) => {
+  ])('never lets %s be committed', async ([file, pattern], ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     await expect(ignored(file)).resolves.toBe(true);
     await expect(matchedRule(file)).resolves.toBe(`.gitignore:${pattern}`);
   });
@@ -331,9 +334,10 @@ describe('the secrets block the skeletons ship is live in this repository too', 
   // `.env.*`; git takes the last matching pattern, so a reorder silently commits
   // every `.env.*` file. And the sample file has to survive nested too, or a
   // service's own `.env.example` stops being shippable.
-  it.each(['.env.example', 'packages/core/.env.example'])(
+  it.for(['.env.example', 'packages/core/.env.example'])(
     'still tracks %s, and by the negation rather than by an absent block',
-    async (file) => {
+    async (file, ctx) => {
+      skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
       await expect(ignored(file)).resolves.toBe(false);
       await expect(matchedRule(file)).resolves.toBe('.gitignore:!.env.example');
     },
@@ -341,7 +345,8 @@ describe('the secrets block the skeletons ship is live in this repository too', 
 
   // A neighbour that predates the block: adding patterns must not change what
   // the existing entries mean.
-  it('leaves the pre-existing next-env.d.ts entry doing its job', async () => {
+  it('leaves the pre-existing next-env.d.ts entry doing its job', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     await expect(ignored('next-env.d.ts')).resolves.toBe(true);
     await expect(matchedRule('next-env.d.ts')).resolves.toBe('.gitignore:next-env.d.ts');
   });
@@ -432,9 +437,10 @@ describe('the secrets block the skeletons ship is live in this repository too', 
     expect(members).toContain(member);
   });
 
-  it.each(credentialFileNames(routerSource, CREDENTIAL_WORDS))(
+  it.for(credentialFileNames(routerSource, CREDENTIAL_WORDS))(
     'never lets %s be committed — the router calls it a credential file',
-    async (file) => {
+    async (file, ctx) => {
+      skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
       await expect(ignored(file)).resolves.toBe(true);
       await expect(matchedRule(file)).resolves.toMatch(/^\.gitignore:/);
     },
@@ -473,7 +479,8 @@ describe('the secrets block the skeletons ship is live in this repository too', 
   // repository's own classifier misses and its ignore block misses too; the
   // second gap is the one this test closes. The first is the router's, and
   // widening a risk classifier is not this change.
-  it('never lets .envrc be committed, though isSecretFile does not classify it', async () => {
+  it('never lets .envrc be committed, though isSecretFile does not classify it', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     await expect(ignored('.envrc')).resolves.toBe(true);
     await expect(matchedRule('.envrc')).resolves.toMatch(/^\.gitignore:/);
   });

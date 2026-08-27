@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
+import { needsGit, skipUnless } from '../helpers/env.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 
 import {
   ANTHROPIC_KEY,
@@ -546,6 +547,8 @@ describe('ordinary source that merely names a credential is not a credential', (
 // false positive anyone adds from now on lands on this test, in the file and
 // line where it was written.
 describe('the repository itself is the regression test for a guard that fires on honest work', () => {
+  beforeEach((ctx) => skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason));
+
   it('reads a tracked file list that is not empty, so the sweep cannot pass on nothing', async () => {
     const files = await trackedFiles();
     expect(files.length).toBeGreaterThan(300);

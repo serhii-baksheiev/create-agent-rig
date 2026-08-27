@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { needsGit, needsNonRoot, skipUnless } from '../helpers/env.js';
 
 // Extraction brief §4: `loop-driver` is the most valuable artifact in the source
 // tree and the only one that cannot be copied — its selection logic assumes one
@@ -3103,7 +3104,8 @@ describe('reading the state — only a truly absent file means "nothing has clos
     expect(loadState(path.join(dir, 'notadir', 'queue.state.json'))).toEqual({});
   });
 
-  it('refuses a state file it is not allowed to read instead of reading it as absent', async () => {
+  it('refuses a state file it is not allowed to read instead of reading it as absent', async (ctx) => {
+    skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
     const { loadState } = await load('index.mjs');
     const dir = await scratch();
     const statePath = path.join(dir, 'queue.state.json');
@@ -3872,7 +3874,8 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
       );
     });
 
-  it('this repository ignores the state file while keeping the config tracked', async () => {
+  it('this repository ignores the state file while keeping the config tracked', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     await expect(ignored('.claude/queue.state.json')).resolves.toBe(true);
     // and the config stays tracked: it is generated content, not scratch state
     await expect(ignored('.claude/queue.json')).resolves.toBe(false);
@@ -4927,16 +4930,22 @@ describe('an escalation is recorded rather than remembered', () => {
       expect(result, `${file} threw, or answered differently`).toEqual(usual);
     });
 
-    it.each(ADAPTER_FILES)('%s escalates when the run directory is unwritable', async (file) => {
-      const runDir = await newRunDir();
-      const usual = await withEnv({ RIG_RUN_DIR: runDir }, () => escalateOn(file));
+    // `it.for`, not `it.each`: the context arrives as the second argument, and
+    // the skip needs it — chmod 0o500 does not deny root (AR-107).
+    it.for(ADAPTER_FILES)(
+      '%s escalates when the run directory is unwritable',
+      async (file, ctx) => {
+        skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
+        const runDir = await newRunDir();
+        const usual = await withEnv({ RIG_RUN_DIR: runDir }, () => escalateOn(file));
 
-      const { result } = await withUnwritableRunDir((blocked) =>
-        withCapturedOutput(() => withEnv({ RIG_RUN_DIR: blocked }, () => escalateOn(file))),
-      );
+        const { result } = await withUnwritableRunDir((blocked) =>
+          withCapturedOutput(() => withEnv({ RIG_RUN_DIR: blocked }, () => escalateOn(file))),
+        );
 
-      expect(result, `${file} threw, or answered differently`).toEqual(usual);
-    });
+        expect(result, `${file} threw, or answered differently`).toEqual(usual);
+      },
+    );
 
     it('says on stderr that the count went unrecorded, when the directory is missing', async () => {
       const { stderr, stdout } = await withCapturedOutput(() =>
@@ -4956,7 +4965,8 @@ describe('an escalation is recorded rather than remembered', () => {
       expect(stdout, 'a caller parsing stdout would get this line in its JSON').toBe('');
     });
 
-    it('says on stderr that the count went unrecorded, when the directory is unwritable', async () => {
+    it('says on stderr that the count went unrecorded, when the directory is unwritable', async (ctx) => {
+      skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
       const { stderr } = await withUnwritableRunDir((blocked) =>
         withCapturedOutput(() =>
           withEnv({ RIG_RUN_DIR: blocked }, () => escalateOn('plan-md.mjs')),
@@ -4981,7 +4991,8 @@ describe('an escalation is recorded rather than remembered', () => {
       await expect(readdir(MISSING_RUN_DIR)).rejects.toThrow();
     });
 
-    it('leaves the count it could not raise exactly as it found it', async () => {
+    it('leaves the count it could not raise exactly as it found it', async (ctx) => {
+      skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
       const after = await withUnwritableRunDir(
         async (blocked) => {
           await withCapturedOutput(() =>
@@ -5072,7 +5083,8 @@ describe('an escalation is recorded rather than remembered', () => {
       expect(result).toBe(0);
     });
 
-    it('hands back the count that is really on disk when it could not write', async () => {
+    it('hands back the count that is really on disk when it could not write', async (ctx) => {
+      skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
       const record = await recorder();
 
       const counted = await withUnwritableRunDir(
