@@ -1,0 +1,16 @@
+{
+  "case": "receipt-notify-upgraded-to-wake",
+  "definition": "DeliveryReceipt",
+  "valid": false,
+  "expectedKeyword": "const",
+  "expectedInstancePath": "/effectiveIntent",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-notify-upgraded",
+    "correlationId": "correlation-notify-upgraded",
+    "observedAt": "2026-08-27T18:13:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "wake",
+    "outcome": "routed"
+  }
+}

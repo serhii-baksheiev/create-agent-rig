@@ -1,0 +1,37 @@
+{
+  "case": "probe-periodic-schedule",
+  "definition": "ProbeResult",
+  "valid": false,
+  "expectedKeyword": "additionalProperties",
+  "expectedInstancePath": "",
+  "value": {
+    "contractMajor": 1,
+    "session": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "instanceId": "codex-local-a"
+    },
+    "trigger": "registration",
+    "mechanism": "local ingress registration probe",
+    "outcome": "notify accepted",
+    "observedAt": "2026-08-27T18:12:00Z",
+    "effectiveCapability": {
+      "deliveryClass": "TURN_BOUNDARY",
+      "supportedIntents": ["notify"],
+      "ingressKind": "local-hook"
+    },
+    "verificationState": "verified",
+    "evidence": {
+      "harness": "codex",
+      "surface": "local-cli",
+      "harnessVersion": "0.1.0",
+      "os": "linux",
+      "observedDate": "2026-08-27",
+      "mechanism": "registration probe",
+      "result": "notify accepted",
+      "evidencePointer": "fixture://probe-periodic-schedule",
+      "degradationThreshold": 3
+    },
+    "periodicSchedule": { "intervalSeconds": 60 }
+  }
+}

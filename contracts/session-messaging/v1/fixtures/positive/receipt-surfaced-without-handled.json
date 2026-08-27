@@ -1,0 +1,14 @@
+{
+  "case": "receipt-surfaced-without-handled",
+  "definition": "DeliveryReceipt",
+  "valid": true,
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-surfaced",
+    "correlationId": "correlation-surfaced",
+    "observedAt": "2026-08-27T18:06:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "notify",
+    "outcome": "surfaced"
+  }
+}

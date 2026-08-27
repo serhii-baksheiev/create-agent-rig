@@ -1,0 +1,16 @@
+{
+  "case": "orthogonal-poll-notify",
+  "definition": "Envelope",
+  "valid": true,
+  "deliveryClass": "POLL",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-poll-notify",
+    "messageType": "orthogonality.sample",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-poll-notify",
+    "requestedIntent": "notify"
+  }
+}

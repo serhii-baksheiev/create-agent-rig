@@ -1,0 +1,16 @@
+{
+  "case": "orthogonal-turn-boundary-notify",
+  "definition": "Envelope",
+  "valid": true,
+  "deliveryClass": "TURN_BOUNDARY",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-turn-boundary-notify",
+    "messageType": "orthogonality.sample",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-turn-boundary-notify",
+    "requestedIntent": "notify"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "case": "receipt-handled-reply",
+  "definition": "DeliveryReceipt",
+  "valid": true,
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-replied",
+    "correlationId": "correlation-replied",
+    "observedAt": "2026-08-27T18:08:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "notify",
+    "outcome": "handled",
+    "busReaction": {
+      "kind": "reply",
+      "messageId": "reply-001"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "case": "envelope-transport-subject",
+  "definition": "Envelope",
+  "valid": false,
+  "expectedKeyword": "additionalProperties",
+  "expectedInstancePath": "",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-transport-subject",
+    "messageType": "project.note",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-transport-subject",
+    "requestedIntent": "notify",
+    "transportSubject": "transport.private.receiver-a"
+  }
+}

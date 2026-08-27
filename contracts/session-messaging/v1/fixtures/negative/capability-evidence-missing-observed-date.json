@@ -1,0 +1,32 @@
+{
+  "case": "capability-evidence-missing-observed-date",
+  "definition": "SessionCapabilities",
+  "valid": false,
+  "expectedKeyword": "required",
+  "expectedInstancePath": "/evidence",
+  "value": {
+    "contractMajor": 1,
+    "session": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "instanceId": "codex-local-a"
+    },
+    "effectiveDeliveryClass": "TURN_BOUNDARY",
+    "supportedIntents": ["notify"],
+    "ingressKind": "local-hook",
+    "verifiedAt": "2026-08-27T18:00:00Z",
+    "verifiedBy": "traffic",
+    "verificationState": "verified",
+    "consecutiveExpectedObservationFailures": 0,
+    "evidence": {
+      "harness": "codex",
+      "surface": "local-cli",
+      "harnessVersion": "0.1.0",
+      "os": "linux",
+      "mechanism": "turn-boundary observation",
+      "result": "message surfaced",
+      "evidencePointer": "fixture://missing-observed-date",
+      "degradationThreshold": 3
+    }
+  }
+}

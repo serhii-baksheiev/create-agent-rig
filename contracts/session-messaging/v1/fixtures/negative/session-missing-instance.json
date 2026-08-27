@@ -1,0 +1,12 @@
+{
+  "case": "session-missing-instance",
+  "definition": "SessionIdentity",
+  "valid": false,
+  "expectedKeyword": "required",
+  "expectedInstancePath": "",
+  "value": {
+    "engineerId": "engineer-local",
+    "harness": "codex",
+    "projectId": "create-agent-rig"
+  }
+}

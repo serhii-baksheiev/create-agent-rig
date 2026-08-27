@@ -1,0 +1,16 @@
+{
+  "case": "receipt-handled-without-reaction",
+  "definition": "DeliveryReceipt",
+  "valid": false,
+  "expectedKeyword": "required",
+  "expectedInstancePath": "",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-unobserved-handled",
+    "correlationId": "correlation-unobserved-handled",
+    "observedAt": "2026-08-27T18:11:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "notify",
+    "outcome": "handled"
+  }
+}

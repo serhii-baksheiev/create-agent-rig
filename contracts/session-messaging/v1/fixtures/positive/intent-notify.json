@@ -1,0 +1,7 @@
+{
+  "case": "intent-notify",
+  "definition": "DeliveryIntent",
+  "valid": true,
+  "baseline": "non-enterprise",
+  "value": "notify"
+}

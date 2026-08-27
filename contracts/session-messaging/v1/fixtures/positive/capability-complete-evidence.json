@@ -1,0 +1,34 @@
+{
+  "case": "capability-complete-evidence",
+  "definition": "SessionCapabilities",
+  "valid": true,
+  "baseline": "non-enterprise",
+  "value": {
+    "contractMajor": 1,
+    "session": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "projectId": "create-agent-rig",
+      "instanceId": "codex-local-a"
+    },
+    "effectiveDeliveryClass": "TURN_BOUNDARY",
+    "supportedIntents": ["notify"],
+    "ingressKind": "local-hook",
+    "verifiedAt": "2026-08-27T18:00:00Z",
+    "verifiedBy": "traffic",
+    "lastAckAt": "2026-08-27T18:00:00Z",
+    "verificationState": "verified",
+    "consecutiveExpectedObservationFailures": 0,
+    "evidence": {
+      "harness": "codex",
+      "surface": "local-cli",
+      "harnessVersion": "0.1.0",
+      "os": "linux",
+      "observedDate": "2026-08-27",
+      "mechanism": "turn-boundary observation",
+      "result": "message surfaced",
+      "evidencePointer": "fixture://capability-complete-evidence",
+      "degradationThreshold": 3
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "case": "receipt-handled-ack",
+  "definition": "DeliveryReceipt",
+  "valid": true,
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-acked",
+    "correlationId": "correlation-acked",
+    "observedAt": "2026-08-27T18:07:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "notify",
+    "outcome": "handled",
+    "busReaction": {
+      "kind": "ack",
+      "messageId": "ack-001"
+    }
+  }
+}

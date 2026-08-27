@@ -1,0 +1,16 @@
+{
+  "case": "orthogonal-offline-notify",
+  "definition": "Envelope",
+  "valid": true,
+  "deliveryClass": "OFFLINE",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-offline-notify",
+    "messageType": "orthogonality.sample",
+    "payload": {},
+    "sender": { "engineerId": "sender", "harness": "codex", "instanceId": "sender-a" },
+    "recipient": { "engineerId": "receiver", "harness": "claude", "instanceId": "receiver-a" },
+    "correlationId": "correlation-offline-notify",
+    "requestedIntent": "notify"
+  }
+}

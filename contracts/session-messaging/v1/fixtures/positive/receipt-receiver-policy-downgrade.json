@@ -1,0 +1,19 @@
+{
+  "case": "receipt-receiver-policy-downgrade",
+  "definition": "DeliveryReceipt",
+  "valid": true,
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-policy-downgrade",
+    "correlationId": "correlation-policy-downgrade",
+    "observedAt": "2026-08-27T18:03:00Z",
+    "requestedIntent": "wake",
+    "effectiveIntent": "notify",
+    "outcome": "surfaced",
+    "downgrade": {
+      "from": "wake",
+      "to": "notify",
+      "reason": "receiver policy permits notify only"
+    }
+  }
+}

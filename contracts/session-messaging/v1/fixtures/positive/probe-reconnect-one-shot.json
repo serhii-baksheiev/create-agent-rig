@@ -1,0 +1,35 @@
+{
+  "case": "probe-reconnect-one-shot",
+  "definition": "ProbeResult",
+  "valid": true,
+  "value": {
+    "contractMajor": 1,
+    "session": {
+      "engineerId": "engineer-local",
+      "harness": "claude",
+      "projectId": "create-agent-rig",
+      "instanceId": "claude-local-a"
+    },
+    "trigger": "reconnect",
+    "mechanism": "local ingress reconnect probe",
+    "outcome": "turn-boundary notify accepted",
+    "observedAt": "2026-08-27T18:10:00Z",
+    "effectiveCapability": {
+      "deliveryClass": "TURN_BOUNDARY",
+      "supportedIntents": ["notify"],
+      "ingressKind": "local-hook"
+    },
+    "verificationState": "verified",
+    "evidence": {
+      "harness": "claude",
+      "surface": "local-cli",
+      "harnessVersion": "0.1.0",
+      "os": "linux",
+      "observedDate": "2026-08-27",
+      "mechanism": "reconnect probe",
+      "result": "turn-boundary notify accepted",
+      "evidencePointer": "fixture://probe-reconnect-one-shot",
+      "degradationThreshold": 3
+    }
+  }
+}

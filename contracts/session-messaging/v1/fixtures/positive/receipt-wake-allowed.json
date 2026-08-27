@@ -1,0 +1,15 @@
+{
+  "case": "receipt-wake-allowed",
+  "definition": "DeliveryReceipt",
+  "valid": true,
+  "baseline": "non-enterprise",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-wake-allowed",
+    "correlationId": "correlation-wake-allowed",
+    "observedAt": "2026-08-27T18:02:00Z",
+    "requestedIntent": "wake",
+    "effectiveIntent": "wake",
+    "outcome": "routed"
+  }
+}

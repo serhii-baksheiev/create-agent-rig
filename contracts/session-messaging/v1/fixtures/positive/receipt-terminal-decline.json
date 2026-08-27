@@ -1,0 +1,15 @@
+{
+  "case": "receipt-terminal-decline",
+  "definition": "DeliveryReceipt",
+  "valid": true,
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-declined",
+    "correlationId": "correlation-declined",
+    "observedAt": "2026-08-27T18:05:00Z",
+    "requestedIntent": "wake",
+    "effectiveIntent": "wake",
+    "outcome": "declined",
+    "declineReason": "sender is not authorized to wake this session"
+  }
+}

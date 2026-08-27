@@ -1,0 +1,8 @@
+{
+  "case": "intent-foreign-value",
+  "definition": "DeliveryIntent",
+  "valid": false,
+  "expectedKeyword": "enum",
+  "expectedInstancePath": "",
+  "value": "steer"
+}

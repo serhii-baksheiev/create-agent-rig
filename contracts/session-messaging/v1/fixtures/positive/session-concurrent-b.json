@@ -1,0 +1,11 @@
+{
+  "case": "session-concurrent-b",
+  "definition": "SessionIdentity",
+  "valid": true,
+  "value": {
+    "engineerId": "engineer-local",
+    "harness": "codex",
+    "projectId": "create-agent-rig",
+    "instanceId": "codex-local-b"
+  }
+}
