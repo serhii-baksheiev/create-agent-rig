@@ -11,9 +11,98 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
-## Unreleased
+## 0.6.0
+
+**The loop now checks its premises against the tracker at three points, and
+the rulebook cannot be edited from an unattended run.** Everything below is what
+a newly scaffolded or `init`ed project receives.
+
+**The released-hash table no longer depends on tags** (AR-35). It is built
+from `templates/release-ledger.json` — the commit each version was published
+from — so it now carries 0.5.0's bytes, 0.4.0's real bytes (the stale `v0.4.0`
+tag is reported and ignored) and a 0.2.0 row; the consequence 0.5.0's notes
+state for a rig upgraded without a readable manifest is closed for every
+release the ledger records. This release itself is excluded, as every release
+being prepared is: commit `.claude/.rig-manifest.json`.
+
+### Added
+
+- **Revalidation at SELECT, BEFORE_PR and BEFORE_CLOSE** (AR-133, AR-134,
+  AR-135, AR-136). `.claude/scripts/revalidate.mjs` compares the item the run
+  took against the tracker's current state — at selection against this run's
+  take-up, before a PR against the item and the default branch, and before a
+  close against the item's fields and its dependants — and every point records
+  one evidence shape in the run directory; `revalidation-report.mjs` reads them
+  back. A close now proves it transitioned rather than reporting the write. The
+  points themselves have one spelling, `.claude/scripts/lib/revalidation-points.mjs`,
+  and the `loop` and `pr-ship` skills are checked against it in both directions
+  (AR-137).
+- **`guard-rulebook`** (AR-51): a `PreToolUse` hook that refuses an edit to the
+  hooks, their wiring, `.claude/queue.json`, the queue adapters, the router, the
+  gate sweep, the rules or `CLAUDE.md` while the unattended flag the `loop` skill
+  writes at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), unless
+  the item's allow-list names the path. Attended sessions are untouched. Its
+  header states its limits, each one under test in the generator.
+- **`doctor`** (AR-5): `node .claude/scripts/doctor.mjs` reads
+  `.claude/.rig-manifest.json` and reports every hook the project owns — bytes
+  that differ from what the generator installed, or no manifest entry — that has
+  no `<hook>.test.mjs` beside it. Exemptions are an explicit list with reasons in
+  `.claude/doctor-exemptions.json`; a doctor that looked nowhere never says GO.
+- **Fan-out coverage is checked, not just recorded** (AR-79, AR-118): `pr-ship`
+  compares the reviewers that answered against the route the router gave the
+  head, bound to that head; `docs/decisions/gate-coverage.md` records the shape
+  and the unreadable states.
+- **Queue items carry more of the tracker's meaning into selection:**
+  - an item marked for another repository (`owner-<name>`; `[owner:<name>]` in
+    `PLAN.md`) is held, never taken — a checkout names itself in
+    `options.owner` (AR-132);
+  - the lifecycle vocabulary `keep-core` / `re-scope` / `obsolete` and the
+    `parked` pile are read above the adapter seam, and the loop infers none of
+    it (AR-144);
+  - a proposal the loop files records the commit it was measured against
+    (`asOf`), and `hygiene` reports the one git has overtaken (AR-116); it also
+    names what it measured and what it inferred, and an inference past the
+    measurement is refused at filing (AR-142);
+  - the take-up baseline reaches into earlier runs, so a marker the adapter's
+    own write produced is not read back as a catch (AR-138, AR-140);
+  - `gate-round` refuses to count a round on a checkout that cannot ship, and
+    states the cap as a spent count rather than a convergence verdict (AR-141,
+    AR-115).
+
+### Changed
+
+- **The Jira adapter is harder to knock over** (AR-54): a request timeout that
+  stays armed through the body read, transient retry honouring `Retry-After`
+  (capped at 60 s), cursor pagination with a stated page cap, a priority-id
+  fallback, and a JQL that is always project-qualified — an explicit
+  `options.jql` must begin with `project = <KEY>`.
+- **The adapter contract gained `find` and `listProposals`** (AR-135, AR-116)
+  and the ticket shape gained `updatedAt`, `owner`, `lifecycle` and `parked`. A
+  custom adapter written against 0.5.0 fails the contract check until it
+  provides both operations. On `jira`, `limit` is now the **page** size, not a
+  result cap.
+- **A close is a close only when the tracker says so** (AR-135): all three
+  adapters read the item back and return `transitioned` from what they read,
+  instead of from the argument they were given or a `gh` exit code.
+- **`gate-stop-dod` measures the project the hook belongs to, not the cwd**, and
+  names the tree in its refusal (AR-119).
+- **`.claude/rules/node-ts.md` names the third state of a PR head** — one that
+  gets no workflow run at all — and says it is retriggered per required check,
+  never merged on an older head's green (AR-149).
+- **The autonomy and invariants rules state the enforcement they have exactly**:
+  `guard-secret-file`'s four blind spots, the unattended flag as what arms
+  `guard-rulebook`, and the unbacked-claim rule with its two exits (delete, or
+  point at the test).
 
 ### Fixed
+
+- **`MultiEdit` and `NotebookEdit` reached every content guard and produced no
+  fragment**, so an impure edit to the core through either passed unchecked.
+  `hooks/lib/edit-input.mjs` now yields one fragment per edit for both (AR-51).
+- **`manifest.version` is held to the same value check its siblings get**, and
+  the comment no longer claims a prerelease the rig never wrote (AR-128).
+- **Hooks resolve the project root inside `main()`**, so a throw there announces
+  itself instead of failing open silently (AR-119).
 
 - **The upgrade plan's header told you your rig was old when it could not know
   that.** It greeted every rig it could not read a manifest for with "no manifest
