@@ -137,19 +137,30 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
     expect(content).toMatch(/pointer to (a|the) test/i);
   });
 
-  it('allows an absent upstream test only for an unchanged generator-authored hook', async () => {
+  it('allows an absent upstream test only for a manifest-proven inherited artifact', async () => {
     const content = await read();
     const checklist = content.slice(
       content.indexOf('## Checklist'),
       content.indexOf('## Advisory'),
     );
+    const exception =
+      /⚠ A pointer[\s\S]*?(?=\n\s*🔴 Three things this is not)/.exec(checklist)?.[0] ?? '';
 
-    expect(checklist).toMatch(/generator-authored hook/i);
-    expect(checklist).toMatch(/(?:upstream|generator)[^.]{0,80}tests?[^.]{0,120}absent locally/i);
-    expect(checklist).toMatch(/hook[^.]{0,80}header[^.]{0,120}absent locally/i);
-    expect(checklist).toMatch(/only while[^.]{0,120}(?:unchanged|untouched)[^.]{0,80}downstream/i);
-    expect(checklist).toMatch(
-      /(?:edit|change)[^.]{0,120}(?:downstream|current diff)[^.]{0,160}(?:local test|test is yours|exception (?:expires|ends|no longer applies))/i,
+    expect(exception, 'the inherited upstream-pointer exception must still exist').toBeTruthy();
+    expect(exception).toMatch(/generator-authored (?:artifact|rulebook|hook|skill)/i);
+    for (const artifact of ['rulebook', 'hook', 'skill']) expect(exception).toMatch(artifact);
+    expect(exception).toMatch(/(?:upstream|generator)[^.]{0,80}tests?[^.]{0,120}absent locally/i);
+    expect(exception).toMatch(/(?:pointer|artifact)[^.]{0,120}absent locally/i);
+    expect(exception).toContain('.claude/.rig-manifest.json');
+    expect(exception).toMatch(
+      /manifest[^.]{0,160}hash[^.]{0,120}(?:match|same)|hash[^.]{0,160}(?:match|same)[^.]{0,120}manifest/i,
+    );
+    expect(exception).toMatch(
+      /(?:upgrade|upgraded)[^.]{0,160}(?:inherited|generator-owned)|(?:inherited|generator-owned)[^.]{0,160}(?:upgrade|upgraded)/i,
+    );
+    expect(exception).toMatch(/only while[^.]{0,160}(?:manifest|hash)[^.]{0,120}(?:match|same)/i);
+    expect(exception).toMatch(
+      /(?:hash mismatch|hash[^.]{0,80}(?:differs|does not match)|no manifest|missing manifest|no evidence)[^.]{0,180}(?:local test|test is yours|exception (?:expires|ends|no longer applies))/i,
     );
   });
 

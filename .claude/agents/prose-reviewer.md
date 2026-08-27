@@ -61,11 +61,15 @@ about it here, so the two gates never file competing opinions on one paragraph.
 
    ⚠ A pointer into a test suite the reader's project does not carry is normally
    item 2, not backing. There is one narrow inherited-snapshot exception from
-   `invariants.md`: a generator-authored hook may point to upstream generator
-   tests that are absent locally **only while the hook is unchanged downstream**
-   and its hook header identifies those tests as absent locally. If that hook is
-   edited downstream or appears as changed in the current diff, the exception
-   expires and the local test is yours; then an absent pointer is item 2 again.
+   `invariants.md`: a generator-authored artifact — rulebook, hook, or skill —
+   may point to upstream generator tests that are absent locally only when the
+   pointer explicitly says the suite is absent locally and
+   `.claude/.rig-manifest.json` proves the current artifact's hash matches the
+   installed manifest. A manifest-backed upgrade remains an inherited,
+   generator-owned artifact; a changed file in the upgrade diff does not alone
+   make it downstream-authored. The exception applies **only while the manifest
+   hash matches**. A hash mismatch, missing manifest, or no evidence ends the
+   exception and the local test is yours; then an absent pointer is item 2 again.
 
    🔴 Three things this is not. It is not item 1: that one is about enforcement the
    mechanism does not provide, this one is about any claim with nothing behind it,

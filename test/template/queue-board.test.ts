@@ -16,12 +16,12 @@ const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const queueDir = path.join(universal, '.claude', 'scripts', 'queue');
 const indexModule = () => import(pathToFileURL(path.join(queueDir, 'index.mjs')).href);
 
-const runCli = (args: string[], cwd: string) =>
+const runCli = (args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) =>
   new Promise<{ code: number; stdout: string; out: string }>((resolve) => {
     execFile(
       process.execPath,
       [path.join(queueDir, 'index.mjs'), ...args],
-      { cwd },
+      { cwd, env: { ...process.env, ...env } },
       (error, stdout, stderr) =>
         resolve({
           code: error ? ((error as { code?: number }).code ?? 1) : 0,
@@ -105,6 +105,47 @@ describe('boards in queue.json', () => {
       boards: ['AR', 'RP'],
       options: { maxGateRounds: 3, project: 'RP', owner: 'rig' },
     });
+  });
+
+  it('keeps the board report available but refuses a switch while this checkout is unattended', async () => {
+    const { boardPathFor } = await indexModule();
+    const { writeUnattended, clearUnattended } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const { dir, configPath } = await fixture();
+    const home = await mkdtemp(path.join(tmpdir(), 'queue-board-home-'));
+    const env = { HOME: home, CLAUDE_PROJECT_DIR: dir };
+    writeUnattended({ item: 'AR-BOARD', runDir: '/runs/board', allow: [] }, env);
+
+    const report = await runCli(['board', '--json', '--config', configPath], dir, env);
+    expect(report.code, report.out).toBe(0);
+    expect(JSON.parse(report.stdout)).toMatchObject({ board: 'AR', boards: ['AR', 'RP'] });
+
+    const switched = await runCli(['board', 'RP', '--config', configPath], dir, env);
+    expect(switched.code, switched.out).not.toBe(0);
+    expect(switched.out).toMatch(/unattended/i);
+    await expect(readFile(boardPathFor(configPath), 'utf8')).rejects.toThrow();
+
+    clearUnattended(env);
+  });
+
+  it('finds the checkout-scoped flag from cwd when CLAUDE_PROJECT_DIR is absent', async () => {
+    const { writeUnattended, clearUnattended } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const { dir, configPath } = await fixture();
+    const home = await mkdtemp(path.join(tmpdir(), 'queue-board-cwd-home-'));
+    const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: dir };
+    writeUnattended({ item: 'AR-BOARD-CWD', runDir: '/runs/board', allow: [] }, scopedEnv);
+
+    const switched = await runCli(['board', 'RP', '--config', configPath], dir, {
+      HOME: home,
+      CLAUDE_PROJECT_DIR: '',
+    });
+    expect(switched.code, switched.out).not.toBe(0);
+    expect(switched.out).toMatch(/unattended/i);
+
+    clearUnattended(scopedEnv);
   });
 
   it('`board <name>` refuses an undeclared board and writes nothing', async () => {

@@ -88,9 +88,23 @@ function main() {
   }
   if (!EDIT_TOOLS.has(input?.tool_name)) return 0;
 
-  const root = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const root = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const unattendedEnv = { ...process.env, CLAUDE_PROJECT_DIR: root };
+  const fragments = editFragments(input);
+  const globalRefusal = fragments.find(
+    ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
+  );
+  if (globalRefusal) {
+    const mode = readUnattended(unattendedEnv);
+    if (!mode.on) return 0;
+    process.stderr.write(
+      `BLOCKED — cannot safely inspect this unattended edit: ${globalRefusal.inspectionRefusal}\n` +
+        `${globalRefusal.remedy ?? 'Split it into a smaller edit and retry.'}\n`,
+    );
+    return 2;
+  }
   const paths = [];
-  for (const { filePath } of editFragments(input)) {
+  for (const { filePath } of fragments) {
     if (typeof filePath !== 'string' || filePath === '') continue;
     const rel = relativeTo(root, filePath);
     if (isRulebookPath(rel) && !paths.includes(rel)) paths.push(rel);
@@ -98,7 +112,7 @@ function main() {
   }
   if (paths.length === 0) return 0; // nothing under the rulebook: never judged
 
-  const mode = readUnattended();
+  const mode = readUnattended(unattendedEnv);
   if (!mode.on) return 0; // attended session
 
   if (mode.unreadable) {
@@ -109,8 +123,17 @@ function main() {
     return 2;
   }
 
-  const refused = paths.filter((rel) => !isAllowed(rel, mode.allow));
+  const refused = paths.filter(
+    (rel) => rel === '.claude/queue.board' || !isAllowed(rel, mode.allow),
+  );
   if (refused.length === 0) return 0;
+  if (refused[0] === '.claude/queue.board') {
+    process.stderr.write(
+      'BLOCKED — ".claude/queue.board" is the checkout board selector and cannot be changed while unattended, even through an item allow-list. ' +
+        'Disarm unattended mode before deliberately switching queues.\n',
+    );
+    return 2;
+  }
   process.stderr.write(
     `BLOCKED — "${refused[0]}" is part of the rulebook, and an unattended run never edits the rulebook outside its item's allow-list ` +
       `(item ${mode.item ?? '(none)'}; allowed prefixes: ${mode.allow.length === 0 ? 'none' : mode.allow.join(', ')}). ` +

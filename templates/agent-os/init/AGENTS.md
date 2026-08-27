@@ -118,7 +118,7 @@ All four are one-liners, and all four are inert until you do them.
    every repo has. Everything else is yours to add.
 3. **Five runtime paths need a `.gitignore` line each**, and `init` cannot add
    them — it installs into your repository and does not edit files it did not
-   bring. Add all five:
+   bring. If any are missing, add only the missing entries:
 
    ```
    # the tier the last close recorded

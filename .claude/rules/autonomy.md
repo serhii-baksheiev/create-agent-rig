@@ -95,10 +95,10 @@ own cost figures are read next to the lane they do not cover.
 - bypass pre-commit (`--no-verify` is hook-blocked anyway)
 - force-push a shared branch
 - put secrets in code, config, logs, or fixtures. One part of this is
-  **mechanical**: `guard-secret-file` refuses an edit through `Write`, `Edit`, or
-  `apply_patch` that names a credential file or carries a credential value,
+  **mechanical**: `guard-secret-file` refuses an edit through `Write`, `Edit`,
+  `MultiEdit`, `NotebookEdit`, or `apply_patch` that names a credential file or carries a credential value,
   reading its vocabulary from `.claude/scripts/lib/secrets.mjs`. ⚠ **Only that
-  part.** The hook sees what an agent writes through those three tools and
+  part.** The hook sees what an agent writes through those five tools and
   nothing else — its own header states the four blind spots — so whether a
   credential typed by a human, or committed from disk, is also refused depends
   on whether this project has a commit-time check. Look at `.husky/` and the CI

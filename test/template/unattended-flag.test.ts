@@ -221,6 +221,26 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
 describe('writeUnattended / clearUnattended: the file the run arms and disarms', () => {
   const env = () => ({ ...process.env, HOME: home });
 
+  it('keeps concurrent worktrees separate and clears only the current checkout record', async () => {
+    const { writeUnattended, clearUnattended, readUnattended } = await load();
+    const checkoutA = path.join(home, 'checkout-a');
+    const checkoutB = path.join(home, 'checkout-b');
+    await mkdir(checkoutA, { recursive: true });
+    await mkdir(checkoutB, { recursive: true });
+    const envA = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA };
+    const envB = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB };
+
+    writeUnattended({ item: 'AR-A', runDir: '/runs/a', allow: [] }, envA);
+    writeUnattended({ item: 'AR-B', runDir: '/runs/b', allow: [] }, envB);
+
+    expect(readUnattended(envA)).toMatchObject({ on: true, item: 'AR-A', runDir: '/runs/a' });
+    expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
+
+    clearUnattended(envA);
+    expect(readUnattended(envA)).toEqual({ on: false });
+    expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
+  });
+
   it('writes the first candidate, creating <home>/.claude/, and returns the path', async () => {
     const { writeUnattended, readUnattended } = await load();
     const touched = writeUnattended({ item: 'AR-51', runDir: '/r', allow: ['CLAUDE.md'] }, env());
@@ -245,6 +265,31 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
 });
 
 describe('the CLI the loop skill calls', () => {
+  it('scopes on/off to --root so concurrent checkout CLIs do not share a flag', async () => {
+    const { readUnattended } = await load();
+    const checkoutA = path.join(home, 'cli-checkout-a');
+    const checkoutB = path.join(home, 'cli-checkout-b');
+    await mkdir(checkoutA, { recursive: true });
+    await mkdir(checkoutB, { recursive: true });
+
+    expect((await runCli(['on', '--root', checkoutA, '--item', 'AR-A'], home)).code).toBe(0);
+    expect((await runCli(['on', '--root', checkoutB, '--item', 'AR-B'], home)).code).toBe(0);
+    expect(
+      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA }),
+    ).toMatchObject({ item: 'AR-A' });
+    expect(
+      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB }),
+    ).toMatchObject({ item: 'AR-B' });
+
+    expect((await runCli(['off', '--root', checkoutA], home)).code).toBe(0);
+    expect(readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA })).toEqual({
+      on: false,
+    });
+    expect(
+      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB }),
+    ).toMatchObject({ item: 'AR-B' });
+  });
+
   it('`on --item … --run-dir … --allow …` writes the flag and prints its path', async () => {
     const result = await runCli(
       [
