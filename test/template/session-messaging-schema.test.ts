@@ -3,6 +3,15 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import type {
+  DeliveryClass as DeliveryClassValue,
+  DeliveryIntent as DeliveryIntentValue,
+  DeliveryReceipt,
+  Envelope,
+  ProbeResult,
+  SessionCapabilities,
+  SessionIdentity,
+} from '../../contracts/session-messaging/v1/schema.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const contractDir = path.join(repoRoot, 'contracts', 'session-messaging', 'v1');
@@ -53,6 +62,77 @@ type GoldenFixture = {
   expectedInstancePath?: string;
   deliveryClass?: DeliveryClass;
   baseline?: 'non-enterprise';
+};
+
+const representativeIdentity = {
+  engineerId: 'engineer-local',
+  harness: 'codex',
+  projectId: 'create-agent-rig',
+  instanceId: 'codex-local-a',
+} satisfies SessionIdentity;
+
+const representativeEvidence = {
+  harness: 'codex',
+  surface: 'local-cli',
+  harnessVersion: '0.1.0',
+  os: 'linux',
+  observedDate: '2026-08-27',
+  mechanism: 'fixture conformance',
+  result: 'accepted',
+  evidencePointer: 'fixture://typed-representative',
+  degradationThreshold: 3,
+};
+
+const TYPED_CONTRACT_VALUES = {
+  identity: representativeIdentity,
+  envelope: {
+    contractMajor: 1,
+    messageId: 'message-typed',
+    messageType: 'contract.typed',
+    payload: {},
+    sender: representativeIdentity,
+    recipient: { ...representativeIdentity, instanceId: 'codex-local-b' },
+    correlationId: 'correlation-typed',
+    requestedIntent: 'notify',
+  } satisfies Envelope,
+  intent: 'notify' satisfies DeliveryIntentValue,
+  deliveryClass: 'TURN_BOUNDARY' satisfies DeliveryClassValue,
+  capabilities: {
+    contractMajor: 1,
+    session: representativeIdentity,
+    effectiveDeliveryClass: 'TURN_BOUNDARY',
+    supportedIntents: ['notify'],
+    ingressKind: 'local-hook',
+    verifiedAt: '2026-08-27T18:00:00Z',
+    verifiedBy: 'traffic',
+    verificationState: 'verified',
+    consecutiveExpectedObservationFailures: 0,
+    evidence: representativeEvidence,
+  } satisfies SessionCapabilities,
+  receipt: {
+    contractMajor: 1,
+    messageId: 'message-typed',
+    correlationId: 'correlation-typed',
+    observedAt: '2026-08-27T18:00:00Z',
+    requestedIntent: 'notify',
+    effectiveIntent: 'notify',
+    outcome: 'surfaced',
+  } satisfies DeliveryReceipt,
+  probe: {
+    contractMajor: 1,
+    session: representativeIdentity,
+    trigger: 'registration',
+    mechanism: 'local registration probe',
+    outcome: 'notify accepted',
+    observedAt: '2026-08-27T18:00:00Z',
+    effectiveCapability: {
+      deliveryClass: 'TURN_BOUNDARY',
+      supportedIntents: ['notify'],
+      ingressKind: 'local-hook',
+    },
+    verificationState: 'verified',
+    evidence: representativeEvidence,
+  } satisfies ProbeResult,
 };
 
 const recordOf = (value: unknown, description: string): Record<string, unknown> => {
@@ -107,7 +187,13 @@ const loadAjv2020 = (): AjvInstance => {
   const loaded: unknown = requireFromHere('ajv/dist/2020.js');
   const constructor =
     (loaded as { default?: AjvConstructor }).default ?? (loaded as AjvConstructor);
-  return new constructor({ allErrors: true, strict: true });
+  const ajv = new constructor({ allErrors: true, strict: true });
+  const loadedFormats: unknown = requireFromHere('ajv-formats');
+  const installFormats =
+    (loadedFormats as { default?: (instance: AjvInstance) => unknown }).default ??
+    (loadedFormats as (instance: AjvInstance) => unknown);
+  installFormats(ajv);
+  return ajv;
 };
 
 const compileDefinition = async (definition: PublicDefinition): Promise<Validator> => {
@@ -133,6 +219,15 @@ const validateFixture = async (fixture: GoldenFixture): Promise<Validator> => {
 
 describe('session messaging Contract v1 Draft 2020-12 schemas', () => {
   it('exports one Draft 2020-12 schema with all seven public definitions', async () => {
+    expect(Object.keys(TYPED_CONTRACT_VALUES)).toEqual([
+      'identity',
+      'envelope',
+      'intent',
+      'deliveryClass',
+      'capabilities',
+      'receipt',
+      'probe',
+    ]);
     const schema = await loadSchema();
     expect(schema.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
     for (const definition of PUBLIC_DEFINITIONS) {
@@ -319,6 +414,30 @@ describe('session messaging Contract v1 Draft 2020-12 schemas', () => {
     );
   });
 
+  it('rejects reactions before handled and decline reasons before declined', async () => {
+    const fixtures = await loadFixtureTree('negative');
+    const inconsistent = [
+      ['receipt-surfaced-with-reaction', { outcome: 'surfaced', busReaction: expect.any(Object) }],
+      [
+        'receipt-routed-with-decline-reason',
+        { outcome: 'routed', declineReason: expect.any(String) },
+      ],
+    ] as const;
+    for (const [name, shape] of inconsistent) {
+      const fixture = fixtureByCase(fixtures, name);
+      expect(fixture.definition).toBe('DeliveryReceipt');
+      expect(recordOf(fixture.value, fixture.file)).toMatchObject(shape);
+      expect((await validateFixture(fixture)).errors, fixture.file).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            keyword: fixture.expectedKeyword,
+            instancePath: fixture.expectedInstancePath,
+          }),
+        ]),
+      );
+    }
+  });
+
   it('requires per-session capability evidence without treating absent traffic as failure', async () => {
     const fixtures = await loadFixtureTree('positive');
     const evidenceFixture = fixtureByCase(fixtures, 'capability-complete-evidence');
@@ -370,6 +489,75 @@ describe('session messaging Contract v1 Draft 2020-12 schemas', () => {
       expect((await validateFixture(fixture)).errors, fixture.file).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ keyword: 'required', instancePath: '/evidence' }),
+        ]),
+      );
+    }
+  });
+
+  it('rejects degraded capability evidence with zero expected-observation failures', async () => {
+    const fixture = fixtureByCase(
+      await loadFixtureTree('negative'),
+      'capability-degraded-zero-failures',
+    );
+    expect(fixture.definition).toBe('SessionCapabilities');
+    expect(recordOf(fixture.value, fixture.file)).toMatchObject({
+      verificationState: 'degraded',
+      consecutiveExpectedObservationFailures: 0,
+    });
+    expect((await validateFixture(fixture)).errors, fixture.file).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          keyword: fixture.expectedKeyword,
+          instancePath: fixture.expectedInstancePath,
+        }),
+      ]),
+    );
+  });
+
+  it('rejects impossible RFC3339 dates and timestamps at their declared paths', async () => {
+    const fixtures = await loadFixtureTree('negative');
+    const cases = [
+      {
+        name: 'capability-evidence-invalid-observed-date',
+        definition: 'SessionCapabilities',
+        path: '/evidence/observedDate',
+        impossible: '2026-02-30',
+        valueOf: (value: Record<string, unknown>) =>
+          recordOf(value.evidence, 'capability evidence').observedDate,
+      },
+      {
+        name: 'capability-invalid-verified-at',
+        definition: 'SessionCapabilities',
+        path: '/verifiedAt',
+        impossible: '2026-02-30T25:61:00Z',
+        valueOf: (value: Record<string, unknown>) => value.verifiedAt,
+      },
+      {
+        name: 'receipt-invalid-observed-at',
+        definition: 'DeliveryReceipt',
+        path: '/observedAt',
+        impossible: '2026-02-30T25:61:00Z',
+        valueOf: (value: Record<string, unknown>) => value.observedAt,
+      },
+      {
+        name: 'probe-invalid-observed-at',
+        definition: 'ProbeResult',
+        path: '/observedAt',
+        impossible: '2026-02-30T25:61:00Z',
+        valueOf: (value: Record<string, unknown>) => value.observedAt,
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const fixture = fixtureByCase(fixtures, testCase.name);
+      expect(fixture.definition).toBe(testCase.definition);
+      expect(fixture).toMatchObject({
+        expectedKeyword: 'format',
+        expectedInstancePath: testCase.path,
+      });
+      expect(testCase.valueOf(recordOf(fixture.value, fixture.file))).toBe(testCase.impossible);
+      expect((await validateFixture(fixture)).errors, fixture.file).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ keyword: 'format', instancePath: testCase.path }),
         ]),
       );
     }

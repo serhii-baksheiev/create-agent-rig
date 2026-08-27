@@ -1,0 +1,33 @@
+{
+  "case": "capability-evidence-invalid-observed-date",
+  "definition": "SessionCapabilities",
+  "valid": false,
+  "expectedKeyword": "format",
+  "expectedInstancePath": "/evidence/observedDate",
+  "value": {
+    "contractMajor": 1,
+    "session": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "instanceId": "codex-local-a"
+    },
+    "effectiveDeliveryClass": "TURN_BOUNDARY",
+    "supportedIntents": ["notify"],
+    "ingressKind": "local-hook",
+    "verifiedAt": "2026-08-27T18:17:00Z",
+    "verifiedBy": "traffic",
+    "verificationState": "verified",
+    "consecutiveExpectedObservationFailures": 0,
+    "evidence": {
+      "harness": "codex",
+      "surface": "local-cli",
+      "harnessVersion": "0.1.0",
+      "os": "linux",
+      "observedDate": "2026-02-30",
+      "mechanism": "turn-boundary observation",
+      "result": "message surfaced",
+      "evidencePointer": "fixture://invalid-observed-date",
+      "degradationThreshold": 3
+    }
+  }
+}

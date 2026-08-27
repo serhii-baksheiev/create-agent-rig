@@ -1,9 +1,122 @@
 export const SESSION_MESSAGING_CONTRACT_MAJOR = 1 as const;
 
+export type DeliveryIntent = 'notify' | 'wake';
+export type DeliveryClass = 'PUSH' | 'TURN_BOUNDARY' | 'POLL' | 'OFFLINE';
+
+export type SessionIdentity = {
+  engineerId: string;
+  harness: string;
+  projectId?: string;
+  instanceId: string;
+};
+
+export type Envelope = {
+  contractMajor: typeof SESSION_MESSAGING_CONTRACT_MAJOR;
+  messageId: string;
+  messageType: string;
+  payload: unknown;
+  sender: SessionIdentity;
+  recipient: SessionIdentity;
+  correlationId: string;
+  causationId?: string;
+  replyTo?: string;
+  requestedIntent: DeliveryIntent;
+};
+
+type VerificationState = 'verified' | 'degraded' | 'unverified';
+
+type EvidenceMetadata = {
+  harness: string;
+  surface: string;
+  harnessVersion: string;
+  os: string;
+  observedDate: string;
+  mechanism: string;
+  result: string;
+  evidencePointer: string;
+  notes?: string;
+  degradationThreshold: number;
+};
+
+export type SessionCapabilities = {
+  contractMajor: typeof SESSION_MESSAGING_CONTRACT_MAJOR;
+  session: SessionIdentity;
+  effectiveDeliveryClass: DeliveryClass;
+  supportedIntents: DeliveryIntent[];
+  ingressKind: string;
+  verifiedAt: string;
+  verifiedBy: 'probe' | 'traffic';
+  lastAckAt?: string;
+  verificationState: VerificationState;
+  consecutiveExpectedObservationFailures: number;
+  degradationReason?: string;
+  evidence: EvidenceMetadata;
+};
+
+type Downgrade = {
+  from: 'wake';
+  to: 'notify';
+  reason: string;
+};
+
+type ReceiptIntent =
+  | { requestedIntent: 'notify'; effectiveIntent: 'notify'; downgrade?: never }
+  | { requestedIntent: 'wake'; effectiveIntent: 'wake'; downgrade?: never }
+  | { requestedIntent: 'wake'; effectiveIntent: 'notify'; downgrade: Downgrade };
+
+type BusReaction = {
+  kind: 'ack' | 'reply' | 'decline' | 'other';
+  messageId: string;
+};
+
+type ReceiptOutcome =
+  | {
+      outcome: 'accepted' | 'routed' | 'surfaced';
+      busReaction?: never;
+      declineReason?: never;
+    }
+  | {
+      outcome: 'handled';
+      busReaction: BusReaction;
+      declineReason?: never;
+    }
+  | {
+      outcome: 'declined';
+      declineReason: string;
+      busReaction?: never;
+      downgrade?: never;
+    };
+
+export type DeliveryReceipt = {
+  contractMajor: typeof SESSION_MESSAGING_CONTRACT_MAJOR;
+  messageId: string;
+  correlationId: string;
+  observedAt: string;
+} & ReceiptIntent &
+  ReceiptOutcome;
+
+type EffectiveCapability = {
+  deliveryClass: DeliveryClass;
+  supportedIntents: DeliveryIntent[];
+  ingressKind: string;
+};
+
+export type ProbeResult = {
+  contractMajor: typeof SESSION_MESSAGING_CONTRACT_MAJOR;
+  session: SessionIdentity;
+  trigger: 'registration' | 'reconnect';
+  mechanism: string;
+  outcome: string;
+  observedAt: string;
+  effectiveCapability: EffectiveCapability;
+  verificationState: VerificationState;
+  evidence: EvidenceMetadata;
+};
+
 const nonEmptyString = { type: 'string', minLength: 1 } as const;
 const timestamp = {
   type: 'string',
-  pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$',
+  format: 'date-time',
 } as const;
 
 export const sessionMessagingSchema = {
@@ -39,7 +152,7 @@ export const sessionMessagingSchema = {
         os: nonEmptyString,
         observedDate: {
           type: 'string',
-          pattern: '^\\d{4}-\\d{2}-\\d{2}$',
+          format: 'date',
         },
         mechanism: nonEmptyString,
         result: nonEmptyString,
@@ -180,7 +293,13 @@ export const sessionMessagingSchema = {
             required: ['verificationState'],
           },
           then: {
-            properties: { degradationReason: nonEmptyString },
+            properties: {
+              degradationReason: nonEmptyString,
+              consecutiveExpectedObservationFailures: {
+                type: 'integer',
+                minimum: 1,
+              },
+            },
             required: ['degradationReason'],
           },
         },
@@ -223,6 +342,12 @@ export const sessionMessagingSchema = {
             properties: { busReaction: { $ref: '#/$defs/BusReaction' } },
             required: ['busReaction'],
           },
+          else: {
+            not: {
+              properties: { busReaction: {} },
+              required: ['busReaction'],
+            },
+          },
         },
         {
           if: {
@@ -235,6 +360,12 @@ export const sessionMessagingSchema = {
               downgrade: false,
             },
             required: ['declineReason'],
+          },
+          else: {
+            not: {
+              properties: { declineReason: {} },
+              required: ['declineReason'],
+            },
           },
         },
         {

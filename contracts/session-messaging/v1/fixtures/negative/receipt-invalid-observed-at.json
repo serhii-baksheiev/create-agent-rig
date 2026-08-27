@@ -1,0 +1,16 @@
+{
+  "case": "receipt-invalid-observed-at",
+  "definition": "DeliveryReceipt",
+  "valid": false,
+  "expectedKeyword": "format",
+  "expectedInstancePath": "/observedAt",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-invalid-observed-at",
+    "correlationId": "correlation-invalid-observed-at",
+    "observedAt": "2026-02-30T25:61:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "notify",
+    "outcome": "routed"
+  }
+}

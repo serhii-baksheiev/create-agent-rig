@@ -1,0 +1,20 @@
+{
+  "case": "receipt-surfaced-with-reaction",
+  "definition": "DeliveryReceipt",
+  "valid": false,
+  "expectedKeyword": "not",
+  "expectedInstancePath": "",
+  "value": {
+    "contractMajor": 1,
+    "messageId": "message-surfaced-with-reaction",
+    "correlationId": "correlation-surfaced-with-reaction",
+    "observedAt": "2026-08-27T18:14:00Z",
+    "requestedIntent": "notify",
+    "effectiveIntent": "notify",
+    "outcome": "surfaced",
+    "busReaction": {
+      "kind": "ack",
+      "messageId": "ack-too-early"
+    }
+  }
+}

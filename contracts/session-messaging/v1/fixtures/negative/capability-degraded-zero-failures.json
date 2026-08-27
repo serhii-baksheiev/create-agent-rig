@@ -1,0 +1,34 @@
+{
+  "case": "capability-degraded-zero-failures",
+  "definition": "SessionCapabilities",
+  "valid": false,
+  "expectedKeyword": "minimum",
+  "expectedInstancePath": "/consecutiveExpectedObservationFailures",
+  "value": {
+    "contractMajor": 1,
+    "session": {
+      "engineerId": "engineer-local",
+      "harness": "codex",
+      "instanceId": "codex-local-a"
+    },
+    "effectiveDeliveryClass": "TURN_BOUNDARY",
+    "supportedIntents": ["notify"],
+    "ingressKind": "local-hook",
+    "verifiedAt": "2026-08-27T18:16:00Z",
+    "verifiedBy": "traffic",
+    "verificationState": "degraded",
+    "consecutiveExpectedObservationFailures": 0,
+    "degradationReason": "expected acknowledgement was not observed",
+    "evidence": {
+      "harness": "codex",
+      "surface": "local-cli",
+      "harnessVersion": "0.1.0",
+      "os": "linux",
+      "observedDate": "2026-08-27",
+      "mechanism": "acknowledgement observation",
+      "result": "degraded",
+      "evidencePointer": "fixture://capability-degraded-zero-failures",
+      "degradationThreshold": 1
+    }
+  }
+}
