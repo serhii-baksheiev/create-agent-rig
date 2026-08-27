@@ -16,7 +16,8 @@
 //   2. Flag present and readable → every edit fragment whose repo-relative path
 //      sits under a rulebook prefix is refused (exit 2) unless it also sits
 //      under one of the item's `allow` prefixes. Paths outside the rulebook are
-//      never judged.
+//      never judged — › "allows a MultiEdit beyond the fragment cap when its
+//      known path is outside the rulebook".
 //   3. Flag present and UNREADABLE → a rulebook edit is refused and the reason
 //      names the flag; an edit outside the rulebook still passes. Refusing to
 //      inspect is not allowing (`.claude/rules/invariants.md`).
@@ -106,6 +107,12 @@ function main() {
     ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
   );
   if (globalRefusal) {
+    if (globalRefusal.filePath) {
+      const rel = comparisonRoots
+        .map((candidate) => relativeTo(candidate, globalRefusal.filePath))
+        .find(isRulebookPath);
+      if (rel === undefined) return 0;
+    }
     const mode = readUnattended(unattendedEnv);
     if (!mode.on) return 0;
     process.stderr.write(
@@ -119,7 +126,6 @@ function main() {
     if (typeof filePath !== 'string' || filePath === '') continue;
     const rel = comparisonRoots.map((candidate) => relativeTo(candidate, filePath)).find(isRulebookPath);
     if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
-    if (paths.length >= 64) break;
   }
   if (paths.length === 0) return 0; // nothing under the rulebook: never judged
 

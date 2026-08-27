@@ -26,7 +26,7 @@
 // while `.claude/.rig-manifest.json` matches; once the hash differs, the local test
 // is yours.
 //
-// There are FOUR:
+// There are FIVE:
 //
 //   - It sees ONE edit fragment, not the resulting file. A credential assembled
 //     across two edits is not seen — see guard-secret-file.test.ts (absent in a generated rig) › "does not
@@ -34,6 +34,10 @@
 //     at a time". This is the same limit every guard in this directory has,
 //     stated in full in `.claude/rules/invariants.md`, "What the enforcement
 //     actually is — stated exactly".
+//   - A `MultiEdit` is capped at 256 fragments and REFUSES before mapping a
+//     longer list, so the tail is never silently dropped — see
+//     guard-secret-file.test.ts (absent in a generated rig) › "refuses a
+//     MultiEdit beyond the fragment cap instead of silently dropping the tail".
 //   - It sees only what the AGENT writes. The `toolName` branch in `main` below
 //     names the complete surface: `Write`, `Edit`, `MultiEdit`, `NotebookEdit`,
 //     and `apply_patch`; every other

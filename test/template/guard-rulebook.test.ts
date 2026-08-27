@@ -205,21 +205,27 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
   });
 
   it('finds the checkout-scoped flag from cwd when the harness omits CLAUDE_PROJECT_DIR', async () => {
-    const { writeUnattended } = await import(
+    const { unattendedFlags, writeUnattended } = await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
     );
-    writeUnattended(
-      { item: 'AR-CWD', runDir: '/runs/cwd', allow: [] },
-      { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: root },
-    );
-    const canonicalRoot = await realpath(root);
-    const result = await runHookFull(
-      write(`${canonicalRoot}/.claude/hooks/guard-bash.mjs`),
-      { HOME: home, CLAUDE_PROJECT_DIR: '' },
-      'guard-rulebook.mjs',
-      root,
-    );
-    expect(result.code, result.stderr).toBe(2);
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: root };
+    try {
+      writeUnattended({ item: 'AR-CWD', runDir: '/runs/cwd', allow: [] }, scopedEnv);
+      const canonicalRoot = await realpath(root);
+      const result = await runHookFull(
+        write(`${canonicalRoot}/.claude/hooks/guard-bash.mjs`),
+        { HOME: home, CLAUDE_PROJECT_DIR: '' },
+        'guard-rulebook.mjs',
+        root,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await Promise.all(
+        [...new Set<string>(unattendedFlags(scopedEnv) as string[])].map((candidate) =>
+          rm(candidate, { force: true }),
+        ),
+      );
+    }
   });
 
   it.each([
@@ -291,7 +297,24 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
 });
 
 describe('guard-rulebook: every edit surface reaches it', () => {
-  it('refuses a MultiEdit beyond the fragment cap instead of missing a guarded tail', async () => {
+  it('refuses a MultiEdit beyond the fragment cap when its known path is in the rulebook', async () => {
+    await armed([]);
+    const result = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: `${root}/.claude/queue.json`,
+        edits: [
+          ...Array.from({ length: 256 }, () => ({ old_string: 'a', new_string: 'b' })),
+          { old_string: 'a', new_string: 'b' },
+        ],
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/cannot safely inspect|inspection limit|more than 256/i);
+  });
+
+  it('allows a MultiEdit beyond the fragment cap when its known path is outside the rulebook', async () => {
     await armed([]);
     const result = await run({
       hook_event_name: 'PreToolUse',
@@ -304,8 +327,36 @@ describe('guard-rulebook: every edit surface reaches it', () => {
         ],
       },
     });
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('does not ignore queue.board as the 65th guarded path behind 64 allowed paths', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    const allowed = Array.from({ length: 64 }, (_, index) => `.claude/rules/allowed-${index}.md`);
+    const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: repoRoot };
+    const { unattendedFlags } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const flag = unattendedFlags(scopedEnv)[0];
+    await mkdir(path.dirname(flag), { recursive: true });
+    await writeFile(
+      flag,
+      JSON.stringify({ item: 'AR-TAIL', runDir: path.join(repoRoot, '.rig-run'), allow: allowed }),
+    );
+    const sections = [...allowed, '.claude/queue.board']
+      .map((rel) => `*** Update File: ${rel}\n@@\n+x`)
+      .join('\n');
+    const result = await runHookFull(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        cwd: repoRoot,
+        tool_input: { command: `*** Begin Patch\n${sections}\n*** End Patch\n` },
+      },
+      scopedEnv,
+    );
     expect(result.code, result.stderr).toBe(2);
-    expect(result.stderr).toMatch(/cannot safely inspect|inspection limit|more than 256/i);
+    expect(result.stderr).toMatch(/queue\.board|board selector/i);
   });
 
   it('blocks a MultiEdit to queue.json', async () => {

@@ -498,7 +498,17 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
 
   it('separates the shapes it refuses from the payloads it still fails open on', async () => {
     const source = await readFile(hook, 'utf8');
-    expect(source).toMatch(/There are FOUR:/);
+    expect(source).toMatch(/There are FIVE:/);
+
+    const limitsBlock = source.match(/There are FIVE:[\s\S]*?(?=\n\/\/ Failing open)/)?.[0] ?? '';
+    expect([...limitsBlock.matchAll(/^\/\/ {3}-/gm)]).toHaveLength(5);
+    const fragmentCap =
+      limitsBlock.split(/^\/\/ {3}-/m).find((entry) => /MultiEdit|256/.test(entry)) ?? '';
+    expect(fragmentCap).toMatch(/MultiEdit/i);
+    expect(fragmentCap).toMatch(/256/);
+    expect(fragmentCap).toMatch(/refus/i);
+    expect(fragmentCap).toMatch(/guard-secret-file\.test\.ts/);
+    expect(fragmentCap).toMatch(/beyond the fragment cap/i);
 
     const failOpenLimit =
       source.match(/\/\/ {3}- It FAILS OPEN[\s\S]*?(?=\n\/\/\n\/\/ Failing open)/)?.[0] ?? '';

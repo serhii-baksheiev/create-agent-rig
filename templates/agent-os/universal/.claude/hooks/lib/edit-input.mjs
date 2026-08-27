@@ -69,17 +69,17 @@ export function editFragments(input) {
   // so a `Date.now()` in a MultiEdit to the core passed unchecked.
   if (toolName === 'MultiEdit') {
     if (!Array.isArray(toolInput.edits)) return [];
+    const filePath = normalisePath(toolInput.file_path);
     if (toolInput.edits.length > MAX_MULTI_EDITS) {
       return [
         {
-          filePath: '',
+          filePath,
           fragment: '',
           inspectionRefusal: `MultiEdit carries more than the ${MAX_MULTI_EDITS}-fragment inspection limit`,
           appliesToAll: true,
         },
       ];
     }
-    const filePath = normalisePath(toolInput.file_path);
     return toolInput.edits.map((edit) => ({
       filePath,
       fragment: String(edit?.new_string ?? ''),

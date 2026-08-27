@@ -24,14 +24,15 @@ const PLATFORM_SKIP_HELPERS = [
 const EXPECTED_SITES: Record<(typeof PLATFORM_SKIP_HELPERS)[number], number> = {
   // SITES, not cases: queue.test.ts has five on 0o500/0o000 (an it.for over
   // three adapters and three singles on 0o500, one on 0o000), run-journal's
-  // 0o555 pair shares one beforeEach, copy-tree's exec bit is one
-  modeBitsDeny: 7,
+  // 0o555 pair shares one beforeEach, copy-tree's exec bit is one, and
+  // unattended-flag has one read and one removal EACCES boundary
+  modeBitsDeny: 9,
   // queue.test.ts: the 0o077 read of state.json — root sees mode bits, Windows has none
   modeBitsExist: 1,
   // hooks.test.ts: the two symlink-fixture cases share one wrapper
   symlinksAvailable: 1,
-  // codex.test.ts: the FIFO move-source fixture
-  fifosAvailable: 1,
+  // codex.test.ts: the FIFO move-source fixture; unattended-flag: nonblocking flag read
+  fifosAvailable: 2,
   // run-without-git-location.test.ts: the .cmd shim branch, measured only there
   onlyOnWindows: 2,
 };

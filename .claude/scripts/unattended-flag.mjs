@@ -43,11 +43,25 @@
 // both forms, so they are kept — › "an allow entry that widens the rulebook — a prefix of a rulebook prefix such as `.` — makes the flag unreadable".
 //
 // Bounded: the file is read up to 64 KiB, `allow` is capped at 64 entries, and
-// both limits are refusals, never silent truncation.
+// both limits are refusals, never silent truncation. A candidate is opened
+// nonblocking and must be a regular file — see the generator's
+// `test/template/unattended-flag.test.ts` (absent in a generated rig) ›
+// "returns promptly and fails closed when a candidate is a FIFO". An access
+// error is unreadable, not absent — › "is on-but-unreadable when access to an
+// existing flag fails at the stat boundary".
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homesOf } from './stop-flag.mjs';
 
@@ -127,9 +141,16 @@ export const unattendedFlags = (env = process.env) =>
 /** Legacy machine-wide candidates are never accepted as scoped authorization. */
 const legacyFlags = (env) => homesOf(env).map((home) => join(home, '.claude', FLAG_BASENAME));
 
+const isMissing = (error) => error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
+
 const readCapped = (path) => {
-  const fd = openSync(path, 'r');
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   try {
+    if (!fstatSync(fd).isFile()) {
+      const error = new Error('unattended flag is not a regular file');
+      error.code = 'EINVAL';
+      throw error;
+    }
     const buffer = Buffer.alloc(MAX_FLAG_BYTES + 1);
     const bytes = readSync(fd, buffer, 0, buffer.length, 0);
     return { bytes, text: buffer.toString('utf8', 0, Math.min(bytes, MAX_FLAG_BYTES)) };
@@ -140,41 +161,46 @@ const readCapped = (path) => {
 
 const unreadable = (path, why) => ({ on: true, unreadable: true, path, why });
 
+const inspectCandidates = (candidates) => {
+  const present = [];
+  for (const path of candidates) {
+    try {
+      present.push({ path, raw: readCapped(path) });
+    } catch (error) {
+      if (isMissing(error)) continue;
+      return {
+        present,
+        failure: unreadable(path, `cannot be read: ${error?.code ?? 'read failed'}`),
+      };
+    }
+  }
+  return { present, failure: null };
+};
+
 /** The mode the flag declares — see the header for the three answers. */
 export const readUnattended = (env = process.env) => {
   const scoped = checkoutId(env) !== null;
-  const present = unattendedFlags(env).filter((candidate) => {
-    try {
-      return existsSync(candidate);
-    } catch {
-      return false;
-    }
-  });
-  let path = present[0];
-  let mirroredRaw = null;
+  const inspected = inspectCandidates(unattendedFlags(env));
+  if (inspected.failure) return inspected.failure;
+  const { present } = inspected;
+  let path = present[0]?.path;
+  let raw = present[0]?.raw ?? null;
   if (scoped && present.length > 1) {
-    const mirrors = [];
-    for (const candidate of present) {
-      try {
-        mirrors.push({ path: candidate, raw: readCapped(candidate) });
-      } catch (error) {
-        return unreadable(candidate, `cannot be read: ${error?.code ?? 'read failed'}`);
-      }
-    }
-    const first = mirrors[0];
-    if (mirrors.some(({ raw }) => raw.bytes !== first.raw.bytes || raw.text !== first.raw.text)) {
+    const first = present[0];
+    if (
+      present.some(
+        ({ raw: candidate }) =>
+          candidate.bytes !== first.raw.bytes || candidate.text !== first.raw.text,
+      )
+    ) {
       return unreadable(first.path, 'mirrored checkout-scoped unattended flags disagree');
     }
-    mirroredRaw = first.raw;
+    raw = first.raw;
   }
   if (!path && scoped) {
-    path = legacyFlags(env).find((candidate) => {
-      try {
-        return existsSync(candidate);
-      } catch {
-        return false;
-      }
-    });
+    const legacy = inspectCandidates(legacyFlags(env));
+    if (legacy.failure) return legacy.failure;
+    path = legacy.present[0]?.path;
     if (path) {
       return unreadable(
         path,
@@ -183,14 +209,6 @@ export const readUnattended = (env = process.env) => {
     }
   }
   if (!path) return { on: false };
-  let raw = mirroredRaw;
-  if (raw === null) {
-    try {
-      raw = readCapped(path);
-    } catch (error) {
-      return unreadable(path, `cannot be read: ${error?.code ?? 'read failed'}`);
-    }
-  }
   if (raw.bytes > MAX_FLAG_BYTES) return unreadable(path, `larger than ${MAX_FLAG_BYTES} bytes`);
   let parsed;
   try {
@@ -304,11 +322,10 @@ export const clearUnattended = (env = process.env) => {
       ];
   for (const path of [...new Set(candidates)]) {
     try {
-      if (existsSync(path)) {
-        rmSync(path);
-        removed.push(path);
-      }
+      rmSync(path);
+      removed.push(path);
     } catch (error) {
+      if (isMissing(error)) continue;
       failures.push(`${path}: ${error?.code ?? error?.message ?? 'remove failed'}`);
     }
   }
@@ -327,9 +344,13 @@ export const clearLegacyUnattended = (selectedPath) => {
   if (basename(path) !== FLAG_BASENAME || basename(dirname(path)) !== '.claude') {
     throw new Error(`refusing legacy cleanup outside .claude/${FLAG_BASENAME}`);
   }
-  if (!existsSync(path)) return [];
-  rmSync(path);
-  return [path];
+  try {
+    rmSync(path);
+    return [path];
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw error;
+  }
 };
 
 const invokedDirectly = () => {
