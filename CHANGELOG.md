@@ -47,7 +47,8 @@ being prepared is: commit `.claude/.rig-manifest.json`.
   `.claude/.rig-manifest.json` and reports every hook the project owns — bytes
   that differ from what the generator installed, or no manifest entry — that has
   no `<hook>.test.mjs` beside it. Exemptions are an explicit list with reasons in
-  `.claude/doctor-exemptions.json`; a doctor that looked nowhere never says GO.
+  `.claude/doctor-exemptions.json`, a file the project writes (none ships); a
+  doctor that looked nowhere never says GO.
 - **Fan-out coverage is checked, not just recorded** (AR-79, AR-118): `pr-ship`
   compares the reviewers that answered against the route the router gave the
   head, bound to that head; `docs/decisions/gate-coverage.md` records the shape
@@ -77,10 +78,8 @@ being prepared is: commit `.claude/.rig-manifest.json`.
   fallback, and a JQL that is always project-qualified — an explicit
   `options.jql` must begin with `project = <KEY>`.
 - **The adapter contract gained `find` and `listProposals`** (AR-135, AR-116)
-  and the ticket shape gained `updatedAt`, `owner`, `lifecycle` and `parked`. A
-  custom adapter written against 0.5.0 fails the contract check until it
-  provides both operations. On `jira`, `limit` is now the **page** size, not a
-  result cap.
+  and the ticket shape gained `updatedAt`, `owner`, `lifecycle` and `parked`.
+  On `jira`, `limit` is now the **page** size, not a result cap.
 - **A close is a close only when the tracker says so** (AR-135): all three
   adapters read the item back and return `transitioned` from what they read,
   instead of from the argument they were given or a `gh` exit code.
