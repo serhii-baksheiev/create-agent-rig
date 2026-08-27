@@ -1,5 +1,7 @@
 # Session Messaging Contract v0
 
+Language: English
+
 Status: proposed for RP-11. Owner human-review is required before RP-12 turns
 these semantics into schemas and golden fixtures.
 
@@ -151,6 +153,12 @@ Wake is receiver-authorized. The default authorization routes are:
    `correlationId`; or
 2. an explicitly allowlisted engineer or authenticated principal.
 
+A correlated wake is authorized only when the still-open request's expected
+responder identity matches the transport-authenticated sender. The correlated
+authorization grant is single-use: it is consumed after one authorized wake and
+closed or expired with the request, so replaying the `correlationId` cannot
+authorize another wake.
+
 Authorization is necessary but not sufficient. A background wake must not race
 a human turn. When the runtime is uncertain about idle state or cannot atomically
 admit an idle turn, it must downgrade wake to notify. When busy, it may steer
@@ -178,8 +186,10 @@ Evidence is mechanism-specific:
 - a channel with no delivery signal requires an explicit message ack, and only
   repeated expected-but-missing acknowledgements degrade capability.
 
-Absence of traffic is never a failure. Degradation occurs only after the stated
-number of expected observations fail.
+Absence of traffic is never a failure. Degradation occurs only after the selected
+number of expected observations fail. Receiver policy owns the degradation
+threshold; Contract v0 defines no universal numeric constant, and the selected
+threshold is recorded with capability evidence.
 
 Every evidence claim names, in order, the harness surface, harness version, OS,
 and observed date, plus the test case or mechanism, result, and evidence

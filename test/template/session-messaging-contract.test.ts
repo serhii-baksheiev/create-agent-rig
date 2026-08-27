@@ -15,11 +15,27 @@ const PUBLIC_TYPES = [
   'ProbeResult',
 ] as const;
 
+const CORRELATED_WAKE_RULES = [
+  [
+    'binds correlated wake authority to the authenticated expected responder',
+    "A correlated wake is authorized only when the still-open request's expected responder identity matches the transport-authenticated sender.",
+  ],
+  [
+    'makes a correlated wake grant single-use and replay-safe',
+    'The correlated authorization grant is single-use: it is consumed after one authorized wake and closed or expired with the request, so replaying the `correlationId` cannot authorize another wake.',
+  ],
+] as const;
+
 type Contract = { file: string; content: string; publicTypes: string };
 type Requirement = readonly [description: string, pattern: RegExp];
 
 const expectTerms = (content: string, terms: readonly Requirement[]) => {
   for (const [description, pattern] of terms) expect(content, description).toMatch(pattern);
+};
+
+const normalizeProse = (content: string) => content.replace(/\s+/g, ' ').trim();
+const expectStatement = (content: string, description: string, statement: string) => {
+  expect(normalizeProse(content), description).toContain(statement);
 };
 
 const section = (content: string, heading: RegExp): string => {
@@ -57,11 +73,14 @@ async function loadContract(): Promise<Contract> {
 }
 
 describe('the canonical session messaging Contract v0', () => {
-  it('is one English Markdown document with every required public type', async () => {
+  it('is one canonical Markdown declaring English and every required public type', async () => {
     const contract = await loadContract();
     expect(contract.file).toMatch(/\.md$/);
     expect(contract.content).toMatch(/^#\s+.*Contract v0/im);
-    expect(contract.content, 'the English document contains Cyrillic text').not.toMatch(
+    expect(contract.content, 'the canonical document must declare its language').toMatch(
+      /^Language: English$/m,
+    );
+    expect(contract.content, 'the narrow Cyrillic guard found non-English text').not.toMatch(
       /[А-Яа-яЁё]/,
     );
     expectTerms(
@@ -81,22 +100,30 @@ describe('the canonical session messaging Contract v0', () => {
         /SessionIdentity[\s\S]{0,500}\b(instance|per-instance)\b/i,
       ],
       [
-        'sender identity is not bound to an authenticated transport principal',
-        /authenticated[\s-]+transport[\s\S]{0,180}\b(principal|identity)\b|\b(principal|identity)\b[\s\S]{0,180}authenticated[\s-]+transport/i,
-      ],
-      [
-        'self-asserted payload identity is not explicitly non-authoritative',
-        /\b(descriptive|self-asserted)\b[\s\S]{0,180}\b(not authoritative|never authoritative|not trusted)\b/i,
-      ],
-      [
         'NATS is not identified as the MVP transport',
         /NATS[\s\S]{0,100}\bMVP transport\b|\bMVP transport\b[\s\S]{0,100}NATS/i,
       ],
-      [
-        'transport subjects are not derived by adapters or runtime',
-        /subjects?[\s\S]{0,160}\b(derived|adapter|runtime)\b|\b(derived|adapter|runtime)\b[\s\S]{0,160}subjects?/i,
-      ],
     ]);
+    // These are documentary conformance statements, not a claim that this
+    // Markdown enforces transport authentication at runtime.
+    const authorityStatements = [
+      'Sender fields in an envelope are descriptive and not authoritative.',
+      'An authenticated transport principal is the authoritative sender identity',
+      'Transport subjects are derived by the adapter/runtime from a validated `SessionIdentity`; they never appear in the public envelope.',
+    ];
+    for (const statement of authorityStatements) {
+      expectStatement(content, `missing canonical normative statement: ${statement}`, statement);
+    }
+    const negatedCounterexamples: ReadonlyArray<readonly [string, string]> = [
+      ['An authenticated transport principal is never authoritative.', authorityStatements[1]!],
+      ['Transport subjects are not derived by the adapter/runtime.', authorityStatements[2]!],
+    ];
+    for (const [counterexample, statement] of negatedCounterexamples) {
+      expect(
+        normalizeProse(counterexample),
+        `the negated counterexample must not satisfy: ${statement}`,
+      ).not.toContain(statement);
+    }
     expect(publicTypes, 'transport or harness details leaked into public types').not.toMatch(
       /\b(NATS|Claude|Codex|hooks?|channel|thread\/inject_items|turn\/(?:start|steer))\b/i,
     );
@@ -178,6 +205,13 @@ describe('the canonical session messaging Contract v0', () => {
     ]);
   });
 
+  for (const [behavior, statement] of CORRELATED_WAKE_RULES) {
+    it(behavior, async () => {
+      const { content } = await loadContract();
+      expectStatement(content, `missing replay-safe wake rule: ${statement}`, statement);
+    });
+  }
+
   it('scopes observed capabilities and forbids periodic synthetic probes', async () => {
     const { content, publicTypes } = await loadContract();
     expectTerms(publicTypes, [
@@ -223,6 +257,15 @@ describe('the canonical session messaging Contract v0', () => {
         /\babsence of traffic\b[\s\S]{0,140}\b(never|not a failure|must not)\b|\b(never|not a failure|must not)\b[\s\S]{0,140}\babsence of traffic\b/i,
       ],
     ]);
+  });
+
+  it('assigns the degradation threshold to receiver policy without a universal number', async () => {
+    const { content } = await loadContract();
+    expectStatement(
+      content,
+      'the N-failure threshold needs an owner and evidence trail, not an unspecified number',
+      'Receiver policy owns the degradation threshold; Contract v0 defines no universal numeric constant, and the selected threshold is recorded with capability evidence.',
+    );
   });
 
   it('keeps attached and managed harness details optional and outside public types', async () => {
