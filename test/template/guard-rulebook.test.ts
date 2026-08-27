@@ -5,6 +5,7 @@ import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { needsGitRoot, skipUnless } from '../helpers/env.js';
 
 /**
  * AR-51 — "the rulebook is editable by the run it governs".
@@ -214,7 +215,8 @@ describe('guard-rulebook: every edit surface reaches it', () => {
     expect(result.code).toBe(2);
   });
 
-  it('blocks a Codex apply_patch that updates settings.json', async () => {
+  it('blocks a Codex apply_patch that updates settings.json', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     await armed([]);
     const result = await run({
       hook_event_name: 'PreToolUse',

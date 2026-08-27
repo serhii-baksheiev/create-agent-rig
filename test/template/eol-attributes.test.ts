@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { needsGit, skipUnless } from '../helpers/env.js';
 
 // AR-5 / AR-51: a Windows checkout with core.autocrlf=true rewrote hashbang
 // `.mjs` scripts to CRLF, and vitest's `import()` of them died with
@@ -28,6 +29,8 @@ const expectPinnedToLf = (file: string): void => {
 };
 
 describe('line-ending attributes (.gitattributes)', () => {
+  beforeEach((ctx) => skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason));
+
   it('pins *.mjs to LF so a Windows checkout cannot turn a hashbang script into CRLF', () => {
     expectPinnedToLf('.claude/hooks/guard-bash.mjs');
   });

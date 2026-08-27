@@ -15,7 +15,8 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { needsGit, needsNonRoot, skipUnless } from '../helpers/env.js';
 
 // Extraction brief §4: `loop-driver` is the most valuable artifact in the source
 // tree and the only one that cannot be copied — its selection logic assumes one
@@ -3872,7 +3873,8 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
       );
     });
 
-  it('this repository ignores the state file while keeping the config tracked', async () => {
+  it('this repository ignores the state file while keeping the config tracked', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     await expect(ignored('.claude/queue.state.json')).resolves.toBe(true);
     // and the config stays tracked: it is generated content, not scratch state
     await expect(ignored('.claude/queue.json')).resolves.toBe(false);
@@ -4912,6 +4914,8 @@ describe('an escalation is recorded rather than remembered', () => {
   };
 
   describe('a run directory it cannot record into never undoes a tracker escalation', () => {
+    beforeEach((ctx) => skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason));
+
     it.each(ADAPTER_FILES)('%s escalates when the run directory is not there', async (file) => {
       const runDir = await newRunDir();
       // The same call twice with only the run directory changed: what the caller
@@ -5072,7 +5076,8 @@ describe('an escalation is recorded rather than remembered', () => {
       expect(result).toBe(0);
     });
 
-    it('hands back the count that is really on disk when it could not write', async () => {
+    it('hands back the count that is really on disk when it could not write', async (ctx) => {
+      skipUnless(ctx, needsNonRoot().ok, needsNonRoot().reason);
       const record = await recorder();
 
       const counted = await withUnwritableRunDir(

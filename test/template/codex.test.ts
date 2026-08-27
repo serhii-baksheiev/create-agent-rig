@@ -5,7 +5,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { needsGitRoot, skipUnless } from '../helpers/env.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
 // `git init` under pre-commit re-initialises THIS repository rather than the
@@ -245,6 +246,8 @@ function runGuardInput(
 }
 
 describe('Codex apply_patch cannot bypass architecture guards', () => {
+  beforeEach((ctx) => skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason));
+
   // 🔴 The remedy an operator is shown, pinned across all three guards. It used
   // to be chosen by `/shape/i.test(reason)` in six copies — correct only by
   // coincidence of wording — and nothing asserted either string, so reverting
@@ -1458,6 +1461,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 });
 
 describe('Codex oversized apply_patch inspection refusals', () => {
+  beforeEach((ctx) => skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason));
+
   it.each([
     {
       guard: 'guard-core-purity.mjs',

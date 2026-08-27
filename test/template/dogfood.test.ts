@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { needsGit, skipUnless } from '../helpers/env.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -189,7 +190,8 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     expect(declared).toContain('templates/agent-os/stack/node-ts/.claude/rules/');
   });
 
-  it('declares every file that declares elevated paths of its own', async () => {
+  it('declares every file that declares elevated paths of its own', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const declared = await loadDeclaredPaths();
     const detector = await loadDetector();
 
@@ -269,6 +271,8 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
 // pinned together with the RULE that produced it: not-ignored has to be the work
 // of `!.env.example`, not of the whole block having been deleted.
 describe('the secrets block the skeletons ship is live in this repository too', () => {
+  beforeEach((ctx) => skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason));
+
   /**
    * The real ignore verdict. `-q` alone: 0 = ignored, 1 = not.
    *
