@@ -53,8 +53,9 @@ The selector is per-checkout runtime state, the same class as
 project ships and an `init`-installed rig adds by hand. An undeclared name is
 refused, never read as "no board" (see `test/template/queue-board.test.ts` ›
 "refuses a board nobody declared instead of falling back" — in the generator,
-absent in a generated rig). It is a rulebook path for `guard-rulebook`, and the
-`board` command itself refuses a switch while the checkout is unattended. This
+absent in a generated rig). It is a rulebook path for `guard-rulebook`:
+`.claude/queue.board` is refused even when an item allow-list names it,
+and the `board` command itself refuses a switch while the checkout is unattended. This
 does not prevent an arbitrary direct shell write to the selector — edit-tool
 hooks cannot see one. `.claude/queue.state.json` stays per config, not per board:
 the tier the last close recorded rations the next selection whichever board it
@@ -127,7 +128,8 @@ node .claude/scripts/unattended-flag.mjs on --root "$PWD" --item <item-id> --run
 on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under the generated
 rulebook — both harnesses' rules, skills, agents and hook wiring, plus their
 scripts, queue config and integrity manifest — is refused unless its
-path starts with an allowed prefix; with no flag the guard does nothing. An
+path starts with an allowed prefix; the board selector is the one always-refused
+exception and cannot be admitted by an allow-list. With no flag the guard does nothing. An
 item that needs a rulebook path names it here — a decision made at claim
 time, never a default — and the stop step below turns the flag off. Pinned in
 the generator's `test/template/guard-rulebook.test.ts` — absent in a generated
@@ -741,6 +743,12 @@ item nobody is working:
 ```bash
 node .claude/scripts/unattended-flag.mjs off --root "$PWD"
 ```
+
+If that command reports a legacy machine-wide flag, it deliberately leaves a
+foreign pre-upgrade authorization in place and the checkout stays fail-closed.
+Confirm that no pre-upgrade run still uses the record, then remove it explicitly
+with `node .claude/scripts/unattended-flag.mjs off --legacy`; do not record the
+flag as off until one of those cleanup paths succeeds.
 
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an

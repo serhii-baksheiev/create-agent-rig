@@ -1,6 +1,7 @@
 /**
  * The decision router — which gate does this change deserve, and what does that
  * cost.
+ * All upstream test pointers in this script name the generator suite, absent in a generated rig.
  *
  * `pr-ship` is the merge-time gate and it always runs the expensive path: the
  * full suite, then `code-reviewer` on every diff. That is right for a change

@@ -216,27 +216,25 @@ are guessing, and a guessed invariant is the one that will fire on honest work.
 
 ## About the hooks you were given
 
-They arrive with their tests **in the generator that produced this project**, not
-in this repository — so by the rule above, as they sit here, they are checks
-without tests. That is deliberate and it has a boundary: it holds only while they
-are untouched.
+Generator-authored rulebook artifacts — rules, hooks and skills — arrive with
+their tests **in the generator that produced this project**, not in this
+repository. There is one narrow inherited-snapshot exception: such an artifact
+may cite the generator's upstream tests, which are absent locally, only when the
+pointer says they are absent and `.claude/.rig-manifest.json` proves the current
+artifact's hash matches the installed manifest.
 
-This is the one narrow exception for a generator-authored hook: it may cite the
-generator's upstream tests **only while unchanged downstream**, and its hook
-header must identify the upstream generator tests as absent locally. That pointer
-records the evidence used to author the inherited snapshot; it does not turn the
-absent test into a local check.
-
-**The moment you edit one, its test is yours.** A guard whose behaviour has
-changed and whose test lives somewhere else is precisely the "quietly stopped
-matching" case this rule names, and nothing here would catch it. The same applies
-if you keep a hook whose invariant you have re-scoped.
+A manifest-backed upgrade remains an inherited, generator-owned artifact even
+though the upgrade diff changes its bytes. The exception applies **only while the
+manifest hash matches**. A hash mismatch, missing manifest, or no evidence ends
+the exception and the local test is yours; an owned guard whose behaviour changed
+while its test lives elsewhere is precisely the "quietly stopped matching" case
+this rule names.
 
 If a hook matters enough to keep, it is worth ten minutes to copy the shape from
 `.claude/skills/new-invariant/guard-invariant.example.test.mjs` and pin the
 behaviour you actually rely on.
 
-**That boundary is audited, not remembered.** `node .claude/scripts/doctor.mjs`
+**For hooks, that ownership boundary is audited, not remembered.** `node .claude/scripts/doctor.mjs`
 reads `.claude/.rig-manifest.json` and asks of every hook in `.claude/hooks/` (and
 `.husky/`, when it exists) whether the project owns it — the bytes differ from
 what the generator installed, or the manifest has no entry — and, if so, whether

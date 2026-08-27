@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 // doctor — the harness audits itself (AR-5).
 //
 //   node .claude/scripts/doctor.mjs                 # the report, ready to paste

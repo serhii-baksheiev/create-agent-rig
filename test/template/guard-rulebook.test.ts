@@ -83,9 +83,13 @@ let home: string;
 let root: string;
 const env = () => ({ HOME: home, CLAUDE_PROJECT_DIR: root });
 const armed = async (allow: string[], raw?: string) => {
-  await mkdir(path.join(home, '.claude'), { recursive: true });
+  const { unattendedFlags } = await import(
+    pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+  );
+  const flag = unattendedFlags(env())[0];
+  await mkdir(path.dirname(flag), { recursive: true });
   await writeFile(
-    path.join(home, '.claude', FLAG_NAME),
+    flag,
     raw ?? JSON.stringify({ item: 'AR-51', runDir: path.join(root, '.rig-run'), allow }),
   );
 };
@@ -158,6 +162,17 @@ describe('guard-rulebook: attended sessions are untouched', () => {
 });
 
 describe('guard-rulebook: an unattended run edits the rulebook only where its item allows', () => {
+  it('never treats a legacy machine-wide allow-list as this checkout authorization', async () => {
+    await mkdir(path.join(home, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(home, '.claude', FLAG_NAME),
+      JSON.stringify({ item: 'OLD-A', runDir: '/runs/old-a', allow: ['.claude/skills/'] }),
+    );
+    const result = await run(edit(`${root}/.claude/skills/loop/SKILL.md`));
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/legacy|migrat|unreadable/i);
+  });
+
   it('finds the checkout-scoped flag from cwd when the harness omits CLAUDE_PROJECT_DIR', async () => {
     const { writeUnattended } = await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
@@ -187,6 +202,9 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
     '.claude/scripts/unattended-flag.mjs',
     '.claude/scripts/stop-flag.mjs',
     '.claude/rules/autonomy.md',
+    '.claude/agents/prose-reviewer.md',
+    '.claude/skills/loop/SKILL.md',
+    '.agents/skills/loop/SKILL.md',
     '.codex/hooks.json',
     '.claude/.rig-manifest.json',
     'CLAUDE.md',
@@ -299,10 +317,13 @@ describe('guard-rulebook: every edit surface reaches it', () => {
 describe('guard-rulebook: refusing to inspect is not allowing', () => {
   it('blocks a rulebook edit when the flag exists but cannot be read, and names the file', async () => {
     await armed([], '{ not json');
+    const { unattendedFlags } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
     const result = await run(write(`${root}/.claude/rules/x.md`));
     expect(result.code).toBe(2);
     expect(result.stderr).toMatch(/unreadable/i);
-    expect(result.stderr).toContain(path.join(home, '.claude', FLAG_NAME));
+    expect(result.stderr).toContain(unattendedFlags(env())[0]);
   });
 
   it('still allows an edit outside the rulebook when the flag is unreadable', async () => {

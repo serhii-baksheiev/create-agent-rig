@@ -375,13 +375,15 @@ if (invokedDirectly()) {
         // absent; a static import would replace their own actionable refusal
         // with ERR_MODULE_NOT_FOUND before the command could start.
         const { readUnattended } = await import('../unattended-flag.mjs');
-        const unattended = readUnattended({
-          ...process.env,
-          CLAUDE_PROJECT_DIR: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-        });
-        if (unattended.on) {
+        const callerRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        const targetRoot = projectRootOfConfig(configPath) ?? callerRoot;
+        const guardedRoots = [...new Set([callerRoot, targetRoot])];
+        const unattended = guardedRoots
+          .map((root) => ({ root, mode: readUnattended({ ...process.env, CLAUDE_PROJECT_DIR: root }) }))
+          .find(({ mode }) => mode.on);
+        if (unattended) {
           throw new Error(
-            'board switching is refused while this checkout is unattended. ' +
+            `board switching is refused while checkout ${unattended.root} is unattended. ` +
               'The read-only `board` report remains available; disarm the loop before re-aiming its queue.',
           );
         }

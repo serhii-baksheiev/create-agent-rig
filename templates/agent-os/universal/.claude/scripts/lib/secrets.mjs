@@ -1,5 +1,6 @@
 // The credential vocabulary, decided once, so that everything which refuses a
 // credential refuses the same set.
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 //
 // Every layer that refuses one reads THIS module — which layers exist is a
 // question about the project, not about this file. A freshly generated rig has
