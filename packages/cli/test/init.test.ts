@@ -214,6 +214,31 @@ describe('initProject — the map describes THIS repo, not the generated shape',
     const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
     expect(claudeMd).toContain('dod-checks.json');
   });
+
+  it('does not claim runtime ignore entries remain after the project has added them', async () => {
+    await writeFile(
+      path.join(repo, '.gitignore'),
+      [
+        '.claude/queue.state.json',
+        '.claude/queue.board',
+        '.claude/gate-rounds.json',
+        '.claude/worktrees/',
+        '.claude/runs/',
+        '',
+      ].join('\n'),
+    );
+    await initProject(repo, {});
+
+    for (const map of ['CLAUDE.md', 'AGENTS.md']) {
+      const content = await readFile(path.join(repo, map), 'utf8');
+      const finishList =
+        content.split('## Four things this install left for you to finish')[1] ?? '';
+      const ignoreSection = /\n3\. \*\*[\s\S]*?(?=\n4\. \*\*)/.exec(finishList)?.[0] ?? '';
+      expect(ignoreSection, `${map} must still explain the runtime ignore entries`).toBeTruthy();
+      expect(ignoreSection).toMatch(/if[^\n]{0,100}missing|add only[^\n]{0,80}missing/i);
+      expect(ignoreSection).not.toMatch(/Add all five/i);
+    }
+  });
 });
 
 // `--force` never meant what it read as. It replaced `CLAUDE.md` and nothing

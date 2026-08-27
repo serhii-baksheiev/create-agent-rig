@@ -11,6 +11,37 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## 0.6.1
+
+**Security and upgrade hardening for the Agent OS shipped by 0.6.0.** This patch
+closes the rulebook, unattended-run and queue-board gaps found while upgrading a
+live generated repository; it adds no dependency and changes no public CLI
+command.
+
+### Security
+
+- **`guard-rulebook` now covers the whole shared rulebook and both spellings of
+  a symlinked checkout.** `AGENTS.md` and `.codex/hooks.json` are protected
+  alongside the Claude files. When `CLAUDE_PROJECT_DIR` names a checkout through
+  a symlink, an edit whose payload uses that same spelling is judged against the
+  selected root as well as its canonical path; the separately documented limit
+  remains only for a payload that invents an unrelated alias spelling.
+- **Queue board names containing terminal control characters are rejected before
+  selection, diagnostics or selector writes.** Ordinary names, including names
+  with spaces, remain valid; ANSI, OSC, C1 and DEL bytes from repository-owned
+  `queue.json` keys can no longer repaint terminal output.
+- **Unattended authorization is checkout-scoped.** Concurrent worktrees derive
+  distinct flag paths from canonical checkout identity, legacy machine-wide
+  state fails closed, and migration or cleanup refuses when any armed flag cannot
+  be removed instead of reporting a partial disarm as success.
+
+### Fixed
+
+- The generated prose-reviewer exception for upstream-only tests now applies
+  only to manifest-proven generator snapshots and expires on local drift. This
+  keeps intentional generator test references available without turning a dead
+  reference in an edited downstream rulebook into a pass.
+
 ## 0.6.0
 
 **The loop now checks its premises against the tracker at three points, and

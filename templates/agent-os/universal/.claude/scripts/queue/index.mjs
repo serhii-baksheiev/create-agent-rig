@@ -89,6 +89,23 @@ export const loadConfig = (configPath) => {
  */
 export const boardPathFor = (configPath) => configPath.replace(/(\.json)?$/, '.board');
 
+const isTerminalControl = (char) => {
+  const code = char.codePointAt(0);
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+};
+
+const assertSafeBoardName = (name, source) => {
+  if (typeof name === 'string' && [...name].some(isTerminalControl)) {
+    throw new Error(`${source}: board names must not contain terminal control characters.`);
+  }
+};
+
+const boardNamesOf = (boards, configPath) => {
+  const names = Object.keys(boards);
+  for (const name of names) assertSafeBoardName(name, configPath);
+  return names;
+};
+
 /**
  * A config may declare several boards and one default:
  *
@@ -109,7 +126,7 @@ export const resolveBoard = (config, configPath) => {
   if (boards === null || typeof boards !== 'object' || Array.isArray(boards)) {
     throw new Error(`${configPath}: "boards" must be an object of <name> → options.`);
   }
-  const known = Object.keys(boards);
+  const known = boardNamesOf(boards, configPath);
   let selected = null;
   let source = 'the "board" key';
   try {
@@ -122,6 +139,7 @@ export const resolveBoard = (config, configPath) => {
   // a truncated write would otherwise switch the run to the default board while
   // the file still looks like a choice somebody made.
   const active = selected === null ? config.board : selected;
+  assertSafeBoardName(active, source);
   if (!active || !known.includes(active)) {
     throw new Error(
       `${source} names board ${JSON.stringify(active ?? null)}, which ${configPath} does not ` +
@@ -354,8 +372,11 @@ if (invokedDirectly()) {
   // and never touches the tracker. Switching is refused on a config that declares
   // no boards — the selector would then be a file nothing reads.
   if (args.command === 'board') {
-    const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
     try {
+      // Resolve before deriving either the checkout root or the selector path.
+      // Otherwise a symlinked `.claude` lets the caller authorize one checkout
+      // while the write follows the link into another unattended checkout.
+      const configPath = realpathSync(args.config ?? join(projectRoot, '.claude', 'queue.json'));
       const raw = JSON.parse(readFileSync(configPath, 'utf8'));
       if (raw?.boards === undefined) {
         throw new Error(`${configPath} declares no boards, so there is nothing to switch between.`);
@@ -363,17 +384,36 @@ if (invokedDirectly()) {
       if (raw.boards === null || typeof raw.boards !== 'object' || Array.isArray(raw.boards)) {
         throw new Error(`${configPath}: "boards" must be an object of <name> → options. Nothing was written.`);
       }
+      const boardNames = boardNamesOf(raw.boards, configPath);
       if (args.name !== null) {
-        if (!Object.keys(raw.boards).includes(args.name)) {
+        assertSafeBoardName(args.name, 'the requested board');
+        if (!boardNames.includes(args.name)) {
           throw new Error(
             `${JSON.stringify(args.name)} is not a declared board. Declared: ` +
-              `${Object.keys(raw.boards).join(', ')}. Nothing was written.`,
+            `${boardNames.join(', ')}. Nothing was written.`,
+          );
+        }
+        // Loaded only on the mutation path. `next`, `list` and `hygiene` also
+        // run in partial-install diagnostics where this sibling is deliberately
+        // absent; a static import would replace their own actionable refusal
+        // with ERR_MODULE_NOT_FOUND before the command could start.
+        const { readUnattended } = await import('../unattended-flag.mjs');
+        const callerRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        const targetRoot = projectRootOfConfig(configPath) ?? callerRoot;
+        const guardedRoots = [...new Set([callerRoot, targetRoot])];
+        const unattended = guardedRoots
+          .map((root) => ({ root, mode: readUnattended({ ...process.env, CLAUDE_PROJECT_DIR: root }) }))
+          .find(({ mode }) => mode.on);
+        if (unattended) {
+          throw new Error(
+            `board switching is refused while checkout ${unattended.root} is unattended. ` +
+              'The read-only `board` report remains available; disarm the loop before re-aiming its queue.',
           );
         }
         writeFileSync(boardPathFor(configPath), `${args.name}\n`);
       }
       const config = loadConfig(configPath);
-      const report = { board: config.board, boards: Object.keys(raw.boards), options: config.options };
+      const report = { board: config.board, boards: boardNames, options: config.options };
       process.stdout.write(
         args.json
           ? `${JSON.stringify(report)}\n`

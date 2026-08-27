@@ -123,19 +123,26 @@ describe('rules/invariants.md — the pattern, stated once', () => {
     expect(content).toMatch(/example|not universal|delete it|yours/i);
   });
 
-  it('limits upstream test pointers to unchanged generator-authored hooks that disclose the exception', async () => {
+  it('limits upstream test pointers to manifest-proven inherited artifacts that disclose the exception', async () => {
     const content = await rule();
-    const inheritedHooks =
+    const inheritedArtifacts =
       content.match(/## About the hooks you were given\n([\s\S]*?)(?=\n## )/)?.[1] ?? '';
+    const exception = inheritedArtifacts.split(/\nIf a hook matters/)[0] ?? '';
 
-    expect(inheritedHooks).toMatch(/exception/i);
-    expect(inheritedHooks).toMatch(/generator-authored|authored by (?:the )?generator/i);
-    expect(inheritedHooks).toMatch(
+    expect(exception).toMatch(/exception/i);
+    expect(exception).toMatch(/generator-authored|authored by (?:the )?generator/i);
+    for (const artifact of ['rules', 'hooks', 'skills', 'scripts', 'agent specs'])
+      expect(exception, artifact).toMatch(new RegExp(artifact.replace(' ', '\\s+'), 'i'));
+    expect(exception).toMatch(
       /(?:cite|point to)[^.]{0,120}(?:generator|upstream)[^.]{0,50}tests?/i,
     );
-    expect(inheritedHooks).toMatch(/only while[^.]{0,100}(?:unchanged|untouched)/i);
-    expect(inheritedHooks).toMatch(
-      /hook[^.]{0,100}(?:header|source|comment)[^.]{0,100}(?:upstream|generator)[^.]{0,50}tests?/i,
+    expect(exception).toContain('.claude/.rig-manifest.json');
+    expect(exception).toMatch(/only while[^.]{0,160}(?:manifest|hash)[^.]{0,120}(?:match|same)/i);
+    expect(exception).toMatch(
+      /(?:upgrade|upgraded)[^.]{0,160}(?:inherited|generator-owned)|(?:inherited|generator-owned)[^.]{0,160}(?:upgrade|upgraded)/i,
+    );
+    expect(exception).toMatch(
+      /(?:hash mismatch|hash[^.]{0,80}(?:differs|does not match)|no manifest|missing manifest|no evidence)[^.]{0,180}(?:local test|test is yours|exception (?:expires|ends|no longer applies))/i,
     );
   });
 });

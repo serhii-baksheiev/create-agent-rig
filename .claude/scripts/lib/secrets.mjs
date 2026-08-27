@@ -1,5 +1,6 @@
 // The credential vocabulary, decided once, so that everything which refuses a
 // credential refuses the same set.
+// All upstream test pointers in this script name the generator suite, absent in a generated rig.
 //
 // Every layer that refuses one reads THIS module — which layers exist is a
 // question about the project, not about this file. A freshly generated rig has
@@ -18,7 +19,9 @@
 // GENERATOR this rig came from, not in this repository — the same arrangement
 // `.claude/rules/invariants.md` describes for the hooks themselves under "About
 // the hooks you were given". They are where a claim is proven, not cover you
-// have here. The moment you edit this module, its tests are yours.
+// have here. A manifest-backed generator upgrade remains inherited while
+// `.claude/.rig-manifest.json` matches; once the hash differs, the local test is
+// yours.
 //
 // It answers two different questions, and keeping them apart matters:
 //

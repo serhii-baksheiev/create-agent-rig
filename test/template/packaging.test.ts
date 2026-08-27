@@ -34,6 +34,37 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
+  it('prepares 0.6.1 as one release in both package manifests', async () => {
+    const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      version: string;
+    };
+    const inner = JSON.parse(
+      await readFile(path.join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
+    ) as { version: string };
+    expect(root.version).toBe('0.6.1');
+    expect(inner.version).toBe(root.version);
+  });
+
+  it('puts the 0.6.1 security fixes first in the changelog', async () => {
+    const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    const first = changelog.match(/^## (\d+\.\d+\.\d+)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    expect(first?.[1]).toBe('0.6.1');
+    expect(first?.[2]).toMatch(/security|harden/i);
+    expect(first?.[2]).toMatch(/guard-rulebook[\s\S]*symlink|symlink[\s\S]*guard-rulebook/i);
+    expect(first?.[2]).toMatch(
+      /unattended[\s\S]*(checkout|worktree)|(checkout|worktree)[\s\S]*unattended/i,
+    );
+    expect(first?.[2]).toMatch(/board[\s\S]*terminal|terminal[\s\S]*board/i);
+    expect(first?.[2]).toMatch(/dead[\s-]*reference|reference[\s\S]*test/i);
+  });
+
+  it('moves pending release work in PLAN from 0.6.0 to 0.6.1', async () => {
+    const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
+    expect(plan).toMatch(/Status \(0\.6\.1 prepared, publish pending the owner/);
+    expect(plan).not.toMatch(/0\.6\.0 prepared|owner publishes `0\.6\.0`/);
+    expect(plan).not.toMatch(/`0\.5\.0` is `latest`/);
+  });
+
   it('has the publishable identity and the npm-facing fields', async () => {
     const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('create-agent-rig');

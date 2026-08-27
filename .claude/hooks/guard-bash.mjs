@@ -24,7 +24,8 @@
 //
 // ── The limits, stated exactly — and TESTED ──────────────────────────────────
 //
-// This block is a credibility claim, so `test/template/guard-hardening.test.ts`
+// This block is a credibility claim, so the generator's
+// `test/template/guard-hardening.test.ts` (absent in a generated rig)
 // asserts each line twice: that the limit is documented here, and that the
 // command really does pass. A limits comment nothing checks drifts into fiction,
 // which is what happened the first time — an earlier version of this list was

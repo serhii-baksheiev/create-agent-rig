@@ -1,5 +1,6 @@
 /**
  * The environment a child `git` should run with — one implementation, imported.
+ * All upstream test pointers in this script name the generator suite, absent in a generated rig.
  *
  * 🔴 **Why this is not inlined at each call site.** A process started under a
  * git hook inherits `GIT_DIR` and `GIT_INDEX_FILE`, and any child then answers

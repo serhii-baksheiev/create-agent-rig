@@ -112,6 +112,36 @@ describe('unattendedFlags: the same two-home rule as the kill switch', () => {
 describe('readUnattended: what the flag file says, or that it cannot be read', () => {
   const env = () => ({ ...process.env, HOME: home });
 
+  it('fails closed when mirrored checkout-scoped candidates disagree', async (context) => {
+    const checkout = path.join(home, 'mirrored-checkout');
+    await mkdir(checkout, { recursive: true });
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    const { unattendedFlags, readUnattended } = await load();
+    const candidates = [...new Set(unattendedFlags(scopedEnv))];
+    if (candidates.length < 2) {
+      context.skip();
+      return;
+    }
+
+    try {
+      await Promise.all(
+        candidates.map((candidate) => mkdir(path.dirname(candidate), { recursive: true })),
+      );
+      await writeFile(
+        candidates[0]!,
+        JSON.stringify({ item: 'AR-FIRST', runDir: '/runs/first', allow: ['src/first/'] }),
+      );
+      await writeFile(
+        candidates[1]!,
+        JSON.stringify({ item: 'AR-SECOND', runDir: '/runs/second', allow: ['src/second/'] }),
+      );
+
+      expect(readUnattended(scopedEnv)).toMatchObject({ on: true, unreadable: true });
+    } finally {
+      await Promise.all(candidates.map((candidate) => rm(candidate, { force: true })));
+    }
+  });
+
   it('is off when no candidate exists', async () => {
     const { readUnattended } = await load();
     expect(readUnattended(env())).toEqual({ on: false });
@@ -216,10 +246,45 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     const { readUnattended } = await load();
     expect(readUnattended(env())).toMatchObject({ on: true, unreadable: true });
   });
+
+  it('never accepts a legacy machine-wide allow-list as scoped authorization', async () => {
+    await arm(JSON.stringify({ item: 'OLD-A', runDir: '/runs/old-a', allow: ['.claude/'] }));
+    const checkout = path.join(home, 'scoped-checkout');
+    await mkdir(checkout, { recursive: true });
+    const { readUnattended } = await load();
+    const mode = readUnattended({
+      ...process.env,
+      HOME: home,
+      CLAUDE_PROJECT_DIR: checkout,
+    });
+    expect(mode).toMatchObject({ on: true, unreadable: true });
+    expect(mode.why).toMatch(/legacy|migrat/i);
+    expect(mode.allow).toBeUndefined();
+  });
 });
 
 describe('writeUnattended / clearUnattended: the file the run arms and disarms', () => {
   const env = () => ({ ...process.env, HOME: home });
+
+  it('keeps concurrent worktrees separate and clears only the current checkout record', async () => {
+    const { writeUnattended, clearUnattended, readUnattended } = await load();
+    const checkoutA = path.join(home, 'checkout-a');
+    const checkoutB = path.join(home, 'checkout-b');
+    await mkdir(checkoutA, { recursive: true });
+    await mkdir(checkoutB, { recursive: true });
+    const envA = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA };
+    const envB = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB };
+
+    writeUnattended({ item: 'AR-A', runDir: '/runs/a', allow: [] }, envA);
+    writeUnattended({ item: 'AR-B', runDir: '/runs/b', allow: [] }, envB);
+
+    expect(readUnattended(envA)).toMatchObject({ on: true, item: 'AR-A', runDir: '/runs/a' });
+    expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
+
+    clearUnattended(envA);
+    expect(readUnattended(envA)).toEqual({ on: false });
+    expect(readUnattended(envB)).toMatchObject({ on: true, item: 'AR-B', runDir: '/runs/b' });
+  });
 
   it('writes the first candidate, creating <home>/.claude/, and returns the path', async () => {
     const { writeUnattended, readUnattended } = await load();
@@ -242,9 +307,84 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
     // idempotent: nothing left to remove
     expect(clearUnattended(env())).toEqual([]);
   });
+
+  it('safely clears a legacy flag only when its run directory belongs to this checkout', async () => {
+    const { clearUnattended, readUnattended } = await load();
+    const checkout = path.join(home, 'legacy-owner');
+    const runDir = path.join(checkout, '.claude', 'runs', 'old');
+    await mkdir(runDir, { recursive: true });
+    await arm(JSON.stringify({ item: 'OLD-A', runDir, allow: [] }));
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+
+    expect(clearUnattended(scopedEnv)).toEqual([flagPath()]);
+    expect(readUnattended(scopedEnv)).toEqual({ on: false });
+  });
 });
 
 describe('the CLI the loop skill calls', () => {
+  it('exits nonzero when off --root leaves a checkout-scoped candidate behind', async () => {
+    const checkout = path.join(home, 'unremovable-checkout');
+    await mkdir(checkout, { recursive: true });
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    const { unattendedFlags } = await load();
+    const candidate = unattendedFlags(scopedEnv)[0]!;
+    await mkdir(candidate, { recursive: true });
+
+    try {
+      const result = await runCli(['off', '--root', checkout], home);
+      expect(existsSync(candidate)).toBe(true);
+      expect(result.code, result.stderr).not.toBe(0);
+      expect(result.stderr).toMatch(/remove|remain|failed/i);
+    } finally {
+      await rm(candidate, { recursive: true, force: true });
+    }
+  });
+
+  it('removes only the explicitly selected legacy record and leaves another home untouched', async () => {
+    const selectedHome = await mkdtemp(path.join(tmpdir(), 'ar51-selected-home-'));
+    try {
+      const selected = path.join(selectedHome, '.claude', FLAG_NAME);
+      await mkdir(path.dirname(selected), { recursive: true });
+      await writeFile(
+        selected,
+        JSON.stringify({ item: 'OLD-SELECTED', runDir: '/runs/a', allow: [] }),
+      );
+      await arm(JSON.stringify({ item: 'OLD-UNRELATED', runDir: '/runs/b', allow: [] }));
+
+      const legacy = await runCli(['off', '--legacy', '--path', selected], home);
+      expect(legacy.code, legacy.stderr).toBe(0);
+      expect(existsSync(selected)).toBe(false);
+      expect(existsSync(flagPath())).toBe(true);
+    } finally {
+      await rm(selectedHome, { recursive: true, force: true });
+    }
+  });
+
+  it('scopes on/off to --root so concurrent checkout CLIs do not share a flag', async () => {
+    const { readUnattended } = await load();
+    const checkoutA = path.join(home, 'cli-checkout-a');
+    const checkoutB = path.join(home, 'cli-checkout-b');
+    await mkdir(checkoutA, { recursive: true });
+    await mkdir(checkoutB, { recursive: true });
+
+    expect((await runCli(['on', '--root', checkoutA, '--item', 'AR-A'], home)).code).toBe(0);
+    expect((await runCli(['on', '--root', checkoutB, '--item', 'AR-B'], home)).code).toBe(0);
+    expect(
+      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA }),
+    ).toMatchObject({ item: 'AR-A' });
+    expect(
+      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB }),
+    ).toMatchObject({ item: 'AR-B' });
+
+    expect((await runCli(['off', '--root', checkoutA], home)).code).toBe(0);
+    expect(readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA })).toEqual({
+      on: false,
+    });
+    expect(
+      readUnattended({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB }),
+    ).toMatchObject({ item: 'AR-B' });
+  });
+
   it('`on --item … --run-dir … --allow …` writes the flag and prints its path', async () => {
     const result = await runCli(
       [
@@ -290,6 +430,16 @@ describe('the CLI the loop skill calls', () => {
 });
 
 describe('the process layer declares the new files', () => {
+  it('explains exact protected-prefix refusal separately from proper-prefix widening', async () => {
+    const source = await readFile(scriptPath, 'utf8');
+    const explanation =
+      source.match(/\/\*\*\n \* Does this allow entry widen[\s\S]*?\*\//)?.[0] ?? '';
+    expect(explanation).toMatch(/exact[\s-]+(?:protected[\s-]+)?prefix/i);
+    expect(explanation).toMatch(/proper[\s-]+prefix/i);
+    expect(explanation).toMatch(/(?:all|every)[\s\S]*\.claude\/scripts\//i);
+    expect(explanation).not.toMatch(/\.claude\/scripts\/queue\/[\s\S]*exactly a rulebook prefix/i);
+  });
+
   it('layers.json `process` lists unattended-flag.mjs and guard-rulebook.mjs', async () => {
     const layers = JSON.parse(await readFile(path.join(universal, 'layers.json'), 'utf8')) as {
       process: string[];

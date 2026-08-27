@@ -93,6 +93,53 @@ describe('the init layer installs a rig with no dangling references', () => {
     }
   });
 
+  it('labels every installed upstream-test pointer as absent from the local rig', async () => {
+    const files = await installed();
+    const offences: string[] = [];
+    const testPointer = /(?:test\/[A-Za-z0-9._\-/]+|[A-Za-z0-9._-]+)\.test\.(?:[cm]?[jt]s)\b/g;
+    const absentLocally =
+      /absent\s+(?:locally|in\s+(?:a|the)\s+generated\s+rig)|generated\s+projects?\s+(?:do|does)\s+not\s+carry|(?:does\s+not|doesn't|never)\s+ship(?:s|ped)?\s+(?:with|into|in)\s+(?:a|the)\s+generated\s+rig|neither\s+(?:file|suite|test)[\s\S]{0,40}ships?\s+(?:with|into|in)\s+(?:a|the)\s+generated\s+rig/i;
+    for (const [rel, content] of files) {
+      const isProseOrEnforcement =
+        rel === 'CLAUDE.md' ||
+        rel === 'AGENTS.md' ||
+        rel.startsWith('.claude/agents/') ||
+        rel.startsWith('.claude/rules/') ||
+        rel.startsWith('.claude/hooks/') ||
+        rel.startsWith('.claude/scripts/') ||
+        rel.startsWith('.codex/agents/') ||
+        rel.includes('/skills/');
+      if (!isProseOrEnforcement) continue;
+      const artifactDisclosure =
+        /(?:all|every)[\s\S]{0,100}(?:test pointers?|tests? cited)[\s\S]{0,120}absent\s+(?:locally|in\s+(?:a|the)\s+generated\s+rig)/i.test(
+          content.slice(0, 4_000),
+        );
+      for (const match of content.matchAll(testPointer)) {
+        // This is a local test shape the installed new-invariant skill asks the
+        // project to create, not an upstream citation offered as evidence.
+        if (match[0].includes('.example.test.')) continue;
+        if (artifactDisclosure) continue;
+        const start = Math.max(0, (match.index ?? 0) - 320);
+        const end = Math.min(content.length, (match.index ?? 0) + match[0].length + 320);
+        if (!absentLocally.test(content.slice(start, end))) offences.push(`${rel} -> ${match[0]}`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  it.each([
+    '.claude/hooks/guard-secret-file.mjs',
+    '.claude/scripts/lib/secrets.mjs',
+    '.claude/scripts/doctor.mjs',
+  ])('%s keeps downstream test ownership conditional on manifest evidence', async (rel) => {
+    const content = (await installed()).get(rel);
+    expect(content, `${rel} must be installed`).toBeDefined();
+    expect(content).not.toMatch(
+      /the moment (?:you edit|one is edited)[^.]{0,100}(?:(?:its )?tests?|they)\s+(?:is|are)\s+(?:yours|the rig's own)/i,
+    );
+    expect(content).toMatch(/\.claude\/\.rig-manifest\.json|\.claude\/rules\/invariants\.md/);
+  });
+
   it('substitutes every token — a token in a filename is a dead kill switch', async () => {
     for (const [rel, content] of await installed()) {
       expect(content, rel).not.toContain('__PROJECT_NAME__');

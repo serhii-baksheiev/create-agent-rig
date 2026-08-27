@@ -34,9 +34,9 @@
 // a per-step budget is how three checks quietly cost three times the wall
 // clock the wiring allows (`.claude/rules/invariants.md` — "an explicit total
 // budget rather than a per-step one").
-//   see hooks.test.ts › "gates the stop when a check outruns the budget — unmeasured is not a pass"
-//   see hooks.test.ts › "spends one budget across the whole suite, not a fresh one per check"
-//   see hooks.test.ts › "gives the stop gate a harness timeout its own budget finishes inside"
+//   see hooks.test.ts (absent in a generated rig) › "gates the stop when a check outruns the budget — unmeasured is not a pass"
+//   see hooks.test.ts (absent in a generated rig) › "spends one budget across the whole suite, not a fresh one per check"
+//   see hooks.test.ts (absent in a generated rig) › "gives the stop gate a harness timeout its own budget finishes inside"
 //
 // ⚠ This rests on ONE assumption about the harness that nothing in this
 // repository can prove or falsify: that a hook outrunning its timeout is
@@ -48,19 +48,19 @@
 // Limits, each with the test that pins it:
 //   - a check whose output outgrows the buffer is UNMEASURED, and blocks like
 //     any other unmeasured check —
-//     see hooks.test.ts › "gates the stop when a check drowns its own buffer — a pass nobody watched is not a pass"
+//     see hooks.test.ts (absent in a generated rig) › "gates the stop when a check drowns its own buffer — a pass nobody watched is not a pass"
 //   - below that buffer, output volume is not a verdict: a chatty check that
 //     passes, passes —
-//     see hooks.test.ts › "does not read a chatty passing check as a failure (the ENOBUFS false gate)"
+//     see hooks.test.ts (absent in a generated rig) › "does not read a chatty passing check as a failure (the ENOBUFS false gate)"
 //   - the RIG_DOD_BUDGET_MS override may only LOWER the budget, and an
 //     override this hook did not honour is announced rather than ignored —
-//     see hooks.test.ts › "clamps a budget override that would outlive the harness, and names the budget it used"
+//     see hooks.test.ts (absent in a generated rig) › "clamps a budget override that would outlive the harness, and names the budget it used"
 //   - a fail-open is announced on stderr, because a silent exit 0 and a clean
 //     pass are the same observation from outside —
-//     see hooks.test.ts › "announces a fail-open instead of returning a silent clean pass"
+//     see hooks.test.ts (absent in a generated rig) › "announces a fail-open instead of returning a silent clean pass"
 //   - an ABSENT config is not a failure and says nothing; only a config that
 //     exists and cannot be used announces —
-//     see hooks.test.ts › "stays silent when there is no config at all — nothing to gate is the design, not a swallowed error"
+//     see hooks.test.ts (absent in a generated rig) › "stays silent when there is no config at all — nothing to gate is the design, not a swallowed error"
 import { execSync, spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -81,9 +81,9 @@ import { withoutGitLocation } from '../scripts/git-env.mjs';
 // `worktree-task` worktree is measured at the main checkout, and the refusal
 // says so. Resolved inside `main()`, so a throw here reaches the backstop
 // and announces itself like every other fault of the gate's own.
-//   see hooks.test.ts › "runs the checks in the project root, so a check reading the tree sees the session project"
-//   see hooks.test.ts › "asks "is the tree clean?" about the project, not about the cwd"
-//   see hooks.test.ts › "names the tree it measured in the refusal, so a foreign failure is visible at a glance"
+//   see hooks.test.ts (absent in a generated rig) › "runs the checks in the project root, so a check reading the tree sees the session project"
+//   see hooks.test.ts (absent in a generated rig) › "asks "is the tree clean?" about the project, not about the cwd"
+//   see hooks.test.ts (absent in a generated rig) › "names the tree it measured in the refusal, so a foreign failure is visible at a glance"
 const projectRootOf = () => realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
 
 // The default total budget, and the allowance for everything that happens
@@ -100,8 +100,8 @@ const projectRootOf = () => realpathSync(fileURLToPath(new URL('../..', import.m
 // So the preamble gets a number and a leash: `git status` below is given this
 // as its own timeout, which turns the allowance from a guess into a bound.
 // Both numbers are read from this file and compared against the wiring —
-//   see hooks.test.ts › "gives the stop gate a harness timeout its own budget finishes inside"
-//   see hooks.test.ts › "bounds its own preamble: the git status call carries a timeout derived from the declared margin"
+//   see hooks.test.ts (absent in a generated rig) › "gives the stop gate a harness timeout its own budget finishes inside"
+//   see hooks.test.ts (absent in a generated rig) › "bounds its own preamble: the git status call carries a timeout derived from the declared margin"
 const DEFAULT_BUDGET_MS = 600_000;
 const PREAMBLE_MARGIN_MS = 60_000;
 
@@ -137,7 +137,7 @@ const SPAWN_NEVER_STARTED = new Set(['ENOENT', 'EACCES', 'EPERM', 'EMFILE', 'ENF
  * it. `Number.isSafeInteger` is the test rather than `isFinite`, because
  * `spawnSync` throws on a fractional `timeout` — and a throw here would land in
  * the backstop and open the gate completely.
- *   see hooks.test.ts › "runs the gate on the default budget when the override is unusable, instead of not running it"
+ *   see hooks.test.ts (absent in a generated rig) › "runs the gate on the default budget when the override is unusable, instead of not running it"
  */
 function budgetMs(env) {
   const raw = env.RIG_DOD_BUDGET_MS;
@@ -235,13 +235,13 @@ function main() {
   // still ended green. Both were shipped here, one after the other, and both
   // are closed the same way — every usable entry runs, and a skipped entry is
   // a check with no verdict, which blocks.
-  //   see hooks.test.ts › "never lets an unusable config entry hide a failing check behind it (an empty string)"
-  //   see hooks.test.ts › "refuses the stop for an empty config entry it skipped, even though every check it could run passed"
+  //   see hooks.test.ts (absent in a generated rig) › "never lets an unusable config entry hide a failing check behind it (an empty string)"
+  //   see hooks.test.ts (absent in a generated rig) › "refuses the stop for an empty config entry it skipped, even though every check it could run passed"
   //
   // The predicate is exactly the three shapes `spawnSync` throws on, and no
   // wider: the shell answers every other unrunnable string with 127, which is
   // a verdict. Filtering past these three converts a real block into a skip.
-  //   see hooks.test.ts › "refuses the stop for a config it could read but cannot use, and names the file to fix"
+  //   see hooks.test.ts (absent in a generated rig) › "refuses the stop for a config it could read but cannot use, and names the file to fix"
   const runnable = (command) =>
     typeof command === 'string' && command !== '' && !command.includes('\0');
   const usable = checks.filter(runnable);
