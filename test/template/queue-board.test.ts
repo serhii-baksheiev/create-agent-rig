@@ -87,6 +87,45 @@ describe('boards in queue.json', () => {
     expect(loadConfig(configPath)).toEqual(plain);
   });
 
+  it('accepts an ordinary board name containing spaces', async () => {
+    const { loadConfig } = await indexModule();
+    const name = 'Incident Response';
+    const { configPath } = await fixture({
+      adapter: 'jira',
+      board: name,
+      boards: { [name]: { project: 'IR' } },
+    });
+    expect(loadConfig(configPath)).toMatchObject({ board: name, options: { project: 'IR' } });
+  });
+
+  it.each([
+    ['ANSI escape', '\u001b[31mred'],
+    ['OSC escape and BEL', '\u001b]2;owned\u0007'],
+    ['C1 CSI', '\u009b31mred'],
+    ['C1 OSC and ST', '\u009d2;owned\u009c'],
+    ['DEL', 'owned\u007f'],
+  ])(
+    'refuses a board name containing %s without echoing its terminal control bytes',
+    async (_, name) => {
+      const { loadConfig } = await indexModule();
+      const { dir, configPath } = await fixture({
+        adapter: 'jira',
+        board: name,
+        boards: { [name]: { project: 'IR' } },
+      });
+
+      expect(() => loadConfig(configPath)).toThrow(/board|control|invalid/i);
+      const result = await runCli(['board', '--config', configPath], dir);
+      expect(result.code, result.out).not.toBe(0);
+      for (const byte of [...name].filter((char) => {
+        const code = char.codePointAt(0) ?? -1;
+        return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+      })) {
+        expect(result.out).not.toContain(byte);
+      }
+    },
+  );
+
   it('`board` prints the active board and the declared ones; `board <name>` writes the selector', async () => {
     const { boardPathFor } = await indexModule();
     const { dir, configPath } = await fixture();

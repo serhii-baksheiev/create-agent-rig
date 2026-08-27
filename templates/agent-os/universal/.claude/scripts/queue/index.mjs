@@ -89,6 +89,23 @@ export const loadConfig = (configPath) => {
  */
 export const boardPathFor = (configPath) => configPath.replace(/(\.json)?$/, '.board');
 
+const isTerminalControl = (char) => {
+  const code = char.codePointAt(0);
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+};
+
+const assertSafeBoardName = (name, source) => {
+  if (typeof name === 'string' && [...name].some(isTerminalControl)) {
+    throw new Error(`${source}: board names must not contain terminal control characters.`);
+  }
+};
+
+const boardNamesOf = (boards, configPath) => {
+  const names = Object.keys(boards);
+  for (const name of names) assertSafeBoardName(name, configPath);
+  return names;
+};
+
 /**
  * A config may declare several boards and one default:
  *
@@ -109,7 +126,7 @@ export const resolveBoard = (config, configPath) => {
   if (boards === null || typeof boards !== 'object' || Array.isArray(boards)) {
     throw new Error(`${configPath}: "boards" must be an object of <name> → options.`);
   }
-  const known = Object.keys(boards);
+  const known = boardNamesOf(boards, configPath);
   let selected = null;
   let source = 'the "board" key';
   try {
@@ -122,6 +139,7 @@ export const resolveBoard = (config, configPath) => {
   // a truncated write would otherwise switch the run to the default board while
   // the file still looks like a choice somebody made.
   const active = selected === null ? config.board : selected;
+  assertSafeBoardName(active, source);
   if (!active || !known.includes(active)) {
     throw new Error(
       `${source} names board ${JSON.stringify(active ?? null)}, which ${configPath} does not ` +
@@ -366,11 +384,13 @@ if (invokedDirectly()) {
       if (raw.boards === null || typeof raw.boards !== 'object' || Array.isArray(raw.boards)) {
         throw new Error(`${configPath}: "boards" must be an object of <name> → options. Nothing was written.`);
       }
+      const boardNames = boardNamesOf(raw.boards, configPath);
       if (args.name !== null) {
-        if (!Object.keys(raw.boards).includes(args.name)) {
+        assertSafeBoardName(args.name, 'the requested board');
+        if (!boardNames.includes(args.name)) {
           throw new Error(
             `${JSON.stringify(args.name)} is not a declared board. Declared: ` +
-            `${Object.keys(raw.boards).join(', ')}. Nothing was written.`,
+            `${boardNames.join(', ')}. Nothing was written.`,
           );
         }
         // Loaded only on the mutation path. `next`, `list` and `hygiene` also
@@ -393,7 +413,7 @@ if (invokedDirectly()) {
         writeFileSync(boardPathFor(configPath), `${args.name}\n`);
       }
       const config = loadConfig(configPath);
-      const report = { board: config.board, boards: Object.keys(raw.boards), options: config.options };
+      const report = { board: config.board, boards: boardNames, options: config.options };
       process.stdout.write(
         args.json
           ? `${JSON.stringify(report)}\n`

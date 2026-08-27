@@ -37,13 +37,15 @@
 //   - it judges paths, not content: a README that merely mentions
 //     `.claude/hooks/guard-bash.mjs` is not a rulebook edit — › "guards the
 //     path, not prose that mentions a guarded path";
-//   - it canonicalizes the checkout root before comparing paths as text, whether
-//     that root came from `CLAUDE_PROJECT_DIR` or the working-directory fallback
-//     — › "canonicalizes a differently spelled checkout root before guarding a
-//     canonical payload path". It does not resolve the payload file path: when
-//     only that path uses a symlink spelling, the root is not stripped and the
-//     edit is not judged — › "still compares the payload file path as text when
-//     only that path uses a symlink spelling";
+//   - it compares against both the selected checkout root and its canonical
+//     spelling, whether selection came from `CLAUDE_PROJECT_DIR` or the
+//     working-directory fallback — › "canonicalizes a differently spelled
+//     checkout root before guarding a canonical payload path" and › "blocks
+//     when the checkout root and payload use the same symlink spelling". It
+//     does not resolve any other payload file-path spelling: when only that path
+//     uses a symlink alias, neither root is stripped and the edit is not judged
+//     — › "still compares the payload file path as text when only that path uses
+//     a symlink spelling";
 //   - an `allow` prefix is a string prefix of the repo-relative path and may
 //     not widen the rulebook — an entry that is itself a prefix of a rulebook
 //     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
@@ -94,7 +96,9 @@ function main() {
   }
   if (!EDIT_TOOLS.has(input?.tool_name)) return 0;
 
-  const root = canonicalRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  const selectedRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const root = canonicalRoot(selectedRoot);
+  const comparisonRoots = [...new Set([root, selectedRoot])];
   const unattendedEnv = { ...process.env, CLAUDE_PROJECT_DIR: root };
   const fragments = editFragments(input);
   const globalRefusal = fragments.find(
@@ -112,8 +116,8 @@ function main() {
   const paths = [];
   for (const { filePath } of fragments) {
     if (typeof filePath !== 'string' || filePath === '') continue;
-    const rel = relativeTo(root, filePath);
-    if (isRulebookPath(rel) && !paths.includes(rel)) paths.push(rel);
+    const rel = comparisonRoots.map((candidate) => relativeTo(candidate, filePath)).find(isRulebookPath);
+    if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
     if (paths.length >= 64) break;
   }
   if (paths.length === 0) return 0; // nothing under the rulebook: never judged

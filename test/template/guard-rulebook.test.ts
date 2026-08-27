@@ -149,6 +149,16 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
     expect(await hookHeader()).toMatch(/canonical|realpath/i);
   });
 
+  it('blocks when the checkout root and payload use the same symlink spelling', async () => {
+    await armed([]);
+    const alias = await aliasedRoot();
+    const result = await runHookFull(write(`${alias}/.claude/hooks/guard-bash.mjs`), {
+      HOME: home,
+      CLAUDE_PROJECT_DIR: alias,
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+
   it('still compares the payload file path as text when only that path uses a symlink spelling', async () => {
     await armed([]);
     const alias = await aliasedRoot();
