@@ -118,7 +118,10 @@ export const resolveBoard = (config, configPath) => {
   } catch (error) {
     if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
   }
-  const active = selected || config.board;
+  // A selector that exists but is empty is refused, not read as "no selector":
+  // a truncated write would otherwise switch the run to the default board while
+  // the file still looks like a choice somebody made.
+  const active = selected === null ? config.board : selected;
   if (!active || !known.includes(active)) {
     throw new Error(
       `${source} names board ${JSON.stringify(active ?? null)}, which ${configPath} does not ` +
@@ -356,6 +359,9 @@ if (invokedDirectly()) {
       const raw = JSON.parse(readFileSync(configPath, 'utf8'));
       if (raw?.boards === undefined) {
         throw new Error(`${configPath} declares no boards, so there is nothing to switch between.`);
+      }
+      if (raw.boards === null || typeof raw.boards !== 'object' || Array.isArray(raw.boards)) {
+        throw new Error(`${configPath}: "boards" must be an object of <name> → options. Nothing was written.`);
       }
       if (args.name !== null) {
         if (!Object.keys(raw.boards).includes(args.name)) {

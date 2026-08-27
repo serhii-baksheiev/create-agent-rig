@@ -140,3 +140,30 @@ describe('the generator dogfoods the switch', () => {
     }
   });
 });
+
+describe('the selector is guarded like the config it picks from', () => {
+  it('guard-rulebook lists .claude/queue.board beside .claude/queue.json', async () => {
+    const { RULEBOOK_PREFIXES } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    expect(RULEBOOK_PREFIXES).toContain('.claude/queue.json');
+    expect(RULEBOOK_PREFIXES).toContain('.claude/queue.board');
+  });
+
+  it('`board <name>` refuses a "boards" that is not an object before writing anything', async () => {
+    const { boardPathFor } = await indexModule();
+    const { dir, configPath } = await fixture({ adapter: 'jira', boards: 'AR' });
+    const result = await runCli(['board', '0', '--config', configPath], dir);
+    expect(result.code).not.toBe(0);
+    await expect(readFile(boardPathFor(configPath), 'utf8')).rejects.toThrow();
+  });
+});
+
+describe('an empty selector is a refusal, not an absence', () => {
+  it('refuses rather than falling back to the default board', async () => {
+    const { loadConfig, boardPathFor } = await indexModule();
+    const { configPath } = await fixture();
+    await writeFile(boardPathFor(configPath), '\n');
+    expect(() => loadConfig(configPath)).toThrow(/queue-board.*\.board.*AR, RP/s);
+  });
+});

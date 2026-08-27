@@ -60,6 +60,9 @@ export const RULEBOOK_PREFIXES = Object.freeze([
   '.claude/hooks/',
   '.claude/settings.json',
   '.claude/queue.json',
+  // the per-checkout board selector: picks among the boards queue.json declares,
+  // so an unattended run must not be able to re-aim itself through it either
+  '.claude/queue.board',
   '.claude/scripts/queue/',
   '.claude/scripts/decision-router.mjs',
   '.claude/scripts/detect-missed-gate.mjs',
