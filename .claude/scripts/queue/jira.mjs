@@ -108,7 +108,7 @@ export const toTicket = (issue) => {
     blockedBy,
     blocks,
     // English names first; a localised board ("Höchste", "Mittel") falls back
-    // to the numeric priority id, which Jira orders the same way. Neither → 999.
+    // to the numeric priority id. Neither → 999.
     priority:
       PRIORITY[String(fields.priority?.name ?? '').toLowerCase()] ??
       (Number.isFinite(Number(fields.priority?.id)) && Number(fields.priority?.id) > 0
@@ -267,9 +267,14 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * The wait before the next attempt: `Retry-After` in seconds when the server
  * names one, otherwise 500 ms doubling per attempt. Bounded by the attempt cap.
  */
+const MAX_RETRY_AFTER_MS = 60_000;
 const retryDelayMs = (response, attempt) => {
+  // Seconds form only; the HTTP-date form is not parsed and falls to backoff.
+  // Capped, because a header is input like any other: `Retry-After: 86400`
+  // must not sleep the loop for a day (› "caps Retry-After so a hostile header
+  // cannot sleep the loop for a day").
   const header = Number(response?.headers?.get?.('Retry-After'));
-  if (Number.isFinite(header) && header > 0) return header * 1000;
+  if (Number.isFinite(header) && header > 0) return Math.min(header * 1000, MAX_RETRY_AFTER_MS);
   return 500 * 2 ** (attempt - 1);
 };
 
@@ -302,6 +307,7 @@ const request = async (
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
+    let payload = null;
     try {
       response = await fetch(`${baseUrl}${route}`, {
         method,
@@ -313,6 +319,10 @@ const request = async (
         ...(body ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal,
       });
+      // The body is read INSIDE the timed region: headers can arrive and the
+      // body then stall, which is the same hung connection with a 200 on it
+      // (› "keeps the timeout armed while the body is read").
+      if (response.ok && response.status !== 204) payload = await response.json();
     } catch (error) {
       if (error?.name === 'AbortError' || controller.signal.aborted) {
         throw new Error(`jira ${method} ${route} timed out after ${timeoutMs} ms`, { cause: error });
@@ -321,7 +331,7 @@ const request = async (
     } finally {
       clearTimeout(timer);
     }
-    if (response.ok) return response.status === 204 ? null : response.json();
+    if (response.ok) return payload;
     if (TRANSIENT.has(response.status) && attempt < MAX_ATTEMPTS) {
       await sleep(retryDelayMs(response, attempt));
       continue;
@@ -358,7 +368,9 @@ const FIELDS = [
 /**
  * Query fresh every time — the queue changes as the loop closes items and
  * unblocks their dependents, so a list read at the start of a run is wrong by the
- * second task. `issues` is the offline seam the tests use.
+ * second task. `issues` is the offline seam the tests use. Since AR-54 `limit`
+ * is the PAGE size, not a result cap: `search` walks every page up to its own
+ * `hardCap`, which this function leaves at the default.
  */
 export const listEligible = async ({
   issues = null,
@@ -411,8 +423,17 @@ export const search = async ({
 } = {}) => {
   const query = buildJql({ project, jql });
   const issues = [];
+  // Two bounds beside hardCap, because a cap on issues alone is no bound at
+  // all against a server that repeats a token with an empty page: a page that
+  // brings nothing ends the walk, and so does a token equal to the one just
+  // sent (› "stops paging when a page brings no issues, even if the token
+  // repeats"). Pages are also capped outright, so the walk is finite whatever
+  // the server says.
+  const maxPages = Math.ceil(hardCap / Math.max(1, limit)) + 1;
   let nextPageToken = null;
+  let pages = 0;
   do {
+    pages += 1;
     const page = await request('/rest/api/3/search/jql', {
       method: 'POST',
       body: {
@@ -425,8 +446,13 @@ export const search = async ({
       timeoutMs,
       retry,
     });
-    issues.push(...(page?.issues ?? []).slice(0, Math.max(0, hardCap - issues.length)));
+    const received = page?.issues ?? [];
+    issues.push(...received.slice(0, Math.max(0, hardCap - issues.length)));
+    const sent = nextPageToken;
     nextPageToken = page?.isLast === true ? null : (page?.nextPageToken ?? null);
+    if (received.length === 0 || (nextPageToken && nextPageToken === sent) || pages >= maxPages) {
+      nextPageToken = null;
+    }
     if (issues.length >= hardCap && nextPageToken) {
       process.stderr.write(
         `jira search: capped at ${hardCap} issues with more pages available — ` +

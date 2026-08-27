@@ -639,6 +639,77 @@ describe('hardening beyond the endpoint (AR-54)', () => {
     });
   });
 
+  describe('liveness bounds — no header or page shape may hold the loop indefinitely', () => {
+    it('caps Retry-After so a hostile header cannot sleep the loop for a day', async () => {
+      scriptFetch([
+        { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '86400' } },
+        { status: 200, json: { issues: [issue({ key: 'AR-1' })] } },
+      ]);
+      const { search } = await load('jira.mjs');
+      const response = (await search({ project: 'AR', env: CREDENTIALS, retry: noSleep })) as {
+        issues: Array<{ key: string }>;
+      };
+      expect(sleeps, 'the 429 was not slept on at all').toHaveLength(1);
+      expect(sleeps[0], 'a day-long Retry-After was honoured verbatim').toBeLessThanOrEqual(60_000);
+      expect(response.issues.map((i) => i.key)).toEqual(['AR-1']);
+    });
+
+    it(
+      'stops paging when a page brings no issues, even if the token repeats',
+      { timeout: 3000 },
+      async () => {
+        // Every page is empty and carries the same token. The stub yields to a
+        // macrotask per call: a microtask-only loop would starve the event loop
+        // and vitest's timeout could never fire — the run would hang instead of
+        // going red.
+        scriptFetch([{ status: 200, json: { issues: [], nextPageToken: 'same' } }]);
+        const scripted = globalThis.fetch;
+        globalThis.fetch = ((input: unknown, init?: RequestInit) =>
+          new Promise((resolve) =>
+            setImmediate(() => resolve(scripted(input as string, init))),
+          )) as unknown as typeof globalThis.fetch;
+        const { search } = await load('jira.mjs');
+        const response = (await search({ project: 'AR', env: CREDENTIALS, retry: noSleep })) as {
+          issues: unknown[];
+        };
+        expect(response).toEqual({ issues: [] });
+        expect(
+          calls.length,
+          'an empty page with a repeating token was followed',
+        ).toBeLessThanOrEqual(2);
+      },
+    );
+
+    it('keeps the timeout armed while the body is read', { timeout: 2000 }, async () => {
+      // Variant of the stalled-socket stub above: here the headers arrive, so
+      // fetch resolves with a 200, but the body never does. The stub's json()
+      // settles only when `init.signal` fires — so what is measured is whether
+      // the implementation keeps its AbortController armed past the headers,
+      // not whether some unrelated timer happens to reject first.
+      globalThis.fetch = ((input: unknown, init: { signal?: AbortSignal } = {}) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: { get: () => null },
+          json: () =>
+            new Promise((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () =>
+                reject(new DOMException('aborted', 'AbortError')),
+              );
+            }),
+          text: () => Promise.resolve(''),
+        })) as unknown as typeof globalThis.fetch;
+
+      const { search } = await load('jira.mjs');
+      const error = await search({ project: 'AR', env: CREDENTIALS, timeoutMs: 50 }).then(
+        () => new Error('the request resolved; the body was supposed to time out'),
+        (thrown: unknown) => thrown as Error,
+      );
+      expect(error.message).toMatch(/timed out/i);
+    });
+  });
+
   describe('a priority the English ladder does not know', () => {
     it('falls back to the numeric id, so a localised board still sorts', async () => {
       const { toTicket } = await load('jira.mjs');
