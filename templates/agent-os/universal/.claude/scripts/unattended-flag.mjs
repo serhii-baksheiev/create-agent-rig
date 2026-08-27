@@ -49,6 +49,9 @@
 // "returns promptly and fails closed when a candidate is a FIFO". An access
 // error is unreadable, not absent — › "is on-but-unreadable when access to an
 // existing flag fails at the stat boundary".
+// Cleanup preserves the same distinction: an owned legacy record that cannot
+// be inspected is an error, not evidence that nothing remains — › "exits
+// nonzero and leaves an unreadable owned legacy flag in place".
 import { createHash } from 'node:crypto';
 import {
   closeSync,
@@ -305,7 +308,13 @@ const legacyBelongsToCheckout = (flagPath, env) => {
     if (raw.bytes > MAX_FLAG_BYTES) return false;
     const parsed = JSON.parse(raw.text);
     return typeof parsed?.runDir === 'string' && pathBelongsToCheckout(parsed.runDir, checkout);
-  } catch {
+  } catch (error) {
+    if (!isMissing(error)) {
+      throw new Error(
+        `legacy unattended flag at ${flagPath} cannot be read: ${error?.code ?? error?.message ?? 'read failed'}`,
+        { cause: error },
+      );
+    }
     return false;
   }
 };
@@ -410,9 +419,10 @@ if (invokedDirectly()) {
     }
     if (!legacy && root) {
       const remaining = readUnattended(cliEnv);
-      if (remaining.on && remaining.unreadable && /legacy/i.test(remaining.why ?? '')) {
+      if (remaining.on) {
+        const reason = remaining.why ?? 'an unattended flag is still armed';
         process.stderr.write(
-          `unattended-flag off: ${remaining.why} at ${remaining.path}. ` +
+          `unattended-flag off: ${reason} at ${remaining.path}. ` +
             'Inspect that exact record; if no pre-upgrade run still uses it, remove it with `off --legacy --path <reported-path>`.\n',
         );
         process.exit(1);

@@ -15,9 +15,12 @@
 //      the rulebook on purpose.
 //   2. Flag present and readable → every edit fragment whose repo-relative path
 //      sits under a rulebook prefix is refused (exit 2) unless it also sits
-//      under one of the item's `allow` prefixes. Paths outside the rulebook are
-//      never judged — › "allows a MultiEdit beyond the fragment cap when its
-//      known path is outside the rulebook".
+//      under one of the item's `allow` prefixes. A known path outside the
+//      rulebook is never judged — › "allows a MultiEdit beyond the fragment cap
+//      when its known path is outside the rulebook". A pathless global refusal
+//      for an oversized or unsupported `apply_patch` payload is blocked while
+//      armed because its scope cannot be proved — › "states the pathless
+//      global-refusal limit for oversized and unsupported apply_patch payloads".
 //   3. Flag present and UNREADABLE → a rulebook edit is refused and the reason
 //      names the flag; an edit outside the rulebook still passes. Refusing to
 //      inspect is not allowing (`.claude/rules/invariants.md`).
@@ -39,15 +42,12 @@
 //   - it judges paths, not content: a README that merely mentions
 //     `.claude/hooks/guard-bash.mjs` is not a rulebook edit — › "guards the
 //     path, not prose that mentions a guarded path";
-//   - it compares against both the selected checkout root and its canonical
-//     spelling, whether selection came from `CLAUDE_PROJECT_DIR` or the
+//   - it compares both roots and payload paths in their selected and canonical
+//     spellings, whether selection came from `CLAUDE_PROJECT_DIR` or the
 //     working-directory fallback — › "canonicalizes a differently spelled
-//     checkout root before guarding a canonical payload path" and › "blocks
-//     when the checkout root and payload use the same symlink spelling". It
-//     does not resolve any other payload file-path spelling: when only that path
-//     uses a symlink alias, neither root is stripped and the edit is not judged
-//     — › "still compares the payload file path as text when only that path uses
-//     a symlink spelling";
+//     checkout root before guarding a canonical payload path", › "blocks when
+//     the checkout root and payload use the same symlink spelling", and
+//     › "blocks an existing rulebook file when only the payload path uses a symlink spelling";
 //   - an `allow` prefix is a string prefix of the repo-relative path and may
 //     not widen the rulebook — an entry that is itself a prefix of a rulebook
 //     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
@@ -61,6 +61,7 @@
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { editFragments } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 
@@ -78,6 +79,22 @@ const canonicalRoot = (root) => {
   }
 };
 
+/** Resolve symlinks in the nearest existing ancestor, preserving a missing tail. */
+const canonicalPath = (filePath) => {
+  let cursor = resolve(filePath);
+  const tail = [];
+  for (;;) {
+    try {
+      return join(realpathSync(cursor), ...tail);
+    } catch {
+      const parent = dirname(cursor);
+      if (parent === cursor) return filePath;
+      tail.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+};
+
 /** The repo-relative tail of an absolute path, or the path itself when it is not under the root. */
 export const relativeTo = (root, filePath) => {
   const dir = toPosix(root).replace(/\/+$/, '');
@@ -88,6 +105,11 @@ export const relativeTo = (root, filePath) => {
 
 export const isAllowed = (rel, allow) =>
   (Array.isArray(allow) ? allow : []).some((prefix) => prefix !== '' && (rel === prefix || rel.startsWith(prefix)));
+
+const protectedRelative = (roots, filePath) =>
+  [...new Set([filePath, canonicalPath(filePath)])]
+    .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)))
+    .find(isRulebookPath);
 
 function main() {
   let input;
@@ -108,9 +130,7 @@ function main() {
   );
   if (globalRefusal) {
     if (globalRefusal.filePath) {
-      const rel = comparisonRoots
-        .map((candidate) => relativeTo(candidate, globalRefusal.filePath))
-        .find(isRulebookPath);
+      const rel = protectedRelative(comparisonRoots, globalRefusal.filePath);
       if (rel === undefined) return 0;
     }
     const mode = readUnattended(unattendedEnv);
@@ -124,7 +144,7 @@ function main() {
   const paths = [];
   for (const { filePath } of fragments) {
     if (typeof filePath !== 'string' || filePath === '') continue;
-    const rel = comparisonRoots.map((candidate) => relativeTo(candidate, filePath)).find(isRulebookPath);
+    const rel = protectedRelative(comparisonRoots, filePath);
     if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
   }
   if (paths.length === 0) return 0; // nothing under the rulebook: never judged

@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -87,32 +87,16 @@ const readInChild = (home: string, timeout = 750): Promise<BoundedResult> =>
   });
 
 // 🔴 Precondition, not a cleanup: a flag in EITHER home arms the mode, and the
-// real home is one of them. These tests never write there — and if something
-// already has, every "flag absent" case below is meaningless.
+// real home is one of them. Scoped writer cases temporarily mirror there and
+// remove their exact candidate paths in `finally`; a pattern-based global
+// cleanup would race with another test process using the same literal template.
+// A pre-existing legacy record would make every "flag absent" case meaningless.
 const realHomes = new Set([homedir()]);
 try {
   realHomes.add(userInfo().homedir);
 } catch {
   // no password entry
 }
-const scopedFlagName = /^__PROJECT_NAME__-[0-9a-f]{16}-loop-UNATTENDED$/;
-const realScopedFlags = async () => {
-  const flags: string[] = [];
-  for (const realHome of realHomes) {
-    const configDir = path.join(realHome, '.claude');
-    try {
-      const entries = await readdir(configDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile() && scopedFlagName.test(entry.name)) {
-          flags.push(path.join(configDir, entry.name));
-        }
-      }
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'ENOENT') throw error;
-    }
-  }
-  return [...new Set(flags)];
-};
 beforeAll(() => {
   for (const home of realHomes) {
     expect(
@@ -123,7 +107,6 @@ beforeAll(() => {
 });
 
 let home: string;
-let realScopedBaseline = new Set<string>();
 // `homedir()` honours $HOME, and the module reads the flag through it — so the
 // test process's own HOME is redirected for the duration of each case.
 const originalHome = process.env.HOME;
@@ -136,21 +119,10 @@ const arm = async (content: string) => {
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), 'ar51-flag-'));
   process.env.HOME = home;
-  realScopedBaseline = new Set(await realScopedFlags());
 });
 afterEach(async () => {
-  let created: string[];
-  try {
-    created = (await realScopedFlags()).filter((flag) => !realScopedBaseline.has(flag));
-    await Promise.all(created.map((flag) => rm(flag, { force: true })));
-  } finally {
-    process.env.HOME = originalHome;
-    await rm(home, { recursive: true, force: true });
-  }
-  expect(
-    created,
-    'a test left new literal __PROJECT_NAME__ checkout-scoped flags in a real password home; cleanup ran before this assertion',
-  ).toEqual([]);
+  process.env.HOME = originalHome;
+  await rm(home, { recursive: true, force: true });
 });
 
 describe('unattendedFlags: the same two-home rule as the kill switch', () => {
@@ -455,6 +427,26 @@ describe('the CLI the loop skill calls', () => {
       expect(result.stderr).toMatch(/remove|remain|failed/i);
     } finally {
       await rm(candidate, { recursive: true, force: true });
+    }
+  });
+
+  it('exits nonzero and leaves an unreadable owned legacy flag in place', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    const checkout = path.join(home, 'legacy-owner-unreadable');
+    const runDir = path.join(checkout, '.claude', 'runs', 'old');
+    await mkdir(runDir, { recursive: true });
+    await arm(JSON.stringify({ item: 'OLD-UNREADABLE', runDir, allow: [] }));
+    await chmod(path.dirname(flagPath()), 0o700);
+
+    try {
+      await chmod(flagPath(), 0o000);
+      const result = await runCli(['off', '--root', checkout], home);
+      expect(existsSync(flagPath()), 'an unreadable legacy record must not be removed').toBe(true);
+      expect(result.code, result.stderr).not.toBe(0);
+      expect(result.stderr).toMatch(/legacy|unreadable|cannot be read|inspect/i);
+    } finally {
+      await chmod(flagPath(), 0o600).catch(() => {});
+      await rm(flagPath(), { force: true });
     }
   });
 

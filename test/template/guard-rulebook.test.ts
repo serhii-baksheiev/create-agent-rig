@@ -159,7 +159,10 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
     expect(result.code, result.stderr).toBe(2);
   });
 
-  it('still compares the payload file path as text when only that path uses a symlink spelling', async () => {
+  it('blocks an existing rulebook file when only the payload path uses a symlink spelling', async () => {
+    const protectedFile = path.join(root, '.claude', 'hooks', 'guard-bash.mjs');
+    await mkdir(path.dirname(protectedFile), { recursive: true });
+    await writeFile(protectedFile, '// protected\n');
     await armed([]);
     const alias = await aliasedRoot();
     const canonicalRoot = await realpath(root);
@@ -167,10 +170,29 @@ describe('guard-rulebook: its stated limits hold, each one measured', () => {
       HOME: home,
       CLAUDE_PROJECT_DIR: canonicalRoot,
     });
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.code, result.stderr).toBe(2);
     const header = await hookHeader();
-    expect(header).toMatch(/symlink|spelled/i);
-    expect(header).toMatch(/file path/i);
+    expect(header).toContain(
+      'blocks an existing rulebook file when only the payload path uses a symlink spelling',
+    );
+    expect(header).toMatch(
+      /existing[\s\S]{0,160}(?:payload|file path)[\s\S]{0,160}(?:symlink|alias)|(?:symlink|alias)[\s\S]{0,160}(?:payload|file path)[\s\S]{0,160}existing/i,
+    );
+  });
+
+  it('does not universally claim that every path outside the rulebook is never judged', async () => {
+    const prose = (await hookHeader()).replace(/^\/\/?\s?/gm, '').replace(/\s+/g, ' ');
+    expect(prose).not.toMatch(/paths outside the rulebook are never judged/i);
+    expect(prose).toMatch(/known path[\s\S]{0,120}outside the rulebook/i);
+  });
+
+  it('states the pathless global-refusal limit for oversized and unsupported apply_patch payloads', async () => {
+    const prose = (await hookHeader()).replace(/^\/\/?\s?/gm, '').replace(/\s+/g, ' ');
+    expect(prose).toMatch(/pathless[\s\S]{0,80}global refusal/i);
+    expect(prose).toMatch(/oversized[\s\S]{0,100}apply_patch|apply_patch[\s\S]{0,100}oversized/i);
+    expect(prose).toMatch(
+      /unsupported[\s\S]{0,100}apply_patch|apply_patch[\s\S]{0,100}unsupported/i,
+    );
   });
 
   it.each(['.', '.claude/', '.claude/scripts/', '.codex/', 'AGENTS', '.claude/.rig-'])(

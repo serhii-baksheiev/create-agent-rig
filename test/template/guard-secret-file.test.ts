@@ -449,7 +449,7 @@ describe('guard-secret-file: the wiring that makes it run at all', () => {
 // `.claude/rules/invariants.md`, "State the limits — and test them": a limits
 // comment is the guard's own claim about how far it can be trusted, and nothing
 // checks prose, so it drifts — into overstatement, which is the direction that
-// gets someone hurt. The hook's header names four limits. These are them.
+// gets someone hurt. The hook's header names five limits. These are them.
 describe('guard-secret-file: the limits it states, asserted rather than asserted-in-prose', () => {
   it('keeps every named test pointer literally greppable in its referenced test file', async () => {
     const source = await readFile(hook, 'utf8');
