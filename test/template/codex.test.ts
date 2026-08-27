@@ -1,12 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { describe, expect, it } from 'vitest';
-import { fifosAvailable, needsGitRoot, skipUnless } from '../helpers/env.js';
+import { fifosAvailable, needsGitRoot, posixShellAvailable, skipUnless } from '../helpers/env.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
 // `git init` under pre-commit re-initialises THIS repository rather than the
@@ -106,15 +106,85 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           expect(windowsScript).toMatch(
             /Join-Path \$repoRoot '\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs'/,
           );
-          expect(hook.command).not.toContain('CLAUDE_PROJECT_DIR');
+          expect(hook.command).toContain('CLAUDE_PROJECT_DIR');
+          expect(windowsScript).toContain('$env:CLAUDE_PROJECT_DIR = $repoRoot');
           // `command` is what Codex executes on macOS and Linux. Keep it valid
           // for the platform-provided POSIX shell and independent of GNU tools.
-          expect(hook.command).toMatch(
-            /^node "\$\(git rev-parse --show-toplevel\)\/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs"$/,
-          );
+          expect(hook.command).toMatch(/node [^\n]*\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/);
           expect(hook.command).not.toMatch(/powershell|cmd\.exe|%CD%|\\/i);
         }
       }
+    }
+  });
+
+  it('anchors a nested-cwd Codex rulebook edit to the canonical repository root', async (ctx) => {
+    // Windows wiring is decoded and asserted above; this drives the POSIX
+    // command through the shell it targets instead of pretending to execute
+    // PowerShell on another platform.
+    skipUnless(ctx, posixShellAvailable().ok, posixShellAvailable().reason);
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-root-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'codex-hook-home-'));
+    const nested = path.join(scratch, 'packages', 'core', 'src');
+    try {
+      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+      await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
+        recursive: true,
+      });
+      await mkdir(nested, { recursive: true });
+
+      const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: scratch };
+      const { unattendedFlags } = (await import(
+        pathToFileURL(path.join(scratch, '.claude', 'scripts', 'unattended-flag.mjs')).href
+      )) as { unattendedFlags: (env: Record<string, string>) => string[] };
+      const flag = unattendedFlags(scopedEnv).find((candidate) => candidate.startsWith(home));
+      expect(flag).toBeDefined();
+      await mkdir(path.dirname(flag!), { recursive: true });
+      await writeFile(flag!, JSON.stringify({ item: 'RP-54', runDir: '/runs/rp-54', allow: [] }));
+
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: {
+          PreToolUse: Array<{
+            hooks: Array<{ command: string }>;
+          }>;
+        };
+      };
+      const command = config.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
+        hook.command.includes('guard-rulebook.mjs'),
+      )?.command;
+      expect(command).toBeDefined();
+
+      const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+        const child = execFile(
+          '/bin/sh',
+          ['-c', command!],
+          {
+            cwd: nested,
+            env: {
+              ...withoutGitLocation(process.env),
+              HOME: home,
+              CLAUDE_PROJECT_DIR: '',
+            },
+          },
+          (error, _stdout, stderr) =>
+            resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.end(
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Write',
+            tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
+            cwd: nested,
+          }),
+        );
+      });
+
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/rulebook|unattended/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
     }
   });
 

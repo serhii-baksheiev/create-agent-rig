@@ -80,6 +80,7 @@ export const MAX_ALLOW_ENTRIES = 64;
 export const RULEBOOK_PREFIXES = Object.freeze([
   '.agents/',
   '.claude/.rig-manifest.json',
+  '.claude/doctor-exemptions.json',
   '.claude/agents/',
   '.claude/hooks/',
   '.claude/settings.json',

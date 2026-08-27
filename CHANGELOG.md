@@ -11,6 +11,37 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## 0.6.2
+
+**Patch hardening for the Agent OS shipped by 0.6.1.** This release closes four
+downstream-found governance and transport defects without changing the public
+CLI or adding a dependency.
+
+### Fixed
+
+- **Codex hooks carry the canonical repository root in `CLAUDE_PROJECT_DIR` on
+  POSIX and Windows.** A session started in a nested directory therefore judges
+  a rulebook edit against the checkout the hook came from. Pinned in
+  `test/template/codex.test.ts` › "anchors a nested-cwd Codex rulebook edit to
+  the canonical repository root"; the same test file decodes and checks the
+  Windows command.
+- **Jira retry is limited to safe reads and the semantically read-only search
+  POST.** Comment, transition, issue-create and issue-update mutations return
+  the first ambiguous transient failure instead of replaying the write. Pinned
+  in `test/template/queue-jira.test.ts` › "does not retry %s" and › "retries a
+  semantically read-only search POST after a 429".
+- **`.claude/doctor-exemptions.json` is protected as rulebook input.** An
+  unattended edit is refused unless the current item's allow-list names that
+  exact file. Pinned in `test/template/guard-rulebook.test.ts` › "allows doctor
+  exemptions only when the item names that exact rulebook file" and the guarded
+  path table in the same suite.
+- **`lastCompletedTier` is explicitly repository-global across board switches.**
+  A selector change cannot reset the spacing brake and admit a second elevated
+  mechanism change in the same checkout. The ruling is in
+  `docs/decisions/spacing-rations-mechanisms.md`, pinned by
+  `test/template/queue-board.test.ts` › "keeps completed-tier spacing
+  repository-global when the active board switches".
+
 ## 0.6.1
 
 **Security and upgrade hardening for the Agent OS shipped by 0.6.0.** This patch

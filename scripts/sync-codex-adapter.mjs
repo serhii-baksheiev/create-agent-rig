@@ -76,7 +76,7 @@ function codexAgent(markdown, source) {
 function portableHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a portable Codex hook command from: ${command}`);
-  return `node "$(git rev-parse --show-toplevel)/${hook}"`;
+  return `repoRoot="$(git rev-parse --show-toplevel)" && CLAUDE_PROJECT_DIR="$repoRoot" node "$repoRoot/${hook}"`;
 }
 
 function windowsHookCommand(command) {
@@ -85,6 +85,7 @@ function windowsHookCommand(command) {
   const script = [
     '$repoRoot = git rev-parse --show-toplevel',
     'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+    '$env:CLAUDE_PROJECT_DIR = $repoRoot',
     `$hookPath = Join-Path $repoRoot '${hook}'`,
     '& node $hookPath',
     'exit $LASTEXITCODE',

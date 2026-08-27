@@ -116,6 +116,21 @@ with no refusal, and then **holds** the elevated item with `causes: ["spacing"]`
 It holds because `core.mjs` is the layer that reads every unrecognised value
 restrictively — the same layer that holds when `selectNext` is called directly.
 
+## A board switch does not reset repository risk
+
+`lastCompletedTier` is intentionally checkout-global, not board-scoped. Boards
+partition ownership and selection; they do not partition the repository a merge
+changes. If switching the selector chose a fresh tier slot, a run could land an
+unreviewed mechanism from one board, switch to an independent queue, and land a
+second mechanism in the same checkout — exactly the back-to-back chain the
+ration exists to stop.
+
+The selector therefore changes only the adapter options. The tier stays in the
+one `.claude/queue.state.json` paired with the checkout's config, and the next
+selection reads it whichever board is active. This is pinned in the generator's
+`test/template/queue-board.test.ts` (absent in a generated rig) › "keeps
+completed-tier spacing repository-global when the active board switches".
+
 ## What this does not fix
 
 The livelock where *every* remaining item is elevated-by-mechanism still exists —

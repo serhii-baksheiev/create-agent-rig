@@ -105,6 +105,13 @@ export const onlyOnWindows = (): { ok: boolean; reason: string } => ({
   reason: 'this branch exists only on Windows (a .cmd shim); there is nothing to measure elsewhere',
 });
 
+/** Is the POSIX shell used by generated hook commands available on this host? */
+export const posixShellAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason:
+    'the generated POSIX hook command requires /bin/sh; Windows wiring is decoded and asserted separately',
+});
+
 /** Do mode bits exist at all here? Windows has none; root sees them, so this is not `modeBitsDeny`. */
 export const modeBitsExist = (): { ok: boolean; reason: string } => ({
   ok: process.platform !== 'win32',

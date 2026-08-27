@@ -6,7 +6,8 @@
     "0.3.2",
     "0.4.0",
     "0.5.0",
-    "0.6.0"
+    "0.6.0",
+    "0.6.1"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -20,7 +21,8 @@
       "since": "0.5.0",
       "hashes": [
         "eb52ef41269018107534d8dc2f552c57698e1677a1e76b5e666b5d09c007cac0",
-        "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5"
+        "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5",
+        "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -90,7 +92,8 @@
       "hashes": [
         "8d5762849afd328fdc1aabf053ad207f2e306e013665e3ff934b06cbb1bbda38",
         "0e4307cd9cf8ef723d79e98b1af46a34c6912a6aa925e2179d939cb83c8f2a44",
-        "7e8eaa2b4af9d65e1d10bf50c32c1d138fb2f8b9ba6e6d0880cade0524324d9d"
+        "7e8eaa2b4af9d65e1d10bf50c32c1d138fb2f8b9ba6e6d0880cade0524324d9d",
+        "ed1c05d3938c0b4f277f1bf4af8641460def830569049ff0697c9bda14518b78"
       ]
     },
     ".claude/agents/security-scanner.md": {
@@ -126,14 +129,16 @@
         "de1f331eaf93bad6ef0e1734789fd3c4ab07550a85ed2d8ff8888bc6f0bcfb0f",
         "9fb8fad4d95756fb2424a97550aa85dfab0ca8dbcf91e6d0385263ba3b929135",
         "7852205961cb1647b49de5f7e79820c1735b4be897adcf8f5bc3eeb49318ff78",
-        "33edb11904e5c4f88626b41c7e649b85d20957a11ff7e1062538917647c3e7f0"
+        "33edb11904e5c4f88626b41c7e649b85d20957a11ff7e1062538917647c3e7f0",
+        "19202a28355dac1d7a95d29411668cf970006b3044d89a772768ce21793931aa"
       ]
     },
     ".claude/hooks/guard-bash.mjs": {
       "since": "0.3.0",
       "hashes": [
         "4d396f412fc53094188b14348c5af4e79c7542a182630c20c4687d79899c5b0e",
-        "e7a513216ebbceaa7f11ec8fb611de8bb5d5925dfdfd75b779dcb7c0ee6e83cc"
+        "e7a513216ebbceaa7f11ec8fb611de8bb5d5925dfdfd75b779dcb7c0ee6e83cc",
+        "78047f42dda65076dd2cdb73ad530553db3d4a6f3ea7f0729590ac7286323cb1"
       ]
     },
     ".claude/hooks/guard-core-purity.mjs": {
@@ -146,13 +151,15 @@
     ".claude/hooks/guard-rulebook.mjs": {
       "since": "0.6.0",
       "hashes": [
-        "4524d715f2e41f4cfdd3d0f9c858817f913aaca5192bda97dff876b4d8c51f19"
+        "4524d715f2e41f4cfdd3d0f9c858817f913aaca5192bda97dff876b4d8c51f19",
+        "f9e3e4b7c22c4a64f521402419707ff382b05c8deb6310f62e5545db87f7cb4f"
       ]
     },
     ".claude/hooks/guard-secret-file.mjs": {
       "since": "0.5.0",
       "hashes": [
-        "f6b81cb7640924d2e56aced58e6b48f65df6638fb5a9099985fe5d673245c3ad"
+        "f6b81cb7640924d2e56aced58e6b48f65df6638fb5a9099985fe5d673245c3ad",
+        "8c333879dba1f2bf87bbb8e7b257ac51315a74a4cb45252408ca615e2a42d7b5"
       ]
     },
     ".claude/hooks/guard-web-boundary.mjs": {
@@ -173,7 +180,8 @@
       "since": "0.5.0",
       "hashes": [
         "4f836bc3ff75a868ffe035b179ac9e7dc1ad7715d520677ff9f6aa5bfdb200eb",
-        "0c191d326a7bb0bbfc110e2210f44b4aa39276e8db3779aaa4545cffd4e11863"
+        "0c191d326a7bb0bbfc110e2210f44b4aa39276e8db3779aaa4545cffd4e11863",
+        "572c671f8f2cad190fe2f144071954ac4d3b1357cab80a19bad584dd3b3768c8"
       ]
     },
     ".claude/queue.json": {
@@ -194,7 +202,8 @@
         "c3aa6ea4487adf6d542174f491bf469d8f8563ec7c8c4de63fcd82d6a5ca4fba",
         "ce2104ce697d3e5ed9210e85fe0daeb66b432a36868493f06fec54073a5fff31",
         "530f63a4b29a5cc67867fa7b23575db81d42609ae401bfc4089b05194c586c21",
-        "a7359408d56e6bdbf268019ad9193d5fbf4a872385a65ba08564204e6a8f5b5f"
+        "a7359408d56e6bdbf268019ad9193d5fbf4a872385a65ba08564204e6a8f5b5f",
+        "619999500386b3d2867bbd4799f86a800fe7e168083c6e35fb2e629a2c926c5f"
       ]
     },
     ".claude/rules/aws-cdk.md": {
@@ -211,7 +220,8 @@
         "b24bbf3e596033719eff463d317ba1e933d0661e48bfa8eafba8d6dca1453a59",
         "518d9b3d7cbae50f30c86d33b2b4bbea11ab3ba6cfef270876e92604b2af5f50",
         "389484f0846c3dd8207c0f41bd56409103fbcc7f58b94b1bf4bd1d81b5af0e87",
-        "a2e10499a0bcd2cdc32f3986d27b59077c86e524d40323faabb2e5d78afc002c"
+        "a2e10499a0bcd2cdc32f3986d27b59077c86e524d40323faabb2e5d78afc002c",
+        "c94c33d7ccbd46f191948325dfc7f68ce13b0d3a9470215de1de3f06b1499111"
       ]
     },
     ".claude/rules/node-ts.md": {
@@ -233,7 +243,8 @@
       "since": "0.5.0",
       "hashes": [
         "783b5b455a56c6a3e3723f3c6da861e0a945562acb686b86ab9d0e16dbd552a6",
-        "c7a045d3687429c5047f09b4033ffffcecfede2edba736106f5e1048eb3cf27f"
+        "c7a045d3687429c5047f09b4033ffffcecfede2edba736106f5e1048eb3cf27f",
+        "8e9fe877949955e8f698701f969784b288bc95943c3bcea3bd4368db82e8e43e"
       ]
     },
     ".claude/scripts/detect-missed-gate.mjs": {
@@ -247,13 +258,15 @@
     ".claude/scripts/doctor.mjs": {
       "since": "0.6.0",
       "hashes": [
-        "eb31d2726ab95d6b8fd091b1daf8a21f403a46c801590baf4fecee5c1bec64b9"
+        "eb31d2726ab95d6b8fd091b1daf8a21f403a46c801590baf4fecee5c1bec64b9",
+        "5154ad9abdcb37fea58b0da78fd71842c705774ffe48fd8050c302da17e73913"
       ]
     },
     ".claude/scripts/git-env.mjs": {
       "since": "0.5.0",
       "hashes": [
-        "ff9f3c848a3881b67a8f795a4d172f407d896447e21dd3a9c4903365977d4519"
+        "ff9f3c848a3881b67a8f795a4d172f407d896447e21dd3a9c4903365977d4519",
+        "b022399f287cdce1bcb07329c0aab44bf99714b5f0515f274c962f41ea072b86"
       ]
     },
     ".claude/scripts/lib/gate-coverage.mjs": {
@@ -265,13 +278,15 @@
     ".claude/scripts/lib/revalidation-points.mjs": {
       "since": "0.6.0",
       "hashes": [
-        "41c4f70e5914636bccec7995172c322c875774027e0c626abb7c593c43fddd65"
+        "41c4f70e5914636bccec7995172c322c875774027e0c626abb7c593c43fddd65",
+        "b48e4959862906e279eca481f484f07a7fd4aa082f2778224a6574a7871bc9d8"
       ]
     },
     ".claude/scripts/lib/secrets.mjs": {
       "since": "0.5.0",
       "hashes": [
-        "dc4a300646f12459c0c37e380b325451474e1ec113482381e0fad80aceb88049"
+        "dc4a300646f12459c0c37e380b325451474e1ec113482381e0fad80aceb88049",
+        "60fab2cc9f2028bccf6139e6a744406b4a86a9039d1367f3cef409902e9b327d"
       ]
     },
     ".claude/scripts/lib/verdict.mjs": {
@@ -332,7 +347,8 @@
       "hashes": [
         "cd149245dc29ef7489ae0e5394fa5a063dea2cc017bd3cbbface1ace6f8d7b46",
         "7db3c17b781e6876b4822afd09e6affa97e46607b63d443975d987daf1f14464",
-        "9edd70b5960f367958e8e7500150b4edd285c99869cca803e40e0537d2d347b0"
+        "9edd70b5960f367958e8e7500150b4edd285c99869cca803e40e0537d2d347b0",
+        "4cf917ac06708e1068dfe9f8bbebc9376c4748526bd669b9bea32929ba996d0a"
       ]
     },
     ".claude/scripts/queue/jira.mjs": {
@@ -341,7 +357,8 @@
         "13e187a4005136a9a1fae5fb5a3d2a61c3cf5dc097b467c12622ad82a0fd5d52",
         "86591a48b9264d641c2530238ea3720705f12e17af2ec8dccecabfa3a742a2e7",
         "13c301f828d4402fcf81e7e0b2b1d22472cbdb50f6fd606770056af4ec215e51",
-        "b8be5855809c0d44ece94858456098663296c17c5ad9abb1ea2cf1a8f48ca491"
+        "b8be5855809c0d44ece94858456098663296c17c5ad9abb1ea2cf1a8f48ca491",
+        "3fc8ff9a06a2e22355a660a31e2943a97f50869f7e5726f768a7931d17b64b5b"
       ]
     },
     ".claude/scripts/queue/plan-md.mjs": {
@@ -368,13 +385,15 @@
     ".claude/scripts/revalidate.mjs": {
       "since": "0.6.0",
       "hashes": [
-        "32f847a2a3a5136cabcb42f6447da9f8cf98e2d20512212ee5201461128d7798"
+        "32f847a2a3a5136cabcb42f6447da9f8cf98e2d20512212ee5201461128d7798",
+        "b62348a27bcaa1d62a0e4ddd53873fab6cb75f9af8e8c69d24f6ce81c592c4e3"
       ]
     },
     ".claude/scripts/revalidation-report.mjs": {
       "since": "0.6.0",
       "hashes": [
-        "b99a3537158c2851698bfac027f7061811d7d428c3eea57f3ce0f58ea75dc249"
+        "b99a3537158c2851698bfac027f7061811d7d428c3eea57f3ce0f58ea75dc249",
+        "78adac5c8f696f2c9cc86f404abf1d55604ccb10f11dd612501c14d4cf5935b1"
       ]
     },
     ".claude/scripts/run-journal.mjs": {
@@ -400,7 +419,8 @@
     ".claude/scripts/unattended-flag.mjs": {
       "since": "0.6.0",
       "hashes": [
-        "060b001927d8b471f1c1a8c8851fbb4266d3b2edd674cccbd6c16c44b57b91dd"
+        "060b001927d8b471f1c1a8c8851fbb4266d3b2edd674cccbd6c16c44b57b91dd",
+        "7721ee19fd1bcf6902be3d359def40742d79b88f5d83e7e3ca22ba45ca3211aa"
       ]
     },
     ".claude/scripts/verdict.mjs": {
@@ -435,7 +455,8 @@
         "8f687f92fa60d4cc679fa13bff997cec92227f6bc0b90c1dc5b8a5400f2abef0",
         "e442ca58c4249ac10d5759bba2d8360544642e03b2b158e6253e71f5be3767fb",
         "eb52ef41269018107534d8dc2f552c57698e1677a1e76b5e666b5d09c007cac0",
-        "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5"
+        "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5",
+        "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -503,7 +524,8 @@
       "since": "0.5.0",
       "hashes": [
         "80b4631502d95c619ad060ce02cc8702b12574758ba7df8337ed63efa15d764d",
-        "cfd516f72acdfd197c59ac3cbdd39d7b175976dbd3d9eef52825dfdc4f1e5b60"
+        "cfd516f72acdfd197c59ac3cbdd39d7b175976dbd3d9eef52825dfdc4f1e5b60",
+        "8687eacf0ad707a4f887e0714e82fca23fd005fa9ec8824faedfe99ca46333e1"
       ]
     },
     ".codex/agents/security-scanner.toml": {

@@ -4,8 +4,9 @@
 //
 // The rulebook is the set of files that decide what this session may do — hooks
 // and settings wiring, the queue config and selector, all scripts, rules, skills
-// and agents, the `.codex/` configuration, the integrity manifest, `AGENTS.md`
-// and `CLAUDE.md`. Every one of them was editable by the run it governs: a
+// and agents, the `.codex/` configuration, the integrity manifest,
+// `.claude/doctor-exemptions.json`, `AGENTS.md` and `CLAUDE.md`. Every one of
+// them was editable by the run it governs: a
 // Write to `.claude/hooks/dod-checks.json` with `[]` switched the stop gate
 // off, and nothing refused it until the merge sweep, long after.
 //
