@@ -69,7 +69,13 @@ export const stubCommand = async (name: string, handlerBody: string): Promise<St
   const env: Record<string, string> = {};
   if (process.platform === 'win32') {
     await copyFile(process.execPath, path.join(bin, `${name}.exe`));
-    env['NODE_OPTIONS'] = [savedNodeOptions, `--require "${preload}"`].filter(Boolean).join(' ');
+    // Forward slashes: NODE_OPTIONS strips a backslash inside its quotes
+    // (measured: `C:UsersrunneradminAppData...` — AR-93), and node on Windows
+    // accepts a forward-slash path.
+    const preloadForOptions = preload.replace(/\\/g, '/');
+    env['NODE_OPTIONS'] = [savedNodeOptions, `--require "${preloadForOptions}"`]
+      .filter(Boolean)
+      .join(' ');
   } else {
     // exec, not `node`: the handler runs in the same binary the test runs in
     await writeFile(
