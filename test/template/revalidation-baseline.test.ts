@@ -7,8 +7,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
 
 /**
- * AR-138 — the take-up baseline crosses runs, and a proposal's baseline is the
- * marker it had when the loop filed it.
+ * AR-138 compatibility evidence crosses runs, while RP-50 makes the durable
+ * claim fingerprint the only decision baseline.
  *
  * Measured (RX1): SELECT compared only against a take-up recorded in the same
  * run, so an item taken up by yesterday's run and re-offered today reported
@@ -124,11 +124,39 @@ describe('the take-up baseline reaches back into earlier runs', () => {
   });
 });
 
-describe('selection compares against the earlier run when this run has no take-up yet', () => {
+describe('selection preserves earlier-run take-up evidence without using it as authority', () => {
   const nextJson = async (updated: string, previous: Record<string, unknown>[]) => {
     const { withoutGitLocation } = await load('git-env.mjs');
     const dir = await scratch('baseline-');
     await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.rig', 'revalidation.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        detection: {
+          mode: 'pull',
+          sources: ['run-state', 'journal'],
+          acceptedLatency: '24h',
+          push: false,
+        },
+        pairedFacts: [],
+      })}\n`,
+    );
+    for (const args of [
+      ['init', '-q', '-b', 'master'],
+      ['add', '.rig/revalidation.json'],
+      ['commit', '-q', '-m', 'seed contract'],
+    ]) {
+      await new Promise<void>((resolve, reject) =>
+        execFile(
+          'git',
+          ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+          { cwd: dir, env: withoutGitLocation() },
+          (error) => (error ? reject(error) : resolve()),
+        ),
+      );
+    }
     const configPath = path.join(dir, '.claude', 'queue.json');
     await writeFile(
       configPath,
@@ -153,15 +181,21 @@ describe('selection compares against the earlier run when this run has no take-u
     return { json: JSON.parse(result.stdout), event: events[0]?.data, dirs };
   };
 
-  it('holds when the marker moved past the earlier run’s take-up, and names that baseline', async () => {
+  it('creates the claim when the marker moved, and names the compatibility baseline', async () => {
     const { json, event, dirs } = await nextJson(T2, [{ takeUps: { 'AR-1': T1 } }]);
     expect(json.revalidation).toMatchObject({
-      changed: true,
-      action: 'hold',
+      result: 'BASELINE_CREATED',
+      changed: false,
+      action: 'continue',
       task: { from: T1, to: T2 },
       baseline: 'previous-run',
     });
-    expect(event).toMatchObject({ changed: true, baseline: 'previous-run', baselineRun: dirs[0] });
+    expect(event).toMatchObject({
+      result: 'BASELINE_CREATED',
+      changed: false,
+      baseline: 'previous-run',
+      baselineRun: dirs[0],
+    });
   });
 
   it('continues when the marker is where the earlier run left it', async () => {
@@ -169,6 +203,7 @@ describe('selection compares against the earlier run when this run has no take-u
     expect(json.revalidation).toMatchObject({
       changed: false,
       action: 'continue',
+      result: 'BASELINE_CREATED',
       baseline: 'previous-run',
     });
   });
@@ -177,6 +212,7 @@ describe('selection compares against the earlier run when this run has no take-u
     const { json } = await nextJson(T2, []);
     expect(json.revalidation).toMatchObject({
       changed: false,
+      result: 'BASELINE_CREATED',
       task: { from: null, to: T2 },
       baseline: null,
     });

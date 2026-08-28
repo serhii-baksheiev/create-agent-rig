@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-50",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "d77e025ba59f95f0ce69e8311cdd1ef4ed78f692c36a20e49139874d63e589f6",
+      "targetSha": "d2351e1d11041e7a46d7520f95b55ba9a0487fb2"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "bac74137ea0228e796f8d6447f443f7e60129e5e0cf3a3d9cdf374f9d9435933",
+      "count": 2
+    }
+  }
+}

@@ -4091,6 +4091,14 @@ const runNode = (
 const runCli = (args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
   runNode(path.join(queueDir, 'index.mjs'), args, cwd, env);
 
+const runGit = (args: string[], cwd: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, env: withoutGitLocation() }, (error, _stdout, stderr) => {
+      if (error) reject(new Error(`git ${args.join(' ')} failed: ${stderr}`));
+      else resolve();
+    });
+  });
+
 /**
  * A project with takeable work, a declared run directory, and an explicit
  * `--config` so the pair (config, per-checkout state) resolves inside the temp
@@ -4107,6 +4115,38 @@ const runProject = async (
 ): Promise<{ dir: string; configPath: string; runDir: string; env: NodeJS.ProcessEnv }> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'run-state-'));
   await mkdir(path.join(dir, '.claude'), { recursive: true });
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    })}\n`,
+  );
+  await runGit(['init', '-q', '-b', 'master'], dir);
+  await runGit(
+    ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'add', '.rig/revalidation.json'],
+    dir,
+  );
+  await runGit(
+    [
+      '-c',
+      'user.email=t@example.invalid',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '-m',
+      'seed contract',
+    ],
+    dir,
+  );
   if (plan !== null) await writeFile(path.join(dir, 'PLAN.md'), plan);
   const configPath = path.join(dir, '.claude', 'queue.json');
   await writeFile(configPath, JSON.stringify({ adapter: 'plan-md', ...config }));

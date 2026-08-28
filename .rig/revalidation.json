@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "detection": {
+    "mode": "pull",
+    "sources": ["run-state", "journal"],
+    "acceptedLatency": "24h",
+    "push": false
+  },
+  "pairedFacts": []
+}

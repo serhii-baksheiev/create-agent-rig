@@ -6,14 +6,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-// AR-133 [RX1] Revalidate at SELECT. A queue item is a claim about the code, and
-// the run reads it once, at take-up. Between that read and the next selection
-// the ticket can be edited — by a human, by another session — and nothing
-// downstream re-reads it. So the CLI carries a per-ticket freshness marker
-// (`updatedAt`), snapshots it in the run's state at take-up, and at the next
-// SELECT compares the two: unchanged stays quiet and cheap, changed says
-// "re-read", and an adapter that has no marker records a BLIND SPOT rather than
-// reporting "unchanged".
+// AR-133 [RX1], superseded by RP-50's durable content-blind baseline. SELECT
+// still records take-up markers for compatibility evidence, but only the
+// tracked `.rig/claims/<ticket>.json` decides drift.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -94,6 +89,48 @@ const runNode = (
 const runCli = (args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
   runNode(path.join(queueDir, 'index.mjs'), args, cwd, env);
 
+const git = async (args: string[], cwd: string): Promise<void> => {
+  const result = await new Promise<{ code: number; out: string }>((resolve) => {
+    execFile(
+      'git',
+      ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+      { cwd, env: withoutGitLocation() },
+      (error, stdout, stderr) =>
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          out: stdout + stderr,
+        }),
+    );
+  });
+  if (result.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.out}`);
+};
+
+const seedContract = async (dir: string): Promise<void> => {
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    })}\n`,
+  );
+  await git(['init', '-q', '-b', 'master'], dir);
+  await git(['add', '.rig/revalidation.json'], dir);
+  await git(['commit', '-q', '-m', 'seed contract'], dir);
+  await git(['checkout', '-q', '-b', 'feat/revalidation'], dir);
+};
+
+const trackClaim = async (dir: string, id = 'AR-1'): Promise<void> => {
+  await git(['add', `.rig/claims/${id}.json`], dir);
+  await git(['commit', '-q', '-m', `track ${id} claim`], dir);
+};
+
 /**
  * A project whose queue is the jira adapter run OFFLINE: `options.issues` is the
  * adapter's own seam, so no credential and no network are needed. The config
@@ -107,6 +144,7 @@ const jiraProject = async (): Promise<{
   setUpdated: (updated: string | undefined) => Promise<void>;
 }> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'revalidate-'));
+  await seedContract(dir);
   await mkdir(path.join(dir, '.claude'), { recursive: true });
   const configPath = path.join(dir, '.claude', 'queue.json');
   const setUpdated = (updated: string | undefined) =>
@@ -138,6 +176,7 @@ const planProject = async (): Promise<{
   env: NodeJS.ProcessEnv;
 }> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'revalidate-plan-'));
+  await seedContract(dir);
   await mkdir(path.join(dir, '.claude'), { recursive: true });
   await writeFile(path.join(dir, 'PLAN.md'), '# P\n\n## Agent queue\n\n- add a route\n');
   const configPath = path.join(dir, '.claude', 'queue.json');
@@ -244,74 +283,64 @@ describe('the jira search asks for the marker', () => {
   });
 });
 
-describe('revalidationOf decides, purely, whether the item moved since take-up', () => {
+describe('takeUpEvidenceOf reports marker movement without deciding drift', () => {
   const ticket = (updatedAt: string | null | undefined) => ({ id: 'AR-1', updatedAt });
 
   it('is unverifiable when the ticket has no marker', async () => {
-    const { revalidationOf } = await load('core.mjs');
-    expect(revalidationOf({ ticket: ticket(null), snapshot: T1 })).toEqual({
-      ticket: 'AR-1',
-      point: 'SELECT',
+    const { takeUpEvidenceOf } = await load('core.mjs');
+    expect(takeUpEvidenceOf({ ticket: ticket(null), snapshot: T1 })).toEqual({
       changed: null,
-      source: [],
-      action: 'unverifiable',
       task: { from: T1, to: null },
     });
-    expect(revalidationOf({ ticket: { id: 'AR-1' }, snapshot: undefined })).toMatchObject({
+    expect(takeUpEvidenceOf({ ticket: { id: 'AR-1' }, snapshot: undefined })).toMatchObject({
       changed: null,
-      action: 'unverifiable',
       task: { from: null },
     });
   });
 
   it('continues, and offers the marker as the new snapshot, when nothing was snapshotted yet', async () => {
-    const { revalidationOf } = await load('core.mjs');
-    expect(revalidationOf({ ticket: ticket(T1), snapshot: undefined })).toEqual({
-      ticket: 'AR-1',
-      point: 'SELECT',
+    const { takeUpEvidenceOf } = await load('core.mjs');
+    expect(takeUpEvidenceOf({ ticket: ticket(T1), snapshot: undefined })).toEqual({
       changed: false,
-      source: [],
-      action: 'continue',
       task: { from: null, to: T1 },
     });
-    expect(revalidationOf({ ticket: ticket(T1), snapshot: null })).toMatchObject({
+    expect(takeUpEvidenceOf({ ticket: ticket(T1), snapshot: null })).toMatchObject({
       changed: false,
-      action: 'continue',
       task: { from: null, to: T1 },
     });
   });
 
   it('continues when the snapshot equals the marker', async () => {
-    const { revalidationOf } = await load('core.mjs');
-    expect(revalidationOf({ ticket: ticket(T1), snapshot: T1 })).toMatchObject({
+    const { takeUpEvidenceOf } = await load('core.mjs');
+    const evidence = takeUpEvidenceOf({ ticket: ticket(T1), snapshot: T1 });
+    expect(evidence).toMatchObject({
       changed: false,
-      source: [],
-      action: 'continue',
       task: { from: T1, to: T1 },
     });
+    expect(evidence).not.toHaveProperty('source');
+    expect(evidence).not.toHaveProperty('action');
   });
 
-  it('holds, naming task:updatedAt, when the marker moved past the snapshot', async () => {
-    const { revalidationOf } = await load('core.mjs');
-    expect(revalidationOf({ ticket: ticket(T2), snapshot: T1 })).toEqual({
-      ticket: 'AR-1',
-      point: 'SELECT',
+  it('reports movement without naming a source or action', async () => {
+    const { takeUpEvidenceOf } = await load('core.mjs');
+    const evidence = takeUpEvidenceOf({ ticket: ticket(T2), snapshot: T1 });
+    expect(evidence).toEqual({
       changed: true,
-      source: ['task:updatedAt'],
-      action: 'hold',
       task: { from: T1, to: T2 },
     });
+    expect(evidence).not.toHaveProperty('source');
+    expect(evidence).not.toHaveProperty('action');
   });
 
   it('reports `changed: true` in exactly one of the four cases', async () => {
-    const { revalidationOf } = await load('core.mjs');
+    const { takeUpEvidenceOf } = await load('core.mjs');
     const cases = [
       { ticket: ticket(null), snapshot: T1 },
       { ticket: ticket(T1), snapshot: undefined },
       { ticket: ticket(T1), snapshot: T1 },
       { ticket: ticket(T2), snapshot: T1 },
     ];
-    const changed = cases.map((input) => (revalidationOf(input) as Revalidation).changed);
+    const changed = cases.map((input) => (takeUpEvidenceOf(input) as Revalidation).changed);
     expect(changed).toEqual([null, false, false, true]);
   });
 });
@@ -352,13 +381,14 @@ describe('recordTakeUp snapshots the marker in the run state', () => {
   });
 });
 
-describe('`next` revalidates the selected item against the take-up snapshot', () => {
-  it('first take-up: continues, snapshots the marker, and journals one revalidation', async () => {
+describe('`next` revalidates through the durable claim and preserves take-up evidence', () => {
+  it('first SELECT creates the baseline, snapshots the marker, and journals one detection', async () => {
     const { dir, configPath, runDir, env } = await jiraProject();
     const out = await nextJson(configPath, dir, env);
-    expect(out.revalidation).toEqual({
+    expect(out.revalidation).toMatchObject({
       ticket: 'AR-1',
       point: 'SELECT',
+      result: 'BASELINE_CREATED',
       changed: false,
       source: [],
       action: 'continue',
@@ -370,9 +400,10 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     expect((await stateOf(runDir)).takeUps).toEqual({ 'AR-1': T1 });
     const events = await revalidationEvents(runDir);
     expect(events).toHaveLength(1);
-    expect(events[0]!.data).toEqual({
+    expect(events[0]!.data).toMatchObject({
       ticket: 'AR-1',
       point: 'SELECT',
+      result: 'BASELINE_CREATED',
       changed: false,
       source: [],
       action: 'continue',
@@ -381,30 +412,34 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     });
   });
 
-  it('a moved marker holds on task:updatedAt, re-snapshots, and journals the change', async () => {
+  it('a moved marker stays evidence-only while the tracked claim remains CURRENT', async () => {
     const { dir, configPath, runDir, env, setUpdated } = await jiraProject();
     await nextJson(configPath, dir, env);
+    await trackClaim(dir);
     await setUpdated(T2);
     const out = await nextJson(configPath, dir, env);
     expect(out.revalidation).toMatchObject({
-      changed: true,
-      source: ['task:updatedAt'],
-      action: 'hold',
+      result: 'CURRENT',
+      changed: false,
+      source: [],
+      action: 'continue',
       task: { from: T1, to: T2 },
     });
     expect((await stateOf(runDir)).takeUps).toEqual({ 'AR-1': T2 });
     const events = await revalidationEvents(runDir);
     expect(events).toHaveLength(2);
     expect(events[1]!.data).toMatchObject({
-      changed: true,
-      source: ['task:updatedAt'],
-      action: 'hold',
+      result: 'CURRENT',
+      changed: false,
+      source: [],
+      action: 'continue',
     });
   });
 
   it('the same marker twice continues quietly', async () => {
     const { dir, configPath, env } = await jiraProject();
     await nextJson(configPath, dir, env);
+    await trackClaim(dir);
     const out = await nextJson(configPath, dir, env);
     expect(out.revalidation).toMatchObject({
       changed: false,
@@ -414,35 +449,39 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     });
   });
 
-  it('text mode prints a `revalidate:` line telling the run to re-read only after a change', async () => {
+  it('text mode does not print a hold for updatedAt-only movement', async () => {
     const { dir, configPath, env, setUpdated } = await jiraProject();
     const first = await runCli(['next', '--config', configPath], dir, env);
     expect(first.code, first.out).toBe(0);
     expect(first.stdout).not.toMatch(/^revalidate:/m);
+    await trackClaim(dir);
 
     await setUpdated(T2);
     const second = await runCli(['next', '--config', configPath], dir, env);
     expect(second.code, second.out).toBe(0);
-    const line = second.stdout.split('\n').find((l) => l.startsWith('revalidate: AR-1'));
-    expect(line, second.stdout).toBeDefined();
-    expect(line).toMatch(/^revalidate: AR-1 hold — task:updatedAt/);
-    expect(line).toContain('re-read');
+    expect(second.stdout).not.toMatch(/^revalidate:/m);
+    expect(second.stdout).not.toContain('task:updatedAt');
   });
 
-  it('an adapter with no marker records a blind spot, not "unchanged"', async () => {
+  it('an adapter with no marker still creates an authoritative claim baseline', async () => {
     const { dir, configPath, runDir, env } = await planProject();
     const out = await nextJson(configPath, dir, env);
     expect(out.revalidation).toMatchObject({
       point: 'SELECT',
-      changed: null,
+      result: 'BASELINE_CREATED',
+      changed: false,
       source: [],
-      action: 'unverifiable',
+      action: 'continue',
       task: { from: null, to: null },
     });
     expect(await stateOf(runDir)).not.toHaveProperty('takeUps');
     const events = await revalidationEvents(runDir);
     expect(events).toHaveLength(1);
-    expect(events[0]!.data).toMatchObject({ changed: null, action: 'unverifiable' });
+    expect(events[0]!.data).toMatchObject({
+      result: 'BASELINE_CREATED',
+      changed: false,
+      action: 'continue',
+    });
   });
 
   it('a run journal that predates revalidation events keeps the selection and says the record was lost', async () => {
@@ -546,13 +585,17 @@ describe('`next` revalidates the selected item against the take-up snapshot', ()
     });
   });
 
-  it('without a run directory it neither revalidates nor writes', async () => {
+  it('without a run directory it creates the durable baseline but no run evidence', async () => {
     const { dir, configPath, runDir, env } = await jiraProject();
     const bare = { ...env };
     delete bare['RIG_RUN_DIR'];
     const out = await nextJson(configPath, dir, bare);
-    expect(out).toHaveProperty('revalidation');
-    expect(out.revalidation).toBeNull();
+    expect(out.revalidation).toMatchObject({
+      result: 'BASELINE_CREATED',
+      action: 'continue',
+      sourcePointer: '.rig/claims/AR-1.json',
+    });
+    expect(existsSync(path.join(dir, '.rig', 'claims', 'AR-1.json'))).toBe(true);
     expect(existsSync(path.join(runDir, 'state.json'))).toBe(false);
     expect(existsSync(path.join(runDir, 'events.jsonl'))).toBe(false);
   });

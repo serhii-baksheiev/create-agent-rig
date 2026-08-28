@@ -1,8 +1,8 @@
 /**
  * The run's own state — three of the four values `stopConditionOf` asks for and
- * nothing used to answer, plus one value it does not ask for: the take-up
- * snapshot `takeUps` ({@link recordTakeUp}), which is the run's fact as much as
- * the other three. The fourth stop input, `killSwitch`, is deliberately not here:
+ * nothing used to answer, plus compatibility evidence in `takeUps` and a
+ * checkpoint refusal in `revalidationHold`. The take-up marker is not a drift
+ * authority; `.rig/claims/` is. The fourth stop input, `killSwitch`, is deliberately not here:
  * it is already mechanical in `guard-bash` and scripted in preflight, and a
  * second answer to "is the brake on" is the disagreement `invariants.md`
  * forbids.
@@ -203,8 +203,8 @@ export const recordEscalation = (runDir) => {
 
 /**
  * The take-up snapshot: the selected item's `updatedAt` marker, keyed by id, as
- * seen at SELECT. `queue/core.mjs` › revalidationOf compares the next selection
- * against it, so a stale take-up is reported rather than silently continued.
+ * seen at SELECT. It is evidence/compatibility state only; it neither decides
+ * drift nor whether a durable claim baseline may be created.
  *
  * Per run, like everything else here — a snapshot from yesterday's run is not
  * a take-up this run made. Merged by id, so a second item does not erase the
@@ -223,6 +223,37 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
   return updateState(runDir, { takeUps: { ...takeUps, [String(id)]: updatedAt } });
 };
 
+/** Persist a checkpoint refusal so the next selector cannot progress the run. */
+export const recordRevalidationHold = (runDir, detection = {}) => {
+  if (!runDir) return null;
+  const result = detection.result;
+  if (
+    typeof detection.ticket !== 'string' ||
+    typeof detection.checkpoint !== 'string' ||
+    typeof detection.id !== 'string' ||
+    !['CHANGED', 'CONFLICT', 'UNVERIFIABLE'].includes(result)
+  ) {
+    throw new Error('run state: revalidation hold needs a ticket, checkpoint, detection id, and blocking result');
+  }
+  return updateState(runDir, {
+    revalidationHold: {
+      kind: 'revalidation-hold',
+      ticket: detection.ticket,
+      checkpoint: detection.checkpoint,
+      result,
+      detectionId: detection.id,
+    },
+  });
+};
+
+/** Clear only the hold the recorded resolution actually answers. */
+export const clearRevalidationHold = (runDir, detectionId) => {
+  if (!runDir || typeof detectionId !== 'string') return null;
+  const state = readState(runDir);
+  if (state.revalidationHold?.detectionId !== detectionId) return state;
+  return updateState(runDir, { revalidationHold: undefined });
+};
+
 /**
  * The take-up an EARLIER run recorded for this item, or null (AR-138).
  *
@@ -232,8 +263,7 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
  * when this run has no take-up for the item, SELECT asks the sibling run
  * directories — newest first by name, which is the `YYYYMMDD-HHMMSS` the
  * `loop` skill declares — and takes the first that recorded one. The answer
- * names the run it came from, so the revalidation event can say whose
- * baseline it compared against.
+ * names the evidence source in the event; it is never the fingerprint baseline.
  *
  * 🔴 A sibling is a run only by NAME — `YYYYMMDD-HHMMSS`, the shape the `loop`
  * skill declares — and so is the run asking. The first version took every
@@ -378,6 +408,20 @@ export const stopInputsOf = (state = {}) => {
     refuse('lastDeployVerdict', verdict);
   }
 
+  const revalidationHold = state.revalidationHold ?? null;
+  if (
+    revalidationHold !== null &&
+    (typeof revalidationHold !== 'object' ||
+      Array.isArray(revalidationHold) ||
+      revalidationHold.kind !== 'revalidation-hold' ||
+      typeof revalidationHold.ticket !== 'string' ||
+      typeof revalidationHold.checkpoint !== 'string' ||
+      typeof revalidationHold.detectionId !== 'string' ||
+      !['CHANGED', 'CONFLICT', 'UNVERIFIABLE'].includes(revalidationHold.result))
+  ) {
+    refuse('revalidationHold', revalidationHold);
+  }
+
   // `triggersFired` is deliberately absent from this, and its absence is a
   // decision rather than an oversight: `core.mjs` compares `fired !== true`
   // strictly, so a string, a number or a nonsense shape can only ever leave an
@@ -386,6 +430,7 @@ export const stopInputsOf = (state = {}) => {
   return {
     consecutiveEscalations: count,
     lastDeployVerdict: normalised,
+    revalidationHold,
     // Any truthy value means exhausted: the only writer stores `true`, and a
     // hand-edit reaching for `"yes"` means yes. A flag has an honest `false`,
     // unlike a count — so unlike `escalations` above, nothing here needs

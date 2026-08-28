@@ -63,20 +63,24 @@ blockers.
    node .claude/scripts/revalidate.mjs --point BEFORE_PR --ticket <item-id> --base origin/<default>
    ```
 
-   It compares two sources and names each one that moved: the item's `updatedAt`
-   against the take-up snapshot `next` recorded (`task:updatedAt`), and what the
-   default branch changed since this branch forked, on the paths the branch
-   touches or a `check-premises` record in this run cited (`main:<path>`). It
+   It runs the existing revalidation chain against the tracked, versioned
+   `.rig/claims/<item-id>.json`: the content-blind `scope` fingerprint set is
+   authoritative here, while `takeUps` / `updatedAt` remain evidence only. It
+   also names what the default branch changed since this branch forked on paths
+   the branch touches or a `check-premises` record cited (`main:<path>`). It
    journals one `revalidation` event at `point: BEFORE_PR`; **exit code 2 is a HOLD**, with one blocker per named source: re-read the item, or the default
    branch on that path, record what the re-read concluded —
    `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket <item-id> --action-changed <true | false> --note '…'`
    — and come back through step 0. A hold with no outcome is counted by the
-   report as a re-read the run skipped. Exit 0 with
-   `unverifiable` means the task side could not be compared — no take-up
-   snapshot in this run, or no marker — and is stated in the evidence, not read
-   as a pass. Exit 1 is the command refusing (unknown point, no ticket, a base
+   report as a re-read the run skipped. A missing, untracked, unreadable or
+   unsupported claim is `UNVERIFIABLE`, exits 2, and stops automatic progress;
+   it is never read as a pass. Exit 1 is the command refusing (unknown point, no ticket, a base
    that is not a revision): fix the call. Its limits are its own header's; the
-   cited-path set is a labelled assumption, not a recorded fact.
+   cited-path set is a labelled assumption, not a recorded fact. Pinned in the
+   generator's `test/template/revalidate.test.ts` (absent in a generated rig) ›
+   "continues when only updatedAt moved and still reports the marker evidence"
+   and `test/template/content-blind-revalidation.test.ts` › "refuses a deleted
+   tracked claim in a fresh run without take-up markers".
 2. **Route the diff before you spend on it.** This gate always ran its most
    expensive path, so a typo fix in a README bought the same fan-out as a
    rewrite of the storage layer. The dispatcher decides which lane the change

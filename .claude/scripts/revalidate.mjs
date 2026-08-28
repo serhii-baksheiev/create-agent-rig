@@ -6,13 +6,12 @@
  *
  *   node .claude/scripts/revalidate.mjs --point BEFORE_PR --ticket <id> [--base origin/master] [--config <queue.json>] [--json]
  *
- * Two sources, compared and named separately, because a hold that cannot say
- * WHAT moved sends the run to re-read everything:
+ * One existing checkpoint chain, with one authoritative durable baseline:
  *
- * - `task:updatedAt` — the item's marker now, read through the queue adapter,
- *   against the take-up snapshot `queue/index.mjs next` recorded in the run's
- *   `state.json` (`takeUps`, AR-133). No snapshot, no marker or no run → that
- *   source is `null`: not looked, never "unchanged".
+ * - `.rig/claims/<ticket>.json` carries versioned, content-blind `scope` and
+ *   `commentary` fingerprint sets. Scope is authoritative at BEFORE_PR;
+ *   commentary is observed but does not hold until BEFORE_CLOSE. Missing,
+ *   untracked or unreadable claim state is `UNVERIFIABLE` and exits 2.
  * - `main:<path>` — what the default branch changed since this branch forked
  *   (`git merge-base <base> HEAD` … `<base>`), intersected with the CITED
  *   paths. Cited is a labelled assumption, not a recorded fact: the paths the
@@ -20,11 +19,12 @@
  *   record in this run's journal — the files the run said its premises rest
  *   on. An unrelated change on the default branch does not hold.
  *
- * At BEFORE_CLOSE (AR-135) there is no git and no main: the sources are
- * `task:updatedAt` against the LAST VALIDATION — the `task.to` of this run's
- * latest `revalidation` event for the item, falling back to the take-up
- * snapshot — and `task:state`, which is expected `in-progress` at close and
- * is a change when someone closed the item or moved it back. The item comes
+ * `updatedAt` and `takeUps` are still projected into `task` as compatibility
+ * evidence, but never contribute a source or action.
+ *
+ * At BEFORE_CLOSE (AR-135) there is no main comparison: both claim fingerprint
+ * sets are authoritative, together with `task:state`, which is expected
+ * `in-progress` and changes when someone closed the item or moved it back. The item comes
  * from the adapter's `find`, which sees closed items where `listEligible`
  * drops them; one the tracker no longer offers at all reads `missing`, and
  * either holds on `task:state` (revalidate.test.ts › "holds on task:state when
@@ -34,16 +34,15 @@
  * "re-reads each dependant's state, and names one the tracker no longer
  * offers") for the loop's write-back.
  *
- * The aggregates are `queue/core.mjs` › beforePrRevalidationOf and
- * beforeCloseRevalidationOf; this file is the I/O around them.
- *
  * `outcome --point <P> --ticket <id> --action-changed true|false [--note …]`
  * (AR-136) is the second half of the evidence: after the re-read, it appends a
  * `revalidation-outcome` record whose `answers` is the seq of the latest
  * `revalidation` for that ticket and point in this run — the join a report
  * needs, made by the writer rather than guessed by the reader. It refuses
  * without a run, without a matching revalidation, and with any word but
- * `true`/`false`, and writes nothing then. Exit 2 on `hold`, 0 on `continue` and `unverifiable`, 1 when
+ * `true`/`false`, and writes nothing then. The typed resolution names the
+ * stable detection id and clears only the matching run-level hold. Exit 2 on
+ * `hold` or `unverifiable`, 0 on `continue`, and 1 when
  * the arguments cannot be acted on (unknown point, no ticket, a base that is
  * not a revision) — and then nothing is journalled, because a refusal is not
  * an answer.
@@ -61,10 +60,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
 import { readRun, recordEvent } from './run-journal.mjs';
-import { readState } from './run-state.mjs';
+import { clearRevalidationHold, readState, recordRevalidationHold } from './run-state.mjs';
 import { POINTS as ALL_POINTS, REVALIDATES } from './lib/revalidation-points.mjs';
-import { beforeCloseRevalidationOf, beforePrRevalidationOf, revalidationOf } from './queue/core.mjs';
+import { takeUpEvidenceOf } from './queue/core.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
+import { projectRootOfConfig } from './queue/index.mjs';
+import { revalidateClaim, targetShaOf, withAdditionalDrift } from './lib/claim-records.mjs';
 
 // Derived from the one source, never restated here (AR-137).
 export const POINTS = REVALIDATES;
@@ -132,7 +133,7 @@ const citedByPremises = (runDir) => {
     .filter((file) => typeof file === 'string' && file !== '');
 };
 
-/** The last validation's marker for this item: the latest revalidation event, any point. */
+/** The last compatibility marker observed for this item, at any revalidation point. */
 const lastValidationOf = (runDir, id) => {
   if (!runDir) return null;
   const { events } = readRun({ runDir });
@@ -191,18 +192,26 @@ if (invokedDirectly()) {
     if (!target) {
       refuse(`no revalidation of ${args.ticket} at ${args.point} in ${runDir} for this outcome to answer.`);
     }
+    const now = new Date().toISOString();
+    const actionRequired = args.actionChanged === 'true';
     const record = recordEvent({
       runDir,
       kind: 'revalidation-outcome',
       data: {
+        detectionId: target.data?.id,
+        action: actionRequired ? 'semantic decision' : 'continue',
+        actionRequired,
+        driftOrigin: 'unknown',
+        resolvedAt: now,
         ticket: args.ticket,
         point: args.point,
-        actionChanged: args.actionChanged === 'true',
+        actionChanged: actionRequired,
         note: args.note,
         answers: target.seq,
       },
-      now: new Date().toISOString(),
+      now,
     });
+    clearRevalidationHold(runDir, target.data?.id);
     process.stdout.write(
       args.json
         ? `${JSON.stringify(record, null, 2)}\n`
@@ -216,13 +225,13 @@ if (invokedDirectly()) {
   const config = loadConfig(configPath);
   const adapter = await resolveAdapter(config.adapter ?? 'plan-md');
   const options = optionsWithPlanPath(config.options, configPath);
+  const claimRoot = projectRootOfConfig(configPath) ?? projectRoot;
 
   if (args.point === 'BEFORE_CLOSE') {
     const ticket = await adapter.find(args.ticket, options);
     const takeUp = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
-    // The NEWER of the two, not the last validation first (AR-140): an adapter
-    // re-records the take-up after each write of its own, and a comment posted
-    // after BEFORE_PR would otherwise hold this close on the run's own move.
+    // Preserve the newest compatibility marker as evidence. This comparison
+    // never decides drift; the durable claim below is the authority.
     // ISO strings compare as text; a missing side yields to the other.
     const lastValidation = lastValidationOf(runDir, args.ticket);
     const baseline =
@@ -233,7 +242,7 @@ if (invokedDirectly()) {
         : (lastValidation ?? takeUp);
     const task =
       ticket && baseline !== null
-        ? revalidationOf({ ticket, snapshot: baseline })
+        ? takeUpEvidenceOf({ ticket, snapshot: baseline })
         : { changed: null, task: { from: baseline, to: ticket?.updatedAt ?? null } };
     // Not found is not "in progress": the tracker no longer offers the item.
     const actual = ticket ? ticket.state : 'missing';
@@ -245,9 +254,22 @@ if (invokedDirectly()) {
     for (const dependant of dependants) {
       dependantState[dependant] = (await adapter.find(dependant, options))?.state ?? 'missing';
     }
-    const aggregate = beforeCloseRevalidationOf({ ticket: args.ticket, task, state: actual });
+    const claim = revalidateClaim({
+      projectRoot: claimRoot,
+      ticket: ticket ?? { id: args.ticket },
+      point: 'BEFORE_CLOSE',
+      // Close has no caller-selected comparison base. Resolve the same default
+      // target SELECT pinned, so a missing `origin/master` cannot turn an
+      // otherwise current local rig into claim:scope drift.
+      targetSha: targetShaOf(claimRoot),
+    });
+    const aggregate = withAdditionalDrift(
+      claim,
+      actual === 'in-progress' ? [] : ['task:state'],
+    );
     const result = {
       ...aggregate,
+      observedAt: new Date().toISOString(),
       task: { changed: task.changed, from: task.task.from, to: task.task.to },
       state: { expected: 'in-progress', actual },
       dependants,
@@ -255,6 +277,9 @@ if (invokedDirectly()) {
     };
     if (runDir) {
       recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+      if (result.action === 'hold' || result.action === 'unverifiable') {
+        recordRevalidationHold(runDir, result);
+      }
     }
     if (args.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -265,7 +290,7 @@ if (invokedDirectly()) {
         process.stdout.write('  re-read the item before closing it; a late change is not published as Done.\n');
       }
     }
-    process.exit(result.action === 'hold' ? 2 : 0);
+    process.exit(result.action === 'hold' || result.action === 'unverifiable' ? 2 : 0);
   }
 
   let mergeBase;
@@ -279,29 +304,39 @@ if (invokedDirectly()) {
   const ticket = tickets.find((candidate) => String(candidate.id) === String(args.ticket)) ?? null;
 
   const snapshot = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
-  // At SELECT a missing snapshot is a first sight only when no earlier run
-  // took the item up either — `queue/index.mjs` asks `previousTakeUp` (AR-138);
-  // here the question is this run's own take-up, which SELECT wrote — and it
-  // becomes the baseline;
-  // here it is a comparison that cannot be made — the run never recorded a
-  // take-up for this item, so `null`, not the SELECT point's `false`.
+  // BEFORE_PR reports this run's marker snapshot as compatibility evidence.
+  // A missing marker is evidence that cannot be compared, but it does not make
+  // the authoritative claim unverifiable; `revalidateClaim` decides that.
   const unverifiable = { changed: null, task: { from: snapshot, to: ticket?.updatedAt ?? null } };
-  const task = ticket && snapshot !== null ? revalidationOf({ ticket, snapshot }) : unverifiable;
+  const task = ticket && snapshot !== null ? takeUpEvidenceOf({ ticket, snapshot }) : unverifiable;
 
   const branchPaths = pathsOf(git(['diff', '--name-only', '-z', mergeBase, 'HEAD']));
   const mainPaths = pathsOf(git(['diff', '--name-only', '-z', mergeBase, args.base]));
   const cited = [...new Set([...branchPaths, ...citedByPremises(runDir)])];
   const mainChanged = mainPaths.filter((path) => cited.includes(path));
 
-  const aggregate = beforePrRevalidationOf({ ticket: args.ticket, task, mainChanged });
+  const claim = revalidateClaim({
+    projectRoot: claimRoot,
+    ticket: ticket ?? { id: args.ticket },
+    point: 'BEFORE_PR',
+    targetSha: targetShaOf(claimRoot, args.base),
+  });
+  const aggregate = withAdditionalDrift(
+    claim,
+    mainChanged.map((path) => `main:${path}`),
+  );
   const result = {
     ...aggregate,
+    observedAt: new Date().toISOString(),
     task: { changed: task.changed, from: task.task.from, to: task.task.to },
     main: { base: args.base, mergeBase, cited, changed: mainChanged },
   };
 
   if (runDir) {
     recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+    if (result.action === 'hold' || result.action === 'unverifiable') {
+      recordRevalidationHold(runDir, result);
+    }
   }
 
   if (args.json) {
@@ -313,5 +348,5 @@ if (invokedDirectly()) {
       process.stdout.write('  re-read the item and the default branch before opening or updating the PR.\n');
     }
   }
-  process.exit(result.action === 'hold' ? 2 : 0);
+  process.exit(result.action === 'hold' || result.action === 'unverifiable' ? 2 : 0);
 }
