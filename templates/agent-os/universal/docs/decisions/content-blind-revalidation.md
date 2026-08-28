@@ -15,7 +15,10 @@ absent record on a resumed SELECT, BEFORE_PR or BEFORE_CLOSE. Each case stops
 automatic progress. Pinned in the generator's
 `test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
 › "creates a versioned content-blind claim and returns BASELINE_CREATED" and ›
-"refuses a deleted tracked claim in a fresh run without take-up markers", plus
+"refuses a deleted tracked claim in a fresh run without take-up markers", ›
+"refuses to recreate a deleted untracked baseline with a readable prior SELECT
+journal", and › "refuses to recreate a deleted untracked baseline with a corrupt
+prior SELECT journal", plus
 `test/template/queue-revalidation.test.ts` › "without a run directory it
 creates the durable baseline but no run evidence".
 
@@ -47,7 +50,10 @@ checkpoint action. `.claude/runs/<run-id>/` remains append-only evidence for a
 particular run; it is not the cross-harness claim store. Pinned in the generator
 suite (absent in a generated rig),
 `test/template/queue-revalidation.test.ts` › "a moved marker stays
-evidence-only while the tracked claim remains CURRENT".
+evidence-only while the tracked claim remains CURRENT". First sight versus
+resume is reconstructed from SELECT events in the current and bounded sibling
+run journals. An unreadable bounded journal cannot prove first sight and
+therefore cannot authorise recreation of a missing claim.
 
 Every blocking detection has a stable content-blind id. A typed outcome names
 that id, records whether action was required and clears only its matching
@@ -59,6 +65,26 @@ id for the same drift at the same checkpoint", › "journals a typed resolution
 through the existing outcome command", › "derives false-HOLD from result !=
 CURRENT and actionRequired false, only after resolution", and › "joins a typed
 resolution to its detection across run directories".
+
+The run-state hold is a cache of that append-only evidence, not a deletion
+escape hatch. Before selection, the same temporal resolver used by the report
+reconstructs the newest unresolved blocking detection from the current run
+journal when `state.json` has no hold. Claim and contract reads stay anchored to
+an opened file descriptor and reject identity changes during validation;
+first-baseline creation is anchored to the validated claim-directory working
+directory so a pathname swap cannot redirect the write outside the repository.
+Pinned in the generator's
+`test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
+› "stops for unresolved absent state evidence with CHANGED result", › "does not
+accept an external contract swapped in after containment validation", and ›
+"does not write a baseline outside after the claim directory passes
+containment".
+
+BEFORE_CLOSE proves the tracker state it observed; the later tracker transition
+is a separate API operation. Without a tracker-supplied conditional transition
+or transaction token, this mechanism cannot make those two remote operations
+atomic. A future adapter may consume such a native primitive, but this decision
+does not invent one or treat `updatedAt` as a substitute authority.
 
 ## Why
 

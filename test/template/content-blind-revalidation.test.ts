@@ -20,6 +20,7 @@ const queueScript = path.join(scriptsDir, 'queue', 'index.mjs');
 const revalidateScript = path.join(scriptsDir, 'revalidate.mjs');
 const reportScript = path.join(scriptsDir, 'revalidation-report.mjs');
 const claimRecordsScript = path.join(scriptsDir, 'lib', 'claim-records.mjs');
+const runStateScript = path.join(scriptsDir, 'run-state.mjs');
 
 const T1 = '2026-08-28T08:00:00.000Z';
 const T2 = '2026-08-28T09:00:00.000Z';
@@ -589,6 +590,53 @@ describe('a checkpoint hold becomes a selector stop input', () => {
   );
 });
 
+describe('selection reconciles unresolved append-only revalidation evidence', () => {
+  it.each([
+    ['absent state', 'CHANGED', false],
+    ['empty state', 'CHANGED', true],
+    ['absent state', 'CONFLICT', false],
+    ['empty state', 'UNVERIFIABLE', true],
+  ] as const)(
+    'stops with %s when the unresolved journal result is %s',
+    async (_stateCase, result, writeEmptyState) => {
+      const p = await project();
+      expect((await next(p)).code).toBe(0);
+      if (!(await trackClaim(p))) return;
+      const statePath = path.join(p.runDir, 'state.json');
+      if (writeEmptyState) await writeFile(statePath, '{}\n');
+      else await rm(statePath, { force: true });
+      const journal = await import(pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href);
+      journal.recordEvent({
+        runDir: p.runDir,
+        kind: 'revalidation',
+        data: {
+          schemaVersion: 1,
+          id: `unresolved-${result.toLowerCase()}-${writeEmptyState ? 'empty' : 'absent'}`,
+          ticket: 'RP-50',
+          point: 'BEFORE_PR',
+          checkpoint: 'BEFORE_PR',
+          result,
+          changed: result === 'UNVERIFIABLE' ? null : true,
+          source: result === 'UNVERIFIABLE' ? [] : ['claim:scope'],
+          action: result === 'UNVERIFIABLE' ? 'unverifiable' : 'hold',
+          movedFingerprintSet: result === 'UNVERIFIABLE' ? [] : ['scope'],
+          sourcePointer: '.rig/claims/RP-50.json',
+          observedAt: T2,
+        },
+        now: T2,
+      });
+
+      const selection = await next(p);
+
+      expect(selection.code, selection.out).toBe(1);
+      expect(jsonOf(selection).stop).toMatchObject({
+        kind: 'revalidation-hold',
+        success: false,
+      });
+    },
+  );
+});
+
 describe('claim record shape is fail-closed', () => {
   it('refuses a tracked claim symlink instead of following it', async () => {
     const p = await project();
@@ -622,6 +670,49 @@ describe('claim record shape is fail-closed', () => {
     const result = await before(p, 'BEFORE_PR');
     expect(result.code, result.out).toBe(2);
     expect(jsonOf(result)).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
+  });
+
+  it('accepts a tracked claim whose target branch uses a Git SHA-256 object id', async () => {
+    const p = await project();
+    const targetSha = 'a'.repeat(64);
+    const ticket = {
+      id: 'RP-50',
+      title: 'Git SHA-256 claim fixture',
+      body: null,
+      labels: [],
+      blockedBy: [],
+      blocks: [],
+      commentary: { count: 0, ids: [] },
+    };
+    const claimRecords = (await import(
+      `${pathToFileURL(claimRecordsScript).href}?git-sha256=${Date.now()}`
+    )) as {
+      revalidateClaim: (input: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    expect(
+      claimRecords.revalidateClaim({
+        projectRoot: p.root,
+        ticket,
+        point: 'SELECT',
+        targetSha,
+        allowCreate: true,
+        isResume: false,
+      }),
+    ).toMatchObject({ result: 'BASELINE_CREATED', action: 'continue' });
+    await git(['add', '.rig/claims/RP-50.json'], p.root);
+    await git(['commit', '-q', '-m', 'track SHA-256 claim fixture'], p.root);
+
+    expect(
+      claimRecords.revalidateClaim({
+        projectRoot: p.root,
+        ticket,
+        point: 'BEFORE_PR',
+        targetSha,
+        allowCreate: false,
+        isResume: true,
+      }),
+    ).toMatchObject({ result: 'CURRENT', action: 'continue' });
   });
 });
 
@@ -880,6 +971,68 @@ describe('reviewer hardening — SELECT cannot bypass or recreate durable eviden
   );
 });
 
+describe('markerless plan-md resume derives from the durable SELECT journal', () => {
+  it.each([
+    ['readable prior SELECT journal', false],
+    ['corrupt prior SELECT journal', true],
+  ])(
+    'refuses to recreate a deleted untracked baseline with a %s',
+    async (_label, corruptJournal) => {
+      const p = await project();
+      await writeFile(
+        path.join(p.root, 'PLAN.md'),
+        '# Project\n\n## Agent queue\n\n- RP-50 plan item\n',
+      );
+      await writeFile(p.configPath, JSON.stringify({ adapter: 'plan-md' }));
+      const planClaim = path.join(p.root, '.rig', 'claims', '1.json');
+
+      const baseline = await next(p);
+      expect(baseline.code, baseline.out).toBe(0);
+      expect(jsonOf(baseline).revalidation).toMatchObject({
+        ticket: '1',
+        point: 'SELECT',
+        result: 'BASELINE_CREATED',
+      });
+      expect(
+        (await eventsOf(p.runDir)).some(
+          (event) =>
+            event.kind === 'revalidation' &&
+            event.data?.ticket === '1' &&
+            event.data?.result === 'BASELINE_CREATED',
+        ),
+      ).toBe(true);
+      expect(existsSync(path.join(p.runDir, 'state.json'))).toBe(false);
+      await rm(planClaim);
+      if (corruptJournal) {
+        await writeFile(path.join(p.runDir, 'events.jsonl'), '{not valid journal json\n');
+      }
+
+      const freshRunDir = path.join(p.root, '.claude', 'runs', '20260828-140000');
+      await mkdir(freshRunDir, { recursive: true });
+      const resumed = await run(
+        process.execPath,
+        [queueScript, 'next', '--config', p.configPath, '--json'],
+        p.root,
+        { ...p.env, RIG_RUN_DIR: freshRunDir },
+      );
+
+      expect(resumed.code, resumed.out).toBe(2);
+      expect(jsonOf(resumed).revalidation).toMatchObject({
+        ticket: '1',
+        result: 'UNVERIFIABLE',
+        action: 'unverifiable',
+      });
+      expect(jsonOf(resumed).revalidation.result).not.toBe('BASELINE_CREATED');
+      expect(existsSync(planClaim)).toBe(false);
+      if (corruptJournal) {
+        expect(JSON.stringify(jsonOf(resumed).revalidation)).toMatch(
+          /journal.*(invalid|unreadable|corrupt)/i,
+        );
+      }
+    },
+  );
+});
+
 describe('resolution time bounds a stable detection id', () => {
   it('does not resolve a later detection with an earlier same-id resolution', async () => {
     const { reportOf: classify } = (await import(pathToFileURL(reportScript).href)) as {
@@ -1037,6 +1190,45 @@ describe('run-state uncertainty preserves the revalidation brake', () => {
     expect(jsonOf(result).revalidation).not.toMatchObject({ result: 'BASELINE_CREATED' });
     expect(existsSync(p.claimPath)).toBe(false);
   });
+
+  it('rejects oversized selection state from metadata before attempting a full read', async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), 'oversized-selection-state-'));
+    const statePath = path.join(runDir, 'state.json');
+    await writeFile(statePath, Buffer.alloc(256 * 1024 + 1, 0x20));
+    const require = createRequire(import.meta.url);
+    const mutableFs = require('node:fs') as {
+      readFileSync: (...args: unknown[]) => unknown;
+    };
+    const originalReadFileSync = mutableFs.readFileSync;
+    let attemptedFullRead = false;
+    mutableFs.readFileSync = (...args: unknown[]) => {
+      if (path.resolve(String(args[0])) === path.resolve(statePath)) {
+        attemptedFullRead = true;
+        throw new Error('full selection-state read trap');
+      }
+      return originalReadFileSync(...args);
+    };
+    syncBuiltinESMExports();
+    let failure: unknown;
+
+    try {
+      const runState = (await import(
+        `${pathToFileURL(runStateScript).href}?oversized=${Date.now()}`
+      )) as {
+        readStateForSelection: (runDir: string) => unknown;
+      };
+      runState.readStateForSelection(runDir);
+    } catch (error) {
+      failure = error;
+    } finally {
+      mutableFs.readFileSync = originalReadFileSync;
+      syncBuiltinESMExports();
+    }
+
+    expect.soft(attemptedFullRead).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/run state.*(exceeds|oversized|too large)/i);
+  });
 });
 
 describe('the detection contract is classified before it is followed or fully read', () => {
@@ -1108,6 +1300,113 @@ describe('the detection contract is classified before it is followed or fully re
       expect(attemptedFullRead).toBe(false);
     } finally {
       mutableFs.readFileSync = originalReadFileSync;
+      syncBuiltinESMExports();
+    }
+  });
+});
+
+describe('claim persistence resists validation-to-use pathname swaps', () => {
+  it('does not accept an external contract swapped in after containment validation', async () => {
+    const p = await project();
+    const contractPath = path.join(p.root, '.rig', 'revalidation.json');
+    const outside = await mkdtemp(path.join(tmpdir(), 'contract-race-target-'));
+    const outsideContract = path.join(outside, 'revalidation.json');
+    await writeFile(
+      outsideContract,
+      JSON.stringify({
+        ...VALID_CONTRACT,
+        pairedFacts: [],
+      }),
+    );
+    const require = createRequire(import.meta.url);
+    const mutableFs = require('node:fs') as {
+      realpathSync: (...args: unknown[]) => unknown;
+      symlinkSync: (target: string, path: string, type?: string) => void;
+      unlinkSync: (path: string) => void;
+    };
+    const originalRealpathSync = mutableFs.realpathSync;
+    let swapped = false;
+    mutableFs.realpathSync = (...args: unknown[]) => {
+      const resolved = originalRealpathSync(...args);
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(contractPath)) {
+        mutableFs.unlinkSync(contractPath);
+        mutableFs.symlinkSync(outsideContract, contractPath, 'file');
+        swapped = true;
+      }
+      return resolved;
+    };
+    syncBuiltinESMExports();
+
+    try {
+      const claimRecords = (await import(
+        `${pathToFileURL(claimRecordsScript).href}?contract-race=${Date.now()}`
+      )) as {
+        readRevalidationContract: (root: string) => unknown;
+      };
+      expect(() => claimRecords.readRevalidationContract(p.root)).toThrow(/no-detection-contract/i);
+      expect(swapped).toBe(true);
+    } finally {
+      mutableFs.realpathSync = originalRealpathSync;
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('does not write a baseline outside after the claim directory passes containment', async () => {
+    const p = await project();
+    const claimDirectory = path.join(p.root, '.rig', 'claims');
+    const outside = await mkdtemp(path.join(tmpdir(), 'claim-race-target-'));
+    const outsideClaim = path.join(outside, 'RP-50.json');
+    const require = createRequire(import.meta.url);
+    const mutableFs = require('node:fs') as {
+      realpathSync: (...args: unknown[]) => unknown;
+      rmdirSync: (path: string) => void;
+      symlinkSync: (target: string, path: string, type?: string) => void;
+    };
+    const originalRealpathSync = mutableFs.realpathSync;
+    let swapped = false;
+    mutableFs.realpathSync = (...args: unknown[]) => {
+      const resolved = originalRealpathSync(...args);
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(claimDirectory)) {
+        mutableFs.rmdirSync(claimDirectory);
+        mutableFs.symlinkSync(
+          outside,
+          claimDirectory,
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        swapped = true;
+      }
+      return resolved;
+    };
+    syncBuiltinESMExports();
+
+    try {
+      const claimRecords = (await import(
+        `${pathToFileURL(claimRecordsScript).href}?claim-race=${Date.now()}`
+      )) as {
+        revalidateClaim: (input: Record<string, unknown>) => Record<string, unknown>;
+      };
+      const result = claimRecords.revalidateClaim({
+        projectRoot: p.root,
+        ticket: {
+          id: 'RP-50',
+          title: 'claim directory race fixture',
+          body: null,
+          labels: [],
+          blockedBy: [],
+          blocks: [],
+          commentary: { count: 0, ids: [] },
+        },
+        point: 'SELECT',
+        targetSha: p.targetSha,
+        allowCreate: true,
+        isResume: false,
+      });
+
+      expect(swapped).toBe(true);
+      expect(existsSync(outsideClaim)).toBe(false);
+      expect(result).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
+    } finally {
+      mutableFs.realpathSync = originalRealpathSync;
       syncBuiltinESMExports();
     }
   });

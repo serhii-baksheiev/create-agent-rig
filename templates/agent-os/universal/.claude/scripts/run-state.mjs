@@ -49,25 +49,38 @@
  * per run is the caller's part of the contract, and the `loop` skill states it.
  */
 
-import { opendirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  opendirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const STATE = 'state.json';
+const MAX_STATE_BYTES = 256 * 1024;
 
 /** The state file's path inside a run directory — one definition, not two. */
 export const statePathIn = (runDir) => join(runDir, STATE);
 
 /**
- * What the run has recorded so far; `{}` when it has recorded nothing.
+ * What a non-selection caller has recorded so far; `{}` when it has recorded
+ * nothing.
  *
  * 🔴 **Unreadable is empty, and that is a decision rather than an oversight.**
- * A corrupt or half-written state file must not stop the run from selecting
- * work: the failure mode of reading it as "no state" is today's behaviour —
- * which is exactly what the caller had before this module — while the failure
- * mode of throwing is a run that cannot take an item because of a file that
- * only ever *adds* stop conditions. Fail towards the behaviour that was already
- * trusted.
+ * This is the compatibility reader for writers and diagnostic commands whose
+ * established failure mode is "no state". Selection does NOT call it: a
+ * corrupt file there may be hiding a persisted stop, so `readStateForSelection`
+ * below is deliberately fail-closed. Keeping the two entry points named makes
+ * that boundary explicit instead of letting one permissive helper silently
+ * decide whether work may start.
  *
  * Note the asymmetry with `run-journal.mjs`, which refuses a broken sequence
  * loudly: the journal's whole job is to be trustworthy evidence, so a journal
@@ -91,12 +104,26 @@ export const readState = (runDir) => {
  */
 export const readStateForSelection = (runDir) => {
   if (!runDir) return {};
-  let raw;
+  let fd;
   try {
-    raw = readFileSync(statePathIn(runDir), 'utf8');
+    fd = openSync(statePathIn(runDir), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   } catch (error) {
     if (error?.code === 'ENOENT') return {};
     throw new Error('run state is unreadable', { cause: error });
+  }
+  let raw;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error('run state is invalid: expected a regular file');
+    if (stat.size > MAX_STATE_BYTES) {
+      throw new Error(`run state exceeds ${MAX_STATE_BYTES} bytes`);
+    }
+    raw = readFileSync(fd, 'utf8');
+  } catch (error) {
+    if (String(error?.message ?? error).startsWith('run state ')) throw error;
+    throw new Error('run state is unreadable', { cause: error });
+  } finally {
+    closeSync(fd);
   }
   let parsed;
   try {
@@ -313,18 +340,22 @@ const RUN_DIR_NAME = /^\d{8}-\d{6}$/;
 const RUNS_ROOT_ENTRY_BUDGET = 10_000;
 const RUNS_READ_CAP = 200;
 
-export const previousTakeUp = (runDir, id) => {
-  if (!runDir || id === undefined || id === null) return null;
+/**
+ * The bounded, newest-first sibling run directories that can carry evidence.
+ *
+ * Enumeration is shared by compatibility take-up lookup and durable journal
+ * lookup so they cannot disagree about which runs are in scope. Callers choose
+ * their own failure direction: take-up evidence is optional and catches an
+ * error; resume detection is authoritative for baseline creation and fails
+ * closed when this enumeration cannot be completed.
+ */
+export const previousRunDirs = (runDir) => {
+  if (!runDir) return [];
   const root = dirname(runDir);
   const self = basename(runDir);
-  if (!RUN_DIR_NAME.test(self)) return null;
+  if (!RUN_DIR_NAME.test(self)) return [];
   const names = [];
-  let dir;
-  try {
-    dir = opendirSync(root);
-  } catch {
-    return null;
-  }
+  const dir = opendirSync(root);
   try {
     for (let seen = 0; seen < RUNS_ROOT_ENTRY_BUDGET; seen += 1) {
       const entry = dir.readSync();
@@ -333,14 +364,22 @@ export const previousTakeUp = (runDir, id) => {
         names.push(entry.name);
       }
     }
-  } catch {
-    return null;
   } finally {
     dir.closeSync();
   }
   names.sort().reverse();
-  for (const name of names.slice(0, RUNS_READ_CAP)) {
-    const candidate = join(root, name);
+  return names.slice(0, RUNS_READ_CAP).map((name) => join(root, name));
+};
+
+export const previousTakeUp = (runDir, id) => {
+  if (!runDir || id === undefined || id === null) return null;
+  let candidates;
+  try {
+    candidates = previousRunDirs(runDir);
+  } catch {
+    return null;
+  }
+  for (const candidate of candidates) {
     let state;
     try {
       state = JSON.parse(readFileSync(statePathIn(candidate), 'utf8'));

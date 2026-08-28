@@ -298,6 +298,10 @@ evidence/compatibility state. They do not decide `CURRENT`, `CHANGED`,
 `CONFLICT` or `UNVERIFIABLE`, do not decide whether a first baseline may be
 created, and never appear as a drift source. The event may still name
 `baseline: this-run | previous-run | null` so older evidence remains readable.
+First sight versus resume comes only from the SELECT events in the current and
+bounded sibling run journals. If those journals cannot prove first sight, a
+missing claim is `UNVERIFIABLE`; an `updatedAt` marker can neither create nor
+withhold the claim.
 
 On `CHANGED`, `CONFLICT` or `UNVERIFIABLE`, **re-read before acting**, then
 record what the re-read concluded:
@@ -406,8 +410,8 @@ reviewer verdict, an exhausted gate-round cap, a false premise in the item itsel
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
-**two escalations in a row** · **budget** · **nothing selectable** · **queue
-empty**.
+**revalidation hold** · **two escalations in a row** · **budget** · **nothing
+selectable** · **queue empty**.
 
 🔴 **Their inputs come from a file, not from your memory — and that is why they
 fire at all.** `escalations` and `lastDeployVerdict` live in
@@ -693,10 +697,13 @@ declared in §1. Five things about it are worth knowing before relying on it:
   so a stale record cannot read as the current one — which is the whole failure a
   journal exists to prevent.
 - ⚠ **The trace can stop before the run does, and the two failures part ways
-  here.** A journal that can no longer accept records — a sequence already
-  broken, a file that will not parse, a run already marked ended — is a lost
-  trace, **not** a reason to withhold work the queue can still hand out: the
-  selection prints, stderr carries a `run journal:` line, the exit code stays 0.
+  here.** After a durable claim exists, a journal that can no longer accept
+  records — a sequence already broken, a file that will not parse, a run already
+  marked ended — is a lost trace, **not** by itself a reason to withhold work the
+  queue can still hand out: the selection prints, stderr carries a `run journal:`
+  line, and the claim still decides drift. Before the first claim, the boundary
+  is stricter: an unreadable current or bounded sibling journal means SELECT
+  cannot prove first sight, so an absent claim is `UNVERIFIABLE` and exits 2.
   The refusals are the ones where nothing has happened yet and a second fixes
   it, and there are **four**: the declaration is empty, its directory does not
   exist, the path is not a directory, or the journal module is missing. Each

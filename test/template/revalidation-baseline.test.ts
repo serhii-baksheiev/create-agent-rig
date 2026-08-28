@@ -163,6 +163,35 @@ describe('selection preserves earlier-run take-up evidence without using it as a
       JSON.stringify({ adapter: 'jira', options: { project: 'AR', issues: [jiraIssue(updated)] } }),
     );
     const { runDir, dirs } = await runsRoot(previous);
+    for (const [index, state] of previous.entries()) {
+      const takeUps = state.takeUps;
+      const selectedAt =
+        typeof takeUps === 'object' && takeUps !== null
+          ? (takeUps as Record<string, unknown>)['AR-1']
+          : null;
+      if (typeof selectedAt !== 'string') continue;
+      await writeFile(
+        path.join(dirs[index]!, 'events.jsonl'),
+        `${JSON.stringify({
+          seq: 1,
+          at: selectedAt,
+          kind: 'revalidation',
+          data: {
+            schemaVersion: 1,
+            id: `prior-select-${index}`,
+            ticket: 'AR-1',
+            point: 'SELECT',
+            checkpoint: 'SELECT',
+            result: 'BASELINE_CREATED',
+            changed: false,
+            source: [],
+            action: 'continue',
+            movedFingerprintSet: [],
+            sourcePointer: '.rig/claims/AR-1.json',
+          },
+        })}\n`,
+      );
+    }
     const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) =>
       execFile(
         process.execPath,
@@ -209,7 +238,7 @@ describe('selection preserves earlier-run take-up evidence without using it as a
     });
   });
 
-  it('is a first sight — baseline null, changed false — only when no run ever took it up', async () => {
+  it('is a first sight — baseline null, changed false — only when no prior SELECT exists', async () => {
     const { code, json } = await nextJson(T2, []);
     expect(code).toBe(0);
     expect(json.revalidation).toMatchObject({
