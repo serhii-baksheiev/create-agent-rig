@@ -63,7 +63,12 @@ export const reportOf = ({ runs, since }) => {
     for (const event of events) {
       if (event.kind !== 'revalidation-outcome') continue;
       if (typeof event.data?.detectionId === 'string') {
-        resolutions.set(event.data.detectionId, event.data);
+        const resolvedAt = Date.parse(event.data?.resolvedAt ?? event.at);
+        if (Number.isFinite(resolvedAt)) {
+          const matching = resolutions.get(event.data.detectionId) ?? [];
+          matching.push({ resolvedAt, data: event.data });
+          resolutions.set(event.data.detectionId, matching);
+        }
       }
       if (Number.isInteger(event.data?.answers)) {
         legacyOutcomes.set(`${run}:${event.data.answers}`, event.data);
@@ -93,9 +98,14 @@ export const reportOf = ({ runs, since }) => {
           : event.data.changed === true;
       if (!caught) continue;
       bucket.catches += 1;
-      const outcome =
-        (typeof event.data?.id === 'string' ? resolutions.get(event.data.id) : null) ??
-        legacyOutcomes.get(`${run}:${event.seq}`);
+      const detectionAt = Date.parse(event.at);
+      const typed =
+        typeof event.data?.id === 'string'
+          ? (resolutions.get(event.data.id) ?? [])
+              .filter((resolution) => resolution.resolvedAt >= detectionAt)
+              .sort((left, right) => left.resolvedAt - right.resolvedAt)[0]?.data
+          : null;
+      const outcome = typed ?? legacyOutcomes.get(`${run}:${event.seq}`);
       const actionRequired = outcome?.actionRequired ?? outcome?.actionChanged;
       if (typeof actionRequired !== 'boolean') bucket.unresolved += 1;
       else if (actionRequired) {

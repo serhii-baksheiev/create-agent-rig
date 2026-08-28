@@ -85,6 +85,32 @@ export const readState = (runDir) => {
 };
 
 /**
+ * Selection's fail-closed view of run state. An absent file is still an empty
+ * run, but a present file that cannot be read or interpreted may be hiding a
+ * persisted stop such as `revalidationHold` and must not become `{}`.
+ */
+export const readStateForSelection = (runDir) => {
+  if (!runDir) return {};
+  let raw;
+  try {
+    raw = readFileSync(statePathIn(runDir), 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw new Error('run state is unreadable', { cause: error });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error('run state is corrupt or invalid JSON', { cause: error });
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('run state is invalid: expected a JSON object');
+  }
+  return parsed;
+};
+
+/**
  * Merge `patch` over what is already recorded, and return the result.
  *
  * Shallow by design: the fields are flat values plus one object

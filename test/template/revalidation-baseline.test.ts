@@ -172,44 +172,46 @@ describe('selection preserves earlier-run take-up evidence without using it as a
           resolve({ code: e && typeof e.code === 'number' ? e.code : 0, stdout: out, stderr: err }),
       ),
     );
-    expect(result.code, result.stderr).toBe(0);
     const events = (await readFile(path.join(runDir, 'events.jsonl'), 'utf8'))
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line))
       .filter((e) => e.kind === 'revalidation');
-    return { json: JSON.parse(result.stdout), event: events[0]?.data, dirs };
+    return { code: result.code, json: JSON.parse(result.stdout), event: events[0]?.data, dirs };
   };
 
-  it('creates the claim when the marker moved, and names the compatibility baseline', async () => {
-    const { json, event, dirs } = await nextJson(T2, [{ takeUps: { 'AR-1': T1 } }]);
+  it('refuses a missing claim on resume while naming the moved compatibility marker', async () => {
+    const { code, json, event, dirs } = await nextJson(T2, [{ takeUps: { 'AR-1': T1 } }]);
+    expect(code).toBe(2);
     expect(json.revalidation).toMatchObject({
-      result: 'BASELINE_CREATED',
-      changed: false,
-      action: 'continue',
+      result: 'UNVERIFIABLE',
+      changed: null,
+      action: 'unverifiable',
       task: { from: T1, to: T2 },
       baseline: 'previous-run',
     });
     expect(event).toMatchObject({
-      result: 'BASELINE_CREATED',
-      changed: false,
+      result: 'UNVERIFIABLE',
+      changed: null,
       baseline: 'previous-run',
       baselineRun: dirs[0],
     });
   });
 
-  it('continues when the marker is where the earlier run left it', async () => {
-    const { json } = await nextJson(T2, [{ takeUps: { 'AR-1': T2 } }]);
+  it('still refuses a missing claim when the compatibility marker did not move', async () => {
+    const { code, json } = await nextJson(T2, [{ takeUps: { 'AR-1': T2 } }]);
+    expect(code).toBe(2);
     expect(json.revalidation).toMatchObject({
-      changed: false,
-      action: 'continue',
-      result: 'BASELINE_CREATED',
+      changed: null,
+      action: 'unverifiable',
+      result: 'UNVERIFIABLE',
       baseline: 'previous-run',
     });
   });
 
   it('is a first sight — baseline null, changed false — only when no run ever took it up', async () => {
-    const { json } = await nextJson(T2, []);
+    const { code, json } = await nextJson(T2, []);
+    expect(code).toBe(0);
     expect(json.revalidation).toMatchObject({
       changed: false,
       result: 'BASELINE_CREATED',

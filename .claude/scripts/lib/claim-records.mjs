@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { withoutGitLocation } from '../git-env.mjs';
 
 export const CLAIM_SCHEMA_VERSION = 1;
@@ -37,6 +37,51 @@ const digest = (value) =>
     .update(Buffer.isBuffer(value) ? value : JSON.stringify(stable(value)))
     .digest('hex');
 
+const pathExists = (path) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const assertInsideRepository = (projectRoot, path, label) => {
+  const root = realpathSync(projectRoot);
+  const resolved = realpathSync(path);
+  const fromRoot = relative(root, resolved);
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new Error(`${label} escapes the repository`);
+  }
+};
+
+const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+  if (!stat.isFile()) throw new Error(`${label} is not a regular file`);
+  if (stat.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
+  assertInsideRepository(projectRoot, path, label);
+  return readFileSync(path);
+};
+
+const assertRepositoryDirectory = (projectRoot, path, label) => {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+  if (!stat.isDirectory()) throw new Error(`${label} is not a directory`);
+  assertInsideRepository(projectRoot, path, label);
+};
+
+const ensureClaimDirectory = (projectRoot, path) => {
+  const rigDir = dirname(path);
+  assertRepositoryDirectory(projectRoot, rigDir, 'claim root .rig');
+  try {
+    mkdirSync(path);
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
+  assertRepositoryDirectory(projectRoot, path, 'claim directory .rig/claims');
+};
+
 const safeRelativePath = (value) => {
   if (
     typeof value !== 'string' ||
@@ -53,12 +98,12 @@ export const readRevalidationContract = (projectRoot) => {
   const path = join(projectRoot, CONTRACT_PATH);
   let raw;
   try {
-    raw = readFileSync(path, 'utf8');
-  } catch {
-    throw new Error(`no-detection-contract: ${CONTRACT_PATH} is missing or unreadable`);
-  }
-  if (Buffer.byteLength(raw) > MAX_CONTRACT_BYTES) {
-    throw new Error(`no-detection-contract: ${CONTRACT_PATH} exceeds ${MAX_CONTRACT_BYTES} bytes`);
+    raw = readRepositoryFile(projectRoot, path, {
+      label: `detection contract ${CONTRACT_PATH}`,
+      maxBytes: MAX_CONTRACT_BYTES,
+    }).toString('utf8');
+  } catch (error) {
+    throw new Error(`no-detection-contract: ${error.message}`, { cause: error });
   }
   let parsed;
   try {
@@ -124,12 +169,11 @@ const pairedFingerprintsOf = (projectRoot, pairs) =>
     id,
     paths: paths.map((path) => {
       const file = join(projectRoot, path);
-      const stat = lstatSync(file);
-      if (!stat.isFile()) throw new Error(`paired fact ${path} is not a regular file`);
-      if (stat.size > MAX_PAIRED_FACT_BYTES) {
-        throw new Error(`paired fact ${path} exceeds ${MAX_PAIRED_FACT_BYTES} bytes`);
-      }
-      return { path, value: digest(readFileSync(file)) };
+      const raw = readRepositoryFile(projectRoot, file, {
+        label: `paired fact ${path}`,
+        maxBytes: MAX_PAIRED_FACT_BYTES,
+      });
+      return { path, value: digest(raw) };
     }),
   }));
 
@@ -217,24 +261,37 @@ export const withAdditionalDrift = (detection, sources = []) => {
   };
 };
 
-const trackedByGit = (projectRoot, path) => {
+const committedObjectOf = (projectRoot, path) => {
   try {
-    execFileSync('git', ['-C', projectRoot, 'ls-files', '--error-unmatch', '--', path], {
+    return execFileSync('git', ['-C', projectRoot, 'rev-parse', '--verify', `HEAD:${path}`], {
       encoding: 'utf8',
       env: withoutGitLocation(),
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
-    return true;
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
   } catch {
-    return false;
+    return null;
   }
 };
 
-const readClaim = (path) => {
-  if (!lstatSync(path).isFile()) throw new Error('claim record is not a regular file');
-  const raw = readFileSync(path);
-  if (raw.byteLength > MAX_CLAIM_BYTES) throw new Error(`claim record exceeds ${MAX_CLAIM_BYTES} bytes`);
-  const parsed = JSON.parse(raw.toString('utf8'));
+const objectOf = (projectRoot, raw) =>
+  execFileSync('git', ['-C', projectRoot, 'hash-object', '--stdin'], {
+    encoding: 'utf8',
+    env: withoutGitLocation(),
+    input: raw,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  }).trim();
+
+const readClaim = (projectRoot, path) => {
+  const raw = readRepositoryFile(projectRoot, path, {
+    label: 'claim record',
+    maxBytes: MAX_CLAIM_BYTES,
+  });
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.toString('utf8'));
+  } catch {
+    throw new Error('claim record is not valid JSON');
+  }
   if (
     !parsed ||
     typeof parsed !== 'object' ||
@@ -252,7 +309,7 @@ const readClaim = (path) => {
   ) {
     throw new Error('claim record has an unsupported shape');
   }
-  return parsed;
+  return { parsed, raw };
 };
 
 const resultOf = ({
@@ -314,9 +371,9 @@ export const revalidateClaim = ({
   }
   const current = fingerprintsOf({ ticket, targetSha, pairedFacts });
 
-  const tracked = trackedByGit(projectRoot, pointer);
-  if (!existsSync(path)) {
-    if (tracked) {
+  const committedObject = committedObjectOf(projectRoot, pointer);
+  if (!pathExists(path)) {
+    if (committedObject !== null) {
       return resultOf({
         ticket,
         point,
@@ -328,13 +385,25 @@ export const revalidateClaim = ({
       });
     }
     if (point === 'SELECT' && allowCreate && !isResume) {
-      mkdirSync(dirname(path), { recursive: true });
-      const claim = {
-        schemaVersion: CLAIM_SCHEMA_VERSION,
-        ticket: ticketIdOf(ticket),
-        fingerprints: current,
-      };
-      writeFileSync(path, `${JSON.stringify(claim, null, 2)}\n`, { flag: 'wx' });
+      try {
+        ensureClaimDirectory(projectRoot, dirname(path));
+        const claim = {
+          schemaVersion: CLAIM_SCHEMA_VERSION,
+          ticket: ticketIdOf(ticket),
+          fingerprints: current,
+        };
+        writeFileSync(path, `${JSON.stringify(claim, null, 2)}\n`, { flag: 'wx' });
+      } catch (error) {
+        return resultOf({
+          ticket,
+          point,
+          result: 'UNVERIFIABLE',
+          action: 'unverifiable',
+          pointer,
+          evidence: { error: `claim baseline could not be created: ${error.message}` },
+          identity: 'create-refused',
+        });
+      }
       return resultOf({
         ticket,
         point,
@@ -356,21 +425,25 @@ export const revalidateClaim = ({
     });
   }
 
-  if (!tracked) {
+  if (committedObject === null) {
     return resultOf({
       ticket,
       point,
       result: 'UNVERIFIABLE',
       action: 'unverifiable',
       pointer,
-      evidence: { error: `untracked claim record ${pointer}` },
-      identity: 'untracked',
+      evidence: { error: `untracked or unversioned claim record ${pointer}` },
+      identity: 'unversioned',
     });
   }
 
   let claim;
   try {
-    claim = readClaim(path);
+    const read = readClaim(projectRoot, path);
+    if (objectOf(projectRoot, read.raw) !== committedObject) {
+      throw new Error('tracked claim worktree content diverges from its committed Git version');
+    }
+    claim = read.parsed;
   } catch (error) {
     return resultOf({
       ticket,

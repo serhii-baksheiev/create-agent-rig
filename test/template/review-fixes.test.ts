@@ -482,6 +482,20 @@ describe('the queue CLI fails loudly, exactly as its own header demands', () => 
   const project = async (config?: string, plan = '# P\n\n## Agent queue\n\n- do a thing\n') => {
     const dir = await mkdtemp(path.join(tmpdir(), 'cli-'));
     await installQueueCli(dir);
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.rig', 'revalidation.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        detection: {
+          mode: 'pull',
+          sources: ['run-state', 'journal'],
+          acceptedLatency: '24h',
+          push: false,
+        },
+        pairedFacts: [],
+      })}\n`,
+    );
     await writeFile(path.join(dir, 'PLAN.md'), plan);
     if (config !== undefined) await writeFile(path.join(dir, '.claude', 'queue.json'), config);
     return dir;

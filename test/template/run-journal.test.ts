@@ -1015,17 +1015,16 @@ describe('the queue CLI records its selection when a run directory is declared',
   });
 });
 
-// 🔴 The journal is instrumentation, and instrumentation that can stop the thing
-// it instruments is a liability. But "never stop" is the wrong lesson too: the
-// two describes below are the same failure at the journal, and they must end
-// differently, because only one of them has anything to lose by continuing.
-describe('an unusable journal does not take the queue selection with it', () => {
+// The journal remains instrumentation once a durable claim exists. Before the
+// first claim, however, an unreadable trace makes "first sight" and "resume"
+// indistinguishable, so baseline creation must fail closed.
+describe('journal failure preserves the durable-claim boundary', () => {
   const envFor = (runDir: string): NodeJS.ProcessEnv => ({
     ...withoutGitLocation(),
     RIG_RUN_DIR: runDir,
   });
 
-  it('prints the selection and warns when the run directory holds a broken sequence', async () => {
+  it('prints the item but refuses baseline creation when the run directory holds a broken sequence', async () => {
     const dir = await project();
     const runDir = await newRunDir();
     // What two sessions sharing one run directory leave behind: two records
@@ -1040,8 +1039,11 @@ describe('an unusable journal does not take the queue selection with it', () => 
 
     const result = await run(['next', '--json', '--config', planConfig(dir)], dir, envFor(runDir));
 
-    expect(result.code, result.out).toBe(0);
-    expect(JSON.parse(result.stdout).ticket).toMatchObject({ id: '1' });
+    expect(result.code, result.out).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ticket: { id: '1' },
+      revalidation: { result: 'UNVERIFIABLE', action: 'unverifiable' },
+    });
     // Loud, on the stream that is not the selection, and specific: it names the
     // journal as the thing that failed and says the selection went unrecorded.
     // Without that sentence the operator reads a normal run with a gap in it.

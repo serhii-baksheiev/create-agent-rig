@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +19,7 @@ const scriptsDir = path.join(universal, '.claude', 'scripts');
 const queueScript = path.join(scriptsDir, 'queue', 'index.mjs');
 const revalidateScript = path.join(scriptsDir, 'revalidate.mjs');
 const reportScript = path.join(scriptsDir, 'revalidation-report.mjs');
+const claimRecordsScript = path.join(scriptsDir, 'lib', 'claim-records.mjs');
 
 const T1 = '2026-08-28T08:00:00.000Z';
 const T2 = '2026-08-28T09:00:00.000Z';
@@ -813,5 +815,300 @@ describe('revalidate outcome resolves a detection and makes false-HOLD observabl
       since: '2026-01-01T00:00:00.000Z',
     });
     expect(report.totals).toMatchObject({ falseHolds: 0, unresolved: 1 });
+  });
+});
+
+describe('reviewer hardening — SELECT cannot bypass or recreate durable evidence', () => {
+  it('returns UNVERIFIABLE when SELECT has neither a run directory nor a detection contract', async () => {
+    const p = await project();
+    await rm(path.join(p.root, '.rig', 'revalidation.json'));
+    const env = { ...p.env };
+    delete env.RIG_RUN_DIR;
+
+    const result = await run(
+      process.execPath,
+      [queueScript, 'next', '--config', p.configPath, '--json'],
+      p.root,
+      env,
+    );
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result).revalidation).toMatchObject({
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(/no-detection-contract/i);
+  });
+
+  it.each([
+    ['readable prior journal', false],
+    ['corrupt prior journal', true],
+  ])(
+    'does not recreate a deleted untracked baseline on a fresh-run resume with a %s',
+    async (_label, corruptJournal) => {
+      const p = await project();
+      const baseline = await next(p);
+      expect(baseline.code, baseline.out).toBe(0);
+      expect(jsonOf(baseline).revalidation.result).toBe('BASELINE_CREATED');
+      await rm(p.claimPath);
+      if (corruptJournal) {
+        await writeFile(path.join(p.runDir, 'events.jsonl'), '{not valid journal json\n');
+      }
+
+      const freshRunDir = path.join(p.root, '.claude', 'runs', '20260828-130000');
+      await mkdir(freshRunDir, { recursive: true });
+      const result = await run(
+        process.execPath,
+        [queueScript, 'next', '--config', p.configPath, '--json'],
+        p.root,
+        { ...p.env, RIG_RUN_DIR: freshRunDir },
+      );
+
+      expect(result.code, result.out).toBe(2);
+      expect(jsonOf(result).revalidation).toMatchObject({
+        result: 'UNVERIFIABLE',
+        action: 'unverifiable',
+      });
+      expect(jsonOf(result).revalidation.result).not.toBe('BASELINE_CREATED');
+      expect(existsSync(p.claimPath)).toBe(false);
+      if (corruptJournal) {
+        expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(
+          /journal.*(invalid|unreadable|corrupt)/i,
+        );
+      }
+    },
+  );
+});
+
+describe('resolution time bounds a stable detection id', () => {
+  it('does not resolve a later detection with an earlier same-id resolution', async () => {
+    const { reportOf: classify } = (await import(pathToFileURL(reportScript).href)) as {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      reportOf: (input: { runs: unknown[]; since: string }) => Record<string, any>;
+    };
+    const resolution = {
+      seq: 1,
+      at: '2026-08-28T12:00:00.000Z',
+      kind: 'revalidation-outcome',
+      data: {
+        detectionId: 'reused-detection-id',
+        action: 'continue',
+        actionRequired: false,
+        resolvedAt: '2026-08-28T12:00:00.000Z',
+      },
+    };
+    const laterDetection = {
+      seq: 2,
+      at: '2026-08-28T13:00:00.000Z',
+      kind: 'revalidation',
+      data: {
+        id: 'reused-detection-id',
+        point: 'BEFORE_PR',
+        result: 'CHANGED',
+      },
+    };
+
+    const report = classify({
+      runs: [{ run: 'run-a', events: [resolution, laterDetection] }],
+      since: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(report.totals).toMatchObject({ falseHolds: 0, unresolved: 1 });
+  });
+});
+
+describe('repository paths stay inside the repository', () => {
+  it('rejects a paired-fact path whose ancestor symlink escapes the repository', async () => {
+    const p = await project();
+    const outside = await mkdtemp(path.join(tmpdir(), 'paired-fact-outside-'));
+    const outsideContent = ['outside', 'paired', 'content'].join('-');
+    await writeFile(path.join(outside, 'fact.txt'), outsideContent);
+    await symlink(
+      outside,
+      path.join(p.root, 'linked-facts'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await writeFile(
+      path.join(p.root, '.rig', 'revalidation.json'),
+      JSON.stringify({
+        ...VALID_CONTRACT,
+        pairedFacts: [{ id: 'escaped-pair', paths: ['linked-facts/fact.txt', 'paired-beta.txt'] }],
+      }),
+    );
+    await git(['add', '.rig/revalidation.json'], p.root);
+    await git(['commit', '-q', '-m', 'declare escaped paired fact fixture'], p.root);
+
+    const result = await next(p);
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result).revalidation).toMatchObject({
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(
+      /paired.*(escape|outside|symlink)/i,
+    );
+    expect(JSON.stringify(jsonOf(result).revalidation)).not.toContain(outsideContent);
+  });
+
+  it('does not write a baseline through a .rig/claims ancestor symlink', async () => {
+    const p = await project();
+    const outside = await mkdtemp(path.join(tmpdir(), 'claim-record-outside-'));
+    await symlink(
+      outside,
+      path.join(p.root, '.rig', 'claims'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const result = await next(p);
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result).revalidation).toMatchObject({
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(existsSync(path.join(outside, 'RP-50.json'))).toBe(false);
+    expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(/claim.*(escape|outside|symlink)/i);
+  });
+});
+
+describe('a tracked claim must match the Git index', () => {
+  it.each(['modified', 'replaced'])(
+    'rejects a tracked claim %s only in the worktree',
+    async (mode) => {
+      const p = await project();
+      expect((await next(p)).code).toBe(0);
+      if (!(await trackClaim(p))) return;
+      const claim = JSON.parse(await readFile(p.claimPath, 'utf8'));
+      claim.fingerprints.scope.value = '0'.repeat(64);
+      if (mode === 'replaced') await rm(p.claimPath);
+      await writeFile(p.claimPath, `${JSON.stringify(claim)}\n`);
+
+      const result = await next(p);
+
+      expect(result.code, result.out).toBe(2);
+      expect(jsonOf(result).revalidation).toMatchObject({
+        result: 'UNVERIFIABLE',
+        action: 'unverifiable',
+      });
+      expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(
+        /(index|tracked).*(worktree|diverg)/i,
+      );
+    },
+  );
+
+  it('does not copy malformed claim bytes into parse-error evidence', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+    const malformedSentinel = ['CLAIM', 'PARSE', 'BYTES', 'MUST', 'NOT', 'ECHO'].join('_');
+    const leakedPrefix = malformedSentinel.slice(0, 10);
+    await writeFile(p.claimPath, `{"schemaVersion":1,"value":${malformedSentinel}}`);
+    await git(['add', '.rig/claims/RP-50.json'], p.root);
+    await git(['commit', '-q', '-m', 'malformed tracked claim fixture'], p.root);
+
+    const result = await next(p);
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result).revalidation).toMatchObject({
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(result).revalidation)).not.toContain(leakedPrefix);
+    expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(
+      /claim.*(invalid|malformed|unreadable)/i,
+    );
+  });
+});
+
+describe('run-state uncertainty preserves the revalidation brake', () => {
+  it('fails closed at selection when a corrupt state may contain revalidationHold', async () => {
+    const p = await project();
+    await writeFile(
+      path.join(p.runDir, 'state.json'),
+      '{"revalidationHold":{"kind":"revalidation-hold","ticket":"RP-50"',
+    );
+
+    const result = await next(p);
+
+    expect(result.code, result.out).toBe(1);
+    expect(jsonOf(result).stop).toMatchObject({ success: false });
+    expect(JSON.stringify(jsonOf(result).stop)).toMatch(/state.*(corrupt|invalid|unreadable)/i);
+    expect(jsonOf(result).revalidation).not.toMatchObject({ result: 'BASELINE_CREATED' });
+    expect(existsSync(p.claimPath)).toBe(false);
+  });
+});
+
+describe('the detection contract is classified before it is followed or fully read', () => {
+  it('rejects a contract symlink instead of following its target', async () => {
+    const p = await project();
+    const outside = await mkdtemp(path.join(tmpdir(), 'contract-target-'));
+    const outsideMarker = ['CONTRACT', 'SYMLINK', 'TARGET', 'BYTES'].join('_');
+    const target = path.join(outside, 'revalidation.json');
+    await writeFile(target, JSON.stringify({ ...VALID_CONTRACT, note: outsideMarker }));
+    await rm(path.join(p.root, '.rig', 'revalidation.json'));
+    await symlink(target, path.join(p.root, '.rig', 'revalidation.json'));
+
+    const result = await next(p);
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result).revalidation).toMatchObject({
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(
+      /contract.*(symlink|regular file)/i,
+    );
+    expect(JSON.stringify(jsonOf(result).revalidation)).not.toContain(outsideMarker);
+  });
+
+  it('rejects a special contract path as not a regular file', async () => {
+    const p = await project();
+    await rm(path.join(p.root, '.rig', 'revalidation.json'));
+    await mkdir(path.join(p.root, '.rig', 'revalidation.json'));
+
+    const result = await next(p);
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result).revalidation).toMatchObject({
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(result).revalidation)).toMatch(/contract.*not a regular file/i);
+  });
+
+  it('rejects an oversized contract from metadata before attempting a full read', async () => {
+    const p = await project();
+    const contractPath = path.join(p.root, '.rig', 'revalidation.json');
+    await writeFile(contractPath, Buffer.alloc(256 * 1024 + 1, 0x20));
+    const require = createRequire(import.meta.url);
+    const mutableFs = require('node:fs') as {
+      readFileSync: (...args: unknown[]) => unknown;
+    };
+    const originalReadFileSync = mutableFs.readFileSync;
+    let attemptedFullRead = false;
+    mutableFs.readFileSync = (...args: unknown[]) => {
+      if (path.resolve(String(args[0])) === path.resolve(contractPath)) {
+        attemptedFullRead = true;
+        throw new Error('full contract read trap');
+      }
+      return originalReadFileSync(...args);
+    };
+    syncBuiltinESMExports();
+
+    try {
+      const claimRecords = (await import(
+        `${pathToFileURL(claimRecordsScript).href}?oversize=${Date.now()}`
+      )) as {
+        readRevalidationContract: (root: string) => unknown;
+      };
+      expect(() => claimRecords.readRevalidationContract(p.root)).toThrow(
+        /no-detection-contract.*exceeds/i,
+      );
+      expect(attemptedFullRead).toBe(false);
+    } finally {
+      mutableFs.readFileSync = originalReadFileSync;
+      syncBuiltinESMExports();
+    }
   });
 });
