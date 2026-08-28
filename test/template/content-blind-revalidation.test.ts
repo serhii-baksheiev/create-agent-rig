@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -436,6 +437,71 @@ describe('commentary fingerprints are ids/count and hold only at close', () => {
   });
 });
 
+describe('Jira commentary fingerprints require the complete id set', () => {
+  it('refuses SELECT when comment.total exceeds the returned comment ids', async () => {
+    const p = await project();
+    await p.setIssue(
+      jiraIssue({
+        comment: {
+          total: 2,
+          comments: [{ id: '10001', body: description(COMMENT_SENTINEL) }],
+        },
+      }),
+    );
+
+    const selection = await next(p);
+
+    expect(selection.code, selection.out).toBe(2);
+    expect(jsonOf(selection).revalidation).toMatchObject({
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(selection).revalidation)).toMatch(
+      /comment.*(incomplete|truncated|missing|total)/i,
+    );
+    expect(existsSync(p.claimPath)).toBe(false);
+  });
+
+  it('never returns CURRENT for same-total unseen ID changes at BEFORE_CLOSE', async () => {
+    const p = await project();
+    await p.setIssue(
+      jiraIssue({
+        comment: {
+          total: 2,
+          comments: [
+            { id: '10001', body: description(COMMENT_SENTINEL) },
+            { id: '10002', body: description('second complete comment') },
+          ],
+        },
+      }),
+    );
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+    const legacyClaim = JSON.parse(await readFile(p.claimPath, 'utf8'));
+    legacyClaim.fingerprints.commentary.value = createHash('sha256')
+      .update(JSON.stringify({ count: 2, ids: ['10001'] }))
+      .digest('hex');
+    await writeFile(p.claimPath, `${JSON.stringify(legacyClaim)}\n`);
+    await git(['add', '.rig/claims/RP-50.json'], p.root);
+    await git(['commit', '-q', '-m', 'track legacy truncated commentary baseline'], p.root);
+    await p.setIssue(
+      jiraIssue({
+        comment: {
+          total: 2,
+          comments: [{ id: '10001', body: description(COMMENT_SENTINEL) }],
+        },
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      }),
+    );
+
+    const close = await before(p, 'BEFORE_CLOSE');
+
+    expect(close.code, close.out).toBe(2);
+    expect(jsonOf(close)).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
+    expect(JSON.stringify(jsonOf(close))).toMatch(/comment.*(incomplete|truncated|missing|total)/i);
+  });
+});
+
 describe('a missing durable claim blocks every resumed checkpoint', () => {
   it.each(['SELECT', 'BEFORE_PR', 'BEFORE_CLOSE'] as const)(
     '%s returns UNVERIFIABLE instead of progressing',
@@ -625,6 +691,58 @@ describe('selection reconciles unresolved append-only revalidation evidence', ()
         },
         now: T2,
       });
+
+      const selection = await next(p);
+
+      expect(selection.code, selection.out).toBe(1);
+      expect(jsonOf(selection).stop).toMatchObject({
+        kind: 'revalidation-hold',
+        success: false,
+      });
+    },
+  );
+
+  it.each(['absent', 'empty'] as const)(
+    'keeps a detection unresolved with %s state when its typed outcome has no boolean verdict',
+    async (stateMode) => {
+      const p = await project();
+      expect((await next(p)).code).toBe(0);
+      if (!(await trackClaim(p))) return;
+      const journal = await import(pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href);
+      const detectionId = `missing-boolean-${stateMode}`;
+      journal.recordEvent({
+        runDir: p.runDir,
+        kind: 'revalidation',
+        data: {
+          schemaVersion: 1,
+          id: detectionId,
+          ticket: 'RP-50',
+          point: 'BEFORE_PR',
+          checkpoint: 'BEFORE_PR',
+          result: 'CHANGED',
+          changed: true,
+          source: ['claim:scope'],
+          action: 'hold',
+          movedFingerprintSet: ['scope'],
+          sourcePointer: '.rig/claims/RP-50.json',
+          observedAt: T1,
+        },
+        now: T1,
+      });
+      journal.recordEvent({
+        runDir: p.runDir,
+        kind: 'revalidation-outcome',
+        data: {
+          detectionId,
+          action: 'continue',
+          driftOrigin: 'operator',
+          resolvedAt: T2,
+        },
+        now: T2,
+      });
+      const statePath = path.join(p.runDir, 'state.json');
+      if (stateMode === 'empty') await writeFile(statePath, '{}\n');
+      else await rm(statePath, { force: true });
 
       const selection = await next(p);
 
@@ -968,6 +1086,70 @@ describe('reviewer hardening — SELECT cannot bypass or recreate durable eviden
         );
       }
     },
+  );
+});
+
+describe('UNVERIFIABLE detection identity is checkout-independent', () => {
+  it('uses the same id for the same missing-contract condition in two absolute roots', async () => {
+    const projects = await Promise.all([project(), project()]);
+    await Promise.all(projects.map((p) => rm(path.join(p.root, '.rig', 'revalidation.json'))));
+
+    const results = await Promise.all(projects.map(next));
+    const detections = results.map((result) => {
+      expect(result.code, result.out).toBe(2);
+      return jsonOf(result).revalidation;
+    });
+
+    expect.soft(detections[1].id).toBe(detections[0].id);
+    for (const [index, detection] of detections.entries()) {
+      expect(detection).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
+      expect.soft(JSON.stringify(detection)).not.toContain(projects[index]!.root);
+    }
+  });
+});
+
+describe('an incomplete sibling-run search cannot authorize a first baseline', () => {
+  it.each(['candidate cap', 'entry budget'] as const)(
+    'returns UNVERIFIABLE when the %s truncates prior SELECT evidence',
+    async (limit) => {
+      const p = await project();
+      const runsRoot = path.dirname(p.runDir);
+      try {
+        if (limit === 'candidate cap') {
+          await Promise.all(
+            Array.from({ length: 201 }, (_, index) =>
+              mkdir(path.join(runsRoot, `20260827-${String(index).padStart(6, '0')}`)),
+            ),
+          );
+        } else {
+          const names = Array.from(
+            { length: 10_001 },
+            (_, index) => `non-run-entry-${String(index).padStart(5, '0')}`,
+          );
+          for (let offset = 0; offset < names.length; offset += 250) {
+            await Promise.all(
+              names.slice(offset, offset + 250).map((name) => mkdir(path.join(runsRoot, name))),
+            );
+          }
+        }
+
+        const selection = await next(p);
+        const revalidation = jsonOf(selection).revalidation;
+
+        expect.soft(selection.code, selection.out).toBe(2);
+        expect.soft(revalidation).toMatchObject({
+          result: 'UNVERIFIABLE',
+          action: 'unverifiable',
+        });
+        expect.soft(revalidation.result).not.toBe('BASELINE_CREATED');
+        expect(JSON.stringify(revalidation.evidence)).toMatch(
+          /(incomplete|truncated|limit|cap|budget)/i,
+        );
+      } finally {
+        await rm(p.root, { recursive: true, force: true });
+      }
+    },
+    30_000,
   );
 });
 
@@ -1404,6 +1586,67 @@ describe('claim persistence resists validation-to-use pathname swaps', () => {
 
       expect(swapped).toBe(true);
       expect(existsSync(outsideClaim)).toBe(false);
+      expect(result).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
+    } finally {
+      mutableFs.realpathSync = originalRealpathSync;
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('does not write through an in-repository claim-directory symlink swapped after validation', async () => {
+    const p = await project();
+    const claimDirectory = path.join(p.root, '.rig', 'claims');
+    const redirectedDirectory = path.join(p.root, '.rig', 'redirected-claims');
+    const redirectedClaim = path.join(redirectedDirectory, 'RP-50.json');
+    await mkdir(redirectedDirectory);
+    const require = createRequire(import.meta.url);
+    const mutableFs = require('node:fs') as {
+      realpathSync: (...args: unknown[]) => unknown;
+      rmdirSync: (path: string) => void;
+      symlinkSync: (target: string, path: string, type?: string) => void;
+    };
+    const originalRealpathSync = mutableFs.realpathSync;
+    let swapped = false;
+    mutableFs.realpathSync = (...args: unknown[]) => {
+      const resolved = originalRealpathSync(...args);
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(claimDirectory)) {
+        mutableFs.rmdirSync(claimDirectory);
+        mutableFs.symlinkSync(
+          redirectedDirectory,
+          claimDirectory,
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        swapped = true;
+      }
+      return resolved;
+    };
+    syncBuiltinESMExports();
+
+    try {
+      const claimRecords = (await import(
+        `${pathToFileURL(claimRecordsScript).href}?claim-in-repo-race=${Date.now()}`
+      )) as {
+        revalidateClaim: (input: Record<string, unknown>) => Record<string, unknown>;
+      };
+      const result = claimRecords.revalidateClaim({
+        projectRoot: p.root,
+        ticket: {
+          id: 'RP-50',
+          title: 'in-repository claim directory race fixture',
+          body: null,
+          labels: [],
+          blockedBy: [],
+          blocks: [],
+          commentary: { count: 0, ids: [] },
+        },
+        point: 'SELECT',
+        targetSha: p.targetSha,
+        allowCreate: true,
+        isResume: false,
+      });
+
+      expect(swapped).toBe(true);
+      expect(existsSync(redirectedClaim)).toBe(false);
       expect(result).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
     } finally {
       mutableFs.realpathSync = originalRealpathSync;

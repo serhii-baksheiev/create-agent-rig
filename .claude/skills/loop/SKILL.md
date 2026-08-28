@@ -301,7 +301,9 @@ created, and never appear as a drift source. The event may still name
 First sight versus resume comes only from the SELECT events in the current and
 bounded sibling run journals. If those journals cannot prove first sight, a
 missing claim is `UNVERIFIABLE`; an `updatedAt` marker can neither create nor
-withhold the claim.
+withhold the claim. Hitting the sibling entry/read cap makes that proof
+incomplete and therefore fails closed; "not found in the bounded subset" never
+means "never selected".
 
 On `CHANGED`, `CONFLICT` or `UNVERIFIABLE`, **re-read before acting**, then
 record what the re-read concluded:

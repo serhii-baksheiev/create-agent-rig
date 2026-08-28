@@ -63,6 +63,7 @@ const assertInsideRepository = (projectRoot, path, label) => {
   if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
     throw new Error(`${label} escapes the repository`);
   }
+  return { root, resolved };
 };
 
 const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
@@ -77,7 +78,10 @@ const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
       // Preserve the open failure when the pathname itself cannot be classified.
     }
     if (symlink) throw new Error(`${label} is a symlink`, { cause: error });
-    throw error;
+    throw new Error(
+      error?.code === 'ENOENT' ? `${label} is missing` : `${label} is unreadable`,
+      { cause: error },
+    );
   }
   try {
     const opened = fstatSync(fd);
@@ -91,6 +95,9 @@ const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
       throw new Error(`${label} changed during validation`);
     }
     return readFileSync(fd);
+  } catch (error) {
+    if (String(error?.message ?? error).startsWith(`${label} `)) throw error;
+    throw new Error(`${label} is unreadable`, { cause: error });
   } finally {
     closeSync(fd);
   }
@@ -100,7 +107,8 @@ const assertRepositoryDirectory = (projectRoot, path, label) => {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) throw new Error(`${label} is a symlink`);
   if (!stat.isDirectory()) throw new Error(`${label} is not a directory`);
-  assertInsideRepository(projectRoot, path, label);
+  const { resolved } = assertInsideRepository(projectRoot, path, label);
+  return { resolved, dev: stat.dev, ino: stat.ino };
 };
 
 const ensureClaimDirectory = (projectRoot, path) => {
@@ -111,7 +119,7 @@ const ensureClaimDirectory = (projectRoot, path) => {
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
   }
-  assertRepositoryDirectory(projectRoot, path, 'claim directory .rig/claims');
+  return assertRepositoryDirectory(projectRoot, path, 'claim directory .rig/claims');
 };
 
 // Node has no public `openat(2)` binding. A child with the validated claim
@@ -119,27 +127,43 @@ const ensureClaimDirectory = (projectRoot, path) => {
 // handle: renaming or replacing the pathname after spawn cannot redirect that
 // cwd. If the path was already redirected before spawn, the child resolves its
 // own cwd outside the repository and refuses before creating anything.
-const writeClaimExclusive = (projectRoot, path, content) => {
+const writeClaimExclusive = (projectRoot, path, content, expectedDirectory) => {
   const script = String.raw`
-    const { constants, openSync, readFileSync, realpathSync, writeFileSync, closeSync } = require('node:fs');
+    const { constants, openSync, readFileSync, realpathSync, writeFileSync, closeSync, statSync } = require('node:fs');
     const { isAbsolute, relative, sep } = require('node:path');
-    const [name, repository] = process.argv.slice(1);
+    const [name, repository, expectedPath, expectedDev, expectedIno] = process.argv.slice(1);
     const root = realpathSync(repository);
     const cwd = realpathSync('.');
     const fromRoot = relative(root, cwd);
     if (fromRoot === '..' || fromRoot.startsWith('..' + sep) || isAbsolute(fromRoot)) {
       throw new Error('claim directory .rig/claims escapes the repository');
     }
+    const cwdStat = statSync('.');
+    if (cwd !== expectedPath || String(cwdStat.dev) !== expectedDev || String(cwdStat.ino) !== expectedIno) {
+      throw new Error('claim directory .rig/claims changed during validation');
+    }
     const fd = openSync(name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
     try { writeFileSync(fd, readFileSync(0)); } finally { closeSync(fd); }
   `;
-  execFileSync(process.execPath, ['-e', script, basename(path), realpathSync(projectRoot)], {
-    cwd: dirname(path),
-    env: withoutGitLocation(),
-    input: content,
-    stdio: ['pipe', 'ignore', 'pipe'],
-    maxBuffer: 1024 * 1024,
-  });
+  execFileSync(
+    process.execPath,
+    [
+      '-e',
+      script,
+      basename(path),
+      realpathSync(projectRoot),
+      expectedDirectory.resolved,
+      String(expectedDirectory.dev),
+      String(expectedDirectory.ino),
+    ],
+    {
+      cwd: dirname(path),
+      env: withoutGitLocation(),
+      input: content,
+      stdio: ['pipe', 'ignore', 'pipe'],
+      maxBuffer: 1024 * 1024,
+    },
+  );
 };
 
 const safeRelativePath = (value) => {
@@ -429,6 +453,17 @@ export const revalidateClaim = ({
       identity: error.message,
     });
   }
+  if (ticket?.commentary?.complete === false) {
+    return resultOf({
+      ticket,
+      point,
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+      pointer,
+      evidence: { error: 'commentary evidence is incomplete: total does not match unique ids' },
+      identity: 'commentary-incomplete',
+    });
+  }
   const current = fingerprintsOf({ ticket, targetSha, pairedFacts });
 
   const committedObject = committedObjectOf(projectRoot, pointer);
@@ -446,13 +481,33 @@ export const revalidateClaim = ({
     }
     if (point === 'SELECT' && allowCreate && !isResume) {
       try {
-        ensureClaimDirectory(projectRoot, dirname(path));
+        const expectedDirectory = ensureClaimDirectory(projectRoot, dirname(path));
         const claim = {
           schemaVersion: CLAIM_SCHEMA_VERSION,
           ticket: ticketIdOf(ticket),
           fingerprints: current,
         };
-        writeClaimExclusive(projectRoot, path, `${JSON.stringify(claim, null, 2)}\n`);
+        const content = `${JSON.stringify(claim, null, 2)}\n`;
+        writeClaimExclusive(projectRoot, path, content, expectedDirectory);
+        const persistedDirectory = assertRepositoryDirectory(
+          projectRoot,
+          dirname(path),
+          'claim directory .rig/claims',
+        );
+        if (
+          persistedDirectory.resolved !== expectedDirectory.resolved ||
+          persistedDirectory.dev !== expectedDirectory.dev ||
+          persistedDirectory.ino !== expectedDirectory.ino
+        ) {
+          throw new Error('claim directory .rig/claims changed during baseline creation');
+        }
+        const persisted = readRepositoryFile(projectRoot, path, {
+          label: 'claim record',
+          maxBytes: MAX_CLAIM_BYTES,
+        });
+        if (!persisted.equals(Buffer.from(content))) {
+          throw new Error('claim baseline postcondition failed');
+        }
       } catch (error) {
         return resultOf({
           ticket,

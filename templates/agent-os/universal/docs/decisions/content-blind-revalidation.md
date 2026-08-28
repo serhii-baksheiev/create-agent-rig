@@ -53,11 +53,17 @@ suite (absent in a generated rig),
 evidence-only while the tracked claim remains CURRENT". First sight versus
 resume is reconstructed from SELECT events in the current and bounded sibling
 run journals. An unreadable bounded journal cannot prove first sight and
-therefore cannot authorise recreation of a missing claim.
+therefore cannot authorise recreation of a missing claim. Neither can a scan
+truncated by its entry or candidate cap: incompleteness is explicit and fails
+closed rather than turning subset absence into first sight.
 
 Every blocking detection has a stable content-blind id. A typed outcome names
 that id, records whether action was required and clears only its matching
-run-level hold. The report joins by detection id across runs and retains the
+run-level hold. An outcome without a boolean `actionRequired` or legacy
+`actionChanged` verdict is malformed and resolves nothing. Filesystem failures
+are reduced to stable logical evidence before they enter a detection id, so
+identical failures have identical ids across harness
+checkouts. The report joins by detection id across runs and retains the
 legacy same-run sequence join for older evidence. Pinned in the generator suite
 (absent in a generated rig),
 `test/template/content-blind-revalidation.test.ts` › "reuses a stable detection
@@ -73,12 +79,22 @@ journal when `state.json` has no hold. Claim and contract reads stay anchored to
 an opened file descriptor and reject identity changes during validation;
 first-baseline creation is anchored to the validated claim-directory working
 directory so a pathname swap cannot redirect the write outside the repository.
+The directory's real path and filesystem identity are carried into the writer
+and checked again with the persisted bytes before SELECT reports
+`BASELINE_CREATED`; redirecting it elsewhere inside the repository is refused
+too. Jira commentary declares whether its returned IDs cover `comment.total`;
+an incomplete set is `UNVERIFIABLE`, never a hash of unseen IDs.
 Pinned in the generator's
 `test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
 › "stops for unresolved absent state evidence with CHANGED result", › "does not
 accept an external contract swapped in after containment validation", and ›
 "does not write a baseline outside after the claim directory passes
-containment".
+containment", plus › "keeps a detection unresolved with absent state when its
+typed outcome has no boolean verdict", › "uses the same id for the same
+missing-contract condition in two absolute roots", › "returns UNVERIFIABLE
+when the candidate cap truncates prior SELECT evidence", › "refuses SELECT when
+comment.total exceeds the returned comment ids", and › "does not write through
+an in-repository claim-directory symlink swapped after validation".
 
 BEFORE_CLOSE proves the tracker state it observed; the later tracker transition
 is a separate API operation. Without a tracker-supplied conditional transition
