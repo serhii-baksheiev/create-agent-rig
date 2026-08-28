@@ -87,6 +87,9 @@ const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
     const opened = fstatSync(fd);
     if (!opened.isFile()) throw new Error(`${label} is not a regular file`);
     if (opened.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
+    const declared = lstatSync(path);
+    if (declared.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+    if (!declared.isFile()) throw new Error(`${label} is not a regular file`);
     assertInsideRepository(projectRoot, path, label);
     const current = lstatSync(path);
     if (current.isSymbolicLink()) throw new Error(`${label} is a symlink`);

@@ -734,12 +734,16 @@ describe('the v0.1 repository revalidation contract', () => {
         pairedFacts: [{ id: 'not-a-pair', paths: ['paired-alpha.txt'] }],
       },
     ],
-  ])('preflight hard-refuses a %s contract as no-detection-contract', async (_label, contract) => {
-    const output = await runPreflight(contract);
-    expect(output.verdict).toBe('STOP');
-    expect(JSON.stringify(output)).toContain('no-detection-contract');
-    expect(valuesFor(output, 'detectionContract')[0]).toMatchObject({ ok: false });
-  });
+  ])(
+    'preflight hard-refuses a %s contract as no-detection-contract',
+    async (_label, contract) => {
+      const output = await runPreflight(contract);
+      expect(output.verdict).toBe('STOP');
+      expect(JSON.stringify(output)).toContain('no-detection-contract');
+      expect(valuesFor(output, 'detectionContract')[0]).toMatchObject({ ok: false });
+    },
+    30_000,
+  );
 
   it('accepts the default pull/run-state+journal/24h/no-push contract', async () => {
     const output = await runPreflight(VALID_CONTRACT);

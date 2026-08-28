@@ -53,6 +53,7 @@ import {
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
   openSync,
   opendirSync,
   readFileSync,
@@ -104,11 +105,20 @@ export const readState = (runDir) => {
  */
 export const readStateForSelection = (runDir) => {
   if (!runDir) return {};
-  let fd;
+  const statePath = statePathIn(runDir);
+  let pathStat;
   try {
-    fd = openSync(statePathIn(runDir), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    pathStat = lstatSync(statePath);
   } catch (error) {
     if (error?.code === 'ENOENT') return {};
+    throw new Error('run state is unreadable', { cause: error });
+  }
+  if (pathStat.isSymbolicLink()) throw new Error('run state is a symlink');
+  if (!pathStat.isFile()) throw new Error('run state is invalid: expected a regular file');
+  let fd;
+  try {
+    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
     throw new Error('run state is unreadable', { cause: error });
   }
   let raw;
@@ -117,6 +127,12 @@ export const readStateForSelection = (runDir) => {
     if (!stat.isFile()) throw new Error('run state is invalid: expected a regular file');
     if (stat.size > MAX_STATE_BYTES) {
       throw new Error(`run state exceeds ${MAX_STATE_BYTES} bytes`);
+    }
+    const current = lstatSync(statePath);
+    if (current.isSymbolicLink()) throw new Error('run state is a symlink');
+    if (!current.isFile()) throw new Error('run state is invalid: expected a regular file');
+    if (current.dev !== stat.dev || current.ino !== stat.ino) {
+      throw new Error('run state changed during validation');
     }
     raw = readFileSync(fd, 'utf8');
   } catch (error) {
