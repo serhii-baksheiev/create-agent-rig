@@ -12,7 +12,7 @@
 // defaults to `plan-md`, which is the only adapter that works in a freshly
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import {
@@ -20,7 +20,6 @@ import {
   citedPathsOf,
   hygieneOf,
   overtakenOf,
-  revalidationOf,
   selectNext,
   stopConditionOf,
 } from './core.mjs';
@@ -30,6 +29,7 @@ import { changedSinceOf, headShaOf } from './as-of.mjs';
 // apart from `state.mjs` so the read path does not drag the tier computation —
 // and `detect-missed-gate.mjs` behind it — into a CLI that never calls either.
 import { checkoutIsShippable, mainCheckoutRoot } from './checkout.mjs';
+import { revalidateClaim, targetShaOf } from '../lib/claim-records.mjs';
 
 const ADAPTERS = {
   'plan-md': './plan-md.mjs',
@@ -317,12 +317,16 @@ const renderNext = (result, stop, revalidation = null) => {
     return `queue: ${label}${stop.success ? '' : ' (needs attention)'}\n  ${stop.why}\n`;
   }
   const lines = [`next: ${result.ticket.id} — ${result.ticket.title} [${result.ticket.tier}]`];
-  // Only a marker that MOVED earns a line: the unchanged case stays quiet and
-  // cheap, and the no-marker case is in the JSON and the event log, not here.
-  if (revalidation?.changed === true) {
+  // CURRENT and BASELINE_CREATED stay quiet. Every blocking claim result is
+  // visible in text mode too; an exit code with no reason is not operable.
+  if (revalidation?.action === 'hold' || revalidation?.action === 'unverifiable') {
+    const detail =
+      revalidation.source.length > 0
+        ? revalidation.source.join(', ')
+        : (revalidation.evidence?.error ?? revalidation.sourcePointer);
     lines.push(
-      `revalidate: ${revalidation.ticket} hold — ${revalidation.source.join(', ')} ` +
-        `(${revalidation.task.from} → ${revalidation.task.to}) — re-read the item before acting`,
+      `revalidate: ${revalidation.ticket} ${revalidation.action} — ${detail} — ` +
+        're-read the item before acting',
     );
   }
   if (result.skipped.length > 0) {
@@ -533,9 +537,11 @@ if (invokedDirectly()) {
   let readState;
   let stopInputsOf;
   let recordTakeUp;
+  let recordRevalidationHold;
   let previousTakeUp;
   try {
-    ({ readState, stopInputsOf, recordTakeUp, previousTakeUp } = await import('../run-state.mjs'));
+    ({ readState, stopInputsOf, recordTakeUp, recordRevalidationHold, previousTakeUp } =
+      await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
       `run state: ${error.message}\n` +
@@ -726,27 +732,58 @@ if (invokedDirectly()) {
   // a default derived from `projectRoot` would land the trace inside the very
   // template tree this repository publishes.
   const runDir = process.env.RIG_RUN_DIR;
-  // Revalidation at SELECT (AR-133): the selected item against the marker this
-  // run recorded at its last take-up. Computed only under a declared run —
-  // there is no snapshot to compare against anywhere else — and `null` in the
-  // output then, so a reader can tell "not compared" from "compared, unchanged".
+  // Revalidation at SELECT: the selected item against its durable claim
+  // fingerprints. It runs with or without a declared run; only the evidence
+  // log is run-scoped. Otherwise an attended first SELECT would bypass the
+  // cross-harness baseline the next unattended resume requires.
   //
-  // The baseline is this run's take-up when it has one; otherwise the newest
-  // earlier run's (AR-138) — an item taken up yesterday and re-offered today
-  // used to compare against nothing and report a first sight. `baseline` says
-  // which it was (`this-run` | `previous-run` | null), and `baselineRun` names
-  // the earlier run, so the report can tell the three apart. A rig whose
-  // run-state module predates `previousTakeUp` keeps the per-run behaviour.
+  // Take-up markers remain attached as compatibility evidence. `baseline`
+  // says where that evidence came from; neither it nor `updatedAt` contributes
+  // to the claim result or decides whether the first claim may be created.
   let revalidation = null;
-  if (runDir && result.ticket) {
-    const own = runState.takeUps?.[result.ticket.id];
+  const configuredProjectRoot = projectRootOfConfig(configPath);
+  const claimRoot = configuredProjectRoot ?? projectRoot;
+  const contractAvailable =
+    configuredProjectRoot !== null &&
+    existsSync(join(configuredProjectRoot, '.rig', 'revalidation.json'));
+  if (result.ticket && configuredProjectRoot !== null && (runDir || contractAvailable)) {
+    const own = runDir ? runState.takeUps?.[result.ticket.id] : undefined;
     const prior =
-      own === undefined && typeof previousTakeUp === 'function'
+      runDir && own === undefined && typeof previousTakeUp === 'function'
         ? previousTakeUp(runDir, result.ticket.id)
         : null;
     const snapshot = own ?? prior?.updatedAt ?? null;
+    let selectedBefore = false;
+    if (runDir) {
+      try {
+        const journal = await import('../run-journal.mjs');
+        selectedBefore = journal
+          .readRun({ runDir })
+          .events.some(
+            (event) =>
+              event.kind === 'revalidation' &&
+              event.data?.point === 'SELECT' &&
+              String(event.data?.ticket) === String(result.ticket.id) &&
+              typeof event.data?.result === 'string' &&
+              typeof event.data?.sourcePointer === 'string',
+          );
+      } catch {
+        // The journal's own write below remains the authoritative refusal. Here a
+        // missing prior event can only permit the first baseline attempt.
+      }
+    }
+    const claim = revalidateClaim({
+      projectRoot: claimRoot,
+      ticket: result.ticket,
+      point: 'SELECT',
+      targetSha: targetShaOf(claimRoot),
+      allowCreate: true,
+      isResume: selectedBefore,
+    });
     revalidation = {
-      ...revalidationOf({ ticket: result.ticket, snapshot }),
+      ...claim,
+      observedAt: new Date().toISOString(),
+      task: { from: snapshot, to: result.ticket.updatedAt ?? null },
       baseline: own !== undefined ? 'this-run' : prior ? 'previous-run' : null,
       ...(prior ? { baselineRun: prior.runDir } : {}),
     };
@@ -821,6 +858,9 @@ if (invokedDirectly()) {
   }
 
   if (revalidation) {
+    if (revalidation.action === 'hold' || revalidation.action === 'unverifiable') {
+      recordRevalidationHold(runDir, revalidation);
+    }
     // Its own try, after the journal's: a state file that cannot be written is
     // not the journal failing, and the selection stands either way — the
     // comparison was made and recorded; only the next baseline is lost.
@@ -840,4 +880,5 @@ if (invokedDirectly()) {
       ? `${JSON.stringify({ ticket: result.ticket, skipped: result.skipped, stop, revalidation }, null, 2)}\n`
       : renderNext(result, stop, revalidation),
   );
+  process.exit(revalidation?.action === 'hold' || revalidation?.action === 'unverifiable' ? 2 : 0);
 }

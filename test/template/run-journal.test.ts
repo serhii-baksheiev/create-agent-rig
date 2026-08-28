@@ -909,6 +909,53 @@ const run = (args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<CliRe
 /** A project the plan-md adapter can read: one Agent-queue item, taken verbatim. */
 const project = async (item = 'add a route'): Promise<string> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'run-caller-'));
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    })}\n`,
+  );
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'init', '-q', '-b', 'master'],
+      { cwd: dir, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'add', '.rig/revalidation.json'],
+      { cwd: dir, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      'git',
+      [
+        '-c',
+        'user.email=t@example.invalid',
+        '-c',
+        'user.name=t',
+        'commit',
+        '-q',
+        '-m',
+        'seed contract',
+      ],
+      { cwd: dir, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
   await writeFile(path.join(dir, 'PLAN.md'), `# P\n\n## Agent queue\n\n- ${item}\n\n## Journal\n`);
   return dir;
 };
@@ -1186,6 +1233,7 @@ const rigWithout = async (
   const scripts = path.join(dir, '.claude', 'scripts');
   await mkdir(scripts, { recursive: true });
   await cp(path.join(scriptsDir, 'queue'), path.join(scripts, 'queue'), { recursive: true });
+  await cp(path.join(scriptsDir, 'lib'), path.join(scripts, 'lib'), { recursive: true });
   await copyFile(path.join(scriptsDir, 'git-env.mjs'), path.join(scripts, 'git-env.mjs'));
   const present = missing === 'run-journal.mjs' ? 'run-state.mjs' : 'run-journal.mjs';
   await copyFile(path.join(scriptsDir, present), path.join(scripts, present));

@@ -76,10 +76,7 @@ export const toTicket = (issue, states = {}) => {
     blocks: [],
     priority: priorityLabel ? Number(priorityLabel[1]) : 999,
     createdAt: issue.createdAt ?? null,
-    // The take-up marker for revalidation at SELECT: the tracker's own
-    // last-modified field, whose contract (moves on edits, comments and state
-    // changes) is assumed and not checked here. `null` when the listing did not
-    // carry it.
+    // Compatibility evidence only; `.rig/claims/` fingerprints decide drift.
     updatedAt: issue.updatedAt ?? null,
     // The body travels on the neutral shape so the hygiene checks live in one
     // place (core.mjs) instead of once per adapter. This adapter also parses it
@@ -87,6 +84,13 @@ export const toTicket = (issue, states = {}) => {
     // purpose: that is exactly the disagreement `body-claims-unlinked-blocker`
     // exists to surface.
     body: typeof issue.body === 'string' ? issue.body : null,
+    commentary: {
+      count: Array.isArray(issue.comments) ? issue.comments.length : 0,
+      ids: (Array.isArray(issue.comments) ? issue.comments : [])
+        .map((comment) => comment?.id)
+        .filter((id) => id !== undefined && id !== null)
+        .map(String),
+    },
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
       ? 'auto'
@@ -130,7 +134,7 @@ const ghText = (args) =>
 
 const ghJson = (args) => JSON.parse(ghText(args));
 
-const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt';
+const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments';
 
 // --- the adapter contract ------------------------------------------------------
 

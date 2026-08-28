@@ -23,9 +23,9 @@
  *   actionChanged — catches whose `revalidation-outcome` says true;
  *   falseHolds — catches whose outcome says false;
  *   unresolved — catches with no outcome at all (the run skipped the re-read).
- * An outcome answers the revalidation whose seq its `answers` names, in the
- * SAME run — an outcome cannot reach across runs. `noise` counts the sources
- * behind the false holds, which is where the mechanism's cost is.
+ * A typed outcome answers the stable `detectionId`, including across harness
+ * runs; legacy evidence still joins by `answers` within the same run. `noise`
+ * counts the sources behind false holds, which is where the mechanism's cost is.
  *
  * The primary metric is `actionChanged`, not `opportunities` or `catches`: a
  * hold that changed nothing is noise, and the report says so by name.
@@ -56,18 +56,26 @@ export const reportOf = ({ runs, since }) => {
   const noise = {};
   const read = [];
   const skipped = [];
+  const resolutions = new Map();
+  const legacyOutcomes = new Map();
+  for (const { run, events = [], error } of runs) {
+    if (error) continue;
+    for (const event of events) {
+      if (event.kind !== 'revalidation-outcome') continue;
+      if (typeof event.data?.detectionId === 'string') {
+        resolutions.set(event.data.detectionId, event.data);
+      }
+      if (Number.isInteger(event.data?.answers)) {
+        legacyOutcomes.set(`${run}:${event.data.answers}`, event.data);
+      }
+    }
+  }
   for (const { run, events, error } of runs) {
     if (error) {
       skipped.push({ run, why: error });
       continue;
     }
     read.push(run);
-    const outcomes = new Map();
-    for (const event of events) {
-      if (event.kind === 'revalidation-outcome' && Number.isInteger(event.data?.answers)) {
-        outcomes.set(event.data.answers, event.data);
-      }
-    }
     for (const event of events) {
       if (event.kind !== 'revalidation') continue;
       // Written as "inside the window", so an `at` that does not parse falls
@@ -76,13 +84,23 @@ export const reportOf = ({ runs, since }) => {
       const bucket = points[event.data?.point];
       if (!bucket) continue;
       bucket.opportunities += 1;
-      if (event.data.changed === null) bucket.unverifiable += 1;
-      if (event.data.changed !== true) continue;
+      const result = event.data?.result;
+      const unverifiable = result === 'UNVERIFIABLE' || event.data.changed === null;
+      if (unverifiable) bucket.unverifiable += 1;
+      const caught =
+        typeof result === 'string'
+          ? result !== 'CURRENT' && result !== 'BASELINE_CREATED'
+          : event.data.changed === true;
+      if (!caught) continue;
       bucket.catches += 1;
-      const outcome = outcomes.get(event.seq);
-      if (!outcome) bucket.unresolved += 1;
-      else if (outcome.actionChanged === true) bucket.actionChanged += 1;
-      else {
+      const outcome =
+        (typeof event.data?.id === 'string' ? resolutions.get(event.data.id) : null) ??
+        legacyOutcomes.get(`${run}:${event.seq}`);
+      const actionRequired = outcome?.actionRequired ?? outcome?.actionChanged;
+      if (typeof actionRequired !== 'boolean') bucket.unresolved += 1;
+      else if (actionRequired) {
+        bucket.actionChanged += 1;
+      } else {
         bucket.falseHolds += 1;
         for (const source of Array.isArray(event.data.source) ? event.data.source : []) {
           noise[source] = (noise[source] ?? 0) + 1;

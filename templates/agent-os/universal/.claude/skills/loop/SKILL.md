@@ -281,59 +281,52 @@ and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
-**Selection also revalidates the item against its last take-up.** `next`
-records the selected item's `updatedAt` marker in the run state (`takeUps`) and,
-when the item is offered again, compares the two — against this run's take-up
-when it has one, otherwise against the newest earlier run's under `.claude/runs/`
-(AR-138: before that, an item taken up yesterday compared against nothing and
-read as a first sight). A proposal the loop files carries its own baseline: the
-`jira` and `github-issues` adapters record the filed item's marker as a take-up
-in the run that filed it. The event names which it used — `baseline:
-this-run | previous-run | null` — pinned in the generator's
-`test/template/revalidation-baseline.test.ts` — absent in a generated rig — ›
-"holds when the marker moved past the earlier run’s take-up, and names that
-baseline". A marker that
-moved prints a `revalidate:` line and the JSON carries `revalidation.changed:
-true`: **re-read the item before acting on it**, then record what the re-read
-concluded — whether the change altered the action is the evidence this exists to
-collect, and the comparison alone cannot supply it:
+**Selection is the first point of the one revalidation chain.** On the first
+successful SELECT, `next` creates a versioned content-blind baseline at
+`.rig/claims/<item-id>.json` and reports `BASELINE_CREATED`. Add that record to
+the task's branch: a later SELECT, BEFORE_PR or BEFORE_CLOSE refuses an
+untracked record, and a resumed checkpoint with no record is `UNVERIFIABLE`.
+The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR;
+`commentary` is observed there but becomes hold-authoritative only at
+BEFORE_CLOSE. Neither set stores title, description or comment bodies.
+The durable/evidence boundary and rollback rule are recorded in
+`docs/decisions/content-blind-revalidation.md`.
+
+`takeUps` and `updatedAt` remain in run state and in the event's `task` field as
+evidence/compatibility state. They do not decide `CURRENT`, `CHANGED`,
+`CONFLICT` or `UNVERIFIABLE`, do not decide whether a first baseline may be
+created, and never appear as a drift source. The event may still name
+`baseline: this-run | previous-run | null` so older evidence remains readable.
+
+On `CHANGED`, `CONFLICT` or `UNVERIFIABLE`, **re-read before acting**, then
+record what the re-read concluded:
 
 ```bash
 node .claude/scripts/revalidate.mjs outcome --point SELECT --ticket <item-id> --action-changed <true | false> --note '<what changed, or why it changes nothing>'
 ```
 
-It appends one `revalidation-outcome` record whose `answers` names the
-revalidation it resolves, so the report can pair the two without guessing. The
+It appends one typed `revalidation-outcome` record whose `detectionId` names the
+stable detection it resolves (and retains the legacy `answers` sequence), so
+the report can pair the two across harness runs without guessing. The
 note is stored verbatim from argv, so keep it in single quotes: inside double
 quotes the shell expands a backtick or a `$` before the command sees it.
 Nothing forces this record — a `revalidation` event with no matching outcome is
 counted as `unresolved`, which is the honest word for a re-read the run skipped.
 
-Under a declared run directory, every selection logs one `revalidation` event
-`{ticket, point: SELECT, changed, source, action, task}` — the same shape the
-BEFORE_PR and BEFORE_CLOSE points write. **No-change is always recorded**, one
-line per selection and no sampling: the rule is explicit so the report's
-`opportunities` is a count and not an estimate. An adapter with no marker
-(`plan-md`) logs `changed: null`, never "unchanged". ⚠ The marker also moves on
-the run's own claim and comments. The `jira` and `github-issues` adapters
-re-record the take-up after each write they make — claim, comment, close,
-escalate — so a move made through the adapter is not a hold (AR-140, from the
-journal's RX3/RX4 entry: every BEFORE_PR catch of that run was the run's own
-comment, counted by `revalidation-report.mjs`); a
-comment posted by any other route — a REST call by hand, a connector — still
-moves it like anyone else's, and a `true` can still be self-inflicted that way
-— the re-read decides, which is why the outcome is recorded separately, and a
-hold the re-read overturns is counted as a false hold with its source named.
-Pinned in the generator's `test/template/self-inflicted-marker.test.ts` — absent
-in a generated rig — › "%s leaves the take-up at the marker the write produced",
-an `it.each` over claim, comment, close and escalate. The
+Under a declared run directory, every selection logs one versioned
+`revalidation` detection — the same shape BEFORE_PR and BEFORE_CLOSE write.
+**No-change is always recorded**, one line per selection and no sampling: the
+rule is explicit so the report's `opportunities` is a count and not an estimate.
+The `jira` and `github-issues` adapters still re-record take-ups after their own
+writes for compatibility and attribution evidence; that state is never the
+fingerprint baseline. The
 four-week view is `node .claude/scripts/revalidation-report.mjs --since <date>`,
 over this rig's `.claude/runs/` (or a `--runs <dir>`). The behaviour is pinned in the
-generator's `test/template/queue-revalidation.test.ts` — absent in a generated
-rig — › "an adapter with no marker records a blind spot, not \"unchanged\"", ›
-"a moved marker holds on task:updatedAt, re-snapshots, and journals the change"
-and › "the loop skill's outcome command records what the re-read concluded", and
-in `test/template/revalidation-evidence.test.ts`.
+generator's `test/template/content-blind-revalidation.test.ts` (absent in a generated rig) › "creates a
+versioned content-blind claim and returns BASELINE_CREATED" and › "defers an
+added comment through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE", plus
+`test/template/revalidation-evidence.test.ts` (absent in a generated rig) › "the journaled events of SELECT,
+BEFORE_PR and BEFORE_CLOSE share exactly the common keys and value types".
 
 **Then, before the Red step: `check-premises`.** The item was written by someone
 who was not reading the code at the time, and everything downstream — the failing
@@ -881,13 +874,11 @@ three poisons the only channel by which this project learns.
   node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id>
   ```
 
-  It compares the item's marker against the newer of this run's last
-  validation and its take-up — an adapter re-records the take-up after each
-  write of its own (§2, AR-140), so a comment posted after BEFORE_PR does not
-  hold the close; pinned in the generator's
-  `test/template/self-inflicted-marker.test.ts` (absent in a generated rig) › "continues when the run’s own
-  write moved the marker after the last validation" — and its
-  state against the `in-progress` a close expects, journals one `revalidation`
+  It compares the tracked claim's `scope` and `commentary` fingerprint sets;
+  commentary becomes hold-authoritative only here. Marker/take-up movement is
+  retained in evidence but cannot decide drift. A missing claim is
+  `UNVERIFIABLE` and stops the close. The check also compares the item's state
+  against the `in-progress` a close expects, journals one `revalidation`
   event at `point: BEFORE_CLOSE`, and lists the item's dependants with each
   one's state re-read for the write-back below — pinned in the generator's
   `test/template/revalidate.test.ts` (absent in a generated rig) › "appends

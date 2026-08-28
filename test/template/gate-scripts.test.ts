@@ -592,6 +592,9 @@ describe('the CLI entrypoint survives a symlinked path', () => {
       await cp(path.join(scriptsDir, 'queue'), path.join(project, '.claude', 'scripts', 'queue'), {
         recursive: true,
       });
+      await cp(path.join(scriptsDir, 'lib'), path.join(project, '.claude', 'scripts', 'lib'), {
+        recursive: true,
+      });
       // The queue CLI reaches OUTSIDE `queue/` for three modules, and a fixture that
       // copies only the directory gets a run that fails on the missing import while
       // still printing something — which is all this test asserts, so the gap hid.
