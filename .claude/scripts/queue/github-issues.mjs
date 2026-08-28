@@ -56,6 +56,7 @@ export const blockerIdsOf = (issue) => {
 export const toTicket = (issue, states = {}) => {
   const labels = labelNames(issue);
   const priorityLabel = labels.map((label) => PRIORITY.exec(label)).find(Boolean);
+  const comments = Array.isArray(issue.comments) ? issue.comments : [];
 
   return {
     id: String(issue.number),
@@ -85,11 +86,16 @@ export const toTicket = (issue, states = {}) => {
     // exists to surface.
     body: typeof issue.body === 'string' ? issue.body : null,
     commentary: {
-      count: Array.isArray(issue.comments) ? issue.comments.length : 0,
-      ids: (Array.isArray(issue.comments) ? issue.comments : [])
+      count: comments.length,
+      ids: comments
         .map((comment) => comment?.id)
         .filter((id) => id !== undefined && id !== null)
         .map(String),
+      // GitHub CLI expands `comments` to `comments(first: 100)` but exposes no
+      // total or pageInfo beside the resulting array. Fewer than 100 proves the
+      // first page was also the last; exactly 100 cannot prove there is no 101st
+      // comment and must fail closed rather than fingerprint a partial thread.
+      complete: Array.isArray(issue.comments) && comments.length < 100,
     },
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
