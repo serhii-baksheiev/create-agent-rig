@@ -67,6 +67,17 @@ const assertInsideRepository = (projectRoot, path, label) => {
 };
 
 const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
+  let declared;
+  try {
+    declared = lstatSync(path);
+  } catch (error) {
+    throw new Error(
+      error?.code === 'ENOENT' ? `${label} is missing` : `${label} is unreadable`,
+      { cause: error },
+    );
+  }
+  if (declared.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+  if (!declared.isFile()) throw new Error(`${label} is not a regular file`);
   let fd;
   try {
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -87,9 +98,9 @@ const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
     const opened = fstatSync(fd);
     if (!opened.isFile()) throw new Error(`${label} is not a regular file`);
     if (opened.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
-    const declared = lstatSync(path);
-    if (declared.isSymbolicLink()) throw new Error(`${label} is a symlink`);
-    if (!declared.isFile()) throw new Error(`${label} is not a regular file`);
+    const openedPath = lstatSync(path);
+    if (openedPath.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+    if (!openedPath.isFile()) throw new Error(`${label} is not a regular file`);
     assertInsideRepository(projectRoot, path, label);
     const current = lstatSync(path);
     if (current.isSymbolicLink()) throw new Error(`${label} is a symlink`);
@@ -154,6 +165,51 @@ const writeClaimExclusive = (projectRoot, path, content, expectedDirectory) => {
       '-e',
       script,
       basename(path),
+      realpathSync(projectRoot),
+      expectedDirectory.resolved,
+      String(expectedDirectory.dev),
+      String(expectedDirectory.ino),
+    ],
+    {
+      cwd: dirname(path),
+      env: withoutGitLocation(),
+      input: content,
+      stdio: ['pipe', 'ignore', 'pipe'],
+      maxBuffer: 1024 * 1024,
+    },
+  );
+};
+
+const replaceClaim = (projectRoot, path, content, expectedDirectory) => {
+  const script = String.raw`
+    const { constants, openSync, readFileSync, realpathSync, writeFileSync, closeSync, renameSync, unlinkSync, statSync } = require('node:fs');
+    const { isAbsolute, relative, sep } = require('node:path');
+    const [name, temporary, repository, expectedPath, expectedDev, expectedIno] = process.argv.slice(1);
+    const root = realpathSync(repository);
+    const cwd = realpathSync('.');
+    const fromRoot = relative(root, cwd);
+    if (fromRoot === '..' || fromRoot.startsWith('..' + sep) || isAbsolute(fromRoot)) {
+      throw new Error('claim directory .rig/claims escapes the repository');
+    }
+    const cwdStat = statSync('.');
+    if (cwd !== expectedPath || String(cwdStat.dev) !== expectedDev || String(cwdStat.ino) !== expectedIno) {
+      throw new Error('claim directory .rig/claims changed during validation');
+    }
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+    try { writeFileSync(fd, readFileSync(0)); } finally { closeSync(fd); }
+    try { renameSync(temporary, name); } catch (error) {
+      try { unlinkSync(temporary); } catch {}
+      throw error;
+    }
+  `;
+  const temporary = `.${basename(path)}.${process.pid}.tmp`;
+  execFileSync(
+    process.execPath,
+    [
+      '-e',
+      script,
+      basename(path),
+      temporary,
       realpathSync(projectRoot),
       expectedDirectory.resolved,
       String(expectedDirectory.dev),
@@ -287,16 +343,27 @@ const normaliseLinks = (ticket) => ({
 
 const WORKFLOW_STATES = new Set(['open', 'in-progress', 'closed']);
 
-const workflowPositionOf = ({ ticket, point, claimedState }) => {
-  const expected = point === 'SELECT' ? 'open' : claimedState;
+const workflowPositionOf = ({ ticket, point, claimedState, workflowClaim = null }) => {
+  const ownClaim = workflowClaim?.claimedState === claimedState;
+  const expected = point === 'SELECT' && !ownClaim ? 'open' : claimedState;
   if (!WORKFLOW_STATES.has(expected)) {
     throw new Error(`claim record: unsupported claimed workflow state ${JSON.stringify(expected)}`);
   }
   const actual = ticket?.state ?? null;
-  return actual === expected ? { position: 'expected' } : { position: 'unexpected', value: actual };
+  const acknowledged = expected === 'open' || ownClaim;
+  return actual === expected && acknowledged
+    ? { position: 'expected' }
+    : { position: 'unexpected', value: actual };
 };
 
-const fingerprintsOf = ({ ticket, point, claimedState, targetSha, pairedFacts = [] }) => {
+const fingerprintsOf = ({
+  ticket,
+  point,
+  claimedState,
+  workflowClaim = null,
+  targetSha,
+  pairedFacts = [],
+}) => {
   const commentaryIds = (ticket?.commentary?.ids ?? []).map(String).sort();
   const commentaryCount = Number.isInteger(ticket?.commentary?.count)
     ? ticket.commentary.count
@@ -309,7 +376,7 @@ const fingerprintsOf = ({ ticket, point, claimedState, targetSha, pairedFacts = 
       .filter((label) => !['ready', 'blocked', 'in-progress', 'escalated'].includes(label))
       .sort(),
     links: normaliseLinks(ticket),
-    workflow: workflowPositionOf({ ticket, point, claimedState }),
+    workflow: workflowPositionOf({ ticket, point, claimedState, workflowClaim }),
     pairedFacts,
   };
   return {
@@ -404,11 +471,58 @@ const readClaim = (projectRoot, path) => {
     parsed.fingerprints?.commentary?.algorithm !== 'sha256' ||
     !SHA256.test(parsed.fingerprints?.commentary?.value ?? '') ||
     !Number.isInteger(parsed.fingerprints?.commentary?.count) ||
-    parsed.fingerprints.commentary.count < 0
+    parsed.fingerprints.commentary.count < 0 ||
+    (parsed.workflowClaim !== undefined &&
+      (!parsed.workflowClaim ||
+        typeof parsed.workflowClaim !== 'object' ||
+        Array.isArray(parsed.workflowClaim) ||
+        !WORKFLOW_STATES.has(parsed.workflowClaim.claimedState)))
   ) {
     throw new Error('claim record has an unsupported shape');
   }
   return { parsed, raw };
+};
+
+export const recordClaimTransition = ({ projectRoot = process.cwd(), ticket, claimedState }) => {
+  if (!WORKFLOW_STATES.has(claimedState)) {
+    throw new Error(`claim record: unsupported claimed workflow state ${JSON.stringify(claimedState)}`);
+  }
+  const path = claimPathFor(projectRoot, ticket);
+  if (!pathExists(path)) return null;
+  const claim = readClaim(projectRoot, path).parsed;
+  if (claim.ticket !== ticketIdOf(ticket)) {
+    throw new Error(`claim ticket conflicts with ${ticketIdOf(ticket)}`);
+  }
+  if (claim.workflowClaim?.claimedState === claimedState) return claim.workflowClaim;
+
+  const expectedDirectory = assertRepositoryDirectory(
+    projectRoot,
+    dirname(path),
+    'claim directory .rig/claims',
+  );
+  const next = { ...claim, workflowClaim: { claimedState } };
+  const content = `${JSON.stringify(next, null, 2)}\n`;
+  replaceClaim(projectRoot, path, content, expectedDirectory);
+  const persistedDirectory = assertRepositoryDirectory(
+    projectRoot,
+    dirname(path),
+    'claim directory .rig/claims',
+  );
+  if (
+    persistedDirectory.resolved !== expectedDirectory.resolved ||
+    persistedDirectory.dev !== expectedDirectory.dev ||
+    persistedDirectory.ino !== expectedDirectory.ino
+  ) {
+    throw new Error('claim directory .rig/claims changed during claim transition recording');
+  }
+  const persisted = readRepositoryFile(projectRoot, path, {
+    label: 'claim record',
+    maxBytes: MAX_CLAIM_BYTES,
+  });
+  if (!persisted.equals(Buffer.from(content))) {
+    throw new Error('claim transition postcondition failed');
+  }
+  return next.workflowClaim;
 };
 
 const resultOf = ({
@@ -598,6 +712,15 @@ export const revalidateClaim = ({
       identity: claim.ticket,
     });
   }
+
+  current = fingerprintsOf({
+    ticket,
+    point,
+    claimedState,
+    workflowClaim: claim.workflowClaim,
+    targetSha,
+    pairedFacts,
+  });
 
   const scopeMoved =
     claim.fingerprints.scope.value !== current.scope.value ||

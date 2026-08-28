@@ -26,10 +26,13 @@ The record contains SHA-256 fingerprint sets, not source content:
 
 - `scope` covers stable ticket scope, workflow state, dependency links and
   configured paired repository facts. Workflow state is fingerprinted against
-  the state expected at each checkpoint: `open` at SELECT; afterwards the
-  adapter's observable claimed state (`in-progress` for Jira and GitHub issues,
-  still `open` for PLAN.md). The expected claim transition therefore preserves
-  the scope fingerprint, while a rollback or other unexpected state moves it.
+  the state expected at each checkpoint. The first SELECT expects `open`.
+  A successful Jira or GitHub adapter `claim` then writes its observable state
+  (`in-progress`) into the same durable claim record as `workflowClaim`; only
+  that acknowledgement authorises the state at a resumed SELECT, BEFORE_PR or
+  BEFORE_CLOSE. The same state reached without the acknowledgement is external
+  drift and moves `scope`. PLAN.md remains `open` because its claim has no
+  observable workflow transition. A rollback or any other state also moves it.
 - `commentary` covers comment identifiers and count. It is observed at SELECT
   and BEFORE_PR and becomes hold-authoritative only at BEFORE_CLOSE.
 
@@ -37,10 +40,15 @@ Pinned in the generator suite (absent in a generated rig),
 `test/template/content-blind-revalidation.test.ts` › "stays CURRENT
 for marker-only movement and holds on changed scope", › "holds when the target
 branch SHA moves without a tracker edit", › "adapters declare their observable
-claimed workflow state", › "accepts the Rig claim transition from open at
-SELECT to in-progress at BEFORE_PR", › "holds claim:scope when workflow state
-returns to open after the Rig claim transition", and › "defers an added comment
-through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE".
+claimed workflow state", › "keeps a resumed SELECT current after the Jira
+adapter records its own claim transition", › "GitHub claim records the durable
+transition that makes in-progress CURRENT", › "holds claim:scope at resumed
+SELECT for the same transition made outside the adapter", › "accepts an
+in-progress transition performed by the Jira adapter claim operation", ›
+"holds claim:scope when an external actor moves the item to the expected
+claimed state", › "holds claim:scope when workflow state returns to open after
+the Rig claim transition", and › "defers an added comment through SELECT and
+BEFORE_PR, then holds at BEFORE_CLOSE".
 
 `.rig/revalidation.json` is the versioned detection contract. Version 1 is a
 pull model over run-state and journal evidence, with 24-hour accepted latency,
@@ -86,8 +94,9 @@ reconstructs the newest unresolved blocking detection from the current run
 journal when `state.json` has no hold. Revalidation-hold writers use the same
 fail-closed state reader as selection, so a corrupt, symlinked or oversized
 state file cannot be replaced while it may conceal another stop input. Contract
-reads stay anchored to an opened file descriptor and reject identity changes
-during validation. Existing claim bytes are read through a bounded no-follow
+and paired-fact reads classify a pathname before opening it, stay anchored to
+the opened file descriptor, and reject identity changes during validation.
+Existing claim bytes are read through a bounded no-follow
 descriptor and compared with the tracked Git object; first-baseline creation is
 anchored to the validated claim-directory working directory so a pathname swap
 cannot redirect the write outside the repository.

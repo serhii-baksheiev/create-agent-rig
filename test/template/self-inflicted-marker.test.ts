@@ -258,6 +258,7 @@ describe('BEFORE_CLOSE retains newest marker evidence without using it as author
       targetSha: claims.targetShaOf(dir, 'master'),
       allowCreate: true,
     });
+    claims.recordClaimTransition({ projectRoot: dir, ticket, claimedState: 'in-progress' });
     for (const args of [
       ['add', '.rig/claims/AR-1.json'],
       ['commit', '-q', '-m', 'track claim'],

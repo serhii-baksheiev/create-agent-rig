@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stubCommand } from '../helpers/stub-command.js';
 
 /**
  * RP-50 — replacement semantics for the existing SELECT / BEFORE_PR /
@@ -192,6 +193,56 @@ const before = (p: Project, point: 'BEFORE_PR' | 'BEFORE_CLOSE') =>
     p.root,
     p.env,
   );
+
+const claimThroughJiraAdapter = async (p: Project) => {
+  const adapterUrl = pathToFileURL(path.join(scriptsDir, 'queue', 'jira.mjs')).href;
+  const script = `
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({}),
+    });
+    const { claim } = await import(${JSON.stringify(adapterUrl)});
+    await claim(
+      { id: 'RP-50', title: 'Replace marker authority with content-blind claims' },
+      {
+        transitionId: '31',
+        env: {
+          JIRA_BASE_URL: 'https://example.invalid',
+          JIRA_EMAIL: 'a@b.c',
+          JIRA_API_TOKEN: 'x',
+        },
+      },
+    );
+  `;
+  const result = await run(
+    process.execPath,
+    ['--input-type=module', '--eval', script],
+    p.root,
+    p.env,
+  );
+  expect(result.code, result.out).toBe(0);
+  await git(['add', '.rig/claims/RP-50.json'], p.root);
+  await git(['commit', '-q', '--allow-empty', '-m', 'record Rig claim transition'], p.root);
+};
+
+const claimAtSelect = async (p: Project, issue: Record<string, unknown>) => {
+  const [claimRecords, jira] = await Promise.all([
+    import(`${pathToFileURL(claimRecordsScript).href}?select-claim=${Date.now()}`),
+    import(
+      `${pathToFileURL(path.join(scriptsDir, 'queue', 'jira.mjs')).href}?select-ticket=${Date.now()}`
+    ),
+  ]);
+  return claimRecords.revalidateClaim({
+    projectRoot: p.root,
+    ticket: jira.toTicket(issue),
+    point: 'SELECT',
+    claimedState: jira.claimedState,
+    targetSha: p.targetSha,
+    isResume: true,
+  });
+};
 
 // CLI JSON is intentionally heterogeneous; assertions below validate its shape.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -412,10 +463,93 @@ describe('workflow state participates in the checkpoint-aware scope fingerprint'
     });
   });
 
-  it('accepts the Rig claim transition from open at SELECT to in-progress at BEFORE_PR', async () => {
+  it('GitHub claim records the durable transition that makes in-progress CURRENT', async () => {
+    const p = await project();
+    const selection = await next(p);
+    expect(selection.code, selection.out).toBe(0);
+    if (!(await trackClaim(p))) return;
+    const ticket = jsonOf(selection).ticket;
+    const stub = await stubCommand('gh', 'return {};');
+
+    try {
+      const github = await import(
+        `${pathToFileURL(path.join(scriptsDir, 'queue', 'github-issues.mjs')).href}?workflow-claim=${Date.now()}`
+      );
+      expect(github.claim(ticket, { projectRoot: p.root })).toMatchObject({
+        ok: true,
+        workflowClaimRecorded: true,
+      });
+
+      const durableClaim = JSON.parse(await readFile(p.claimPath, 'utf8'));
+      expect(durableClaim.workflowClaim).toEqual({ claimedState: 'in-progress' });
+      await git(['add', '.rig/claims/RP-50.json'], p.root);
+      await git(['commit', '-q', '-m', 'record GitHub workflow claim'], p.root);
+
+      const claimRecords = await import(
+        `${pathToFileURL(claimRecordsScript).href}?github-workflow-claim=${Date.now()}`
+      );
+      expect(
+        claimRecords.revalidateClaim({
+          projectRoot: p.root,
+          ticket: { ...ticket, state: 'in-progress', updatedAt: T2 },
+          point: 'BEFORE_PR',
+          claimedState: github.claimedState,
+          targetSha: p.targetSha,
+          isResume: true,
+        }),
+      ).toMatchObject({ result: 'CURRENT', action: 'continue', source: [] });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('keeps a resumed SELECT current after the Jira adapter records its own claim transition', async () => {
     const p = await project();
     expect((await next(p)).code).toBe(0);
     if (!(await trackClaim(p))) return;
+
+    await claimThroughJiraAdapter(p);
+    const claimedIssue = jiraIssue({
+      updated: T2,
+      status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+    });
+    await p.setIssue(claimedIssue);
+
+    expect(await claimAtSelect(p, claimedIssue)).toMatchObject({
+      point: 'SELECT',
+      result: 'CURRENT',
+      action: 'continue',
+      movedFingerprintSet: [],
+      source: [],
+    });
+  });
+
+  it('holds claim:scope at resumed SELECT for the same transition made outside the adapter', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+
+    const externallyClaimedIssue = jiraIssue({
+      updated: T2,
+      status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+    });
+    await p.setIssue(externallyClaimedIssue);
+
+    expect(await claimAtSelect(p, externallyClaimedIssue)).toMatchObject({
+      point: 'SELECT',
+      result: 'CHANGED',
+      action: 'hold',
+      movedFingerprintSet: expect.arrayContaining(['scope']),
+      source: expect.arrayContaining(['claim:scope']),
+    });
+  });
+
+  it('accepts an in-progress transition performed by the Jira adapter claim operation', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+
+    await claimThroughJiraAdapter(p);
 
     await p.setIssue(
       jiraIssue({
@@ -431,6 +565,28 @@ describe('workflow state participates in the checkpoint-aware scope fingerprint'
       action: 'continue',
     });
     expect(jsonOf(result).source ?? []).not.toContain('claim:scope');
+  });
+
+  it('holds claim:scope when an external actor moves the item to the expected claimed state', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      }),
+    );
+
+    const result = await before(p, 'BEFORE_PR');
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result)).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      movedFingerprintSet: expect.arrayContaining(['scope']),
+      source: expect.arrayContaining(['claim:scope']),
+    });
   });
 
   it('holds claim:scope when workflow state returns to open after the Rig claim transition', async () => {
@@ -479,6 +635,7 @@ describe('commentary fingerprints are ids/count and hold only at close', () => {
     expect(select).toMatchObject({ result: 'CURRENT', action: 'continue' });
     expect(select.movedFingerprintSet ?? []).not.toContain('commentary');
 
+    await claimThroughJiraAdapter(p);
     await p.setIssue(
       jiraIssue({
         ...withNewComment.fields,
@@ -1669,6 +1826,56 @@ describe('run-state uncertainty preserves the revalidation brake', () => {
 });
 
 describe('the detection contract is classified before it is followed or fully read', () => {
+  it('classifies a contract symlink before attempting to open it', async () => {
+    const p = await project();
+    const contractPath = path.join(p.root, '.rig', 'revalidation.json');
+    const outside = await mkdtemp(path.join(tmpdir(), 'contract-preopen-target-'));
+    const outsideMarker = ['CONTRACT', 'PREOPEN', 'TARGET', 'BYTES'].join('_');
+    const target = path.join(outside, 'revalidation.json');
+    await writeFile(target, JSON.stringify({ ...VALID_CONTRACT, note: outsideMarker }));
+    await rm(contractPath);
+    await symlink(target, contractPath);
+
+    const require = createRequire(import.meta.url);
+    const mutableFs = require('node:fs') as {
+      openSync: (...args: unknown[]) => number;
+    };
+    const originalOpenSync = mutableFs.openSync;
+    let attemptedOpen = false;
+    mutableFs.openSync = (...args: unknown[]) => {
+      if (path.resolve(String(args[0])) === path.resolve(contractPath)) {
+        attemptedOpen = true;
+        throw new Error('contract open trap');
+      }
+      return originalOpenSync(...args);
+    };
+    syncBuiltinESMExports();
+
+    try {
+      const claimRecords = (await import(
+        `${pathToFileURL(claimRecordsScript).href}?contract-preopen=${Date.now()}`
+      )) as {
+        readRevalidationContract: (root: string) => unknown;
+      };
+      let failure: unknown;
+      try {
+        claimRecords.readRevalidationContract(p.root);
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(Error);
+      expect(String((failure as Error | undefined)?.message ?? '')).toMatch(
+        /no-detection-contract.*symlink/i,
+      );
+      expect(String((failure as Error | undefined)?.message ?? '')).not.toContain(outsideMarker);
+      expect(attemptedOpen).toBe(false);
+    } finally {
+      mutableFs.openSync = originalOpenSync;
+      syncBuiltinESMExports();
+    }
+  });
+
   it('rejects a contract symlink instead of following its target', async () => {
     const p = await project();
     const outside = await mkdtemp(path.join(tmpdir(), 'contract-target-'));

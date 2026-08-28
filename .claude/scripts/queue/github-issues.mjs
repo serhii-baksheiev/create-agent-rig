@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { duplicateOf, fingerprintOf, lifecycleOf, ownerOfLabels, validateProposal } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
+import { recordClaimTransition } from '../lib/claim-records.mjs';
 
 export const name = 'github-issues';
 export const claimedState = 'in-progress';
@@ -187,10 +188,20 @@ const rebaseline = (ticket) => {
   }
 };
 
-export const claim = (ticket) => {
+export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
   ghText(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
+  let workflowClaimRecorded = false;
+  try {
+    workflowClaimRecorded =
+      recordClaimTransition({ projectRoot, ticket, claimedState }) !== null;
+  } catch (error) {
+    process.stderr.write(
+      `#${ticket.id}: the workflow claim landed, but its durable acknowledgement was NOT recorded — ` +
+        `${error.message}\n`,
+    );
+  }
   rebaseline(ticket);
-  return { ok: true };
+  return { ok: true, workflowClaimRecorded };
 };
 
 /**

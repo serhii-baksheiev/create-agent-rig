@@ -26,6 +26,7 @@
 import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
+import { recordClaimTransition } from '../lib/claim-records.mjs';
 
 export const name = 'jira';
 export const claimedState = 'in-progress';
@@ -568,7 +569,10 @@ const rebaseline = async (ticket, env) => {
   recordMarker(ticket, updatedAt, env);
 };
 
-export const claim = async (ticket, { transitionId = null, env = process.env } = {}) => {
+export const claim = async (
+  ticket,
+  { transitionId = null, env = process.env, projectRoot = process.cwd() } = {},
+) => {
   if (!transitionId) {
     const available = await request(`/rest/api/3/issue/${ticket.id}/transitions`, { env });
     const target = available.transitions.find(
@@ -587,8 +591,18 @@ export const claim = async (ticket, { transitionId = null, env = process.env } =
     body: { transition: { id: transitionId } },
     env,
   });
+  let workflowClaimRecorded = false;
+  try {
+    workflowClaimRecorded =
+      recordClaimTransition({ projectRoot, ticket, claimedState }) !== null;
+  } catch (error) {
+    process.stderr.write(
+      `${ticket.id}: the workflow claim landed, but its durable acknowledgement was NOT recorded — ` +
+        `${error.message}\n`,
+    );
+  }
   await rebaseline(ticket, env);
-  return { ok: true };
+  return { ok: true, workflowClaimRecorded };
 };
 
 export const comment = async (ticket, body, { env = process.env } = {}) => {

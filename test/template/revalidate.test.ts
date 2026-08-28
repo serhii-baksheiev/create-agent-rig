@@ -177,6 +177,7 @@ const trackClaimBaseline = async (
   };
   const claims = (await loadScript('lib/claim-records.mjs')) as {
     revalidateClaim: (input: Record<string, unknown>) => { result: string };
+    recordClaimTransition: (input: Record<string, unknown>) => { claimedState: string } | null;
     targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
   };
   const selectedIssue = {
@@ -196,6 +197,7 @@ const trackClaimBaseline = async (
     allowCreate: true,
   });
   if (result.result !== 'BASELINE_CREATED') throw new Error(`claim fixture: ${result.result}`);
+  claims.recordClaimTransition({ projectRoot: root, ticket, claimedState: 'in-progress' });
   await git(['add', '.rig/claims/AR-1.json'], root);
   await git(['commit', '-q', '-m', 'track claim baseline'], root);
 };

@@ -290,12 +290,20 @@ untracked record, and a resumed checkpoint with no record is `UNVERIFIABLE`.
 The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR and
 includes workflow state normalised to the state that checkpoint expects;
 `commentary` is observed there but becomes hold-authoritative only at
-BEFORE_CLOSE. Neither set stores title, description or comment bodies. The
-checkpoint-aware status edge is pinned in the generator's
+BEFORE_CLOSE. Neither set stores title, description or comment bodies.
+For Jira and GitHub issues, the adapter's successful `claim` writes its
+observable `in-progress` transition into that same record as `workflowClaim`.
+Only that durable acknowledgement makes the claimed state expected at a resumed
+SELECT, BEFORE_PR or BEFORE_CLOSE; the same tracker state reached without it is
+external drift and HOLDs. PLAN.md remains `open` because it has no observable
+claim transition. The checkpoint-aware edge is pinned in the generator's
 `test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
-› "accepts the Rig claim transition from open at SELECT to in-progress at
-BEFORE_PR" and › "holds claim:scope when workflow state returns to open after
-the Rig claim transition".
+› "keeps a resumed SELECT current after the Jira adapter records its own claim
+transition", › "GitHub claim records the durable transition that makes
+in-progress CURRENT", › "holds claim:scope at resumed SELECT for the same transition
+made outside the adapter", › "accepts an in-progress transition performed by
+the Jira adapter claim operation", and › "holds claim:scope when an external
+actor moves the item to the expected claimed state".
 The durable/evidence boundary and rollback rule are recorded in
 `docs/decisions/content-blind-revalidation.md`.
 

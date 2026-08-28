@@ -156,6 +156,7 @@ const createAndTrackClaim = async (
     pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href
   )) as {
     revalidateClaim: (input: Record<string, unknown>) => { result: string };
+    recordClaimTransition: (input: Record<string, unknown>) => { claimedState: string } | null;
     targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
   };
   const ticket = await jira.find('AR-1', {
@@ -171,6 +172,7 @@ const createAndTrackClaim = async (
     allowCreate: true,
   });
   if (result.result !== 'BASELINE_CREATED') throw new Error(`claim fixture: ${result.result}`);
+  claims.recordClaimTransition({ projectRoot: root, ticket, claimedState: 'in-progress' });
   await trackClaim(root);
 };
 
