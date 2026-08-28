@@ -394,6 +394,70 @@ describe('fingerprints, not updatedAt, decide scope drift', () => {
   });
 });
 
+describe('workflow state participates in the checkpoint-aware scope fingerprint', () => {
+  it('adapters declare their observable claimed workflow state', async () => {
+    const states = await Promise.all(
+      ['jira', 'github-issues', 'plan-md'].map(async (adapter) => {
+        const module = await import(
+          `${pathToFileURL(path.join(scriptsDir, 'queue', `${adapter}.mjs`)).href}?claimed-state=${Date.now()}`
+        );
+        return [adapter, module.claimedState];
+      }),
+    );
+
+    expect(Object.fromEntries(states)).toEqual({
+      jira: 'in-progress',
+      'github-issues': 'in-progress',
+      'plan-md': 'open',
+    });
+  });
+
+  it('accepts the Rig claim transition from open at SELECT to in-progress at BEFORE_PR', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      }),
+    );
+
+    const result = await before(p, 'BEFORE_PR');
+    expect(result.code, result.out).toBe(0);
+    expect(jsonOf(result)).toMatchObject({
+      result: 'CURRENT',
+      action: 'continue',
+    });
+    expect(jsonOf(result).source ?? []).not.toContain('claim:scope');
+  });
+
+  it('holds claim:scope when workflow state returns to open after the Rig claim transition', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      }),
+    );
+    await p.setIssue(jiraIssue({ updated: T2 }));
+
+    const result = await before(p, 'BEFORE_PR');
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result)).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      movedFingerprintSet: expect.arrayContaining(['scope']),
+      source: expect.arrayContaining(['claim:scope']),
+    });
+    expect(jsonOf(result).source ?? []).not.toContain('task:state');
+  });
+});
+
 describe('commentary fingerprints are ids/count and hold only at close', () => {
   it('defers an added comment through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE', async () => {
     const p = await project();
@@ -414,6 +478,13 @@ describe('commentary fingerprints are ids/count and hold only at close', () => {
     const select = jsonOf(await next(p)).revalidation;
     expect(select).toMatchObject({ result: 'CURRENT', action: 'continue' });
     expect(select.movedFingerprintSet ?? []).not.toContain('commentary');
+
+    await p.setIssue(
+      jiraIssue({
+        ...withNewComment.fields,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      }),
+    );
 
     const pr = await before(p, 'BEFORE_PR');
     expect(pr.code, pr.out).toBe(0);

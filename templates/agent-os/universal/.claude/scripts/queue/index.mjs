@@ -861,6 +861,7 @@ if (invokedDirectly()) {
       projectRoot: claimRoot,
       ticket: result.ticket,
       point: 'SELECT',
+      claimedState: adapter.claimedState,
       targetSha: targetShaOf(claimRoot),
       allowCreate: true,
       isResume: selectedBefore,

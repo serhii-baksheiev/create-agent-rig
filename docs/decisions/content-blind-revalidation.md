@@ -24,16 +24,22 @@ creates the durable baseline but no run evidence".
 
 The record contains SHA-256 fingerprint sets, not source content:
 
-- `scope` covers stable ticket scope, dependency links and configured paired
-  repository facts. Workflow-only status and labels are excluded so the rig's
-  own claim transition cannot invalidate its baseline.
+- `scope` covers stable ticket scope, workflow state, dependency links and
+  configured paired repository facts. Workflow state is fingerprinted against
+  the state expected at each checkpoint: `open` at SELECT; afterwards the
+  adapter's observable claimed state (`in-progress` for Jira and GitHub issues,
+  still `open` for PLAN.md). The expected claim transition therefore preserves
+  the scope fingerprint, while a rollback or other unexpected state moves it.
 - `commentary` covers comment identifiers and count. It is observed at SELECT
   and BEFORE_PR and becomes hold-authoritative only at BEFORE_CLOSE.
 
 Pinned in the generator suite (absent in a generated rig),
 `test/template/content-blind-revalidation.test.ts` › "stays CURRENT
 for marker-only movement and holds on changed scope", › "holds when the target
-branch SHA moves without a tracker edit", and › "defers an added comment
+branch SHA moves without a tracker edit", › "adapters declare their observable
+claimed workflow state", › "accepts the Rig claim transition from open at
+SELECT to in-progress at BEFORE_PR", › "holds claim:scope when workflow state
+returns to open after the Rig claim transition", and › "defers an added comment
 through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE".
 
 `.rig/revalidation.json` is the versioned detection contract. Version 1 is a

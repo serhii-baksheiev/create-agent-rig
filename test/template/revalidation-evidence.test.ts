@@ -158,7 +158,10 @@ const createAndTrackClaim = async (
     revalidateClaim: (input: Record<string, unknown>) => { result: string };
     targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
   };
-  const ticket = await jira.find('AR-1', { project: 'AR', issues: [jiraIssue(issue)] });
+  const ticket = await jira.find('AR-1', {
+    project: 'AR',
+    issues: [jiraIssue({ ...issue, status: { name: 'To Do', statusCategory: { key: 'new' } } })],
+  });
   if (!ticket) throw new Error('claim fixture could not map its Jira issue');
   const result = claims.revalidateClaim({
     projectRoot: root,

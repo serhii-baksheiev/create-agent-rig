@@ -238,7 +238,19 @@ describe('BEFORE_CLOSE retains newest marker evidence without using it as author
     }
     const jira = await loadQueue('jira.mjs');
     const claims = await load('lib/claim-records.mjs');
-    const ticket = await jira.find('AR-1', { project: 'AR', issues: [jiraIssue(T1)] });
+    const selectedIssue = jiraIssue(T1);
+    const ticket = await jira.find('AR-1', {
+      project: 'AR',
+      issues: [
+        {
+          ...selectedIssue,
+          fields: {
+            ...selectedIssue.fields,
+            status: { name: 'To Do', statusCategory: { key: 'new' } },
+          },
+        },
+      ],
+    });
     claims.revalidateClaim({
       projectRoot: dir,
       ticket,

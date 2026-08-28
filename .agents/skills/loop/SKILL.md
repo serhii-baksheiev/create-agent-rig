@@ -287,9 +287,15 @@ successful SELECT, `next` creates a versioned content-blind baseline at
 `.rig/claims/<item-id>.json` and reports `BASELINE_CREATED`. Add that record to
 the task's branch: a later SELECT, BEFORE_PR or BEFORE_CLOSE refuses an
 untracked record, and a resumed checkpoint with no record is `UNVERIFIABLE`.
-The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR;
+The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR and
+includes workflow state normalised to the state that checkpoint expects;
 `commentary` is observed there but becomes hold-authoritative only at
-BEFORE_CLOSE. Neither set stores title, description or comment bodies.
+BEFORE_CLOSE. Neither set stores title, description or comment bodies. The
+checkpoint-aware status edge is pinned in the generator's
+`test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
+› "accepts the Rig claim transition from open at SELECT to in-progress at
+BEFORE_PR" and › "holds claim:scope when workflow state returns to open after
+the Rig claim transition".
 The durable/evidence boundary and rollback rule are recorded in
 `docs/decisions/content-blind-revalidation.md`.
 
@@ -887,9 +893,10 @@ three poisons the only channel by which this project learns.
   It compares the tracked claim's `scope` and `commentary` fingerprint sets;
   commentary becomes hold-authoritative only here. Marker/take-up movement is
   retained in evidence but cannot decide drift. A missing claim is
-  `UNVERIFIABLE` and stops the close. The check also compares the item's state
-  against the `in-progress` a close expects, journals one `revalidation`
-  event at `point: BEFORE_CLOSE`, and lists the item's dependants with each
+  `UNVERIFIABLE` and stops the close. The adapter's expected claimed state is
+  part of the same `claim:scope` comparison rather than a second state-drift
+  decision. The check journals one `revalidation` event at `point:
+  BEFORE_CLOSE` and lists the item's dependants with each
   one's state re-read for the write-back below — pinned in the generator's
   `test/template/revalidate.test.ts` (absent in a generated rig) › "appends
   exactly one BEFORE_CLOSE revalidation event after the BEFORE_PR one, and does

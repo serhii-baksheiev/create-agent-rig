@@ -179,7 +179,14 @@ const trackClaimBaseline = async (
     revalidateClaim: (input: Record<string, unknown>) => { result: string };
     targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
   };
-  const ticket = await jira.find('AR-1', { project: 'AR', issues: [issue] });
+  const selectedIssue = {
+    ...issue,
+    fields: {
+      ...((issue.fields ?? {}) as Record<string, unknown>),
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+    },
+  };
+  const ticket = await jira.find('AR-1', { project: 'AR', issues: [selectedIssue] });
   if (!ticket) throw new Error('claim fixture could not map its Jira issue');
   const result = claims.revalidateClaim({
     projectRoot: root,
@@ -795,8 +802,8 @@ describe('BEFORE_CLOSE — markers remain evidence beside the durable claim', ()
   });
 });
 
-describe('BEFORE_CLOSE — the state source: in-progress is the only state a close expects', () => {
-  it('holds on task:state when the tracker no longer offers the item', async () => {
+describe('BEFORE_CLOSE — workflow state remains part of claim:scope', () => {
+  it('is unverifiable when the tracker no longer offers the item or its claim', async () => {
     const p = await closeProject();
     const { code, stdout, out } = await run(
       process.execPath,
@@ -817,27 +824,27 @@ describe('BEFORE_CLOSE — the state source: in-progress is the only state a clo
     const result = JSON.parse(stdout) as CloseResult;
     expect(result.state).toEqual({ expected: 'in-progress', actual: 'missing' });
     expect(result).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
-    expect(result.source).toEqual(['task:state']);
+    expect(result.source).toEqual([]);
     expect(result.task.changed).toBeNull();
   });
 
-  it('holds on task:state when someone already closed the item', async () => {
+  it('holds on claim:scope when someone already closed the item', async () => {
     const p = await closeProject({ status: DONE });
     const { code, result, out } = await revalidateCloseJson(p);
     expect(code, out).toBe(2);
     expect(result).toMatchObject({
       changed: true,
       action: 'hold',
-      source: ['task:state'],
+      source: ['claim:scope'],
       state: { expected: 'in-progress', actual: 'closed' },
     });
   });
 
-  it('holds on task:state when the item was moved back to open', async () => {
+  it('holds on claim:scope when the item was moved back to open', async () => {
     const p = await closeProject({ status: TO_DO });
     const { code, result, out } = await revalidateCloseJson(p);
     expect(code, out).toBe(2);
-    expect(result.source).toEqual(['task:state']);
+    expect(result.source).toEqual(['claim:scope']);
     expect(result.state).toEqual({ expected: 'in-progress', actual: 'open' });
   });
 
@@ -883,11 +890,11 @@ describe('BEFORE_CLOSE — the dependants the close would release', () => {
 });
 
 describe('BEFORE_CLOSE — what it prints and what it journals', () => {
-  it('text mode on hold names the authoritative state source on one line', async () => {
+  it('text mode on hold names the authoritative scope source on one line', async () => {
     const p = await closeProject({ updated: T3, snapshot: T1, status: DONE });
     const { code, stdout } = await revalidateClose(p);
     expect(code).toBe(2);
-    expect(stdout).toMatch(/^revalidate BEFORE_CLOSE: AR-1 hold — task:state/m);
+    expect(stdout).toMatch(/^revalidate BEFORE_CLOSE: AR-1 hold — claim:scope/m);
     expect(stdout).not.toContain('task:updatedAt');
   });
 

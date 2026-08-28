@@ -282,7 +282,18 @@ const normaliseLinks = (ticket) => ({
   blocks: (ticket?.blocks ?? []).map(String).sort(),
 });
 
-const fingerprintsOf = ({ ticket, targetSha, pairedFacts = [] }) => {
+const WORKFLOW_STATES = new Set(['open', 'in-progress', 'closed']);
+
+const workflowPositionOf = ({ ticket, point, claimedState }) => {
+  const expected = point === 'SELECT' ? 'open' : claimedState;
+  if (!WORKFLOW_STATES.has(expected)) {
+    throw new Error(`claim record: unsupported claimed workflow state ${JSON.stringify(expected)}`);
+  }
+  const actual = ticket?.state ?? null;
+  return actual === expected ? { position: 'expected' } : { position: 'unexpected', value: actual };
+};
+
+const fingerprintsOf = ({ ticket, point, claimedState, targetSha, pairedFacts = [] }) => {
   const commentaryIds = (ticket?.commentary?.ids ?? []).map(String).sort();
   const commentaryCount = Number.isInteger(ticket?.commentary?.count)
     ? ticket.commentary.count
@@ -295,6 +306,7 @@ const fingerprintsOf = ({ ticket, targetSha, pairedFacts = [] }) => {
       .filter((label) => !['ready', 'blocked', 'in-progress', 'escalated'].includes(label))
       .sort(),
     links: normaliseLinks(ticket),
+    workflow: workflowPositionOf({ ticket, point, claimedState }),
     pairedFacts,
   };
   return {
@@ -432,6 +444,7 @@ export const revalidateClaim = ({
   projectRoot,
   ticket,
   point,
+  claimedState = 'in-progress',
   targetSha,
   allowCreate = false,
   isResume = false,
@@ -439,9 +452,11 @@ export const revalidateClaim = ({
   const path = claimPathFor(projectRoot, ticket);
   const pointer = pointerFor(projectRoot, ticket);
   let pairedFacts;
+  let current;
   try {
     const contract = readRevalidationContract(projectRoot);
     pairedFacts = pairedFingerprintsOf(projectRoot, contract.pairedFacts);
+    current = fingerprintsOf({ ticket, point, claimedState, targetSha, pairedFacts });
   } catch (error) {
     return resultOf({
       ticket,
@@ -464,8 +479,6 @@ export const revalidateClaim = ({
       identity: 'commentary-incomplete',
     });
   }
-  const current = fingerprintsOf({ ticket, targetSha, pairedFacts });
-
   const committedObject = committedObjectOf(projectRoot, pointer);
   if (!pathExists(path)) {
     if (committedObject !== null) {

@@ -19,6 +19,7 @@ import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
 
 export const name = 'github-issues';
+export const claimedState = 'in-progress';
 
 /**
  * A dependency line, and everything after the keyword on it.

@@ -17,6 +17,7 @@ import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
+export const claimedState = 'open';
 
 const AGENT_QUEUE = /^##\s+Agent queue\s*$/i;
 const OPERATOR_QUEUE = /^##\s+Operator queue\s*$/i;

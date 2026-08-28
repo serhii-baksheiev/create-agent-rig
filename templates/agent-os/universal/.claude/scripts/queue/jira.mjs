@@ -28,6 +28,7 @@ import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
 
 export const name = 'jira';
+export const claimedState = 'in-progress';
 
 /** Jira's own default priority ladder. An unrecognised name sorts last, never first. */
 const PRIORITY = { highest: 1, high: 2, medium: 3, low: 4, lowest: 5 };

@@ -23,13 +23,14 @@
  * evidence, but never contribute a source or action.
  *
  * At BEFORE_CLOSE (AR-135) there is no main comparison: both claim fingerprint
- * sets are authoritative, together with `task:state`, which is expected
- * `in-progress` and changes when someone closed the item or moved it back. The item comes
+ * sets are authoritative. Workflow state is already inside `claim:scope`,
+ * normalised to the adapter's expected claimed state, so an expected claim
+ * transition stays current while a close or rollback moves scope. The item comes
  * from the adapter's `find`, which sees closed items where `listEligible`
  * drops them; one the tracker no longer offers at all reads `missing`, and
- * either holds on `task:state` (revalidate.test.ts › "holds on task:state when
- * someone already closed the item", › "holds on task:state when the tracker no
- * longer offers the item"). The result lists the item's dependants (`blocks`)
+ * holds on `claim:scope` (revalidate.test.ts › "holds on claim:scope when
+ * someone already closed the item", › "holds on claim:scope when the item was
+ * moved back to open"). The result lists the item's dependants (`blocks`)
  * and re-reads each one's state through the same `find` (revalidate.test.ts ›
  * "re-reads each dependant's state, and names one the tracker no longer
  * offers") for the loop's write-back.
@@ -258,20 +259,17 @@ if (invokedDirectly()) {
       projectRoot: claimRoot,
       ticket: ticket ?? { id: args.ticket },
       point: 'BEFORE_CLOSE',
+      claimedState: adapter.claimedState,
       // Close has no caller-selected comparison base. Resolve the same default
       // target SELECT pinned, so a missing `origin/master` cannot turn an
       // otherwise current local rig into claim:scope drift.
       targetSha: targetShaOf(claimRoot),
     });
-    const aggregate = withAdditionalDrift(
-      claim,
-      actual === 'in-progress' ? [] : ['task:state'],
-    );
     const result = {
-      ...aggregate,
+      ...claim,
       observedAt: new Date().toISOString(),
       task: { changed: task.changed, from: task.task.from, to: task.task.to },
-      state: { expected: 'in-progress', actual },
+      state: { expected: adapter.claimedState, actual },
       dependants,
       dependantState,
     };
@@ -319,6 +317,7 @@ if (invokedDirectly()) {
     projectRoot: claimRoot,
     ticket: ticket ?? { id: args.ticket },
     point: 'BEFORE_PR',
+    claimedState: adapter.claimedState,
     targetSha: targetShaOf(claimRoot, args.base),
   });
   const aggregate = withAdditionalDrift(
