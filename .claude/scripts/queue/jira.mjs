@@ -76,6 +76,14 @@ export const toTicket = (issue) => {
   const labels = fields.labels ?? [];
   const links = fields.issuelinks ?? [];
   const category = statusCategory(fields);
+  const comments = Array.isArray(fields.comment?.comments) ? fields.comment.comments : [];
+  const commentaryIds = comments
+    .map((comment) => comment?.id)
+    .filter((id) => id !== undefined && id !== null)
+    .map(String);
+  const commentaryCount = Number.isInteger(fields.comment?.total)
+    ? fields.comment.total
+    : comments.length;
 
   // 🔴 INVARIANT 1: the dependency is the LINK, and the blocker's own status
   // decides. A `blocked` label is a snapshot nobody updates when the blocker
@@ -123,13 +131,14 @@ export const toTicket = (issue) => {
     // already reads internally, now visible to the shared hygiene checks.
     body: descriptionTextOf(issue) || null,
     commentary: {
-      count: Number.isInteger(fields.comment?.total)
-        ? fields.comment.total
-        : (fields.comment?.comments ?? []).length,
-      ids: (fields.comment?.comments ?? [])
-        .map((comment) => comment?.id)
-        .filter((id) => id !== undefined && id !== null)
-        .map(String),
+      count: commentaryCount,
+      ids: commentaryIds,
+      // Jira may return only the first page while still declaring the total.
+      // A partial set cannot truthfully fingerprint commentary; the shared
+      // claim resolver turns this explicit false into UNVERIFIABLE.
+      complete:
+        commentaryIds.length === commentaryCount &&
+        new Set(commentaryIds).size === commentaryIds.length,
     },
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')

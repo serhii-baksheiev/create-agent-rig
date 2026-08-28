@@ -329,12 +329,14 @@ export const clearRevalidationHold = (runDir, detectionId) => {
  * another naming looks at no siblings at all, and the limit is the mirror
  * image: an earlier run declared under another naming is not seen here.
  *
- * Bounded and fail-soft: the runs root is walked through one directory handle
- * and at most 10 000 entries are looked at, whatever is in there; at most 200
- * candidate runs are read, an unreadable state is skipped rather than trusted,
- * and the answer is `null` for no run directory, an unnamed one, or no runs
- * root. Never this run's own state — that is {@link readState}'s answer, and
- * the caller asks it first.
+ * Bounded: the runs root is walked through one directory handle and at most
+ * 10 000 entries are looked at, whatever is in there; at most 200 candidate
+ * runs are returned. `previousRunEvidence` says when either boundary truncated
+ * the search, so authoritative resume detection can fail closed instead of
+ * reading "not found in the subset" as "first sight". Compatibility marker
+ * lookup remains fail-soft and may discard that completeness signal. Never
+ * this run's own state — that is {@link readState}'s answer, and the caller asks
+ * it first.
  */
 const RUN_DIR_NAME = /^\d{8}-\d{6}$/;
 const RUNS_ROOT_ENTRY_BUDGET = 10_000;
@@ -349,17 +351,21 @@ const RUNS_READ_CAP = 200;
  * error; resume detection is authoritative for baseline creation and fails
  * closed when this enumeration cannot be completed.
  */
-export const previousRunDirs = (runDir) => {
-  if (!runDir) return [];
+export const previousRunEvidence = (runDir) => {
+  if (!runDir) return { runDirs: [], complete: true };
   const root = dirname(runDir);
   const self = basename(runDir);
-  if (!RUN_DIR_NAME.test(self)) return [];
+  if (!RUN_DIR_NAME.test(self)) return { runDirs: [], complete: true };
   const names = [];
+  let reachedEnd = false;
   const dir = opendirSync(root);
   try {
     for (let seen = 0; seen < RUNS_ROOT_ENTRY_BUDGET; seen += 1) {
       const entry = dir.readSync();
-      if (entry === null) break;
+      if (entry === null) {
+        reachedEnd = true;
+        break;
+      }
       if (entry.isDirectory() && entry.name !== self && RUN_DIR_NAME.test(entry.name)) {
         names.push(entry.name);
       }
@@ -368,8 +374,13 @@ export const previousRunDirs = (runDir) => {
     dir.closeSync();
   }
   names.sort().reverse();
-  return names.slice(0, RUNS_READ_CAP).map((name) => join(root, name));
+  return {
+    runDirs: names.slice(0, RUNS_READ_CAP).map((name) => join(root, name)),
+    complete: reachedEnd && names.length <= RUNS_READ_CAP,
+  };
 };
+
+export const previousRunDirs = (runDir) => previousRunEvidence(runDir).runDirs;
 
 export const previousTakeUp = (runDir, id) => {
   if (!runDir || id === undefined || id === null) return null;

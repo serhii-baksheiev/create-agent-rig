@@ -539,7 +539,7 @@ if (invokedDirectly()) {
   let recordTakeUp;
   let recordRevalidationHold;
   let previousTakeUp;
-  let previousRunDirs;
+  let previousRunEvidence;
   try {
     ({
       readStateForSelection,
@@ -547,7 +547,7 @@ if (invokedDirectly()) {
       recordTakeUp,
       recordRevalidationHold,
       previousTakeUp,
-      previousRunDirs,
+      previousRunEvidence,
     } = await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
@@ -830,11 +830,13 @@ if (invokedDirectly()) {
       }
       if (journal && !selectedBefore) {
         let candidates = [];
+        let complete;
         try {
-          candidates = previousRunDirs(runDir);
+          const previous = previousRunEvidence(runDir);
+          candidates = previous.runDirs;
+          complete = previous.complete;
         } catch {
-          selectedBefore = true;
-          resumeEvidenceError = 'prior run journals are unreadable or unavailable';
+          complete = false;
         }
         let unreadablePrior = false;
         for (const candidateRunDir of candidates) {
@@ -847,9 +849,11 @@ if (invokedDirectly()) {
             unreadablePrior = true;
           }
         }
-        if (!selectedBefore && unreadablePrior) {
+        if (!selectedBefore && (!complete || unreadablePrior)) {
           selectedBefore = true;
-          resumeEvidenceError = 'prior run journal is unreadable or invalid';
+          resumeEvidenceError = !complete
+            ? 'prior run journal search is incomplete or truncated by its safety limit'
+            : 'prior run journal is unreadable or invalid';
         }
       }
     }

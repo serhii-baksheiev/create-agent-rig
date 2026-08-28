@@ -2,7 +2,12 @@
 export const typedResolutionsOf = (events = []) => {
   const resolutions = new Map();
   for (const event of events) {
-    if (event.kind !== 'revalidation-outcome' || typeof event.data?.detectionId !== 'string') {
+    const actionRequired = event.data?.actionRequired ?? event.data?.actionChanged;
+    if (
+      event.kind !== 'revalidation-outcome' ||
+      typeof event.data?.detectionId !== 'string' ||
+      typeof actionRequired !== 'boolean'
+    ) {
       continue;
     }
     const resolvedAt = Date.parse(event.data?.resolvedAt ?? event.at);
