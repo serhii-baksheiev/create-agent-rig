@@ -27,7 +27,8 @@ The record contains SHA-256 fingerprint sets, not source content:
 - `commentary` covers comment identifiers and count. It is observed at SELECT
   and BEFORE_PR and becomes hold-authoritative only at BEFORE_CLOSE.
 
-Pinned in `test/template/content-blind-revalidation.test.ts` › "stays CURRENT
+Pinned in the generator suite (absent in a generated rig),
+`test/template/content-blind-revalidation.test.ts` › "stays CURRENT
 for marker-only movement and holds on changed scope", › "holds when the target
 branch SHA moves without a tracker edit", and › "defers an added comment
 through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE".
@@ -35,21 +36,24 @@ through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE".
 `.rig/revalidation.json` is the versioned detection contract. Version 1 is a
 pull model over run-state and journal evidence, with 24-hour accepted latency,
 no push channel, and an explicit list of paired facts. Preflight stops when the
-contract is absent or unsupported. Pinned in
+contract is absent or unsupported. Pinned in the generator suite (absent in a
+generated rig),
 `test/template/content-blind-revalidation.test.ts` › "accepts the default
 pull/run-state+journal/24h/no-push contract".
 
 `updatedAt` take-up markers remain in run state and revalidation events for
 compatibility and attribution. They do not decide drift, baseline creation or
 checkpoint action. `.claude/runs/<run-id>/` remains append-only evidence for a
-particular run; it is not the cross-harness claim store. Pinned in
+particular run; it is not the cross-harness claim store. Pinned in the generator
+suite (absent in a generated rig),
 `test/template/queue-revalidation.test.ts` › "a moved marker stays
 evidence-only while the tracked claim remains CURRENT".
 
 Every blocking detection has a stable content-blind id. A typed outcome names
 that id, records whether action was required and clears only its matching
 run-level hold. The report joins by detection id across runs and retains the
-legacy same-run sequence join for older evidence. Pinned in
+legacy same-run sequence join for older evidence. Pinned in the generator suite
+(absent in a generated rig),
 `test/template/content-blind-revalidation.test.ts` › "reuses a stable detection
 id for the same drift at the same checkpoint", › "journals a typed resolution
 through the existing outcome command", › "derives false-HOLD from result !=

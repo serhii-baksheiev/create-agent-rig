@@ -12,7 +12,7 @@
 // defaults to `plan-md`, which is the only adapter that works in a freshly
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import {
@@ -534,14 +534,19 @@ if (invokedDirectly()) {
   // pattern it matched on. The load lives here; the READ stays behind the
   // declaration, because a session with no run directory has no state to read
   // and must keep working exactly as before.
-  let readState;
+  let readStateForSelection;
   let stopInputsOf;
   let recordTakeUp;
   let recordRevalidationHold;
   let previousTakeUp;
   try {
-    ({ readState, stopInputsOf, recordTakeUp, recordRevalidationHold, previousTakeUp } =
-      await import('../run-state.mjs'));
+    ({
+      readStateForSelection,
+      stopInputsOf,
+      recordTakeUp,
+      recordRevalidationHold,
+      previousTakeUp,
+    } = await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
       `run state: ${error.message}\n` +
@@ -592,7 +597,24 @@ if (invokedDirectly()) {
   // `invariants.md` forbids. Selection therefore does NOT stop on the brake, and
   // the `loop` skill tells the run to keep checking it between tasks.
   //
-  const runState = process.env.RIG_RUN_DIR ? readState(process.env.RIG_RUN_DIR) : {};
+  let runState;
+  try {
+    runState = process.env.RIG_RUN_DIR
+      ? readStateForSelection(process.env.RIG_RUN_DIR)
+      : {};
+  } catch (error) {
+    const stop = {
+      kind: 'run-state-unreadable',
+      success: false,
+      why: `${error.message}; the run may contain a stop condition, so selection is refused.`,
+    };
+    process.stdout.write(
+      args.json
+        ? `${JSON.stringify({ stop, revalidation: null }, null, 2)}\n`
+        : `queue: ${stop.kind}\n  ${stop.why}\n`,
+    );
+    process.exit(1);
+  }
   let stopInputs;
   try {
     // Read through the module that owns the vocabulary, never field by field
@@ -743,36 +765,59 @@ if (invokedDirectly()) {
   let revalidation = null;
   const configuredProjectRoot = projectRootOfConfig(configPath);
   const claimRoot = configuredProjectRoot ?? projectRoot;
-  const contractAvailable =
-    configuredProjectRoot !== null &&
-    existsSync(join(configuredProjectRoot, '.rig', 'revalidation.json'));
-  if (result.ticket && configuredProjectRoot !== null && (runDir || contractAvailable)) {
+  if (result.ticket && configuredProjectRoot !== null) {
     const own = runDir ? runState.takeUps?.[result.ticket.id] : undefined;
     const prior =
       runDir && own === undefined && typeof previousTakeUp === 'function'
         ? previousTakeUp(runDir, result.ticket.id)
         : null;
     const snapshot = own ?? prior?.updatedAt ?? null;
-    let selectedBefore = false;
+    // A prior take-up is compatibility evidence that this is not a first
+    // sight. It does not decide whether content moved; the claim fingerprints
+    // remain the only drift authority. Its run journal is checked as the
+    // stronger evidence when available, and an unreadable relevant journal can
+    // only make a missing claim unverifiable — never eligible for recreation.
+    let selectedBefore = prior !== null;
+    let resumeEvidenceError = null;
     if (runDir) {
+      let journal = null;
       try {
-        const journal = await import('../run-journal.mjs');
-        selectedBefore = journal
-          .readRun({ runDir })
-          .events.some(
+        journal = await import('../run-journal.mjs');
+      } catch {
+        selectedBefore = true;
+        resumeEvidenceError = 'current run journal module is unreadable or missing';
+      }
+      try {
+        if (!journal) throw new Error('run journal module unavailable');
+        const selectedInCurrentRun = journal.readRun({ runDir }).events.some(
+          (event) =>
+            event.kind === 'revalidation' &&
+            event.data?.point === 'SELECT' &&
+            String(event.data?.ticket) === String(result.ticket.id) &&
+            typeof event.data?.result === 'string' &&
+            typeof event.data?.sourcePointer === 'string',
+        );
+        selectedBefore = selectedBefore || selectedInCurrentRun;
+      } catch {
+        selectedBefore = true;
+        resumeEvidenceError = 'current run journal is unreadable or invalid';
+      }
+      if (journal && prior?.runDir) {
+        try {
+          const selectedInPriorRun = journal.readRun({ runDir: prior.runDir }).events.some(
             (event) =>
               event.kind === 'revalidation' &&
               event.data?.point === 'SELECT' &&
-              String(event.data?.ticket) === String(result.ticket.id) &&
-              typeof event.data?.result === 'string' &&
-              typeof event.data?.sourcePointer === 'string',
+              String(event.data?.ticket) === String(result.ticket.id),
           );
-      } catch {
-        // The journal's own write below remains the authoritative refusal. Here a
-        // missing prior event can only permit the first baseline attempt.
+          selectedBefore = selectedBefore || selectedInPriorRun;
+        } catch {
+          selectedBefore = true;
+          resumeEvidenceError = 'prior run journal is unreadable or invalid';
+        }
       }
     }
-    const claim = revalidateClaim({
+    let claim = revalidateClaim({
       projectRoot: claimRoot,
       ticket: result.ticket,
       point: 'SELECT',
@@ -780,6 +825,15 @@ if (invokedDirectly()) {
       allowCreate: true,
       isResume: selectedBefore,
     });
+    if (resumeEvidenceError && claim.result === 'UNVERIFIABLE') {
+      claim = {
+        ...claim,
+        evidence: {
+          ...claim.evidence,
+          error: `${resumeEvidenceError}; ${claim.evidence?.error ?? 'claim cannot be verified'}`,
+        },
+      };
+    }
     revalidation = {
       ...claim,
       observedAt: new Date().toISOString(),

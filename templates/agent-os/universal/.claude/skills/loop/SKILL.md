@@ -75,13 +75,14 @@ state-vs-queue split exists to prevent.
 node .claude/scripts/preflight.mjs
 ```
 
-Four items are scripted (kill switch absent · `RIG_RUN_DIR` not already
-exported · local default branch matches the remote · the last deploy concluded
-successfully) and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
+Five items are scripted (kill switch absent · `RIG_RUN_DIR` not already
+exported · the versioned revalidation detection contract is supported · local
+default branch matches the remote · the last deploy concluded successfully)
+and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
 leaves no record cannot tell you it was skipped.
 
 Verdicts: **STOP** → do not start, deal with the cause. **CAUTION** → start,
-knowing which ground is soft. **GO** → the scripted four are clean; the rest are
+knowing which ground is soft. **GO** → the scripted five are clean; the rest are
 still yours.
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you

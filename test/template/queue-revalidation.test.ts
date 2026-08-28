@@ -484,7 +484,7 @@ describe('`next` revalidates through the durable claim and preserves take-up evi
     });
   });
 
-  it('a run journal that predates revalidation events keeps the selection and says the record was lost', async () => {
+  it('a run journal that predates revalidation reads the missing claim as UNVERIFIABLE', async () => {
     const { dir, configPath, runDir, env } = await jiraProject();
     // The CLI resolves `../run-journal.mjs` from its own location, so the stale
     // module has to sit in a copy of the scripts tree, not in the project.
@@ -500,26 +500,36 @@ describe('`next` revalidates through the durable claim and preserves take-up evi
       dir,
       env,
     );
-    expect(result.code, result.out).toBe(0);
+    expect(result.code, result.out).toBe(2);
     expect(result.out).toMatch(/predates revalidation events/);
     expect(result.out).not.toMatch(/is not a function/);
-    const parsed = JSON.parse(result.stdout) as { revalidation: { changed: boolean | null } };
-    expect(parsed.revalidation.changed).toBe(false);
+    const parsed = JSON.parse(result.stdout) as {
+      revalidation: { changed: boolean | null; result: string; action: string };
+    };
+    expect(parsed.revalidation).toMatchObject({
+      changed: null,
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
     expect(await read(runDir, 'state.json')).toContain('takeUps');
   });
 
-  it('a state file that cannot be written loses the baseline, not the selection', async () => {
+  it('a present but unreadable state file refuses selection before baseline creation', async () => {
     const { dir, configPath, runDir, env } = await jiraProject();
     // A directory where the file goes: the write-then-rename inside updateState
     // fails, and the journal beside it is untouched.
     await mkdir(path.join(runDir, 'state.json'));
     const result = await runCli(['next', '--json', '--config', configPath], dir, env);
-    expect(result.code, result.out).toBe(0);
-    expect(result.out).toMatch(/run state: the take-up snapshot was NOT recorded/);
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/run-state-unreadable|run state is unreadable/);
     expect(result.out).not.toMatch(/run journal:/);
-    const parsed = JSON.parse(result.stdout) as { revalidation: { changed: boolean | null } };
-    expect(parsed.revalidation.changed).toBe(false);
-    expect(await revalidationEvents(runDir)).toHaveLength(1);
+    const parsed = JSON.parse(result.stdout) as {
+      stop: { success: boolean };
+      revalidation: null;
+    };
+    expect(parsed.stop.success).toBe(false);
+    expect(parsed.revalidation).toBeNull();
+    await expect(read(runDir, 'events.jsonl')).rejects.toThrow();
   });
 
   it("the loop skill's outcome command records what the re-read concluded", async () => {
