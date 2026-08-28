@@ -111,8 +111,9 @@ Pinned in the generator's
 `test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
 › "stops with %s when the unresolved journal result is %s", › "%s refuses a
 present %s state instead of replacing unknown stop inputs", › "does not accept
-an external contract swapped in after containment validation", › "rejects a
-tracked claim %s only in the worktree", and › "does not write a baseline outside
+an external contract swapped in after containment validation", › "classifies a
+contract symlink before attempting to open it", › "rejects a tracked claim %s
+only in the worktree", and › "does not write a baseline outside
 after the claim directory passes containment", plus › "keeps a detection
 unresolved with %s state when its typed outcome has no boolean verdict", › "uses
 the same id for the same missing-contract condition in two absolute roots", ›
