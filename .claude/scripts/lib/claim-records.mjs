@@ -1,7 +1,16 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { withoutGitLocation } from '../git-env.mjs';
 
 export const CLAIM_SCHEMA_VERSION = 1;
@@ -19,6 +28,7 @@ const MAX_CONTRACT_BYTES = 256 * 1024;
 const MAX_CLAIM_BYTES = 256 * 1024;
 const MAX_PAIRED_FACT_BYTES = 16 * 1024 * 1024;
 const SHA256 = /^[0-9a-f]{64}$/;
+const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 const stable = (value) => {
   if (Array.isArray(value)) return value.map(stable);
@@ -56,12 +66,34 @@ const assertInsideRepository = (projectRoot, path, label) => {
 };
 
 const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink()) throw new Error(`${label} is a symlink`);
-  if (!stat.isFile()) throw new Error(`${label} is not a regular file`);
-  if (stat.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
-  assertInsideRepository(projectRoot, path, label);
-  return readFileSync(path);
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    let symlink = false;
+    try {
+      symlink = lstatSync(path).isSymbolicLink();
+    } catch {
+      // Preserve the open failure when the pathname itself cannot be classified.
+    }
+    if (symlink) throw new Error(`${label} is a symlink`, { cause: error });
+    throw error;
+  }
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) throw new Error(`${label} is not a regular file`);
+    if (opened.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
+    assertInsideRepository(projectRoot, path, label);
+    const current = lstatSync(path);
+    if (current.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+    if (!current.isFile()) throw new Error(`${label} is not a regular file`);
+    if (current.dev !== opened.dev || current.ino !== opened.ino) {
+      throw new Error(`${label} changed during validation`);
+    }
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 };
 
 const assertRepositoryDirectory = (projectRoot, path, label) => {
@@ -80,6 +112,34 @@ const ensureClaimDirectory = (projectRoot, path) => {
     if (error?.code !== 'EEXIST') throw error;
   }
   assertRepositoryDirectory(projectRoot, path, 'claim directory .rig/claims');
+};
+
+// Node has no public `openat(2)` binding. A child with the validated claim
+// directory as its cwd gives the relative create the same stable directory
+// handle: renaming or replacing the pathname after spawn cannot redirect that
+// cwd. If the path was already redirected before spawn, the child resolves its
+// own cwd outside the repository and refuses before creating anything.
+const writeClaimExclusive = (projectRoot, path, content) => {
+  const script = String.raw`
+    const { constants, openSync, readFileSync, realpathSync, writeFileSync, closeSync } = require('node:fs');
+    const { isAbsolute, relative, sep } = require('node:path');
+    const [name, repository] = process.argv.slice(1);
+    const root = realpathSync(repository);
+    const cwd = realpathSync('.');
+    const fromRoot = relative(root, cwd);
+    if (fromRoot === '..' || fromRoot.startsWith('..' + sep) || isAbsolute(fromRoot)) {
+      throw new Error('claim directory .rig/claims escapes the repository');
+    }
+    const fd = openSync(name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+    try { writeFileSync(fd, readFileSync(0)); } finally { closeSync(fd); }
+  `;
+  execFileSync(process.execPath, ['-e', script, basename(path), realpathSync(projectRoot)], {
+    cwd: dirname(path),
+    env: withoutGitLocation(),
+    input: content,
+    stdio: ['pipe', 'ignore', 'pipe'],
+    maxBuffer: 1024 * 1024,
+  });
 };
 
 const safeRelativePath = (value) => {
@@ -301,7 +361,7 @@ const readClaim = (projectRoot, path) => {
     parsed.fingerprints?.scope?.algorithm !== 'sha256' ||
     !SHA256.test(parsed.fingerprints?.scope?.value ?? '') ||
     (parsed.fingerprints.scope.targetSha !== null &&
-      !/^[0-9a-f]{40}$/.test(parsed.fingerprints.scope.targetSha ?? '')) ||
+      !GIT_OBJECT_ID.test(parsed.fingerprints.scope.targetSha ?? '')) ||
     parsed.fingerprints?.commentary?.algorithm !== 'sha256' ||
     !SHA256.test(parsed.fingerprints?.commentary?.value ?? '') ||
     !Number.isInteger(parsed.fingerprints?.commentary?.count) ||
@@ -392,7 +452,7 @@ export const revalidateClaim = ({
           ticket: ticketIdOf(ticket),
           fingerprints: current,
         };
-        writeFileSync(path, `${JSON.stringify(claim, null, 2)}\n`, { flag: 'wx' });
+        writeClaimExclusive(projectRoot, path, `${JSON.stringify(claim, null, 2)}\n`);
       } catch (error) {
         return resultOf({
           ticket,

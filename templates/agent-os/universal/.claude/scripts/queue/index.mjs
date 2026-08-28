@@ -539,6 +539,7 @@ if (invokedDirectly()) {
   let recordTakeUp;
   let recordRevalidationHold;
   let previousTakeUp;
+  let previousRunDirs;
   try {
     ({
       readStateForSelection,
@@ -546,6 +547,7 @@ if (invokedDirectly()) {
       recordTakeUp,
       recordRevalidationHold,
       previousTakeUp,
+      previousRunDirs,
     } = await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
@@ -614,6 +616,28 @@ if (invokedDirectly()) {
         : `queue: ${stop.kind}\n  ${stop.why}\n`,
     );
     process.exit(1);
+  }
+  // `state.json` is the fast stop input; the append-only journal is the durable
+  // run evidence that can reconstruct it after an absent or valid-but-empty
+  // state file. Reuse the shared temporal resolution rule rather than growing
+  // a second definition of "unresolved" in selection. A broken journal keeps
+  // its established lost-trace behaviour; a readable unresolved detection can
+  // never be erased merely by deleting the derived state cache.
+  if (process.env.RIG_RUN_DIR && !runState.revalidationHold) {
+    try {
+      const [{ readRun }, { unresolvedBlockingDetectionOf }] = await Promise.all([
+        import('../run-journal.mjs'),
+        import('../lib/revalidation-evidence.mjs'),
+      ]);
+      const recovered = unresolvedBlockingDetectionOf(
+        readRun({ runDir: process.env.RIG_RUN_DIR }).events,
+      );
+      if (recovered) runState = { ...runState, revalidationHold: recovered };
+    } catch {
+      // The journal's read/write failure contract is handled at its existing
+      // call site below. This reconciliation only restores evidence it can
+      // validate; it never guesses a detection from unreadable bytes.
+    }
   }
   let stopInputs;
   try {
@@ -772,12 +796,12 @@ if (invokedDirectly()) {
         ? previousTakeUp(runDir, result.ticket.id)
         : null;
     const snapshot = own ?? prior?.updatedAt ?? null;
-    // A prior take-up is compatibility evidence that this is not a first
-    // sight. It does not decide whether content moved; the claim fingerprints
-    // remain the only drift authority. Its run journal is checked as the
-    // stronger evidence when available, and an unreadable relevant journal can
-    // only make a missing claim unverifiable — never eligible for recreation.
-    let selectedBefore = prior !== null;
+    // SELECT events are the sole authority for whether this is first sight or
+    // a resume. A take-up may still supply the compatibility snapshot above,
+    // but it never enters this decision. Every sibling journal comes from the
+    // same bounded resolver as the marker lookup so the evidence windows cannot
+    // drift apart.
+    let selectedBefore = false;
     let resumeEvidenceError = null;
     if (runDir) {
       let journal = null;
@@ -787,9 +811,8 @@ if (invokedDirectly()) {
         selectedBefore = true;
         resumeEvidenceError = 'current run journal module is unreadable or missing';
       }
-      try {
-        if (!journal) throw new Error('run journal module unavailable');
-        const selectedInCurrentRun = journal.readRun({ runDir }).events.some(
+      const selectedIn = (candidateRunDir) =>
+        journal.readRun({ runDir: candidateRunDir }).events.some(
           (event) =>
             event.kind === 'revalidation' &&
             event.data?.point === 'SELECT' &&
@@ -797,21 +820,34 @@ if (invokedDirectly()) {
             typeof event.data?.result === 'string' &&
             typeof event.data?.sourcePointer === 'string',
         );
-        selectedBefore = selectedBefore || selectedInCurrentRun;
-      } catch {
-        selectedBefore = true;
-        resumeEvidenceError = 'current run journal is unreadable or invalid';
-      }
-      if (journal && prior?.runDir) {
+      if (journal) {
         try {
-          const selectedInPriorRun = journal.readRun({ runDir: prior.runDir }).events.some(
-            (event) =>
-              event.kind === 'revalidation' &&
-              event.data?.point === 'SELECT' &&
-              String(event.data?.ticket) === String(result.ticket.id),
-          );
-          selectedBefore = selectedBefore || selectedInPriorRun;
+          selectedBefore = selectedIn(runDir);
         } catch {
+          selectedBefore = true;
+          resumeEvidenceError = 'current run journal is unreadable or invalid';
+        }
+      }
+      if (journal && !selectedBefore) {
+        let candidates = [];
+        try {
+          candidates = previousRunDirs(runDir);
+        } catch {
+          selectedBefore = true;
+          resumeEvidenceError = 'prior run journals are unreadable or unavailable';
+        }
+        let unreadablePrior = false;
+        for (const candidateRunDir of candidates) {
+          try {
+            if (selectedIn(candidateRunDir)) {
+              selectedBefore = true;
+              break;
+            }
+          } catch {
+            unreadablePrior = true;
+          }
+        }
+        if (!selectedBefore && unreadablePrior) {
           selectedBefore = true;
           resumeEvidenceError = 'prior run journal is unreadable or invalid';
         }

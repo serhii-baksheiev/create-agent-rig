@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRun } from './run-journal.mjs';
 import { POINTS } from './lib/revalidation-points.mjs';
+import { typedResolutionOf, typedResolutionsOf } from './lib/revalidation-evidence.mjs';
 
 export { POINTS };
 
@@ -56,20 +57,14 @@ export const reportOf = ({ runs, since }) => {
   const noise = {};
   const read = [];
   const skipped = [];
-  const resolutions = new Map();
+  const resolutions = typedResolutionsOf(
+    runs.flatMap(({ events = [], error }) => (error ? [] : events)),
+  );
   const legacyOutcomes = new Map();
   for (const { run, events = [], error } of runs) {
     if (error) continue;
     for (const event of events) {
       if (event.kind !== 'revalidation-outcome') continue;
-      if (typeof event.data?.detectionId === 'string') {
-        const resolvedAt = Date.parse(event.data?.resolvedAt ?? event.at);
-        if (Number.isFinite(resolvedAt)) {
-          const matching = resolutions.get(event.data.detectionId) ?? [];
-          matching.push({ resolvedAt, data: event.data });
-          resolutions.set(event.data.detectionId, matching);
-        }
-      }
       if (Number.isInteger(event.data?.answers)) {
         legacyOutcomes.set(`${run}:${event.data.answers}`, event.data);
       }
@@ -98,13 +93,7 @@ export const reportOf = ({ runs, since }) => {
           : event.data.changed === true;
       if (!caught) continue;
       bucket.catches += 1;
-      const detectionAt = Date.parse(event.at);
-      const typed =
-        typeof event.data?.id === 'string'
-          ? (resolutions.get(event.data.id) ?? [])
-              .filter((resolution) => resolution.resolvedAt >= detectionAt)
-              .sort((left, right) => left.resolvedAt - right.resolvedAt)[0]?.data
-          : null;
+      const typed = typedResolutionOf(resolutions, event);
       const outcome = typed ?? legacyOutcomes.get(`${run}:${event.seq}`);
       const actionRequired = outcome?.actionRequired ?? outcome?.actionChanged;
       if (typeof actionRequired !== 'boolean') bucket.unresolved += 1;
