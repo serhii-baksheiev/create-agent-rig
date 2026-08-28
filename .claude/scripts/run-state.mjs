@@ -156,8 +156,8 @@ export const readStateForSelection = (runDir) => {
  * there the failure is loud rather than torn, which is the direction to prefer
  * if it ever has to be handled.
  */
-export const updateState = (runDir, patch) => {
-  const next = { ...readState(runDir), ...patch };
+const writeState = (runDir, current, patch) => {
+  const next = { ...current, ...patch };
   const file = statePathIn(runDir);
   // The temp name carries the pid so a second writer cannot clobber the first
   // one's half-written file — the merge above is still unsafe under two
@@ -192,6 +192,8 @@ export const updateState = (runDir, patch) => {
   }
   return next;
 };
+
+export const updateState = (runDir, patch) => writeState(runDir, readState(runDir), patch);
 
 /**
  * Count one task that hit a wall, and hand back the new total.
@@ -288,23 +290,27 @@ export const recordRevalidationHold = (runDir, detection = {}) => {
   ) {
     throw new Error('run state: revalidation hold needs a ticket, checkpoint, detection id, and blocking result');
   }
-  return updateState(runDir, {
-    revalidationHold: {
-      kind: 'revalidation-hold',
-      ticket: detection.ticket,
-      checkpoint: detection.checkpoint,
-      result,
-      detectionId: detection.id,
+  return writeState(
+    runDir,
+    readStateForSelection(runDir),
+    {
+      revalidationHold: {
+        kind: 'revalidation-hold',
+        ticket: detection.ticket,
+        checkpoint: detection.checkpoint,
+        result,
+        detectionId: detection.id,
+      },
     },
-  });
+  );
 };
 
 /** Clear only the hold the recorded resolution actually answers. */
 export const clearRevalidationHold = (runDir, detectionId) => {
   if (!runDir || typeof detectionId !== 'string') return null;
-  const state = readState(runDir);
+  const state = readStateForSelection(runDir);
   if (state.revalidationHold?.detectionId !== detectionId) return state;
-  return updateState(runDir, { revalidationHold: undefined });
+  return writeState(runDir, state, { revalidationHold: undefined });
 };
 
 /**

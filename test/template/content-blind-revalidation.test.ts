@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -499,6 +499,104 @@ describe('Jira commentary fingerprints require the complete id set', () => {
     expect(close.code, close.out).toBe(2);
     expect(jsonOf(close)).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
     expect(JSON.stringify(jsonOf(close))).toMatch(/comment.*(incomplete|truncated|missing|total)/i);
+  });
+});
+
+describe('GitHub commentary fingerprints require proof beyond the capped list window', () => {
+  const comments = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({ id: `IC_kwDO-comment-${index + 1}` }));
+  const issue = (over: Record<string, unknown> = {}) => ({
+    number: 50,
+    title: 'GitHub capped commentary fixture',
+    body: SCOPE_SENTINEL,
+    state: 'OPEN',
+    labels: [],
+    url: 'https://example.invalid/issues/50',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    comments: comments(100),
+    ...over,
+  });
+
+  it('refuses SELECT when the transport returns exactly its 100-comment window without a total', async () => {
+    const p = await project();
+    const claimPath = path.join(p.root, '.rig', 'claims', '50.json');
+    await writeFile(
+      p.configPath,
+      JSON.stringify({ adapter: 'github-issues', options: { issues: [issue()] } }),
+    );
+
+    const selection = await next(p);
+
+    expect(selection.code).toBe(2);
+    expect(jsonOf(selection).revalidation).toMatchObject({
+      ticket: '50',
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(selection).revalidation)).toMatch(
+      /comment.*(complete|cap|limit|window|total)/i,
+    );
+    expect(existsSync(claimPath)).toBe(false);
+  });
+
+  it('never returns CURRENT for a tracked legacy baseline at the 100-comment cap', async () => {
+    const p = await project();
+    const claimPath = path.join(p.root, '.rig', 'claims', '50.json');
+    await writeFile(
+      p.configPath,
+      JSON.stringify({
+        adapter: 'github-issues',
+        options: { issues: [issue({ comments: comments(99) })] },
+      }),
+    );
+    expect((await next(p)).code).toBe(0);
+    const legacyClaim = JSON.parse(await readFile(claimPath, 'utf8'));
+    const cappedIds = comments(100)
+      .map((comment) => comment.id)
+      .sort();
+    legacyClaim.fingerprints.commentary.value = createHash('sha256')
+      .update(JSON.stringify({ count: 100, ids: cappedIds }))
+      .digest('hex');
+    legacyClaim.fingerprints.commentary.count = 100;
+    await writeFile(claimPath, `${JSON.stringify(legacyClaim)}\n`);
+    await git(['add', '.rig/claims/50.json'], p.root);
+    await git(['commit', '-q', '-m', 'track legacy capped GitHub commentary baseline'], p.root);
+    await writeFile(
+      p.configPath,
+      JSON.stringify({
+        adapter: 'github-issues',
+        options: {
+          issues: [issue({ labels: [{ name: 'in-progress' }] })],
+        },
+      }),
+    );
+
+    const close = await run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_CLOSE',
+        '--ticket',
+        '50',
+        '--base',
+        'master',
+        '--config',
+        p.configPath,
+        '--json',
+      ],
+      p.root,
+      p.env,
+    );
+
+    expect(close.code, close.out).toBe(2);
+    expect(jsonOf(close)).toMatchObject({
+      ticket: '50',
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+    expect(JSON.stringify(jsonOf(close))).toMatch(/comment.*(complete|cap|limit|window|total)/i);
   });
 });
 
@@ -1411,6 +1509,88 @@ describe('run-state uncertainty preserves the revalidation brake', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toMatch(/run state.*(exceeds|oversized|too large)/i);
   });
+
+  it.each([
+    ['record', 'corrupt'],
+    ['clear', 'corrupt'],
+    ['record', 'symlink'],
+    ['clear', 'symlink'],
+    ['record', 'oversized'],
+    ['clear', 'oversized'],
+  ] as const)(
+    '%s refuses a present %s state instead of replacing unknown stop inputs',
+    async (operation, shape) => {
+      const runDir = await mkdtemp(path.join(tmpdir(), 'revalidation-hold-state-'));
+      const statePath = path.join(runDir, 'state.json');
+      const existingHold = {
+        kind: 'revalidation-hold',
+        ticket: 'RP-50',
+        checkpoint: 'BEFORE_PR',
+        result: 'CHANGED',
+        detectionId: 'existing-detection',
+      };
+      try {
+        if (shape === 'corrupt') {
+          await writeFile(statePath, '{"budgetExhausted":true,"revalidationHold":');
+        } else if (shape === 'oversized') {
+          await writeFile(
+            statePath,
+            `${JSON.stringify({
+              budgetExhausted: true,
+              revalidationHold: existingHold,
+              padding: 'x'.repeat(256 * 1024),
+            })}\n`,
+          );
+        } else {
+          const linkedState = path.join(runDir, 'linked-state.json');
+          await writeFile(
+            linkedState,
+            `${JSON.stringify({ budgetExhausted: true, revalidationHold: existingHold })}\n`,
+          );
+          await symlink('linked-state.json', statePath, 'file');
+        }
+        const original = await readFile(statePath);
+        const originalDigest = createHash('sha256').update(original).digest('hex');
+        const runState = (await import(
+          `${pathToFileURL(runStateScript).href}?hold-${operation}-${shape}=${Date.now()}`
+        )) as {
+          recordRevalidationHold: (runDir: string, detection: Record<string, unknown>) => unknown;
+          clearRevalidationHold: (runDir: string, detectionId: string) => unknown;
+        };
+        let failure: unknown;
+
+        try {
+          if (operation === 'record') {
+            runState.recordRevalidationHold(runDir, {
+              ticket: 'RP-50',
+              checkpoint: 'BEFORE_CLOSE',
+              id: 'replacement-detection',
+              result: 'UNVERIFIABLE',
+            });
+          } else {
+            runState.clearRevalidationHold(runDir, 'existing-detection');
+          }
+        } catch (error) {
+          failure = error;
+        }
+
+        expect.soft(failure).toBeInstanceOf(Error);
+        expect
+          .soft(String((failure as Error | undefined)?.message ?? ''))
+          .toMatch(/run state.*(corrupt|invalid|unreadable|symlink|exceeds|oversized|too large)/i);
+        const after = await readFile(statePath);
+        expect.soft(createHash('sha256').update(after).digest('hex')).toBe(originalDigest);
+        if (shape === 'corrupt') {
+          expect.soft(after.toString('utf8')).toContain('"budgetExhausted":true');
+        }
+        if (shape === 'symlink') {
+          expect((await lstat(statePath)).isSymbolicLink()).toBe(true);
+        }
+      } finally {
+        await rm(runDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('the detection contract is classified before it is followed or fully read', () => {
