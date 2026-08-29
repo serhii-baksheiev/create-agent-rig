@@ -283,6 +283,7 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
 
   it.each([
     '.claude/hooks/guard-bash.mjs',
+    '.claude/doctor-exemptions.json',
     '.claude/settings.json',
     '.claude/queue.json',
     '.claude/queue.board',
@@ -325,6 +326,12 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
   it('allows an edit under an allowed prefix', async () => {
     await armed(['.claude/scripts/queue/']);
     const result = await run(edit(`${root}/.claude/scripts/queue/core.mjs`));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('allows doctor exemptions only when the item names that exact rulebook file', async () => {
+    await armed(['.claude/doctor-exemptions.json']);
+    const result = await run(edit(`${root}/.claude/doctor-exemptions.json`));
     expect(result.code, result.stderr).toBe(0);
   });
 

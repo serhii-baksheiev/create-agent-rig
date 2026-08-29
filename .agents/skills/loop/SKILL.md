@@ -59,7 +59,11 @@ and the `board` command itself refuses a switch while the checkout is unattended
 does not prevent an arbitrary direct shell write to the selector — edit-tool
 hooks cannot see one. `.claude/queue.state.json` stays per config, not per board:
 the tier the last close recorded rations the next selection whichever board it
-lands on.
+lands on. This is repository-risk state, not tracker metadata: switching from
+one independent queue to another must not turn a previous mechanism close into
+permission for a second one in the same checkout. Pinned in the generator's
+`test/template/queue-board.test.ts` (absent in a generated rig) › "keeps
+completed-tier spacing repository-global when the active board switches".
 
 Adding a fourth is an adapter, not a rewrite: `core.mjs` holds every selection
 decision and each adapter only maps its tracker's records onto the neutral shape.

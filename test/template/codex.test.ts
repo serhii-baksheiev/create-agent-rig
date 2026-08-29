@@ -1,12 +1,19 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { describe, expect, it } from 'vitest';
-import { fifosAvailable, needsGitRoot, skipUnless } from '../helpers/env.js';
+import {
+  fifosAvailable,
+  needsGitRoot,
+  onlyOnWindows,
+  posixShellAvailable,
+  skipUnless,
+} from '../helpers/env.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
 // `git init` under pre-commit re-initialises THIS repository rather than the
@@ -106,15 +113,230 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           expect(windowsScript).toMatch(
             /Join-Path \$repoRoot '\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs'/,
           );
-          expect(hook.command).not.toContain('CLAUDE_PROJECT_DIR');
+          expect(hook.command).toContain('CLAUDE_PROJECT_DIR');
+          expect(windowsScript).toContain('$env:CLAUDE_PROJECT_DIR = $repoRoot');
+          expect(windowsScript).toContain('$startInfo.RedirectStandardInput = $true');
+          expect(windowsScript).toContain(
+            '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
+          );
+          expect(windowsScript).toContain('exit $child.ExitCode');
           // `command` is what Codex executes on macOS and Linux. Keep it valid
           // for the platform-provided POSIX shell and independent of GNU tools.
-          expect(hook.command).toMatch(
-            /^node "\$\(git rev-parse --show-toplevel\)\/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs"$/,
-          );
+          expect(hook.command).toMatch(/node [^\n]*\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/);
           expect(hook.command).not.toMatch(/powershell|cmd\.exe|%CD%|\\/i);
         }
       }
+    }
+  });
+
+  it('anchors a nested-cwd Codex rulebook edit to the canonical repository root', async (ctx) => {
+    // Windows wiring is decoded and asserted above; this drives the POSIX
+    // command through the shell it targets instead of pretending to execute
+    // PowerShell on another platform.
+    skipUnless(ctx, posixShellAvailable().ok, posixShellAvailable().reason);
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-root-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'codex-hook-home-'));
+    const nested = path.join(scratch, 'packages', 'core', 'src');
+    try {
+      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+      await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
+        recursive: true,
+      });
+      await mkdir(nested, { recursive: true });
+
+      const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: scratch };
+      const { unattendedFlags } = (await import(
+        pathToFileURL(path.join(scratch, '.claude', 'scripts', 'unattended-flag.mjs')).href
+      )) as { unattendedFlags: (env: Record<string, string>) => string[] };
+      const flag = unattendedFlags(scopedEnv).find((candidate) => candidate.startsWith(home));
+      expect(flag).toBeDefined();
+      await mkdir(path.dirname(flag!), { recursive: true });
+      await writeFile(flag!, JSON.stringify({ item: 'RP-54', runDir: '/runs/rp-54', allow: [] }));
+
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: {
+          PreToolUse: Array<{
+            hooks: Array<{ command: string }>;
+          }>;
+        };
+      };
+      const command = config.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
+        hook.command.includes('guard-rulebook.mjs'),
+      )?.command;
+      expect(command).toBeDefined();
+
+      const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+        const child = execFile(
+          '/bin/sh',
+          ['-c', command!],
+          {
+            cwd: nested,
+            env: {
+              ...withoutGitLocation(process.env),
+              HOME: home,
+              CLAUDE_PROJECT_DIR: '',
+            },
+          },
+          (error, _stdout, stderr) =>
+            resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.end(
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Write',
+            tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
+            cwd: nested,
+          }),
+        );
+      });
+
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/rulebook|unattended/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('anchors a nested-cwd Windows Codex rulebook edit to the canonical repository root', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-root-'));
+    const home = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-home-'));
+    const nested = path.join(scratch, 'packages', 'core', 'src');
+    try {
+      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+      await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
+        recursive: true,
+      });
+      await mkdir(nested, { recursive: true });
+
+      const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: scratch };
+      const { unattendedFlags } = (await import(
+        pathToFileURL(path.join(scratch, '.claude', 'scripts', 'unattended-flag.mjs')).href
+      )) as { unattendedFlags: (env: Record<string, string>) => string[] };
+      const flag = unattendedFlags(scopedEnv).find((candidate) =>
+        path.resolve(candidate).toLowerCase().startsWith(path.resolve(home).toLowerCase()),
+      );
+      expect(flag).toBeDefined();
+      await mkdir(path.dirname(flag!), { recursive: true });
+      await writeFile(flag!, JSON.stringify({ item: 'RP-54', runDir: '/runs/rp-54', allow: [] }));
+
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: {
+          PreToolUse: Array<{
+            hooks: Array<{ command: string; commandWindows?: string }>;
+          }>;
+        };
+      };
+      const commandWindows = config.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
+        hook.command.includes('guard-rulebook.mjs'),
+      )?.commandWindows;
+      const encoded = commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      expect(encoded).toBeDefined();
+
+      const payloadText = JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
+        cwd: nested,
+      });
+
+      const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+        const child = execFile(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+          {
+            cwd: nested,
+            env: {
+              ...withoutGitLocation(process.env),
+              HOME: home,
+              CLAUDE_PROJECT_DIR: '',
+            },
+          },
+          (error, _stdout, stderr) =>
+            resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.end(payloadText);
+      });
+
+      // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
+      // the edit, and the only stderr PowerShell returns on the allow path is
+      // its own CLIXML progress noise — so this failure has to carry the inputs
+      // the guard compared. The spellings are the whole question: the hook
+      // derives its root from `git rev-parse --show-toplevel` while the payload
+      // path comes from `os.tmpdir()`, and the flag is named by a hash of that root.
+      const toplevel = (
+        await exec('git', ['rev-parse', '--show-toplevel'], {
+          cwd: nested,
+          env: withoutGitLocation(),
+        })
+      ).stdout.trim();
+      // Only when the guard already allowed the edit: re-run the SAME unmodified
+      // wrapper against a probe standing in for the guard, so the failure says
+      // whether the payload reached the child at all. It separates a wrapper
+      // that loses stdin from a guard that reads it and decides "allow" — and
+      // the exit code says whether the wrapper propagates a child's code.
+      const probe =
+        result.code === 2
+          ? '(not probed: the guard blocked)'
+          : await (async () => {
+              await writeFile(
+                path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
+                [
+                  "import { readFileSync } from 'node:fs';",
+                  "let n = -1, err = '';",
+                  'try { n = readFileSync(0).length; } catch (e) { err = String((e && e.code) || e); }',
+                  'process.stderr.write(`PROBE bytes=${n} err=${err}\\n`);',
+                  'process.exit(3);',
+                ].join('\n'),
+              );
+              return new Promise<string>((resolve, reject) => {
+                const child = execFile(
+                  'powershell.exe',
+                  ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+                  {
+                    cwd: nested,
+                    env: {
+                      ...withoutGitLocation(process.env),
+                      HOME: home,
+                      CLAUDE_PROJECT_DIR: '',
+                    },
+                  },
+                  (error, _stdout, stderr) => {
+                    const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+                    resolve(`exit=${code} ${stderr.replace(/\s+/g, ' ').trim()}`);
+                  },
+                );
+                if (!child.stdin) return reject(new Error('no stdin'));
+                child.stdin.end(payloadText);
+              });
+            })();
+
+      const seen = [
+        `tmpdir            ${tmpdir()}`,
+        `scratch           ${scratch}`,
+        `scratch (native)  ${realpathSync.native(scratch)}`,
+        `git toplevel      ${toplevel}`,
+        `payload file_path ${path.join(scratch, '.claude', 'rules', 'autonomy.md')}`,
+        `payload bytes     ${Buffer.byteLength(payloadText)}`,
+        `home              ${home}`,
+        `flag              ${flag}`,
+        `flag exists       ${existsSync(flag!)}`,
+        `transport probe   ${probe}`,
+        `stderr            ${result.stderr}`,
+      ].join('\n');
+
+      expect(result.code, seen).toBe(2);
+      expect(result.stderr, seen).toMatch(/rulebook|unattended/i);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
     }
   });
 

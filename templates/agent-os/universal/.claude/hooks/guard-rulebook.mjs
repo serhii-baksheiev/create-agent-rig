@@ -4,8 +4,9 @@
 //
 // The rulebook is the set of files that decide what this session may do — hooks
 // and settings wiring, the queue config and selector, all scripts, rules, skills
-// and agents, the `.codex/` configuration, the integrity manifest, `AGENTS.md`
-// and `CLAUDE.md`. Every one of them was editable by the run it governs: a
+// and agents, the `.codex/` configuration, the integrity manifest,
+// `.claude/doctor-exemptions.json`, `AGENTS.md` and `CLAUDE.md`. Every one of
+// them was editable by the run it governs: a
 // Write to `.claude/hooks/dod-checks.json` with `[]` switched the stop gate
 // off, and nothing refused it until the merge sweep, long after.
 //
@@ -60,10 +61,11 @@
 //     adversary.
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { editFragments } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 export { RULEBOOK_PREFIXES, isRulebookPath };
 
@@ -71,9 +73,20 @@ const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply
 
 const toPosix = (value) => String(value ?? '').replaceAll('\\', '/');
 
+// RP-54: `.native`, never plain `realpathSync`. Both resolve symlinks and
+// normalise separators; only the native one expands a Windows 8.3 short name,
+// so `C:\Users\RUNNER~1\…` and `C:\Users\runneradmin\…` otherwise survive as
+// two spellings of one directory. The root arrives from
+// `git rev-parse --show-toplevel` (long) while a payload path arrives however
+// the tool spelled it (short under an 8.3 temp or home), and a root that
+// matches no spelling of the payload makes this fail-open guard allow the
+// rulebook edit it exists to refuse. Both sites take the same canonicaliser or
+// the comparison is between two different normalisations. Measured on Windows
+// by codex.test.ts (absent in a generated rig) › "anchors a nested-cwd Windows
+// Codex rulebook edit to the canonical repository root".
 const canonicalRoot = (root) => {
   try {
-    return realpathSync(root);
+    return realpathSync.native(root);
   } catch {
     return root;
   }
@@ -85,7 +98,7 @@ const canonicalPath = (filePath) => {
   const tail = [];
   for (;;) {
     try {
-      return join(realpathSync(cursor), ...tail);
+      return join(realpathSync.native(cursor), ...tail);
     } catch {
       const parent = dirname(cursor);
       if (parent === cursor) return filePath;
@@ -112,12 +125,8 @@ const protectedRelative = (roots, filePath) =>
     .find(isRulebookPath);
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0; // unparseable payload: not ours to judge
-  }
+  const input = readHookInput();
+  if (input === null) return 0; // unparseable payload: not ours to judge
   if (!EDIT_TOOLS.has(input?.tool_name)) return 0;
 
   const selectedRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();

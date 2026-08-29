@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
@@ -137,6 +137,35 @@ describe('unattendedFlags: the same two-home rule as the kill switch', () => {
     const { unattendedFlags } = await load();
     const flags = unattendedFlags({ ...process.env, HOME: home });
     expect(flags).toContain(path.join(userInfo().homedir, '.claude', FLAG_NAME));
+  });
+
+  /**
+   * RP-54 — the flag is scoped by a hash of CLAUDE_PROJECT_DIR, so two
+   * spellings of ONE checkout must hash to one name or the guard looks for a
+   * file nobody wrote and fails open.
+   *
+   * The spelling the loop arms with is `os.tmpdir()`-derived in tests and
+   * harness-derived in a run; the spelling the generated Codex Windows hook
+   * passes is `git rev-parse --show-toplevel`. On Windows those differ: a home
+   * under an 8.3 short name (`SERHII~1`, and `RUNNER~1` on the GitHub runner)
+   * survives `realpathSync`, which normalises separators but not short names —
+   * only `realpathSync.native` expands them.
+   *
+   * Where a platform offers one spelling only, the two arms are equal and this
+   * asserts nothing; it is sharp exactly where the defect is reachable.
+   */
+  it('scopes the flag by the checkout, so two spellings of one directory arm one file', async () => {
+    const { unattendedFlags } = await load();
+    const checkout = await mkdtemp(path.join(tmpdir(), 'ar51-spelling-'));
+    try {
+      const spellings = [checkout, realpathSync.native(checkout)];
+      const names = spellings.map((dir) =>
+        path.basename(unattendedFlags({ ...process.env, HOME: home, CLAUDE_PROJECT_DIR: dir })[0]!),
+      );
+      expect(names[1], `spellings: ${spellings.join(' vs ')}`).toBe(names[0]);
+    } finally {
+      await rm(checkout, { recursive: true, force: true });
+    }
   });
 });
 

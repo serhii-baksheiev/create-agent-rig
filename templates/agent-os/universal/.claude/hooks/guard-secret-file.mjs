@@ -82,10 +82,10 @@
 // by an explicit per-line candidate cap rather than running to exhaustion. Any
 // unbounded work in a fail-open guard is a total bypass of every rule at once,
 // not just of this one.
-import { readFileSync } from 'node:fs';
 
 import { findSecretValues, isCredentialPath } from '../scripts/lib/secrets.mjs';
 import { editFragments } from './lib/edit-input.mjs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 /** Where a refusal points the agent, so the block is actionable rather than a wall. */
 const WHERE_CREDENTIALS_BELONG =
@@ -93,12 +93,8 @@ const WHERE_CREDENTIALS_BELONG =
   'and reach the process through the environment — see .claude/rules/autonomy.md, "Never".';
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0; // unparseable payload: not ours to judge
-  }
+  const input = readHookInput();
+  if (input === null) return 0; // unparseable payload: not ours to judge
 
   const editTools = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
   if (!editTools.has(input?.tool_name)) return 0;

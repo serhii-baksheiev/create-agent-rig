@@ -76,18 +76,31 @@ function codexAgent(markdown, source) {
 function portableHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a portable Codex hook command from: ${command}`);
-  return `node "$(git rev-parse --show-toplevel)/${hook}"`;
+  return `repoRoot="$(git rev-parse --show-toplevel)" && CLAUDE_PROJECT_DIR="$repoRoot" node "$repoRoot/${hook}"`;
 }
 
 function windowsHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a Windows Codex hook command from: ${command}`);
+  // PowerShell owns its stdin, so `& node` receives an empty stream. Copy the
+  // original bytes into a child process explicitly; parsing and re-encoding the
+  // JSON here would make the wrapper a second implementation of the hook input.
   const script = [
+    "$ErrorActionPreference = 'Stop'",
     '$repoRoot = git rev-parse --show-toplevel',
     'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+    '$env:CLAUDE_PROJECT_DIR = $repoRoot',
     `$hookPath = Join-Path $repoRoot '${hook}'`,
-    '& node $hookPath',
-    'exit $LASTEXITCODE',
+    '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
+    "$startInfo.FileName = 'node'",
+    "$startInfo.Arguments = '\"' + $hookPath + '\"'",
+    '$startInfo.UseShellExecute = $false',
+    '$startInfo.RedirectStandardInput = $true',
+    '$child = [System.Diagnostics.Process]::Start($startInfo)',
+    '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
+    '$child.StandardInput.Close()',
+    '$child.WaitForExit()',
+    'exit $child.ExitCode',
   ].join('; ');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encoded}`;

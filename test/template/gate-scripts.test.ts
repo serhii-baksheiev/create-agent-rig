@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stubCommand } from '../helpers/stub-command.js';
 
 // The extraction brief's highest-value artifacts (§2, §5): the two sweeps that
 // detect the class of failure a run cannot report about itself. Fixtures here
@@ -619,47 +620,82 @@ describe('the CLI entrypoint survives a symlinked path', () => {
       const link = path.join(real, 'via-symlink');
       await symlink(project, link);
 
+      // Preflight's entrypoint owns two outbound probes. This test is about the
+      // symlinked `isMain` boundary, so those dependencies are deterministic
+      // local executables: no fixture may fetch a real remote or inspect the
+      // caller's GitHub Actions history while proving an entrypoint ran.
+      const commandStubs: Array<{ restore: () => void }> = [];
+      if (script === 'preflight.mjs') {
+        commandStubs.push(
+          await stubCommand(
+            'git',
+            [
+              "if (args[0] === 'symbolic-ref') return { stdout: 'origin/main\\n' };",
+              "if (args[0] === 'fetch') return {};",
+              "if (args[0] === 'rev-parse') return { stdout: 'fixture-sha\\n' };",
+              'return { exitCode: 2 };',
+            ].join(' '),
+          ),
+        );
+        commandStubs.push(
+          await stubCommand(
+            'gh',
+            'if (args[0] === \'run\' && args[1] === \'list\') return { stdout: \'[{"conclusion":"success","url":"https://example.invalid/deploy/1"}]\\n\' }; return { exitCode: 2 };',
+          ),
+        );
+      }
+
       const args =
         script.startsWith('detect') || script.startsWith('reconcile')
           ? ['--input', path.join(link, 'prs.json')]
           : script.startsWith('queue')
             ? ['next']
             : [];
-      const result = await new Promise<{ code: number; out: string }>((resolve) => {
-        execFile(
-          process.execPath,
-          [path.join(link, '.claude', 'scripts', script), ...args],
-          { cwd: link, env: hermeticEnv() },
-          (error, stdout, stderr) => {
-            resolve({
-              code: error ? ((error as { code?: number }).code ?? 1) : 0,
-              out: stdout + stderr,
-            });
-          },
+      try {
+        const result = await new Promise<{ code: number; out: string }>((resolve) => {
+          execFile(
+            process.execPath,
+            [path.join(link, '.claude', 'scripts', script), ...args],
+            { cwd: link, env: hermeticEnv() },
+            (error, stdout, stderr) => {
+              resolve({
+                code: error ? ((error as { code?: number }).code ?? 1) : 0,
+                out: stdout + stderr,
+              });
+            },
+          );
+        });
+        // 🔴 NOT "it printed something". `out` is stdout+stderr, so an
+        // `ERR_MODULE_NOT_FOUND` stack trace satisfies a non-empty assertion — and
+        // it did, for weeks, while the CLI this fixture exists to exercise never
+        // loaded at all. The assertion has to be that the script RAN: a clean exit,
+        // and a line only its own output shape produces.
+        // A clean exit is the cheapest signal that the script ran to completion
+        // rather than dying on an import — but it is only safe to assert because
+        // the child's environment is hermetic. Three of the four DO call
+        // `process.exit` (only `preflight.mjs` does not), and `queue/index.mjs`
+        // exits on the ambient run state; see `hermeticEnv`. An earlier revision
+        // dropped this assertion instead, on the belief that `preflight.mjs`
+        // exits non-zero on a STOP verdict — it does not, and the cheapest check
+        // was discarded for a reason that did not exist.
+        expect(result.code, `${script} exited non-zero through a symlink:\n${result.out}`).toBe(0);
+        expect(
+          result.out,
+          `${script} crashed instead of running through a symlink:\n${result.out}`,
+        ).not.toMatch(
+          /ERR_MODULE_NOT_FOUND|Cannot find (module|package)|at file:\/\/|node:internal/,
         );
-      });
-      // 🔴 NOT "it printed something". `out` is stdout+stderr, so an
-      // `ERR_MODULE_NOT_FOUND` stack trace satisfies a non-empty assertion — and
-      // it did, for weeks, while the CLI this fixture exists to exercise never
-      // loaded at all. The assertion has to be that the script RAN: a clean exit,
-      // and a line only its own output shape produces.
-      // A clean exit is the cheapest signal that the script ran to completion
-      // rather than dying on an import — but it is only safe to assert because
-      // the child's environment is hermetic. Three of the four DO call
-      // `process.exit` (only `preflight.mjs` does not), and `queue/index.mjs`
-      // exits on the ambient run state; see `hermeticEnv`. An earlier revision
-      // dropped this assertion instead, on the belief that `preflight.mjs`
-      // exits non-zero on a STOP verdict — it does not, and the cheapest check
-      // was discarded for a reason that did not exist.
-      expect(result.code, `${script} exited non-zero through a symlink:\n${result.out}`).toBe(0);
-      expect(
-        result.out,
-        `${script} crashed instead of running through a symlink:\n${result.out}`,
-      ).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find (module|package)|at file:\/\/|node:internal/);
-      expect(
-        result.out,
-        `${script} produced no recognisable output through a symlink:\n${result.out}`,
-      ).toMatch(shape);
+        expect(
+          result.out,
+          `${script} produced no recognisable output through a symlink:\n${result.out}`,
+        ).toMatch(shape);
+        if (script === 'preflight.mjs') {
+          expect(result.out).toContain('main == origin/main');
+          expect(result.out).toContain('last deploy succeeded (https://example.invalid/deploy/1)');
+        }
+      } finally {
+        for (const stub of commandStubs.reverse()) stub.restore();
+      }
     },
   );
 });

@@ -67,6 +67,40 @@ describe('boards in queue.json', () => {
     expect(config.options).toEqual({ maxGateRounds: 3, project: 'RP', owner: 'rig' });
   });
 
+  it('keeps completed-tier spacing repository-global when the active board switches', async () => {
+    const { loadState, statePathFor } = await indexModule();
+    const { selectNext } = await import(pathToFileURL(path.join(queueDir, 'core.mjs')).href);
+    const { dir, configPath } = await fixture();
+    const statePath = statePathFor(configPath);
+    await writeFile(statePath, '{"lastCompletedTier":"elevated-mechanism"}\n');
+
+    const switched = await runCli(['board', 'RP', '--config', configPath], dir);
+    expect(switched.code, switched.out).toBe(0);
+    const state = loadState(statePath);
+    expect(state.lastCompletedTier).toBe('elevated-mechanism');
+
+    const result = selectNext(
+      [
+        {
+          id: 'RP-NEXT',
+          title: 'change another mechanism',
+          state: 'open',
+          labels: [],
+          tier: 'elevated',
+          blockedBy: [],
+          blocks: [],
+          priority: 1,
+          createdAt: '2026-08-27T00:00:00Z',
+          triage: false,
+          trigger: null,
+        },
+      ],
+      state,
+    );
+    expect(result.ticket).toBeNull();
+    expect(result.skipped[0]?.reason).toMatch(/back to back|consecutive|spacing/i);
+  });
+
   it('refuses a board nobody declared instead of falling back', async () => {
     const { loadConfig, boardPathFor } = await indexModule();
     const { configPath } = await fixture();

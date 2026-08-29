@@ -544,7 +544,7 @@ describe('hardening beyond the endpoint (AR-54)', () => {
   });
 
   describe('a transient failure is retried, and the server’s Retry-After is honoured', () => {
-    it('a 429 followed by a 200 yields the 200 body', async () => {
+    it('retries a semantically read-only search POST after a 429', async () => {
       scriptFetch([
         { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '1' } },
         { status: 200, json: { issues: [issue({ key: 'AR-1' })] } },
@@ -554,7 +554,24 @@ describe('hardening beyond the endpoint (AR-54)', () => {
         issues: Array<{ key: string }>;
       };
       expect(calls).toHaveLength(2);
+      expect(calls.every((call) => call.method === 'POST')).toBe(true);
       expect(response.issues.map((i) => i.key)).toEqual(['AR-1']);
+    });
+
+    it('keeps bounded retry for a safe issue GET', async () => {
+      scriptFetch([
+        {
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: { 'Retry-After': '0.001' },
+        },
+        { status: 200, json: issue({ key: 'AR-1' }) },
+      ]);
+      const { find } = await load('jira.mjs');
+      const found = (await find('AR-1', { env: CREDENTIALS })) as Ticket;
+      expect(found.id).toBe('AR-1');
+      expect(calls).toHaveLength(2);
+      expect(calls.every((call) => call.method === 'GET')).toBe(true);
     });
 
     it('sleeps for the Retry-After the 429 carried, in milliseconds', async () => {
@@ -601,6 +618,71 @@ describe('hardening beyond the endpoint (AR-54)', () => {
       expect(calls).toHaveLength(1);
       expect(sleeps).toEqual([]);
     });
+  });
+
+  describe('ambiguous transient responses are never replayed for tracker mutations', () => {
+    const proposal = {
+      finding: 'queue empty twenty times',
+      part: 'PLAN.md',
+      change: 'seed the queue',
+      proof: 'the next run has work',
+    };
+
+    it.each(['comment POST', 'transition POST', 'issue-create POST', 'issue update PUT'])(
+      'does not retry %s',
+      async (operation) => {
+        const transient: Scripted = {
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: { 'Retry-After': '0.001' },
+        };
+        scriptFetch(
+          operation === 'issue update PUT'
+            ? [{ status: 204 }, transient, { status: 204 }]
+            : [
+                transient,
+                operation === 'issue-create POST'
+                  ? { status: 200, json: { key: 'AR-99' } }
+                  : { status: 204 },
+              ],
+        );
+
+        const adapter = await load('jira.mjs');
+        const ticket = { id: 'ABC-13' };
+        const mutation =
+          operation === 'comment POST'
+            ? adapter.comment(ticket, 'a note', { env: CREDENTIALS })
+            : operation === 'transition POST'
+              ? adapter.claim(ticket, { transitionId: '31', env: CREDENTIALS })
+              : operation === 'issue-create POST'
+                ? adapter.proposeTriage(proposal, {
+                    project: 'AR',
+                    existing: [],
+                    env: CREDENTIALS,
+                  })
+                : adapter.escalate(ticket, 'needs an owner', { env: CREDENTIALS });
+        const error = await mutation.then(
+          () => null,
+          (thrown: unknown) => thrown,
+        );
+
+        expect(error, `${operation} reported success after an ambiguous 503`).toBeInstanceOf(Error);
+        expect(String(error)).toMatch(/503/);
+        const targetCalls = calls.filter((call) => {
+          const route = new URL(call.url).pathname;
+          if (operation === 'comment POST')
+            return call.method === 'POST' && /\/comment$/.test(route);
+          if (operation === 'transition POST') {
+            return call.method === 'POST' && /\/transitions$/.test(route);
+          }
+          if (operation === 'issue-create POST') {
+            return call.method === 'POST' && route === '/rest/api/3/issue';
+          }
+          return call.method === 'PUT' && route === '/rest/api/3/issue/ABC-13';
+        });
+        expect(targetCalls, `${operation} was replayed`).toHaveLength(1);
+      },
+    );
   });
 
   describe('search follows the cursor, so a board longer than one page is read whole', () => {

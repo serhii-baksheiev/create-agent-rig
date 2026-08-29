@@ -286,22 +286,32 @@ const retryDelayMs = (response, attempt) => {
  * - a timeout (`timeoutMs`, default 20 s) through an AbortController — a stalled
  *   connection used to block selection forever, and a loop that cannot read its
  *   queue must stop, not hang;
- * - a retry on 429/502/503/504, at most `MAX_ATTEMPTS`, honouring `Retry-After`;
- *   401/403/404 and every other status fail at once — a bad credential is not
- *   transient, and retrying it only delays the diagnosis;
+ * - safe reads retry 429/502/503/504 at most `MAX_ATTEMPTS`, honouring
+ *   `Retry-After`; mutating calls do not retry an ambiguous response, because
+ *   Jira may have applied the write before a proxy returned the error. The
+ *   search endpoint opts in explicitly: it is a POST at the transport layer and
+ *   a read at the operation layer;
  * - `retry.sleep` injectable, so a test measures the delay it would have waited
  *   instead of waiting it.
  *
  * Pinned in the generator's `test/template/queue-jira.test.ts` (absent in a
  * generated rig) › "hands fetch an AbortSignal", › "rejects naming the timeout
- * and the route when fetch never resolves", › "a 429 followed by a 200 yields
- * the 200 body", › "sleeps for the Retry-After the 429 carried, in
+ * and the route when fetch never resolves", › "retries a semantically read-only
+ * search POST after a 429", › "keeps bounded retry for a safe issue GET", ›
+ * "does not retry %s", › "sleeps for the Retry-After the 429 carried, in
  * milliseconds", › "gives up after four consecutive 503s, naming the status and
  * the attempts" and › "does not retry a 401 — a bad credential is not transient".
  */
 const request = async (
   route,
-  { method = 'GET', body = null, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, retry = {} } = {},
+  {
+    method = 'GET',
+    body = null,
+    env = process.env,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    retry = {},
+    retryTransient = method === 'GET',
+  } = {},
 ) => {
   const { baseUrl, email, token } = requireCredentials(env);
   const sleep = retry.sleep ?? defaultSleep;
@@ -334,13 +344,14 @@ const request = async (
       clearTimeout(timer);
     }
     if (response.ok) return payload;
-    if (TRANSIENT.has(response.status) && attempt < MAX_ATTEMPTS) {
+    const retryable = retryTransient && TRANSIENT.has(response.status);
+    if (retryable && attempt < MAX_ATTEMPTS) {
       await sleep(retryDelayMs(response, attempt));
       continue;
     }
     // The status alone; never echo the response body, which can carry the token
     // back in an error envelope.
-    const attempts = TRANSIENT.has(response.status) ? ` after ${attempt} attempts` : '';
+    const attempts = retryable ? ` after ${attempt} attempts` : '';
     throw new Error(`jira ${method} ${route} failed: ${response.status} ${response.statusText}${attempts}`);
   }
 };
@@ -443,6 +454,7 @@ export const search = async ({
     pages += 1;
     const page = await request('/rest/api/3/search/jql', {
       method: 'POST',
+      retryTransient: true,
       body: {
         jql: query,
         maxResults: limit,
