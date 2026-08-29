@@ -239,7 +239,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       )?.[1];
       expect(encoded).toBeDefined();
 
-      const payload = JSON.stringify({
+      const payloadText = JSON.stringify({
         hook_event_name: 'PreToolUse',
         tool_name: 'Write',
         tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
@@ -262,7 +262,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
             resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
         );
         if (!child.stdin) return reject(new Error('no stdin'));
-        child.stdin.end(payload);
+        child.stdin.end(payloadText);
       });
 
       // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
@@ -277,29 +277,46 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           env: withoutGitLocation(),
         })
       ).stdout.trim();
-      // The same payload, the same env, the same guard — but spawned directly
-      // instead of through the generated PowerShell wrapper. It separates the
-      // two remaining explanations: a guard that decides "allow" on this
-      // host's paths (both allow), or a wrapper that loses the payload on the
-      // way to it (direct blocks, wrapper allows).
-      const direct = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
-        const child = execFile(
-          process.execPath,
-          [path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs')],
-          {
-            cwd: nested,
-            env: {
-              ...withoutGitLocation(process.env),
-              HOME: home,
-              CLAUDE_PROJECT_DIR: toplevel,
-            },
-          },
-          (error, _stdout, stderr) =>
-            resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
-        );
-        if (!child.stdin) return reject(new Error('no stdin'));
-        child.stdin.end(payload);
-      });
+      // Only when the guard already allowed the edit: re-run the SAME unmodified
+      // wrapper against a probe standing in for the guard, so the failure says
+      // whether the payload reached the child at all. It separates a wrapper
+      // that loses stdin from a guard that reads it and decides "allow" — and
+      // the exit code says whether the wrapper propagates a child's code.
+      const probe =
+        result.code === 2
+          ? '(not probed: the guard blocked)'
+          : await (async () => {
+              await writeFile(
+                path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
+                [
+                  "import { readFileSync } from 'node:fs';",
+                  "let n = -1, err = '';",
+                  'try { n = readFileSync(0).length; } catch (e) { err = String((e && e.code) || e); }',
+                  'process.stderr.write(`PROBE bytes=${n} err=${err}\\n`);',
+                  'process.exit(3);',
+                ].join('\n'),
+              );
+              return new Promise<string>((resolve, reject) => {
+                const child = execFile(
+                  'powershell.exe',
+                  ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+                  {
+                    cwd: nested,
+                    env: {
+                      ...withoutGitLocation(process.env),
+                      HOME: home,
+                      CLAUDE_PROJECT_DIR: '',
+                    },
+                  },
+                  (error, _stdout, stderr) => {
+                    const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+                    resolve(`exit=${code} ${stderr.replace(/\s+/g, ' ').trim()}`);
+                  },
+                );
+                if (!child.stdin) return reject(new Error('no stdin'));
+                child.stdin.end(payloadText);
+              });
+            })();
 
       const seen = [
         `tmpdir            ${tmpdir()}`,
@@ -307,12 +324,12 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         `scratch (native)  ${realpathSync.native(scratch)}`,
         `git toplevel      ${toplevel}`,
         `payload file_path ${path.join(scratch, '.claude', 'rules', 'autonomy.md')}`,
+        `payload bytes     ${Buffer.byteLength(payloadText)}`,
         `home              ${home}`,
         `flag              ${flag}`,
         `flag exists       ${existsSync(flag!)}`,
-        `direct guard code ${direct.code}`,
-        `direct guard err  ${direct.stderr.trim()}`,
-        `wrapper stderr    ${result.stderr}`,
+        `transport probe   ${probe}`,
+        `stderr            ${result.stderr}`,
       ].join('\n');
 
       expect(result.code, seen).toBe(2);
