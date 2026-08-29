@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -264,8 +265,32 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         );
       });
 
-      expect(result.code, result.stderr).toBe(2);
-      expect(result.stderr).toMatch(/rulebook|unattended/i);
+      // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
+      // the edit, and the only stderr PowerShell returns on the allow path is
+      // its own CLIXML progress noise — so this failure has to carry the inputs
+      // the guard compared. The spellings are the whole question: the hook
+      // derives its root from `git rev-parse --show-toplevel` while the payload
+      // path comes from `os.tmpdir()`, and the flag is named by a hash of that root.
+      const toplevel = (
+        await exec('git', ['rev-parse', '--show-toplevel'], {
+          cwd: nested,
+          env: withoutGitLocation(),
+        })
+      ).stdout.trim();
+      const seen = [
+        `tmpdir            ${tmpdir()}`,
+        `scratch           ${scratch}`,
+        `scratch (native)  ${realpathSync.native(scratch)}`,
+        `git toplevel      ${toplevel}`,
+        `payload file_path ${path.join(scratch, '.claude', 'rules', 'autonomy.md')}`,
+        `home              ${home}`,
+        `flag              ${flag}`,
+        `flag exists       ${existsSync(flag!)}`,
+        `stderr            ${result.stderr}`,
+      ].join('\n');
+
+      expect(result.code, seen).toBe(2);
+      expect(result.stderr, seen).toMatch(/rulebook|unattended/i);
     } finally {
       await rm(scratch, { recursive: true, force: true });
       await rm(home, { recursive: true, force: true });
