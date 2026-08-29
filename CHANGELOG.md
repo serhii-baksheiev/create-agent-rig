@@ -13,12 +13,29 @@ content as a patch by the owner's call and stays recorded as one.
 
 ## 0.6.2
 
-**Patch hardening for the Agent OS shipped by 0.6.1.** This release closes four
+**Patch hardening for the Agent OS shipped by 0.6.1.** This release closes six
 downstream-found governance and transport defects without changing the public
 CLI or adding a dependency.
 
 ### Fixed
 
+- **A UTF-8 BOM on a hook's stdin no longer disarms it.** PowerShell prepends
+  one on some Windows hosts, `JSON.parse` throws on a leading U+FEFF, and every
+  hook resolved that to its documented fail-open — so a well-formed refusal
+  became an allow. On such a host all eight hooks failed open together,
+  `guard-bash` among them, which carries the Never tier and the kill switch.
+  They now read through one shared `.claude/hooks/lib/hook-input.mjs`. Pinned in
+  `test/template/hook-stdin.test.ts` › "blocks the same command when PowerShell
+  prepends a UTF-8 BOM" and › "reads stdin through the one shared reader, in
+  every hook that reads it".
+- **Windows 8.3 short paths no longer hide a rulebook edit from the guard.**
+  `realpathSync` normalises separators but leaves a short name (`RUNNER~1`,
+  `SERHII~1`) unexpanded, so a checkout reached by two spellings hashed to two
+  unattended-flag names and compared as two directories. Both
+  `guard-rulebook` and `unattended-flag` now canonicalise with
+  `realpathSync.native`. Pinned in `test/template/unattended-flag.test.ts` ›
+  "scopes the flag by the checkout, so two spellings of one directory arm one
+  file".
 - **Codex hooks carry the canonical repository root in `CLAUDE_PROJECT_DIR` on
   POSIX and Windows.** A session started in a nested directory therefore judges
   a rulebook edit against the checkout the hook came from. Pinned in
