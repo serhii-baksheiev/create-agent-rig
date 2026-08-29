@@ -8,8 +8,8 @@
 // Generator-owned coverage for the neutral bounded-inspection refusal lives upstream in
 // codex.test.ts › "$guard blocks with a neutral, actionable size-limit refusal"; generated
 // projects do not carry that suite, and a downstream edit requires a local replacement test.
-import { readFileSync } from 'node:fs';
 import { editFragments } from './lib/edit-input.mjs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 /** The only non-relative import the core may use: its schema/validation library. */
 const ALLOWED_PACKAGES = ['zod'];
@@ -29,12 +29,8 @@ const BANNED = [
 ];
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0; // unparseable payload: not ours to judge
-  }
+  const input = readHookInput();
+  if (input === null) return 0; // unparseable payload: not ours to judge
   const fragments = editFragments(input);
   const blocked = fragments.find(
     ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,

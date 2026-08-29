@@ -77,9 +77,10 @@
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason. Fails open on anything it cannot
 // parse — a crashed guard must never make the session unusable.
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { brakeIsOn } from '../scripts/stop-flag.mjs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 /** Branches that are shared by definition. */
 const PROTECTED_BRANCH = /^(main|master|develop|development|trunk)$/;
@@ -804,12 +805,8 @@ export const inspect = (raw, brake, depth = 0) => {
 };
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0;
-  }
+  const input = readHookInput();
+  if (input === null) return 0;
   if (input.tool_name !== 'Bash') return 0;
   const commandValue = input.tool_input?.command;
   if (typeof commandValue !== 'string') return 0;

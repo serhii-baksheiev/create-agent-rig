@@ -12,15 +12,11 @@
 // to tokenise: it owns exactly one invariant and stays readable because of it
 // (see .claude/rules/invariants.md, "One invariant per hook"). Use a file rather
 // than a heredoc, or quote the example.
-import { readFileSync } from 'node:fs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0;
-  }
+  const input = readHookInput();
+  if (input === null) return 0;
   if (input.tool_name !== 'Bash') return 0;
   const raw = String(input.tool_input?.command ?? '');
 

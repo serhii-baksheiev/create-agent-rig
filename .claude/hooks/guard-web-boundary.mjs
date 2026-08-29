@@ -8,8 +8,8 @@
 // Generator-owned coverage for the neutral bounded-inspection refusal lives upstream in
 // codex.test.ts › "$guard blocks with a neutral, actionable size-limit refusal"; generated
 // projects do not carry that suite, and a downstream edit requires a local replacement test.
-import { readFileSync } from 'node:fs';
 import { editFragments } from './lib/edit-input.mjs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 const WEB_PATH = /(^|\/)apps\/web\//;
 const CODE_FILE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -20,12 +20,8 @@ const FORBIDDEN_WORKSPACE = /^@[^/]+\/(db|api|worker)$/;
 const FORBIDDEN_RELATIVE = /(^|\/)(packages\/db|services)(\/|$)/;
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0; // unparseable payload: not ours to judge
-  }
+  const input = readHookInput();
+  if (input === null) return 0; // unparseable payload: not ours to judge
   const violations = [];
   const importRe =
     /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;

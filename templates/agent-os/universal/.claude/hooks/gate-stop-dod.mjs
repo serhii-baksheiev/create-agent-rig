@@ -66,6 +66,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from '../scripts/git-env.mjs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 // 🔴 The tree this gate measures is the project the hook BELONGS to — the
 // directory above `.claude/hooks/` — never the directory the session happens
@@ -166,12 +167,8 @@ function budgetMs(env) {
 }
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch (error) {
-    return failOpen(`the Stop payload could not be read: ${error.message}`);
-  }
+  const input = readHookInput();
+  if (input === null) return failOpen('the Stop payload could not be read');
   if (input.hook_event_name !== 'Stop' && input.hook_event_name !== 'SubagentStop') return 0;
   if (input.stop_hook_active) return 0;
 

@@ -373,6 +373,15 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
       path.join(hooksDir, '..', 'scripts', 'git-env.mjs'),
       path.join(scriptDir, 'git-env.mjs'),
     );
+    // Same reasoning as `git-env.mjs`: every hook reads its payload through
+    // `lib/hook-input.mjs`, `layers.json` ships it in the same `process` layer,
+    // and a fixture without it is a fixture of a project that does not exist.
+    const libDir = path.join(hookDir, 'lib');
+    await mkdirP(libDir, { recursive: true });
+    await copyFile(
+      path.join(hooksDir, 'lib', 'hook-input.mjs'),
+      path.join(libDir, 'hook-input.mjs'),
+    );
     if (options.rawConfig !== undefined) {
       await writeF(path.join(hookDir, 'dod-checks.json'), options.rawConfig);
     } else if (options.checks !== undefined) {
@@ -1228,6 +1237,11 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
       const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
       await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
       await fsp.writeFile(path.join(planted, '.claude', 'rules', 'autonomy.md'), rules);
 
       return await new Promise<HookResult>((resolve, reject) => {
@@ -1339,6 +1353,11 @@ describe('inject-rules main guard (invocation paths that must not silence it)', 
     await fsp.copyFile(
       path.join(hooksDir, 'inject-rules.mjs'),
       path.join(real, '.claude', 'hooks', 'inject-rules.mjs'),
+    );
+    await fsp.mkdir(path.join(real, '.claude', 'hooks', 'lib'), { recursive: true });
+    await fsp.copyFile(
+      path.join(hooksDir, 'lib', 'hook-input.mjs'),
+      path.join(real, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
     );
     await fsp.copyFile(
       path.join(hooksDir, '..', 'rules', 'autonomy.md'),

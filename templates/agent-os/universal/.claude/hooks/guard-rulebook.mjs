@@ -61,10 +61,11 @@
 //     adversary.
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { editFragments } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
+import { readHookInput } from './lib/hook-input.mjs';
 
 export { RULEBOOK_PREFIXES, isRulebookPath };
 
@@ -124,12 +125,8 @@ const protectedRelative = (roots, filePath) =>
     .find(isRulebookPath);
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0; // unparseable payload: not ours to judge
-  }
+  const input = readHookInput();
+  if (input === null) return 0; // unparseable payload: not ours to judge
   if (!EDIT_TOOLS.has(input?.tool_name)) return 0;
 
   const selectedRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();

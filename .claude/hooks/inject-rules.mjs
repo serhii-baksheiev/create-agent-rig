@@ -30,6 +30,7 @@
 // is why every ambiguity resolves toward injecting more.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { readHookInput } from './lib/hook-input.mjs';
 
 // Regions the rule file marks as not worth injecting. The marker is explicit
 // and lives in the rule file itself, where the person editing it can see it —
@@ -150,12 +151,8 @@ function invokedDirectly() {
 }
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0;
-  }
+  const input = readHookInput();
+  if (input === null) return 0;
   if (input.hook_event_name !== 'SessionStart') return 0;
 
   let rules;
