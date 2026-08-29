@@ -239,6 +239,13 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       )?.[1];
       expect(encoded).toBeDefined();
 
+      const payload = JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
+        cwd: nested,
+      });
+
       const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
         const child = execFile(
           'powershell.exe',
@@ -255,14 +262,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
             resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
         );
         if (!child.stdin) return reject(new Error('no stdin'));
-        child.stdin.end(
-          JSON.stringify({
-            hook_event_name: 'PreToolUse',
-            tool_name: 'Write',
-            tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
-            cwd: nested,
-          }),
-        );
+        child.stdin.end(payload);
       });
 
       // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
@@ -277,6 +277,30 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           env: withoutGitLocation(),
         })
       ).stdout.trim();
+      // The same payload, the same env, the same guard — but spawned directly
+      // instead of through the generated PowerShell wrapper. It separates the
+      // two remaining explanations: a guard that decides "allow" on this
+      // host's paths (both allow), or a wrapper that loses the payload on the
+      // way to it (direct blocks, wrapper allows).
+      const direct = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+        const child = execFile(
+          process.execPath,
+          [path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs')],
+          {
+            cwd: nested,
+            env: {
+              ...withoutGitLocation(process.env),
+              HOME: home,
+              CLAUDE_PROJECT_DIR: toplevel,
+            },
+          },
+          (error, _stdout, stderr) =>
+            resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.end(payload);
+      });
+
       const seen = [
         `tmpdir            ${tmpdir()}`,
         `scratch           ${scratch}`,
@@ -286,7 +310,9 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         `home              ${home}`,
         `flag              ${flag}`,
         `flag exists       ${existsSync(flag!)}`,
-        `stderr            ${result.stderr}`,
+        `direct guard code ${direct.code}`,
+        `direct guard err  ${direct.stderr.trim()}`,
+        `wrapper stderr    ${result.stderr}`,
       ].join('\n');
 
       expect(result.code, seen).toBe(2);
