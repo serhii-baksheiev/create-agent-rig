@@ -117,14 +117,36 @@ export const isWidening = (entry) =>
   entry === '.codex/' ||
   RULEBOOK_PREFIXES.some((prefix) => prefix !== entry && prefix.startsWith(entry));
 
+/**
+ * One spelling for one directory — the single canonicaliser this file compares
+ * and hashes with (`invariants.md`, "One mechanism, one implementation").
+ *
+ * RP-54: it is `realpathSync.native`, not `realpathSync`, and on Windows those
+ * differ. Both normalise separators; only the native one expands an 8.3 short
+ * name, so `C:\Users\RUNNER~1\…` and `C:\Users\runneradmin\…` survive
+ * `realpathSync` as two strings for one directory. The flag is named by a hash
+ * of this value while the generated Codex Windows hook supplies
+ * `git rev-parse --show-toplevel` — a different spelling of the same checkout —
+ * so the guard looked for a file nobody wrote and, being fail-open, allowed the
+ * rulebook edit it exists to refuse. Proven by
+ * unattended-flag.test.ts › "scopes the flag by the checkout, so two spellings
+ * of one directory arm one file".
+ *
+ * A path that does not exist has no real path; `resolve` is the fallback, and
+ * it is the same one on both sides of every comparison below.
+ */
+const canonicalPath = (p) => {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return resolve(p);
+  }
+};
+
 const canonicalCheckout = (env) => {
   const declared = typeof env.CLAUDE_PROJECT_DIR === 'string' ? env.CLAUDE_PROJECT_DIR.trim() : '';
   if (declared === '') return null;
-  try {
-    return realpathSync(declared);
-  } catch {
-    return resolve(declared);
-  }
+  return canonicalPath(declared);
 };
 
 const checkoutId = (env) => {
@@ -291,12 +313,10 @@ export const writeUnattended = ({ item, runDir = null, allow = [] } = {}, env = 
 };
 
 const pathBelongsToCheckout = (candidate, checkout) => {
-  let resolved;
-  try {
-    resolved = realpathSync(candidate);
-  } catch {
-    resolved = resolve(candidate);
-  }
+  // `checkout` is `canonicalCheckout`'s output, so the candidate takes the same
+  // canonicaliser: two spellings compared here would put an in-checkout runDir
+  // outside its own checkout.
+  const resolved = canonicalPath(candidate);
   const rel = relative(checkout, resolved);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 };
@@ -365,14 +385,7 @@ export const clearLegacyUnattended = (selectedPath) => {
 
 const invokedDirectly = () => {
   if (!process.argv[1]) return false;
-  const real = (p) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return p;
-    }
-  };
-  return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
+  return canonicalPath(fileURLToPath(import.meta.url)) === canonicalPath(process.argv[1]);
 };
 
 if (invokedDirectly()) {

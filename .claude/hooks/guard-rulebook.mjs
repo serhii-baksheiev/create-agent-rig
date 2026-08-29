@@ -72,9 +72,20 @@ const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply
 
 const toPosix = (value) => String(value ?? '').replaceAll('\\', '/');
 
+// RP-54: `.native`, never plain `realpathSync`. Both resolve symlinks and
+// normalise separators; only the native one expands a Windows 8.3 short name,
+// so `C:\Users\RUNNER~1\…` and `C:\Users\runneradmin\…` otherwise survive as
+// two spellings of one directory. The root arrives from
+// `git rev-parse --show-toplevel` (long) while a payload path arrives however
+// the tool spelled it (short under an 8.3 temp or home), and a root that
+// matches no spelling of the payload makes this fail-open guard allow the
+// rulebook edit it exists to refuse. Both sites take the same canonicaliser or
+// the comparison is between two different normalisations. Measured on Windows
+// by codex.test.ts (absent in a generated rig) › "anchors a nested-cwd Windows
+// Codex rulebook edit to the canonical repository root".
 const canonicalRoot = (root) => {
   try {
-    return realpathSync(root);
+    return realpathSync.native(root);
   } catch {
     return root;
   }
@@ -86,7 +97,7 @@ const canonicalPath = (filePath) => {
   const tail = [];
   for (;;) {
     try {
-      return join(realpathSync(cursor), ...tail);
+      return join(realpathSync.native(cursor), ...tail);
     } catch {
       const parent = dirname(cursor);
       if (parent === cursor) return filePath;
