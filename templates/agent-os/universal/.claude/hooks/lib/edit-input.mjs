@@ -49,13 +49,59 @@ const MAX_PATCH_SECTIONS = 128;
 const MAX_MULTI_EDITS = 256;
 const MAX_PATCH_PATH_COMPONENTS = 512;
 
+// RP-54: the path a tool hands us, canonicalised so a Windows 8.3 alias is the
+// same string as the name the repository uses.
+//
+// 🔴 Why this exists at all, because the cheaper fix does not work here. The
+// four non-patch surfaces (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) name a
+// file that may not exist yet, so `realpathSync.native` on the whole path throws
+// and would leave the alias in place. Walking up to the nearest EXISTING
+// ancestor and re-joining the missing tail is what resolves
+// `CREDEN~1/brand-new.txt` to `credentials/brand-new.txt` — and that case is the
+// dangerous one, because it needs no pre-existing target: only the DIRECTORY has
+// to carry an alias for a brand-new credential file to land.
+//
+// `guard-secret-file` canonicalises nothing of its own; it asks whether the text
+// this module reports names a credential. So an alias reaching it unresolved
+// simply turned the name check off. The same shape is in guard-rulebook.mjs,
+// which is why that guard was never exposed.
+//
+// Bounded, because this module fails open: an explicit component budget rather
+// than a `for(;;)`, one `realpathSync` per step, no recursion, and the input
+// returned unchanged when the budget is spent — `.claude/rules/invariants.md`
+// ("a guard that fails open must do provably bounded work").
+const canonicalEntryPath = (value) => {
+  const raw = String(value ?? '');
+  // Only an ABSOLUTE path is canonicalised. The edit tools send one, and
+  // `path.resolve` on a relative path would silently anchor it to the hook's own
+  // cwd — turning `packages/core/src/x.ts` into an absolute path that no longer
+  // matches the prefixes `guard-core-purity` and `guard-web-boundary` test.
+  if (raw === '' || !path.isAbsolute(raw)) return raw;
+  let cursor = path.resolve(raw);
+  const tail = [];
+  for (let step = 0; step <= MAX_PATCH_PATH_COMPONENTS; step += 1) {
+    try {
+      return path.join(realpathSync.native(cursor), ...tail);
+    } catch {
+      const parent = path.dirname(cursor);
+      // Reached the volume root without finding an existing ancestor: nothing
+      // was resolved, so return the caller's spelling untouched rather than a
+      // `path.resolve`-rewritten one.
+      if (parent === cursor) return raw;
+      tail.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+  return raw;
+};
+
 export function editFragments(input) {
   const toolName = input?.tool_name;
   const toolInput = input?.tool_input ?? {};
   if (toolName === 'Write' || toolName === 'Edit') {
     return [
       {
-        filePath: normalisePath(toolInput.file_path),
+        filePath: normalisePath(canonicalEntryPath(toolInput.file_path)),
         fragment: String(
           (toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '',
         ),
@@ -69,7 +115,7 @@ export function editFragments(input) {
   // so a `Date.now()` in a MultiEdit to the core passed unchecked.
   if (toolName === 'MultiEdit') {
     if (!Array.isArray(toolInput.edits)) return [];
-    const filePath = normalisePath(toolInput.file_path);
+    const filePath = normalisePath(canonicalEntryPath(toolInput.file_path));
     if (toolInput.edits.length > MAX_MULTI_EDITS) {
       return [
         {
@@ -88,7 +134,7 @@ export function editFragments(input) {
   if (toolName === 'NotebookEdit') {
     return [
       {
-        filePath: normalisePath(toolInput.notebook_path),
+        filePath: normalisePath(canonicalEntryPath(toolInput.notebook_path)),
         fragment: String(toolInput.new_source ?? ''),
       },
     ];
@@ -182,20 +228,33 @@ export function editFragments(input) {
 // four edit hooks that share this module.
 //
 // 🔴 EVERY path resolution in this file is `.native` — the two directories here
-// and the three file resolutions further down — because a mixed file was not
+// and the three resolutions further down, one of which walks up to the
+// deepest existing ancestor — because a mixed file was not
 // merely untidy, it was a bypass. The path a guard receives is the one this
 // module reports, and `guard-secret-file` canonicalises nothing of its own: it
 // asks whether that literal text names a credential. A destination resolved with
 // plain `realpathSync` comes back in whatever spelling it was handed, so an
 // existing `.env` addressed as its 8.3 alias was reported as the alias and the
 // name check simply missed it, while the same patch spelled `.env` was refused.
-// Dot-leading names are never 8.3-conformant, so they always have an alias. This
-// is NOT limited to moves: `destinationPath = moveTo ?? sourcePath`, so an
-// ordinary `Update File` takes the same route.
+// A dot-leading name is not 8.3-conformant, so it has an alias wherever the
+// volume creates them (per-volume, and it can be off). This is NOT limited to
+// moves: `destinationPath = moveTo ?? sourcePath`, so an ordinary `Update File`
+// takes the same route.
 //
-// The three below keep their `try`/`catch` rather than calling the helper above:
-// `repositoryPatchPath` must tell ENOENT (walk up to the parent) apart from every
-// other error, and a helper that swallows the throw would collapse the two.
+// All FIVE surfaces `guard-secret-file` declares are covered, and it took two
+// different mechanisms because they ask different questions. `apply_patch`
+// resolves a destination that is relative to a working directory, so it needed
+// both directories canonical. The other four — `Write`, `Edit`, `MultiEdit`,
+// `NotebookEdit` — hand over one absolute path and previously got no resolution
+// at all, so they go through `canonicalEntryPath` above. Fixing only the first
+// left the primary edit tool of one harness wide open, which is why the limit
+// that used to be written here is gone rather than reworded.
+//
+// The walk-up below keeps its own `try`/`catch` rather than calling the helper
+// above: `repositoryPatchPath` must tell ENOENT (walk up to the parent) apart
+// from every other error, and a helper that swallows the throw would collapse
+// the two. The two move-source resolutions sit inside `movedFragment`'s
+// function-level catch instead.
 //
 // No test pointer here on purpose: this file ships into generated rigs and is
 // held mechanically self-contained — a sibling test asserts it names no

@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -186,13 +186,23 @@ describe('editFragments: an 8.3 cwd is a spelling of the repository, not a forei
   });
 });
 
-/** Feed a synthetic payload to the real hook, exactly as the harness does. */
-const runGuardSecretFile = (payload: unknown): Promise<{ code: number; stderr: string }> =>
+/**
+ * Feed a synthetic payload to the real hook, exactly as the harness does.
+ *
+ * `env` overrides are for the arms that carry an ABSOLUTE `file_path`: the guard
+ * judges the repo-relative tail, so a case about a leaf's spelling has to tell it
+ * which directory the leaf hangs off (`CLAUDE_PROJECT_DIR`), or the whole scratch
+ * path stays in the string and the case stops being about the leaf.
+ */
+const runGuardSecretFile = (
+  payload: unknown,
+  env: Record<string, string> = {},
+): Promise<{ code: number; stderr: string }> =>
   new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [path.join(hooksDir, 'guard-secret-file.mjs')],
-      { env: { ...process.env } },
+      { env: { ...process.env, ...env } },
       (error, _stdout, stderr) => {
         resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
       },
@@ -336,5 +346,148 @@ describe('guard-secret-file: an 8.3 alias is a spelling of a credential path, no
     expect(editFragments(patchTo(path.basename(alias.spelling)))).toEqual(
       editFragments(patchTo('.env')),
     );
+  });
+});
+
+/**
+ * RP-54, the four surfaces the apply_patch fix did not reach — and the reason
+ * this is a separate block rather than more cases in the one above is that the
+ * bypass arrives by a different route.
+ *
+ * `guard-secret-file` declares five edit tools. Only `apply_patch` reaches its
+ * destination through `repositoryPatchPath`, which now resolves natively. The
+ * other four — `Write`, `Edit`, `MultiEdit`, `NotebookEdit` — reach theirs
+ * through `normalisePath`, which slashes separators and runs
+ * `path.posix.normalize`, and resolves NOTHING. The guard canonicalises nothing
+ * of its own either; it asks whether that literal text names a credential. So a
+ * `.env` addressed as `ENV~1` is a filename in no vocabulary, and the path arm —
+ * the arm that exists precisely because content matching is incomplete — never
+ * fires.
+ *
+ * Two properties make this the worse half of the defect. `Write` is the primary
+ * edit tool in this harness, not a fallback. And the directory case needs NO
+ * pre-existing target: only `credentials/` has to be aliased, so a brand-new
+ * credential file lands under it. Measured at 31bfc8d8 in a scratch `git init`
+ * checkout with `CLAUDE_PROJECT_DIR` set to it: `<repo>/.env` exits 2,
+ * `<repo>/ENV~1` exits 0 with empty stderr, `<repo>/credentials/brand-new.txt`
+ * exits 2 and `<repo>/CREDEN~1/brand-new.txt` exits 0.
+ *
+ * The body written throughout is a placeholder-only comment, which
+ * `secrets.mjs` leaves alone by design — so the VALUE arm cannot answer for the
+ * PATH arm and a block here is a statement about the path.
+ *
+ * Pinned as an OUTCOME — the guard refuses the credential path — so the fix is
+ * free to be any canonicalisation that makes the two spellings meet.
+ *
+ * Where the volume offers one spelling only, the alias cannot be built and the
+ * case skips with that reason; it is sharp exactly where the bypass is
+ * reachable.
+ */
+describe('guard-secret-file: the four non-patch edit tools read an 8.3 alias as the credential path it spells', () => {
+  /**
+   * A checkout holding both shapes: an existing dot-leading credential FILE
+   * (never 8.3-conformant, so it reliably has an alias) and a credential
+   * DIRECTORY whose contents do not exist yet.
+   */
+  let checkout: string;
+  beforeAll(async () => {
+    checkout = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp54-edit-tool-8dot3-')));
+    // gitEnv(): an inherited GIT_DIR would point `git init` at the repository
+    // running the suite instead of this scratch checkout.
+    execFileSync('git', ['init', '-q'], { cwd: checkout, env: gitEnv() });
+    await writeFile(path.join(checkout, '.env'), 'hello\n');
+    // Deliberately EMPTY: the file the aliased-directory case writes must not
+    // exist, because "no pre-existing target is needed" is the property.
+    await mkdir(path.join(checkout, 'credentials'));
+  });
+  afterAll(async () => {
+    await rm(checkout, { recursive: true, force: true });
+  });
+
+  /**
+   * A placeholder-only body. `secrets.mjs` documents that it leaves this shape
+   * alone, so nothing here can be blocked by the credential-VALUE arm.
+   */
+  const innocuousBody = '# filled in later by the deploy script\n';
+
+  const editTools = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'] as const;
+
+  /** The same edit, spoken in each tool's own payload shape. */
+  const editPayload = (toolName: (typeof editTools)[number], filePath: string) => {
+    const shapes = {
+      Write: { file_path: filePath, content: innocuousBody },
+      Edit: { file_path: filePath, old_string: 'hello', new_string: innocuousBody },
+      MultiEdit: {
+        file_path: filePath,
+        edits: [{ old_string: 'hello', new_string: innocuousBody }],
+      },
+      NotebookEdit: { notebook_path: filePath, new_source: innocuousBody },
+    } as const;
+    return { hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: shapes[toolName] };
+  };
+
+  /**
+   * The leaf's 8.3 alias re-joined to the LONG checkout, so only the leaf is
+   * short and nothing but the leaf's resolution is on trial.
+   */
+  const aliasOf = (relative: string) => shortNameSpelling(path.join(checkout, relative));
+  const inCheckout = (...segments: string[]) => path.join(checkout, ...segments);
+
+  const runEdit = (toolName: (typeof editTools)[number], filePath: string) =>
+    runGuardSecretFile(editPayload(toolName, filePath), { CLAUDE_PROJECT_DIR: checkout });
+
+  // The control. It passes today, and it is what makes a failure of the cases
+  // below a statement about the SPELLING rather than about the fixture.
+  it.for(editTools)(
+    'refuses a %s to .env, written the way the repository spells it',
+    async (toolName) => {
+      const result = await runEdit(toolName, inCheckout('.env'));
+      expect(result.code, `${toolName} to .env was not refused\n${result.stderr}`).toBe(2);
+      expect(result.stderr).toContain('is a credential file');
+    },
+  );
+
+  it.for(editTools)('refuses a %s to the 8.3 alias of a credential file', async (toolName, ctx) => {
+    const alias = aliasOf('.env');
+    skipUnless(ctx, alias.ok, alias.reason);
+    const filePath = inCheckout(path.basename(alias.spelling));
+
+    const result = await runEdit(toolName, filePath);
+
+    expect(result.code, `${toolName} to ${filePath} (.env) was allowed\n${result.stderr}`).toBe(2);
+  });
+
+  // The half that needs nothing to exist: only the DIRECTORY carries an alias,
+  // and the file being written is brand new. A guard that resolved only paths
+  // it can stat would still let this one through.
+  it.for(editTools)(
+    'refuses a %s creating a new file under the 8.3 alias of a credential directory',
+    async (toolName, ctx) => {
+      const alias = aliasOf('credentials');
+      skipUnless(ctx, alias.ok, alias.reason);
+      const filePath = inCheckout(path.basename(alias.spelling), 'brand-new.txt');
+      expect(existsSync(filePath), 'the fixture must not pre-create the target').toBe(false);
+
+      const result = await runEdit(toolName, filePath);
+
+      expect(
+        result.code,
+        `${toolName} to ${filePath} (credentials/brand-new.txt) was allowed\n${result.stderr}`,
+      ).toBe(2);
+    },
+  );
+
+  // A refusal naming `ENV~1` sends the reader looking for a file that does not
+  // appear in their checkout — `.claude/rules/invariants.md`: a refusal that
+  // cannot be acted on is one that gets routed around.
+  it('names the credential file the way the repository spells it, not the alias an edit tool handed it', async (ctx) => {
+    const alias = aliasOf('.env');
+    skipUnless(ctx, alias.ok, alias.reason);
+    const aliasLeaf = path.basename(alias.spelling);
+
+    const result = await runEdit('Write', inCheckout(aliasLeaf));
+
+    expect(result.stderr).toContain('".env"');
+    expect(result.stderr).not.toContain(aliasLeaf);
   });
 });

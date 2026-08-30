@@ -28,22 +28,31 @@ CLI or adding a dependency.
   `test/template/hook-stdin.test.ts` › "blocks the same command when PowerShell
   prepends a UTF-8 BOM" and › "reads stdin through the one shared reader, in
   every hook that reads it".
-- **Windows 8.3 short paths no longer let an edit address a credential file
-  under an alias.** `guard-secret-file` has two arms — a value arm for
+- **No edit can address a credential file under its Windows 8.3 alias.** `guard-secret-file` has two arms — a value arm for
   credential shapes in content, and a path arm for credential names, which
   exists because content matching is incomplete. The guard canonicalises
   nothing itself: it judges the literal path this module reports. Because
   `repositoryPatchPath` resolved with plain `realpathSync`, a destination
   arrived back in whatever spelling it was handed, so an existing `.env`
   addressed as `ENV~1` was reported as `ENV~1` and the name check missed it,
-  while the same patch spelled `.env` was refused. Dot-leading names are never
-  8.3-conformant, so they always have an alias, and this was never limited to
+  while the same patch spelled `.env` was refused. A dot-leading name is not
+  8.3-conformant, so it has an alias wherever the volume creates them, and this
+  was never limited to
   moves — `destinationPath = moveTo ?? sourcePath`, so an ordinary
   `Update File` took the same route. Every path resolution in the module is now
-  `.native`. Pinned in `test/template/edit-fragments.test.ts` › "refuses a patch
+  `.native`.
+
+  The other four surfaces needed a second mechanism. `Write`, `Edit`,
+  `MultiEdit` and `NotebookEdit` hand over one absolute path and previously got
+  no resolution at all, so `Write` to `ENV~1` was allowed where `.env` was
+  refused — on the primary edit tool, not just the patch route. Worse, the
+  target did not have to exist: only the DIRECTORY needed an alias, so a
+  brand-new file under `CREDEN~1/` landed. They now canonicalise the existing
+  prefix and keep the missing tail. Pinned in `test/template/edit-fragments.test.ts` › "refuses a %s to the 8.3 alias of a credential file", › "refuses a %s creating a new file under the 8.3 alias of a credential directory", › "names the credential file the way the repository spells it, not the alias an edit tool handed it", › "refuses a patch
   to the 8.3 alias of a credential file", › "refuses a patch under the 8.3 alias
   of a credential directory" and › "names the credential file the way the
   repository spells it, not the alias it was handed".
+
 - **Windows 8.3 short paths no longer take `apply_patch` out of service.** The
   same short-name defect had a second site the first fix did not reach: the
   shared `.claude/hooks/lib/edit-input.mjs` took the repository root from
