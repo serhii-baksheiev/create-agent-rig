@@ -78,8 +78,16 @@ const canonicalEntryPath = (value) => {
   // matches the prefixes `guard-core-purity` and `guard-web-boundary` test.
   if (raw === '' || !path.isAbsolute(raw)) return raw;
   let cursor = path.resolve(raw);
+  const volumeRoot = path.parse(cursor).root;
   const tail = [];
   for (let step = 0; step <= MAX_PATCH_PATH_COMPONENTS; step += 1) {
+    // Reaching the volume root having resolved nothing below it means the walk
+    // found no real ancestor at all — every component was invented. Joining the
+    // tail onto the root would hand back a `path.resolve`-rewritten string
+    // (a POSIX path judged on Windows becomes `C:\tmp\…`), which stops
+    // matching the CLAUDE_PROJECT_DIR prefix the guards strip and leaves the
+    // whole absolute path to be judged. Return the caller's spelling instead.
+    if (tail.length > 0 && cursor === volumeRoot) return raw;
     try {
       return path.join(realpathSync.native(cursor), ...tail);
     } catch {
