@@ -126,14 +126,19 @@ export const fifosAvailable = (): { ok: boolean; reason: string } => ({
 });
 
 /**
- * A SECOND, genuinely distinct spelling of one directory — the Windows 8.3
- * short form (`RP57-E~1`, `SERHII~1`) — or a reason there is none here.
+ * A SECOND, genuinely distinct spelling of one filesystem entry — the Windows
+ * 8.3 short form (`RP57-E~1`, `SERHII~1`, `ENV~1`) — or a reason there is none
+ * here.
+ *
+ * The entry may be a DIRECTORY or a FILE: both get an alias when their real
+ * name is not 8.3-conformant, and a dot-leading file (`.env`) never is, so it
+ * reliably has one. Everything below reads the path, not its type.
  *
  * This is a filesystem capability, not a platform: NTFS 8.3 name creation can
  * be turned off per volume (`fsutil 8dot3name query`), and a ReFS or POSIX
  * volume never had it. So it is MEASURED rather than guessed — the candidate is
- * accepted only when `realpathSync.native` resolves it back to the same
- * directory, which is what makes it a spelling rather than another path.
+ * accepted only when `realpathSync.native` resolves it back to the same entry,
+ * which is what makes it a spelling rather than another path.
  *
  * Two sources, in order: the OS's own answer (`cmd`'s `%~sI`), which finds a
  * short form even under a long temp root; and `realpathSync`, which normalises
@@ -141,13 +146,13 @@ export const fifosAvailable = (): { ok: boolean; reason: string } => ({
  * ⚠ The second is a fallback for a caller that passes such a path through; it
  * cannot fire for a caller that has already canonicalised with
  * `realpathSync.native`, because then both spellings are the same string and
- * `sameDirectory` rejects the candidate as identical.
+ * `sameEntry` rejects the candidate as identical.
  */
 export const shortNameSpelling = (
-  dir: string,
+  entry: string,
 ): { ok: boolean; reason: string; spelling: string } => {
-  const canonical = realpathSync.native(dir);
-  const sameDirectory = (candidate: string): boolean => {
+  const canonical = realpathSync.native(entry);
+  const sameEntry = (candidate: string): boolean => {
     if (candidate === '' || candidate.toLowerCase() === canonical.toLowerCase()) return false;
     try {
       return realpathSync.native(candidate).toLowerCase() === canonical.toLowerCase();
@@ -155,14 +160,14 @@ export const shortNameSpelling = (
       return false;
     }
   };
-  for (const candidate of [askTheOsForAShortName(dir), safely(() => realpathSync(dir))]) {
-    if (candidate !== null && sameDirectory(candidate)) {
+  for (const candidate of [askTheOsForAShortName(entry), safely(() => realpathSync(entry))]) {
+    if (candidate !== null && sameEntry(candidate)) {
       return { ok: true, reason: '', spelling: candidate };
     }
   }
   return {
     ok: false,
-    reason: `this filesystem gives ${canonical} no distinct 8.3 short spelling (no cmd, or 8dot3 name creation is off on this volume), so the two spellings of one directory the case needs do not exist here`,
+    reason: `this filesystem gives ${canonical} no distinct 8.3 short spelling (no cmd, or 8dot3 name creation is off on this volume), so the two spellings of one path the case needs do not exist here`,
     spelling: canonical,
   };
 };
@@ -182,9 +187,9 @@ const safely = (read: () => string): string | null => {
  * metacharacter is declined rather than interpolated. `spawnSync`, not
  * `execFileSync`, because only the former's options carry that flag.
  */
-const askTheOsForAShortName = (dir: string): string | null => {
-  if (/["&|<>^%!]/.test(dir)) return null;
-  const probe = spawnSync('cmd', ['/d', '/c', `for %I in ("${dir}") do @echo %~sI`], {
+const askTheOsForAShortName = (entry: string): string | null => {
+  if (/["&|<>^%!]/.test(entry)) return null;
+  const probe = spawnSync('cmd', ['/d', '/c', `for %I in ("${entry}") do @echo %~sI`], {
     encoding: 'utf8',
     windowsVerbatimArguments: true,
     stdio: ['ignore', 'pipe', 'ignore'],

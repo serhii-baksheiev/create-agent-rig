@@ -179,20 +179,23 @@ export function editFragments(input) {
 // are two directories, `isWithin` fails, `patchCwd` becomes null, and every
 // apply_patch is refused as "outside the repository". That is fail-closed rather
 // than a bypass, but it takes apply_patch out of service on such a host for all
-// four edit hooks that share this module. The two sides of THAT comparison —
-// `repoRoot` and `patchCwd` — take this function, which is the rule
-// guard-rulebook.mjs states at its own canonicaliser.
+// four edit hooks that share this module.
 //
-// ⚠ Scope, stated so the sentence above is not read wider than it is. The plain
-// `realpathSync` calls further down are deliberate, not leftovers: the move-source
-// ones resolve a candidate already built from the canonical `patchCwd`, so both
-// sides of their `isWithin` are the long spelling. `repositoryPatchPath` is the
-// one that still normalises differently, and an 8.3 component in a patch
-// DESTINATION is reported unexpanded there — measured identical before and after
-// the change above, so it is pre-existing rather than introduced here, and it
-// fails closed. Not exploitable today: guard-rulebook re-canonicalises the path
-// itself, and the other guarded prefixes (`packages/core/src`, `apps/web`) have
-// no 8.3 alias because every component is eight characters or fewer.
+// 🔴 EVERY path resolution in this file is `.native` — the two directories here
+// and the three file resolutions further down — because a mixed file was not
+// merely untidy, it was a bypass. The path a guard receives is the one this
+// module reports, and `guard-secret-file` canonicalises nothing of its own: it
+// asks whether that literal text names a credential. A destination resolved with
+// plain `realpathSync` comes back in whatever spelling it was handed, so an
+// existing `.env` addressed as its 8.3 alias was reported as the alias and the
+// name check simply missed it, while the same patch spelled `.env` was refused.
+// Dot-leading names are never 8.3-conformant, so they always have an alias. This
+// is NOT limited to moves: `destinationPath = moveTo ?? sourcePath`, so an
+// ordinary `Update File` takes the same route.
+//
+// The three below keep their `try`/`catch` rather than calling the helper above:
+// `repositoryPatchPath` must tell ENOENT (walk up to the parent) apart from every
+// other error, and a helper that swallows the throw would collapse the two.
 //
 // No test pointer here on purpose: this file ships into generated rigs and is
 // held mechanically self-contained — a sibling test asserts it names no
@@ -336,7 +339,7 @@ function movedFragment(current, budget) {
     if (lstatSync(candidate).isSymbolicLink()) {
       return inspectionRefusal(current, 'unsafe move source is a symbolic link');
     }
-    const resolvedSource = realpathSync(candidate);
+    const resolvedSource = realpathSync.native(candidate);
     if (!isWithin(repoRoot, resolvedSource)) {
       return inspectionRefusal(current, 'move source resolves outside the repository root');
     }
@@ -347,7 +350,7 @@ function movedFragment(current, budget) {
     try {
       const opened = fstatSync(handle);
       if (!opened.isFile()) return inspectionRefusal(current, 'move source is not a regular file');
-      const verifiedSource = realpathSync(candidate);
+      const verifiedSource = realpathSync.native(candidate);
       if (!isWithin(repoRoot, verifiedSource)) {
         return inspectionRefusal(current, 'move source resolves outside the repository root');
       }
@@ -516,7 +519,7 @@ function repositoryPatchPath(value, budget) {
       return path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/');
     }
     try {
-      const resolved = realpathSync(existing);
+      const resolved = realpathSync.native(existing);
       if (suffix.length > 0) {
         budget.resolvedDirectories.set(existing, resolved);
         let lexicalPrefix = existing;

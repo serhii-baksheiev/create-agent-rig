@@ -13,7 +13,7 @@ content as a patch by the owner's call and stays recorded as one.
 
 ## 0.6.2
 
-**Patch hardening for the Agent OS shipped by 0.6.1.** This release closes seven
+**Patch hardening for the Agent OS shipped by 0.6.1.** This release closes eight
 downstream-found governance and transport defects without changing the public
 CLI or adding a dependency.
 
@@ -28,6 +28,22 @@ CLI or adding a dependency.
   `test/template/hook-stdin.test.ts` › "blocks the same command when PowerShell
   prepends a UTF-8 BOM" and › "reads stdin through the one shared reader, in
   every hook that reads it".
+- **Windows 8.3 short paths no longer let an edit address a credential file
+  under an alias.** `guard-secret-file` has two arms — a value arm for
+  credential shapes in content, and a path arm for credential names, which
+  exists because content matching is incomplete. The guard canonicalises
+  nothing itself: it judges the literal path this module reports. Because
+  `repositoryPatchPath` resolved with plain `realpathSync`, a destination
+  arrived back in whatever spelling it was handed, so an existing `.env`
+  addressed as `ENV~1` was reported as `ENV~1` and the name check missed it,
+  while the same patch spelled `.env` was refused. Dot-leading names are never
+  8.3-conformant, so they always have an alias, and this was never limited to
+  moves — `destinationPath = moveTo ?? sourcePath`, so an ordinary
+  `Update File` took the same route. Every path resolution in the module is now
+  `.native`. Pinned in `test/template/edit-fragments.test.ts` › "refuses a patch
+  to the 8.3 alias of a credential file", › "refuses a patch under the 8.3 alias
+  of a credential directory" and › "names the credential file the way the
+  repository spells it, not the alias it was handed".
 - **Windows 8.3 short paths no longer take `apply_patch` out of service.** The
   same short-name defect had a second site the first fix did not reach: the
   shared `.claude/hooks/lib/edit-input.mjs` took the repository root from
