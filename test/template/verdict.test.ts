@@ -841,7 +841,7 @@ interface CliResult {
  * operator's session.
  */
 const runCli = (args: string[], stdin = ''): Promise<CliResult> =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     const env = { ...process.env };
     delete env.RIG_RUN_DIR;
     const child = execFile(
@@ -857,7 +857,15 @@ const runCli = (args: string[], stdin = ''): Promise<CliResult> =>
         });
       },
     );
-    child.stdin?.end(stdin);
+    if (stdin !== '') {
+      child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
+        // A fast refusal can close stdin before the parent flushes its input.
+        // That says nothing about the CLI verdict; every other stream failure
+        // still fails the test instead of becoming an unhandled process error.
+        if (error.code !== 'EPIPE') reject(error);
+      });
+      child.stdin?.end(stdin);
+    }
   });
 
 /** Whatever text a gate captured, on disk — including text no helper composes. */

@@ -909,6 +909,53 @@ const run = (args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<CliRe
 /** A project the plan-md adapter can read: one Agent-queue item, taken verbatim. */
 const project = async (item = 'add a route'): Promise<string> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'run-caller-'));
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    })}\n`,
+  );
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'init', '-q', '-b', 'master'],
+      { cwd: dir, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'add', '.rig/revalidation.json'],
+      { cwd: dir, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      'git',
+      [
+        '-c',
+        'user.email=t@example.invalid',
+        '-c',
+        'user.name=t',
+        'commit',
+        '-q',
+        '-m',
+        'seed contract',
+      ],
+      { cwd: dir, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
   await writeFile(path.join(dir, 'PLAN.md'), `# P\n\n## Agent queue\n\n- ${item}\n\n## Journal\n`);
   return dir;
 };
@@ -968,17 +1015,16 @@ describe('the queue CLI records its selection when a run directory is declared',
   });
 });
 
-// 🔴 The journal is instrumentation, and instrumentation that can stop the thing
-// it instruments is a liability. But "never stop" is the wrong lesson too: the
-// two describes below are the same failure at the journal, and they must end
-// differently, because only one of them has anything to lose by continuing.
-describe('an unusable journal does not take the queue selection with it', () => {
+// The journal remains instrumentation once a durable claim exists. Before the
+// first claim, however, an unreadable trace makes "first sight" and "resume"
+// indistinguishable, so baseline creation must fail closed.
+describe('journal failure preserves the durable-claim boundary', () => {
   const envFor = (runDir: string): NodeJS.ProcessEnv => ({
     ...withoutGitLocation(),
     RIG_RUN_DIR: runDir,
   });
 
-  it('prints the selection and warns when the run directory holds a broken sequence', async () => {
+  it('prints the item but refuses baseline creation when the run directory holds a broken sequence', async () => {
     const dir = await project();
     const runDir = await newRunDir();
     // What two sessions sharing one run directory leave behind: two records
@@ -993,8 +1039,11 @@ describe('an unusable journal does not take the queue selection with it', () => 
 
     const result = await run(['next', '--json', '--config', planConfig(dir)], dir, envFor(runDir));
 
-    expect(result.code, result.out).toBe(0);
-    expect(JSON.parse(result.stdout).ticket).toMatchObject({ id: '1' });
+    expect(result.code, result.out).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ticket: { id: '1' },
+      revalidation: { result: 'UNVERIFIABLE', action: 'unverifiable' },
+    });
     // Loud, on the stream that is not the selection, and specific: it names the
     // journal as the thing that failed and says the selection went unrecorded.
     // Without that sentence the operator reads a normal run with a gap in it.
@@ -1186,6 +1235,7 @@ const rigWithout = async (
   const scripts = path.join(dir, '.claude', 'scripts');
   await mkdir(scripts, { recursive: true });
   await cp(path.join(scriptsDir, 'queue'), path.join(scripts, 'queue'), { recursive: true });
+  await cp(path.join(scriptsDir, 'lib'), path.join(scripts, 'lib'), { recursive: true });
   await copyFile(path.join(scriptsDir, 'git-env.mjs'), path.join(scripts, 'git-env.mjs'));
   const present = missing === 'run-journal.mjs' ? 'run-state.mjs' : 'run-journal.mjs';
   await copyFile(path.join(scriptsDir, present), path.join(scripts, present));

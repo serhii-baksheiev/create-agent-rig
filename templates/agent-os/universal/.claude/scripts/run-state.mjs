@@ -1,8 +1,8 @@
 /**
  * The run's own state — three of the four values `stopConditionOf` asks for and
- * nothing used to answer, plus one value it does not ask for: the take-up
- * snapshot `takeUps` ({@link recordTakeUp}), which is the run's fact as much as
- * the other three. The fourth stop input, `killSwitch`, is deliberately not here:
+ * nothing used to answer, plus compatibility evidence in `takeUps` and a
+ * checkpoint refusal in `revalidationHold`. The take-up marker is not a drift
+ * authority; `.rig/claims/` is. The fourth stop input, `killSwitch`, is deliberately not here:
  * it is already mechanical in `guard-bash` and scripted in preflight, and a
  * second answer to "is the brake on" is the disagreement `invariants.md`
  * forbids.
@@ -49,25 +49,39 @@
  * per run is the caller's part of the contract, and the `loop` skill states it.
  */
 
-import { opendirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  opendirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const STATE = 'state.json';
+const MAX_STATE_BYTES = 256 * 1024;
 
 /** The state file's path inside a run directory — one definition, not two. */
 export const statePathIn = (runDir) => join(runDir, STATE);
 
 /**
- * What the run has recorded so far; `{}` when it has recorded nothing.
+ * What a non-selection caller has recorded so far; `{}` when it has recorded
+ * nothing.
  *
  * 🔴 **Unreadable is empty, and that is a decision rather than an oversight.**
- * A corrupt or half-written state file must not stop the run from selecting
- * work: the failure mode of reading it as "no state" is today's behaviour —
- * which is exactly what the caller had before this module — while the failure
- * mode of throwing is a run that cannot take an item because of a file that
- * only ever *adds* stop conditions. Fail towards the behaviour that was already
- * trusted.
+ * This is the compatibility reader for writers and diagnostic commands whose
+ * established failure mode is "no state". Selection does NOT call it: a
+ * corrupt file there may be hiding a persisted stop, so `readStateForSelection`
+ * below is deliberately fail-closed. Keeping the two entry points named makes
+ * that boundary explicit instead of letting one permissive helper silently
+ * decide whether work may start.
  *
  * Note the asymmetry with `run-journal.mjs`, which refuses a broken sequence
  * loudly: the journal's whole job is to be trustworthy evidence, so a journal
@@ -82,6 +96,61 @@ export const readState = (runDir) => {
   } catch {
     return {};
   }
+};
+
+/**
+ * Selection's fail-closed view of run state. An absent file is still an empty
+ * run, but a present file that cannot be read or interpreted may be hiding a
+ * persisted stop such as `revalidationHold` and must not become `{}`.
+ */
+export const readStateForSelection = (runDir) => {
+  if (!runDir) return {};
+  const statePath = statePathIn(runDir);
+  let pathStat;
+  try {
+    pathStat = lstatSync(statePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw new Error('run state is unreadable', { cause: error });
+  }
+  if (pathStat.isSymbolicLink()) throw new Error('run state is a symlink');
+  if (!pathStat.isFile()) throw new Error('run state is invalid: expected a regular file');
+  let fd;
+  try {
+    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    throw new Error('run state is unreadable', { cause: error });
+  }
+  let raw;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error('run state is invalid: expected a regular file');
+    if (stat.size > MAX_STATE_BYTES) {
+      throw new Error(`run state exceeds ${MAX_STATE_BYTES} bytes`);
+    }
+    const current = lstatSync(statePath);
+    if (current.isSymbolicLink()) throw new Error('run state is a symlink');
+    if (!current.isFile()) throw new Error('run state is invalid: expected a regular file');
+    if (current.dev !== stat.dev || current.ino !== stat.ino) {
+      throw new Error('run state changed during validation');
+    }
+    raw = readFileSync(fd, 'utf8');
+  } catch (error) {
+    if (String(error?.message ?? error).startsWith('run state ')) throw error;
+    throw new Error('run state is unreadable', { cause: error });
+  } finally {
+    closeSync(fd);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error('run state is corrupt or invalid JSON', { cause: error });
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('run state is invalid: expected a JSON object');
+  }
+  return parsed;
 };
 
 /**
@@ -103,8 +172,8 @@ export const readState = (runDir) => {
  * there the failure is loud rather than torn, which is the direction to prefer
  * if it ever has to be handled.
  */
-export const updateState = (runDir, patch) => {
-  const next = { ...readState(runDir), ...patch };
+const writeState = (runDir, current, patch) => {
+  const next = { ...current, ...patch };
   const file = statePathIn(runDir);
   // The temp name carries the pid so a second writer cannot clobber the first
   // one's half-written file — the merge above is still unsafe under two
@@ -139,6 +208,8 @@ export const updateState = (runDir, patch) => {
   }
   return next;
 };
+
+export const updateState = (runDir, patch) => writeState(runDir, readState(runDir), patch);
 
 /**
  * Count one task that hit a wall, and hand back the new total.
@@ -203,8 +274,8 @@ export const recordEscalation = (runDir) => {
 
 /**
  * The take-up snapshot: the selected item's `updatedAt` marker, keyed by id, as
- * seen at SELECT. `queue/core.mjs` › revalidationOf compares the next selection
- * against it, so a stale take-up is reported rather than silently continued.
+ * seen at SELECT. It is evidence/compatibility state only; it neither decides
+ * drift nor whether a durable claim baseline may be created.
  *
  * Per run, like everything else here — a snapshot from yesterday's run is not
  * a take-up this run made. Merged by id, so a second item does not erase the
@@ -223,6 +294,41 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
   return updateState(runDir, { takeUps: { ...takeUps, [String(id)]: updatedAt } });
 };
 
+/** Persist a checkpoint refusal so the next selector cannot progress the run. */
+export const recordRevalidationHold = (runDir, detection = {}) => {
+  if (!runDir) return null;
+  const result = detection.result;
+  if (
+    typeof detection.ticket !== 'string' ||
+    typeof detection.checkpoint !== 'string' ||
+    typeof detection.id !== 'string' ||
+    !['CHANGED', 'CONFLICT', 'UNVERIFIABLE'].includes(result)
+  ) {
+    throw new Error('run state: revalidation hold needs a ticket, checkpoint, detection id, and blocking result');
+  }
+  return writeState(
+    runDir,
+    readStateForSelection(runDir),
+    {
+      revalidationHold: {
+        kind: 'revalidation-hold',
+        ticket: detection.ticket,
+        checkpoint: detection.checkpoint,
+        result,
+        detectionId: detection.id,
+      },
+    },
+  );
+};
+
+/** Clear only the hold the recorded resolution actually answers. */
+export const clearRevalidationHold = (runDir, detectionId) => {
+  if (!runDir || typeof detectionId !== 'string') return null;
+  const state = readStateForSelection(runDir);
+  if (state.revalidationHold?.detectionId !== detectionId) return state;
+  return writeState(runDir, state, { revalidationHold: undefined });
+};
+
 /**
  * The take-up an EARLIER run recorded for this item, or null (AR-138).
  *
@@ -232,8 +338,7 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
  * when this run has no take-up for the item, SELECT asks the sibling run
  * directories — newest first by name, which is the `YYYYMMDD-HHMMSS` the
  * `loop` skill declares — and takes the first that recorded one. The answer
- * names the run it came from, so the revalidation event can say whose
- * baseline it compared against.
+ * names the evidence source in the event; it is never the fingerprint baseline.
  *
  * 🔴 A sibling is a run only by NAME — `YYYYMMDD-HHMMSS`, the shape the `loop`
  * skill declares — and so is the run asking. The first version took every
@@ -246,45 +351,68 @@ export const recordTakeUp = (runDir, { id, updatedAt } = {}) => {
  * another naming looks at no siblings at all, and the limit is the mirror
  * image: an earlier run declared under another naming is not seen here.
  *
- * Bounded and fail-soft: the runs root is walked through one directory handle
- * and at most 10 000 entries are looked at, whatever is in there; at most 200
- * candidate runs are read, an unreadable state is skipped rather than trusted,
- * and the answer is `null` for no run directory, an unnamed one, or no runs
- * root. Never this run's own state — that is {@link readState}'s answer, and
- * the caller asks it first.
+ * Bounded: the runs root is walked through one directory handle and at most
+ * 10 000 entries are looked at, whatever is in there; at most 200 candidate
+ * runs are returned. `previousRunEvidence` says when either boundary truncated
+ * the search, so authoritative resume detection can fail closed instead of
+ * reading "not found in the subset" as "first sight". Compatibility marker
+ * lookup remains fail-soft and may discard that completeness signal. Never
+ * this run's own state — that is {@link readState}'s answer, and the caller asks
+ * it first.
  */
 const RUN_DIR_NAME = /^\d{8}-\d{6}$/;
 const RUNS_ROOT_ENTRY_BUDGET = 10_000;
 const RUNS_READ_CAP = 200;
 
-export const previousTakeUp = (runDir, id) => {
-  if (!runDir || id === undefined || id === null) return null;
+/**
+ * The bounded, newest-first sibling run directories that can carry evidence.
+ *
+ * Enumeration is shared by compatibility take-up lookup and durable journal
+ * lookup so they cannot disagree about which runs are in scope. Callers choose
+ * their own failure direction: take-up evidence is optional and catches an
+ * error; resume detection is authoritative for baseline creation and fails
+ * closed when this enumeration cannot be completed.
+ */
+export const previousRunEvidence = (runDir) => {
+  if (!runDir) return { runDirs: [], complete: true };
   const root = dirname(runDir);
   const self = basename(runDir);
-  if (!RUN_DIR_NAME.test(self)) return null;
+  if (!RUN_DIR_NAME.test(self)) return { runDirs: [], complete: true };
   const names = [];
-  let dir;
-  try {
-    dir = opendirSync(root);
-  } catch {
-    return null;
-  }
+  let reachedEnd = false;
+  const dir = opendirSync(root);
   try {
     for (let seen = 0; seen < RUNS_ROOT_ENTRY_BUDGET; seen += 1) {
       const entry = dir.readSync();
-      if (entry === null) break;
+      if (entry === null) {
+        reachedEnd = true;
+        break;
+      }
       if (entry.isDirectory() && entry.name !== self && RUN_DIR_NAME.test(entry.name)) {
         names.push(entry.name);
       }
     }
-  } catch {
-    return null;
   } finally {
     dir.closeSync();
   }
   names.sort().reverse();
-  for (const name of names.slice(0, RUNS_READ_CAP)) {
-    const candidate = join(root, name);
+  return {
+    runDirs: names.slice(0, RUNS_READ_CAP).map((name) => join(root, name)),
+    complete: reachedEnd && names.length <= RUNS_READ_CAP,
+  };
+};
+
+export const previousRunDirs = (runDir) => previousRunEvidence(runDir).runDirs;
+
+export const previousTakeUp = (runDir, id) => {
+  if (!runDir || id === undefined || id === null) return null;
+  let candidates;
+  try {
+    candidates = previousRunDirs(runDir);
+  } catch {
+    return null;
+  }
+  for (const candidate of candidates) {
     let state;
     try {
       state = JSON.parse(readFileSync(statePathIn(candidate), 'utf8'));
@@ -378,6 +506,20 @@ export const stopInputsOf = (state = {}) => {
     refuse('lastDeployVerdict', verdict);
   }
 
+  const revalidationHold = state.revalidationHold ?? null;
+  if (
+    revalidationHold !== null &&
+    (typeof revalidationHold !== 'object' ||
+      Array.isArray(revalidationHold) ||
+      revalidationHold.kind !== 'revalidation-hold' ||
+      typeof revalidationHold.ticket !== 'string' ||
+      typeof revalidationHold.checkpoint !== 'string' ||
+      typeof revalidationHold.detectionId !== 'string' ||
+      !['CHANGED', 'CONFLICT', 'UNVERIFIABLE'].includes(revalidationHold.result))
+  ) {
+    refuse('revalidationHold', revalidationHold);
+  }
+
   // `triggersFired` is deliberately absent from this, and its absence is a
   // decision rather than an oversight: `core.mjs` compares `fired !== true`
   // strictly, so a string, a number or a nonsense shape can only ever leave an
@@ -386,6 +528,7 @@ export const stopInputsOf = (state = {}) => {
   return {
     consecutiveEscalations: count,
     lastDeployVerdict: normalised,
+    revalidationHold,
     // Any truthy value means exhausted: the only writer stores `true`, and a
     // hand-edit reaching for `"yes"` means yes. A flag has an honest `false`,
     // unlike a count — so unlike `escalations` above, nothing here needs

@@ -677,7 +677,8 @@ export const selectNext = (
 
 /**
  * Revalidation at SELECT — is the item the run is about to take the item the
- * last take-up saw?
+ * last take-up saw? This is compatibility EVIDENCE only: claim fingerprints
+ * are the sole authority for scope and commentary drift.
  *
  * The snapshot is the ticket's `updatedAt` marker as recorded at the previous
  * take-up in THIS run (`run-state.mjs` › recordTakeUp). One string compare on
@@ -692,74 +693,13 @@ export const selectNext = (
  * marker that moved: a first sight (no snapshot yet) is `false` with the baseline
  * recorded, not a change.
  *
- * `action` says what the run does with it: `hold` — re-read the item before
- * acting; `continue` — nothing moved; `unverifiable` — no marker to compare.
- *
- * ⚠ Limit: the marker moves on the run's OWN claim and comments too. The
- * tracker adapters re-record the take-up after each write they make (AR-140),
- * so a move made THROUGH the adapter is not a hold — one made by any other
- * route (a hand-posted comment, a connector) still is. This function cannot
- * tell who moved it; the re-read can, and the `loop` skill records that
- * conclusion as a separate `revalidation-outcome` event.
+ * It deliberately returns no `source` and no `action`. Adding either would
+ * restore the marker as a second decision engine beside `.rig/claims/`.
  */
-export const revalidationOf = ({ ticket, snapshot = null }) => {
+export const takeUpEvidenceOf = ({ ticket, snapshot = null }) => {
   const to = typeof ticket?.updatedAt === 'string' ? ticket.updatedAt : null;
   const from = typeof snapshot === 'string' ? snapshot : null;
-  // One shape at every point (AR-136): `source` is the list of what moved,
-  // `action` the same three words BEFORE_PR and BEFORE_CLOSE use, and the two
-  // markers sit under `task` — so a reader of the evidence log needs one parser.
-  const base = { ticket: ticket?.id ?? null, point: 'SELECT', task: { from, to } };
-  if (to === null) return { ...base, changed: null, source: [], action: 'unverifiable' };
-  const changed = from !== null && from !== to;
-  return {
-    ...base,
-    changed,
-    source: changed ? ['task:updatedAt'] : [],
-    action: changed ? 'hold' : 'continue',
-  };
-};
-
-/**
- * Revalidation at BEFORE_PR — the aggregate over two sources, pure.
- *
- * `task` is what {@link revalidationOf} returned for the ticket against the
- * take-up snapshot; `mainChanged` is the list of cited paths the default branch
- * changed since the branch forked (`revalidate.mjs` computes it from git). One
- * source name per finding — `task:updatedAt`, `main:<path>` — so a hold names
- * exactly what moved, never "something changed".
- *
- * `changed` keeps the three values of the SELECT point: `true` when any source
- * moved; `null` when nothing moved but the task could not be checked (no
- * snapshot, no marker, no run) — a blind spot on one side is not a clean pass
- * on both; `false` only when both sides were compared and neither moved.
- */
-export const beforePrRevalidationOf = ({ ticket, task = { changed: null }, mainChanged = [] }) => {
-  const source = [
-    ...(task?.changed === true ? ['task:updatedAt'] : []),
-    ...mainChanged.map((path) => `main:${path}`),
-  ];
-  const changed = source.length > 0 ? true : task?.changed === null ? null : false;
-  const action = changed === true ? 'hold' : changed === null ? 'unverifiable' : 'continue';
-  return { ticket, point: 'BEFORE_PR', changed, source, action };
-};
-
-/**
- * Revalidation at BEFORE_CLOSE — the aggregate over the item's marker and its
- * state, pure. `task` is what {@link revalidationOf} returned against the last
- * validation; `state` is the item's neutral state now. At close the item is
- * expected `in-progress`: `closed` means someone else published it, `open`
- * means someone moved it back, and either is a change the close must not
- * paper over. Same three-valued `changed` and the same actions as BEFORE_PR;
- * `task:updatedAt` is named before `task:state`.
- */
-export const beforeCloseRevalidationOf = ({ ticket, task = { changed: null }, state = null }) => {
-  const source = [
-    ...(task?.changed === true ? ['task:updatedAt'] : []),
-    ...(state !== 'in-progress' ? ['task:state'] : []),
-  ];
-  const changed = source.length > 0 ? true : task?.changed === null ? null : false;
-  const action = changed === true ? 'hold' : changed === null ? 'unverifiable' : 'continue';
-  return { ticket, point: 'BEFORE_CLOSE', changed, source, action };
+  return { changed: to === null ? null : from !== null && from !== to, task: { from, to } };
 };
 
 /**
@@ -933,6 +873,7 @@ export const stopConditionOf = ({
   lastDeployVerdict = null,
   consecutiveEscalations = 0,
   killSwitch = false,
+  revalidationHold = null,
   budgetExhausted = false,
   queueReadable = true,
 } = {}) => {
@@ -964,6 +905,16 @@ export const stopConditionOf = ({
         'the kill switch is set. Stop at the current task boundary: finish it, ' +
         'push the branch, open the PR, write the journal entry, exit. Losing ' +
         'in-flight work is not what stopping cleanly means.',
+    };
+  }
+  if (revalidationHold) {
+    return {
+      kind: 'revalidation-hold',
+      success: false,
+      why:
+        `${revalidationHold.ticket} stopped at ${revalidationHold.checkpoint}: ` +
+        `${revalidationHold.result} (${revalidationHold.detectionId}). Resolve that ` +
+        'detection before selecting more work in this run.',
     };
   }
   if (consecutiveEscalations >= 2) {

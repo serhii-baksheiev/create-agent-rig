@@ -17,8 +17,10 @@ import { execFileSync } from 'node:child_process';
 import { duplicateOf, fingerprintOf, lifecycleOf, ownerOfLabels, validateProposal } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
+import { recordClaimTransition } from '../lib/claim-records.mjs';
 
 export const name = 'github-issues';
+export const claimedState = 'in-progress';
 
 /**
  * A dependency line, and everything after the keyword on it.
@@ -56,6 +58,7 @@ export const blockerIdsOf = (issue) => {
 export const toTicket = (issue, states = {}) => {
   const labels = labelNames(issue);
   const priorityLabel = labels.map((label) => PRIORITY.exec(label)).find(Boolean);
+  const comments = Array.isArray(issue.comments) ? issue.comments : [];
 
   return {
     id: String(issue.number),
@@ -76,10 +79,7 @@ export const toTicket = (issue, states = {}) => {
     blocks: [],
     priority: priorityLabel ? Number(priorityLabel[1]) : 999,
     createdAt: issue.createdAt ?? null,
-    // The take-up marker for revalidation at SELECT: the tracker's own
-    // last-modified field, whose contract (moves on edits, comments and state
-    // changes) is assumed and not checked here. `null` when the listing did not
-    // carry it.
+    // Compatibility evidence only; `.rig/claims/` fingerprints decide drift.
     updatedAt: issue.updatedAt ?? null,
     // The body travels on the neutral shape so the hygiene checks live in one
     // place (core.mjs) instead of once per adapter. This adapter also parses it
@@ -87,6 +87,18 @@ export const toTicket = (issue, states = {}) => {
     // purpose: that is exactly the disagreement `body-claims-unlinked-blocker`
     // exists to surface.
     body: typeof issue.body === 'string' ? issue.body : null,
+    commentary: {
+      count: comments.length,
+      ids: comments
+        .map((comment) => comment?.id)
+        .filter((id) => id !== undefined && id !== null)
+        .map(String),
+      // GitHub CLI expands `comments` to `comments(first: 100)` but exposes no
+      // total or pageInfo beside the resulting array. Fewer than 100 proves the
+      // first page was also the last; exactly 100 cannot prove there is no 101st
+      // comment and must fail closed rather than fingerprint a partial thread.
+      complete: Array.isArray(issue.comments) && comments.length < 100,
+    },
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
       ? 'auto'
@@ -130,7 +142,7 @@ const ghText = (args) =>
 
 const ghJson = (args) => JSON.parse(ghText(args));
 
-const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt';
+const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments';
 
 // --- the adapter contract ------------------------------------------------------
 
@@ -176,10 +188,20 @@ const rebaseline = (ticket) => {
   }
 };
 
-export const claim = (ticket) => {
+export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
   ghText(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
+  let workflowClaimRecorded = false;
+  try {
+    workflowClaimRecorded =
+      recordClaimTransition({ projectRoot, ticket, claimedState }) !== null;
+  } catch (error) {
+    process.stderr.write(
+      `#${ticket.id}: the workflow claim landed, but its durable acknowledgement was NOT recorded — ` +
+        `${error.message}\n`,
+    );
+  }
   rebaseline(ticket);
-  return { ok: true };
+  return { ok: true, workflowClaimRecorded };
 };
 
 /**

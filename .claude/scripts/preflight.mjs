@@ -11,19 +11,21 @@
 // reason it is safe to script half a checklist. The honest objection to a partial
 // script — "a script that half-checks is worse than a list the run actually
 // reads" — is true exactly while the boundary is invisible. A silent script would
-// let a GO on four items read as a pass on seven.
+// let a GO on the scripted subset read as a pass on the whole checklist.
 //
 // 🔴 **`unknown` never becomes `pass`.** A probe that could not run tells you
 // nothing, and "I could not look" recorded as "it is fine" is the failure this
 // checklist exists to prevent.
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // One implementation of the brake, shared with the hook that enforces it. This
 // file used to carry its own `process.env.AGENT_LOOP_STOP || <default>`, which is
 // the replace-not-add bug — fixed in the hook and left open here for a full review
 // cycle, because preflight is the only scripted brake check and had no test.
 import { brakeIsOn } from './stop-flag.mjs';
+import { readRevalidationContract } from './lib/claim-records.mjs';
 
 /** The items this script cannot check: judgement, or a call worth more than it saves. */
 export const UNCHECKED = [
@@ -120,6 +122,20 @@ export const checkRunDirNotExported = (env = process.env) => {
     : { ok: true, detail: 'not exported' };
 };
 
+export const checkDetectionContract = (projectRoot) => {
+  try {
+    const contract = readRevalidationContract(projectRoot);
+    return {
+      ok: true,
+      detail:
+        `${contract.detection.mode} via ${contract.detection.sources.join(' + ')}, ` +
+        `${contract.detection.acceptedLatency} accepted latency, no push`,
+    };
+  } catch (error) {
+    return { ok: false, detail: error.message };
+  }
+};
+
 /** The last deploy must have concluded successfully — never start on a broken runtime. */
 export const checkLastDeploy = ({ workflow = 'deploy' } = {}) => {
   try {
@@ -195,9 +211,11 @@ const invokedDirectly = () => {
 };
 
 if (invokedDirectly()) {
+  const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const checks = {
     killSwitch: checkKillSwitch(),
     runDirNotExported: checkRunDirNotExported(),
+    detectionContract: checkDetectionContract(projectRoot),
     defaultBranchFresh: checkDefaultBranchFresh(),
     lastDeploy: checkLastDeploy(),
   };

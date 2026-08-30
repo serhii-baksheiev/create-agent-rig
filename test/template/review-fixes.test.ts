@@ -45,16 +45,18 @@ const ELEVATED = ['infra/', 'packages/db/src/'];
  * refusal to be read as one: the test goes on passing while measuring module
  * resolution instead of the behaviour it names.
  *
- * Both siblings are STATIC imports, so both are load-bearing before a single
- * line of queue logic runs — `git-env.mjs` from `queue/checkout.mjs`, and
- * `run-state.mjs` from all three adapters. `run-journal.mjs` is deliberately
- * absent: the CLI imports it dynamically and only when `RIG_RUN_DIR` is
- * declared, which no fixture here does, and `run-journal.test.ts` owns that path.
+ * Both sibling files and the shared `lib/` modules are STATIC imports, so they
+ * are load-bearing before a single line of queue logic runs — `git-env.mjs`
+ * from `queue/checkout.mjs`, `run-state.mjs` from all three adapters, and the
+ * claim helpers from the CLI. `run-journal.mjs` is deliberately absent: the
+ * CLI imports it dynamically and only when `RIG_RUN_DIR` is declared, which no
+ * fixture here does, and `run-journal.test.ts` owns that path.
  */
 const installQueueCli = async (dir: string): Promise<void> => {
   const scripts = path.join(dir, '.claude', 'scripts');
   await mkdir(scripts, { recursive: true });
   await cp(queueDir, path.join(scripts, 'queue'), { recursive: true });
+  await cp(path.join(scriptsDir, 'lib'), path.join(scripts, 'lib'), { recursive: true });
   for (const sibling of ['git-env.mjs', 'run-state.mjs']) {
     await copyFile(path.join(scriptsDir, sibling), path.join(scripts, sibling));
   }
@@ -480,6 +482,20 @@ describe('the queue CLI fails loudly, exactly as its own header demands', () => 
   const project = async (config?: string, plan = '# P\n\n## Agent queue\n\n- do a thing\n') => {
     const dir = await mkdtemp(path.join(tmpdir(), 'cli-'));
     await installQueueCli(dir);
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.rig', 'revalidation.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        detection: {
+          mode: 'pull',
+          sources: ['run-state', 'journal'],
+          acceptedLatency: '24h',
+          push: false,
+        },
+        pairedFacts: [],
+      })}\n`,
+    );
     await writeFile(path.join(dir, 'PLAN.md'), plan);
     if (config !== undefined) await writeFile(path.join(dir, '.claude', 'queue.json'), config);
     return dir;

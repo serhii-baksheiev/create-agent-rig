@@ -57,6 +57,16 @@ const journal = (await import(pathToFileURL(path.join(scriptsDir, 'run-journal.m
 const T1 = '2026-08-24T20:56:23.474Z';
 const T2 = '2026-08-25T09:00:00.000Z';
 const NOW = '2026-08-25T10:00:00.000Z';
+const REVALIDATION_CONTRACT = {
+  schemaVersion: 1,
+  detection: {
+    mode: 'pull',
+    sources: ['run-state', 'journal'],
+    acceptedLatency: '24h',
+    push: false,
+  },
+  pairedFacts: [],
+};
 
 const POINTS = ['SELECT', 'BEFORE_PR', 'BEFORE_CLOSE'] as const;
 type Point = (typeof POINTS)[number];
@@ -111,6 +121,15 @@ const IN_PROGRESS = { name: 'In Progress', statusCategory: { key: 'indeterminate
 const project = async (issue: Record<string, unknown>) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'evidence-'));
   await mkdir(path.join(dir, '.claude'), { recursive: true });
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify(REVALIDATION_CONTRACT)}\n`,
+  );
+  await git(['init', '-q', '-b', 'master'], dir);
+  await git(['add', '.rig/revalidation.json'], dir);
+  await git(['commit', '-q', '-m', 'seed contract'], dir);
+  await git(['checkout', '-q', '-b', 'feat/revalidation-evidence'], dir);
   const configPath = path.join(dir, '.claude', 'queue.json');
   await writeFile(
     configPath,
@@ -118,6 +137,43 @@ const project = async (issue: Record<string, unknown>) => {
   );
   const runDir = await mkdtemp(path.join(tmpdir(), 'run-'));
   return { dir, configPath, runDir, env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir } };
+};
+
+const trackClaim = async (root: string) => {
+  await git(['add', '.rig/claims/AR-1.json'], root);
+  await git(['commit', '-q', '-m', 'track claim baseline'], root);
+};
+
+const createAndTrackClaim = async (
+  root: string,
+  issue: Record<string, unknown>,
+  targetRef: string | null,
+) => {
+  const jira = (await import(pathToFileURL(path.join(queueDir, 'jira.mjs')).href)) as {
+    find: (id: string, options: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+  };
+  const claims = (await import(
+    pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href
+  )) as {
+    revalidateClaim: (input: Record<string, unknown>) => { result: string };
+    recordClaimTransition: (input: Record<string, unknown>) => { claimedState: string } | null;
+    targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
+  };
+  const ticket = await jira.find('AR-1', {
+    project: 'AR',
+    issues: [jiraIssue({ ...issue, status: { name: 'To Do', statusCategory: { key: 'new' } } })],
+  });
+  if (!ticket) throw new Error('claim fixture could not map its Jira issue');
+  const result = claims.revalidateClaim({
+    projectRoot: root,
+    ticket,
+    point: 'SELECT',
+    targetSha: claims.targetShaOf(root, targetRef),
+    allowCreate: true,
+  });
+  if (result.result !== 'BASELINE_CREATED') throw new Error(`claim fixture: ${result.result}`);
+  claims.recordClaimTransition({ projectRoot: root, ticket, claimedState: 'in-progress' });
+  await trackClaim(root);
 };
 
 const eventsOf = (runDir: string, kind: string): JournalRecord[] =>
@@ -148,6 +204,11 @@ const gitClone = async (): Promise<string> => {
   await mkdir(origin);
   await git(['init', '--bare', '-b', 'master'], origin);
   await git(['clone', '-q', origin, clone], root);
+  await mkdir(path.join(clone, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(clone, '.rig', 'revalidation.json'),
+    `${JSON.stringify(REVALIDATION_CONTRACT)}\n`,
+  );
   await writeFile(path.join(clone, 'a.txt'), 'a.txt v1\n');
   await git(['add', '-A'], clone);
   await git(['commit', '-q', '-m', 'seed'], clone);
@@ -175,34 +236,25 @@ const expectCommonShape = (data: unknown, point: Point) => {
 };
 
 describe('A. one revalidation shape at all three points', () => {
-  it('revalidationOf returns source as an array, action from the hold vocabulary, and task.{from,to}', async () => {
-    const { revalidationOf } = (await import(
+  it('takeUpEvidenceOf reports marker movement without returning a drift decision', async () => {
+    const { takeUpEvidenceOf } = (await import(
       pathToFileURL(path.join(queueDir, 'core.mjs')).href
     )) as {
-      revalidationOf: (input: { ticket: unknown; snapshot?: string | null }) => CommonShape;
+      takeUpEvidenceOf: (input: {
+        ticket: unknown;
+        snapshot?: string | null;
+      }) => Record<string, unknown>;
     };
-    expect(revalidationOf({ ticket: { id: 'AR-1', updatedAt: T2 }, snapshot: T1 })).toEqual({
-      ticket: 'AR-1',
-      point: 'SELECT',
+    expect(takeUpEvidenceOf({ ticket: { id: 'AR-1', updatedAt: T2 }, snapshot: T1 })).toEqual({
       changed: true,
-      source: ['task:updatedAt'],
-      action: 'hold',
       task: { from: T1, to: T2 },
     });
-    expect(revalidationOf({ ticket: { id: 'AR-1', updatedAt: T1 }, snapshot: T1 })).toEqual({
-      ticket: 'AR-1',
-      point: 'SELECT',
+    expect(takeUpEvidenceOf({ ticket: { id: 'AR-1', updatedAt: T1 }, snapshot: T1 })).toEqual({
       changed: false,
-      source: [],
-      action: 'continue',
       task: { from: T1, to: T1 },
     });
-    expect(revalidationOf({ ticket: { id: 'AR-1', updatedAt: null }, snapshot: T1 })).toEqual({
-      ticket: 'AR-1',
-      point: 'SELECT',
+    expect(takeUpEvidenceOf({ ticket: { id: 'AR-1', updatedAt: null }, snapshot: T1 })).toEqual({
       changed: null,
-      source: [],
-      action: 'unverifiable',
       task: { from: T1, to: null },
     });
   });
@@ -217,6 +269,7 @@ describe('A. one revalidation shape at all three points', () => {
       select.env,
     );
     expect(first.code, first.out).toBe(0);
+    await trackClaim(select.dir);
     await writeFile(
       select.configPath,
       JSON.stringify({
@@ -235,9 +288,9 @@ describe('A. one revalidation shape at all three points', () => {
     expect(selectEvents).toHaveLength(2);
     expectCommonShape(selectEvents[1]!.data, 'SELECT');
     expect(selectEvents[1]!.data).toMatchObject({
-      changed: true,
-      source: ['task:updatedAt'],
-      action: 'hold',
+      changed: false,
+      source: [],
+      action: 'continue',
       task: { from: T1, to: T2 },
     });
 
@@ -254,6 +307,7 @@ describe('A. one revalidation shape at all three points', () => {
     );
     const prRun = await mkdtemp(path.join(tmpdir(), 'run-pr-'));
     await writeFile(path.join(prRun, 'state.json'), JSON.stringify({ takeUps: { 'AR-1': T1 } }));
+    await createAndTrackClaim(clone, { status: IN_PROGRESS, updated: T1 }, 'origin/master');
     const pr = await node(
       revalidateScript,
       ['--point', 'BEFORE_PR', '--ticket', 'AR-1', '--config', prConfig, '--json'],
@@ -265,8 +319,9 @@ describe('A. one revalidation shape at all three points', () => {
     expect(prEvents).toHaveLength(1);
     expectCommonShape(prEvents[0]!.data, 'BEFORE_PR');
 
-    // BEFORE_CLOSE — a plain directory, no git.
+    // BEFORE_CLOSE — the same durable claim contract, with no remote lookup.
     const close = await project({ status: IN_PROGRESS, updated: T1 });
+    await createAndTrackClaim(close.dir, { status: IN_PROGRESS, updated: T1 }, 'master');
     await writeFile(
       path.join(close.runDir, 'state.json'),
       JSON.stringify({ takeUps: { 'AR-1': T1 } }),
@@ -283,7 +338,7 @@ describe('A. one revalidation shape at all three points', () => {
     expectCommonShape(closeEvents[0]!.data, 'BEFORE_CLOSE');
   });
 
-  it('the SELECT text line prints `hold — task:updatedAt` and says re-read, only on a change', async () => {
+  it('the SELECT text line does not turn updatedAt-only movement into a hold', async () => {
     const p = await project({ updated: T1 });
     const first = await node(
       path.join(queueDir, 'index.mjs'),
@@ -292,6 +347,7 @@ describe('A. one revalidation shape at all three points', () => {
       p.env,
     );
     expect(first.code, first.out).toBe(0);
+    await trackClaim(p.dir);
     expect(first.stdout).not.toMatch(/^revalidate:/m);
     await writeFile(
       p.configPath,
@@ -307,11 +363,9 @@ describe('A. one revalidation shape at all three points', () => {
       p.env,
     );
     expect(second.code, second.out).toBe(0);
-    const line = second.stdout.split('\n').find((l) => l.startsWith('revalidate: AR-1'));
-    expect(line, second.stdout).toBeDefined();
-    expect(line).toMatch(/^revalidate: AR-1 hold — task:updatedAt/);
-    expect(line).toContain('re-read');
-    expect(line).not.toContain('changed since take-up');
+    expect(second.code, second.out).toBe(0);
+    expect(second.stdout).not.toContain('task:updatedAt');
+    expect(second.stdout).not.toContain('re-read');
   });
 });
 
@@ -361,10 +415,14 @@ describe('B. `revalidate.mjs outcome` answers one revalidation event by seq', ()
     expect(result.code, result.out).toBe(0);
     const outcomes = eventsOf(p.runDir, 'revalidation-outcome');
     expect(outcomes).toHaveLength(1);
-    expect(outcomes[0]!.data).toEqual({
+    expect(outcomes[0]!.data).toMatchObject({
       ticket: 'AR-1',
       point: 'SELECT',
       actionChanged: true,
+      actionRequired: true,
+      action: 'semantic decision',
+      driftOrigin: 'unknown',
+      resolvedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       note: 'a late comment re-scoped it',
       answers: 3,
     });
@@ -382,10 +440,14 @@ describe('B. `revalidate.mjs outcome` answers one revalidation event by seq', ()
       'false',
     ]);
     expect(result.code, result.out).toBe(0);
-    expect(eventsOf(p.runDir, 'revalidation-outcome')[0]!.data).toEqual({
+    expect(eventsOf(p.runDir, 'revalidation-outcome')[0]!.data).toMatchObject({
       ticket: 'AR-1',
       point: 'BEFORE_CLOSE',
       actionChanged: false,
+      actionRequired: false,
+      action: 'continue',
+      driftOrigin: 'unknown',
+      resolvedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       note: null,
       answers: 1,
     });
@@ -493,6 +555,7 @@ describe('B. `revalidate.mjs outcome` answers one revalidation event by seq', ()
 
   it('the existing `--point BEFORE_CLOSE --ticket` form without `outcome` still revalidates', async () => {
     const p = await project({ status: IN_PROGRESS, updated: T1 });
+    await createAndTrackClaim(p.dir, { status: IN_PROGRESS, updated: T1 }, 'master');
     await writeFile(path.join(p.runDir, 'state.json'), JSON.stringify({ takeUps: { 'AR-1': T1 } }));
     const result = await node(
       revalidateScript,

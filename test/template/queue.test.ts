@@ -35,6 +35,22 @@ const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const queueDir = path.join(universal, '.claude', 'scripts', 'queue');
 const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).href);
 const read = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
+const seedRevalidationContract = async (dir: string): Promise<void> => {
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    })}\n`,
+  );
+};
 
 // Every git this file spawns gets an explicit environment, and the list of what
 // leaves is the ONE the shipped scripts export — a hand-rolled second copy here
@@ -2591,6 +2607,7 @@ describe('the queue CLI', () => {
 
   it('lists the next selectable item from PLAN.md with no configuration at all', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
+    await seedRevalidationContract(dir);
     await writeFile(
       path.join(dir, 'PLAN.md'),
       '# P\n\n## Agent queue\n\n- add a route\n- rotate the key [elevated]\n\n## Journal\n',
@@ -2707,6 +2724,7 @@ describe('the queue CLI', () => {
     config: Record<string, unknown> = { adapter: 'plan-md' },
   ): Promise<{ dir: string; configPath: string; statePath: string }> => {
     const dir = await mkdtemp(path.join(tmpdir(), 'queue-'));
+    await seedRevalidationContract(dir);
     await mkdir(path.join(dir, '.claude'), { recursive: true });
     await writeFile(
       path.join(dir, 'PLAN.md'),
@@ -2993,6 +3011,7 @@ describe('the queue CLI', () => {
       config: Record<string, unknown> = { adapter: 'plan-md' },
     ): Promise<{ dir: string; configPath: string; subdir: string }> => {
       const dir = await mkdtemp(path.join(tmpdir(), 'queue-cwd-'));
+      await seedRevalidationContract(dir);
       await mkdir(path.join(dir, '.claude'), { recursive: true });
       await writeFile(
         path.join(dir, 'PLAN.md'),
@@ -4091,6 +4110,14 @@ const runNode = (
 const runCli = (args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
   runNode(path.join(queueDir, 'index.mjs'), args, cwd, env);
 
+const runGit = (args: string[], cwd: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, env: withoutGitLocation() }, (error, _stdout, stderr) => {
+      if (error) reject(new Error(`git ${args.join(' ')} failed: ${stderr}`));
+      else resolve();
+    });
+  });
+
 /**
  * A project with takeable work, a declared run directory, and an explicit
  * `--config` so the pair (config, per-checkout state) resolves inside the temp
@@ -4107,6 +4134,38 @@ const runProject = async (
 ): Promise<{ dir: string; configPath: string; runDir: string; env: NodeJS.ProcessEnv }> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'run-state-'));
   await mkdir(path.join(dir, '.claude'), { recursive: true });
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    })}\n`,
+  );
+  await runGit(['init', '-q', '-b', 'master'], dir);
+  await runGit(
+    ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'add', '.rig/revalidation.json'],
+    dir,
+  );
+  await runGit(
+    [
+      '-c',
+      'user.email=t@example.invalid',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '-m',
+      'seed contract',
+    ],
+    dir,
+  );
   if (plan !== null) await writeFile(path.join(dir, 'PLAN.md'), plan);
   const configPath = path.join(dir, '.claude', 'queue.json');
   await writeFile(configPath, JSON.stringify({ adapter: 'plan-md', ...config }));

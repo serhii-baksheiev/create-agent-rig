@@ -7,8 +7,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
 
 /**
- * AR-138 — the take-up baseline crosses runs, and a proposal's baseline is the
- * marker it had when the loop filed it.
+ * AR-138 compatibility evidence crosses runs, while RP-50 makes the durable
+ * claim fingerprint the only decision baseline.
  *
  * Measured (RX1): SELECT compared only against a take-up recorded in the same
  * run, so an item taken up by yesterday's run and re-offered today reported
@@ -124,17 +124,74 @@ describe('the take-up baseline reaches back into earlier runs', () => {
   });
 });
 
-describe('selection compares against the earlier run when this run has no take-up yet', () => {
+describe('selection preserves earlier-run take-up evidence without using it as authority', () => {
   const nextJson = async (updated: string, previous: Record<string, unknown>[]) => {
     const { withoutGitLocation } = await load('git-env.mjs');
     const dir = await scratch('baseline-');
     await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.rig', 'revalidation.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        detection: {
+          mode: 'pull',
+          sources: ['run-state', 'journal'],
+          acceptedLatency: '24h',
+          push: false,
+        },
+        pairedFacts: [],
+      })}\n`,
+    );
+    for (const args of [
+      ['init', '-q', '-b', 'master'],
+      ['add', '.rig/revalidation.json'],
+      ['commit', '-q', '-m', 'seed contract'],
+    ]) {
+      await new Promise<void>((resolve, reject) =>
+        execFile(
+          'git',
+          ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+          { cwd: dir, env: withoutGitLocation() },
+          (error) => (error ? reject(error) : resolve()),
+        ),
+      );
+    }
     const configPath = path.join(dir, '.claude', 'queue.json');
     await writeFile(
       configPath,
       JSON.stringify({ adapter: 'jira', options: { project: 'AR', issues: [jiraIssue(updated)] } }),
     );
     const { runDir, dirs } = await runsRoot(previous);
+    for (const [index, state] of previous.entries()) {
+      const takeUps = state.takeUps;
+      const selectedAt =
+        typeof takeUps === 'object' && takeUps !== null
+          ? (takeUps as Record<string, unknown>)['AR-1']
+          : null;
+      if (typeof selectedAt !== 'string') continue;
+      await writeFile(
+        path.join(dirs[index]!, 'events.jsonl'),
+        `${JSON.stringify({
+          seq: 1,
+          at: selectedAt,
+          kind: 'revalidation',
+          data: {
+            schemaVersion: 1,
+            id: `prior-select-${index}`,
+            ticket: 'AR-1',
+            point: 'SELECT',
+            checkpoint: 'SELECT',
+            result: 'BASELINE_CREATED',
+            changed: false,
+            source: [],
+            action: 'continue',
+            movedFingerprintSet: [],
+            sourcePointer: '.rig/claims/AR-1.json',
+          },
+        })}\n`,
+      );
+    }
     const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) =>
       execFile(
         process.execPath,
@@ -144,39 +201,49 @@ describe('selection compares against the earlier run when this run has no take-u
           resolve({ code: e && typeof e.code === 'number' ? e.code : 0, stdout: out, stderr: err }),
       ),
     );
-    expect(result.code, result.stderr).toBe(0);
     const events = (await readFile(path.join(runDir, 'events.jsonl'), 'utf8'))
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line))
       .filter((e) => e.kind === 'revalidation');
-    return { json: JSON.parse(result.stdout), event: events[0]?.data, dirs };
+    return { code: result.code, json: JSON.parse(result.stdout), event: events[0]?.data, dirs };
   };
 
-  it('holds when the marker moved past the earlier run’s take-up, and names that baseline', async () => {
-    const { json, event, dirs } = await nextJson(T2, [{ takeUps: { 'AR-1': T1 } }]);
+  it('refuses a missing claim on resume while naming the moved compatibility marker', async () => {
+    const { code, json, event, dirs } = await nextJson(T2, [{ takeUps: { 'AR-1': T1 } }]);
+    expect(code).toBe(2);
     expect(json.revalidation).toMatchObject({
-      changed: true,
-      action: 'hold',
+      result: 'UNVERIFIABLE',
+      changed: null,
+      action: 'unverifiable',
       task: { from: T1, to: T2 },
       baseline: 'previous-run',
     });
-    expect(event).toMatchObject({ changed: true, baseline: 'previous-run', baselineRun: dirs[0] });
+    expect(event).toMatchObject({
+      result: 'UNVERIFIABLE',
+      changed: null,
+      baseline: 'previous-run',
+      baselineRun: dirs[0],
+    });
   });
 
-  it('continues when the marker is where the earlier run left it', async () => {
-    const { json } = await nextJson(T2, [{ takeUps: { 'AR-1': T2 } }]);
+  it('still refuses a missing claim when the compatibility marker did not move', async () => {
+    const { code, json } = await nextJson(T2, [{ takeUps: { 'AR-1': T2 } }]);
+    expect(code).toBe(2);
     expect(json.revalidation).toMatchObject({
-      changed: false,
-      action: 'continue',
+      changed: null,
+      action: 'unverifiable',
+      result: 'UNVERIFIABLE',
       baseline: 'previous-run',
     });
   });
 
-  it('is a first sight — baseline null, changed false — only when no run ever took it up', async () => {
-    const { json } = await nextJson(T2, []);
+  it('is a first sight — baseline null, changed false — only when no prior SELECT exists', async () => {
+    const { code, json } = await nextJson(T2, []);
+    expect(code).toBe(0);
     expect(json.revalidation).toMatchObject({
       changed: false,
+      result: 'BASELINE_CREATED',
       task: { from: null, to: T2 },
       baseline: null,
     });
