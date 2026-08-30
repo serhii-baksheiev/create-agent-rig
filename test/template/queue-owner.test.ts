@@ -109,6 +109,20 @@ describe('the CLI hands options.owner to selection and to hygiene', () => {
     const { tmpdir } = await import('node:os');
     const dir = await mkdtemp(path.join(tmpdir(), 'owner-cli-'));
     await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.rig', 'revalidation.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        detection: {
+          mode: 'pull',
+          sources: ['run-state', 'journal'],
+          acceptedLatency: '24h',
+          push: false,
+        },
+        pairedFacts: [],
+      })}\n`,
+    );
     await writeFile(
       path.join(dir, '.claude', 'queue.json'),
       JSON.stringify({ adapter: 'plan-md', options: owner === null ? {} : { owner } }),

@@ -7,14 +7,14 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
 
 /**
- * AR-140 — the adapter records the marker its own write produced, so a
- * self-inflicted move is not a catch.
+ * AR-140 — the adapter preserves the marker its own write produced as
+ * compatibility evidence. RP-50 removes that marker from catch authority.
  *
  * Measured (RX3/RX4): every BEFORE_PR catch of one run — 3 of 3 — was a hold
  * on `task:updatedAt` moved by the run's own comments on the item; the same
- * again on every BEFORE_CLOSE of the run after it. A tracker adapter now reads
- * the marker back after each write it makes (claim, comment, close, escalate)
- * and records it as the take-up, so the next comparison starts from there.
+ * again on every BEFORE_CLOSE of the run after it. A tracker adapter still
+ * reads the marker back after each write it makes (claim, comment, close,
+ * escalate), but durable fingerprints now decide whether the run holds.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -186,7 +186,7 @@ describe('github-issues re-records the marker after each write of its own', () =
   );
 });
 
-describe('BEFORE_CLOSE compares against the newest baseline the run holds', () => {
+describe('BEFORE_CLOSE retains newest marker evidence without using it as authority', () => {
   const jiraIssue = (updated: string) => ({
     key: 'AR-1',
     self: 'https://example.invalid/AR-1',
@@ -207,6 +207,71 @@ describe('BEFORE_CLOSE compares against the newest baseline the run holds', () =
     const journal = await load('run-journal.mjs');
     const dir = await scratch('close-');
     await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.rig', 'revalidation.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        detection: {
+          mode: 'pull',
+          sources: ['run-state', 'journal'],
+          acceptedLatency: '24h',
+          push: false,
+        },
+        pairedFacts: [],
+      })}\n`,
+    );
+    for (const args of [
+      ['init', '-q', '-b', 'master'],
+      ['add', '.rig/revalidation.json'],
+      ['commit', '-q', '-m', 'seed contract'],
+      ['checkout', '-q', '-b', 'feat/revalidation-close'],
+    ]) {
+      await new Promise<void>((resolve, reject) =>
+        execFile(
+          'git',
+          ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+          { cwd: dir, env: withoutGitLocation() },
+          (error) => (error ? reject(error) : resolve()),
+        ),
+      );
+    }
+    const jira = await loadQueue('jira.mjs');
+    const claims = await load('lib/claim-records.mjs');
+    const selectedIssue = jiraIssue(T1);
+    const ticket = await jira.find('AR-1', {
+      project: 'AR',
+      issues: [
+        {
+          ...selectedIssue,
+          fields: {
+            ...selectedIssue.fields,
+            status: { name: 'To Do', statusCategory: { key: 'new' } },
+          },
+        },
+      ],
+    });
+    claims.revalidateClaim({
+      projectRoot: dir,
+      ticket,
+      point: 'SELECT',
+      targetSha: claims.targetShaOf(dir, 'master'),
+      allowCreate: true,
+    });
+    claims.recordClaimTransition({ projectRoot: dir, ticket, claimedState: 'in-progress' });
+    for (const args of [
+      ['add', '.rig/claims/AR-1.json'],
+      ['commit', '-q', '-m', 'track claim'],
+    ]) {
+      await new Promise<void>((resolve, reject) =>
+        execFile(
+          'git',
+          ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+          { cwd: dir, env: withoutGitLocation() },
+          (error) => (error ? reject(error) : resolve()),
+        ),
+      );
+    }
     const configPath = path.join(dir, '.claude', 'queue.json');
     await writeFile(
       configPath,
@@ -262,9 +327,13 @@ describe('BEFORE_CLOSE compares against the newest baseline the run holds', () =
     expect(JSON.parse(stdout)).toMatchObject({ action: 'continue', task: { from: T2 } });
   });
 
-  it('still holds when the marker moved past both', async () => {
+  it('continues when the marker moved past both because the claim stayed current', async () => {
     const { code, stdout } = await run({ updated: T3, lastValidation: T1, takeUp: T2 });
-    expect(code).toBe(2);
-    expect(JSON.parse(stdout)).toMatchObject({ action: 'hold', task: { from: T2, to: T3 } });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({
+      result: 'CURRENT',
+      action: 'continue',
+      task: { changed: true, from: T2, to: T3 },
+    });
   });
 });

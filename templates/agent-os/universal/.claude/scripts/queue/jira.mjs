@@ -26,8 +26,10 @@
 import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
 import { recordEscalation, recordTakeUp } from '../run-state.mjs';
+import { recordClaimTransition } from '../lib/claim-records.mjs';
 
 export const name = 'jira';
+export const claimedState = 'in-progress';
 
 /** Jira's own default priority ladder. An unrecognised name sorts last, never first. */
 const PRIORITY = { highest: 1, high: 2, medium: 3, low: 4, lowest: 5 };
@@ -76,6 +78,14 @@ export const toTicket = (issue) => {
   const labels = fields.labels ?? [];
   const links = fields.issuelinks ?? [];
   const category = statusCategory(fields);
+  const comments = Array.isArray(fields.comment?.comments) ? fields.comment.comments : [];
+  const commentaryIds = comments
+    .map((comment) => comment?.id)
+    .filter((id) => id !== undefined && id !== null)
+    .map(String);
+  const commentaryCount = Number.isInteger(fields.comment?.total)
+    ? fields.comment.total
+    : comments.length;
 
   // 🔴 INVARIANT 1: the dependency is the LINK, and the blocker's own status
   // decides. A `blocked` label is a snapshot nobody updates when the blocker
@@ -116,16 +126,22 @@ export const toTicket = (issue) => {
         ? Number(fields.priority?.id)
         : 999),
     createdAt: toIso(fields.created),
-    // The take-up marker for revalidation at SELECT (`core.mjs` › revalidationOf):
-    // the tracker's own last-modified field. That it moves on every status
-    // change, edit and comment is Jira's contract, assumed and not checked
-    // here. `null` when the search did not carry it — never `''`, which would
-    // compare equal to itself and read as "unchanged" where the truth is "not
-    // looked".
+    // Compatibility evidence only: Jira's last-modified field is retained in
+    // `takeUps`, but content-blind claim fingerprints decide drift.
     updatedAt: toIso(fields.updated),
     // Flattened from the document description — the same text this adapter
     // already reads internally, now visible to the shared hygiene checks.
     body: descriptionTextOf(issue) || null,
+    commentary: {
+      count: commentaryCount,
+      ids: commentaryIds,
+      // Jira may return only the first page while still declaring the total.
+      // A partial set cannot truthfully fingerprint commentary; the shared
+      // claim resolver turns this explicit false into UNVERIFIABLE.
+      complete:
+        commentaryIds.length === commentaryCount &&
+        new Set(commentaryIds).size === commentaryIds.length,
+    },
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
       ? 'auto'
@@ -374,6 +390,7 @@ const FIELDS = [
   'updated',
   'issuelinks',
   'description',
+  'comment',
 ];
 
 // --- the adapter contract ------------------------------------------------------
@@ -529,17 +546,9 @@ export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) =
 /**
  * Re-record the item's marker after a write of this adapter's own (AR-140).
  *
- * Every write here — a claim, a comment, a close, an escalation — moves the
- * tracker's `updated`, and the next revalidation compared against the take-up
- * from before it — the generator's journal records one run whose every
- * BEFORE_PR catch was a hold on its own comment (`revalidation-report.mjs`
- * over that run). So the marker is read back after the write
- * and recorded as the take-up in the declared run; a hold that still fires is
- * a move by something other than this adapter.
- *
- * ⚠ Limit: only writes made THROUGH this adapter re-baseline. A comment the
- * session posts by another route — a REST call by hand, a connector — moves
- * the marker like anyone else's, and the next check holds on it.
+ * Every write here moves Jira's `updated`, so it is read back and retained for
+ * attribution and compatibility. It does not re-baseline `.rig/claims/` and
+ * cannot produce or clear a drift decision.
  *
  * Best-effort, like `proposeTriage`'s baseline: the write has landed by now,
  * and a read-back the tracker refused or a stale run directory is announced on
@@ -572,7 +581,10 @@ const rebaseline = async (ticket, env) => {
   recordMarker(ticket, updatedAt, env);
 };
 
-export const claim = async (ticket, { transitionId = null, env = process.env } = {}) => {
+export const claim = async (
+  ticket,
+  { transitionId = null, env = process.env, projectRoot = process.cwd() } = {},
+) => {
   if (!transitionId) {
     const available = await request(`/rest/api/3/issue/${ticket.id}/transitions`, { env });
     const target = available.transitions.find(
@@ -591,8 +603,18 @@ export const claim = async (ticket, { transitionId = null, env = process.env } =
     body: { transition: { id: transitionId } },
     env,
   });
+  let workflowClaimRecorded = false;
+  try {
+    workflowClaimRecorded =
+      recordClaimTransition({ projectRoot, ticket, claimedState }) !== null;
+  } catch (error) {
+    process.stderr.write(
+      `${ticket.id}: the workflow claim landed, but its durable acknowledgement was NOT recorded — ` +
+        `${error.message}\n`,
+    );
+  }
   await rebaseline(ticket, env);
-  return { ok: true };
+  return { ok: true, workflowClaimRecorded };
 };
 
 export const comment = async (ticket, body, { env = process.env } = {}) => {

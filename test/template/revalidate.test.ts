@@ -56,6 +56,16 @@ const journal = (await loadScript('run-journal.mjs')) as {
 const T1 = '2026-08-24T20:56:23.474Z';
 const T2 = '2026-08-25T09:00:00.000Z';
 const NOW = '2026-08-25T10:00:00.000Z';
+const REVALIDATION_CONTRACT = {
+  schemaVersion: 1,
+  detection: {
+    mode: 'pull',
+    sources: ['run-state', 'journal'],
+    acceptedLatency: '24h',
+    push: false,
+  },
+  pairedFacts: [],
+};
 
 interface Result {
   ticket: string;
@@ -111,6 +121,11 @@ const gitFixture = async (): Promise<{
   await mkdir(origin);
   await git(['init', '--bare', '-b', 'master'], origin);
   await git(['clone', '-q', origin, clone], root);
+  await mkdir(path.join(clone, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(clone, '.rig', 'revalidation.json'),
+    `${JSON.stringify(REVALIDATION_CONTRACT)}\n`,
+  );
   for (const name of ['a.txt', 'b.txt', 'c.txt']) {
     await writeFile(path.join(clone, name), `${name} v1\n`);
   }
@@ -152,6 +167,41 @@ const jiraIssue = (over: Record<string, unknown> = {}) => ({
   },
 });
 
+const trackClaimBaseline = async (
+  root: string,
+  issue: Record<string, unknown>,
+  targetRef: string | null,
+) => {
+  const jira = (await loadQueue('jira.mjs')) as {
+    find: (id: string, options: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+  };
+  const claims = (await loadScript('lib/claim-records.mjs')) as {
+    revalidateClaim: (input: Record<string, unknown>) => { result: string };
+    recordClaimTransition: (input: Record<string, unknown>) => { claimedState: string } | null;
+    targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
+  };
+  const selectedIssue = {
+    ...issue,
+    fields: {
+      ...((issue.fields ?? {}) as Record<string, unknown>),
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+    },
+  };
+  const ticket = await jira.find('AR-1', { project: 'AR', issues: [selectedIssue] });
+  if (!ticket) throw new Error('claim fixture could not map its Jira issue');
+  const result = claims.revalidateClaim({
+    projectRoot: root,
+    ticket,
+    point: 'SELECT',
+    targetSha: claims.targetShaOf(root, targetRef),
+    allowCreate: true,
+  });
+  if (result.result !== 'BASELINE_CREATED') throw new Error(`claim fixture: ${result.result}`);
+  claims.recordClaimTransition({ projectRoot: root, ticket, claimedState: 'in-progress' });
+  await git(['add', '.rig/claims/AR-1.json'], root);
+  await git(['commit', '-q', '-m', 'track claim baseline'], root);
+};
+
 interface Project {
   clone: string;
   configPath: string;
@@ -169,6 +219,7 @@ const project = async ({
   const { clone, moveMain } = await gitFixture();
   await mkdir(path.join(clone, '.claude'), { recursive: true });
   const configPath = path.join(clone, '.claude', 'queue.json');
+  const issueFor = (value: string | null) => jiraIssue(value === null ? {} : { updated: value });
   const setUpdated = (value: string | null) =>
     writeFile(
       configPath,
@@ -178,11 +229,12 @@ const project = async ({
           project: 'AR',
           // `null` is the sentinel for an absent field: a parameter default
           // swallows `undefined`, so it could never mean "no marker" here.
-          issues: [jiraIssue(value === null ? {} : { updated: value })],
+          issues: [issueFor(value)],
         },
       }),
     );
   await setUpdated(updated);
+  await trackClaimBaseline(clone, issueFor(updated), 'origin/master');
   const runDir = await mkdtemp(path.join(tmpdir(), 'run-'));
   if (snapshot !== null) {
     await writeFile(
@@ -263,7 +315,7 @@ describe('revalidate.mjs — the CLI contract', () => {
     expect(result.main.changed).toEqual([]);
     // and once the ref is current, the same path is the hold it should be
     await p.moveMain(['a.txt'], { fetch: true });
-    expect((await revalidateJson(p)).result.source).toEqual(['main:a.txt']);
+    expect((await revalidateJson(p)).result.source).toEqual(['claim:scope', 'main:a.txt']);
   });
 
   it.each([
@@ -289,19 +341,19 @@ describe('revalidate.mjs — the CLI contract', () => {
   });
 });
 
-describe('the task source — the ticket moved since take-up', () => {
-  it('holds when the in-progress ticket carries a newer updatedAt than the take-up snapshot', async () => {
+describe('take-up markers remain compatibility evidence, not drift authority', () => {
+  it('continues when only updatedAt moved and still reports the marker evidence', async () => {
     const p = await project({ updated: T2, snapshot: T1 });
     const { code, result, out } = await revalidateJson(p);
-    expect(code, out).toBe(2);
+    expect(code, out).toBe(0);
     expect(result).toMatchObject({
       ticket: 'AR-1',
       point: 'BEFORE_PR',
-      changed: true,
-      action: 'hold',
+      changed: false,
+      action: 'continue',
       task: { changed: true, from: T1, to: T2 },
     });
-    expect(result.source).toContain('task:updatedAt');
+    expect(result.source).not.toContain('task:updatedAt');
   });
 
   it('continues when the marker is unchanged and main has not moved', async () => {
@@ -317,22 +369,22 @@ describe('the task source — the ticket moved since take-up', () => {
     });
   });
 
-  it('is unverifiable when the run has no take-up snapshot for the ticket', async () => {
+  it('uses the tracked claim when the run has no take-up snapshot', async () => {
     const p = await project({ snapshot: null });
     const { code, result, out } = await revalidateJson(p);
     expect(code, out).toBe(0);
     expect(result.task.changed).toBeNull();
-    expect(result).toMatchObject({ changed: null, action: 'unverifiable', source: [] });
+    expect(result).toMatchObject({ changed: false, action: 'continue', source: [] });
   });
 
-  it('is unverifiable when the ticket carries no marker', async () => {
+  it('uses the tracked claim when the ticket carries no marker', async () => {
     const p = await project({ updated: null });
     const { result } = await revalidateJson(p);
     expect(result.task).toMatchObject({ changed: null, to: null });
-    expect(result.action).toBe('unverifiable');
+    expect(result.action).toBe('continue');
   });
 
-  it('is unverifiable without a run dir, and still computes the main source', async () => {
+  it('uses the tracked claim without a run dir, and still computes the main source', async () => {
     const p = await project();
     await p.moveMain(['a.txt']);
     const env = { ...p.env };
@@ -340,7 +392,7 @@ describe('the task source — the ticket moved since take-up', () => {
     const { code, result, out } = await revalidateJson({ ...p, env });
     expect(code, out).toBe(2);
     expect(result.task.changed).toBeNull();
-    expect(result.source).toEqual(['main:a.txt']);
+    expect(result.source).toEqual(['claim:scope', 'main:a.txt']);
     expect(existsSync(path.join(p.runDir, 'events.jsonl'))).toBe(false);
   });
 });
@@ -351,19 +403,23 @@ describe('the main source — the default branch moved under a cited file', () =
     await p.moveMain(['a.txt']);
     const { code, result, out } = await revalidateJson(p);
     expect(code, out).toBe(2);
-    expect(result).toMatchObject({ changed: true, action: 'hold', source: ['main:a.txt'] });
+    expect(result).toMatchObject({
+      changed: true,
+      action: 'hold',
+      source: ['claim:scope', 'main:a.txt'],
+    });
     expect(result.main.cited).toContain('a.txt');
     expect(result.main.changed).toEqual(['a.txt']);
     expect(result.main.base).toBe('origin/master');
     expect(result.main.mergeBase).toMatch(/^[0-9a-f]{40}$/);
   });
 
-  it('does not hold on an unrelated main change', async () => {
+  it('holds on target-SHA drift even when main changed only an uncited path', async () => {
     const p = await project();
     await p.moveMain(['b.txt']);
     const { code, result, out } = await revalidateJson(p);
-    expect(code, out).toBe(0);
-    expect(result).toMatchObject({ changed: false, action: 'continue', source: [] });
+    expect(code, out).toBe(2);
+    expect(result).toMatchObject({ changed: true, action: 'hold', source: ['claim:scope'] });
     expect(result.main.changed).toEqual([]);
     expect(result.main.cited).not.toContain('b.txt');
   });
@@ -381,10 +437,10 @@ describe('the main source — the default branch moved under a cited file', () =
     const { code, result, out } = await revalidateJson(p);
     expect(code, out).toBe(2);
     expect(result.main.cited).toEqual(expect.arrayContaining(['a.txt', 'c.txt']));
-    expect(result.source).toEqual(['main:c.txt']);
+    expect(result.source).toEqual(['claim:scope', 'main:c.txt']);
   });
 
-  it('ignores blockers from a gate other than check-premises', async () => {
+  it('ignores non-premise blocker paths while target-SHA drift still holds', async () => {
     const p = await project();
     journal.recordDecision({
       runDir: p.runDir,
@@ -395,22 +451,22 @@ describe('the main source — the default branch moved under a cited file', () =
     });
     await p.moveMain(['c.txt']);
     const { code, result, out } = await revalidateJson(p);
-    expect(code, out).toBe(0);
+    expect(code, out).toBe(2);
     expect(result.main.cited).not.toContain('c.txt');
-    expect(result.action).toBe('continue');
+    expect(result).toMatchObject({ action: 'hold', source: ['claim:scope'] });
   });
 });
 
 describe('what it prints and what it journals', () => {
-  it('text mode on hold names every changed source on one line', async () => {
+  it('text mode on hold names authoritative sources on one line', async () => {
     const p = await project({ updated: T2 });
     await p.moveMain(['a.txt']);
     const { code, stdout } = await revalidate(p);
     expect(code).toBe(2);
     const line = stdout.split('\n').find((l) => l.startsWith('revalidate BEFORE_PR: AR-1 hold'));
     expect(line, stdout).toBeDefined();
-    expect(line).toContain('task:updatedAt');
     expect(line).toContain('main:a.txt');
+    expect(line).not.toContain('task:updatedAt');
   });
 
   it('text mode on continue says so', async () => {
@@ -426,72 +482,116 @@ describe('what it prints and what it journals', () => {
     const events = revalidationEvents(p.runDir);
     expect(events).toHaveLength(1);
     expect(events[0]!.data).toEqual(result);
-    expect(events[0]!.data).toMatchObject({ point: 'BEFORE_PR', action: 'hold' });
+    expect(events[0]!.data).toMatchObject({ point: 'BEFORE_PR', action: 'continue' });
   });
 });
 
-describe('beforePrRevalidationOf aggregates the sources, purely', () => {
+describe('takeUpEvidenceOf cannot make a BEFORE_PR decision', () => {
   const load = async () =>
     (await loadQueue('core.mjs')) as {
-      revalidationOf: (input: { ticket: unknown; snapshot?: string | null }) => {
+      takeUpEvidenceOf: (input: { ticket: unknown; snapshot?: string | null }) => {
         changed: boolean | null;
+        task: { from: string | null; to: string | null };
       };
-      beforePrRevalidationOf: (input: {
-        ticket: string;
-        task: { changed: boolean | null };
-        mainChanged: string[];
-      }) => Omit<Result, 'task' | 'main'>;
     };
 
-  it('holds on a task change, naming task:updatedAt', async () => {
-    const { revalidationOf, beforePrRevalidationOf } = await load();
-    const task = revalidationOf({ ticket: { id: 'AR-1', updatedAt: T2 }, snapshot: T1 });
-    expect(beforePrRevalidationOf({ ticket: 'AR-1', task, mainChanged: [] })).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_PR',
+  it('reports a moved marker as evidence only', async () => {
+    const { takeUpEvidenceOf } = await load();
+    const evidence = takeUpEvidenceOf({ ticket: { id: 'AR-1', updatedAt: T2 }, snapshot: T1 });
+    expect(evidence).toEqual({
       changed: true,
-      source: ['task:updatedAt'],
-      action: 'hold',
+      task: { from: T1, to: T2 },
     });
+    expect(evidence).not.toHaveProperty('action');
+    expect(evidence).not.toHaveProperty('source');
   });
 
-  it('holds on main-only changes, one source per path', async () => {
-    const { revalidationOf, beforePrRevalidationOf } = await load();
-    const task = revalidationOf({ ticket: { id: 'AR-1', updatedAt: T1 }, snapshot: T1 });
-    expect(
-      beforePrRevalidationOf({ ticket: 'AR-1', task, mainChanged: ['a.txt', 'c.txt'] }),
-    ).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_PR',
-      changed: true,
-      source: ['main:a.txt', 'main:c.txt'],
-      action: 'hold',
-    });
-  });
-
-  it('continues when neither moved and the task was verifiable', async () => {
-    const { revalidationOf, beforePrRevalidationOf } = await load();
-    const task = revalidationOf({ ticket: { id: 'AR-1', updatedAt: T1 }, snapshot: T1 });
-    expect(beforePrRevalidationOf({ ticket: 'AR-1', task, mainChanged: [] })).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_PR',
+  it('reports unchanged and unavailable markers without authority', async () => {
+    const { takeUpEvidenceOf } = await load();
+    expect(takeUpEvidenceOf({ ticket: { id: 'AR-1', updatedAt: T1 }, snapshot: T1 })).toEqual({
       changed: false,
-      source: [],
-      action: 'continue',
+      task: { from: T1, to: T1 },
+    });
+    expect(takeUpEvidenceOf({ ticket: { id: 'AR-1', updatedAt: null }, snapshot: T1 })).toEqual({
+      changed: null,
+      task: { from: T1, to: null },
+    });
+  });
+});
+
+describe('withAdditionalDrift extends the claim detection, not marker evidence', () => {
+  const load = async () =>
+    (await loadScript('lib/claim-records.mjs')) as {
+      withAdditionalDrift: (
+        detection: Record<string, unknown>,
+        sources?: string[],
+      ) => Record<string, unknown>;
+    };
+  const current = () => ({
+    schemaVersion: 1,
+    id: 'current-id',
+    ticket: 'AR-1',
+    point: 'BEFORE_PR',
+    checkpoint: 'BEFORE_PR',
+    result: 'CURRENT',
+    changed: false,
+    source: [],
+    action: 'continue',
+    movedFingerprintSet: [],
+    sourcePointer: '.rig/claims/AR-1.json',
+  });
+
+  it('adds cited main drift to the current claim result', async () => {
+    const { withAdditionalDrift } = await load();
+    expect(withAdditionalDrift(current(), ['main:a.txt', 'main:c.txt'])).toMatchObject({
+      result: 'CHANGED',
+      changed: true,
+      action: 'hold',
+      source: ['main:a.txt', 'main:c.txt'],
     });
   });
 
-  it('is unverifiable when main did not move and the task could not be checked', async () => {
-    const { beforePrRevalidationOf } = await load();
-    expect(
-      beforePrRevalidationOf({ ticket: 'AR-1', task: { changed: null }, mainChanged: [] }),
-    ).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_PR',
-      changed: null,
-      source: [],
-      action: 'unverifiable',
+  it('adds the close state source to the current claim result', async () => {
+    const { withAdditionalDrift } = await load();
+    expect(withAdditionalDrift(current(), ['task:state'])).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      source: ['task:state'],
     });
+  });
+
+  it('refuses to restore task:updatedAt as a drift source', async () => {
+    const { withAdditionalDrift } = await load();
+    expect(() => withAdditionalDrift(current(), ['task:updatedAt'])).toThrow(/updatedAt|source/i);
+  });
+
+  it('preserves an existing fingerprint hold and adds checkpoint evidence', async () => {
+    const { withAdditionalDrift } = await load();
+    const hold = {
+      ...current(),
+      result: 'CHANGED',
+      changed: true,
+      action: 'hold',
+      source: ['claim:scope'],
+    };
+    expect(withAdditionalDrift(hold, ['main:a.txt'])).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      source: ['claim:scope', 'main:a.txt'],
+    });
+  });
+
+  it('returns the same current detection when there is no additional drift', async () => {
+    const { withAdditionalDrift } = await load();
+    const detection = current();
+    expect(withAdditionalDrift(detection)).toBe(detection);
+  });
+
+  it('gives the same additional drift a stable detection id', async () => {
+    const { withAdditionalDrift } = await load();
+    expect(withAdditionalDrift(current(), ['main:a.txt']).id).toBe(
+      withAdditionalDrift(current(), ['main:a.txt']).id,
+    );
   });
 });
 
@@ -547,9 +647,9 @@ interface CloseProject {
 }
 
 /**
- * A plain directory — deliberately NOT a git repository — holding only the
- * queue config, plus a run directory. `snapshot` is `takeUps[AR-1]`; `null`
- * writes no state.json at all.
+ * A minimal repository holding the durable claim, queue config and a run
+ * directory. `snapshot` is compatibility evidence only; `null` writes no
+ * state.json at all.
  */
 const closeProject = async ({
   updated = T1,
@@ -567,20 +667,28 @@ const closeProject = async ({
 } = {}): Promise<CloseProject> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'revalidate-close-'));
   await mkdir(path.join(dir, '.claude'), { recursive: true });
+  await mkdir(path.join(dir, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(dir, '.rig', 'revalidation.json'),
+    `${JSON.stringify(REVALIDATION_CONTRACT)}\n`,
+  );
+  await git(['init', '-q', '-b', 'master'], dir);
+  await git(['add', '.rig/revalidation.json'], dir);
+  await git(['commit', '-q', '-m', 'seed contract'], dir);
+  await git(['checkout', '-q', '-b', 'feat/revalidation-close'], dir);
   const configPath = path.join(dir, '.claude', 'queue.json');
+  const issue = jiraIssue({ status, issuelinks, ...(updated === null ? {} : { updated }) });
   await writeFile(
     configPath,
     JSON.stringify({
       adapter: 'jira',
       options: {
         project: 'AR',
-        issues: [
-          jiraIssue({ status, issuelinks, ...(updated === null ? {} : { updated }) }),
-          ...others,
-        ],
+        issues: [issue, ...others],
       },
     }),
   );
+  await trackClaimBaseline(dir, issue, 'master');
   const runDir = await mkdtemp(path.join(tmpdir(), 'run-close-'));
   if (snapshot !== null) {
     await writeFile(
@@ -636,9 +744,9 @@ describe('revalidate.mjs knows BEFORE_CLOSE', () => {
     expect(Object.isFrozen(POINTS)).toBe(true);
   });
 
-  it('needs no git: runs in a plain directory and ignores --base there', async () => {
+  it('needs no remote target ref at close and ignores --base there', async () => {
     const p = await closeProject();
-    expect(existsSync(path.join(p.dir, '.git'))).toBe(false);
+    expect(existsSync(path.join(p.dir, '.git'))).toBe(true);
     const { code, result, out } = await revalidateCloseJson(p, ['--base', 'no-such-ref']);
     expect(code, out).toBe(0);
     expect(result).toMatchObject({ ticket: 'AR-1', point: 'BEFORE_CLOSE', action: 'continue' });
@@ -646,7 +754,7 @@ describe('revalidate.mjs knows BEFORE_CLOSE', () => {
   });
 });
 
-describe('BEFORE_CLOSE — the task source compares against the LAST validation', () => {
+describe('BEFORE_CLOSE — markers remain evidence beside the durable claim', () => {
   it('continues when the marker equals the last BEFORE_PR event, even though take-up is older', async () => {
     const p = await closeProject({ updated: T2, snapshot: T1 });
     recordBeforePr(p.runDir, T2);
@@ -660,15 +768,15 @@ describe('BEFORE_CLOSE — the task source compares against the LAST validation'
     });
   });
 
-  it('holds when the marker moved past the last BEFORE_PR event, with `from` being that event', async () => {
+  it('continues when only the marker moved past the last validation', async () => {
     const p = await closeProject({ updated: T3, snapshot: T1 });
     recordBeforePr(p.runDir, T2);
     const { code, result, out } = await revalidateCloseJson(p);
-    expect(code, out).toBe(2);
+    expect(code, out).toBe(0);
     expect(result).toMatchObject({
-      changed: true,
-      action: 'hold',
-      source: ['task:updatedAt'],
+      changed: false,
+      action: 'continue',
+      source: [],
       task: { changed: true, from: T2, to: T3 },
     });
   });
@@ -683,21 +791,21 @@ describe('BEFORE_CLOSE — the task source compares against the LAST validation'
     });
   });
 
-  it('is unverifiable when there is neither an event nor a take-up snapshot', async () => {
+  it('uses the tracked claim when there is neither an event nor a take-up snapshot', async () => {
     const p = await closeProject({ snapshot: null });
     const { code, result, out } = await revalidateCloseJson(p);
     expect(code, out).toBe(0);
     expect(result).toMatchObject({
-      changed: null,
-      action: 'unverifiable',
+      changed: false,
+      action: 'continue',
       source: [],
       task: { changed: null, from: null, to: T1 },
     });
   });
 });
 
-describe('BEFORE_CLOSE — the state source: in-progress is the only state a close expects', () => {
-  it('holds on task:state when the tracker no longer offers the item', async () => {
+describe('BEFORE_CLOSE — workflow state remains part of claim:scope', () => {
+  it('is unverifiable when the tracker no longer offers the item or its claim', async () => {
     const p = await closeProject();
     const { code, stdout, out } = await run(
       process.execPath,
@@ -717,27 +825,28 @@ describe('BEFORE_CLOSE — the state source: in-progress is the only state a clo
     expect(code, out).toBe(2);
     const result = JSON.parse(stdout) as CloseResult;
     expect(result.state).toEqual({ expected: 'in-progress', actual: 'missing' });
-    expect(result.source).toEqual(['task:state']);
+    expect(result).toMatchObject({ result: 'UNVERIFIABLE', action: 'unverifiable' });
+    expect(result.source).toEqual([]);
     expect(result.task.changed).toBeNull();
   });
 
-  it('holds on task:state when someone already closed the item', async () => {
+  it('holds on claim:scope when someone already closed the item', async () => {
     const p = await closeProject({ status: DONE });
     const { code, result, out } = await revalidateCloseJson(p);
     expect(code, out).toBe(2);
     expect(result).toMatchObject({
       changed: true,
       action: 'hold',
-      source: ['task:state'],
+      source: ['claim:scope'],
       state: { expected: 'in-progress', actual: 'closed' },
     });
   });
 
-  it('holds on task:state when the item was moved back to open', async () => {
+  it('holds on claim:scope when the item was moved back to open', async () => {
     const p = await closeProject({ status: TO_DO });
     const { code, result, out } = await revalidateCloseJson(p);
     expect(code, out).toBe(2);
-    expect(result.source).toEqual(['task:state']);
+    expect(result.source).toEqual(['claim:scope']);
     expect(result.state).toEqual({ expected: 'in-progress', actual: 'open' });
   });
 
@@ -783,11 +892,12 @@ describe('BEFORE_CLOSE — the dependants the close would release', () => {
 });
 
 describe('BEFORE_CLOSE — what it prints and what it journals', () => {
-  it('text mode on hold names both sources on one line', async () => {
+  it('text mode on hold names the authoritative scope source on one line', async () => {
     const p = await closeProject({ updated: T3, snapshot: T1, status: DONE });
     const { code, stdout } = await revalidateClose(p);
     expect(code).toBe(2);
-    expect(stdout).toMatch(/^revalidate BEFORE_CLOSE: AR-1 hold — task:updatedAt, task:state/m);
+    expect(stdout).toMatch(/^revalidate BEFORE_CLOSE: AR-1 hold — claim:scope/m);
+    expect(stdout).not.toContain('task:updatedAt');
   });
 
   it('text mode on continue says so', async () => {
@@ -804,88 +914,39 @@ describe('BEFORE_CLOSE — what it prints and what it journals', () => {
     const events = revalidationEvents(p.runDir);
     expect(events).toHaveLength(2);
     expect(events[1]!.data).toEqual(result);
-    expect(events[1]!.data).toMatchObject({ point: 'BEFORE_CLOSE', action: 'hold' });
+    expect(events[1]!.data).toMatchObject({ point: 'BEFORE_CLOSE', action: 'continue' });
     expect(journal.readRun({ runDir: p.runDir }).ended).toBe(false);
   });
 
-  it('is unverifiable without a run dir, and writes nothing', async () => {
+  it('uses the tracked claim without a run dir, and writes nothing', async () => {
     const p = await closeProject();
     const env = { ...p.env };
     delete env.RIG_RUN_DIR;
     const { code, result, out } = await revalidateCloseJson({ ...p, env });
     expect(code, out).toBe(0);
-    expect(result).toMatchObject({ action: 'unverifiable', task: { changed: null } });
+    expect(result).toMatchObject({ action: 'continue', task: { changed: null } });
     expect(existsSync(path.join(p.runDir, 'events.jsonl'))).toBe(false);
   });
 });
 
-describe('beforeCloseRevalidationOf aggregates task and state, purely', () => {
+describe('takeUpEvidenceOf cannot make a BEFORE_CLOSE decision', () => {
   const load = async () =>
     (await loadQueue('core.mjs')) as {
-      beforeCloseRevalidationOf: (input: {
-        ticket: string;
-        task: { changed: boolean | null };
-        state: string | null;
-      }) => Omit<CloseResult, 'task' | 'state' | 'dependants'>;
+      takeUpEvidenceOf: (input: { ticket: unknown; snapshot?: string | null }) => {
+        changed: boolean | null;
+        task: { from: string | null; to: string | null };
+      };
     };
 
-  it('holds on a task change, naming task:updatedAt', async () => {
-    const { beforeCloseRevalidationOf } = await load();
-    expect(
-      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: true }, state: 'in-progress' }),
-    ).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_CLOSE',
+  it('keeps the last marker comparison as evidence without action or sources', async () => {
+    const { takeUpEvidenceOf } = await load();
+    const evidence = takeUpEvidenceOf({ ticket: { id: 'AR-1', updatedAt: T3 }, snapshot: T2 });
+    expect(evidence).toEqual({
       changed: true,
-      source: ['task:updatedAt'],
-      action: 'hold',
+      task: { from: T2, to: T3 },
     });
-  });
-
-  it('holds on a closed state, naming task:state', async () => {
-    const { beforeCloseRevalidationOf } = await load();
-    expect(
-      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: false }, state: 'closed' }),
-    ).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_CLOSE',
-      changed: true,
-      source: ['task:state'],
-      action: 'hold',
-    });
-  });
-
-  it('names task:updatedAt before task:state when both moved', async () => {
-    const { beforeCloseRevalidationOf } = await load();
-    expect(
-      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: true }, state: 'open' }).source,
-    ).toEqual(['task:updatedAt', 'task:state']);
-  });
-
-  it('continues when the task compared unchanged and the state is in-progress', async () => {
-    const { beforeCloseRevalidationOf } = await load();
-    expect(
-      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: false }, state: 'in-progress' }),
-    ).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_CLOSE',
-      changed: false,
-      source: [],
-      action: 'continue',
-    });
-  });
-
-  it('is unverifiable when the task could not be compared and the state is in-progress', async () => {
-    const { beforeCloseRevalidationOf } = await load();
-    expect(
-      beforeCloseRevalidationOf({ ticket: 'AR-1', task: { changed: null }, state: 'in-progress' }),
-    ).toEqual({
-      ticket: 'AR-1',
-      point: 'BEFORE_CLOSE',
-      changed: null,
-      source: [],
-      action: 'unverifiable',
-    });
+    expect(evidence).not.toHaveProperty('action');
+    expect(evidence).not.toHaveProperty('source');
   });
 });
 
