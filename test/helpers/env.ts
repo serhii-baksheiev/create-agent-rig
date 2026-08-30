@@ -16,7 +16,8 @@
  * reason travels into the report. Pinned in
  * `test/template/test-env-helpers.test.ts`.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import type { TestContext } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 
@@ -123,3 +124,73 @@ export const fifosAvailable = (): { ok: boolean; reason: string } => ({
   ok: process.platform !== 'win32',
   reason: 'on Windows there is no mkfifo; the FIFO fixture cannot be built',
 });
+
+/**
+ * A SECOND, genuinely distinct spelling of one directory — the Windows 8.3
+ * short form (`RP57-E~1`, `SERHII~1`) — or a reason there is none here.
+ *
+ * This is a filesystem capability, not a platform: NTFS 8.3 name creation can
+ * be turned off per volume (`fsutil 8dot3name query`), and a ReFS or POSIX
+ * volume never had it. So it is MEASURED rather than guessed — the candidate is
+ * accepted only when `realpathSync.native` resolves it back to the same
+ * directory, which is what makes it a spelling rather than another path.
+ *
+ * Two sources, in order: the OS's own answer (`cmd`'s `%~sI`), which finds a
+ * short form even under a long temp root; and `realpathSync`, which normalises
+ * separators but leaves an 8.3 component the caller was already handed intact
+ * — enough wherever `os.tmpdir()` is itself short, as it is on the GitHub
+ * Windows runner (`RUNNER~1`).
+ */
+export const shortNameSpelling = (
+  dir: string,
+): { ok: boolean; reason: string; spelling: string } => {
+  const canonical = realpathSync.native(dir);
+  const sameDirectory = (candidate: string): boolean => {
+    if (candidate === '' || candidate.toLowerCase() === canonical.toLowerCase()) return false;
+    try {
+      return realpathSync.native(candidate).toLowerCase() === canonical.toLowerCase();
+    } catch {
+      return false;
+    }
+  };
+  for (const candidate of [askTheOsForAShortName(dir), safely(() => realpathSync(dir))]) {
+    if (candidate !== null && sameDirectory(candidate)) {
+      return { ok: true, reason: '', spelling: candidate };
+    }
+  }
+  return {
+    ok: false,
+    reason: `this filesystem gives ${canonical} no distinct 8.3 short spelling (no cmd, or 8dot3 name creation is off on this volume), so the two spellings of one directory the case needs do not exist here`,
+    spelling: canonical,
+  };
+};
+
+const safely = (read: () => string): string | null => {
+  try {
+    return read();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * `%~sI` is the only reliable way to ask for an 8.3 name; Node exposes none.
+ * `windowsVerbatimArguments` because Node's own quoting mangles the `for`
+ * clause into `C:\"C:\Users\…"`, and for the same reason a path carrying a cmd
+ * metacharacter is declined rather than interpolated. `spawnSync`, not
+ * `execFileSync`, because only the former's options carry that flag.
+ */
+const askTheOsForAShortName = (dir: string): string | null => {
+  if (/["&|<>^%!]/.test(dir)) return null;
+  const probe = spawnSync('cmd', ['/d', '/c', `for %I in ("${dir}") do @echo %~sI`], {
+    encoding: 'utf8',
+    windowsVerbatimArguments: true,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5000,
+  });
+  if (probe.error !== undefined || probe.status !== 0 || typeof probe.stdout !== 'string') {
+    return null;
+  }
+  const answer = probe.stdout.trim();
+  return answer === '' ? null : answer;
+};

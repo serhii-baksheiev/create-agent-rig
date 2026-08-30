@@ -1,5 +1,11 @@
 import { defineConfig } from 'vitest/config';
 
+// One figure for every lane that spawns a subprocess, so the two cannot drift
+// (`.claude/rules/invariants.md`: one mechanism, one implementation). It is the
+// same number `ci.yml` passes as --testTimeout; test/template/vitest-timeouts.test.ts
+// pins them equal in both directions.
+const SPAWN_TIMEOUT = 15_000;
+
 export default defineConfig({
   test: {
     passWithNoTests: true,
@@ -9,6 +15,12 @@ export default defineConfig({
           name: 'unit',
           include: ['packages/*/test/**/*.test.ts'],
           setupFiles: ['test/setup-env.ts'],
+          // RP-54: AR-143 gave this to `template` and stopped there. `unit` is the
+          // other half of `test:unit` — the script `.husky/pre-commit` runs, with no
+          // --testTimeout of its own — so it sat on vitest's 5 s default exactly where
+          // a slow host bites, while ci.yml's global flag masked the gap. The file that
+          // exposed it is packages/cli/test/cli-report.test.ts, which spawns the CLI.
+          testTimeout: SPAWN_TIMEOUT,
         },
       },
       {
@@ -20,7 +32,7 @@ export default defineConfig({
           // pins the two equal). Tests here spawn stub `gh` subprocesses, and under a
           // full parallel `pnpm test` with e2e beside them some crossed vitest's 5 s
           // default while passing alone — the measurements are on AR-143.
-          testTimeout: 15_000,
+          testTimeout: SPAWN_TIMEOUT,
         },
       },
       {

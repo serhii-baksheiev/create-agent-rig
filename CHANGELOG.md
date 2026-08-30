@@ -28,6 +28,20 @@ CLI or adding a dependency.
   `test/template/hook-stdin.test.ts` › "blocks the same command when PowerShell
   prepends a UTF-8 BOM" and › "reads stdin through the one shared reader, in
   every hook that reads it".
+- **Windows 8.3 short paths no longer take `apply_patch` out of service.** The
+  same short-name defect had a second site the first fix did not reach: the
+  shared `.claude/hooks/lib/edit-input.mjs` took the repository root from
+  `git rev-parse --show-toplevel` (which answers in the long spelling from any
+  cwd) and the patch working directory from the payload through plain
+  `realpathSync` (which leaves `SERHII~1` unexpanded). Compared through two
+  normalisations they were two directories, so every `apply_patch` was refused
+  as "outside the repository" — fail-closed rather than a bypass, but it took
+  the tool out of service on such a host for **all four** edit hooks that share
+  the module. Both sides now take one canonicaliser. Pinned in
+  `test/template/edit-fragments.test.ts` › "inspects a patch whose cwd is the
+  8.3 spelling of the repository root", › "reads the same patch identically
+  under either spelling of one directory" and › "leaves guard-secret-file
+  allowing an ordinary patch under the 8.3 spelling".
 - **Windows 8.3 short paths no longer hide a rulebook edit from the guard.**
   `realpathSync` normalises separators but leaves a short name (`RUNNER~1`,
   `SERHII~1`) unexpanded, so a checkout reached by two spellings hashed to two

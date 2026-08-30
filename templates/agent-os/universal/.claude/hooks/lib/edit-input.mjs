@@ -171,6 +171,29 @@ export function editFragments(input) {
   return patchFragments(command, input?.cwd);
 }
 
+// RP-54, second site: `.native`, never plain `realpathSync`. Both resolve
+// symlinks and normalise separators; only the native one expands a Windows 8.3
+// short name. `git rev-parse --show-toplevel` answers in the LONG spelling from
+// either cwd, while `payloadCwd` arrives however the harness spelled it — short
+// under an 8.3 temp or home. Compared through two different normalisations they
+// are two directories, `isWithin` fails, `patchCwd` becomes null, and every
+// apply_patch is refused as "outside the repository". That is fail-closed rather
+// than a bypass, but it takes apply_patch out of service on such a host for all
+// four edit hooks that share this module. Both sides take THIS function or the
+// comparison is between two normalisations again — the exact rule
+// guard-rulebook.mjs states at its own canonicaliser.
+//
+// Bounded, because this module fails open: one `try`, one call, no recursion and
+// no loop — `.claude/rules/invariants.md` ("a guard that fails open must do
+// provably bounded work").
+const canonicalDirectory = (directory) => {
+  try {
+    return realpathSync.native(directory);
+  } catch {
+    return directory;
+  }
+};
+
 function patchFragments(command, payloadCwd) {
   const fragments = [];
   const budget = {
@@ -190,8 +213,8 @@ function patchFragments(command, payloadCwd) {
     const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
       ? path.resolve(payloadCwd)
       : process.cwd();
-    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000, env: withoutGitLocation() }).trim());
-    budget.patchCwd = realpathSync(requestedCwd);
+    budget.repoRoot = canonicalDirectory(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000, env: withoutGitLocation() }).trim());
+    budget.patchCwd = canonicalDirectory(requestedCwd);
     if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
   } catch { /* moved inspection below refuses without a trusted root and cwd */ }
   let current = null;

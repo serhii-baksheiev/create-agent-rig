@@ -11,17 +11,44 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 // the unit lane with --testTimeout=15000; the template project declares the
 // same figure so the local and e2e.yml runs get it too.
 const projects = (config as { test?: { projects?: unknown[] } }).test?.projects ?? [];
-const templateProject = projects.find(
-  (p): p is { test: { name: string; testTimeout?: number } } =>
-    typeof p === 'object' &&
-    p !== null &&
-    (p as { test?: { name?: string } }).test?.name === 'template',
-);
+const projectNamed = (name: string) =>
+  projects.find(
+    (p): p is { test: { name: string; testTimeout?: number } } =>
+      typeof p === 'object' &&
+      p !== null &&
+      (p as { test?: { name?: string } }).test?.name === name,
+  );
+
+const templateProject = projectNamed('template');
+const unitProject = projectNamed('unit');
 
 describe('vitest template project timeout', () => {
   it('gives the template project the timeout CI already runs with, so a load-sensitive spawn is not read as a failure', () => {
     expect(templateProject).toBeDefined();
     expect(templateProject?.test.testTimeout).toBe(15_000);
+  });
+
+  // RP-54: AR-143 gave this figure to `template` and stopped there. `unit` is the
+  // other half of `test:unit`, which is what `.husky/pre-commit` runs — with NO
+  // --testTimeout, so it inherited vitest's 5 s default on the one path where a
+  // slow host actually bites. ci.yml passes the flag globally, which masked it.
+  it('gives the unit project the same timeout, because pre-commit runs it without the CI flag', () => {
+    expect(unitProject).toBeDefined();
+    expect(unitProject?.test.testTimeout).toBe(15_000);
+  });
+
+  it('leaves no lane of test:unit on the bare vitest default, whichever lane runs it', async () => {
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    const script = pkg.scripts['test:unit'] ?? '';
+    const lanes = [...script.matchAll(/--project (\S+)/g)].flatMap((m) =>
+      m[1] === undefined ? [] : [m[1]],
+    );
+    expect(lanes.length).toBeGreaterThan(0);
+    for (const lane of lanes) {
+      expect(projectNamed(lane)?.test.testTimeout).toBe(15_000);
+    }
   });
 
   it('keeps that figure equal to the --testTimeout ci.yml passes, so the two cannot drift', async () => {
