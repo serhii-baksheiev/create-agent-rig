@@ -179,9 +179,25 @@ export function editFragments(input) {
 // are two directories, `isWithin` fails, `patchCwd` becomes null, and every
 // apply_patch is refused as "outside the repository". That is fail-closed rather
 // than a bypass, but it takes apply_patch out of service on such a host for all
-// four edit hooks that share this module. Both sides take THIS function or the
-// comparison is between two normalisations again — the exact rule
+// four edit hooks that share this module. The two sides of THAT comparison —
+// `repoRoot` and `patchCwd` — take this function, which is the rule
 // guard-rulebook.mjs states at its own canonicaliser.
+//
+// ⚠ Scope, stated so the sentence above is not read wider than it is. The plain
+// `realpathSync` calls further down are deliberate, not leftovers: the move-source
+// ones resolve a candidate already built from the canonical `patchCwd`, so both
+// sides of their `isWithin` are the long spelling. `repositoryPatchPath` is the
+// one that still normalises differently, and an 8.3 component in a patch
+// DESTINATION is reported unexpanded there — measured identical before and after
+// the change above, so it is pre-existing rather than introduced here, and it
+// fails closed. Not exploitable today: guard-rulebook re-canonicalises the path
+// itself, and the other guarded prefixes (`packages/core/src`, `apps/web`) have
+// no 8.3 alias because every component is eight characters or fewer.
+//
+// No test pointer here on purpose: this file ships into generated rigs and is
+// held mechanically self-contained — a sibling test asserts it names no
+// generator test path, so its contracts are the named constants above and the
+// comparisons below, not a reference a generated rig could not follow.
 //
 // Bounded, because this module fails open: one `try`, one call, no recursion and
 // no loop — `.claude/rules/invariants.md` ("a guard that fails open must do

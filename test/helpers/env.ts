@@ -137,9 +137,11 @@ export const fifosAvailable = (): { ok: boolean; reason: string } => ({
  *
  * Two sources, in order: the OS's own answer (`cmd`'s `%~sI`), which finds a
  * short form even under a long temp root; and `realpathSync`, which normalises
- * separators but leaves an 8.3 component the caller was already handed intact
- * — enough wherever `os.tmpdir()` is itself short, as it is on the GitHub
- * Windows runner (`RUNNER~1`).
+ * separators but leaves intact an 8.3 component the caller was already handed.
+ * ⚠ The second is a fallback for a caller that passes such a path through; it
+ * cannot fire for a caller that has already canonicalised with
+ * `realpathSync.native`, because then both spellings are the same string and
+ * `sameDirectory` rejects the candidate as identical.
  */
 export const shortNameSpelling = (
   dir: string,

@@ -1,9 +1,13 @@
 import { defineConfig } from 'vitest/config';
 
-// One figure for every lane that spawns a subprocess, so the two cannot drift
-// (`.claude/rules/invariants.md`: one mechanism, one implementation). It is the
-// same number `ci.yml` passes as --testTimeout; test/template/vitest-timeouts.test.ts
-// pins them equal in both directions.
+// One figure for the two lanes of `test:unit` — `unit` and `template` — so they
+// cannot drift (`.claude/rules/invariants.md`: one mechanism, one implementation).
+// It is the same number `ci.yml` passes as --testTimeout. NOT every spawning lane:
+// `e2e` below keeps its own 300_000 because it packs and installs a tarball, and
+// putting this figure on it would cut a five-minute lane to fifteen seconds.
+// Pinned in test/template/vitest-timeouts.test.ts › "gives the unit project the
+// same timeout, because pre-commit runs it without the CI flag" and › "leaves no
+// lane of test:unit on the bare vitest default, whichever lane runs it".
 const SPAWN_TIMEOUT = 15_000;
 
 export default defineConfig({

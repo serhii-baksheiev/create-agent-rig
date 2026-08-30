@@ -13,7 +13,7 @@ content as a patch by the owner's call and stays recorded as one.
 
 ## 0.6.2
 
-**Patch hardening for the Agent OS shipped by 0.6.1.** This release closes six
+**Patch hardening for the Agent OS shipped by 0.6.1.** This release closes seven
 downstream-found governance and transport defects without changing the public
 CLI or adding a dependency.
 
