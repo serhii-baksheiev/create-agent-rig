@@ -90,7 +90,24 @@ would have to ask a question while `RIG_UNATTENDED` is set, where nothing is
 missing from the environment at all: a lifecycle transition refusing to decide
 unattended is the case this contract names. A refusal of the second kind reports
 the refusal and an empty list, rather than inventing a prerequisite to fill it.
-The discriminator is a `result` field, not the exit code.
+
+The discriminator is a `result` field, not the exit code, and **its values are
+contract**: on exit 3 the closed set is `prerequisites-unmet` and
+`refused-unattended`. Naming them is not decoration. This is the one rule in
+this document that turns on a field's _values_ rather than its keys, and the
+stability section covers keys — so left unenumerated, two conforming bins could
+discriminate the same two occasions with different words and neither would be
+wrong, which is the same as having no discriminator. Adding a third value is a
+minor bump, by the additive rule.
+
+**A missing prerequisite names the variable, never the file.** Rule (h) forbids
+a file path in every field but a doctor `fix` hint, and an exit-3 payload has no
+such field — so an implementer who wants to tell the operator which credential
+file is absent has nowhere legal to put the path, and will reach for `detail` if
+this is not said. It is not said as a restriction on helpfulness: the path of a
+credential file is the one piece of information that turns a payload into a map
+to the credential. The entry names the environment variable and the observation;
+where to put the file is the human-facing documentation's job.
 
 ## Output
 
@@ -172,22 +189,32 @@ is exactly the case an implementer wants to put in a `detail` field, and a
 them.
 
 **The file's name is part of the rule, not an implementation detail.** It must be
-one this project's credential vocabulary recognises — an `.env`-form name, or a
-file under a `secrets/` or `credentials/` directory (`.claude/scripts/lib/secrets.mjs`,
-`isCredentialPath`). A configured path with an ordinary name is invisible to
-every layer that refuses a credential by name: measured, `jira.env` is
-recognised while `jira.conf`, `jira.toml` and `credentials.json` are not. An
-example that satisfies this: `~/.config/create-agent-rig/jira.env`.
+a name `isCredentialPath` returns `true` for (`.claude/scripts/lib/secrets.mjs`).
+🔴 **Check the name against that function; do not infer the set from a
+description of it, this sentence included.** A configured path with a name the
+function refuses is invisible to every layer that refuses a credential by name.
+
+Two of its exclusions are deliberate and are exactly where a plausible name
+falls out of the set, so they are named here rather than left to be discovered:
+the placeholder suffixes `.example`, `.sample` and `.template` are not
+recognised, and neither is `<stem>.env.<suffix>` for a suffix the module does
+not name. Measured: `jira.env` is recognised, while `jira.env.qa`,
+`jira.env.template`, `jira.conf`, `jira.toml` and `credentials.json` are not — so
+a credential under one of those names is refused by nothing that reads a name,
+neither the edit-time guard nor the sweep's path arm. An example that satisfies
+the rule: `~/.config/create-agent-rig/jira.env`. The names in this paragraph are pinned in
+`test/template/command-contract.test.ts` › "states a credential-file name rule the vocabulary actually agrees with".
 
 An installer that writes such a file inside a repository must write its ignore
 entry in the same change. ⚠ **The ignore entry is not sufficient on its own, and
-this project already learned that.** It was half (a) of AR-49; half (b) — the
-credential sweep over tracked content — exists because the ignore rule could not
-close the gap by itself. A reader who takes the ignore entry as the whole lesson
-skips the layer that actually works. Note also that the rule does not reach the
-example path above at all: a file in the operator's home directory is outside
-every repository, so no ignore entry applies to it and only the name rule and
-the value rule protect it.
+this project already learned that.** It was half (a) of AR-49; half (b) exists
+because the ignore rule could not close the gap by itself, and half (b) is more
+than one thing: the shared credential vocabulary, the `guard-secret-file` hook
+that refuses an edit through it, and the sweep over tracked content. A reader
+who takes the ignore entry as the whole lesson skips the layers that actually
+work. Note also that the rule does not reach the example path above at all: a
+file in the operator's home directory is outside every repository, so no ignore
+entry applies to it and only the name rule and the value rule protect it.
 
 A fixture that needs the _shape_ of a credential assembles it at runtime rather
 than writing it out, or the project's own credential sweep reports its test data
@@ -244,7 +271,13 @@ The status set is closed: ok, warn, fail.
 `id`, `status` and `detail` are present on every record. `fix` is present when
 `status` is `warn` or `fail`, and omitted otherwise — there is nothing for a
 human to do about a check that passed, and an empty string would be a value a
-consumer has to special-case.
+consumer has to special-case. ⚠ That presence rule is this document's reading of
+the item's four-field record, not something the item states; it is on the
+acceptance list with the other three readings.
+
+The payload carries the records under `checks`, and a `status` of its own, which
+is the worst status any record carries. It is a convenience, not a second source
+of truth: a consumer that disagrees with it should trust the records.
 
 A doctor run exits 0 when no record has status fail, and 1 when one does. `warn`
 never changes the exit code.
@@ -334,10 +367,12 @@ cite` and on the acceptance list.
   name. **Contract 1.0 enumerates none**, so a bin claiming `contractVersion`
   1.0 emits an empty list; the first minor that declares members is what makes a
   non-empty one legal, and the first ticket that ships `load --json` is what
-  declares them. A consumer that nevertheless meets an unrecognised member
-  treats it as an unspecified degradation rather than failing — the additive
-  rule again. On the acceptance list, because reading (i) this way is a choice
-  and the owner may want the members fixed here instead.
+  declares them. The key is **present** either way: a `load --json` payload
+  always carries `degradation`, empty when there was none, so a consumer reads
+  one shape rather than two. A consumer that nevertheless meets an unrecognised
+  member treats it as an unspecified degradation rather than failing — the
+  additive rule again. On the acceptance list, because reading (i) this way is a
+  choice and the owner may want the members fixed here instead.
 
 ## Stability and versioning
 
@@ -367,10 +402,11 @@ its delivery to whoever supplies the layer.
 **Nothing in this repository implements this contract yet.** This section is the
 honest half of the document: it records what was measured about the surfaces
 this change touched, so that no reader takes a statement above as a description
-of installed behaviour. Every row below names the test that pins it, and goes
-red when its claim stops being true. It is what was measured, not an inventory:
-a difference this section does not name is a difference nobody checked, and each
-row's reach is the reach of its test and no wider.
+of installed behaviour. Every row below names the test that pins it, and each
+row's reach is the reach of its test and no wider — where a clause of a row is
+weaker than that, the row says so at the point of use, which is the case for
+`exempt` in the last one. It is what was measured, not an inventory: a
+difference this section does not name is a difference nobody checked.
 
 - **The rig bin has no `--json` flag.** Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin has no --json flag".
@@ -417,7 +453,7 @@ row's reach is the reach of its test and no wider.
 
 ## Open questions for acceptance
 
-Three things this document deliberately does not settle. Each is a choice the
+Four things this document deliberately does not settle. Each is a choice the
 owner makes at acceptance, and each is written here rather than resolved
 quietly, because a specification that guesses is worse than one that asks.
 
@@ -425,13 +461,21 @@ quietly, because a specification that guesses is worse than one that asks.
    `exempt`; the status set above has three members and no slot for either.
    Three exits: add the two statuses in a 1.1 minor; require a conforming doctor
    to report an unrunnable check as `fail`; or map `exempt` to `ok` with the
-   exemption named in `detail`.
+   exemption named in `detail`. ⚠ The third has a cost worth deciding with rather
+   than discovering: `## Doctor` restricts consumers to `status` alone and warns
+   them off matching on `detail`, so under that option a check nobody ran is
+   indistinguishable from a check that passed — which is the objection this
+   document already records against reading `unknown` as a pass.
 2. **`degradation[]`'s members.** This document reads amendment (i) as "closed
    per version, empty at 1.0". The alternative is to enumerate the members here
    and make the field usable at 1.0.
 3. **The load selection budget's default and bounds.** Deferred to the first
    ticket that ships `load --json`. The alternative is to fix the numbers here,
    which is what a literal reading of amendment (e) asks for.
+4. **The doctor `fix` presence rule.** The item names a four-field record; this
+   document reads that as `fix` being present only on a `warn` or a `fail`. The
+   alternative is a `fix` on every record, which costs a value a consumer has to
+   ignore on a passing check.
 
 ## Fixtures
 

@@ -11,6 +11,34 @@ const contractRelative = path.relative(repoRoot, contractPath).split(path.sep).j
 
 type Requirement = readonly [description: string, pattern: RegExp];
 
+/** One credential the shared scanner found — deliberately never its value. */
+interface SecretFinding {
+  id: string;
+  line: number;
+}
+
+interface SecretsModule {
+  isCredentialPath(relativePath: string): boolean;
+  findSecretValues(text: string, options?: { limit?: number }): SecretFinding[];
+}
+
+/**
+ * The credential vocabulary this repository's own layers refuse by — the module
+ * the `## Secrets` section names by path.
+ *
+ * Imported rather than restated: `.claude/rules/invariants.md` ("one mechanism,
+ * one implementation") is why a second spelling of the set is a defect, and the
+ * document itself says not to infer the set from a description of it. The
+ * module ships as plain `.mjs` with no declarations, so it arrives through a
+ * file URL the way `verdict.test.ts` and `secrets-lib.test.ts` take theirs. It
+ * runs nothing on import: it is exported constants, two exported functions and
+ * one `Map` built from them.
+ */
+const loadSecretsModule = async (): Promise<SecretsModule> =>
+  (await import(
+    pathToFileURL(path.join(repoRoot, '.claude', 'scripts', 'lib', 'secrets.mjs')).href
+  )) as unknown as SecretsModule;
+
 const expectTerms = (content: string, terms: readonly Requirement[]) => {
   for (const [description, pattern] of terms) expect(content, description).toMatch(pattern);
 };
@@ -112,6 +140,12 @@ const fixtureRoots = (content: string): unknown[] => {
 const PATH_LIKE =
   /\S[/\\]|[/\\]\S|^~|^\.[A-Za-z0-9]|\b(?:Makefile|Dockerfile|Procfile|Gemfile|Justfile)\b|\.(?:jsonc|json|jsx|tsx|mjs|cjs|mts|cts|yaml|yml|toml|conf|cfg|ini|lock|bash|html|css|xml|txt|mdx|log|pem|crt|env|md|sh|js|ts)(?:\b|$)/i;
 
+const hasKey = (value: unknown, key: string): boolean =>
+  typeof value === 'object' && value !== null && key in (value as Record<string, unknown>);
+
+const fieldOf = (value: unknown, key: string): unknown =>
+  typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+
 const collectPathLikeStrings = (value: unknown, keyPath: string, out: string[]): void => {
   if (typeof value === 'string') {
     if (PATH_LIKE.test(value)) out.push(`${keyPath} = ${JSON.stringify(value)}`);
@@ -122,26 +156,31 @@ const collectPathLikeStrings = (value: unknown, keyPath: string, out: string[]):
     return;
   }
   if (value !== null && typeof value === 'object') {
+    // The document's carve-out is exactly one shape: `fix` is "a doctor-record
+    // field", so the exemption needs the RECORD, not merely the key. A `fix`
+    // exempted wherever it appeared was measurably wider than the rule it
+    // backed: a path in a `fix` inside a `missing[]` entry passed, and the
+    // Exit-codes section forbids exactly that. A doctor record is recognised
+    // the way a consumer recognises one — it carries `id` and `status` too.
+    //
+    // Residual, stated rather than left to be found: any object carrying `id`,
+    // `status` and a string `fix` earns the exemption, whether or not it sits
+    // under `checks`; and a path nested inside an object or an array under a
+    // `fix` key is still reported, because only the direct string value is
+    // exempt.
+    const isDoctorRecord = hasKey(value, 'id') && hasKey(value, 'status');
     for (const [key, child] of Object.entries(value)) {
       const childPath = keyPath === '' ? key : `${keyPath}.${key}`;
-      // The document's carve-out is exactly one shape: "a doctor `fix` hint,
-      // which is an instruction to a human". So the exemption is the STRING
-      // VALUE DIRECTLY UNDER a `fix` key and nothing else — not a path nested
-      // inside an object or an array under `fix`, and not a `fix` key that
-      // turns up inside a `missing[]` entry carrying a path of its own. An
-      // exemption that travelled down the tree with the nearest ancestor key
-      // let both of those through.
-      if (key === 'fix' && typeof child === 'string') continue;
+      // KEYS are inspected too. A payload can name a path as readily in a key
+      // as in a value (`{"packages/core/src/x.ts": true}`), and a walk that
+      // only ever looked at values passed that. Keys are never exempt: the
+      // carve-out is for a `fix` HINT, which is a value.
+      if (PATH_LIKE.test(key)) out.push(`${childPath} (key) = ${JSON.stringify(key)}`);
+      if (key === 'fix' && typeof child === 'string' && isDoctorRecord) continue;
       collectPathLikeStrings(child, childPath, out);
     }
   }
 };
-
-const hasKey = (value: unknown, key: string): boolean =>
-  typeof value === 'object' && value !== null && key in (value as Record<string, unknown>);
-
-const fieldOf = (value: unknown, key: string): unknown =>
-  typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 
 async function walkSources(dir: string, extension: string): Promise<string[]> {
   let entries;
@@ -174,9 +213,23 @@ const stripLineComments = (source: string): string =>
 
 /**
  * The spellings of a real read of `RIG_UNATTENDED`, in order: a member access
- * (with or without optional chaining), a computed access by literal key,
- * a destructuring of `process.env`, and a presence probe that passes
- * `process.env` and the name as two arguments (`Object.hasOwn`, `Reflect.has`).
+ * (with or without optional chaining), a computed access by literal key, a
+ * destructuring of the environment (with or without a default value), a
+ * presence probe passing the environment and the name as two arguments
+ * (`Object.hasOwn`, `Reflect.has`), an `in` probe, and `hasOwnProperty`.
+ *
+ * 🔴 The failure direction here is a false GREEN on a conformance row — a read
+ * this pattern cannot see reads as "nothing in this repository reads it" — so
+ * the pattern is deliberately wider than a parser would be, and the arms below
+ * accept a destructured `env` wherever they accept `process.env`. Four
+ * spellings were measured slipping past the previous form: `'RIG_UNATTENDED' in
+ * process.env`, `Object.hasOwn(env, 'RIG_UNATTENDED')` against a destructured
+ * environment, `process.env.hasOwnProperty('RIG_UNATTENDED')`, and a
+ * destructuring whose default value contains braces (`const { RIG_UNATTENDED =
+ * {} } = process.env`), which the old brace-balanced arm could not cross. Each
+ * of the six is pinned from both sides in
+ * "detects every spelling of a RIG_UNATTENDED read, and no bare mention of the
+ * name".
  *
  * Limits — the shapes this pattern does not see, so the row it backs is read
  * with them in mind (`.claude/rules/invariants.md`, "State the limits"):
@@ -191,9 +244,28 @@ const stripLineComments = (source: string): string =>
  *     e.RIG_UNATTENDED`) are all invisible.
  *   - A read in a spawned process's environment, or through a `dotenv`-style
  *     loader, is not a textual occurrence at all.
+ *   - The destructuring arm is a one-line heuristic: the name, then up to 200
+ *     characters carrying no `;` or newline, then `= …env`. A destructuring
+ *     broken across lines is missed, and an unrelated mention of the name on a
+ *     line that also assigns from the environment is a false RED, which fails
+ *     safe.
  */
-const READS_RIG_UNATTENDED =
-  /(?:process\s*\.\s*)?env\s*(?:\?\.)?\s*\.?\s*RIG_UNATTENDED\b|env\s*(?:\?\.)?\s*\[\s*['"`]RIG_UNATTENDED['"`]\s*\]|\{[^{}]*\bRIG_UNATTENDED\b[^{}]*\}\s*=\s*(?:process\s*\.\s*)?env\b|process\s*\.\s*env\s*,\s*['"`]RIG_UNATTENDED['"`]/;
+const READS_RIG_UNATTENDED = new RegExp(
+  [
+    // `process.env.RIG_UNATTENDED`, `env?.RIG_UNATTENDED`, `env.RIG_UNATTENDED`
+    String.raw`(?:process\s*\.\s*)?env\s*(?:\?\.)?\s*\.?\s*RIG_UNATTENDED\b`,
+    // `env['RIG_UNATTENDED']`
+    String.raw`env\s*(?:\?\.)?\s*\[\s*['"\`]RIG_UNATTENDED['"\`]\s*\]`,
+    // `const { RIG_UNATTENDED } = process.env`, and the same with a default
+    String.raw`\bRIG_UNATTENDED\b[^;\n]{0,200}=\s*(?:process\s*\.\s*)?env\b`,
+    // `Object.hasOwn(process.env, 'RIG_UNATTENDED')`, `Reflect.has(env, …)`
+    String.raw`(?:process\s*\.\s*)?env\s*,\s*['"\`]RIG_UNATTENDED['"\`]`,
+    // `'RIG_UNATTENDED' in process.env`
+    String.raw`['"\`]RIG_UNATTENDED['"\`]\s+in\s+(?:process\s*\.\s*)?env\b`,
+    // `process.env.hasOwnProperty('RIG_UNATTENDED')`
+    String.raw`env\s*(?:\?\.)?\s*\.\s*hasOwnProperty\s*\(\s*['"\`]RIG_UNATTENDED['"\`]`,
+  ].join('|'),
+);
 
 describe('the proposed command contract document', () => {
   it('exists, names itself, and declares that it is proposed and awaiting owner acceptance', async () => {
@@ -273,7 +345,33 @@ describe('the exit-code table', () => {
     expectStatement(
       await exitCodes(),
       'the Exit codes section must name a `result` field as the discriminator rather than the exit code',
-      'The discriminator is a `result` field, not the exit code.',
+      'The discriminator is a `result` field, not the exit code',
+    );
+  });
+
+  it("closes exit 3's result values at prerequisites-unmet and refused-unattended", async () => {
+    const content = await exitCodes();
+    // The document's one rule that turns on a field's VALUES rather than its
+    // keys, so the stability section does not cover it — left unenumerated, two
+    // conforming bins could discriminate the same two occasions with different
+    // words. Pinned verbatim: both words, and the claim that they are contract.
+    expectStatement(
+      content,
+      'the Exit codes section must declare the discriminator values contract and enumerate them',
+      'and **its values are contract**: on exit 3 the closed set is `prerequisites-unmet` and `refused-unattended`.',
+    );
+    expectStatement(
+      content,
+      'the Exit codes section must make a third discriminator value a minor bump rather than silence',
+      'Adding a third value is a minor bump, by the additive rule.',
+    );
+  });
+
+  it('names the environment variable and never the file when a prerequisite is missing', async () => {
+    expectStatement(
+      await exitCodes(),
+      'the Exit codes section must forbid a credential file path in an exit-3 entry',
+      'A missing prerequisite names the variable, never the file.',
     );
   });
 
@@ -303,36 +401,31 @@ describe('output discipline', () => {
   }
 
   it('makes schema evolution additive: unknown keys tolerated, a foreign major rejected', async () => {
-    const output = section(await loadContract(), /^#{2,6}\s+.*Output\b/i);
-    expectTerms(output, [
-      ['the Output section does not call evolution additive', /\badditive\b/i],
-      [
-        'the Output section does not say unknown keys are tolerated',
-        /unknown\s+(?:keys|fields)[\s\S]{0,120}\b(tolerat|ignor|accept)/i,
-      ],
-      [
-        'the Output section does not say a foreign major is rejected',
-        /\bmajor\b[\s\S]{0,120}\b(reject|refus)/i,
-      ],
-    ]);
+    // Verbatim, because the three regexes this replaced were polarity-blind:
+    // "unknown keys are NOT tolerated" satisfied the tolerance proximity match
+    // exactly as the real rule did, and `\badditive\b` fired on any mention.
+    expectStatement(
+      section(await loadContract(), /^#{2,6}\s+.*Output\b/i),
+      'the Output section must state the additive-evolution rule verbatim, in its own polarity',
+      'Schema evolution is **additive**. Unknown keys are tolerated rather than treated as an error, ' +
+        'so a bin may add a field in a minor version without breaking a caller written against an earlier one. ' +
+        'A foreign major is rejected outright: the consumer refuses to interpret the payload at all — that is what exit 4 is for.',
+    );
   });
 });
 
 describe('the version handshake', () => {
   it('answers --version --json with name, version and contractVersion', async () => {
-    const handshake = section(
-      await loadContract(),
-      /^#{2,6}\s+.*(handshake|--version|version handshake)/i,
+    // One verbatim sentence rather than four word-presence regexes: `\bname\b`
+    // and `\bversion\b` inside a section titled "The version handshake" are
+    // satisfied by the title and by every other paragraph, so neither could
+    // have gone red if the answer stopped carrying the field.
+    expectStatement(
+      section(await loadContract(), /^#{2,6}\s+.*(handshake|--version|version handshake)/i),
+      'the handshake section must state the invocation and the three fields of its answer verbatim',
+      'Every conforming bin answers `--version --json` with an object carrying at least ' +
+        '`name`, `version` and `contractVersion`:',
     );
-    expectTerms(handshake, [
-      [
-        'the handshake section does not name the --version --json invocation',
-        /--version[\s\S]{0,40}--json/,
-      ],
-      ['the handshake answer omits name', /\bname\b/],
-      ['the handshake answer omits version', /\bversion\b/],
-      ['the handshake answer omits contractVersion', /\bcontractVersion\b/],
-    ]);
   });
 });
 
@@ -391,6 +484,60 @@ describe('configuration, secrets and unattended operation', () => {
     );
   });
 
+  it('states a credential-file name rule the vocabulary actually agrees with', async () => {
+    // The document's own instruction is "check the name against that function;
+    // do not infer the set from a description of it, this sentence included" —
+    // so this probes the real `isCredentialPath` rather than restating it.
+    const { isCredentialPath } = await loadSecretsModule();
+
+    // Real callers hand it a repo-relative path (`.claude/hooks/guard-secret-file.mjs`,
+    // `scripts/validate-no-secrets.mjs`), and the name arm answers from the
+    // basename. Each name is therefore probed twice — bare, and under a
+    // directory that decides nothing — and the two must agree. A `secrets/` or
+    // `credentials/` prefix would be answered by the SEGMENT arm instead and
+    // would say nothing about the name.
+    const NAMES: readonly (readonly [name: string, recognised: boolean])[] = [
+      ['jira.env', true],
+      ['jira.env.qa', false],
+      ['jira.env.template', false],
+      ['jira.conf', false],
+      ['jira.toml', false],
+      ['credentials.json', false],
+    ];
+    for (const [name, recognised] of NAMES) {
+      for (const probe of [name, `config/${name}`]) {
+        expect(
+          isCredentialPath(probe),
+          `the Secrets section says ${name} is ${recognised ? '' : 'not '}recognised, ` +
+            `but isCredentialPath(${JSON.stringify(probe)}) disagrees`,
+        ).toBe(recognised);
+      }
+    }
+
+    // And the prose names every spelling the probe above measured, so the two
+    // cannot drift apart. Backticked, because `jira.env` is a substring of
+    // `jira.env.qa` and a bare `toContain` would pass on the wrong one.
+    const secrets = normalizeProse(section(await loadContract(), /^#{2,6}\s+.*Secrets?\b/i));
+    for (const [name] of NAMES) {
+      expect(
+        secrets,
+        `the Secrets section does not name \`${name}\`, which this test measures`,
+      ).toContain(`\`${name}\``);
+    }
+    expect(
+      secrets,
+      'the Secrets section must name isCredentialPath and the module it lives in as the authority for the name rule',
+    ).toContain(
+      'It must be a name `isCredentialPath` returns `true` for (`.claude/scripts/lib/secrets.mjs`).',
+    );
+    // The document cites this test by name; a rename leaves the pointer dead
+    // and nothing else would notice.
+    expect(
+      secrets,
+      'the Secrets section no longer points at this test by name — the pointer is dead',
+    ).toContain('"states a credential-file name rule the vocabulary actually agrees with"');
+  });
+
   it('makes RIG_UNATTENDED silence questions and turn missing input into exit 3', async () => {
     const unattended = section(await loadContract(), /^#{2,6}\s+.*RIG_UNATTENDED/);
     expectTerms(unattended, [
@@ -428,12 +575,15 @@ describe('mutations and doctor', () => {
   });
 
   it('builds a doctor record from id, status, detail and fix', async () => {
-    expectTerms(
+    // The four `\bfield\b` presence regexes this replaced were each satisfied
+    // by any other paragraph in the section — `status` alone occurs a dozen
+    // times — so none of them could have gone red if a field left the record.
+    // The four names themselves are pinned by the presence-rule statement
+    // below; what needed a pin of its own is the claim that there are FOUR.
+    expectStatement(
       await doctor(),
-      (['id', 'status', 'detail', 'fix'] as const).map(
-        (field) =>
-          [`the doctor record shape omits ${field}`, new RegExp(`\\b${field}\\b`)] as const,
-      ),
+      'the Doctor section must declare the record shape and its field count verbatim',
+      '`doctor --json` answers with a list of check records built from these four fields:',
     );
   });
 
@@ -463,24 +613,37 @@ describe('mutations and doctor', () => {
     );
   });
 
+  it("derives the payload's top-level status from the records rather than beside them", async () => {
+    // The suite pinned this of the fixtures before the document said it, which
+    // is a rule enforced against nothing. Now it is stated, so the sentence is
+    // what the fixture assertion enforces.
+    expectStatement(
+      await doctor(),
+      'the Doctor section must make the top-level status the worst record status, and a convenience only',
+      'The payload carries the records under `checks`, and a `status` of its own, which is the worst status any record carries. It is a convenience, not a second source of truth: a consumer that disagrees with it should trust the records.',
+    );
+  });
+
   it('keeps detail and fix human-facing while consumers act on status alone', async () => {
-    expectTerms(await doctor(), [
-      [
-        'detail and fix are not marked human-facing',
-        /\b(detail|fix)\b[\s\S]{0,160}\bhuman[- ](facing|readable)\b/i,
-      ],
-      [
-        'consumers are not restricted to acting on status only',
-        /consumers?[\s\S]{0,160}\bstatus\b[\s\S]{0,60}\bonly\b|\bstatus\b[\s\S]{0,60}\bonly\b[\s\S]{0,160}consumers?/i,
-      ],
-    ]);
+    // Verbatim: the proximity match this replaced was polarity-blind — a
+    // section telling consumers to match on `detail` puts the same words the
+    // same distance apart.
+    expectStatement(
+      await doctor(),
+      'the Doctor section must state the human-facing rule and the consumer restriction verbatim',
+      '`detail` and `fix` are human-facing prose. Consumers act on `status` only — matching on the wording of `detail` couples a caller to a sentence nobody promised to keep.',
+    );
   });
 
   it('leaves contract mismatch to the consumer handshake rather than to doctor', async () => {
-    expect(
-      normalizeProse(await doctor()),
-      'doctor must not report contract mismatch; the consumer detects it through the handshake',
-    ).toMatch(/contract[\s\S]{0,120}handshake|handshake[\s\S]{0,120}contract/i);
+    // The proximity match this replaced passed on the opposite claim: "doctor
+    // reports contract mismatch alongside the handshake" carries both words
+    // well inside 120 characters of each other.
+    expectStatement(
+      await doctor(),
+      'the Doctor section must exclude contract mismatch from doctor findings verbatim',
+      'Contract mismatch is **not** a doctor finding. A consumer detects it through the version handshake and exit 4, before it interprets any other payload.',
+    );
   });
 });
 
@@ -520,8 +683,13 @@ describe('the memory command surface', () => {
       'the memory section must state storage-tree ownership verbatim',
       'Only the memory subsystem reads or mutates its storage tree.',
     );
-    expect(content, 'consumers are not routed through the command surface').toMatch(
-      /consumers?[\s\S]{0,160}command surface/i,
+    // Verbatim: the proximity match this replaced was satisfied by any sentence
+    // putting "consumers" near "command surface", including one exempting them
+    // from it.
+    expectStatement(
+      content,
+      'the memory section must route every other party through the command surface verbatim',
+      'Every other party goes through the command surface — consumers use the command surface and never touch the files.',
     );
   });
 
@@ -573,6 +741,27 @@ describe('the memory command surface', () => {
       'the memory section does not say a bin claiming contractVersion 1.0 emits an empty list',
     ).toMatch(/bin claiming `contractVersion` 1\.0 emits an empty list/i);
   });
+
+  it('keeps degradation present on every load payload, empty when there was none', async () => {
+    const content = await loadContract();
+    expectStatement(
+      section(content, /^#{2,6}\s+.*Memory\b/i),
+      'the memory section must make `degradation` present whether or not there was any',
+      'The key is **present** either way: a `load --json` payload always carries `degradation`, empty when there was none, so a consumer reads one shape rather than two.',
+    );
+    // And the fixtures obey it: an absent key is the second shape the sentence
+    // exists to forbid, so the check is presence, not contents.
+    const loads = fixtureRoots(content).filter(
+      (root) => hasKey(root, 'counters') && hasKey(root, 'budget'),
+    );
+    expect(loads.length, 'no fixture illustrates a load payload').toBeGreaterThan(0);
+    for (const [index, load] of loads.entries()) {
+      expect(
+        hasKey(load, 'degradation'),
+        `load fixture #${index + 1} omits degradation, which the contract says is present either way`,
+      ).toBe(true);
+    }
+  });
 });
 
 describe('stability and versioning', () => {
@@ -605,10 +794,11 @@ describe('stability and versioning', () => {
 });
 
 describe('the questions the document leaves open for acceptance', () => {
-  it("names doctor's extra marks, degradation[]'s members and the budget numbers", async () => {
-    const open = normalizeProse(
-      section(await loadContract(), /^#{2,6}\s+.*Open questions for acceptance\b/i),
-    );
+  const openQuestions = async () =>
+    section(await loadContract(), /^#{2,6}\s+.*Open questions for acceptance\b/i);
+
+  it("names doctor's extra marks, degradation[]'s members, the budget numbers and the fix presence rule", async () => {
+    const open = normalizeProse(await openQuestions());
     expectTerms(open, [
       ["the acceptance list omits doctor's two extra marks", /doctor'?s two extra marks/i],
       ["the acceptance list omits degradation[]'s members", /`degradation\[\]`'?s members/i],
@@ -616,7 +806,29 @@ describe('the questions the document leaves open for acceptance', () => {
         "the acceptance list omits the load selection budget's default and bounds",
         /load selection budget'?s default and bounds/i,
       ],
+      [
+        "the acceptance list omits the doctor `fix` presence rule, which `## Doctor` marks as this document's reading rather than the item's",
+        /the doctor `fix` presence rule/i,
+      ],
     ]);
+  });
+
+  it('opens exactly as many numbered questions as it says it leaves open', async () => {
+    const open = await openQuestions();
+    // The count is stated in prose and again as a numbered list; two spellings
+    // of one fact drift, and the one nobody is reading is the one that is
+    // wrong (`.claude/rules/invariants.md`, "one mechanism, one
+    // implementation"). So they are checked against each other.
+    expectStatement(
+      open,
+      'the acceptance section must say how many questions it leaves open',
+      'Four things this document deliberately does not settle.',
+    );
+    const numbered = open.split('\n').filter((line) => /^\d+\.\s/.test(line));
+    expect(
+      numbered.map((line) => line.slice(0, 60)),
+      'the acceptance section says it leaves four questions open but its numbered list has a different length',
+    ).toHaveLength(4);
   });
 });
 
@@ -644,6 +856,34 @@ describe('the JSON fixtures in the document', () => {
     });
   });
 
+  it('keeps schemaVersion off every record nested inside a payload', async () => {
+    // The document's own words: a nested record "carries no version of its own;
+    // the payload's covers them". Asserting the key's PRESENCE on roots does not
+    // pin that — this is the direction that matters, and the direction a
+    // conformance-matrix author would otherwise have to guess at.
+    const offenders: string[] = [];
+    const walk = (value: unknown, keyPath: string, depth: number): void => {
+      if (Array.isArray(value)) {
+        value.forEach((element, index) => walk(element, `${keyPath}[${index}]`, depth));
+        return;
+      }
+      if (value === null || typeof value !== 'object') return;
+      if (depth > 0 && hasKey(value, 'schemaVersion')) offenders.push(keyPath);
+      for (const [key, child] of Object.entries(value)) {
+        walk(child, keyPath === '' ? key : `${keyPath}.${key}`, depth + 1);
+      }
+    };
+    const blocks = jsonFixtures(await loadContract());
+    expect(blocks.length, 'the document carries no ```json fixture at all').toBeGreaterThan(0);
+    blocks.forEach((block, index) => {
+      walk(JSON.parse(block) as unknown, '', 0);
+      expect(
+        offenders,
+        `fixture #${index + 1} versions a nested record (${offenders.join(', ')}) — the document says only the top-level payload carries schemaVersion`,
+      ).toEqual([]);
+    });
+  });
+
   it('keeps file paths out of every field except a doctor fix hint', async () => {
     const blocks = jsonFixtures(await loadContract());
     expect(blocks.length, 'the document carries no ```json fixture at all').toBeGreaterThan(0);
@@ -653,6 +893,104 @@ describe('the JSON fixtures in the document', () => {
       expect(
         offenders,
         `fixture #${index + 1} names a file path outside a fix field: ${offenders.join(', ')}`,
+      ).toEqual([]);
+    });
+  });
+
+  it('exempts a path only in a doctor record fix, and sees one in a key', () => {
+    // The carve-out and the walk are what every path assertion above rests on,
+    // so both are measured rather than trusted. Each case here was a measured
+    // pass under the previous form: a `fix` was exempt under ANY key at any
+    // depth, and keys were never inspected at all.
+    const reported = (value: unknown): string[] => {
+      const out: string[] = [];
+      collectPathLikeStrings(value, '', out);
+      return out;
+    };
+    const HINT = 'copy .claude/skills/new-invariant/guard-invariant.example.test.mjs';
+    expect(
+      reported({ id: 'hook-test-neighbour', status: 'fail', detail: 'no test', fix: HINT }),
+      'a doctor record — id, status and a string fix — must keep its human-facing hint',
+    ).toEqual([]);
+    expect(
+      reported({ kind: 'environment', name: 'RIG_HOME', detail: 'not set', fix: HINT }),
+      'a missing[] entry is not a doctor record, so a path in its fix is not exempt',
+    ).not.toEqual([]);
+    expect(
+      reported({ id: 'x', status: 'ok', fix: { path: HINT } }),
+      'only the string DIRECTLY under fix is exempt, never a path nested under it',
+    ).not.toEqual([]);
+    expect(
+      reported({ 'packages/core/src/x.ts': true }),
+      'a path named by an object KEY is a path in the payload just as a value is',
+    ).not.toEqual([]);
+    expect(
+      reported({ result: 'ok', detail: 'not on the search path', version: '0.6.2' }),
+      'ordinary prose and a version string must survive the walk, or every fixture assertion is a false red',
+    ).toEqual([]);
+  });
+
+  it('discriminates the two exit-3 occasions with result values from the closed set', async () => {
+    const carriers = fixtureRoots(await loadContract()).filter((root) => hasKey(root, 'missing'));
+    expect(carriers.length, 'no fixture illustrates an exit-3 payload').toBeGreaterThan(0);
+    const results = carriers.map((root) => fieldOf(root, 'result'));
+    // Equality, not membership: it fails on a fixture inventing a third value
+    // AND on the document dropping one of the two occasions it illustrates.
+    expect(
+      [...new Set(results)].sort(),
+      `the exit-3 fixtures discriminate with ${JSON.stringify(results)}, not with the contract's closed set`,
+    ).toEqual(['prerequisites-unmet', 'refused-unattended']);
+  });
+
+  it('names a variable and never a file in every missing-prerequisite entry', async () => {
+    const content = await loadContract();
+    const entries = fixtureRoots(content).flatMap((root) => {
+      const missing = fieldOf(root, 'missing');
+      return Array.isArray(missing) ? missing : [];
+    });
+    expect(entries.length, 'no fixture carries a non-empty missing[] to check').toBeGreaterThan(0);
+    entries.forEach((entry, index) => {
+      // `fix` is a DOCTOR-record field. An exit-3 entry that carried one would
+      // be the legal-looking place to put a credential file's path, which is
+      // the move `## Exit codes` forbids by name.
+      expect(
+        hasKey(entry, 'fix'),
+        `missing[] entry #${index + 1} carries a fix key, but the contract scopes fix to a doctor record`,
+      ).toBe(false);
+      const offenders: string[] = [];
+      collectPathLikeStrings(entry, `missing[${index}]`, offenders);
+      expect(
+        offenders,
+        `missing[] entry #${index + 1} names a file path (${offenders.join(', ')}), and a missing prerequisite names the variable, never the file`,
+      ).toEqual([]);
+    });
+  });
+
+  it('carries no credential value in any fixture', async () => {
+    const { findSecretValues } = await loadSecretsModule();
+    const blocks = jsonFixtures(await loadContract());
+    expect(blocks.length, 'the document carries no ```json fixture at all').toBeGreaterThan(0);
+
+    // Non-vacuity first: an empty finding list means nothing unless the scanner
+    // still finds a credential it should. The probe is ASSEMBLED at runtime
+    // rather than written out — a credential SHAPE in this file's text would be
+    // reported by the project's own sweep as a leak (`.claude/rules/autonomy.md`,
+    // "Never").
+    const probe = `token = "${'A1'.repeat(12)}"`;
+    expect(
+      findSecretValues(probe).map((finding) => finding.id),
+      'findSecretValues no longer reports an assigned credential — the sweep below would pass vacuously',
+    ).toContain('assigned-secret');
+
+    blocks.forEach((block, index) => {
+      // The finding is `{ id, line }` and never the value — a report that
+      // quoted what it matched would have copied the credential into a CI log
+      // in the act of refusing it. So the assertion is on the list, and the
+      // message names the shape and the line only.
+      const findings = findSecretValues(block);
+      expect(
+        findings.map((finding) => `${finding.id} at line ${finding.line}`),
+        `fixture #${index + 1} carries a credential value, which no payload this contract defines may`,
       ).toEqual([]);
     });
   });
@@ -764,7 +1102,7 @@ describe('the conformance section stays true about this repository', () => {
     expectStatement(
       await conformance(),
       'the conformance section must promise that each row is pinned by a named test',
-      'Every row below names the test that pins it, and goes red when its claim stops being true.',
+      "Every row below names the test that pins it, and each row's reach is the reach of its test and no wider",
     );
   });
 
@@ -800,6 +1138,43 @@ describe('the conformance section stays true about this repository', () => {
     ).toMatch(
       /\b(no reader|nothing)\b[\s\S]{0,80}RIG_UNATTENDED|RIG_UNATTENDED[\s\S]{0,160}\b(nothing|no reader|not read|unread)\b/i,
     );
+  });
+
+  it('detects every spelling of a RIG_UNATTENDED read, and no bare mention of the name', async () => {
+    // The row above fails in the FALSE-GREEN direction: a read the pattern
+    // cannot see reads as "nothing in this repository reads it". Four of these
+    // six were measured slipping past an earlier form of the pattern, so each
+    // is pinned here rather than trusted to the row, which is green either way.
+    const READS = [
+      'const flag = process.env.RIG_UNATTENDED;',
+      'const flag = process.env?.RIG_UNATTENDED;',
+      "const flag = env['RIG_UNATTENDED'];",
+      'const { RIG_UNATTENDED } = process.env;',
+      'const { RIG_UNATTENDED = {} } = process.env;',
+      "if (Object.hasOwn(process.env, 'RIG_UNATTENDED')) return true;",
+      "if (Object.hasOwn(env, 'RIG_UNATTENDED')) return true;",
+      "if ('RIG_UNATTENDED' in process.env) return true;",
+      "if (process.env.hasOwnProperty('RIG_UNATTENDED')) return true;",
+    ] as const;
+    for (const source of READS) {
+      expect(
+        READS_RIG_UNATTENDED.test(stripLineComments(source)),
+        `the detector misses a real read (${source}), so the conformance row would go falsely green`,
+      ).toBe(true);
+    }
+    // The other direction: a mention is not a read, or the row goes red on the
+    // documents and comments that discuss the variable without consulting it.
+    const MENTIONS = [
+      '// RIG_UNATTENDED is a command-surface variable',
+      'const message = "set RIG_UNATTENDED before an unattended run";',
+      'const other = process.env.RIG_UNATTENDED_HOME;',
+    ] as const;
+    for (const source of MENTIONS) {
+      expect(
+        READS_RIG_UNATTENDED.test(stripLineComments(source)),
+        `the detector reads a bare mention as a read (${source}), which is a false red on ordinary prose`,
+      ).toBe(false);
+    }
   });
 
   it('reports that the rig bin has no --json flag', async () => {
@@ -961,18 +1336,12 @@ describe('the conformance section stays true about this repository', () => {
   });
 
   it('reports the third script that pins the opposite exit convention', async () => {
-    const verdict = await readFile(
-      path.join(repoRoot, '.claude', 'scripts', 'verdict.mjs'),
-      'utf8',
-    );
-    // The claim wraps across two comment lines, so it is pinned as the two
-    // fragments that each sit on one line rather than as one sentence.
-    for (const fragment of [/whether the REPORT was usable/, /never what the verdict/]) {
-      expect(
-        verdict,
-        `verdict.mjs no longer states that its exit code says whether the report was usable (${fragment}) — the conformance row is stale`,
-      ).toMatch(fragment);
-    }
+    // The two comment-fragment matches that used to sit here are gone. They
+    // read `verdict.mjs`'s own PROSE about its exit convention, which is a
+    // claim rather than the behaviour; the row's real backing is the named
+    // behavioural test below, and a comment that drifted while the test still
+    // passed would have gone red for nothing.
+    //
     // The row cites the behavioural test by name. A rename there is what turns
     // the citation into a dead pointer, and only this assertion sees it.
     const verdictSuite = await readFile(
