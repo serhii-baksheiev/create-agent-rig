@@ -45,7 +45,7 @@ composed file:
 
 ```bash
 node .claude/scripts/queue/index.mjs board        # the active board and the declared ones
-node .claude/scripts/queue/index.mjs board <board-id>   # switch this checkout: writes .claude/queue.board
+node .claude/scripts/queue/index.mjs board <board-id>  # switch this checkout: writes .claude/queue.board
 ```
 
 The selector is per-checkout runtime state, the same class as
@@ -832,11 +832,10 @@ node --input-type=module -e '
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
 
-**A finding can say what it measured and what it inferred, as two paired fields**
-A proposal whose premise was never true had no check at filing, only at
-take-up — one such proposal was filed, promoted and claimed before its
-conclusion
-was traced to a probe that had touched one hook. So `measured` and `inferred`
+**A finding can say what it measured and what it inferred, as two paired fields.**
+A proposal whose premise was never true had no check at filing, only at take-up
+— one such proposal was filed, promoted and claimed before its platform
+conclusion was traced to a probe that had touched one hook. So `measured` and `inferred`
 are separate, and `validateProposal` refuses an `inferred` that cites a path
 `measured` does not, naming both fields and the path; one field without the
 other is refused too, and neither files as before. The surface is a cited path

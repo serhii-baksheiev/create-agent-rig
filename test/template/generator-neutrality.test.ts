@@ -7,11 +7,16 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const agentOsDir = path.join(repoRoot, 'templates', 'agent-os');
 
 /**
- * RP-67: the loop skill a generated project receives cited `AR-124`, `AR-142`
- * and nine further identifiers from THIS repository's backlog, and the stack
- * rules cited a twelfth. A downstream reader cannot open any of them — the
- * provenance is real and belongs to a tracker they have no access to — so in a
- * generator-neutral artifact it is noise shaped like a reference.
+ * RP-67: the artifacts a generated project reads as its own instructions cited
+ * this repository's backlog. Counted on `7cecf137`, per file, in the canonical
+ * layer: the `loop` skill 11 citations of 9 distinct ids (AR-115, AR-116,
+ * AR-117, AR-124, AR-132, AR-135, AR-139, AR-142, AR-144), the `pr-ship` skill
+ * 2 of 2 (AR-141, AR-134), and the node-ts stack rule 1 (AR-149, alongside two
+ * commit SHAs and two PR numbers of this repository) — 14 citations of 12
+ * distinct ids, doubled to 27 by the `.agents` projections. A downstream reader
+ * cannot open any of them; the provenance is real and belongs to a tracker they
+ * have no access to, so in a generator-neutral artifact it is noise shaped like
+ * a reference.
  *
  * ⚠ **Scoped deliberately, and the scope is the point.** This checks the
  * artifacts a generated project is INSTRUCTED BY: the rules and skills of the
@@ -20,11 +25,22 @@ const agentOsDir = path.join(repoRoot, 'templates', 'agent-os');
  * docs, journal, decision records and tests name real tickets legitimately, and
  * a global rule would fire on every one of them.
  *
- * The decision records under `templates/agent-os/universal/docs/decisions/` are
- * outside this scope on purpose: a record's whole job is to say what happened,
- * and the defect history it carries is why the rule beside it is worded as it
- * is. What ships as an instruction is held here; what ships as an explanation
- * of one is not.
+ * Three exclusions, each on a stated ground rather than by omission:
+ *
+ * - `templates/agent-os/universal/docs/decisions/` — a record's whole job is to
+ *   say what happened, and the defect history it carries is why the rule beside
+ *   it is worded as it is. What ships as an instruction is held here; what ships
+ *   as an explanation of one is not.
+ * - the shipped `.claude/scripts/**` and `.claude/hooks/**` — those citations
+ *   are code comments addressed to whoever edits the mechanism, not instructions
+ *   the agent is told to follow, and they still carry roughly a hundred. Whether
+ *   a downstream governance reviewer reads them as the same defect is a live
+ *   question and NOT settled here; widening to them is a separate item, not an
+ *   oversight this file quietly covers.
+ * - `.codex/agents/*.toml` and `templates/agent-os/init/*.md` — a different
+ *   format and a different layer. Both are clean today, and neither is guarded
+ *   by this scan; `.claude/agents/` and `.agents/` agent specs ARE included
+ *   below, because an agent spec is an instruction by the same definition.
  */
 
 /** A tracker identifier: an uppercase project key, a hyphen, a number. */
@@ -48,7 +64,9 @@ const walk = (dir: string): string[] => {
 const neutralSurface = (): string[] =>
   walk(agentOsDir)
     .map((full) => path.relative(repoRoot, full).split(path.sep).join('/'))
-    .filter((rel) => /\/(\.claude|\.agents)\/(rules|skills)\//.test(rel) && /\.mdx?$/.test(rel))
+    .filter(
+      (rel) => /\/(\.claude|\.agents)\/(rules|skills|agents)\//.test(rel) && /\.mdx?$/.test(rel),
+    )
     .sort();
 
 describe('the generator-neutral surface names no ticket of this repository', () => {
