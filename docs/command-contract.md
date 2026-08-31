@@ -11,11 +11,14 @@ settle.
 
 This contract binds the published tool bins — the rig bin and the memory shim — and does not bind this repository's internal .claude/scripts/ fleet.
 
-That sentence is a **labelled assumption**, and it is here because the item this
-document answers never named the tools it binds. `check-premises` returned
-`UNVERIFIABLE` on exactly that question. The assumption's support is RP-19,
-which delivers the version handshake "in rig, the memory shim" — those two bins
-and no others.
+That sentence is an **owner ruling**, recorded on RP-17 on 2026-08-31: the
+contract binds the public platform bins, and internal Agent-OS scripts keep
+their existing conventions unless a separate ticket migrates them. It was
+carried as an open assumption for one round of this work — the item never named
+the tools it binds, and `check-premises` returned `UNVERIFIABLE` on exactly that
+question — and the ruling closed it. What made the reading a plausible one in
+the first place was RP-19, which delivers the version handshake "in rig, the
+memory shim" — those two bins and no others.
 
 The carve-out matters because `.claude/scripts/` is not a neutral space: it
 already spends exit 2 on meanings of its own, and carries an unattended signal
@@ -23,6 +26,9 @@ that is a file rather than a variable. Read as a description of that fleet, this
 document would be false on arrival, and each such place would be a migration
 rather than a specification. `## Conformance today` records the ones this change
 measured; it is not an inventory of every difference, and no count is claimed.
+Because those scripts are outside the contract, a difference recorded there is
+a measured fact about an unbound tool — not a violation, and not a thing this
+document is asking anyone to change.
 
 What the contract covers, once accepted: subcommand names, documented flags,
 exit codes, and the keys of the JSON payloads named here. Anything a bin does
@@ -44,14 +50,13 @@ version bump.
   schema spelling is RP-57's, in another repository. This is the same split
   `docs/session-messaging-contract-v0.md` uses when it defers type spelling to
   RP-12.
-- **The load selection budget's default and bounds.** The item's amendment (e)
-  calls them contract-defined. This contract does not fix them, and saying so is
-  the honest form: the numbers are declared by the first ticket that ships
-  `load --json`, arriving as a minor bump. The same treatment `degradation[]`'s
-  members get below, and it is on the acceptance list.
-- **The doctor status set's coverage of this project's own doctor marks**, and
-  **`degradation[]`'s members** — both on the acceptance list rather than
-  settled here.
+- **The load selection budget's allowed bounds.** Amendment (e) calls the
+  default and the bounds contract-defined. The default is fixed below and it is
+  a measurement; the bounds are not, because no implementation has ever enforced
+  one — the measurement that shows it is with the default. RP-57 is the ticket
+  that owns budget bounds, and it is parked behind the Memory MVP behaviour
+  freeze, so there is no material to cite either. This document will not supply
+  a range it invented, so the bounds are the one item on the acceptance list.
 
 RP-18, RP-19, RP-52 and RP-57 are cited above and below as **tracker items**,
 not as documents. Only RP-57 earns a carve-out, because this document defers a
@@ -268,12 +273,19 @@ fields:
 
 The status set is closed: ok, warn, fail.
 
-`id`, `status` and `detail` are present on every record. `fix` is present when
-`status` is `warn` or `fail`, and omitted otherwise — there is nothing for a
-human to do about a check that passed, and an empty string would be a value a
-consumer has to special-case. ⚠ That presence rule is this document's reading of
-the item's four-field record, not something the item states; it is on the
-acceptance list with the other three readings.
+`ok` means the check ran and passed. A check that could not run is therefore
+never `ok` — it is a `warn` or a `fail`, and which of the two is the bin's call
+under the exit rule below. There is no fourth mark for "could not look": the set
+is three words, and the one answer the meaning of `ok` forbids is the one that
+reads an unrunnable check as a pass.
+
+All four fields are present on every record. `fix` is an empty string when the
+check has nothing for a human to do — the item names a four-field record, and
+this document already takes that same shape decision once, for `degradation` in
+`## The memory command surface`: one shape a consumer reads, rather than two it
+has to tell apart. The cost is a field that is empty on a passing check, and it
+is paid by nobody, because the rule below restricts consumers to `status` alone
+and a consumer therefore never reads `fix` at all.
 
 The payload carries the records under `checks`, and a `status` of its own, which
 is the worst status any record carries. It is a convenience, not a second source
@@ -347,12 +359,33 @@ A budget that lives in shared configuration is a setting one caller changes and
 another caller's behaviour follows. Per-invocation, a caller that wants more
 asks for more.
 
-Its default and bounds are contract, and **this version does not fix them** —
-they arrive with the first ticket that ships `load --json`, as a minor bump.
-Saying so is deliberate: the item's amendment (e) asks for contract-defined
-numbers, and a document that repeated the requirement without supplying a number
-would read as having satisfied it. Listed in `## What this contract does not
-cite` and on the acceptance list.
+The default is **8192 bytes**. The unit is UTF-8 bytes of a record's body — the
+text after the front matter — summed across the records one invocation injects
+for one project tree, and the count starts at zero on every invocation. A record
+whose body does not fit the remainder is skipped and counted, never truncated,
+and selection stops once the running total reaches the budget.
+
+The number is measured, not chosen. Both shipped Memory MVP backends carry it as
+the constant `INJECTION_BUDGET_BYTES` — `shared-memory/load.sh:14` and
+`shared-memory/load.ps1:5` in the `claude-config` repository; that repository's
+`README.md` states it to a reader as the 8 KB cap a session's injected event
+bodies are held to, and its `docs/decisions/mvp-completion.md` records the same
+figure beside a dated measurement of a real tree. It is also a number the owner
+has decided about once already: on **2026-08-23**, against measurements over four
+real memory trees, the decision was taken _not_ to raise it, on the ground that
+the records compete for a reason a larger budget does not fix.
+
+🔴 **The allowed bounds are the one thing this document still cannot state.**
+Measured, no implementation enforces any bound at all: a copy of `load.ps1` run
+over a three-event fixture tree with that constant patched accepted 0, 1, 1653,
+1654 and **16384** alike — exiting 0 every time, refusing nothing, and at 16384,
+twice the default, injecting all three bodies for 11920 bytes. So there is no
+measured range to write down, and there is no material to cite either: RP-57
+owns budget bounds and is parked behind the Memory MVP behaviour freeze.
+Amendment (e) asks for contract-defined bounds, and this document will not
+answer it with a range it invented — so the bounds are the single entry on
+`## Open questions for acceptance`, and `## What this contract does not cite`
+carries them too.
 
 ### Payload rules specific to the shim
 
@@ -364,15 +397,24 @@ cite` and on the acceptance list.
   path, and a credential value.
 - `degradation[]` is a closed enum, in the sense that each version of this
   contract enumerates its members and a bin emits no member the version does not
-  name. **Contract 1.0 enumerates none**, so a bin claiming `contractVersion`
-  1.0 emits an empty list; the first minor that declares members is what makes a
-  non-empty one legal, and the first ticket that ships `load --json` is what
-  declares them. The key is **present** either way: a `load --json` payload
-  always carries `degradation`, empty when there was none, so a consumer reads
-  one shape rather than two. A consumer that nevertheless meets an unrecognised
-  member treats it as an unspecified degradation rather than failing — the
-  additive rule again. On the acceptance list, because reading (i) this way is a
-  choice and the owner may want the members fixed here instead.
+  name. **Contract 1.0 enumerates two**, and neither is a word chosen here —
+  they are the two degradations both shipped Memory MVP backends already count,
+  in those backends' own spelling from the counter line they write to stderr:
+  - `budget-skipped` — at least one eligible record was not injected, because
+    its body did not fit the budget remaining.
+  - `invalid` — at least one record failed validation and was never considered.
+
+  A third degradation is measured and is deliberately **not** a member: a record
+  dropped because its `sourceKey` was already seen is invisible to every one of
+  the five counters, the loop skipping it before the eligible count is reached.
+  No conforming bin could report it without a runtime change, and an enum member
+  nothing can emit is a promise nobody keeps. Adding it is a minor bump on the
+  day a backend can observe it.
+
+  The key is **present** either way: a `load --json` payload always carries
+  `degradation`, empty when there was none, so a consumer reads one shape rather
+  than two. A consumer that nevertheless meets an unrecognised member treats it
+  as an unspecified degradation rather than failing — the additive rule again.
 
 ## Stability and versioning
 
@@ -403,12 +445,17 @@ its delivery to whoever supplies the layer.
 honest half of the document: it records what was measured about the surfaces
 this change touched, so that no reader takes a statement above as a description
 of installed behaviour. Every row below names the test that pins it, and each
-row's reach is the reach of its test and no wider — where a clause of a row is
-weaker than that, the row says so at the point of use, which is the case for
-`exempt` in the last one. It is what was measured, not an inventory: a
-difference this section does not name is a difference nobody checked.
+row's reach is the reach of its test and no wider — so every row whose test
+reaches less far than the row sounds states that reach at the point of use, and
+three of them do. It is what was measured, not an inventory: a difference this
+section does not name is a difference nobody checked. And because `## Scope`
+puts the internal script fleet outside this contract, a row about that fleet
+records a fact, not a fault.
 
-- **The rig bin has no `--json` flag.** Pinned in
+- **The rig bin has no `--json` flag.** Reach: the test reads `index.ts` alone
+  and recognises one spelling — a `parseArgs` option named `json`; a flag added
+  by a hand-rolled argv scan, or declared in another module under
+  `packages/cli/src`, is invisible to it. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin has no --json flag".
 - **The rig bin names no `contractVersion` anywhere under `packages/cli/src`**,
   so nothing it prints in answer to `--version` is a handshake object. Pinned in
@@ -426,7 +473,9 @@ difference this section does not name is a difference nobody checked.
   that are not this contract's: the queue CLI spends it twice over — gate rounds
   exhausted, and a revalidation hold — and the revalidation script spends it on
   the second. This is why `## Scope` carves that fleet out rather than claiming
-  it. Pinned in
+  it. Reach: the test counts occurrences of an exit-2 call, not distinct
+  meanings, so the "twice over" clause rests on reading those two call sites and
+  not on the count. Pinned in
   `test/template/command-contract.test.ts` › "reports that exit 2 is already spoken for in the internal script fleet".
 - **A third script pins the opposite convention outright.** In `verdict.mjs` the
   exit code says whether the report was usable, never what the verdict was — a
@@ -445,37 +494,49 @@ difference this section does not name is a difference nobody checked.
   `test/template/doctor.test.ts` › "an unknown-ownership hook without a test is unknown, and the run is CAUTION not GO",
   and for this repository's own copy in
   `test/template/command-contract.test.ts` › "reports the doctor marks the contract's status set has no slot for",
-  which calls `verdictOf` rather than reading its source. `exempt` has no verdict
-  of its own to call — `verdictOf` branches on `FAIL` and `unknown` only — so
-  that half of the row is a source read, and would stay green if the mark were
-  removed from `auditHooks` while its name survived in a comment. This is the
-  first item on the acceptance list.
+  which calls `verdictOf` rather than reading its source. Reach: `exempt` has no
+  verdict of its own to call — `verdictOf` branches on `FAIL` and `unknown` only
+  — so that half of the row is a source read, and would stay green if the mark
+  were removed from `auditHooks` while its name survived in a comment. This was
+  the first item on the acceptance list until the owner ruling of 2026-08-31
+  settled it: `.claude/scripts/doctor.mjs` is part of the internal fleet, so it
+  is **outside this contract's scope** and its two extra marks are a measured
+  difference of a tool the contract does not bind. What the objection behind the
+  row is really about — that a probe which could not run must never be read as a
+  pass — is answered in `## Doctor` by what `ok` means, and needs no fourth
+  status to say it.
 
 ## Open questions for acceptance
 
-Four things this document deliberately does not settle. Each is a choice the
-owner makes at acceptance, and each is written here rather than resolved
-quietly, because a specification that guesses is worse than one that asks.
+One thing this document deliberately does not settle. It is written here rather
+than resolved quietly, because a specification that guesses is worse than one
+that asks.
 
-1. **Doctor's two extra marks.** The project's own doctor answers `unknown` and
-   `exempt`; the status set above has three members and no slot for either.
-   Three exits: add the two statuses in a 1.1 minor; require a conforming doctor
-   to report an unrunnable check as `fail`; or map `exempt` to `ok` with the
-   exemption named in `detail`. ⚠ The third has a cost worth deciding with rather
-   than discovering: `## Doctor` restricts consumers to `status` alone and warns
-   them off matching on `detail`, so under that option a check nobody ran is
-   indistinguishable from a check that passed — which is the objection this
-   document already records against reading `unknown` as a pass.
-2. **`degradation[]`'s members.** This document reads amendment (i) as "closed
-   per version, empty at 1.0". The alternative is to enumerate the members here
-   and make the field usable at 1.0.
-3. **The load selection budget's default and bounds.** Deferred to the first
-   ticket that ships `load --json`. The alternative is to fix the numbers here,
-   which is what a literal reading of amendment (e) asks for.
-4. **The doctor `fix` presence rule.** The item names a four-field record; this
-   document reads that as `fix` being present only on a `warn` or a `fail`. The
-   alternative is a `fix` on every record, which costs a value a consumer has to
-   ignore on a passing check.
+1. **The load selection budget's allowed bounds.** The default is fixed above,
+   at the measured 8192 bytes. The bounds are not, and there is nothing to
+   measure: no backend enforces one — the patched-loader run recorded above
+   accepted 0 and 16384 alike and refused nothing — and RP-57, the ticket that
+   owns budget bounds, is parked behind the Memory MVP behaviour freeze.
+   Amendment (e) requires contract-defined bounds, so this is a decision
+   acceptance makes, not a deferral this document may take on its own.
+
+Three questions this section carried are settled, and are recorded here rather
+than deleted:
+
+- **Doctor's two extra marks** — settled by the owner ruling of 2026-08-31.
+  `.claude/scripts/doctor.mjs` belongs to the internal fleet this contract does
+  not bind, so its `unknown` and `exempt` are not a conformance target. The
+  substantive half is answered in `## Doctor` instead: `ok` means the check ran
+  and passed, so no conforming doctor may report an unrunnable check as one, and
+  no fourth status is needed to say so.
+- **`degradation[]`'s members** — enumerated at 1.0 in `## The memory command
+surface`: `budget-skipped` and `invalid`, the two degradations both shipped
+  backends already count. The one that is measured but unobservable — a dedup
+  drop — is named there as excluded, with the reason.
+- **The doctor `fix` presence rule** — settled toward the item's own words
+  rather than this document's reading of them. The item names a four-field
+  record, so all four are present and `fix` is empty when there is nothing to
+  do, which is the shape rule this document already applies to `degradation`.
 
 ## Fixtures
 
@@ -531,9 +592,9 @@ and nothing is missing:
 }
 ```
 
-A doctor run with one failing check — exit 1. `fix` is present on the failing
-record and omitted on the passing one, and it is the one field allowed to name a
-path:
+A doctor run with one failing check — exit 1. All four fields are on both
+records; `fix` carries the remedy on the failing one and is empty on the passing
+one, and it is the one field allowed to name a path:
 
 ```json
 {
@@ -549,22 +610,25 @@ path:
     {
       "id": "manifest-present",
       "status": "ok",
-      "detail": "the install manifest was read"
+      "detail": "the install manifest was read",
+      "fix": ""
     }
   ]
 }
 ```
 
-A memory load reporting its counters and its budget. `degradation` is empty
-because contract 1.0 enumerates no members; a later minor that declares them is
-what makes a non-empty list legal:
+A memory load reporting its counters and its budget. The numbers are a real
+reading rather than a plausible-looking one — the 2026-08-21 measurement of the
+`memory/claude-config` tree recorded in that repository's
+`docs/decisions/mvp-completion.md` — so the limit is the contract default and
+the degradation list is what those counters oblige:
 
 ```json
 {
   "schemaVersion": 1,
   "result": "ok",
-  "counters": { "eligible": 41, "injected": 12, "budgetSkipped": 28, "invalid": 1 },
-  "budget": { "limitBytes": 65536, "usedBytes": 51204 },
-  "degradation": []
+  "counters": { "eligible": 7, "injected": 4, "budgetSkipped": 3, "invalid": 0 },
+  "budget": { "limitBytes": 8192, "usedBytes": 7681 },
+  "degradation": ["budget-skipped"]
 }
 ```

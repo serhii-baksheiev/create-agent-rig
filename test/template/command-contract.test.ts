@@ -293,6 +293,23 @@ describe('the proposed command contract document', () => {
       '.claude/scripts/',
     );
   });
+
+  it('records the scope as an owner ruling rather than as an open assumption', async () => {
+    const scope = section(await loadContract(), /^#{2,6}\s+.*Scope\b/i);
+    // The sentence above was carried as a *labelled assumption* while the
+    // question was open. It was settled on the item on 2026-08-31, so what the
+    // section must now say is who decided it and when — an assumption and a
+    // ruling are read differently by everyone downstream.
+    expectStatement(
+      scope,
+      'Scope must attribute the boundary to the owner ruling that settled it',
+      'That sentence is an **owner ruling**, recorded on RP-17 on 2026-08-31',
+    );
+    expect(
+      normalizeProse(scope),
+      'Scope still calls the boundary a labelled assumption, which the owner ruling replaced',
+    ).not.toMatch(/labelled assumption/i);
+  });
 });
 
 describe('the exit-code table', () => {
@@ -597,11 +614,30 @@ describe('mutations and doctor', () => {
     );
   });
 
-  it('puts id, status and detail on every record and fix only on warn or fail', async () => {
+  it('puts all four record fields on every record, with fix empty when there is nothing to do', async () => {
+    // The rule this replaced — `fix` omitted on a passing record — was the
+    // document's own reading rather than the item's, and it was on the
+    // acceptance list for exactly that reason. The item names a FOUR-field
+    // record; amendment (f) restricts consumers to `status`, so a consumer
+    // never reads `fix` and an empty one costs it nothing. The document's own
+    // one-shape principle for `degradation` decides the rest.
     expectStatement(
       await doctor(),
-      'the Doctor section must state which fields are always present and when `fix` joins them',
-      '`id`, `status` and `detail` are present on every record. `fix` is present when `status` is `warn` or `fail`, and omitted otherwise',
+      'the Doctor section must put all four fields on every record and make `fix` empty rather than absent',
+      'All four fields are present on every record. `fix` is an empty string when the check has nothing for a human to do',
+    );
+  });
+
+  it('says what ok means, so a check that could not run is never reported as one', async () => {
+    // The status set is closed at three words, and the project's own doctor
+    // answers two more. Ruling 1 of 2026-08-31 puts that doctor outside this
+    // contract, so its marks are not a conformance target — but a conforming
+    // doctor still needs to know what to answer for a check it could not run,
+    // and that follows from what `ok` means rather than from a fourth mark.
+    expectStatement(
+      await doctor(),
+      'the Doctor section must define ok as "the check ran and passed" and exclude an unrunnable check from it',
+      '`ok` means the check ran and passed. A check that could not run is therefore never `ok`',
     );
   });
 
@@ -708,21 +744,72 @@ describe('the memory command surface', () => {
     );
   });
 
-  it("defers the selection budget's default and bounds instead of claiming to fix them", async () => {
-    const content = await loadContract();
-    expect(
-      normalizeProse(section(content, /^#{2,6}\s+.*Memory\b/i)),
-      'the memory section must say this version does not fix the budget default and bounds',
-      // The item's amendment (e) asks for contract-defined numbers. Repeating
-      // the requirement without supplying one would read as having met it.
-    ).toMatch(/default and bounds[\s\S]{0,80}this version does not fix them/i);
-    expect(
-      normalizeProse(section(content, /^#{2,6}\s+.*(does not cite|not cited)/i)),
-      'the absent-referent section carries no entry for the load selection budget',
-    ).toMatch(/load selection budget's default and bounds/i);
+  it('fixes the budget default at the value both shipped backends measurably carry', async () => {
+    const memorySection = await memory();
+    // Amendment (e) calls the default contract-defined, and the owner ruling of
+    // 2026-08-31 refuses to let it stay deferred. The number is not chosen: it
+    // is the constant both Memory MVP backends hold, so the document has to
+    // carry the number AND where it was read, or a later reader cannot tell a
+    // measurement from a preference.
+    expectStatement(
+      memorySection,
+      'the memory section must state the budget default as a number',
+      'The default is **8192 bytes**.',
+    );
+    expectTerms(normalizeProse(memorySection), [
+      [
+        'the budget default names neither backend constant it was read from',
+        /INJECTION_BUDGET_BYTES/,
+      ],
+      ['the budget default cites no source file for the POSIX backend', /load\.sh:14/],
+      ['the budget default cites no source file for the PowerShell backend', /load\.ps1:5/],
+      [
+        "the budget default does not record the owner's 2026-08-23 decision not to raise it",
+        /2026-08-23/,
+      ],
+    ]);
   });
 
-  it('closes the degradation enum per version and enumerates no member at 1.0', async () => {
+  it('states the budget unit and the behaviour at the limit, not the number alone', async () => {
+    // A byte count with no unit is three different budgets: whole file, body,
+    // or characters. The two backends agree on one of them, and they agree on
+    // what happens to a record that does not fit — it is skipped, never cut.
+    expectStatement(
+      await memory(),
+      'the memory section must define the unit the budget counts and what happens at the limit',
+      'A record whose body does not fit the remainder is skipped and counted, never truncated',
+    );
+    expect(
+      normalizeProse(await memory()),
+      'the memory section does not say the budget counts UTF-8 bytes of a record body',
+    ).toMatch(/UTF-8 bytes of a record's body/i);
+  });
+
+  it("leaves the budget's allowed bounds open, and says the backends enforce none", async () => {
+    const content = await loadContract();
+    // The honest half. The default is measured; the bounds are not, and the
+    // measurement says why — a patched loader accepted every value it was
+    // given, including one above the default, and refused nothing.
+    expectStatement(
+      section(content, /^#{2,6}\s+.*Memory\b/i),
+      'the memory section must say the allowed bounds are still unstated and that no backend enforces any',
+      '🔴 **The allowed bounds are the one thing this document still cannot state.**',
+    );
+    expect(
+      normalizeProse(section(content, /^#{2,6}\s+.*Memory\b/i)),
+      'the memory section does not record the measurement that shows no bound is enforced',
+    ).toMatch(/16384/);
+    expect(
+      normalizeProse(section(content, /^#{2,6}\s+.*(does not cite|not cited)/i)),
+      'the absent-referent section must now carry the bounds alone, the default having been fixed',
+    ).toMatch(/load selection budget's allowed bounds/i);
+    expect(
+      normalizeProse(section(content, /^#{2,6}\s+.*(does not cite|not cited)/i)),
+      'the absent-referent section still defers the budget default, which this version fixes',
+    ).not.toMatch(/load selection budget's default and bounds/i);
+  });
+
+  it('closes the degradation enum per version and enumerates its 1.0 members', async () => {
     const content = normalizeProse(await memory());
     expect(content, 'degradation[] is not declared a closed enum').toMatch(
       /`degradation\[\]` is a closed enum/,
@@ -733,13 +820,28 @@ describe('the memory command surface', () => {
       // "closed per version" is the reading of amendment (i) this document
       // takes; without it "closed enum" says nothing about which members exist.
     ).toMatch(/each version of this contract enumerates its members/i);
-    expect(content, 'the memory section does not say contract 1.0 enumerates no member').toContain(
-      '**Contract 1.0 enumerates none**',
-    );
+    // An empty enum satisfied (i) in form and made the field unusable, which is
+    // what the owner ruling of 2026-08-31 calls a silent deferral. The two
+    // members below are not words picked here: they are the two degradations
+    // both shipped backends already count, in the backends' own spelling.
     expect(
       content,
-      'the memory section does not say a bin claiming contractVersion 1.0 emits an empty list',
-    ).toMatch(/bin claiming `contractVersion` 1\.0 emits an empty list/i);
+      'the memory section does not say how many members contract 1.0 enumerates',
+    ).toContain('**Contract 1.0 enumerates two**');
+    expectTerms(content, [
+      ['the degradation enum does not name its budget member', /`budget-skipped`/],
+      ['the degradation enum does not name its validation member', /`invalid`/],
+    ]);
+  });
+
+  it('excludes the one measured degradation no backend can observe', async () => {
+    // A dedup drop is real and is counted by nothing — `load.sh` skips a seen
+    // `sourceKey` before the eligible count. Naming it in the enum would put a
+    // member in the contract that no conforming bin could ever emit.
+    expect(
+      normalizeProse(await memory()),
+      'the memory section does not say why the dedup drop is left out of the enum',
+    ).toMatch(/`sourceKey` was already seen[\s\S]{0,200}counters/i);
   });
 
   it('keeps degradation present on every load payload, empty when there was none', async () => {
@@ -797,20 +899,19 @@ describe('the questions the document leaves open for acceptance', () => {
   const openQuestions = async () =>
     section(await loadContract(), /^#{2,6}\s+.*Open questions for acceptance\b/i);
 
-  it("names doctor's extra marks, degradation[]'s members, the budget numbers and the fix presence rule", async () => {
+  it("leaves exactly one question open, and it is the budget's allowed bounds", async () => {
     const open = normalizeProse(await openQuestions());
     expectTerms(open, [
-      ["the acceptance list omits doctor's two extra marks", /doctor'?s two extra marks/i],
-      ["the acceptance list omits degradation[]'s members", /`degradation\[\]`'?s members/i],
       [
-        "the acceptance list omits the load selection budget's default and bounds",
-        /load selection budget'?s default and bounds/i,
-      ],
-      [
-        "the acceptance list omits the doctor `fix` presence rule, which `## Doctor` marks as this document's reading rather than the item's",
-        /the doctor `fix` presence rule/i,
+        "the acceptance list omits the load selection budget's allowed bounds",
+        /load selection budget'?s allowed bounds/i,
       ],
     ]);
+    // The three that left this list did so by being answered, not by being
+    // dropped, and each of the three must no longer read as unsettled here.
+    expect(open, 'the acceptance list still carries the settled doctor-marks question').not.toMatch(
+      /^1\.[\s\S]{0,120}doctor'?s two extra marks/im,
+    );
   });
 
   it('opens exactly as many numbered questions as it says it leaves open', async () => {
@@ -822,13 +923,27 @@ describe('the questions the document leaves open for acceptance', () => {
     expectStatement(
       open,
       'the acceptance section must say how many questions it leaves open',
-      'Four things this document deliberately does not settle.',
+      'One thing this document deliberately does not settle.',
     );
     const numbered = open.split('\n').filter((line) => /^\d+\.\s/.test(line));
     expect(
       numbered.map((line) => line.slice(0, 60)),
-      'the acceptance section says it leaves four questions open but its numbered list has a different length',
-    ).toHaveLength(4);
+      'the acceptance section says it leaves one question open but its numbered list has a different length',
+    ).toHaveLength(1);
+  });
+
+  it('records what acceptance settled, so a question is never dropped in silence', async () => {
+    const open = await openQuestions();
+    expectStatement(
+      open,
+      'the acceptance section must record the questions it used to carry and how each was settled',
+      'Three questions this section carried are settled, and are recorded here rather than deleted:',
+    );
+    expectTerms(normalizeProse(open), [
+      ['the settled list omits the doctor marks question', /doctor'?s two extra marks/i],
+      ['the settled list omits the degradation members question', /`degradation\[\]`'?s members/i],
+      ['the settled list omits the doctor fix presence rule', /`fix` presence rule/i],
+    ]);
   });
 });
 
@@ -1057,7 +1172,7 @@ describe('the JSON fixtures in the document', () => {
       const checks = fieldOf(run, 'checks') as unknown[];
       checks.forEach((record, index) => {
         const status = fieldOf(record, 'status');
-        for (const field of ['id', 'status', 'detail'] as const) {
+        for (const field of ['id', 'status', 'detail', 'fix'] as const) {
           expect(
             hasKey(record, field),
             `doctor fixture record #${index + 1} has no ${field}, which the contract puts on every record`,
@@ -1067,10 +1182,14 @@ describe('the JSON fixtures in the document', () => {
           ['ok', 'warn', 'fail'],
           `doctor fixture record #${index + 1} has status ${JSON.stringify(status)}, outside the closed set`,
         ).toContain(status);
+        // The presence rule is now "always present, empty when there is
+        // nothing to do", so what varies with status is the CONTENT. A
+        // non-empty fix on a passing record would say a passed check needs
+        // remedying; an empty one on a failure would leave a human nowhere.
         expect(
-          hasKey(record, 'fix'),
-          `doctor fixture record #${index + 1} has status ${JSON.stringify(status)}, so fix must be ${status === 'ok' ? 'omitted' : 'present'}`,
-        ).toBe(status === 'warn' || status === 'fail');
+          fieldOf(record, 'fix') === '',
+          `doctor fixture record #${index + 1} has status ${JSON.stringify(status)}, so fix must be ${status === 'ok' ? 'empty' : 'non-empty'}`,
+        ).toBe(status === 'ok');
       });
       const anyFail = checks.some((record) => fieldOf(record, 'status') === 'fail');
       expect(
@@ -1082,15 +1201,53 @@ describe('the JSON fixtures in the document', () => {
     }
   });
 
-  it('leaves degradation empty, because contract 1.0 enumerates no member', async () => {
+  it('emits no degradation member outside the two contract 1.0 enumerates', async () => {
     const roots = fixtureRoots(await loadContract());
     const carriers = roots.filter((root) => hasKey(root, 'degradation'));
     expect(carriers.length, 'no fixture carries a degradation field').toBeGreaterThan(0);
+    // The enum is closed per version, so a fixture is the first place a member
+    // outside it would appear — and a fixture is what an implementer copies.
+    const MEMBERS = ['budget-skipped', 'invalid'] as const;
     for (const root of carriers) {
+      const members = fieldOf(root, 'degradation');
+      expect(Array.isArray(members), 'a fixture carries a degradation that is not a list').toBe(
+        true,
+      );
+      for (const member of members as unknown[]) {
+        expect(
+          MEMBERS,
+          `a fixture emits the degradation member ${JSON.stringify(member)}, which contract 1.0 does not enumerate`,
+        ).toContain(member);
+      }
+    }
+  });
+
+  it('keeps the load fixture a measurement rather than a plausible-looking payload', async () => {
+    const roots = fixtureRoots(await loadContract());
+    const loads = roots.filter((root) => hasKey(root, 'counters') && hasKey(root, 'budget'));
+    expect(loads.length, 'no fixture illustrates a load payload').toBeGreaterThan(0);
+    for (const load of loads) {
+      // The limit a fixture shows is the number an implementer will copy. It
+      // was 65536 here — a value no backend has ever carried — while the
+      // document was about to fix the default at 8192.
       expect(
-        fieldOf(root, 'degradation'),
-        'a fixture emits a degradation member, but contract 1.0 enumerates none',
-      ).toEqual([]);
+        fieldOf(fieldOf(load, 'budget'), 'limitBytes'),
+        'a load fixture shows a budget limit that is not the contract default',
+      ).toBe(8192);
+      const counters = fieldOf(load, 'counters') as Record<string, unknown>;
+      const usedBytes = fieldOf(fieldOf(load, 'budget'), 'usedBytes') as number;
+      expect(
+        usedBytes <= 8192,
+        `a load fixture spends ${usedBytes} bytes of an 8192-byte budget`,
+      ).toBe(true);
+      // A payload reporting budget-skipped records with an empty degradation
+      // list, or the reverse, teaches an implementer the wrong relation.
+      const skipped = counters.budgetSkipped as number;
+      const degraded = (fieldOf(load, 'degradation') as unknown[]).includes('budget-skipped');
+      expect(
+        degraded,
+        `a load fixture counts budgetSkipped=${skipped} but ${degraded ? 'does' : 'does not'} report the degradation`,
+      ).toBe(skipped > 0);
     }
   });
 });
@@ -1104,6 +1261,29 @@ describe('the conformance section stays true about this repository', () => {
       'the conformance section must promise that each row is pinned by a named test',
       "Every row below names the test that pins it, and each row's reach is the reach of its test and no wider",
     );
+  });
+
+  it('states the reach on every row whose test is narrower than the row sounds', async () => {
+    // The round-3 blocker: the preamble named `exempt` as the ONE clause weaker
+    // than its test's reach, while rows 1 and 5 stated no reach at all and
+    // their tests' own comments recorded one. The rows were true; the promise
+    // of pinning was not. So the preamble must stop claiming a single
+    // exception, and the two rows must carry their limits where they are read.
+    const section_ = normalizeProse(await conformance());
+    expect(
+      section_,
+      'the conformance preamble still claims a single clause is weaker than its test',
+    ).not.toMatch(/which is the case for `exempt` in the last one/i);
+    expectTerms(section_, [
+      [
+        'the --json row does not state that its test reads index.ts alone',
+        /`index\.ts` alone[\s\S]{0,200}`parseArgs`/i,
+      ],
+      [
+        'the exit-2 row does not state that its test counts occurrences rather than meanings',
+        /counts occurrences[\s\S]{0,160}not distinct meanings/i,
+      ],
+    ]);
   });
 
   it('reports that nothing in this repository reads RIG_UNATTENDED', async () => {
@@ -1298,10 +1478,21 @@ describe('the conformance section stays true about this repository', () => {
         new RegExp(`\\b${mark}\\b`),
       );
     }
+    // The row used to hand this to the acceptance list. Ruling 1 of 2026-08-31
+    // settled it instead: `.claude/scripts/doctor.mjs` is not bound by this
+    // contract, so its two extra marks are a measured difference of a tool the
+    // contract does not reach — not an open question, and not a violation.
     expect(
       text,
-      "the conformance section must hand doctor's extra marks to the owner's acceptance list",
-    ).toMatch(/\bacceptance list\b/i);
+      "the doctor-marks row must say the measured tool is outside this contract's scope",
+    ).toMatch(/outside this contract's scope|this contract does not bind/i);
+    // A negative regex on the old wording would be dodged by a reword, so the
+    // pin is positive: the row has to say the question is settled and by what.
+    expectStatement(
+      await conformance(),
+      'the doctor-marks row must record that the acceptance question it used to carry is settled',
+      'until the owner ruling of 2026-08-31 settled it',
+    );
   });
 
   it('reports that exit 2 is already spoken for in the internal script fleet', async () => {
