@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -8,7 +8,7 @@ const exec = promisify(execFile);
 /**
  * RP-70: the two e2e suites that install through `npx` let `execFile`'s
  * rejection reach vitest untouched, and Node's message for that is only
- * `Command failed: <the whole command line>`. The child's stderr — the single
+ * `Command failed: <the whole command line>`. The child's own output — the one
  * thing that says *why* — rides along on the error object and was thrown away.
  *
  * That is what made the `e2e` failure on PR #162 head `6bccbb17` undiagnosable:
@@ -18,8 +18,8 @@ const exec = promisify(execFile);
  *
  * ⚠ These helpers make a failure *readable*. They do not make it pass, retry
  * it, or soften it: a command that did not complete is still a failed test —
- * `test/e2e/run.test.ts` › "says the command did not complete, so it is not read
- * as a bad generated project".
+ * `test/template/e2e-run-report.test.ts` › "says the command did not complete,
+ * so it is not read as a bad generated project".
  */
 
 /** Node's `execFile` rejection. Every field is optional — it is not a contract. */
@@ -31,14 +31,37 @@ type ExecFailure = {
 };
 
 /**
- * How much of each stream the report keeps. A failing `npm install` can emit
- * far more than anyone reads, and the reason is at the END of it — so the tail
- * is what survives, and the report says how much it dropped.
+ * How much of each stream, and of each debug log, the report keeps. A failing
+ * install can emit far more than anyone reads, and the reason is at the END of
+ * it — so the tail is what survives, and the report says how much it dropped.
  */
 export const OUTPUT_TAIL = 4000;
 
+/** How many of an `_logs` directory's files the report will read. Bounded on purpose. */
+export const MAX_DEBUG_LOGS = 4;
+
 const asText = (value: string | Buffer | undefined): string =>
   typeof value === 'string' ? value : Buffer.isBuffer(value) ? value.toString('utf8') : '';
+
+/**
+ * Credentials embedded in a URL, masked.
+ *
+ * Measured on npm 11.3.0 by `security-scanner` on this change: a registry
+ * configured as `https://user:password@host` is written **unredacted** into the
+ * debug log on its `silly packumentCache` and `http fetch GET` lines — npm
+ * masks it only on `verbose stack` and `error network`. Since this report is
+ * printed into a CI log, it closes that gap itself rather than trusting npm's.
+ *
+ * Not reachable on this repository's CI (no secrets, no `registry-url`, no
+ * tracked `.npmrc`); it is reachable on a developer machine or self-hosted
+ * runner whose npmrc embeds credentials in a registry URL, which is the whole
+ * reason it is here. `.claude/scripts/lib/secrets.mjs` names this exact shape
+ * as one its vocabulary cannot see.
+ *
+ * One pass, no backtracking: both character classes are negated and bounded.
+ */
+export const redactUrlCredentials = (text: string): string =>
+  text.replace(/(\/\/[^\s/:@]+):[^\s/@]+@/g, '$1:***@');
 
 const tail = (stream: string): string => {
   if (stream.length <= OUTPUT_TAIL) return stream;
@@ -46,8 +69,18 @@ const tail = (stream: string): string => {
   return `… [${dropped} earlier characters truncated] …\n${stream.slice(-OUTPUT_TAIL)}`;
 };
 
-const section = (label: string, stream: string): string =>
-  stream.trim() === '' ? '' : `\n--- ${label} ---\n${tail(stream)}`;
+/**
+ * A labelled block, verbatim.
+ *
+ * 🔴 It does **not** truncate. An earlier version did, and because the debug
+ * logs arrive already tailed and joined newest-first, that second tail spent
+ * the whole budget on the oldest log and dropped the newest — the one this
+ * file documents as carrying the failure. Truncation happens once, at the
+ * source of each piece of text. `test/template/e2e-run-report.test.ts` ›
+ * "keeps the newest log's reason even when an older log fills the budget".
+ */
+const section = (label: string, text: string): string =>
+  text.trim() === '' ? '' : `\n--- ${label} ---\n${text}`;
 
 /**
  * The message thrown in place of `Command failed: …`.
@@ -61,27 +94,47 @@ export const commandFailureReport = (command: string, error: unknown, npmDebugLo
   const stderr = asText(failure.stderr);
   const stdout = asText(failure.stdout);
 
+  // A spawn failure carries an errno string (`ENOENT`) where an exited child
+  // carries a number. Calling the first one an "exit code" misreports it.
   const how =
     failure.signal != null
       ? `killed by signal ${String(failure.signal)}`
-      : failure.code != null
-        ? `exit code ${String(failure.code)}`
-        : 'no exit code reported';
+      : typeof failure.code === 'number'
+        ? `exit code ${failure.code}`
+        : typeof failure.code === 'string'
+          ? `did not start: ${failure.code}`
+          : 'no exit code reported';
 
-  const streams = `${section('child stderr', stderr)}${section('child stdout', stdout)}`;
+  const streams =
+    section('child stderr', redactUrlCredentials(tail(stderr))) +
+    section('child stdout', redactUrlCredentials(tail(stdout)));
   const silent = streams === '' ? '\nthe child produced no output on either stream.' : streams;
 
   return (
     `the install/generate command did not complete (${how}) — ` +
     `this is the command failing, not an assertion about the generated project.\n` +
-    `command: ${command}` +
+    `command: ${redactUrlCredentials(command)}` +
     silent +
-    section('npm debug logs', npmDebugLog)
+    // redacted here as well as in `npmDebugLogs`: the masking must not depend
+    // on which caller assembled the text. The substitution is idempotent.
+    section('npm debug logs', redactUrlCredentials(npmDebugLog))
   );
 };
 
-/** How many of an `_logs` directory's files the report will read. Bounded on purpose. */
-export const MAX_DEBUG_LOGS = 4;
+/** The last `OUTPUT_TAIL` bytes of a file, without reading the rest of it. */
+const readTail = (file: string): string => {
+  const fd = openSync(file, 'r');
+  try {
+    const { size } = fstatSync(fd);
+    const want = Math.min(size, OUTPUT_TAIL);
+    const buffer = Buffer.alloc(want);
+    readSync(fd, buffer, 0, want, Math.max(0, size - want));
+    const text = buffer.toString('utf8');
+    return size > want ? `… [${size - want} earlier bytes truncated] …\n${text}` : text;
+  } finally {
+    closeSync(fd);
+  }
+};
 
 /**
  * The `_logs/*.log` files under an npm cache directory, newest name first.
@@ -99,8 +152,8 @@ export const MAX_DEBUG_LOGS = 4;
  * its own log after the inner install has already failed, so picking by mtime
  * returns the file with nothing in it. That was measured, after a first version
  * of this function did exactly that and reported an empty section.
- * `test/e2e/run.test.ts` › "reads every log, because the one carrying the
- * failure is not the newest" pins it.
+ * `test/template/e2e-run-report.test.ts` › "reads every log, because the one
+ * carrying the failure is not the newest" pins it.
  *
  * The suites set `npm_config_cache` into their own temp directory and delete it
  * afterwards, so these have to be read here, while the failure is being
@@ -108,23 +161,33 @@ export const MAX_DEBUG_LOGS = 4;
  *
  * Total by construction: called from a catch block, every failure to read
  * resolves to "no log", never to a throw that would replace the real one. The
- * file count is capped before anything is read.
+ * file count is capped before any file is opened, only the tail of each is
+ * read, and one unreadable file costs that file rather than the others.
  */
 export const npmDebugLogs = (cacheDir: string | undefined): string => {
   if (!cacheDir) return '';
+  let names: string[];
+  const logsDir = path.join(cacheDir, '_logs');
   try {
-    const logsDir = path.join(cacheDir, '_logs');
-    const names = readdirSync(logsDir)
+    names = readdirSync(logsDir)
       .filter((name) => name.endsWith('.log'))
       .sort()
       .reverse()
       .slice(0, MAX_DEBUG_LOGS);
-    return names
-      .map((name) => `[${name}]\n${tail(readFileSync(path.join(logsDir, name), 'utf8'))}`)
-      .join('\n');
   } catch {
     return '';
   }
+  return names
+    .map((name) => {
+      let body: string;
+      try {
+        body = readTail(path.join(logsDir, name));
+      } catch (error) {
+        body = `[unreadable: ${error instanceof Error ? error.message : 'unknown'}]`;
+      }
+      return `[${name}]\n${redactUrlCredentials(body)}`;
+    })
+    .join('\n');
 };
 
 /**

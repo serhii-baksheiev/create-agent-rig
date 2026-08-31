@@ -26,7 +26,8 @@ describe('git install (the `npx github:…` personal-stage distribution path)', 
     const appDir = path.join(work, 'app');
     await mkdir(appDir);
     // runNpx, not a bare exec: this install step is the one that failed on CI
-    // with no reason attached (RP-70). Its stderr is the diagnosis.
+    // with no reason attached (RP-70). For this failure both streams are
+    // empty, so the diagnosis is the exit code plus npm's own debug logs.
     await runNpx(
       [
         '--yes',
