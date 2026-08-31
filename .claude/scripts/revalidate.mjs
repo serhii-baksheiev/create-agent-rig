@@ -66,7 +66,13 @@ import { POINTS as ALL_POINTS, REVALIDATES } from './lib/revalidation-points.mjs
 import { takeUpEvidenceOf } from './queue/core.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 import { projectRootOfConfig } from './queue/index.mjs';
-import { revalidateClaim, targetShaOf, withAdditionalDrift } from './lib/claim-records.mjs';
+import {
+  revalidateClaim,
+  targetShaOf,
+  unverifiableResult,
+  withAdditionalDrift,
+} from './lib/claim-records.mjs';
+import { findSecretValues } from './lib/secrets.mjs';
 
 // Derived from the one source, never restated here (AR-137).
 export const POINTS = REVALIDATES;
@@ -157,6 +163,67 @@ const invokedDirectly = () => {
   return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
 };
 
+/**
+ * The adapter's own message, unless it carries something credential-shaped.
+ *
+ * The messages this is written for name environment VARIABLES rather than their
+ * values, and naming them is exactly what the caller acts on. But an adapter is
+ * free to put a URL or a response body in a message, and this text is published
+ * into a verdict a run journals — so it is checked against the one credential
+ * vocabulary this repository has before it goes anywhere.
+ */
+const safeReason = (text) =>
+  findSecretValues(String(text ?? '')).length === 0
+    ? String(text ?? '')
+    : 'the queue adapter could not be read; its message is withheld because it carries a credential-shaped value';
+
+/**
+ * The revalidation boundary for a tracker that cannot be read (RP-64).
+ *
+ * 🔴 It answers `UNVERIFIABLE` and exits 2 — the same hold path a real drift
+ * takes, and never 0. "The adapter was unreachable" is not evidence that the
+ * branch is still the branch the run took up, and a caller that read it as a
+ * pass would carry an unchecked claim into a PR. A drift the adapter DID report
+ * still comes back as `hold`, and an unchanged claim still as `continue`;
+ * this only replaces the crash.
+ */
+const answerUnverifiable = ({ runDir, ticket, point, json }, operation, cause) => {
+  const result = unverifiableResult({
+    ticket: { id: ticket },
+    point,
+    reason: safeReason(
+      `the queue adapter could not be read (${operation}): ${cause?.message ?? cause}`,
+    ),
+    identity: `adapter-unreadable:${operation}`,
+  });
+  if (runDir) {
+    recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+    recordRevalidationHold(runDir, result);
+  }
+  if (json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    process.stdout.write(
+      `revalidate ${point}: ${ticket} unverifiable — the queue adapter could not be read (${operation})\n`,
+    );
+    process.stdout.write(`  ${result.evidence.error}\n`);
+    process.stdout.write(
+      '  this is NOT a pass: nothing about the claim was observed. Fix the adapter and run it again.\n',
+    );
+  }
+  process.exit(2);
+};
+
+/** Every adapter call in this script goes through here, or it can still crash. */
+const readAdapter = async (operation, read, context) => {
+  try {
+    return await read();
+  } catch (error) {
+    answerUnverifiable(context, operation, error);
+    return null; // unreachable: answerUnverifiable exits
+  }
+};
+
 const refuse = (message) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);
@@ -229,7 +296,8 @@ if (invokedDirectly()) {
   const claimRoot = projectRootOfConfig(configPath) ?? projectRoot;
 
   if (args.point === 'BEFORE_CLOSE') {
-    const ticket = await adapter.find(args.ticket, options);
+    const context = { runDir, ticket: args.ticket, point: args.point, json: args.json };
+    const ticket = await readAdapter('find', () => adapter.find(args.ticket, options), context);
     const takeUp = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
     // Preserve the newest compatibility marker as evidence. This comparison
     // never decides drift; the durable claim below is the authority.
@@ -253,7 +321,9 @@ if (invokedDirectly()) {
     const dependants = Array.isArray(ticket?.blocks) ? ticket.blocks : [];
     const dependantState = {};
     for (const dependant of dependants) {
-      dependantState[dependant] = (await adapter.find(dependant, options))?.state ?? 'missing';
+      dependantState[dependant] =
+        (await readAdapter('find dependant', () => adapter.find(dependant, options), context))
+          ?.state ?? 'missing';
     }
     const claim = revalidateClaim({
       projectRoot: claimRoot,
@@ -298,7 +368,12 @@ if (invokedDirectly()) {
     refuse(`--base ${args.base} is not a revision this checkout can compare against: ${error.message}`);
   }
 
-  const tickets = await adapter.listEligible(options);
+  const tickets = await readAdapter('listEligible', () => adapter.listEligible(options), {
+    runDir,
+    ticket: args.ticket,
+    point: args.point,
+    json: args.json,
+  });
   const ticket = tickets.find((candidate) => String(candidate.id) === String(args.ticket)) ?? null;
 
   const snapshot = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
