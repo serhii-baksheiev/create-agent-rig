@@ -1,22 +1,31 @@
-// AR-137: two duplicated mechanical facts, each with one source and a
+// AR-137: three duplicated mechanical facts, each with one source and a
 // two-direction correspondence check against the prose that must restate it.
 //
 // Limits, stated: the points parser reads exactly the `loop` and `pr-ship`
 // skills, by the spellings `--point X` / `point: X` — a point named elsewhere,
 // or spelled otherwise, is invisible to it. The floor parser needs the
-// `**Reviewer fan-out.**` anchor and the `- \`lane\` → …` bullet shape; if either
-// moves, the parse fails by a named assertion rather than passing on nothing.
+// `**Reviewer fan-out.**` anchor and the `- \`lane\` → …` bullet shape. The
+// run-directory parser needs its own anchor sentence, and reads only forward
+// from it to the end of that paragraph, so a script named earlier in the same
+// paragraph is invisible to it; it decides "takes the flag" by the literal
+// string `--run-dir` anywhere in a script's source, so an alias or a
+// runtime-assembled flag is invisible, while a script that merely mentions the
+// flag in a comment counts as an acceptor — a false red, which is the safe
+// direction. Each parser's ANCHOR fails by a named assertion rather than
+// passing on nothing; a broken bullet SHAPE under the floor parser's anchor is
+// a different case, and surfaces as a `<lane>: no bullet` offender string —
+// red, but unnamed.
 // That is the maintenance cost of the check, and it is the whole of it.
 //
 // It runs off the Windows lane: it imports revalidate.mjs and decision-router.mjs,
 // which do not load there (their own tests sit in the same exclusion list).
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // AR-137 (RX5): correspondence checks are the DEFAULT for a mechanical fact that
-// exists in more than one place. Two facts are pinned here, each in BOTH
+// exists in more than one place. Three facts are pinned here, each in BOTH
 // directions — a name the script knows that the prose never mentions is as red
 // as a name the prose mentions that no script knows — and each correspondence
 // function is exercised on a mutated copy inside the test, so "the check would
@@ -25,6 +34,9 @@ import { describe, expect, it } from 'vitest';
 // Fact 1: the revalidation POINTS (`revalidate.mjs`, `revalidation-report.mjs`,
 //         the `loop` and `pr-ship` skills).
 // Fact 2: the lane → reviewer floor (`decision-router.mjs`, the `pr-ship` skill).
+// Fact 3: which commands take the run directory as an argument rather than from
+//         the environment (every `.mjs` under `.claude/scripts/`, the `loop`
+//         skill).
 //
 // No subprocesses: file reads and module imports only.
 
@@ -217,6 +229,194 @@ describe('fact 2 — the lane → reviewer floor has one source', () => {
     const offenders = floorCorrespondence(LANES, widened, prose);
     expect(offenders).toHaveLength(1);
     expect(offenders[0]).toMatch(/^model: /);
+  });
+});
+
+describe('fact 3 — the run directory reaches a command one way, and the skill says which', () => {
+  // RP-63. The loop skill promised that "every command in this skill can also
+  // take the run directory per invocation". Measured over the whole scripts
+  // tree: one script of twenty-eight parses `--run-dir`. A session that
+  // believed the promise passed a flag that was silently ignored, which is how
+  // a routing step recorded nothing and `verdict.mjs coverage` would have
+  // called the round unreadable for want of a route.
+  //
+  // So the fact — WHICH commands accept the flag — gets a correspondence check
+  // rather than a sentence. The measurement is the source; the prose restates
+  // it; both directions are red.
+  //
+  // Limit, stated: a script "accepts --run-dir" here means the literal string
+  // `--run-dir` appears in its source. A flag reached by an alias, or assembled
+  // at runtime, is invisible to this — the same class of limit the points
+  // parser above carries, and for the same reason.
+  //
+  // The universe is DERIVED, not listed. A first draft enumerated the five
+  // commands the ticket happened to name; both gate reviewers rejected it, and
+  // for the right reason — the prose quantifies over any command, so a check
+  // that quantifies over five leaves the sentence able to go false while the
+  // suite stays green. It also contained one script the skill never invokes and
+  // omitted eight it does, which made the array a third spelling of the fact
+  // rather than a source for it.
+  const scriptsUnder = async (dir: string, prefix = ''): Promise<string[]> => {
+    const found: string[] = [];
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) found.push(...(await scriptsUnder(path.join(dir, entry.name), rel)));
+      else if (entry.name.endsWith('.mjs')) found.push(rel);
+    }
+    return found;
+  };
+
+  /** Every script under `.claude/scripts/` whose source really carries the flag. */
+  const measureFlagAcceptors = async (): Promise<string[]> => {
+    const scripts = await scriptsUnder(scriptsDir);
+    // Membership, not a count. Thirteen of the twenty-eight scripts sit at the
+    // top level, so a walk that lost its recursion would still return thirteen
+    // and stay green while every `queue/` and `lib/` script went unmeasured —
+    // which is the whole capability the derived universe was added to buy.
+    expect(scripts, 'the walk did not descend into queue/').toContain('queue/index.mjs');
+    expect(scripts, 'the walk did not descend into lib/').toContain('lib/verdict.mjs');
+    const accepting: string[] = [];
+    for (const command of scripts) {
+      const source = await read(path.join(scriptsDir, ...command.split('/')));
+      if (source.includes('--run-dir')) accepting.push(command);
+    }
+    return accepting.sort();
+  };
+
+  /**
+   * The commands the skill NAMES as taking the flag, read from the one
+   * sentence that carries the fact. The anchor is deliberate: a free-standing
+   * list somewhere else in the document would drift from this one.
+   */
+  const ACCEPTORS_ANCHOR = '`--run-dir` is taken by';
+  /**
+   * Fails by a named assertion rather than returning an empty list: a parser
+   * that degrades to `[]` on a missing anchor can pass on nothing the day the
+   * measurement is empty too, which is the fact-2 parser's stated design and
+   * was this one's weakness at review.
+   */
+  const flagAcceptorsNamedIn = (prose: string): string[] => {
+    const at = prose.indexOf(ACCEPTORS_ANCHOR);
+    expect(at, `the prose no longer carries the anchor "${ACCEPTORS_ANCHOR}"`).toBeGreaterThan(-1);
+    // To the end of the paragraph, not to the first full stop: every command
+    // name here ends in `.mjs`, so a sentence-terminator scan stops inside the
+    // first name it meets and reads none of them at all.
+    const paragraph = prose.slice(at).split(/\n\s*\n/)[0]!;
+    return [...paragraph.matchAll(/`([A-Za-z0-9/._-]+\.mjs)`/g)].map((m) => m[1]!).sort();
+  };
+
+  const flagCorrespondence = (accepting: readonly string[], prose: string) => {
+    const named = flagAcceptorsNamedIn(prose);
+    return {
+      unmentioned: accepting.filter((c) => !named.includes(c)),
+      unknown: named.filter((c) => !accepting.includes(c)),
+    };
+  };
+
+  const loopSkill = () => read(path.join(skillsDir, 'loop', 'SKILL.md'));
+
+  it('does not promise the flag on every command, which four of the five never had', async () => {
+    const prose = await loopSkill();
+    expect(
+      prose.replace(/\s+/g, ' '),
+      'the loop skill still promises the run directory per invocation on every command',
+    ).not.toContain('every command in this skill can also take the run directory per invocation');
+  });
+
+  it('names every command it invokes that does not read the variable, and no others', async () => {
+    // Round 1 of the gate rejected "RIG_RUN_DIR is the one mechanism every
+    // command in this skill reads" as false. Round 2 rejected its replacement,
+    // "`unattended-flag.mjs` … reads no environment variable", as false about
+    // the same command again: it reads `CLAUDE_PROJECT_DIR` (which scopes the
+    // flag to a checkout) and `HOME` by way of `stop-flag.mjs`. Three drafts of
+    // one paragraph, each a confident negative about a mechanism, each wrong in
+    // a different place.
+    //
+    // So the claim is reduced to what can be measured and then measured: which
+    // of the commands the skill INVOKES — `node .claude/scripts/<x>` in its own
+    // code blocks, not modules it imports — do not read `RIG_RUN_DIR`. The
+    // count in the prose is derived from that set, both directions, so neither
+    // a new exception nor a disappearing one can leave the sentence standing.
+    const prose = (await loopSkill()).replace(/\s+/g, ' ');
+    const invoked = [
+      ...new Set(
+        [...(await loopSkill()).matchAll(/node \.claude\/scripts\/([A-Za-z0-9/_-]+\.mjs)/g)].map(
+          (m) => m[1]!,
+        ),
+      ),
+    ].sort();
+    expect(
+      invoked.length,
+      'too few command invocations were parsed out of the skill for this to have measured anything',
+    ).toBeGreaterThan(3);
+    const withoutTheVariable: string[] = [];
+    for (const command of invoked) {
+      const source = await read(path.join(scriptsDir, ...command.split('/')));
+      if (!source.includes('RIG_RUN_DIR')) withoutTheVariable.push(command);
+    }
+    // Read the names OUT of the prose rather than filtering the measured set.
+    // Filtering can only ever fail on too few: a name the measurement does not
+    // contain is unreachable, so the paragraph could gain "`preflight.mjs` does
+    // not read the variable" and stay green. Parsing gives both directions.
+    const named = [...prose.matchAll(/`([A-Za-z0-9._-]+\.mjs)` does not read/g)]
+      .map((m) => m[1]!)
+      .sort();
+    const measuredNames = withoutTheVariable.map((c) => c.split('/').pop()!).sort();
+    expect(
+      named,
+      'the skill names a different set of commands than the ones measured to read the run directory another way',
+    ).toEqual(measuredNames);
+    // And the count the prose states is the size of that set, spelled out.
+    const WORDS = ['one', 'two', 'three', 'four', 'five'] as const;
+    expect(
+      prose,
+      `the skill states a different count than the ${withoutTheVariable.length} commands measured`,
+    ).toContain(
+      `${WORDS[withoutTheVariable.length - 1]} of the commands this skill invokes read it from somewhere else`,
+    );
+    // The channel each exception uses instead, pinned at the parse site rather
+    // than anywhere the string appears — a usage comment would survive the
+    // parser being deleted.
+    expect(
+      await read(path.join(scriptsDir, 'unattended-flag.mjs')),
+      'unattended-flag.mjs no longer parses --run-dir, which the skill states as its channel',
+    ).toContain("valueOf('--run-dir')");
+    expect(
+      await read(path.join(scriptsDir, 'revalidation-report.mjs')),
+      'revalidation-report.mjs no longer parses --runs, which the skill states as its channel',
+    ).toContain("'--runs'");
+  });
+
+  it('names exactly the commands that take --run-dir, and only those', async () => {
+    expect(flagCorrespondence(await measureFlagAcceptors(), await loopSkill())).toEqual({
+      unmentioned: [],
+      unknown: [],
+    });
+  });
+
+  it('reports a command named as taking the flag that does not (mutation: prose)', async () => {
+    const prose = (await loopSkill()).replace(
+      ACCEPTORS_ANCHOR,
+      `${ACCEPTORS_ANCHOR} \`run-state.mjs\` and`,
+    );
+    expect(flagCorrespondence(await measureFlagAcceptors(), prose).unknown).toEqual([
+      'run-state.mjs',
+    ]);
+  });
+
+  it('names the missing anchor instead of passing on nothing (mutation: anchor removed)', async () => {
+    // The parser's own guard, exercised. Without this the named assertion added
+    // at review is itself unmeasured — and a parser nobody has watched fail is
+    // the case the fact-2 header warns about.
+    const prose = (await loopSkill()).replace(ACCEPTORS_ANCHOR, '`--run-dir` is accepted by');
+    expect(() => flagAcceptorsNamedIn(prose)).toThrow(/no longer carries the anchor/);
+  });
+
+  it('reports a command that gained the flag while the prose did not (mutation: measurement)', async () => {
+    const accepting = [...(await measureFlagAcceptors()), 'revalidate.mjs'].sort();
+    expect(flagCorrespondence(accepting, await loopSkill()).unmentioned).toEqual([
+      'revalidate.mjs',
+    ]);
   });
 });
 

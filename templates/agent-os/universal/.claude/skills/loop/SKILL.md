@@ -119,9 +119,31 @@ mkdir -p "$RIG_RUN_DIR"
 never with a variable the session exported — pinned in the generator's
 `test/template/guard-rulebook.test.ts` (absent in a generated rig) › "only a
 flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
-and in some harnesses the export does not even survive to the next Bash call,
-which is why every command in this skill can also take the run directory per
-invocation. What a hook CAN see is a file, so the unattended signal is one:
+and in some harnesses the export does not even survive to the next Bash call.
+
+🔴 **So re-export it in every call that needs it.** `RIG_RUN_DIR` is how the run
+directory reaches the commands that read it from the environment — and two of
+the commands this skill invokes read it from somewhere else instead.
+`unattended-flag.mjs` does not read the variable; it takes the directory as
+`--run-dir`, which is why the call below passes it explicitly.
+`revalidation-report.mjs` does not read it either; it takes `--runs <dir>`.
+For every other command this skill invokes the variable is the whole of it, and
+passing the flag is not a fallback but an unrecognised argument — after which a
+command writes into a run directory nobody declared, or refuses for want of one
+while the caller believes it was told. Modules this skill *imports* rather than
+invokes are a third case again: `run-journal.mjs` and `queue/state.mjs` are
+handed a `runDir` by their caller, which is why §9 lists it among the details
+that must be copied rather than re-derived.
+
+`--run-dir` is taken by `unattended-flag.mjs`, and by no other script under
+`.claude/scripts/`. That is measured over the whole tree rather than against a
+list, in both directions, by the generator's
+`test/template/correspondence.test.ts` (absent in a generated rig) › "names
+exactly the commands that take --run-dir, and only those" — so a script anywhere
+in that tree that gains the flag without this sentence gaining its name goes
+red.
+
+What a hook CAN see is a file, so the unattended signal is one:
 
 ```bash
 # at claim time, from the paths the item names (repo-relative prefixes, with
