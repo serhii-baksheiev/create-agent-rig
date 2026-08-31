@@ -223,6 +223,19 @@ an artifact may cite the generator's upstream tests, which are absent locally,
 only when the pointer says they are absent and `.claude/.rig-manifest.json`
 proves the current artifact's hash matches the installed manifest.
 
+**In the generator, that half is mechanical.** A citation there is a test-file
+name followed by `›` and a quoted test name, and the generator's
+`test/template/evidence-pointers.test.ts` (absent in a generated rig) resolves
+every one of them: › "names a test file this repository still has" and ›
+"quotes a test name that file still declares" go red when a target is renamed
+or a test retitled, and › "says so when the test it names is one a generated
+project never receives" goes red when a pointer into the generator's suite
+carries no word that the reader does not have it. The wording that satisfies
+the last one is `(absent in a generated rig)` beside the pointer, or the
+one-line disclosure nine scripts here open with — a phrase naming the generator
+is not enough, because it tells the reader where the test lives and nothing
+about whether they have it.
+
 A manifest-backed upgrade remains an inherited, generator-owned artifact even
 though the upgrade diff changes its bytes. The exception applies **only while the
 manifest hash matches**. A hash mismatch, missing manifest, or no evidence ends
