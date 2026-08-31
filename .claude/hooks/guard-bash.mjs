@@ -74,6 +74,21 @@
 // written without thinking — not an adversary, and circumventing it is itself a
 // Never-tier violation. The layers behind it are review and CI.
 //
+// ── Which SURFACES it sees, and what that does not promise (RP-65) ───────────
+//
+// This runs for every tool named in `.claude/scripts/lib/shell-tools.mjs`, not
+// for `Bash` alone. It used to be wired under `Bash` only, and the measurement
+// that changed it is in that file: the same `--no-verify` command was blocked
+// through one tool and ran through the other, in one session.
+//
+// ⚠ Widening the matcher makes the same RULES run on both surfaces. It does not
+// make the PARSING identical: the tokeniser above is POSIX, and PowerShell's
+// quoting, escaping and separators are its own, so a command whose danger is
+// visible only after PowerShell-specific parsing can read differently here. The
+// coarse checks do not depend on that — the kill switch refuses on the presence
+// of the operation at all. This gap is why the file keeps a name that says
+// `bash`: a rename would promise a parity the parser does not have.
+//
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason. Fails open on anything it cannot
 // parse — a crashed guard must never make the session unusable.

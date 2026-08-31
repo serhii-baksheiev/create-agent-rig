@@ -52,6 +52,7 @@
     ".claude/scripts/lib/revalidation-points.mjs",
     ".claude/scripts/lib/verdict.mjs",
     ".claude/scripts/lib/secrets.mjs",
+    ".claude/scripts/lib/shell-tools.mjs",
     ".claude/scripts/queue/core.mjs",
     ".claude/scripts/queue/plan-md.mjs",
     ".claude/scripts/queue/github-issues.mjs",
