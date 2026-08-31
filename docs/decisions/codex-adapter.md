@@ -94,8 +94,9 @@ names the platform never sends. The guards therefore accept
 that documented string form. A command that is ABSENT still fails open — a
 payload the hook does not understand — while one that is present and is not a
 shape the normalizer reads is REFUSED, because that is a condition it detects
-and can report rather than an error it threw. See `codex.test.ts` › "refuses,
-rather than failing open, when apply_patch command is supplied as %s".
+and can report rather than an error it threw. See the generator's
+`codex.test.ts` (absent in a generated rig) › "refuses, rather than failing
+open, when apply_patch command is supplied as %s".
 Hook output is the JSON `description` plus event arrays accepted by
 `.codex/hooks.json`; command portability is carried by generated POSIX and
 Windows commands. In this generated project, `.claude/settings.json` and
