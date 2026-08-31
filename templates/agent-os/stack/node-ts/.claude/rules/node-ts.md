@@ -58,8 +58,8 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
 **A head that gets no run at all is a third state, not a slow one.** A
 `pull_request` push can register no workflow run and emit no failure signal —
 the head sits with a scanner only, and the poll above waits forever while the
-previous head's green sits one line up in the same PR (AR-149: `69b5d65` on
-#130 got no `ci` run; `8ca26e7` on #134 got `ci` and no `e2e`). Tell "not
+previous head's green sits one line up in the same PR (measured twice: one
+head registered no `ci` run at all; another registered `ci` and no `e2e`). Tell "not
 registered" apart from "pending" by asking for runs by head, not by PR:
 
 ```sh
