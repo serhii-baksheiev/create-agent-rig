@@ -11,10 +11,10 @@
 // string `--run-dir` anywhere in a script's source, so an alias or a
 // runtime-assembled flag is invisible, while a script that merely mentions the
 // flag in a comment counts as an acceptor — a false red, which is the safe
-// direction. The floor parser's bullet shape and the run-directory anchor both
-// fail by a named assertion rather than passing on nothing; the floor parser's
-// missing-bullet case surfaces as an offender string instead, which is red but
-// is not named.
+// direction. Each parser's ANCHOR fails by a named assertion rather than
+// passing on nothing; a broken bullet SHAPE under the floor parser's anchor is
+// a different case, and surfaces as a `<lane>: no bullet` offender string —
+// red, but unnamed.
 // That is the maintenance cost of the check, and it is the whole of it.
 //
 // It runs off the Windows lane: it imports revalidate.mjs and decision-router.mjs,
@@ -269,10 +269,10 @@ describe('fact 3 — the run directory reaches a command one way, and the skill 
   /** Every script under `.claude/scripts/` whose source really carries the flag. */
   const measureFlagAcceptors = async (): Promise<string[]> => {
     const scripts = await scriptsUnder(scriptsDir);
-    // Membership, not a count. Eighteen of the scripts sit at the top level, so
-    // a walk that lost its recursion would still return eighteen and stay green
-    // while every `queue/` and `lib/` script went unmeasured — which is the
-    // whole capability the derived universe was added to buy.
+    // Membership, not a count. Thirteen of the twenty-eight scripts sit at the
+    // top level, so a walk that lost its recursion would still return thirteen
+    // and stay green while every `queue/` and `lib/` script went unmeasured —
+    // which is the whole capability the derived universe was added to buy.
     expect(scripts, 'the walk did not descend into queue/').toContain('queue/index.mjs');
     expect(scripts, 'the walk did not descend into lib/').toContain('lib/verdict.mjs');
     const accepting: string[] = [];
@@ -347,21 +347,25 @@ describe('fact 3 — the run directory reaches a command one way, and the skill 
     ].sort();
     expect(
       invoked.length,
-      'the skill invokes no commands, so nothing was measured',
+      'too few command invocations were parsed out of the skill for this to have measured anything',
     ).toBeGreaterThan(3);
     const withoutTheVariable: string[] = [];
     for (const command of invoked) {
       const source = await read(path.join(scriptsDir, ...command.split('/')));
       if (!source.includes('RIG_RUN_DIR')) withoutTheVariable.push(command);
     }
-    // Named in the prose, in the sentence that introduces them.
-    const named = withoutTheVariable.filter((c) =>
-      prose.includes(`\`${c.split('/').pop()}\` does not read`),
-    );
+    // Read the names OUT of the prose rather than filtering the measured set.
+    // Filtering can only ever fail on too few: a name the measurement does not
+    // contain is unreachable, so the paragraph could gain "`preflight.mjs` does
+    // not read the variable" and stay green. Parsing gives both directions.
+    const named = [...prose.matchAll(/`([A-Za-z0-9._-]+\.mjs)` does not read/g)]
+      .map((m) => m[1]!)
+      .sort();
+    const measuredNames = withoutTheVariable.map((c) => c.split('/').pop()!).sort();
     expect(
-      named.sort(),
-      'the skill does not name each command it invokes that reads the run directory another way',
-    ).toEqual(withoutTheVariable.sort());
+      named,
+      'the skill names a different set of commands than the ones measured to read the run directory another way',
+    ).toEqual(measuredNames);
     // And the count the prose states is the size of that set, spelled out.
     const WORDS = ['one', 'two', 'three', 'four', 'five'] as const;
     expect(
