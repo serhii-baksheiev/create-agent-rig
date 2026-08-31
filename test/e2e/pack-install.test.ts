@@ -1,11 +1,9 @@
-import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
-const exec = promisify(execFile);
+import { run, runNpx } from './run.js';
 
 // Phase 8.3: the npm-publish path differs from the git path exactly where
 // scaffolders classically break — the packed file set and the file modes.
@@ -22,8 +20,9 @@ describe('npm pack → install → generate (the publish path)', () => {
     for (const target of ['aws-serverless', 'node-service']) {
       const appDir = path.join(work, target);
       await mkdir(appDir);
-      await exec(
-        'npx',
+      // runNpx, not a bare exec — the sibling install path of RP-70: an install
+      // that does not complete must say why, in the run that saw it.
+      await runNpx(
         ['--yes', `--package=${tarball}`, 'create-agent-rig', 'app', '--target', target],
         { cwd: appDir, env: { ...process.env, npm_config_cache: path.join(work, 'npx-cache') } },
       );
@@ -122,14 +121,14 @@ describe('npm pack → install → generate (the publish path)', () => {
   // broken @app/ scope rewrite (workspace deps resolve only if consistent).
   it('a generated node-service project from the tarball passes its own checks', async () => {
     const projectDir = path.join(work, 'node-service', 'app');
-    await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
-    await exec('pnpm', ['check'], { cwd: projectDir });
+    await run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await run('pnpm', ['check'], { cwd: projectDir });
   });
 
   it('a generated aws-serverless project from the tarball passes its own checks', async () => {
     const projectDir = path.join(work, 'aws-serverless', 'app');
-    await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
-    await exec('pnpm', ['check'], { cwd: projectDir });
+    await run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await run('pnpm', ['check'], { cwd: projectDir });
   });
 
   it('file modes survive the pack → generate path', async () => {
