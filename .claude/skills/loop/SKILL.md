@@ -121,15 +121,23 @@ never with a variable the session exported — pinned in the generator's
 flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
 and in some harnesses the export does not even survive to the next Bash call.
 
-🔴 **So re-export it in every call that needs it.** `RIG_RUN_DIR` is the one
-mechanism every command in this skill reads, and `--run-dir` is taken by
-`unattended-flag.mjs`. Passing the flag to any other command is not a fallback —
-it is an unrecognised argument, and what follows is a command that writes into a
-run directory nobody declared, or refuses for want of one while the caller
-believes it was told. The correspondence is checked in both directions in the
-generator's `test/template/correspondence.test.ts` (absent in a generated rig) ›
-"names exactly the commands that take --run-dir, and only those", so a command
-that gains the flag without this sentence gaining its name goes red.
+🔴 **So re-export it in every call that needs it.** `RIG_RUN_DIR` is how the run
+directory reaches every command that reads it from the environment at all — and
+two of the commands this skill invokes do not. `unattended-flag.mjs` takes
+`--run-dir` and reads no environment variable, which is why the call below
+passes the flag explicitly; `revalidation-report.mjs` takes `--runs <dir>` and
+defaults to `.claude/runs/` under the main checkout. Everywhere else the
+variable is the whole of it, and passing the flag is not a fallback but an
+unrecognised argument — after which a command writes into a run directory nobody
+declared, or refuses for want of one while the caller believes it was told.
+
+`--run-dir` is taken by `unattended-flag.mjs`, and by no other script under
+`.claude/scripts/`. That is measured over the whole tree rather than against a
+list, in both directions, by the generator's
+`test/template/correspondence.test.ts` (absent in a generated rig) › "names
+exactly the commands that take --run-dir, and only those" — so a script anywhere
+in that tree that gains the flag without this sentence gaining its name goes
+red.
 
 What a hook CAN see is a file, so the unattended signal is one:
 
