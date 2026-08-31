@@ -32,6 +32,17 @@
 //     `%s` and `$guard` are wildcards, because a parameterised name is
 //     genuinely partial; a short quoted fragment could therefore match by
 //     accident, which is a missed rename and never a false red;
+//   - 🔴 **coverage is partial, and these are the two edges of it.** Quoted
+//     names are read from the citation's own line and the two after it, so a
+//     citation listing many names across many lines has only its first few
+//     checked, and one whose `›` falls more than one line below the file name
+//     is not parsed at all. And a target resolves by BASENAME: a test moved to
+//     another directory still passes. Neither is a live false green today —
+//     every name the check does read resolves — but a reader must not take a
+//     green run as "every citation in this repository was verified";
+//   - the surface it reads is `templates/agent-os/` alone. Citations elsewhere
+//     in the generator — the changelog, the decision records outside the
+//     template, this repository's own docs — are not examined by anything;
 //   - the disclosure half accepts a file-level sentence as well as an inline
 //     marker, because sixteen pointers in one file would otherwise carry
 //     sixteen copies of one clause, which is how a disclosure stops being read;
@@ -176,9 +187,12 @@ const declares = (source: string, name: string): boolean => {
 describe('evidence pointers in the generated surface', () => {
   it('parses citations at all, so an empty result is a measurement and not a silent parse failure', async () => {
     const pointers = await allPointers();
-    // 107 on the head this was written against. The floor is close to it on
-    // purpose: a guard set at 20 would let a regression cut detection by four
-    // fifths and still pass.
+    // The floor sits just under the real count on purpose, and the count is
+    // deliberately not written down beside it: an earlier draft named a figure
+    // here, the counter changed under it one round later, and the comment went
+    // stale in exactly the way this whole file exists to catch. A guard set far
+    // below the real number would let a regression cut detection by four fifths
+    // and still pass, which is why it is not set far below.
     expect(
       pointers.length,
       'too few citations were parsed for this to have checked anything',
