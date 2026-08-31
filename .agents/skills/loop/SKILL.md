@@ -119,9 +119,19 @@ mkdir -p "$RIG_RUN_DIR"
 never with a variable the session exported — pinned in the generator's
 `test/template/guard-rulebook.test.ts` (absent in a generated rig) › "only a
 flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
-and in some harnesses the export does not even survive to the next Bash call,
-which is why every command in this skill can also take the run directory per
-invocation. What a hook CAN see is a file, so the unattended signal is one:
+and in some harnesses the export does not even survive to the next Bash call.
+
+🔴 **So re-export it in every call that needs it.** `RIG_RUN_DIR` is the one
+mechanism every command in this skill reads, and `--run-dir` is taken by
+`unattended-flag.mjs`. Passing the flag to any other command is not a fallback —
+it is an unrecognised argument, and what follows is a command that writes into a
+run directory nobody declared, or refuses for want of one while the caller
+believes it was told. The correspondence is checked in both directions in the
+generator's `test/template/correspondence.test.ts` (absent in a generated rig) ›
+"names exactly the commands that take --run-dir, and only those", so a command
+that gains the flag without this sentence gaining its name goes red.
+
+What a hook CAN see is a file, so the unattended signal is one:
 
 ```bash
 # at claim time, from the paths the item names (repo-relative prefixes, with

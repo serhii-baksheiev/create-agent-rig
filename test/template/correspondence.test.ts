@@ -220,6 +220,108 @@ describe('fact 2 — the lane → reviewer floor has one source', () => {
   });
 });
 
+describe('fact 3 — the run directory reaches a command one way, and the skill says which', () => {
+  // RP-63. The loop skill promised that "every command in this skill can also
+  // take the run directory per invocation". Measured: one of the five does.
+  // `unattended-flag.mjs` parses `--run-dir`; `decision-router.mjs`,
+  // `queue/index.mjs`, `revalidate.mjs` and `run-state.mjs` read
+  // `process.env.RIG_RUN_DIR` and nothing else. A session that believed the
+  // promise passed a flag that was silently ignored, which is how a routing
+  // step recorded nothing and `verdict.mjs coverage` would have called the
+  // round unreadable for want of a route.
+  //
+  // So the fact — WHICH commands accept the flag — gets a correspondence check
+  // rather than a sentence. The measurement is the source; the prose restates
+  // it; both directions are red.
+  //
+  // Limit, stated: a script "accepts --run-dir" here means the literal string
+  // `--run-dir` appears in its source. A flag reached by an alias, or assembled
+  // at runtime, is invisible to this — the same class of limit the points
+  // parser above carries, and for the same reason.
+  const RUN_DIR_COMMANDS = [
+    'decision-router.mjs',
+    'queue/index.mjs',
+    'revalidate.mjs',
+    'run-state.mjs',
+    'unattended-flag.mjs',
+  ] as const;
+
+  /** The commands whose source really carries the flag. */
+  const measureFlagAcceptors = async (): Promise<string[]> => {
+    const accepting: string[] = [];
+    for (const command of RUN_DIR_COMMANDS) {
+      const source = await read(path.join(scriptsDir, ...command.split('/')));
+      if (source.includes('--run-dir')) accepting.push(command);
+    }
+    return accepting.sort();
+  };
+
+  /**
+   * The commands the skill NAMES as taking the flag, read from the one
+   * sentence that carries the fact. The anchor is deliberate: a free-standing
+   * list somewhere else in the document would drift from this one.
+   */
+  const ACCEPTORS_ANCHOR = '`--run-dir` is taken by';
+  const flagAcceptorsNamedIn = (prose: string): string[] => {
+    const at = prose.indexOf(ACCEPTORS_ANCHOR);
+    if (at === -1) return [];
+    // To the end of the paragraph, not to the first full stop: every command
+    // name here ends in `.mjs`, so a sentence-terminator scan stops inside the
+    // first name it meets and reads none of them at all.
+    const paragraph = prose.slice(at).split(/\n\s*\n/)[0]!;
+    return [...paragraph.matchAll(/`([A-Za-z0-9/._-]+\.mjs)`/g)].map((m) => m[1]!).sort();
+  };
+
+  const flagCorrespondence = (accepting: readonly string[], prose: string) => {
+    const named = flagAcceptorsNamedIn(prose);
+    return {
+      unmentioned: accepting.filter((c) => !named.includes(c)),
+      unknown: named.filter((c) => !accepting.includes(c)),
+    };
+  };
+
+  const loopSkill = () => read(path.join(skillsDir, 'loop', 'SKILL.md'));
+
+  it('does not promise the flag on every command, which four of the five never had', async () => {
+    const prose = await loopSkill();
+    expect(
+      prose.replace(/\s+/g, ' '),
+      'the loop skill still promises the run directory per invocation on every command',
+    ).not.toContain('every command in this skill can also take the run directory per invocation');
+  });
+
+  it('names RIG_RUN_DIR as the mechanism every command reads', async () => {
+    expect(
+      (await loopSkill()).replace(/\s+/g, ' '),
+      'the loop skill must name the environment variable as the cross-command mechanism',
+    ).toContain('`RIG_RUN_DIR` is the one mechanism every command in this skill reads');
+  });
+
+  it('names exactly the commands that take --run-dir, and only those', async () => {
+    expect(flagCorrespondence(await measureFlagAcceptors(), await loopSkill())).toEqual({
+      unmentioned: [],
+      unknown: [],
+    });
+  });
+
+  it('reports a command named as taking the flag that does not (mutation: prose)', async () => {
+    const prose = (await loopSkill()).replace(
+      ACCEPTORS_ANCHOR,
+      `${ACCEPTORS_ANCHOR} \`run-state.mjs\` and`,
+    );
+    expect(flagCorrespondence(await measureFlagAcceptors(), prose).unknown).toEqual([
+      'run-state.mjs',
+    ]);
+  });
+
+  it('reports a command that gained the flag while the prose did not (mutation: measurement)', async () => {
+    const accepting = [...(await measureFlagAcceptors()), 'revalidate.mjs'].sort();
+    expect(flagCorrespondence(accepting, await loopSkill()).unmentioned).toEqual([
+      'revalidate.mjs',
+    ]);
+  });
+});
+
 describe('the rule — "One mechanism, one implementation" makes correspondence the default', () => {
   const bullet = async () => {
     const rule = await read(path.join(universal, '.claude', 'rules', 'invariants.md'));
