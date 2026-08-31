@@ -168,8 +168,8 @@ records into this run's trace (AR-139: 38 fixture selections and 22 fixture
 revalidation events in one session, two tests exiting 1). So preflight refuses
 to start on a `RIG_RUN_DIR` already exported. The generator's own test harness
 also scrubs the variable before any test file loads — its `test/setup-env.ts`,
-pinned by its `test/template/rig-run-dir-scrub.test.ts` › "holds with the
-variable exported around the whole vitest process" — and **neither file ships
+pinned by its `test/template/rig-run-dir-scrub.test.ts` (absent in a generated
+rig) › "holds with the variable exported around the whole vitest process" — and **neither file ships
 into a generated rig**: here, nothing scrubs it, and a rig's own test setup is
 the place to do the same.
 

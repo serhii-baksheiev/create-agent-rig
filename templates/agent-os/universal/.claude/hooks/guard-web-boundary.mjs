@@ -6,8 +6,8 @@
 // Contract (Claude Code and Codex): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason.
 // Generator-owned coverage for the neutral bounded-inspection refusal lives upstream in
-// codex.test.ts › "$guard blocks with a neutral, actionable size-limit refusal"; generated
-// projects do not carry that suite, and a downstream edit requires a local replacement test.
+// codex.test.ts (absent in a generated rig) › "$guard blocks with a neutral,
+// actionable size-limit refusal" — a downstream edit requires a local replacement test.
 import { editFragments } from './lib/edit-input.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 

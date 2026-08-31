@@ -19,8 +19,8 @@ automatic progress. Pinned in the generator's
 deleted tracked claim in a fresh run without take-up markers", and › "refuses
 to recreate a deleted untracked baseline with a %s" (parameterized over a
 readable and a corrupt prior journal), plus
-`test/template/queue-revalidation.test.ts` › "without a run directory it
-creates the durable baseline but no run evidence".
+`test/template/queue-revalidation.test.ts` (absent in a generated rig) ›
+"without a run directory it creates the durable baseline but no run evidence".
 
 The record contains SHA-256 fingerprint sets, not source content:
 
