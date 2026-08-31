@@ -785,28 +785,91 @@ describe('the memory command surface', () => {
     ).toMatch(/UTF-8 bytes of a record's body/i);
   });
 
-  it("leaves the budget's allowed bounds open, and says the backends enforce none", async () => {
-    const content = await loadContract();
-    // The honest half. The default is measured; the bounds are not, and the
-    // measurement says why — a patched loader accepted every value it was
-    // given, including one above the default, and refused nothing.
+  it('fixes the allowed range at 0 to 8192 inclusive, the ceiling being the default', async () => {
+    // The owner ruling of 2026-08-31 closed amendment (e). The ceiling reuses
+    // the measured default deliberately: a per-invocation input may lower the
+    // cap and may not raise it, so nothing here can enlarge what a session
+    // reads beyond what the backends already permit.
     expectStatement(
-      section(content, /^#{2,6}\s+.*Memory\b/i),
-      'the memory section must say the allowed bounds are still unstated and that no backend enforces any',
-      '🔴 **The allowed bounds are the one thing this document still cannot state.**',
+      await memory(),
+      'the memory section must state the allowed range and that the input is an integer',
+      '**The allowed range is 0 to 8192 inclusive**, and the input is an integer count',
+    );
+    expectStatement(
+      await memory(),
+      'the memory section must say the per-invocation input may lower the cap and never raise it',
+      'a per-invocation input may **lower** the cap and may not raise it',
+    );
+  });
+
+  it('makes an out-of-range budget an invocation error rather than a silent clamp', async () => {
+    // The failure mode a clamp creates: the caller asked for one run and got a
+    // different one that looks like the one it asked for. The exit-code table
+    // already has a word for an invocation a bin will not accept.
+    const memorySection = normalizeProse(await memory());
+    expectStatement(
+      await memory(),
+      'the memory section must refuse a negative, non-integer or oversized budget with exit 2',
+      'A value that is negative, not an integer, or above 8192 is an **invocation error**: exit 2',
     );
     expect(
-      normalizeProse(section(content, /^#{2,6}\s+.*Memory\b/i)),
-      'the memory section does not record the measurement that shows no bound is enforced',
+      memorySection,
+      'the memory section does not forbid clamping an out-of-range budget',
+    ).toMatch(/never silently clamped/i);
+    expect(
+      memorySection,
+      'the memory section does not say 0 is a valid budget, nor what it means',
+    ).toMatch(/`0` is valid[\s\S]{0,120}no record bodies/i);
+  });
+
+  it('keeps the measurement that made the ceiling a decision rather than a reading', async () => {
+    // The ruling reuses a measured number as a maximum; it did not measure one.
+    // Deleting the probe that showed no bound is enforced would leave the
+    // ceiling looking like something the backends already do.
+    const memorySection = normalizeProse(await memory());
+    expect(
+      memorySection,
+      'the memory section no longer records the probe showing that no backend enforces a bound',
     ).toMatch(/16384/);
     expect(
-      normalizeProse(section(content, /^#{2,6}\s+.*(does not cite|not cited)/i)),
-      'the absent-referent section must now carry the bounds alone, the default having been fixed',
-    ).toMatch(/load selection budget's allowed bounds/i);
+      memorySection,
+      'the memory section does not say the ceiling is a ruling rather than a measurement',
+    ).toMatch(/ceiling is a decision/i);
+  });
+
+  it('says the per-invocation input is implemented nowhere, and discloses its cross-repo evidence', async () => {
+    const memorySection = await memory();
+    expectStatement(
+      memorySection,
+      'the memory section must say nothing implements the input yet and that RP-17 does not ask it to',
+      '**Nothing implements this input today, and RP-17 does not ask anything to.**',
+    );
+    // The default's citations point into another repository, which this suite
+    // cannot reach. An undisclosed unbackable claim is the exact shape
+    // `.claude/rules/invariants.md` calls UNMEASURED, so the document discloses
+    // it rather than letting a reader infer a pin that does not exist.
     expect(
-      normalizeProse(section(content, /^#{2,6}\s+.*(does not cite|not cited)/i)),
-      'the absent-referent section still defers the budget default, which this version fixes',
-    ).not.toMatch(/load selection budget's default and bounds/i);
+      normalizeProse(memorySection),
+      'the memory section does not disclose that its budget evidence is cross-repository and unpinnable by this suite',
+    ).toMatch(/cross-repository[\s\S]{0,300}cannot pin it/i);
+  });
+
+  it('stops deferring the budget, now that both halves of amendment (e) are fixed', async () => {
+    const notCited = normalizeProse(
+      section(await loadContract(), /^#{2,6}\s+.*(does not cite|not cited)/i),
+    );
+    for (const [description, pattern] of [
+      [
+        'the absent-referent section still defers the budget bounds, which the ruling fixed',
+        /load selection budget'?s allowed bounds/i,
+      ],
+      [
+        'the absent-referent section still defers the budget default, which this version fixes',
+        /load selection budget'?s default and bounds/i,
+      ],
+    ] as const) {
+      expect(notCited, description).not.toMatch(pattern);
+    }
   });
 
   it('closes the degradation enum per version and enumerates its 1.0 members', async () => {
@@ -895,55 +958,48 @@ describe('stability and versioning', () => {
   });
 });
 
-describe('the questions the document leaves open for acceptance', () => {
-  const openQuestions = async () =>
-    section(await loadContract(), /^#{2,6}\s+.*Open questions for acceptance\b/i);
+describe('what acceptance settled, and that nothing is left open', () => {
+  const settled = async () =>
+    section(await loadContract(), /^#{2,6}\s+.*What acceptance settled\b/i);
 
-  it("leaves exactly one question open, and it is the budget's allowed bounds", async () => {
-    const open = normalizeProse(await openQuestions());
-    expectTerms(open, [
-      [
-        "the acceptance list omits the load selection budget's allowed bounds",
-        /load selection budget'?s allowed bounds/i,
-      ],
-    ]);
-    // The three that left this list did so by being answered, not by being
-    // dropped, and each of the three must no longer read as unsettled here.
-    expect(open, 'the acceptance list still carries the settled doctor-marks question').not.toMatch(
-      /^1\.[\s\S]{0,120}doctor'?s two extra marks/im,
-    );
-  });
-
-  it('opens exactly as many numbered questions as it says it leaves open', async () => {
-    const open = await openQuestions();
-    // The count is stated in prose and again as a numbered list; two spellings
-    // of one fact drift, and the one nobody is reading is the one that is
-    // wrong (`.claude/rules/invariants.md`, "one mechanism, one
-    // implementation"). So they are checked against each other.
+  it('leaves no question open, and says so as a count it can be checked against', async () => {
+    // The count used to be stated in prose and again as a numbered list, and
+    // the two could drift. They still can, so they are still checked against
+    // each other — the count is now zero, and a numbered entry appearing here
+    // is exactly the drift that check exists for.
     expectStatement(
-      open,
-      'the acceptance section must say how many questions it leaves open',
-      'One thing this document deliberately does not settle.',
+      await settled(),
+      'the section must state that acceptance left nothing open',
+      'Nothing in this document is left for acceptance to settle.',
     );
-    const numbered = open.split('\n').filter((line) => /^\d+\.\s/.test(line));
+    const numbered = (await settled()).split('\n').filter((line) => /^\d+\.\s/.test(line));
     expect(
       numbered.map((line) => line.slice(0, 60)),
-      'the acceptance section says it leaves one question open but its numbered list has a different length',
-    ).toHaveLength(1);
+      'the section says nothing is open but carries a numbered open question',
+    ).toHaveLength(0);
   });
 
-  it('records what acceptance settled, so a question is never dropped in silence', async () => {
-    const open = await openQuestions();
-    expectStatement(
-      open,
-      'the acceptance section must record the questions it used to carry and how each was settled',
-      'Three questions this section carried are settled, and are recorded here rather than deleted:',
-    );
-    expectTerms(normalizeProse(open), [
-      ['the settled list omits the doctor marks question', /doctor'?s two extra marks/i],
+  it('records all four questions it once carried, and the ruling that closed each', async () => {
+    const text = normalizeProse(await settled());
+    expectTerms(text, [
+      ['the settled list omits the scope question', /which tools the contract binds/i],
+      ["the settled list omits doctor's two extra marks", /doctor'?s two extra marks/i],
       ['the settled list omits the degradation members question', /`degradation\[\]`'?s members/i],
       ['the settled list omits the doctor fix presence rule', /`fix` presence rule/i],
+      ['the settled list omits the budget default and bounds', /budget'?s default and bounds/i],
+      ['the settled list dates none of the rulings that closed the questions', /2026-08-31/],
     ]);
+  });
+
+  it('leaves no dangling pointer to the section acceptance used to be asked in', async () => {
+    // The status line and the memory section both pointed at "## Open questions
+    // for acceptance". Renaming a heading without its referrers is how a
+    // document acquires a pointer to a section that is not there.
+    const content = await loadContract();
+    expect(
+      content,
+      'the document still points at a "## Open questions for acceptance" section it no longer has',
+    ).not.toMatch(/Open questions for acceptance/);
   });
 });
 

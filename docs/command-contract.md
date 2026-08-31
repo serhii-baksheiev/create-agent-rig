@@ -2,10 +2,10 @@
 
 Language: English
 
-Status: proposed for RP-17. Owner acceptance is required before RP-18 and RP-19
-build against it; until then this document states intent, not installed
-behaviour. `## Open questions for acceptance` is the list acceptance has to
-settle.
+Status: proposed for RP-17, with every field the item requires now fixed. Owner
+acceptance is required before RP-18 and RP-19 build against it; until then this
+document states intent, not installed behaviour. `## What acceptance settled`
+records the four questions this document carried and what closed each.
 
 ## Scope
 
@@ -50,13 +50,11 @@ version bump.
   schema spelling is RP-57's, in another repository. This is the same split
   `docs/session-messaging-contract-v0.md` uses when it defers type spelling to
   RP-12.
-- **The load selection budget's allowed bounds.** Amendment (e) calls the
-  default and the bounds contract-defined. The default is fixed below and it is
-  a measurement; the bounds are not, because no implementation has ever enforced
-  one — the measurement that shows it is with the default. RP-57 is the ticket
-  that owns budget bounds, and it is parked behind the Memory MVP behaviour
-  freeze, so there is no material to cite either. This document will not supply
-  a range it invented, so the bounds are the one item on the acceptance list.
+- **RP-57's account of budget semantics.** Amendment (e)'s default and bounds are
+  fixed below, by measurement and by the owner ruling of 2026-08-31
+  respectively. RP-57 still owns the wider behavioural account — determinism,
+  counter semantics, the harness input surface — and it is parked behind the
+  Memory MVP behaviour freeze, so nothing of it is cited here.
 
 RP-18, RP-19, RP-52 and RP-57 are cited above and below as **tracker items**,
 not as documents. Only RP-57 earns a carve-out, because this document defers a
@@ -375,17 +373,40 @@ has decided about once already: on **2026-08-23**, against measurements over fou
 real memory trees, the decision was taken _not_ to raise it, on the ground that
 the records compete for a reason a larger budget does not fix.
 
-🔴 **The allowed bounds are the one thing this document still cannot state.**
-Measured, no implementation enforces any bound at all: a copy of `load.ps1` run
-over a three-event fixture tree with that constant patched accepted 0, 1, 1653,
-1654 and **16384** alike — exiting 0 every time, refusing nothing, and at 16384,
-twice the default, injecting all three bodies for 11920 bytes. So there is no
-measured range to write down, and there is no material to cite either: RP-57
-owns budget bounds and is parked behind the Memory MVP behaviour freeze.
-Amendment (e) asks for contract-defined bounds, and this document will not
-answer it with a range it invented — so the bounds are the single entry on
-`## Open questions for acceptance`, and `## What this contract does not cite`
-carries them too.
+**The allowed range is 0 to 8192 inclusive**, and the input is an integer count
+of those same bytes. Owner ruling on RP-17, 2026-08-31:
+
+- Omitted, the budget is the default: 8192.
+- `0` is valid, and it means inject no record bodies for this invocation.
+- A value that is negative, not an integer, or above 8192 is an **invocation
+  error**: exit 2, nothing attempted, per the exit-code table above.
+- An out-of-range value is **never silently clamped**. A clamp answers a
+  caller's mistake with a different run that looks like the one it asked for,
+  and the caller has no way to tell — which is the whole of why exit 2 exists.
+
+The ceiling is the default on purpose: a per-invocation input may **lower** the
+cap and may not raise it, so no invocation can put more into a session's
+context than the backends already permit. Raising the maximum later is an
+additive change — a minor bump — and it wants new evidence rather than a new
+preference.
+
+⚠ **The ceiling is a decision, not a reading, and the measurement behind that
+distinction is worth keeping.** No implementation enforces any bound at all: a
+copy of `load.ps1` run over a three-event fixture tree with that constant
+patched accepted 0, 1, 1653, 1654 and **16384** alike — exiting 0 every time,
+refusing nothing, and at 16384, twice the default, injecting all three bodies for
+11920 bytes. So 8192 is a maximum because the ruling reused the measured default
+as one, and a reader who assumed the backends already refuse 16384 would be
+wrong.
+
+**Nothing implements this input today, and RP-17 does not ask anything to.** In
+both backends the budget is a compile-time constant with no override, and the
+ruling leaves them alone: this is a specification, and RP-18's memory shim is
+what delivers the surface. ⚠ The budget evidence in this section is
+**cross-repository** — read in `claude-config` on the dates given — so this
+repository's suite cannot pin it. What the suite pins is that this document says
+what it says; the provenance is the file and line above, for a reader who wants
+it re-measured.
 
 ### Payload rules specific to the shim
 
@@ -506,37 +527,42 @@ records a fact, not a fault.
   pass — is answered in `## Doctor` by what `ok` means, and needs no fourth
   status to say it.
 
-## Open questions for acceptance
+## What acceptance settled
 
-One thing this document deliberately does not settle. It is written here rather
-than resolved quietly, because a specification that guesses is worse than one
-that asks.
+**Nothing in this document is left for acceptance to settle.** This section
+carried four open questions across three gate rounds; all four are closed, and
+each is recorded here with the ruling or the evidence that closed it rather than
+deleted, because a question that vanishes is indistinguishable from one that was
+never asked.
 
-1. **The load selection budget's allowed bounds.** The default is fixed above,
-   at the measured 8192 bytes. The bounds are not, and there is nothing to
-   measure: no backend enforces one — the patched-loader run recorded above
-   accepted 0 and 16384 alike and refused nothing — and RP-57, the ticket that
-   owns budget bounds, is parked behind the Memory MVP behaviour freeze.
-   Amendment (e) requires contract-defined bounds, so this is a decision
-   acceptance makes, not a deferral this document may take on its own.
-
-Three questions this section carried are settled, and are recorded here rather
-than deleted:
-
-- **Doctor's two extra marks** — settled by the owner ruling of 2026-08-31.
-  `.claude/scripts/doctor.mjs` belongs to the internal fleet this contract does
-  not bind, so its `unknown` and `exempt` are not a conformance target. The
-  substantive half is answered in `## Doctor` instead: `ok` means the check ran
-  and passed, so no conforming doctor may report an unrunnable check as one, and
-  no fourth status is needed to say so.
-- **`degradation[]`'s members** — enumerated at 1.0 in `## The memory command
-surface`: `budget-skipped` and `invalid`, the two degradations both shipped
-  backends already count. The one that is measured but unobservable — a dedup
-  drop — is named there as excluded, with the reason.
+- **Which tools the contract binds** — the question `check-premises` returned
+  `UNVERIFIABLE` on. Settled by owner ruling on RP-17, **2026-08-31**: the public
+  platform bins, and not the internal `.claude/scripts/` fleet. `## Scope` states
+  it, and one consequence runs through `## Conformance today` — a row about that
+  fleet records a measured fact about an unbound tool, not a fault.
+- **Doctor's two extra marks** — settled by the same ruling, which removes the
+  subject: `.claude/scripts/doctor.mjs` is in the fleet this contract does not
+  bind, so its `unknown` and `exempt` are not a conformance target. The
+  substantive half is answered in `## Doctor` by what the word means — `ok` is a
+  check that ran and passed, so no conforming doctor may report an unrunnable
+  check as one, and no fourth status is needed to say so.
+- **`degradation[]`'s members** — settled by measurement, and enumerated at 1.0
+  in `## The memory command surface`: `budget-skipped` and `invalid`, the two
+  degradations both shipped backends already count, in those backends' own
+  spelling. The third that is measured but unobservable — a record dropped
+  because its `sourceKey` was already seen — is named there as excluded, with
+  the reason.
 - **The doctor `fix` presence rule** — settled toward the item's own words
   rather than this document's reading of them. The item names a four-field
   record, so all four are present and `fix` is empty when there is nothing to
   do, which is the shape rule this document already applies to `degradation`.
+- **The load selection budget's default and bounds**, amendment (e). The default
+  is a measurement: 8192 bytes, the constant both shipped backends carry. The
+  allowed range is an owner ruling on RP-17, **2026-08-31**: 0 to 8192 inclusive,
+  integer, out-of-range refused with exit 2 and never clamped, the ceiling being
+  the default so an invocation may lower the cap and not raise it. Both halves
+  are in `## The memory command surface`, next to the probe that shows the
+  ceiling is a decision rather than something a backend already enforces.
 
 ## Fixtures
 
