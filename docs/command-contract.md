@@ -57,10 +57,54 @@ document does not name is not contract, and may change without a version bump.
   counter semantics, the harness input surface — and it is parked behind the
   Memory MVP behaviour freeze, so nothing of it is cited here.
 
-RP-18, RP-19, RP-52 and RP-57 are cited above and below as **tracker items**,
+RP-18, RP-19, RP-52, RP-57 and RP-69 are cited above and below as **tracker items**,
 not as documents. Only RP-57 earns a carve-out, because this document defers a
 spelling to it; the others are named to say who owns a piece of work, which
 needs no citation.
+
+## What holds each statement here
+
+This document mixes four kinds of statement, and they are not backed the same
+way. Reading them as one kind is how a specification gets trusted for the wrong
+reason — a reader who takes an owner ruling for a measurement will not re-measure
+it, and a reader who takes unpinned prose for a pinned sentence will edit it
+freely — so they are separated once, here.
+
+- **Held verbatim by the suite.** `test/template/command-contract.test.ts` holds
+  a named set of sentences and structures: the exit-code table's leading cells,
+  the closed value domains, the fixtures' shapes, the `Reach:` clauses in
+  `## Conformance today`, and the sentences this document must not let drift
+  into two spellings. Where a sentence is held, its wording is load-bearing —
+  change it and the suite goes red.
+- **Accepted specification, and owner rulings.** `## Scope`, the load budget's
+  allowed range, the doctor `fix` presence rule. These are true because the
+  owner decided them on RP-17 on **2026-08-31**, not because anything measured
+  them. A test can hold that this document records the ruling it was given;
+  nothing here can hold that the ruling was right.
+- **Measured correspondence.** `## Conformance today`'s rows, and every
+  `claude-config@b1bfb6e` citation in `## The memory command surface`. Each was
+  read against code once, at a named revision. The conformance rows carry a test
+  that re-reads the repository fact behind the row, on the terms that section
+  states; the cross-repository citations carry no test at all, and say so at
+  their own point of use.
+- **Normative prose the suite does not hold.** Everything else — the meanings in
+  the exit-code table, the payload rules, the stability bump rules. It is
+  contract all the same; what stands behind it is review and this document being
+  read, not an assertion.
+
+🔴 **The suite does not pin every normative sentence here, and no reading of it
+should suggest otherwise.** The measurement, taken on head `a78d9fb7` by a
+reviewer sweeping the document rather than a list: it inverted **64** claims in
+this document into their opposites and ran the suite against each, and **48** of
+the 64 stayed green. The assertion count had grown round over round by closing
+the inversions a reviewer had named — which closes those and leaves the rest, so
+each round finds more. The method does not converge, and it was stopped rather
+than run a fourth time.
+
+A mechanism that would hold every normative sentence — a total correspondence
+check between a document like this one and its suite — is **RP-69**, and it is
+not a condition of this document being accepted. RP-17 asks for the contract and
+its fixtures; the four kinds above are what stands behind each part of it.
 
 ## Exit codes
 
@@ -490,8 +534,15 @@ its delivery to whoever supplies the layer.
 **Nothing in this repository implements this contract yet.** This section is the
 honest half of the document: it records what was measured about the surfaces
 this change touched, so that no reader takes a statement above as a description
-of installed behaviour. Every row below names the test that pins it, and each
-row's reach is the reach of its test and no wider — so every row whose test
+of installed behaviour.
+
+Every row below names a test, and that test holds the repository fact the row
+was built on — not the row's wording about it: invert a row into an overclaim
+and its named test stays green. What a named test buys the reader is therefore a
+**re-measurement and not a proof-read**: the fact was true of this repository
+when the test last ran, and the test goes red the day the repository changes
+underneath the row. Each row's reach is the reach of its test and no wider — so
+every row whose test
 reaches less far than the row sounds states that reach at the point of use, and
 four of them do. It is what was measured, not an inventory: a difference this
 section does not name is a difference nobody checked. And because `## Scope`
@@ -587,8 +638,11 @@ never asked.
   allowed range is an owner ruling on RP-17, **2026-08-31**: 0 to 8192 inclusive,
   integer, out-of-range refused with exit 2 and never clamped, the ceiling being
   the default so an invocation may lower the cap and not raise it. Both halves
-  are in `## The memory command surface`, next to the probe that shows the
-  ceiling is a decision rather than something a backend already enforces.
+  are in `## The memory command surface`, next to the cited lines that show the
+  ceiling is a decision rather than something a backend already enforces. The
+  sandbox probe that once carried that point was deleted at round 2, because it
+  had no test, no command and no revision behind it; the conclusion rests on
+  `load.sh:14-15` and `load.ps1:5-6` instead.
 
 ## Fixtures
 

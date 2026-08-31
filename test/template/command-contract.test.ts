@@ -324,6 +324,73 @@ describe('the proposed command contract document', () => {
   });
 });
 
+describe('what holds each statement in the document', () => {
+  const holds = async () =>
+    section(await loadContract(), /^#{2,6}\s+.*What holds each statement here\b/i);
+
+  it('separates the four kinds of backing rather than presenting one', async () => {
+    // A specification trusted for the wrong reason is worse than one trusted
+    // for none: a reader who takes an owner ruling for a measurement will not
+    // re-measure it, and a reader who takes unpinned prose for a pinned
+    // sentence will edit it freely. The four labels are the disclosure, so
+    // each is pinned by its own bold lead rather than by a count of bullets.
+    const text = normalizeProse(await holds());
+    for (const [description, label] of [
+      ['the disclosure omits the verbatim-pinned category', '**Held verbatim by the suite.**'],
+      [
+        'the disclosure omits the owner-ruling category',
+        '**Accepted specification, and owner rulings.**',
+      ],
+      ['the disclosure omits the measured-correspondence category', '**Measured correspondence.**'],
+      [
+        'the disclosure omits the category the suite does not hold at all',
+        '**Normative prose the suite does not hold.**',
+      ],
+    ] as const) {
+      expect(text, description).toContain(label);
+    }
+  });
+
+  it('states that the suite does not pin every normative sentence, and gives the measurement', async () => {
+    // This is the sentence the whole section exists for, and the one a later
+    // round is most likely to soften back into a promise. `.claude/rules/
+    // invariants.md` names the two exits from an unbacked claim — delete it or
+    // make it a pointer — and rewording is not one of them, so the claim is
+    // held at its exact strength.
+    const text = await holds();
+    expectStatement(
+      text,
+      'the disclosure must state outright that the suite does not pin every normative sentence',
+      'The suite does not pin every normative sentence here, and no reading of it should suggest otherwise.',
+    );
+    const inverted = /inverted \*\*(\d+)\*\* claims/.exec(normalizeProse(text));
+    const survived = /\*\*(\d+)\*\* of the \d+ stayed green/.exec(normalizeProse(text));
+    expect(inverted, 'the disclosure states no count of inverted claims').not.toBe(null);
+    expect(survived, 'the disclosure states no count of inversions that stayed green').not.toBe(
+      null,
+    );
+    // A survivor count at or above the total would be a transcription error
+    // that reads as a stronger admission than the measurement supports.
+    expect(
+      Number(survived![1]),
+      'the disclosure claims at least as many surviving inversions as it ran',
+    ).toBeLessThan(Number(inverted![1]));
+  });
+
+  it('names the follow-up item and says it is not a condition of acceptance', async () => {
+    // Owner ruling of 2026-08-31, (D): the total mechanism is separate work.
+    // A document that named the gap without naming its owner would read as an
+    // open defect on this contract, which is exactly what the ruling settled.
+    const text = normalizeProse(await holds());
+    expect(text, 'the disclosure names no tracker item for the total mechanism').toMatch(/RP-69/);
+    expectStatement(
+      await holds(),
+      'the disclosure must say the follow-up mechanism is not a condition of accepting this document',
+      'it is not a condition of this document being accepted',
+    );
+  });
+});
+
 describe('the exit-code table', () => {
   const exitCodes = async () => section(await loadContract(), /^#{2,6}\s+.*Exit codes\b/i);
 
@@ -1248,6 +1315,32 @@ describe('what acceptance settled, and that nothing is left open', () => {
     ]);
   });
 
+  it('does not credit the probe this branch deleted', async () => {
+    // Round 2 deleted the sandbox probe — its figures had no test, no command
+    // and no revision behind them — and rewrote `## The memory command surface`
+    // to rest the conclusion on cited lines "rather than in a probe". This
+    // section went on pointing the reader "next to the probe", so the document
+    // contradicted itself across two sections: found independently by
+    // `code-reviewer` and `prose-reviewer` at round 3.
+    const content = await loadContract();
+    expect(
+      normalizeProse(await settled()),
+      'the settled section still sends the reader to a probe the document deleted',
+    ).not.toMatch(/next to the probe/i);
+    expectStatement(
+      await settled(),
+      'the settled section must point at the cited lines that replaced the probe',
+      'next to the cited lines that show the ceiling is a decision rather than something a backend already enforces',
+    );
+    // And the paragraph it points at must still be the one that says so, or the
+    // pointer is dead in the other direction.
+    expectStatement(
+      section(content, /^#{2,6}\s+.*memory command surface\b/i),
+      'the memory section no longer rests the ceiling on cited lines rather than a probe',
+      'that is visible in the lines already cited rather than in a probe',
+    );
+  });
+
   it('leaves no dangling pointer to the section acceptance used to be asked in', async () => {
     // The status line and the memory section both pointed at "## Open questions
     // for acceptance". Renaming a heading without its referrers is how a
@@ -1568,12 +1661,29 @@ describe('the JSON fixtures in the document', () => {
 describe('the conformance section stays true about this repository', () => {
   const conformance = async () => section(await loadContract(), /^#{2,6}\s+.*Conformance today\b/i);
 
-  it('promises that every row names the test that pins it', async () => {
+  it('names the test behind each row without claiming the test holds the row', async () => {
+    // The previous spelling — "every row below names the test that pins it" —
+    // was measured false: a reviewer inverted all six rows and the section
+    // headline into overclaims and every named test stayed green. The tests
+    // read the *repository fact* the row was built on; they have no opinion on
+    // how the row words it. So the promise is narrowed to what the tests
+    // actually buy, and the narrowing is itself pinned, because a sentence that
+    // overstates its backing is the one defect this section exists to avoid.
+    const text = await conformance();
     expectStatement(
-      await conformance(),
-      'the conformance section must promise that each row is pinned by a named test',
-      "Every row below names the test that pins it, and each row's reach is the reach of its test and no wider",
+      text,
+      'the conformance section must say the named test holds the repository fact, not the row wording',
+      "Every row below names a test, and that test holds the repository fact the row was built on — not the row's wording about it: invert a row into an overclaim and its named test stays green.",
     );
+    expectStatement(
+      text,
+      'the conformance section must still state that a row reaches no further than its test',
+      "Each row's reach is the reach of its test and no wider",
+    );
+    expect(
+      normalizeProse(await loadContract()),
+      'the document still promises that every conformance row is pinned by its named test',
+    ).not.toContain('Every row below names the test that pins it');
   });
 
   it('counts the rows that state a reach, and the count matches the rows', async () => {
