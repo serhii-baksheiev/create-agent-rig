@@ -294,6 +294,18 @@ describe('the proposed command contract document', () => {
     );
   });
 
+  it('enumerates the covered surface once, and says where', async () => {
+    // Measured: deleting this paragraph left the suite green. It replaced a
+    // second spelling of the covered surface that had already drifted from the
+    // first, so the paragraph IS the fix for that drift — unpinned, the drift
+    // simply comes back.
+    expectStatement(
+      section(await loadContract(), /^#{2,6}\s+.*Scope\b/i),
+      'Scope must point at the single enumeration of the covered surface rather than restating it',
+      'What the contract covers, once accepted, is enumerated once — in `## Stability and versioning`, which is also where the bump rules for changing it live.',
+    );
+  });
+
   it('records the scope as an owner ruling rather than as an open assumption', async () => {
     const scope = section(await loadContract(), /^#{2,6}\s+.*Scope\b/i);
     // The sentence above was carried as a *labelled assumption* while the
@@ -898,19 +910,33 @@ describe('the memory command surface', () => {
     ).toMatch(/`0` is valid[\s\S]{0,120}no record bodies/i);
   });
 
-  it('keeps the measurement that made the ceiling a decision rather than a reading', async () => {
-    // The ruling reuses a measured number as a maximum; it did not measure one.
-    // Deleting the probe that showed no bound is enforced would leave the
-    // ceiling looking like something the backends already do.
-    const memorySection = normalizeProse(await memory());
-    expect(
+  it('says the ceiling is a ruling, and rests that on cited lines rather than on a probe', async () => {
+    // This used to cite a one-off sandbox probe — figures with no test, no
+    // command and no revision behind them, in a document whose own rule says a
+    // claim about a mechanism is a pointer or it is deleted. The figures are
+    // gone; the conclusion survives because it follows from lines the section
+    // already cites, where each backend assigns its budget from the constant
+    // and validates nothing.
+    const memorySection = await memory();
+    expectStatement(
       memorySection,
-      'the memory section no longer records the probe showing that no backend enforces a bound',
-    ).toMatch(/16384/);
-    expect(
-      memorySection,
-      'the memory section does not say the ceiling is a ruling rather than a measurement',
-    ).toMatch(/ceiling is a decision/i);
+      'the memory section must say the ceiling is a decision rather than something a backend enforces',
+      '⚠ **The ceiling is a decision, not a reading.**',
+    );
+    expectTerms(normalizeProse(memorySection), [
+      [
+        'the no-bound claim cites no line in the POSIX backend where the budget is assigned unvalidated',
+        /load\.sh:14-15/,
+      ],
+      [
+        'the no-bound claim cites no line in the PowerShell backend where the budget is assigned unvalidated',
+        /load\.ps1:5-6/,
+      ],
+      [
+        'the memory section no longer says why a reader must not read the ceiling as enforced',
+        /reader who assumed the backends already refuse a larger value would be wrong/i,
+      ],
+    ]);
   });
 
   it('says the per-invocation input is implemented nowhere, and discloses its cross-repo evidence', async () => {
@@ -971,6 +997,59 @@ describe('the memory command surface', () => {
       ['the degradation enum does not name its budget member', /`budget-skipped`/],
       ['the degradation enum does not name its validation member', /`invalid`/],
     ]);
+  });
+
+  it('pins the cross-repository evidence by its polarity, not only by its presence', async () => {
+    // Measured: inverting the counter-line clause to "which print neither
+    // `budget-skipped=` nor `invalid=` among five counters" left the suite
+    // green. The citation was pinned; what it asserts was not. The document
+    // discloses that this suite cannot reach the backend — that is a reason to
+    // pin the SENTENCE tightly, not a licence to leave it loose.
+    expectStatement(
+      await memory(),
+      'the degradation enum must state what the cited counter line prints, not merely that it exists',
+      "in those backends' own spelling from the counter line they write to stderr (`shared-memory/load.sh:56-57` and `load.ps1:53` in `claude-config@b1bfb6e`, which print `budget-skipped=` and `invalid=` among five counters)",
+    );
+  });
+
+  it('rests the no-bound claim on the cited assignment, in the direction it claims', async () => {
+    // Measured: "validates nothing" -> "validates the range" left the suite
+    // green, which would have turned the load-bearing sentence into its own
+    // negation while the ceiling still called itself a decision.
+    expectStatement(
+      await memory(),
+      'the memory section must say each backend assigns its budget from the constant and validates nothing',
+      'No implementation enforces any bound at all, and that is visible in the lines already cited rather than in a probe: each backend assigns its working budget straight from the constant and validates nothing — `load.sh:14-15` and `load.ps1:5-6`, same revision — so there is no code path anywhere today that refuses a value for being out of range.',
+    );
+  });
+
+  it('cites the decision behind the default, and the two documents that record it', async () => {
+    // Measured: deleting the `PLAN.md:264` citation, and stripping the line
+    // number from the README citation, both left the suite green — the exact
+    // shape prose-reviewer blocked at round 2, reintroduced by the remedy.
+    const memorySection = await memory();
+    expectStatement(
+      memorySection,
+      'the memory section must cite where the 2026-08-23 do-not-raise decision is recorded',
+      'It is also a number the owner has decided about once already: `PLAN.md:264` records the decision of **2026-08-23**, taken against measurements over four real memory trees, _not_ to raise it',
+    );
+    expectStatement(
+      memorySection,
+      'the memory section must cite the two supporting documents by file and line',
+      "that repository's `README.md:124` states it to a reader as the 8 KB cap a session's injected event bodies are held to, and its `docs/decisions/mvp-completion.md:90-93` records the same figure beside a dated measurement of a real tree.",
+    );
+  });
+
+  it('keeps the cross-repository disclosure covering claims, not only citations', async () => {
+    // Measured: narrowing it back to "Every `claude-config` citation" left the
+    // suite green. That scope is precisely what prose-reviewer's round-2
+    // blockers turned on — a disclosure that covers sourced claims and leaves
+    // unsourced ones uncovered moves the boundary instead of closing it.
+    expectStatement(
+      await memory(),
+      'the disclosure must cover every claim in the section, not only the ones carrying a citation',
+      "Every claim and every `claude-config` citation in this section — the budget constant above, and the counter line and dedup ordering behind `degradation[]` below — was read in that repository at revision `b1bfb6e`, and **this repository's suite cannot pin any of it**.",
+    );
   });
 
   it('excludes the one measured degradation no backend can observe', async () => {
@@ -1082,13 +1161,18 @@ describe('stability and versioning', () => {
   });
 
   it('makes the budget ceiling rule derivable from the stability rule it cites', async () => {
-    // The blocker this replaces: the memory section asserted a minor bump for a
-    // raised ceiling while the stability section could only produce "patch".
-    // The two now say one thing, and the memory section points at it.
-    expect(
-      normalizeProse(section(await loadContract(), /^#{2,6}\s+.*Memory\b/i)),
-      'the budget section does not tie its version-bump claim to the stability rule that carries it',
-    ).toMatch(/Raising the maximum[\s\S]{0,200}Stability and versioning/i);
+    // Twice now the remedy for "a proximity match that survives its own
+    // inversion" has been another proximity match. The one this replaces —
+    // /Raising the maximum[\s\S]{0,200}Stability and versioning/ — stayed green
+    // when the sentence was rewritten to call a RAISE a narrowing and a MAJOR
+    // bump, which contradicts both the stability section and the owner ruling.
+    // A sentence that assigns a direction to a bump is pinned verbatim, or it
+    // is not pinned.
+    expectStatement(
+      section(await loadContract(), /^#{2,6}\s+.*Memory\b/i),
+      'the budget section must name the bump for each direction, and cite the rule that carries it',
+      'Raising the maximum later is a widening of a closed value domain, which `## Stability and versioning` makes a **minor** bump — and lowering it, or lowering the default, is a narrowing, which that same rule makes a **major** one.',
+    );
   });
 
   it('makes an addition a minor bump', async () => {
@@ -1148,8 +1232,8 @@ describe('what acceptance settled, and that nothing is left open', () => {
     // And the status line names the same number, or the two drift again.
     expect(
       normalizeProse(await loadContract()),
-      'the status line does not carry the same entry count as the settled section',
-    ).toMatch(new RegExp(`Status:[^]{0,320}${claimed![1]!} questions`, 'i'));
+      'the status line does not carry the same entry count, in the same noun, as the settled section',
+    ).toMatch(new RegExp(`Status:[^]{0,320}${claimed![1]!} entries`, 'i'));
   });
 
   it('records every question it once carried, and the ruling that closed each', async () => {
@@ -1515,6 +1599,37 @@ describe('the conformance section stays true about this repository', () => {
       WORDS.indexOf(claimed![1]!.toLowerCase() as (typeof WORDS)[number]) + 1,
       `the preamble claims a different number of reach-stating rows than the ${stated} rows labelled Reach:`,
     ).toBe(stated);
+  });
+
+  it('states each reach as the sentence it is, not as a label a negation can wear', async () => {
+    // The count above is of `Reach:` labels, and a label says nothing about
+    // what follows it: three of the four reach clauses were measured green
+    // after being inverted into overclaims — "the template copies ARE scanned
+    // too", "the test does NOT read index.ts alone", "`exempt` HAS a verdict of
+    // its own". Each is a statement about how far a test reaches, in a section
+    // whose whole promise is that no sentence claims more than its backing, so
+    // each is pinned verbatim and the label check keeps the count honest.
+    const text = await conformance();
+    for (const [description, statement] of [
+      [
+        'the --json row must state that its test reads index.ts alone and knows one spelling',
+        'Reach: the test reads `index.ts` alone and recognises one spelling — a `parseArgs` option named `json`; a flag added by a hand-rolled argv scan, or declared in another module under `packages/cli/src`, is invisible to it.',
+      ],
+      [
+        'the RIG_UNATTENDED row must state that its reach is those three trees and no others',
+        'Reach: those three trees and no others — the template copies under `templates/agent-os/` are not scanned, and neither is any extension but `.mjs` and `.ts`.',
+      ],
+      [
+        'the exit-2 row must state that its test counts occurrences rather than meanings',
+        'Reach: the test counts occurrences of an exit-2 call, not distinct meanings, so the "twice over" clause rests on reading those two call sites and not on the count.',
+      ],
+      [
+        'the doctor row must state that the exempt half is a source read with no verdict behind it',
+        'Reach: `exempt` has no verdict of its own to call — `verdictOf` branches on `FAIL` and `unknown` only — so that half of the row is a source read, and would stay green if the mark were removed from `auditHooks` while its name survived in a comment.',
+      ],
+    ] as const) {
+      expectStatement(text, description, statement);
+    }
   });
 
   it('states the reach on every row whose test is narrower than the row sounds', async () => {

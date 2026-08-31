@@ -5,7 +5,7 @@ Language: English
 Status: proposed for RP-17, with every field the item requires now fixed. Owner
 acceptance is required before RP-18 and RP-19 build against it; until then this
 document states intent, not installed behaviour. `## What acceptance settled`
-records the five questions this document carried and what closed each.
+records the five entries this document carried and what closed each.
 
 ## Scope
 
@@ -365,13 +365,14 @@ and selection stops once the running total reaches the budget.
 
 The number is measured, not chosen. Both shipped Memory MVP backends carry it as
 the constant `INJECTION_BUDGET_BYTES` — `shared-memory/load.sh:14` and
-`shared-memory/load.ps1:5` in the `claude-config` repository; that repository's
-`README.md` states it to a reader as the 8 KB cap a session's injected event
-bodies are held to, and its `docs/decisions/mvp-completion.md` records the same
-figure beside a dated measurement of a real tree. It is also a number the owner
-has decided about once already: on **2026-08-23**, against measurements over four
-real memory trees, the decision was taken _not_ to raise it, on the ground that
-the records compete for a reason a larger budget does not fix.
+`shared-memory/load.ps1:5`; that repository's `README.md:124` states it to a
+reader as the 8 KB cap a session's injected event bodies are held to, and its
+`docs/decisions/mvp-completion.md:90-93` records the same figure beside a dated
+measurement of a real tree. It is also a number the owner has decided about once
+already: `PLAN.md:264` records the decision of **2026-08-23**, taken against
+measurements over four real memory trees, _not_ to raise it — on the ground that
+the records compete for a reason a larger budget does not fix. Every citation in
+this paragraph is `claude-config@b1bfb6e`.
 
 **The allowed range is 0 to 8192 inclusive**, and the input is an integer count
 of those same bytes. Owner ruling on RP-17, 2026-08-31:
@@ -392,21 +393,20 @@ widening of a closed value domain, which `## Stability and versioning` makes a
 that same rule makes a **major** one. Either direction wants new evidence rather
 than a new preference.
 
-⚠ **The ceiling is a decision, not a reading, and the measurement behind that
-distinction is worth keeping.** No implementation enforces any bound at all: a
-copy of `load.ps1` run over a three-event fixture tree with that constant
-patched accepted 0, 1, 1653, 1654 and **16384** alike — exiting 0 every time,
-refusing nothing, and at 16384, twice the default, injecting all three bodies for
-11920 bytes. So 8192 is a maximum because the ruling reused the measured default
-as one, and a reader who assumed the backends already refuse 16384 would be
-wrong.
+⚠ **The ceiling is a decision, not a reading.** No implementation enforces any
+bound at all, and that is visible in the lines already cited rather than in a
+probe: each backend assigns its working budget straight from the constant and
+validates nothing — `load.sh:14-15` and `load.ps1:5-6`, same revision — so there
+is no code path anywhere today that refuses a value for being out of range. 8192
+is a **maximum** because the ruling reused the measured default as one, and a
+reader who assumed the backends already refuse a larger value would be wrong.
 
 **Nothing implements this input today, and RP-17 does not ask anything to.** In
 both backends the budget is a compile-time constant with no override, and the
 ruling leaves them alone: this is a specification, and RP-18's memory shim is
 what delivers the surface.
 
-⚠ **Cross-repository evidence, disclosed once for the whole section.** Every
+⚠ **Cross-repository evidence, disclosed once for the whole section.** Every claim and every
 `claude-config` citation in this section — the budget constant above, and the
 counter line and dedup ordering behind `degradation[]` below — was read in that
 repository at revision `b1bfb6e`, and **this repository's suite cannot pin any
