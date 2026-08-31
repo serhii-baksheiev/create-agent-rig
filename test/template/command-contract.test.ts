@@ -369,12 +369,71 @@ describe('what holds each statement in the document', () => {
     expect(survived, 'the disclosure states no count of inversions that stayed green').not.toBe(
       null,
     );
-    // A survivor count at or above the total would be a transcription error
-    // that reads as a stronger admission than the measurement supports.
+    // Both figures are pinned to their exact values, not merely to survived <
+    // inverted. A one-sided bound lets a transcription error UNDERSTATE the gap
+    // — "2 of the 64 stayed green" would pass while reading as far stronger
+    // coverage than was measured, which is the same class of false confidence
+    // this whole section exists to remove. These are a historical measurement
+    // on one named head; they do not move, so they are held as constants.
     expect(
-      Number(survived![1]),
-      'the disclosure claims at least as many surviving inversions as it ran',
-    ).toBeLessThan(Number(inverted![1]));
+      [Number(inverted![1]), Number(survived![1])],
+      'the disclosure states different figures than the measurement it cites',
+    ).toEqual([64, 48]);
+  });
+
+  it('does not put a verbatim-held rule in the bucket nothing holds', async () => {
+    // The first draft of this section listed "the payload rules" and "the
+    // stability bump rules" as prose the suite does not hold. Both are held
+    // verbatim — `expectStatement` on all four bump rules and on the
+    // degradation-presence rule — so the bullet invited an editor to reword a
+    // sentence the suite would go red on. Three reviewers found it
+    // independently. It fails in the understating direction, which the section
+    // names at its own top as one of the two ways a reader is misled.
+    // Scoped to the bullet itself, not to the section: both phrases below
+    // appear legitimately elsewhere in the section — "the stability bump rules"
+    // in the held bucket, and again in the warning that records this mistake.
+    // A section-wide negative would refuse the very correction it asks for.
+    const whole = normalizeProse(await holds());
+    const start = whole.indexOf('**Normative prose the suite does not hold.**');
+    expect(start, 'the disclosure has no bucket for prose the suite does not hold').toBeGreaterThan(
+      -1,
+    );
+    const after = whole.slice(start);
+    const end = after.indexOf('🔴');
+    const bucket = end === -1 ? after : after.slice(0, end);
+    expect(
+      bucket,
+      'the not-held bucket claims the stability bump rules are unheld, and they are pinned verbatim',
+    ).not.toMatch(/stability bump rules/);
+    expect(
+      bucket,
+      'the not-held bucket sweeps in everything unnamed, which is how a held rule lands in it',
+    ).not.toMatch(/Everything else/);
+    // And the warning that keeps the next draft from doing it again: the lists
+    // are examples, so absence from them decides nothing.
+    expectStatement(
+      await holds(),
+      'the disclosure must warn that its four lists are examples rather than an index',
+      'Those four lists are examples, not an index, and absence from them is not a licence to reword a sentence.',
+    );
+  });
+
+  it('says what the rounds actually found, in a reading a reader cannot check wrong', async () => {
+    // "so each round finds more" has two readings. As "further ones" it is
+    // true; as "a greater number" the run record contradicts it — the three
+    // rounds returned 6, then 2, then 4 blockers. Both readings support the
+    // same conclusion, which is exactly why the ambiguous one would have
+    // survived unnoticed in a document agents follow literally.
+    const text = normalizeProse(await holds());
+    expect(
+      text,
+      'the disclosure still says each round finds more, which the round record contradicts on one reading',
+    ).not.toMatch(/each round finds more\b/);
+    expectStatement(
+      await holds(),
+      'the disclosure must say the rounds found further inversions rather than a growing number',
+      'so each round finds **further** ones — not necessarily more of them',
+    );
   });
 
   it('names the follow-up item and says it is not a condition of acceptance', async () => {
@@ -1332,6 +1391,15 @@ describe('what acceptance settled, and that nothing is left open', () => {
       'the settled section must point at the cited lines that replaced the probe',
       'next to the cited lines that show the ceiling is a decision rather than something a backend already enforces',
     );
+    // And the replacement says only what git can confirm. An earlier wording
+    // dated the probe's removal to "round 2"; the round numbering is a process
+    // fact no commit carries, and the word `sandbox` was never in the document
+    // at any head on this branch. An unverifiable clause in the sentence that
+    // fixes an unverifiable clause is not a fix.
+    expect(
+      normalizeProse(await settled()),
+      'the settled section dates the probe removal to a round no commit records',
+    ).not.toMatch(/deleted at round \d/);
     // And the paragraph it points at must still be the one that says so, or the
     // pointer is dead in the other direction.
     expectStatement(

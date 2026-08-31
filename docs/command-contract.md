@@ -72,34 +72,52 @@ freely — so they are separated once, here.
 
 - **Held verbatim by the suite.** `test/template/command-contract.test.ts` holds
   a named set of sentences and structures: the exit-code table's leading cells,
-  the closed value domains, the fixtures' shapes, the `Reach:` clauses in
-  `## Conformance today`, and the sentences this document must not let drift
-  into two spellings. Where a sentence is held, its wording is load-bearing —
-  change it and the suite goes red.
-- **Accepted specification, and owner rulings.** `## Scope`, the load budget's
-  allowed range, the doctor `fix` presence rule. These are true because the
-  owner decided them on RP-17 on **2026-08-31**, not because anything measured
-  them. A test can hold that this document records the ruling it was given;
-  nothing here can hold that the ruling was right.
+  the closed value domains, the fixtures' shapes, the reach clauses in
+  `## Conformance today`, the `## Output` rules, the stability bump rules, and
+  the sentences this document must not let drift into two spellings. Where a
+  sentence is held, its wording is load-bearing — change it and the suite goes
+  red.
+- **Accepted specification, and owner rulings.** `## Scope` and the load
+  budget's allowed range, both settled by owner ruling on RP-17 on
+  **2026-08-31**; the doctor `fix` presence rule, settled toward the item's own
+  words rather than by a ruling. `## What acceptance settled` names what closed
+  each. These are true because they were decided, not because anything measured
+  them: a test can hold that this document records the decision it was given,
+  and nothing here can hold that the decision was right.
 - **Measured correspondence.** `## Conformance today`'s rows, and every
   `claude-config@b1bfb6e` citation in `## The memory command surface`. Each was
-  read against code once, at a named revision. The conformance rows carry a test
-  that re-reads the repository fact behind the row, on the terms that section
-  states; the cross-repository citations carry no test at all, and say so at
-  their own point of use.
-- **Normative prose the suite does not hold.** Everything else — the meanings in
-  the exit-code table, the payload rules, the stability bump rules. It is
-  contract all the same; what stands behind it is review and this document being
-  read, not an assertion.
+  read against code once. The conformance rows carry a test that re-reads the
+  repository fact behind the row, on the terms that section states; the
+  cross-repository citations name their revision, carry no test at all, and say
+  so at their own point of use.
+- **Normative prose the suite does not hold.** The exit-code table's row
+  _meanings_ — the suite holds the set of leading cells, and each row's meaning
+  survives its own inversion — and the payload rule that no file path appears in
+  any JSON this contract defines. Prose in this category is contract all the
+  same; what stands behind it is review and this document being read, not an
+  assertion.
+
+🔴 **Those four lists are examples, not an index, and absence from them is not a
+licence to reword a sentence.** What decides the category is whether an
+assertion names the sentence, and the only way to know is to look. This is not
+hypothetical: the first draft of this very section put the `## Output` rules and
+the stability bump rules in the last category, and every one of them is in fact
+held verbatim. Three reviewers caught it independently, which is why the warning
+is here rather than in a commit message.
 
 🔴 **The suite does not pin every normative sentence here, and no reading of it
 should suggest otherwise.** The measurement, taken on head `a78d9fb7` by a
-reviewer sweeping the document rather than a list: it inverted **64** claims in
-this document into their opposites and ran the suite against each, and **48** of
-the 64 stayed green. The assertion count had grown round over round by closing
-the inversions a reviewer had named — which closes those and leaves the rest, so
-each round finds more. The method does not converge, and it was stopped rather
-than run a fourth time.
+reviewer sweeping the document rather than working from a list: it inverted
+**64** claims in this document into their opposites and ran the suite against
+each, and **48** of the 64 stayed green. The rounds before it had grown the
+assertion count by closing the inversions a reviewer had named, which closes
+those and leaves the rest, so each round finds **further** ones — not
+necessarily more of them: the three rounds returned 6, then 2, then 4 blockers.
+The method does not converge on completeness, and it was stopped rather than run
+a fourth time. The sweep was recorded on the pull request that carried this
+change and in that run's own journal directory, which `.gitignore` keeps out of
+the repository — so the figures above are the whole of the record a reader has
+here, and the method is stated so it can be re-measured rather than believed.
 
 A mechanism that would hold every normative sentence — a total correspondence
 check between a document like this one and its suite — is **RP-69**, and it is
@@ -639,10 +657,10 @@ never asked.
   integer, out-of-range refused with exit 2 and never clamped, the ceiling being
   the default so an invocation may lower the cap and not raise it. Both halves
   are in `## The memory command surface`, next to the cited lines that show the
-  ceiling is a decision rather than something a backend already enforces. The
-  sandbox probe that once carried that point was deleted at round 2, because it
-  had no test, no command and no revision behind it; the conclusion rests on
-  `load.sh:14-15` and `load.ps1:5-6` instead.
+  ceiling is a decision rather than something a backend already enforces. An
+  earlier draft rested that point on a sandbox probe with no test, no command
+  and no revision behind it; the conclusion rests on `load.sh:14-15` and
+  `load.ps1:5-6` instead.
 
 ## Fixtures
 
