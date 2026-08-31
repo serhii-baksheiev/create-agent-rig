@@ -368,19 +368,31 @@ describe('the exit-code table', () => {
 
   it("closes exit 3's result values at prerequisites-unmet and refused-unattended", async () => {
     const content = await exitCodes();
-    // The document's one rule that turns on a field's VALUES rather than its
-    // keys, so the stability section does not cover it — left unenumerated, two
-    // conforming bins could discriminate the same two occasions with different
-    // words. Pinned verbatim: both words, and the claim that they are contract.
+    // Pinned verbatim: both words, and the claim that they are contract.
+    //
+    // This paragraph used to add that it was "the one rule in this document
+    // that turns on a field's values rather than its keys, and the stability
+    // section covers keys". That was false in both halves — the doctor status
+    // set, the lifecycle vocabulary and degradation[]'s members all turn on
+    // values, and the stability section names enum members — and the suite was
+    // pinning the false sentence verbatim. So the claim is gone and the
+    // paragraph points at the value-domain rule instead.
     expectStatement(
       content,
       'the Exit codes section must declare the discriminator values contract and enumerate them',
       'and **its values are contract**: on exit 3 the closed set is `prerequisites-unmet` and `refused-unattended`.',
     );
+    expect(
+      normalizeProse(content),
+      'the Exit codes section still claims to be the only rule that turns on a value rather than a key',
+    ).not.toMatch(/the one rule in this document that turns on a field's _?values_?/i);
     expectStatement(
       content,
       'the Exit codes section must make a third discriminator value a minor bump rather than silence',
-      'Adding a third value is a minor bump, by the additive rule.',
+      // Both directions now, and both derived from the value-domain rule rather
+      // than asserted here: a set that can only ever grow says nothing about
+      // the change a caller is actually broken by.
+      'adding a third value is a minor bump and removing one is a major.',
     );
   });
 
@@ -583,12 +595,33 @@ describe('mutations and doctor', () => {
   const doctor = async () => section(await loadContract(), /^#{2,6}\s+.*Doctor\b/i);
 
   it('requires a declared side-effect list, --dry-run and a declared idempotence property', async () => {
+    // The three word-presence regexes this replaced were polarity-blind: a
+    // section saying "a mutating command need not offer --dry-run" carries
+    // `--dry-run` exactly as happily as one that requires it, and the suite
+    // stayed green through that inversion when it was measured. These three
+    // back item bullets, so each is pinned to the sentence that states it.
     const mutations = section(await loadContract(), /^#{2,6}\s+.*Mutat/i);
-    expectTerms(mutations, [
-      ['mutating commands do not declare their side effects', /side[- ]effects?\b/i],
-      ['mutating commands do not offer --dry-run', /--dry-run/],
-      ['mutating commands do not declare an idempotence property', /\bidempoten/i],
-    ]);
+    expectStatement(
+      mutations,
+      'the Mutations section must say how many obligations a mutating command carries',
+      'is a **mutating command**, and it carries three obligations:',
+    );
+    for (const [description, statement] of [
+      [
+        'the Mutations section must oblige a declared side-effect list, and say what an undeclared one is',
+        'The documentation names what it writes, creates, deletes or sends. A side effect the documentation does not name is a defect, not a feature.',
+      ],
+      [
+        'the Mutations section must oblige --dry-run and require the same payload shape as the real run',
+        'The command performs none of its declared side effects and reports what it would have done, in the same payload shape the real run emits.',
+      ],
+      [
+        'the Mutations section must oblige a stated idempotence property and refuse to leave it unsaid',
+        "Both answers are acceptable; leaving it unsaid is not, because the caller's retry policy depends on it.",
+      ],
+    ] as const) {
+      expectStatement(mutations, description, statement);
+    }
   });
 
   it('builds a doctor record from id, status, detail and fix', async () => {
@@ -688,12 +721,32 @@ describe('the memory command surface', () => {
 
   it('closes the contract-1.0 foundation verb set at four entries', async () => {
     const content = await memory();
-    expectTerms(content, [
-      ['the foundation verb set omits --version --json', /--version[\s\S]{0,40}--json/],
-      ['the foundation verb set omits doctor --json', /doctor[\s\S]{0,40}--json/],
-      ['the foundation verb set omits load --json', /load[\s\S]{0,40}--json/],
-      ['the foundation verb set omits --dry-run on mutating commands', /--dry-run/],
-    ]);
+    // The four proximity arms this replaced searched the WHOLE memory section,
+    // where `load --json` also appears in the degradation paragraph — so the
+    // `load --json` verb could be deleted from the set while the arm stayed
+    // green and the verbatim sentence below still said four. Measured. The set
+    // is a list, so the assertion reads the list: its bullets, in the
+    // subsection that declares it, and nothing else in the section counts.
+    const verbSet = section(content, /^#{2,6}\s+.*foundation verb set\b/i);
+    const bullets = verbSet
+      .split('\n')
+      .filter((line) => /^-\s/.test(line))
+      .map((line) => line.replace(/^-\s*/, ''));
+    expect(
+      bullets.length,
+      `the foundation verb set is declared closed at four entries but lists ${bullets.length}`,
+    ).toBe(4);
+    for (const [description, verb] of [
+      ['the foundation verb set omits --version --json', '`--version --json`'],
+      ['the foundation verb set omits doctor --json', '`doctor --json`'],
+      ['the foundation verb set omits load --json', '`load --json`'],
+      ['the foundation verb set omits --dry-run on mutating commands', '`--dry-run`'],
+    ] as const) {
+      expect(
+        bullets.some((bullet) => bullet.startsWith(verb)),
+        description,
+      ).toBe(true);
+    }
     // Verbatim: a bare `\bclosed\b` over this whole section was satisfied three
     // separate ways at once, so any one of the three closures could go missing
     // with the assertion still green.
@@ -730,10 +783,16 @@ describe('the memory command surface', () => {
   });
 
   it('refuses lifecycle transitions under RIG_UNATTENDED with exit 3', async () => {
-    expect(
-      normalizeProse(await memory()),
-      'lifecycle transition commands must refuse under RIG_UNATTENDED with exit 3',
-    ).toMatch(/RIG_UNATTENDED[\s\S]{0,200}exit\s*3|exit\s*3[\s\S]{0,200}RIG_UNATTENDED/);
+    // The proximity match this replaced was polarity-blind over the whole
+    // memory section: "Lifecycle transition commands do not refuse under
+    // RIG_UNATTENDED and never exit 3" carries both tokens the same distance
+    // apart, and the suite stayed green through exactly that inversion when it
+    // was measured. Amendment (d) is a normative rule, so it gets its sentence.
+    expectStatement(
+      await memory(),
+      'the memory section must state amendment (d) verbatim',
+      'Lifecycle transition commands refuse under RIG_UNATTENDED and exit 3.',
+    );
   });
 
   it('makes the load selection budget a per-invocation input, never core-global config', async () => {
@@ -802,6 +861,23 @@ describe('the memory command surface', () => {
     );
   });
 
+  it('pins the two clauses of the ruling a proximity match would have let drift', async () => {
+    // Both were measured green under inversion at the last gate round: the
+    // per-invocation reset and the omitted-means-default rule. They are clauses
+    // of an owner ruling, so each gets the sentence that states it.
+    const memorySection = await memory();
+    expectStatement(
+      memorySection,
+      'the memory section must say the budget resets to zero on every invocation',
+      'the count starts at zero on every invocation',
+    );
+    expectStatement(
+      memorySection,
+      'the memory section must say what an omitted budget means',
+      'Omitted, the budget is the default: 8192.',
+    );
+  });
+
   it('makes an out-of-range budget an invocation error rather than a silent clamp', async () => {
     // The failure mode a clamp creates: the caller asked for one run and got a
     // different one that looks like the one it asked for. The exit-code table
@@ -851,7 +927,7 @@ describe('the memory command surface', () => {
     expect(
       normalizeProse(memorySection),
       'the memory section does not disclose that its budget evidence is cross-repository and unpinnable by this suite',
-    ).toMatch(/cross-repository[\s\S]{0,300}cannot pin it/i);
+    ).toMatch(/cross-repository[\s\S]{0,400}cannot pin any of it/i);
   });
 
   it('stops deferring the budget, now that both halves of amendment (e) are fixed', async () => {
@@ -907,6 +983,37 @@ describe('the memory command surface', () => {
     ).toMatch(/`sourceKey` was already seen[\s\S]{0,200}counters/i);
   });
 
+  it('cites the backend evidence behind the degradation enum, and discloses it too', async () => {
+    // The prose-reviewer blocker. The enum rests on two claims about another
+    // repository's running code — the spelling of the counter line, and the
+    // dedup skip landing before the eligible count — and they decide which
+    // members RP-18 must emit. The budget subsection fifteen lines earlier
+    // meets the `.claude/rules/invariants.md` standard for exactly this class
+    // of claim; this one carried neither citation nor disclosure.
+    const text = normalizeProse(await memory());
+    expectTerms(text, [
+      ['the degradation enum does not cite the POSIX counter line', /load\.sh:56/],
+      ['the degradation enum does not cite the PowerShell counter line', /load\.ps1:53/],
+      [
+        'the degradation enum does not cite the dedup skip against the eligible count',
+        /load\.sh:37/,
+      ],
+      [
+        'the degradation evidence names no revision, so its line numbers cannot be reproduced',
+        /b1bfb6e/,
+      ],
+    ]);
+    // And the disclosure has to reach this evidence, not only the budget's.
+    // Scoped to one subsection it left the neighbouring claims uncovered.
+    expect(
+      text,
+      'the cross-repository disclosure is still scoped to the budget subsection alone',
+    ).not.toMatch(/The budget evidence in this section is\s+\*\*cross-repository\*\*/i);
+    expect(text, 'no cross-repository disclosure covers the whole memory section').toMatch(
+      /every `claude-config` citation in this section[\s\S]{0,200}cannot pin/i,
+    );
+  });
+
   it('keeps degradation present on every load payload, empty when there was none', async () => {
     const content = await loadContract();
     expectStatement(
@@ -933,12 +1040,55 @@ describe('stability and versioning', () => {
   const stability = async () =>
     section(await loadContract(), /^#{2,6}\s+.*Stability and versioning\b/i);
 
-  it('covers subcommand names, documented flags, exit codes and JSON keys', async () => {
+  it('covers subcommand names, documented flags, exit codes, JSON keys and value domains', async () => {
+    // The surface used to stop at keys, which made the budget's own
+    // "raising the maximum later is a minor bump" underivable — the residual
+    // rule classified it as a PATCH — and left the breaking direction with no
+    // answer at all. Every closed value set in this document is code a caller
+    // writes against, so the surface has to name them.
     expectStatement(
       await stability(),
-      'the Stability section must name the covered surface verbatim',
-      'What is covered: subcommand names, documented flags, exit codes, and the JSON keys named in this document.',
+      'the Stability section must name the covered surface verbatim, value domains included',
+      'What is covered: subcommand names, documented flags, exit codes, the JSON keys named in this document, and the **value domains** this document closes',
     );
+    expectTerms(normalizeProse(await stability()), [
+      ['the covered surface omits the exit-3 result set', /exit-3 `result` set/i],
+      ['the covered surface omits the doctor status set', /doctor `status` set/i],
+      ['the covered surface omits the lifecycle states', /lifecycle states/i],
+      ["the covered surface omits degradation[]'s members", /`degradation\[\]`'?s members/i],
+      ["the covered surface omits the load budget's allowed range", /budget'?s allowed range/i],
+    ]);
+  });
+
+  it('answers both directions for a closed value domain, not just the widening one', async () => {
+    // One answer per direction. Widening is the case the owner's budget ruling
+    // anticipated; narrowing is the one a caller can actually be broken by, and
+    // it had no answer here at all.
+    const text = await stability();
+    expectStatement(
+      text,
+      'the Stability section must make widening a closed value domain a minor bump',
+      'Widening a closed value domain is a minor bump too',
+    );
+    expectStatement(
+      text,
+      'the Stability section must make narrowing a closed value domain a major bump',
+      'Narrowing a closed value domain is a major bump',
+    );
+    expect(
+      normalizeProse(text),
+      'the Stability section does not name a raised budget maximum as the widening case, nor a lowered one as the narrowing case',
+    ).toMatch(/raised budget maximum[\s\S]{0,600}lowered budget maximum/i);
+  });
+
+  it('makes the budget ceiling rule derivable from the stability rule it cites', async () => {
+    // The blocker this replaces: the memory section asserted a minor bump for a
+    // raised ceiling while the stability section could only produce "patch".
+    // The two now say one thing, and the memory section points at it.
+    expect(
+      normalizeProse(section(await loadContract(), /^#{2,6}\s+.*Memory\b/i)),
+      'the budget section does not tie its version-bump claim to the stability rule that carries it',
+    ).toMatch(/Raising the maximum[\s\S]{0,200}Stability and versioning/i);
   });
 
   it('makes an addition a minor bump', async () => {
@@ -979,7 +1129,30 @@ describe('what acceptance settled, and that nothing is left open', () => {
     ).toHaveLength(0);
   });
 
-  it('records all four questions it once carried, and the ruling that closed each', async () => {
+  it('counts the entries it settled, and the count matches the list', async () => {
+    // The section said "four" over five bullets, and the status line repeated
+    // the four. The fifth is the scope assumption, which the list's own first
+    // bullet calls a question the document carried — so five is the number, and
+    // it is derived from the bullets rather than asserted beside them.
+    const text = await settled();
+    const bullets = text.split('\n').filter((line) => /^-\s/.test(line));
+    const claimed = /carried (one|two|three|four|five|six|seven) entries\b/i.exec(
+      normalizeProse(text),
+    );
+    expect(claimed, 'the settled section states no count of the entries it carried').not.toBe(null);
+    const WORDS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven'] as const;
+    expect(
+      WORDS.indexOf(claimed![1]!.toLowerCase() as (typeof WORDS)[number]) + 1,
+      `the settled section claims a different number of entries than the ${bullets.length} it lists`,
+    ).toBe(bullets.length);
+    // And the status line names the same number, or the two drift again.
+    expect(
+      normalizeProse(await loadContract()),
+      'the status line does not carry the same entry count as the settled section',
+    ).toMatch(new RegExp(`Status:[^]{0,320}${claimed![1]!} questions`, 'i'));
+  });
+
+  it('records every question it once carried, and the ruling that closed each', async () => {
     const text = normalizeProse(await settled());
     expectTerms(text, [
       ['the settled list omits the scope question', /which tools the contract binds/i],
@@ -1317,6 +1490,31 @@ describe('the conformance section stays true about this repository', () => {
       'the conformance section must promise that each row is pinned by a named test',
       "Every row below names the test that pins it, and each row's reach is the reach of its test and no wider",
     );
+  });
+
+  it('counts the rows that state a reach, and the count matches the rows', async () => {
+    // Two spellings of one fact drift, and the number was the one that was
+    // wrong: the preamble said three where four rows carry a reach statement.
+    // This is the same defect as the round-3 blocker that claimed one exception
+    // where three existed — in the section whose whole purpose is that no
+    // sentence claims more than its backing. So the number is derived from the
+    // rows rather than asserted beside them.
+    const text = await conformance();
+    // Every reach statement carries the same `Reach:` label, so counting them
+    // is mechanical rather than a judgement about what reads as one.
+    const stated = (normalizeProse(text).match(/\bReach:/g) ?? []).length;
+    const claimed = /and (one|two|three|four|five|six|seven) of them do\b/i.exec(
+      normalizeProse(text),
+    );
+    expect(
+      claimed,
+      'the conformance preamble states no count of the rows that state a reach',
+    ).not.toBe(null);
+    const WORDS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven'] as const;
+    expect(
+      WORDS.indexOf(claimed![1]!.toLowerCase() as (typeof WORDS)[number]) + 1,
+      `the preamble claims a different number of reach-stating rows than the ${stated} rows labelled Reach:`,
+    ).toBe(stated);
   });
 
   it('states the reach on every row whose test is narrower than the row sounds', async () => {

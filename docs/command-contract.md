@@ -5,7 +5,7 @@ Language: English
 Status: proposed for RP-17, with every field the item requires now fixed. Owner
 acceptance is required before RP-18 and RP-19 build against it; until then this
 document states intent, not installed behaviour. `## What acceptance settled`
-records the four questions this document carried and what closed each.
+records the five questions this document carried and what closed each.
 
 ## Scope
 
@@ -30,10 +30,11 @@ Because those scripts are outside the contract, a difference recorded there is
 a measured fact about an unbound tool — not a violation, and not a thing this
 document is asking anyone to change.
 
-What the contract covers, once accepted: subcommand names, documented flags,
-exit codes, and the keys of the JSON payloads named here. Anything a bin does
-that this document does not name is not contract, and may change without a
-version bump.
+What the contract covers, once accepted, is enumerated once — in
+`## Stability and versioning`, which is also where the bump rules for changing
+it live. Restating the list here is how two spellings of one fact drift, and the
+one nobody is reading is the one that is wrong. Anything a bin does that the
+document does not name is not contract, and may change without a version bump.
 
 ## What this contract does not cite
 
@@ -96,12 +97,11 @@ the refusal and an empty list, rather than inventing a prerequisite to fill it.
 
 The discriminator is a `result` field, not the exit code, and **its values are
 contract**: on exit 3 the closed set is `prerequisites-unmet` and
-`refused-unattended`. Naming them is not decoration. This is the one rule in
-this document that turns on a field's _values_ rather than its keys, and the
-stability section covers keys — so left unenumerated, two conforming bins could
-discriminate the same two occasions with different words and neither would be
-wrong, which is the same as having no discriminator. Adding a third value is a
-minor bump, by the additive rule.
+`refused-unattended`. Naming them is not decoration: left unenumerated, two
+conforming bins could discriminate the same two occasions with different words
+and neither would be wrong, which is the same as having no discriminator. This
+set is one of the **value domains** `## Stability and versioning` closes, so
+adding a third value is a minor bump and removing one is a major.
 
 **A missing prerequisite names the variable, never the file.** Rule (h) forbids
 a file path in every field but a doctor `fix` hint, and an exit-3 payload has no
@@ -386,9 +386,11 @@ of those same bytes. Owner ruling on RP-17, 2026-08-31:
 
 The ceiling is the default on purpose: a per-invocation input may **lower** the
 cap and may not raise it, so no invocation can put more into a session's
-context than the backends already permit. Raising the maximum later is an
-additive change — a minor bump — and it wants new evidence rather than a new
-preference.
+context than the backends already permit. Raising the maximum later is a
+widening of a closed value domain, which `## Stability and versioning` makes a
+**minor** bump — and lowering it, or lowering the default, is a narrowing, which
+that same rule makes a **major** one. Either direction wants new evidence rather
+than a new preference.
 
 ⚠ **The ceiling is a decision, not a reading, and the measurement behind that
 distinction is worth keeping.** No implementation enforces any bound at all: a
@@ -402,11 +404,15 @@ wrong.
 **Nothing implements this input today, and RP-17 does not ask anything to.** In
 both backends the budget is a compile-time constant with no override, and the
 ruling leaves them alone: this is a specification, and RP-18's memory shim is
-what delivers the surface. ⚠ The budget evidence in this section is
-**cross-repository** — read in `claude-config` on the dates given — so this
-repository's suite cannot pin it. What the suite pins is that this document says
-what it says; the provenance is the file and line above, for a reader who wants
-it re-measured.
+what delivers the surface.
+
+⚠ **Cross-repository evidence, disclosed once for the whole section.** Every
+`claude-config` citation in this section — the budget constant above, and the
+counter line and dedup ordering behind `degradation[]` below — was read in that
+repository at revision `b1bfb6e`, and **this repository's suite cannot pin any
+of it**. What the suite pins is that this document says what it says. The
+provenance is the file, line and revision at each point of use, for a reader who
+wants it re-measured.
 
 ### Payload rules specific to the shim
 
@@ -420,17 +426,21 @@ it re-measured.
   contract enumerates its members and a bin emits no member the version does not
   name. **Contract 1.0 enumerates two**, and neither is a word chosen here —
   they are the two degradations both shipped Memory MVP backends already count,
-  in those backends' own spelling from the counter line they write to stderr:
+  in those backends' own spelling from the counter line they write to stderr
+  (`shared-memory/load.sh:56-57` and `load.ps1:53` in `claude-config@b1bfb6e`,
+  which print `budget-skipped=` and `invalid=` among five counters):
   - `budget-skipped` — at least one eligible record was not injected, because
     its body did not fit the budget remaining.
   - `invalid` — at least one record failed validation and was never considered.
 
   A third degradation is measured and is deliberately **not** a member: a record
   dropped because its `sourceKey` was already seen is invisible to every one of
-  the five counters, the loop skipping it before the eligible count is reached.
-  No conforming bin could report it without a runtime change, and an enum member
-  nothing can emit is a promise nobody keeps. Adding it is a minor bump on the
-  day a backend can observe it.
+  the five counters, the loop skipping it before the eligible count is reached —
+  `load.sh:37-40` `continue`s ahead of the `eligible` increment at `:45`, and
+  `load.ps1:37` ahead of `$eligible++` at `:42`, same revision. No conforming
+  bin could report it without a runtime change, and an enum member nothing can
+  emit is a promise nobody keeps. Adding it is a minor bump — a widening — on
+  the day a backend can observe it.
 
   The key is **present** either way: a `load --json` payload always carries
   `degradation`, empty when there was none, so a consumer reads one shape rather
@@ -439,15 +449,30 @@ it re-measured.
 
 ## Stability and versioning
 
-What is covered: subcommand names, documented flags, exit codes, and the JSON
-keys named in this document.
+What is covered: subcommand names, documented flags, exit codes, the JSON keys
+named in this document, and the **value domains** this document closes — the
+exit-3 `result` set, the doctor `status` set, the lifecycle states,
+`degradation[]`'s members, and the load budget's allowed range. A closed value
+set belongs on the surface for the same reason a key does: a caller writes code
+against it, and a caller broken by a change cannot be told the change was
+invisible.
 
 - Adding a subcommand, a flag, a JSON key or an enum member is a **minor** bump.
+- **Widening a closed value domain is a minor bump too** — a third exit-3
+  `result`, a fifth lifecycle state, a raised budget maximum. Nothing a caller
+  already sends or already reads stops working.
 - Renaming or removing any of them is a **major** bump, and must be preceded by
   at least one minor release in which the old spelling still works and is
   documented as deprecated.
+- **Narrowing a closed value domain is a major bump**, on that same rule — a
+  removed enum member, a lowered budget maximum, a lowered default. It breaks
+  the caller that was sending or reading the value that went away, and the
+  deprecation minor is owed there exactly as it is for a renamed flag.
 
-A change nobody can detect through the covered surface is a patch.
+A change nobody can detect through the covered surface is a patch. That residual
+is the reason the value domains are named above rather than left implied: read
+without them, a raised budget maximum is undetectable and therefore a patch,
+which is the opposite of the answer the surface should give.
 
 ## Conformance matrix
 
@@ -468,7 +493,7 @@ this change touched, so that no reader takes a statement above as a description
 of installed behaviour. Every row below names the test that pins it, and each
 row's reach is the reach of its test and no wider — so every row whose test
 reaches less far than the row sounds states that reach at the point of use, and
-three of them do. It is what was measured, not an inventory: a difference this
+four of them do. It is what was measured, not an inventory: a difference this
 section does not name is a difference nobody checked. And because `## Scope`
 puts the internal script fleet outside this contract, a row about that fleet
 records a fact, not a fault.
@@ -486,9 +511,9 @@ records a fact, not a fault.
   under `packages/cli/src`. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0 and 1".
 - **No reader of `RIG_UNATTENDED` exists under `.claude/scripts/`,
-  `.claude/hooks/` or `packages/cli/src/`.** Those three trees are the row's
-  whole reach: the template copies under `templates/agent-os/` are not scanned,
-  and neither is any extension but `.mjs` and `.ts`. Pinned in
+  `.claude/hooks/` or `packages/cli/src/`.** Reach: those three trees and no
+  others — the template copies under `templates/agent-os/` are not scanned, and
+  neither is any extension but `.mjs` and `.ts`. Pinned in
   `test/template/command-contract.test.ts` › "reports that nothing in this repository reads RIG_UNATTENDED".
 - **Exit 2 is already spoken for in the internal script fleet**, on meanings
   that are not this contract's: the queue CLI spends it twice over — gate rounds
@@ -530,7 +555,8 @@ records a fact, not a fault.
 ## What acceptance settled
 
 **Nothing in this document is left for acceptance to settle.** This section
-carried four open questions across three gate rounds; all four are closed, and
+carried five entries across three gate rounds — four numbered questions and the
+scope assumption that preceded them; all five are closed, and
 each is recorded here with the ruling or the evidence that closed it rather than
 deleted, because a question that vanishes is indistinguishable from one that was
 never asked.
