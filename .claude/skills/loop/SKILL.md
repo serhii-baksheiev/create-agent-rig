@@ -122,14 +122,18 @@ flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
 and in some harnesses the export does not even survive to the next Bash call.
 
 🔴 **So re-export it in every call that needs it.** `RIG_RUN_DIR` is how the run
-directory reaches every command that reads it from the environment at all — and
-two of the commands this skill invokes do not. `unattended-flag.mjs` takes
-`--run-dir` and reads no environment variable, which is why the call below
-passes the flag explicitly; `revalidation-report.mjs` takes `--runs <dir>` and
-defaults to `.claude/runs/` under the main checkout. Everywhere else the
-variable is the whole of it, and passing the flag is not a fallback but an
-unrecognised argument — after which a command writes into a run directory nobody
-declared, or refuses for want of one while the caller believes it was told.
+directory reaches the commands that read it from the environment — and two of
+the commands this skill invokes read it from somewhere else instead.
+`unattended-flag.mjs` does not read the variable; it takes the directory as
+`--run-dir`, which is why the call below passes it explicitly.
+`revalidation-report.mjs` does not read it either; it takes `--runs <dir>`.
+For every other command this skill invokes the variable is the whole of it, and
+passing the flag is not a fallback but an unrecognised argument — after which a
+command writes into a run directory nobody declared, or refuses for want of one
+while the caller believes it was told. Modules this skill *imports* rather than
+invokes are a third case again: `run-journal.mjs` and `queue/state.mjs` are
+handed a `runDir` by their caller, which is why §9 lists it among the details
+that must be copied rather than re-derived.
 
 `--run-dir` is taken by `unattended-flag.mjs`, and by no other script under
 `.claude/scripts/`. That is measured over the whole tree rather than against a
