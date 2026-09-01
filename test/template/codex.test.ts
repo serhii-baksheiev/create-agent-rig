@@ -90,7 +90,12 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     const editGroup = config.hooks.PreToolUse?.find((group) =>
       group.matcher?.includes('apply_patch'),
     );
-    expect(config.hooks.PreToolUse?.some((group) => group.matcher === 'Bash')).toBe(true);
+    // RP-65: the shell guards cover an enumerated SET of shell tools now
+    // (.claude/scripts/lib/shell-tools.mjs), so this asserts that Bash is among
+    // them rather than that it is the only one.
+    expect(
+      config.hooks.PreToolUse?.some((group) => (group.matcher ?? '').split('|').includes('Bash')),
+    ).toBe(true);
     expect(config.hooks.Stop).toHaveLength(1);
     expect(config.hooks.SessionStart).toHaveLength(1);
     expect(editGroup).toBeDefined();

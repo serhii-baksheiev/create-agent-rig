@@ -74,12 +74,36 @@
 // written without thinking — not an adversary, and circumventing it is itself a
 // Never-tier violation. The layers behind it are review and CI.
 //
+// ── Which SURFACES it sees, and what that does not promise (RP-65) ───────────
+//
+// This runs for every tool named in `.claude/scripts/lib/shell-tools.mjs`, not
+// for `Bash` alone. It used to be wired under `Bash` only, and the measurement
+// that changed it is in that file: the same `--no-verify` command was blocked
+// through one tool and ran through the other, in one session.
+//
+// ⚠ Widening the matcher makes the same RULES run on both surfaces. It does not
+// make the PARSING identical: the tokeniser above is POSIX, and PowerShell's
+// quoting, escaping and separators are its own, so a command whose danger is
+// visible only after PowerShell-specific parsing can read differently here.
+//
+// ⚠ And the coarse checks are narrower than "coarse" suggests. The rules
+// match a command NAME — `git`, `gh`, `rm` — so they refuse the operation
+// only when the operation is spelled that way.
+// Measured with the brake armed: `gh pr merge …` is refused on both surfaces,
+// while `gh.exe pr merge …`, `Start-Process gh -ArgumentList …` and
+// `Remove-Item -Recurse -Force C:\` are all allowed. The first of those is
+// allowed under `Bash` too, so this is a rule-set bound rather than anything
+// the widened matcher introduced — but it is a bound, and an earlier draft of
+// this block claimed the opposite. This gap is why the file keeps a name that
+// says `bash`: a rename would promise a parity the parser does not have.
+//
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason. Fails open on anything it cannot
 // parse — a crashed guard must never make the session unusable.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { brakeIsOn } from '../scripts/stop-flag.mjs';
+import { SHELL_TOOLS } from '../scripts/lib/shell-tools.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 /** Branches that are shared by definition. */
@@ -807,8 +831,26 @@ export const inspect = (raw, brake, depth = 0) => {
 function main() {
   const input = readHookInput();
   if (input === null) return 0;
-  if (input.tool_name !== 'Bash') return 0;
+  // The ONE list decides which surfaces this guard answers for. Comparing a
+  // literal here is what made the widened matcher in `settings.json` cosmetic:
+  // the hook was launched for every shell tool and then excused itself from all
+  // but one, so the Never tier and the kill switch stayed bypassable on the
+  // other. Two spellings of one fact, and the one that ran was the wrong one.
+  if (!SHELL_TOOLS.includes(input.tool_name)) return 0;
   const commandValue = input.tool_input?.command;
+  // ⚠ A `command` that is PRESENT but not a string is allowed here, and two
+  // authorities in this rulebook disagree about that. `invariants.md`
+  // ("Refusing to inspect is a third outcome") says a field present in a shape
+  // the guard cannot read must fail CLOSED and name the shape it expected,
+  // while ABSENT is the fail-open case. This hook's own suite pins the
+  // opposite, in `test/template/guard-bash.test.ts` (absent in a generated rig)
+  // › "allows unsupported non-string command input". Measured, so the cost is
+  // on record rather than assumed: with the kill switch armed, a payload whose
+  // `command` is an array of argv words is allowed without the brake ever
+  // being consulted. Left as it stands deliberately — a collision between a
+  // rule and a test is resolved in the rulebook, not in one PR's history —
+  // and tracked as RP-80, which also covers the same shape in
+  // `block-no-verify.mjs`, where `String(argv)` defeats its tokeniser.
   if (typeof commandValue !== 'string') return 0;
   const raw = commandValue;
   if (!raw.trim()) return 0;
