@@ -33,14 +33,16 @@ const agentOsDir = path.join(repoRoot, 'templates', 'agent-os');
  *   as an explanation of one is not.
  * - the shipped `.claude/scripts/**` and `.claude/hooks/**` — those citations
  *   are code comments addressed to whoever edits the mechanism, not instructions
- *   the agent is told to follow, and they still carry roughly a hundred. Whether
- *   a downstream governance reviewer reads them as the same defect is a live
- *   question and NOT settled here; widening to them is a separate item, not an
- *   oversight this file quietly covers.
+ *   the agent is told to follow. Counted on `7cecf137` with the same regex this
+ *   file scans with: 71 citations of 24 distinct ids across 22 files, unchanged
+ *   at this head. Whether a downstream governance reviewer reads them as the
+ *   same defect is a live question and NOT settled here; widening to them is a
+ *   separate item, not an oversight this file quietly covers.
  * - `.codex/agents/*.toml` and `templates/agent-os/init/*.md` — a different
- *   format and a different layer. Both are clean today, and neither is guarded
- *   by this scan; `.claude/agents/` and `.agents/` agent specs ARE included
- *   below, because an agent spec is an instruction by the same definition.
+ *   format and a different layer. Both are clean today and neither is guarded by
+ *   this scan. `.claude/agents/` agent specs ARE included below, because an
+ *   agent spec is an instruction by the same definition; `.agents/` receives
+ *   skills only, never agent specs, so it contributes none.
  */
 
 /** A tracker identifier: an uppercase project key, a hyphen, a number. */
