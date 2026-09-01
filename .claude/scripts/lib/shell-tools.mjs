@@ -44,10 +44,17 @@
  * 🔴 The same RULES now run on both surfaces; the PARSING is not thereby
  * identical. `guard-bash` tokenises POSIX shell — quoting, separators, wrappers
  * — and PowerShell's syntax is its own. A command whose danger is visible only
- * after PowerShell-specific parsing can read differently there. The coarse
- * checks do not depend on it: the kill switch refuses on the presence of the
- * operation at all, which is the case `.claude/rules/invariants.md` means by
- * "where a false block is cheap, be deliberately coarse".
+ * after PowerShell-specific parsing can read differently there.
+ *
+ * 🔴 **And the kill switch is narrower than it sounds.** It matches a command
+ * NAME, so it refuses the operation only when the operation is spelled that
+ * way. Measured with the brake armed: `gh pr merge …` is refused on both
+ * surfaces; `gh.exe pr merge …`, `Start-Process gh -ArgumentList …` and
+ * `Remove-Item -Recurse -Force C:\` are allowed. The `.exe` spelling is
+ * allowed under `Bash` as well, so the bound belongs to the rule set and not
+ * to the widened matcher. It is emphatically NOT the "where a false block is
+ * cheap, be deliberately coarse" case of `.claude/rules/invariants.md` — that
+ * describes a guard that over-blocks, and this one is name-exact.
  *
  * That gap is also why `guard-bash.mjs` keeps its name. A rename would promise
  * a parity the parser does not have, and it would break every installed rig's
@@ -55,11 +62,20 @@
  */
 
 /**
- * Every tool name the harness exposes that runs a shell command.
+ * The tool names KNOWN to run a shell command — a hand-maintained list.
  *
  * - `Bash` — the POSIX surface these guards were written for.
  * - `PowerShell` — the Windows-native surface, measured to bypass them before
  *   RP-65. A harness that does not expose it simply never matches the name.
+ *
+ * 🔴 **Nothing checks this list against the harness, and that is the direction
+ * the defect came from.** The tests derive their expectations FROM this
+ * constant, so what they guard is list → matcher → verdict. The opposite
+ * direction — harness → list — is guarded by nobody. A harness that gains a
+ * third shell tool leaves every test green and the Never tier inert on it,
+ * which is exactly what `PowerShell` did until somebody measured it by hand.
+ * Over-listing is safe (an unexposed name never matches); under-listing is
+ * the whole bug, and it is invisible until a person edits this file.
  */
 export const SHELL_TOOLS = Object.freeze(['Bash', 'PowerShell']);
 

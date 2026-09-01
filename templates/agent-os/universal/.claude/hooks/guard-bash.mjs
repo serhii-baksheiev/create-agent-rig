@@ -85,9 +85,16 @@
 // make the PARSING identical: the tokeniser above is POSIX, and PowerShell's
 // quoting, escaping and separators are its own, so a command whose danger is
 // visible only after PowerShell-specific parsing can read differently here. The
-// coarse checks do not depend on that — the kill switch refuses on the presence
-// of the operation at all. This gap is why the file keeps a name that says
-// `bash`: a rename would promise a parity the parser does not have.
+// The coarse checks depend on it less, but NOT not at all, and the difference
+// is worth stating exactly. The brake matches a command NAME — `git`, `gh`,
+// `rm` — so it refuses the operation only when it is spelled that way.
+// Measured with the brake armed: `gh pr merge …` is refused on both surfaces,
+// while `gh.exe pr merge …`, `Start-Process gh -ArgumentList …` and
+// `Remove-Item -Recurse -Force C:\` are all allowed. The first of those is
+// allowed under `Bash` too, so this is a rule-set bound rather than anything
+// the widened matcher introduced — but it is a bound, and an earlier draft of
+// this block claimed the opposite. This gap is why the file keeps a name that
+// says `bash`: a rename would promise a parity the parser does not have.
 //
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason. Fails open on anything it cannot
@@ -840,7 +847,9 @@ function main() {
   // on record rather than assumed: with the kill switch armed, a payload whose
   // `command` is an array of argv words is allowed without the brake ever
   // being consulted. Left as it stands deliberately — a collision between a
-  // rule and a test is resolved in the rulebook, not in one PR's history.
+  // rule and a test is resolved in the rulebook, not in one PR's history —
+  // and tracked as RP-80, which also covers the same shape in
+  // `block-no-verify.mjs`, where `String(argv)` defeats its tokeniser.
   if (typeof commandValue !== 'string') return 0;
   const raw = commandValue;
   if (!raw.trim()) return 0;

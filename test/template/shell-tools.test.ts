@@ -27,10 +27,13 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
  * on both surfaces; it does not make the parsing identical. `guard-bash`
  * tokenises POSIX shell, and PowerShell's quoting, escaping and separators are
  * its own — so a command whose danger is only visible after PowerShell-specific
- * parsing may read differently there. The coarse checks (the kill switch, which
- * refuses on the presence of the operation at all) do not depend on that. This
- * is stated in the guard's own limits block rather than left for a reader to
- * discover, and it is the reason the file was NOT renamed: the name would
+ * parsing may read differently there. Nor is the kill switch as coarse as it
+ * sounds: it matches a command NAME, so with the brake armed `gh pr merge …`
+ * is refused on both surfaces while `gh.exe pr merge …` and
+ * `Remove-Item -Recurse -Force C:\` are allowed — the first of those under
+ * `Bash` too, so the bound is the rule set's rather than the matcher's. Both
+ * limits are stated in the guard's own block rather than left for a reader to
+ * discover, and they are the reason the file was NOT renamed: the name would
  * promise a parity the parser does not have.
  */
 const SETTINGS = ['.claude/settings.json', 'templates/agent-os/universal/.claude/settings.json'];
