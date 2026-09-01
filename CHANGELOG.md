@@ -73,12 +73,14 @@ a patch is the case the rule exists to prevent.
   specs and top-level instruction files and fails on a backlog identifier,
   without banning those letters repository-wide.
 
-  ⚠ Scoped deliberately, and the scope is not the whole rig. The shipped
-  `.claude/scripts/**` and `.claude/hooks/**` are excluded: those citations are
-  comments addressed to whoever edits the mechanism rather than instructions the
-  agent follows. 78 of them, across 24 files, still arrive with a generated
-  project. Whether they are the same defect is a live question this release does
-  not settle.
+  ⚠ Scoped deliberately, and the scope is not the whole rig. Two of the check's
+  exclusions ship: the `.claude/scripts/**` and `.claude/hooks/**` trees, whose
+  citations are comments addressed to whoever edits the mechanism rather than
+  instructions the agent follows, and `docs/decisions/`, where a record's whole
+  job is to say what happened. Together **86 citations across 27 files** still
+  arrive with a generated project — 78 in the first pair, 8 in the records.
+  Whether they are the same defect is a live question this release does not
+  settle.
 
 - **Evidence pointers are checked rather than trusted.** A pointer of the form
   `file › "test name"` is what keeps a claim about a mechanism honest; several
