@@ -220,7 +220,7 @@ describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', (
   // (`safeReason(…)` → `String(…)`) turns this red, and so does removing the
   // userinfo arm.
   it('withholds a password the base URL carries, on stdout and in the run journal', async () => {
-    const password = `sup3r${Date.now().toString(36)}Passw0rd`;
+    const password = ['placeholder', 'secret', Date.now().toString(36)].join('-');
     const token = ['placeholder', 'value', Date.now().toString(36)].join('-');
     const runDir = path.join(work, 'runs', '20260901-000000');
     await mkdir(runDir, { recursive: true });
@@ -280,7 +280,7 @@ describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', (
     );
 
     expect(result.code).toBe(2);
-    expect(result.stderr).not.toMatch(/^s+at /m);
+    expect(result.stderr).not.toMatch(/^\s+at /m);
     expect(result.stderr).toMatch(/could not journal/i);
     const payload = JSON.parse(result.stdout) as { result: string };
     expect(payload.result).toBe('UNVERIFIABLE');
