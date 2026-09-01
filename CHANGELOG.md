@@ -11,6 +11,70 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## 0.7.0
+
+**A revalidation layer a generated project did not have, and the governance
+fixes that followed it.** A newly scaffolded project gains a mechanism it had no
+part of in 0.6.2: a run can now record what it claimed at each checkpoint and
+re-check it later without trusting its own memory of it. The public CLI is
+unchanged — no new command, no new flag, no new dependency.
+
+**Numbered a minor deliberately.** The rule at the top of this file is that
+additive is a minor and a fix is a patch, so that "I only take minors" stays a
+usable policy. Four files land in a generated rig that the published 0.6.2 does
+not contain, one of them a config file the project owns. Shipping that as a
+patch is the case the rule exists to prevent.
+
+### Added
+
+- **Content-blind revalidation claims.** A run records what it claimed at each
+  checkpoint and compares it later without copying the tracker's content, so the
+  re-check does not depend on the run remembering correctly. A generated project
+  receives `.claude/scripts/lib/claim-records.mjs`,
+  `.claude/scripts/lib/revalidation-evidence.mjs`, `.rig/revalidation.json` and
+  the decision record `docs/decisions/content-blind-revalidation.md`.
+
+### Fixed
+
+- **The Never tier and the kill switch now cover every shell surface.** They
+  were wired under one tool matcher, so a second shell surface reached none of
+  them: a force-push of a shared branch, a filesystem wipe and a pre-commit
+  bypass all ran there, with the brake armed. The guards now read one shared
+  list of shell tools rather than each comparing its own literal, and the tests
+  spawn them on every entry in that list instead of checking the wiring alone —
+  which is how the gap survived its own test suite.
+
+- **An adapter it cannot read is `UNVERIFIABLE`, not a stack trace.** A
+  revalidation whose queue adapter could not be reached exited on a raw Node
+  stack trace, which a caller could read as noise rather than as a hold. It now
+  takes the same hold path a real drift takes and never returns a pass. The
+  reason it prints is withheld whenever it carries userinfo — as a class, not as
+  a list of spellings, after two rounds in which each fix closed the form just
+  found and left the next one open. A queue configuration that cannot be
+  resolved at all is a refusal with a readable message rather than a crash.
+
+- **The generator-neutral surface no longer cites this repository's backlog.**
+  The `loop` and `pr-ship` skills and the Node/TypeScript stack rule carried
+  ticket identifiers, commit SHAs and PR numbers from the tracker that built
+  them — provenance a downstream reader cannot open, in artifacts whose only job
+  is to instruct. A mechanical check now scans the instruction surface of every
+  layer and fails on a backlog identifier, without banning those letters
+  repository-wide.
+
+- **Every evidence pointer the rig ships resolves.** A pointer of the form
+  `file › "test name"` is what keeps a claim about a mechanism honest; several
+  named tests that had been renamed or moved. They are checked now, and a
+  pointer into a suite a generated project never receives has to say so.
+
+- **The run directory reaches four of the five commands one way only.** The
+  `loop` skill described a directory most of its own commands could not be told
+  about, so a run could journal into one place while a check looked in another.
+
+### Documentation
+
+- `docs/command-contract.md` records what the CLI promises and which of its
+  commands conform today. Generator-only; it does not ship into a rig.
+
 ## 0.6.2
 
 **Patch hardening for the Agent OS shipped by 0.6.1.** This release closes six

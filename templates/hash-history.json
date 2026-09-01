@@ -7,7 +7,8 @@
     "0.4.0",
     "0.5.0",
     "0.6.0",
-    "0.6.1"
+    "0.6.1",
+    "0.6.2"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -22,7 +23,8 @@
       "hashes": [
         "eb52ef41269018107534d8dc2f552c57698e1677a1e76b5e666b5d09c007cac0",
         "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5",
-        "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd"
+        "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd",
+        "18f4300de4c4c7ea380d726fb109fa224da950ef0a4cea5015ab1d408b823be5"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -114,7 +116,8 @@
       "since": "0.2.0",
       "hashes": [
         "c7c86de47b601dcb594ba8d8e23b5624ef8d47dafeddbc1aadd351c72e051d83",
-        "ece5a81db41bd48695a1a009239837b682d247baf6d19214eaa859a7519ab246"
+        "ece5a81db41bd48695a1a009239837b682d247baf6d19214eaa859a7519ab246",
+        "1646ed80de5268a886a2e861124cb3b871fa46df1857991a645667601f52253b"
       ]
     },
     ".claude/hooks/dod-checks.json": {
@@ -130,7 +133,8 @@
         "9fb8fad4d95756fb2424a97550aa85dfab0ca8dbcf91e6d0385263ba3b929135",
         "7852205961cb1647b49de5f7e79820c1735b4be897adcf8f5bc3eeb49318ff78",
         "33edb11904e5c4f88626b41c7e649b85d20957a11ff7e1062538917647c3e7f0",
-        "19202a28355dac1d7a95d29411668cf970006b3044d89a772768ce21793931aa"
+        "19202a28355dac1d7a95d29411668cf970006b3044d89a772768ce21793931aa",
+        "d2af03ed141fadd0b1e69b230b9277e8f03169757a8e2a679767653ab7828d9a"
       ]
     },
     ".claude/hooks/guard-bash.mjs": {
@@ -138,42 +142,48 @@
       "hashes": [
         "4d396f412fc53094188b14348c5af4e79c7542a182630c20c4687d79899c5b0e",
         "e7a513216ebbceaa7f11ec8fb611de8bb5d5925dfdfd75b779dcb7c0ee6e83cc",
-        "78047f42dda65076dd2cdb73ad530553db3d4a6f3ea7f0729590ac7286323cb1"
+        "78047f42dda65076dd2cdb73ad530553db3d4a6f3ea7f0729590ac7286323cb1",
+        "5782d91c6c54155ad8bf3e107b6574b3ad4c97baa7be673a5ed252c70b387300"
       ]
     },
     ".claude/hooks/guard-core-purity.mjs": {
       "since": "0.2.0",
       "hashes": [
         "e36fbb92ee8395c6686fef582f29f2701747074b3b781bed42fe068f5c000bd7",
-        "282faa364c2d152808cd92ff7e39da26fd0549a5b2d0af9711d3453be2c666eb"
+        "282faa364c2d152808cd92ff7e39da26fd0549a5b2d0af9711d3453be2c666eb",
+        "4bdd9a38b1aa4050c109f7809ef924be4d411f5720b6030d57c5264ce3df556d"
       ]
     },
     ".claude/hooks/guard-rulebook.mjs": {
       "since": "0.6.0",
       "hashes": [
         "4524d715f2e41f4cfdd3d0f9c858817f913aaca5192bda97dff876b4d8c51f19",
-        "f9e3e4b7c22c4a64f521402419707ff382b05c8deb6310f62e5545db87f7cb4f"
+        "f9e3e4b7c22c4a64f521402419707ff382b05c8deb6310f62e5545db87f7cb4f",
+        "493ae58e54b055bd13ba992ee0dbfa2cb9ce9a3637ec345ab8d7cfff95831c60"
       ]
     },
     ".claude/hooks/guard-secret-file.mjs": {
       "since": "0.5.0",
       "hashes": [
         "f6b81cb7640924d2e56aced58e6b48f65df6638fb5a9099985fe5d673245c3ad",
-        "8c333879dba1f2bf87bbb8e7b257ac51315a74a4cb45252408ca615e2a42d7b5"
+        "8c333879dba1f2bf87bbb8e7b257ac51315a74a4cb45252408ca615e2a42d7b5",
+        "5bf2896ec5e5f94fab20b52cd22418a4392778b40744602a087e320eeca3f688"
       ]
     },
     ".claude/hooks/guard-web-boundary.mjs": {
       "since": "0.2.0",
       "hashes": [
         "93d4fa0fd1c18261cc8ef2b1ae2abe3a0200cc4b5a7b1d1d4ae433ca92c514b1",
-        "8deda7061122b69d72e708222ef2d38a971bb713269ec7fd1ca3440fe0a1150f"
+        "8deda7061122b69d72e708222ef2d38a971bb713269ec7fd1ca3440fe0a1150f",
+        "df325e672793e06b8315e64b59a329775d110fc166176074ff3bb8dea557c561"
       ]
     },
     ".claude/hooks/inject-rules.mjs": {
       "since": "0.2.0",
       "hashes": [
         "c472419f1076ea3707d640cd5246c0e69a94c55455f6648e2cbaf300a382c8df",
-        "17c299ea4c6202745a3f8813aaef7711eb9030bf0a220cca77b58cac98c95940"
+        "17c299ea4c6202745a3f8813aaef7711eb9030bf0a220cca77b58cac98c95940",
+        "860a5d4ba02b59971f80bf79a9081f48f11022d46fe66b0470f0abc4ed9633e4"
       ]
     },
     ".claude/hooks/lib/edit-input.mjs": {
@@ -182,6 +192,12 @@
         "4f836bc3ff75a868ffe035b179ac9e7dc1ad7715d520677ff9f6aa5bfdb200eb",
         "0c191d326a7bb0bbfc110e2210f44b4aa39276e8db3779aaa4545cffd4e11863",
         "572c671f8f2cad190fe2f144071954ac4d3b1357cab80a19bad584dd3b3768c8"
+      ]
+    },
+    ".claude/hooks/lib/hook-input.mjs": {
+      "since": "0.6.2",
+      "hashes": [
+        "c40320d90e9585a52026e074e399b6883a0dfed704115b28e8da4dea284cf85f"
       ]
     },
     ".claude/queue.json": {
@@ -358,7 +374,8 @@
         "86591a48b9264d641c2530238ea3720705f12e17af2ec8dccecabfa3a742a2e7",
         "13c301f828d4402fcf81e7e0b2b1d22472cbdb50f6fd606770056af4ec215e51",
         "b8be5855809c0d44ece94858456098663296c17c5ad9abb1ea2cf1a8f48ca491",
-        "3fc8ff9a06a2e22355a660a31e2943a97f50869f7e5726f768a7931d17b64b5b"
+        "3fc8ff9a06a2e22355a660a31e2943a97f50869f7e5726f768a7931d17b64b5b",
+        "f44203af187e855b9f738f8dbedfd313abf9d6a5cc29182fb46cd58d70698d7a"
       ]
     },
     ".claude/scripts/queue/plan-md.mjs": {
@@ -420,7 +437,8 @@
       "since": "0.6.0",
       "hashes": [
         "060b001927d8b471f1c1a8c8851fbb4266d3b2edd674cccbd6c16c44b57b91dd",
-        "7721ee19fd1bcf6902be3d359def40742d79b88f5d83e7e3ca22ba45ca3211aa"
+        "7721ee19fd1bcf6902be3d359def40742d79b88f5d83e7e3ca22ba45ca3211aa",
+        "250292c9959916240bfc0fdf5987a864f6d54799de3d932dc6b85b776e62eaa9"
       ]
     },
     ".claude/scripts/verdict.mjs": {
@@ -456,7 +474,8 @@
         "e442ca58c4249ac10d5759bba2d8360544642e03b2b158e6253e71f5be3767fb",
         "eb52ef41269018107534d8dc2f552c57698e1677a1e76b5e666b5d09c007cac0",
         "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5",
-        "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd"
+        "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd",
+        "18f4300de4c4c7ea380d726fb109fa224da950ef0a4cea5015ab1d408b823be5"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -545,7 +564,8 @@
       "since": "0.5.0",
       "hashes": [
         "c676647d585ec87427545a391598706ecaa74dfe413a7e05877e336bf8942874",
-        "89d999c068ef5b6e48913c15a165359e66b1f505b9f97c145d8c730cbf42d09a"
+        "89d999c068ef5b6e48913c15a165359e66b1f505b9f97c145d8c730cbf42d09a",
+        "1fc2fc35b04fa4ad0859841af72f45695bc346d1a1a9b20ba5d971d48888a910"
       ]
     },
     "AGENTS.md": {
@@ -613,7 +633,8 @@
     "docs/decisions/spacing-rations-mechanisms.md": {
       "since": "0.5.0",
       "hashes": [
-        "883852ffc14b9f0b6101f67b7045567056d2c5630e79391a6e542d6d3854095a"
+        "883852ffc14b9f0b6101f67b7045567056d2c5630e79391a6e542d6d3854095a",
+        "5894f8aa613fbbba0f125c871b2a91d9cc5bd9dd6a3fe4c8fd9d8a06aa8839b8"
       ]
     },
     "docs/decisions/stop-conditions-in-a-file.md": {
