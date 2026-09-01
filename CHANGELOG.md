@@ -56,6 +56,31 @@ a patch is the case the rule exists to prevent.
   was allowed on the original surface too — and it is unchanged by this
   release.
 
+- **A shell command the two shell guards cannot read is refused, where it used
+  to be allowed.** `guard-bash` and `block-no-verify` read the `command` a hook
+  hands them on a shell tool, and asked only whether it was a string. A command
+  that was **there** in some other container — an array of argv words, an
+  object — failed that test and returned _allow_ before the kill switch was ever
+  consulted, so restating a forbidden command in another shape stepped over an
+  armed brake. Those two guards now decide the three outcomes in one shared
+  place: an **absent** command still allows, because there is nothing to judge;
+  a **string** is inspected as before; a command that is present in a shape they
+  cannot read is **refused**, naming the shape they expected.
+
+  ⚠ The scope is those two guards, and it is narrow on purpose — it is **not** a
+  repository-wide ruling on the word `command`. `guard-secret-file` reads an
+  `apply_patch` `command` that is a _list of strings_, exactly the shape this
+  contract calls unreadable, and it is right to; routing a third guard through
+  the same place without checking what its tool actually sends would start
+  refusing input another guard exists to read.
+
+  ⚠ Two further limits. This changes only the unreadable case — the name-exact
+  bound described just above is untouched, and an absent field remains fail-open
+  on purpose, since a guard that blocked when handed nothing would be turned off
+  within the hour. And the **edit** surfaces are not part of this: what
+  `.claude/hooks/lib/edit-input.mjs` does with a `tool_input` it cannot read is
+  unchanged by this release.
+
 - **An adapter it cannot read is `UNVERIFIABLE`, not a stack trace.** A
   revalidation whose queue adapter could not be reached exited on a raw Node
   stack trace, which a caller could read as noise rather than as a hold. It now
