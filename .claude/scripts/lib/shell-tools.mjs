@@ -52,9 +52,7 @@
  * surfaces; `gh.exe pr merge …`, `Start-Process gh -ArgumentList …` and
  * `Remove-Item -Recurse -Force C:\` are allowed. The `.exe` spelling is
  * allowed under `Bash` as well, so the bound belongs to the rule set and not
- * to the widened matcher. It is emphatically NOT the "where a false block is
- * cheap, be deliberately coarse" case of `.claude/rules/invariants.md` — that
- * describes a guard that over-blocks, and this one is name-exact.
+ * to the widened matcher.
  *
  * That gap is also why `guard-bash.mjs` keeps its name. A rename would promise
  * a parity the parser does not have, and it would break every installed rig's

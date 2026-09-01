@@ -84,10 +84,13 @@
 // ⚠ Widening the matcher makes the same RULES run on both surfaces. It does not
 // make the PARSING identical: the tokeniser above is POSIX, and PowerShell's
 // quoting, escaping and separators are its own, so a command whose danger is
-// visible only after PowerShell-specific parsing can read differently here. The
-// The coarse checks depend on it less, but NOT not at all, and the difference
-// is worth stating exactly. The brake matches a command NAME — `git`, `gh`,
-// `rm` — so it refuses the operation only when it is spelled that way.
+// visible only after PowerShell-specific parsing can read differently here.
+//
+// ⚠ And the coarse checks are narrower than "coarse" suggests. The rules
+// match a command NAME — `git`, `gh`, `rm` — so they refuse the operation
+// only when the operation is spelled that way. (`rm` is refused with or
+// without the brake; only the network-client and force-push rules are the
+// brake's own.)
 // Measured with the brake armed: `gh pr merge …` is refused on both surfaces,
 // while `gh.exe pr merge …`, `Start-Process gh -ArgumentList …` and
 // `Remove-Item -Recurse -Force C:\` are all allowed. The first of those is
