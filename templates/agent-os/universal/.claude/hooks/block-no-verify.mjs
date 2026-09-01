@@ -13,11 +13,15 @@
 // (see .claude/rules/invariants.md, "One invariant per hook"). Use a file rather
 // than a heredoc, or quote the example.
 import { readHookInput } from './lib/hook-input.mjs';
+import { SHELL_TOOLS } from '../scripts/lib/shell-tools.mjs';
 
 function main() {
   const input = readHookInput();
   if (input === null) return 0;
-  if (input.tool_name !== 'Bash') return 0;
+  // One list, not a literal: this hook was launched for every shell surface
+  // and then excused itself from all but Bash, so the pre-commit gate stayed
+  // bypassable on the other one.
+  if (!SHELL_TOOLS.includes(input.tool_name)) return 0;
   const raw = String(input.tool_input?.command ?? '');
 
   // Strip quoted segments first: a commit message that merely MENTIONS a

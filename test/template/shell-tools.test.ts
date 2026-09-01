@@ -1,7 +1,9 @@
-import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -107,5 +109,123 @@ describe('every shell-executing tool traverses the same Never-tier guards', () =
       (tool) => !groups.some((group) => group.matcher.split('|').includes(tool)),
     );
     expect(uncovered).toEqual(['AbsentShell']);
+  });
+});
+
+/*
+ * ── The wiring above is not the enforcement ─────────────────────────────────
+ *
+ * Everything before this line reads JSON. It proves the harness LAUNCHES the two
+ * guards for every tool the module names; it spawns neither guard and sends
+ * neither a payload, so a guard that is launched and then returns "allow" for a
+ * tool it does not recognise passes all of it. That is the shape RP-65 shipped:
+ * the matcher was widened and both hooks kept an opening line that excludes any
+ * `tool_name` other than `Bash`, where the exclusion resolves to exit 0 = allow.
+ *
+ * The tests below therefore run the real hooks, once per tool name in
+ * SHELL_TOOLS, and assert the verdict rather than the wiring. The hooks under
+ * test are the authored copies in `templates/agent-os/universal/` — the same
+ * files `test/template/guard-bash.test.ts` invokes; `test/template/dogfood.test.ts`
+ * is what pins this repository's installed `.claude/hooks/` copies to them.
+ *
+ * Payload shape: `tool_input.command`, the field both guards read today. A
+ * surface that names its command field differently is the fix's problem, not a
+ * reason for these tests to send something the guards were never given.
+ */
+
+const universalHook = (name: string) =>
+  path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks', name);
+
+const GUARD_BASH = universalHook('guard-bash.mjs');
+const BLOCK_NO_VERIFY = universalHook('block-no-verify.mjs');
+
+/** Every shell tool the one module names — the matrix widens when that list does. */
+const SHELL_TOOL_NAMES = await shellTools();
+
+let absentFlag: string;
+let armedFlag: string;
+
+beforeAll(async () => {
+  // The brake is machine-level, but `.claude/scripts/stop-flag.mjs` lets an extra
+  // path ADD one (never remove one), so a test arms it without going near the
+  // operator's real `~/.claude/create-agent-rig-loop-STOP`.
+  const dir = await mkdtemp(path.join(tmpdir(), 'shell-tools-killswitch-'));
+  absentFlag = path.join(dir, 'not-here');
+  armedFlag = path.join(dir, 'STOP');
+  await writeFile(armedFlag, '');
+});
+
+function runHook(
+  hookPath: string,
+  toolName: string,
+  command: string,
+  flag?: string,
+): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      process.execPath,
+      [hookPath],
+      { env: { ...process.env, AGENT_LOOP_STOP: flag ?? absentFlag } },
+      (error, _stdout, stderr) => {
+        resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
+      },
+    );
+    if (!child.stdin) return reject(new Error('no stdin'));
+    child.stdin.write(
+      JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: toolName,
+        tool_input: { command },
+      }),
+    );
+    child.stdin.end();
+  });
+}
+
+const denies = async (hookPath: string, tool: string, command: string, flag?: string) => {
+  const result = await runHook(hookPath, tool, command, flag);
+  expect(result.code, `${path.basename(hookPath)} should DENY through ${tool}: ${command}`).toBe(2);
+  expect(result.stderr, `a refusal through ${tool} must say why`).not.toBe('');
+};
+
+const allows = async (hookPath: string, tool: string, command: string, flag?: string) => {
+  const result = await runHook(hookPath, tool, command, flag);
+  expect(
+    result.code,
+    `${path.basename(hookPath)} should ALLOW through ${tool}: ${command}\nstderr: ${result.stderr}`,
+  ).toBe(0);
+};
+
+describe('guard-bash reaches its verdict on every shell tool, not just the one it was written for', () => {
+  it.each(SHELL_TOOL_NAMES)('refuses a force-push of a shared branch through %s', async (tool) => {
+    await denies(GUARD_BASH, tool, 'git push --force origin master');
+  });
+
+  it.each(SHELL_TOOL_NAMES)('refuses a filesystem wipe through %s', async (tool) => {
+    await denies(GUARD_BASH, tool, 'rm -rf /');
+  });
+
+  it.each(SHELL_TOOL_NAMES)(
+    'refuses a merge while the kill switch is armed through %s',
+    async (tool) => {
+      await denies(GUARD_BASH, tool, 'gh pr merge 12 --squash', armedFlag);
+    },
+  );
+
+  // The positive control: without it, a guard that denied everything would pass
+  // every row above, and a guard nobody can work under is a guard that gets
+  // unwired.
+  it.each(SHELL_TOOL_NAMES)('still allows a harmless command through %s', async (tool) => {
+    await allows(GUARD_BASH, tool, 'git status');
+  });
+});
+
+describe('block-no-verify reaches its verdict on every shell tool', () => {
+  it.each(SHELL_TOOL_NAMES)('refuses a pre-commit bypass through %s', async (tool) => {
+    await denies(BLOCK_NO_VERIFY, tool, 'git commit --no-verify -m x');
+  });
+
+  it.each(SHELL_TOOL_NAMES)('still allows a harmless command through %s', async (tool) => {
+    await allows(BLOCK_NO_VERIFY, tool, 'git status');
   });
 });

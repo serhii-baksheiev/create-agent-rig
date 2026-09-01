@@ -95,6 +95,7 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { brakeIsOn } from '../scripts/stop-flag.mjs';
+import { SHELL_TOOLS } from '../scripts/lib/shell-tools.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 /** Branches that are shared by definition. */
@@ -822,8 +823,24 @@ export const inspect = (raw, brake, depth = 0) => {
 function main() {
   const input = readHookInput();
   if (input === null) return 0;
-  if (input.tool_name !== 'Bash') return 0;
+  // The ONE list decides which surfaces this guard answers for. Comparing a
+  // literal here is what made the widened matcher in `settings.json` cosmetic:
+  // the hook was launched for every shell tool and then excused itself from all
+  // but one, so the Never tier and the kill switch stayed bypassable on the
+  // other. Two spellings of one fact, and the one that ran was the wrong one.
+  if (!SHELL_TOOLS.includes(input.tool_name)) return 0;
   const commandValue = input.tool_input?.command;
+  // ⚠ A `command` that is PRESENT but not a string is allowed here, and two
+  // authorities in this rulebook disagree about that. `invariants.md`
+  // ("Refusing to inspect is a third outcome") says a field present in a shape
+  // the guard cannot read must fail CLOSED and name the shape it expected,
+  // while ABSENT is the fail-open case. This hook's own suite pins the
+  // opposite, in `test/template/guard-bash.test.ts` (absent in a generated rig)
+  // › "allows unsupported non-string command input". Measured, so the cost is
+  // on record rather than assumed: with the kill switch armed, a payload whose
+  // `command` is an array of argv words is allowed without the brake ever
+  // being consulted. Left as it stands deliberately — a collision between a
+  // rule and a test is resolved in the rulebook, not in one PR's history.
   if (typeof commandValue !== 'string') return 0;
   const raw = commandValue;
   if (!raw.trim()) return 0;

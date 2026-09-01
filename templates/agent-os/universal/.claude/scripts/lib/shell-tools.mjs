@@ -10,6 +10,20 @@
  * matcher this file does not name. That test lives in the generator and is
  * absent in a generated rig.
  *
+ * 🔴 **Wiring is not behaviour, and certifying only the wiring is how the gap
+ * this file was written to close survived its own PR.** The matcher was widened
+ * while both guards still opened with a literal `tool_name !== 'Bash'` and
+ * returned allow, so every Never-tier rule and the kill switch stayed
+ * bypassable on the other surface — with the configuration tests green.
+ * The guards therefore IMPORT this list rather than restating it, and the same
+ * test file now spawns them. It is absent in a generated rig, like the one
+ * above: `test/template/shell-tools.test.ts`
+ * › "guard-bash reaches its verdict on every shell tool, not just the one it
+ * was written for" and
+ * › "block-no-verify reaches its verdict on every shell tool"
+ * run one refusal and one positive control per entry below, so a surface added
+ * here without being honoured goes red.
+ *
  * ── Why this exists (RP-65) ─────────────────────────────────────────────────
  *
  * `settings.json` wired `block-no-verify` and `guard-bash` under the matcher
