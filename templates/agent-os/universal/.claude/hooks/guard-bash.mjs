@@ -88,9 +88,7 @@
 //
 // ⚠ And the coarse checks are narrower than "coarse" suggests. The rules
 // match a command NAME — `git`, `gh`, `rm` — so they refuse the operation
-// only when the operation is spelled that way. (`rm` is refused with or
-// without the brake; only the network-client and force-push rules are the
-// brake's own.)
+// only when the operation is spelled that way.
 // Measured with the brake armed: `gh pr merge …` is refused on both surfaces,
 // while `gh.exe pr merge …`, `Start-Process gh -ArgumentList …` and
 // `Remove-Item -Recurse -Force C:\` are all allowed. The first of those is
