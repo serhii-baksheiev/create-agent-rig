@@ -1,12 +1,11 @@
-import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-const exec = promisify(execFile);
+import { runNpx } from './run.js';
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 let work: string;
@@ -26,8 +25,10 @@ describe('git install (the `npx github:…` personal-stage distribution path)', 
   it('installs from a local git clone and generates a project', async () => {
     const appDir = path.join(work, 'app');
     await mkdir(appDir);
-    await exec(
-      'npx',
+    // runNpx, not a bare exec: this install step is the one that failed on CI
+    // with no reason attached (RP-70). For this failure both streams are
+    // empty, so the diagnosis is the exit code plus npm's own debug logs.
+    await runNpx(
       [
         '--yes',
         `--package=git+file://${repoRoot}`,
