@@ -55,9 +55,12 @@
  *   neither the hold nor the take-up".
  * - the claim refusal reads the branch DIFF, so a claim record already on the
  *   default branch, or written but not committed, is not seen.
- * - `--base` is the sole authority for the verdict in this mode, the claim
- *   comparison that would otherwise survive a wrong base being absent; a base
- *   that is not really the default branch reports `continue` cheaply.
+ * - `--base` decides more here than the verdict. The claim comparison that
+ *   would otherwise survive a wrong base is absent, AND the claim-touch refusal
+ *   reads the same `mergeBase..HEAD` range — so `--base HEAD` empties the
+ *   branch diff and disarms that refusal as well as reporting `continue`. Pass
+ *   the up-to-date `origin/<default>`; `pr-ship` step 1 refreshes it, since
+ *   this script never talks to a remote itself.
  *
  * One existing checkpoint chain, with one authoritative durable baseline:
  *
@@ -98,18 +101,33 @@
  * "re-reads each dependant's state, and names one the tracker no longer
  * offers") for the loop's write-back.
  *
- * `outcome --point <P> --ticket <id> --action-changed true|false [--note …]`
- * (AR-136) is the second half of the evidence: after the re-read, it appends a
- * `revalidation-outcome` record whose `answers` is the seq of the latest
- * `revalidation` for that ticket and point in this run — the join a report
- * needs, made by the writer rather than guessed by the reader. It refuses
- * without a run, without a matching revalidation, and with any word but
- * `true`/`false`, and writes nothing then. The typed resolution names the
- * stable detection id and clears only the matching run-level hold. Exit 2 on
- * `hold` or `unverifiable`, 0 on `continue`, and 1 when the call cannot be
- * acted on (unknown point, no ticket, a base that is not a revision — or, on
- * the paths that reach it, a queue config that does not resolve) — and then
- * nothing is journalled, because a refusal is not an answer.
+ * `outcome --point <P> {--ticket <id> | --owner-directed} --action-changed
+ * true|false [--note …]` (AR-136, extended by RP-94) is the second half of the
+ * evidence: after the re-read, it appends a `revalidation-outcome` record whose
+ * `answers` is the seq of the latest matching `revalidation` at that point in
+ * this run — the join a report needs, made by the writer rather than guessed by
+ * the reader.
+ *
+ * **Which revalidation it matches depends on the mode, and the two never
+ * cross.** `--ticket` matches by key and skips owner-directed detections
+ * outright; `--owner-directed` matches by `mode`, because such a detection
+ * carries `ticket: null` and cannot be addressed by key — and a ticketed
+ * `--ticket null` must not answer it either. Pinned in the generator's
+ * `test/template/owner-directed-revalidation.test.ts` (absent in a generated
+ * rig) › "answers an owner-directed hold with an owner-directed outcome", ›
+ * "refuses a ticketed outcome aimed at an owner-directed detection" and ›
+ * "refuses an owner-directed outcome when a ticketed hold is the only one this
+ * run carries — and leaves that hold latched".
+ *
+ * It refuses without a run, without a matching revalidation, and with any word
+ * but `true`/`false`, and writes nothing then. The typed resolution names the
+ * stable detection id and clears only the matching run-level hold — and only a
+ * hold whose id it actually names, which is why an owner-directed outcome
+ * cannot release a ticketed one. Exit 2 on `hold` or `unverifiable`, 0 on
+ * `continue`, and 1 when the call cannot be acted on (unknown point, neither
+ * mode or both, a base that is not a revision — or, on the paths that reach it,
+ * a queue config that does not resolve) — and then nothing is journalled,
+ * because a refusal is not an answer.
  *
  * ⚠ It reads `<base>` as it is in this checkout and never updates the remote
  * ref itself; `pr-ship` step 1 does that before calling this. A stale ref
@@ -396,8 +414,17 @@ const ownerDirectedResult = ({ point, base, mergeBase, cited, changed, now, runD
   const held = source.length > 0;
   return {
     schemaVersion: CLAIM_SCHEMA_VERSION,
+    // 🔴 `mergeBase` is in the hash, and it is what keeps this id from being a
+    // CONSTANT. Without it the digest was `{mode, point, source}` alone — the
+    // same value for every `continue` that has ever run, and the same for any
+    // two holds naming the same paths. `revalidation-report.mjs` flattens every
+    // run into one typed-resolution index, so one `--action-changed false`
+    // recorded last week would mark a genuine hold today as already answered:
+    // the metric the report exists to produce, quietly wrong. It stays stable
+    // across RETRIES of the same checkpoint on the same branch, which is the
+    // property `answerUnverifiable`'s identity has and the one that matters.
     id: createHash('sha256')
-      .update(JSON.stringify({ mode: OWNER_DIRECTED, point, source }))
+      .update(JSON.stringify({ mode: OWNER_DIRECTED, point, mergeBase, source }))
       .digest('hex'),
     ticket: null,
     mode: OWNER_DIRECTED,
@@ -588,9 +615,16 @@ if (invokedDirectly()) {
     // This one is adapter-independent because `recordRevalidationHold` is.
     const hold = state.revalidationHold;
     if (hold) {
+      // A malformed hold still refuses — it is a hold either way — but it must
+      // not print `undefined at undefined`, which reads as a broken command
+      // rather than as the stop it is.
+      const describe = (value, fallback) => (typeof value === 'string' ? value : fallback);
       refuse(
         `--owner-directed refused: this run carries an unresolved revalidation hold ` +
-          `(${hold.ticket} at ${hold.checkpoint}, ${hold.result}, detection ${hold.detectionId}). ` +
+          `(${describe(hold.ticket, 'an unnamed item')} at ` +
+          `${describe(hold.checkpoint, 'an unnamed checkpoint')}, ` +
+          `${describe(hold.result, 'result unrecorded')}, detection ` +
+          `${describe(hold.detectionId, 'unrecorded')}). ` +
           'Resolve it with `revalidate.mjs outcome`; re-running the checkpoint in the other ' +
           'mode is not a resolution, it is the bypass this mode refuses.',
       );
@@ -665,13 +699,21 @@ if (invokedDirectly()) {
 
     if (runDir) {
       recordEvent({ runDir, kind: 'revalidation', data: result, now: result.observedAt });
-      // 🔴 No run-level revalidation hold is recorded here, and that is a
-      // decision rather than an omission. `recordRevalidationHold` keys a hold
-      // by ticket id and `outcome` clears one by naming that id; owner-directed
-      // work has no id to name, so a hold written here could never be cleared
-      // and every later selection in this run would stop on it forever. The
-      // exit code below is the stop. A latch nothing can release is not a
-      // stronger stop, it is an unusable run.
+      // 🔴 No run-level revalidation hold is recorded here, and the reason is
+      // NOT the one first written down. That said "a hold written here could
+      // never be cleared" — which stopped being true the moment `outcome
+      // --owner-directed` computed the very id `clearRevalidationHold` matches
+      // on. The real reason is narrower: `recordRevalidationHold` requires a
+      // string ticket, and this mode has none to give it without inventing
+      // one, which is the thing the whole mode refuses to do.
+      //
+      // ⚠ **State the asymmetry rather than let a reader assume symmetry.** A
+      // ticketed hold has TWO stops — the exit code, and a latch that
+      // `queue/index.mjs` and `unresolvedBlockingDetectionOf` both read (the
+      // latter also requires a string ticket, so it skips this one). An
+      // owner-directed hold has ONE: the exit code below. A caller who ignores
+      // it is not stopped a second time. Widening the latch to a ticketless
+      // hold is a run-state schema change — Tier 2, and not this hotfix's.
     }
 
     if (args.json) {

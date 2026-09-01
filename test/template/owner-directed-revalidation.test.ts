@@ -94,8 +94,13 @@ const fixture = async (): Promise<Fixture> => {
   await mkdir(origin);
   await git(['init', '--bare', '-b', 'master'], origin);
   await git(['clone', '-q', origin, clone], root);
+  // 🔴 The seed carries the temp root, so two fixtures are two DIFFERENT
+  // repositories. Without it the content, the author and the message were all
+  // fixed, so two fixtures built inside the same second produced byte-identical
+  // commits — identical shas, identical merge-bases — and the detection-id test
+  // below compared a repository with itself while claiming to compare two.
   for (const name of ['a.txt', 'b.txt', 'c.txt']) {
-    await writeFile(path.join(clone, name), `${name} v1\n`);
+    await writeFile(path.join(clone, name), `${name} v1 in ${root}\n`);
   }
   await git(['add', '-A'], clone);
   await git(['commit', '-q', '-m', 'seed'], clone);
@@ -583,6 +588,40 @@ describe('revalidate.mjs — an owner-directed HOLD can be answered (RP-94)', ()
     expect(record.data.actionRequired).toBe(false);
   });
 
+  // The detection id must not be a constant. `revalidation-report.mjs` indexes
+  // typed resolutions across EVERY run, so an id depending only on the mode,
+  // the point and the drifted paths would let one `--action-changed false`
+  // recorded long ago mark a later, genuine hold as already answered.
+  //
+  // ⚠ What this buys, stated exactly rather than overclaimed: the id separates
+  // different points of history, because `mergeBase` is in it. It does NOT make
+  // one hold unique per run — the same branch at the same merge base with the
+  // same drift is deliberately the same id, which is what lets an outcome
+  // answer a retry of the same checkpoint. That is the tradeoff
+  // `answerUnverifiable`'s identity already makes, and the test below pins both
+  // halves of it.
+  it('gives two different branch states two different detection ids', async () => {
+    const first = await fixture();
+    await first.moveMain(['a.txt']);
+    const a = await jsonOf(await ownerDirected(first, ['--json']));
+
+    const second = await fixture();
+    await second.moveMain(['a.txt']);
+    const b = await jsonOf(await ownerDirected(second, ['--json']));
+
+    // same mode, same point, same `source` — and still distinguishable
+    expect(a.source).toEqual(b.source);
+    expect((a as unknown as { id: string }).id).not.toBe((b as unknown as { id: string }).id);
+  });
+
+  it('gives the same branch state the same id on a retry, so one outcome answers the retry too', async () => {
+    const f = await fixture();
+    await f.moveMain(['a.txt']);
+    const once = await jsonOf(await ownerDirected(f, ['--json']));
+    const twice = await jsonOf(await ownerDirected(f, ['--json']));
+    expect((once as unknown as { id: string }).id).toBe((twice as unknown as { id: string }).id);
+  });
+
   it('refuses a ticketed outcome aimed at an owner-directed detection', async () => {
     const f = await fixture();
     await f.moveMain(['a.txt']);
@@ -598,6 +637,67 @@ describe('revalidate.mjs — an owner-directed HOLD can be answered (RP-94)', ()
     ]);
     expect(r.code, r.out).toBe(1);
     expect(r.stderr).toMatch(/no revalidation of null at BEFORE_PR/);
+  });
+
+  // 🔴 The mutation this pins: `e.data?.mode === OWNER_DIRECTED` → `true` in
+  // the outcome match. The suite was green under it, because the positive test
+  // has only one detection in the run, the cross-match test exercises the other
+  // arm, and the empty-run refusal below refuses either way. What the mutation
+  // buys is the round-1 bypass coming back through the door opened to fix the
+  // round-1 prose contradiction: an owner-directed outcome would match the
+  // TICKETED detection and hand its id to `clearRevalidationHold`, releasing
+  // the latch the hold refusal exists to hold shut.
+  //
+  // The second assertion is the one that matters. Asserting the message alone
+  // would go green again the day somebody rewords it; asserting that the hold
+  // is STILL THERE is about the consequence.
+  it('refuses an owner-directed outcome when a ticketed hold is the only one this run carries — and leaves that hold latched', async () => {
+    const f = await fixture();
+    const configPath = path.join(f.clone, 'queue.json');
+    await writeFile(configPath, JSON.stringify({ adapter: 'jira', options: { project: 'RP' } }));
+    const bare = { ...f.env };
+    for (const key of ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN']) delete bare[key];
+    const ticketed = await run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_PR',
+        '--ticket',
+        'RP-1',
+        '--base',
+        'origin/master',
+        '--config',
+        configPath,
+      ],
+      f.clone,
+      bare,
+    );
+    expect(ticketed.code, ticketed.out).toBe(2);
+    const holdBefore = (
+      JSON.parse(await readFile(path.join(f.runDir, 'state.json'), 'utf8')) as {
+        revalidationHold: { detectionId: string };
+      }
+    ).revalidationHold;
+    expect(holdBefore.detectionId).toBeTruthy();
+
+    const r = await revalidate(f, [
+      'outcome',
+      '--point',
+      'BEFORE_PR',
+      '--owner-directed',
+      '--action-changed',
+      'false',
+    ]);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stderr).toMatch(/no revalidation of owner-directed work at BEFORE_PR/);
+    // 🔴 the consequence: the ticketed hold is untouched
+    const holdAfter = (
+      JSON.parse(await readFile(path.join(f.runDir, 'state.json'), 'utf8')) as {
+        revalidationHold?: { detectionId: string };
+      }
+    ).revalidationHold;
+    expect(holdAfter?.detectionId).toBe(holdBefore.detectionId);
   });
 
   it('refuses an owner-directed outcome when this run holds no owner-directed detection', async () => {
