@@ -6,6 +6,11 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+// @ts-expect-error - the rulebook scripts are .mjs without type declarations
+import { safeReason } from '../../.claude/scripts/revalidate.mjs';
+// @ts-expect-error - see above
+import { DEFAULT_SCAN_LIMIT } from '../../.claude/scripts/lib/secrets.mjs';
+
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const script = path.join(repoRoot, '.claude', 'scripts', 'revalidate.mjs');
@@ -29,8 +34,11 @@ const script = path.join(repoRoot, '.claude', 'scripts', 'revalidate.mjs');
 
 /** Runs the script with the credentials the jira adapter needs deliberately absent. */
 const runRevalidate = async (cwd: string, args: string[], env: Record<string, string> = {}) => {
-  const base = { ...process.env, ...env };
+  const base = { ...process.env };
+  // strip FIRST, then apply the caller's override — the other order deleted the
+  // very variables a caller was trying to set, which made a test unfalsifiable
   for (const key of ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN']) delete base[key];
+  Object.assign(base, env);
   try {
     const { stdout, stderr } = await exec(process.execPath, [script, ...args], { cwd, env: base });
     return { code: 0, stdout, stderr };
@@ -145,16 +153,58 @@ describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', (
     expect(payload.result).toBe('UNVERIFIABLE');
   });
 
-  it('carries no credential value, even when the environment has one', async () => {
-    const secret = ['npm', 'SECRETVALUE', Date.now().toString(36)].join('_');
-    const result = await runRevalidate(
-      work,
-      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
-      { JIRA_API_TOKEN: '' },
-    );
-    expect(`${result.stdout}${result.stderr}`).not.toContain(secret);
-    // and the reason names the VARIABLES, which is what a caller acts on
+  it('names the environment variables in the published reason — that is what a caller acts on', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      config,
+      '--json',
+    ]);
     expect(result.stdout).toMatch(/JIRA_/);
+  });
+
+  // 🔴 The control that justifies publishing adapter text at all, tested where it
+  // lives rather than only through a subprocess. The previous version of this
+  // suite asserted on a value it never gave the child, and a reviewer proved the
+  // point by replacing the guard with `true` — every test stayed green while
+  // every adapter message was published raw.
+  describe('safeReason — the only net on text that reaches stdout and the run journal', () => {
+    it('publishes a message that names only environment variables', () => {
+      const message =
+        'the jira adapter needs JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN in the environment.';
+      expect(safeReason(message)).toBe(message);
+    });
+
+    it('withholds a message carrying a credential-shaped value', () => {
+      // assembled at runtime so this file never carries a credential shape —
+      // the repo's own sweep would otherwise report its test data as a leak
+      const token = `ATATT3x${'A1b2C3d4E5'.repeat(6)}`;
+      const withheld = safeReason(`jira GET /rest/api/3/issue failed: 401 (${token})`);
+      expect(withheld).not.toContain(token);
+      expect(withheld).toMatch(/withheld/i);
+    });
+
+    it('withholds rather than redacting in place — no part of the message survives', () => {
+      const token = `ATATT3x${'A1b2C3d4E5'.repeat(6)}`;
+      const withheld = safeReason(`base=https://jira.example.com token=${token}`);
+      expect(withheld).not.toContain('jira.example.com');
+    });
+
+    it('never publishes more than it scanned', () => {
+      const token = `ATATT3x${'A1b2C3d4E5'.repeat(6)}`;
+      const published = safeReason(`${'x'.repeat(DEFAULT_SCAN_LIMIT + 10)}${token}`);
+      expect(published).not.toContain(token);
+    });
+
+    it('is total on a non-string, rather than throwing inside a catch block', () => {
+      expect(safeReason(undefined)).toBe('');
+      expect(safeReason(null)).toBe('');
+    });
   });
 
   it('still refuses an unusable invocation as before — this did not swallow argument errors', async () => {

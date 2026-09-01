@@ -11,7 +11,9 @@
  * - `.rig/claims/<ticket>.json` carries versioned, content-blind `scope` and
  *   `commentary` fingerprint sets. Scope is authoritative at BEFORE_PR;
  *   commentary is observed but does not hold until BEFORE_CLOSE. Missing,
- *   untracked or unreadable claim state is `UNVERIFIABLE` and exits 2.
+ *   untracked or unreadable claim state is `UNVERIFIABLE` and exits 2. So is a
+ *   tracker this script cannot read at all (RP-64) — that one means the question
+ *   was never put, rather than that the claim record is unreadable.
  * - `main:<path>` — what the default branch changed since this branch forked
  *   (`git merge-base <base> HEAD` … `<base>`), intersected with the CITED
  *   paths. Cited is a labelled assumption, not a recorded fact: the paths the
@@ -72,7 +74,7 @@ import {
   unverifiableResult,
   withAdditionalDrift,
 } from './lib/claim-records.mjs';
-import { findSecretValues } from './lib/secrets.mjs';
+import { DEFAULT_SCAN_LIMIT, findSecretValues } from './lib/secrets.mjs';
 
 // Derived from the one source, never restated here (AR-137).
 export const POINTS = REVALIDATES;
@@ -168,14 +170,40 @@ const invokedDirectly = () => {
  *
  * The messages this is written for name environment VARIABLES rather than their
  * values, and naming them is exactly what the caller acts on. But an adapter is
- * free to put a URL or a response body in a message, and this text is published
- * into a verdict a run journals — so it is checked against the one credential
- * vocabulary this repository has before it goes anywhere.
+ * free to put a URL or a response body into a message, and this text is
+ * published to stdout and into a verdict a run journals — neither of which
+ * `guard-secret-file` or `validate-no-secrets` can see — so it is checked
+ * against the one credential vocabulary this repository has before it goes
+ * anywhere.
+ *
+ * ⚠ **It is defence in depth, not a general redacter, and the vocabulary's own
+ * blind spots are its blind spots.** Measured on the shapes an adapter could
+ * plausibly produce: an Atlassian token value, an opaque token after a
+ * credential keyword, and a token in a query string are WITHHELD; a basic-auth
+ * URL password, `Authorization: Bearer <opaque>` and `Authorization: Basic
+ * <base64>` are NOT — `secrets.mjs` names those as outside its vocabulary. No
+ * adapter in this repository puts any of them in a message (`jira.mjs` builds
+ * errors from method, route and status only), which is what makes this a second
+ * layer rather than the only one.
+ *
+ * All-or-nothing on purpose: `findSecretValues` never returns the matched text,
+ * so redacting in place would need a second matcher, and a partial redacter is
+ * where redacters leak.
+ *
+ * Exported so the control itself is testable rather than only reachable through
+ * a subprocess. Pinned in the generator's `test/template/revalidate-adapter.test.ts`
+ * — absent in a generated rig — › "publishes a message that names only environment variables"
+ * and › "withholds a message carrying a credential-shaped value".
  */
-const safeReason = (text) =>
-  findSecretValues(String(text ?? '')).length === 0
-    ? String(text ?? '')
+export const safeReason = (text) => {
+  // Scan and publish the SAME prefix: findSecretValues reads at most
+  // DEFAULT_SCAN_LIMIT, and publishing more than was scanned would ship the
+  // unscanned tail verbatim.
+  const scanned = String(text ?? '').slice(0, DEFAULT_SCAN_LIMIT);
+  return findSecretValues(scanned).length === 0
+    ? scanned
     : 'the queue adapter could not be read; its message is withheld because it carries a credential-shaped value';
+};
 
 /**
  * The revalidation boundary for a tracker that cannot be read (RP-64).
@@ -185,7 +213,15 @@ const safeReason = (text) =>
  * branch is still the branch the run took up, and a caller that read it as a
  * pass would carry an unchecked claim into a PR. A drift the adapter DID report
  * still comes back as `hold`, and an unchanged claim still as `continue`;
- * this only replaces the crash.
+ * this only replaces the crash. Pinned in the generator's
+ * `test/template/revalidate-adapter.test.ts` — absent in a generated rig — ›
+ * "holds the same way at BEFORE_CLOSE, which reads the adapter through a different call"
+ * and › "still refuses an unusable invocation as before — this did not swallow argument errors".
+ *
+ * The detection `identity` names the point and the operation and NOT the
+ * message, so it is stable across retries of the same outage — which also means
+ * two unrelated failures at one operation share an id, and one `outcome`
+ * answers both.
  */
 const answerUnverifiable = ({ runDir, ticket, point, json }, operation, cause) => {
   const result = unverifiableResult({
@@ -197,8 +233,17 @@ const answerUnverifiable = ({ runDir, ticket, point, json }, operation, cause) =
     identity: `adapter-unreadable:${operation}`,
   });
   if (runDir) {
-    recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
-    recordRevalidationHold(runDir, result);
+    // Announce, never throw: a stale or unwritable RIG_RUN_DIR made these throw
+    // INSIDE the catch that was handling the adapter failure, and the run ended
+    // on the Node stack trace this whole change exists to remove.
+    try {
+      recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+      recordRevalidationHold(runDir, result);
+    } catch (error) {
+      process.stderr.write(
+        `could not journal this revalidation into ${runDir}: ${error?.message ?? error}\n`,
+      );
+    }
   }
   if (json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -220,7 +265,9 @@ const readAdapter = async (operation, read, context) => {
     return await read();
   } catch (error) {
     answerUnverifiable(context, operation, error);
-    return null; // unreachable: answerUnverifiable exits
+    // answerUnverifiable exits; throwing rather than returning null keeps a
+    // null ticket from ever reaching revalidateClaim and resolving to continue.
+    throw new Error('unreachable: answerUnverifiable did not exit', { cause: error });
   }
 };
 
