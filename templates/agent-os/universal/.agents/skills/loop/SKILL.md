@@ -164,9 +164,8 @@ rig — › "blocks a hook-config edit with an empty allow-list, naming path, it
 
 ⚠ **The export outlives the run's own calls.** Everything the session spawns
 inherits it — and a test suite that spawns the queue CLI would write fixture
-records into this run's trace (measured once: 38 fixture selections and 22 fixture
-revalidation events in one session, two tests exiting 1). So preflight refuses
-to start on a `RIG_RUN_DIR` already exported. The generator's own test harness
+records into this run's trace. So preflight refuses to start on a
+`RIG_RUN_DIR` already exported. The generator's own test harness
 also scrubs the variable before any test file loads — its `test/setup-env.ts`,
 pinned by its `test/template/rig-run-dir-scrub.test.ts` (absent in a generated
 rig) › "holds with the variable exported around the whole vitest process" — and **neither file ships
