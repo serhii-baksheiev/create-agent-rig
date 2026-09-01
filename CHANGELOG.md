@@ -51,10 +51,10 @@ the skill step that calls it.
   it; the run's stop inputs are read fail-closed, so an unreadable
   `state.json` refuses instead of reading as an empty run.
 
-  An owner-directed HOLD is answered the same way a ticketed one is —
-  `revalidate.mjs outcome --point BEFORE_PR --owner-directed --action-changed
-<true | false>` — which addresses the detection by mode, since it carries no
-  ticket to name.
+  An owner-directed HOLD is answered the same way a ticketed one is, with
+  `revalidate.mjs outcome` at the same point, passing `--owner-directed`
+  instead of `--ticket`. It addresses the detection by mode, since that
+  detection carries no ticket to name.
 
   ⚠ Its stated limits, because a governance mode is trusted as far as it is
   described. Nothing can prove an item does not exist. With no `RIG_RUN_DIR`
