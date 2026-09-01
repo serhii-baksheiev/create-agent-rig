@@ -16,8 +16,12 @@
  *   question was never put, rather than that the claim record is unreadable.
  *   ⚠ Reads, precisely: the queue CONFIG failing to resolve at all — an unknown
  *   adapter name, a malformed `queue.json` — is exit 1, the refusal path, not a
- *   hold. It no longer prints a stack trace either, but it is the operator's to
- *   fix rather than a claim waiting on a tracker.
+ *   hold, and it is the operator's to fix rather than a claim waiting on a
+ *   tracker. Pinned in the generator's
+ *   `test/template/revalidate-adapter.test.ts` — absent in a generated rig —
+ *   › "refuses an adapter name it cannot resolve with a readable message, not a
+ *   stack trace" and › "refuses a queue config that is not valid JSON with a
+ *   readable message, not a stack trace".
  * - `main:<path>` — what the default branch changed since this branch forked
  *   (`git merge-base <base> HEAD` … `<base>`), intersected with the CITED
  *   paths. Cited is a labelled assumption, not a recorded fact: the paths the
@@ -49,10 +53,10 @@
  * without a run, without a matching revalidation, and with any word but
  * `true`/`false`, and writes nothing then. The typed resolution names the
  * stable detection id and clears only the matching run-level hold. Exit 2 on
- * `hold` or `unverifiable`, 0 on `continue`, and 1 when
- * the arguments cannot be acted on (unknown point, no ticket, a base that is
- * not a revision) — and then nothing is journalled, because a refusal is not
- * an answer.
+ * `hold` or `unverifiable`, 0 on `continue`, and 1 when the call cannot be
+ * acted on (unknown point, no ticket, a base that is not a revision — or, on
+ * the paths that reach it, a queue config that does not resolve) — and then
+ * nothing is journalled, because a refusal is not an answer.
  *
  * ⚠ It reads `<base>` as it is in this checkout and never updates the remote
  * ref itself; `pr-ship` step 1 does that before calling this. A stale ref
@@ -211,10 +215,26 @@ const invokedDirectly = () => {
  * and › "withholds a message carrying a credential-shaped value".
  */
 /**
- * Credentials in a URL's userinfo — `//user:secret@host`. One forward pass, both
- * character classes negated and bounded, so it cannot backtrack.
+ * Userinfo present in a URL at all — `//<anything but a slash or space>@host`.
+ * One forward pass, one negated bounded class, so it cannot backtrack.
+ *
+ * 🔴 It matches the CLASS, not a list of spellings, and that is the whole
+ * lesson of how it got here. It first required `user:pass@`, which published
+ * `//<token>@host`. Widened to make the password optional, it published
+ * `//:<token>@host` — the shape `https://${JIRA_EMAIL}:${JIRA_API_TOKEN}@host`
+ * degrades to when the first variable is unset, so the likeliest accident of
+ * the three. Two rounds of enumerating forms; the invariant was always "there
+ * is userinfo here", and it is shorter than any enumeration of it.
+ *
+ * The class excludes `/` and whitespace, which is what keeps an ordinary URL,
+ * a bare email address in prose, and a registry path carrying an `@scope`
+ * published. Pinned in the generator's `test/template/revalidate-adapter.test.ts`
+ * — absent in a generated rig — › "withholds a URL whose userinfo is %s — every
+ * shape, not the ones enumerated so far" and › "still publishes a message
+ * carrying %s", which are tables rather than cases so a future narrowing that
+ * handles the known spellings and reopens the class goes red.
  */
-const URL_USERINFO = /\/\/[^\s/@:]+(?::[^\s/@]*)?@/;
+const URL_USERINFO = /\/\/[^\s/@]*@/;
 
 export const safeReason = (text) => {
   // Scan and publish the SAME prefix: findSecretValues reads at most

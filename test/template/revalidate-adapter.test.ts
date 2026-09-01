@@ -213,6 +213,68 @@ describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', (
       expect(withheld).toMatch(/withheld/i);
     });
 
+    // 🔴 The third spelling, and the likeliest accident of the lot: a rig that
+    // builds its base URL as `https://${JIRA_EMAIL}:${JIRA_API_TOKEN}@host`
+    // with JIRA_EMAIL unset produces exactly this — an empty username and the
+    // API token in the password position.
+    it('withholds userinfo that is a password with no username at all', () => {
+      const secret = ['placeholder', 'userinfo', '9f8e7d6c5b4a'].join('-');
+      const withheld = safeReason(
+        `the queue adapter could not be read (listEligible): Request cannot be constructed from a URL that includes credentials: https://:${secret}@jira.example.invalid/rest`,
+      );
+      expect(withheld).not.toContain(secret);
+      expect(withheld).toMatch(/withheld/i);
+    });
+
+    // 🔴 The property, not the spelling. Each fix so far handled the form that
+    // had just been found and left the class open — a `:` was required, then a
+    // non-empty username was. This table is the standing statement: whatever
+    // half of the userinfo is empty, the reason is withheld. A future narrowing
+    // that handles four shapes and misses a fifth fails here rather than in a
+    // run journal.
+    const userinfo = ['placeholder', 'userinfo', 'c3d4e5f6a1b2'].join('-');
+    const credentialBearingUrls: Array<[string, string]> = [
+      ['a username and a password', `https://bot%40example.com:${userinfo}@jira.example.invalid/x`],
+      ['a username that is the whole credential', `https://${userinfo}@jira.example.invalid/x`],
+      ['a username with an empty password', `https://${userinfo}:@jira.example.invalid/x`],
+      ['a password with an empty username', `https://:${userinfo}@jira.example.invalid/x`],
+      [
+        'a percent-encoded password',
+        `https://bot%40example.com:${userinfo}%2Fx@jira.example.invalid/x`,
+      ],
+    ];
+
+    it.each(credentialBearingUrls)(
+      'withholds a URL whose userinfo is %s — every shape, not the ones enumerated so far',
+      (_shape, url) => {
+        const withheld = safeReason(`the queue adapter could not be read (listEligible): ${url}`);
+        expect(withheld).not.toContain(userinfo);
+        expect(withheld).toMatch(/withheld/i);
+      },
+    );
+
+    // The other half of that property, and the reason closing the class is not
+    // free: an `@` near a `//` is ordinary in adapter text. These are what a
+    // widening must not sweep up, pinned so the next person can widen safely.
+    const benignMessages: Array<[string, string]> = [
+      [
+        'an email address beside an ordinary URL',
+        'contact bot@example.com about https://jira.example.com/browse/ZZ-1',
+      ],
+      [
+        'a URL followed later in the sentence by an email address',
+        'https://jira.example.com/browse/ZZ-1 is assigned to bot@example.com',
+      ],
+      [
+        'a registry path containing an @scope',
+        'GET https://registry.example.com/@scope/queue-adapter failed: 404',
+      ],
+    ];
+
+    it.each(benignMessages)('still publishes a message carrying %s', (_shape, message) => {
+      expect(safeReason(message)).toBe(message);
+    });
+
     it('withholds rather than redacting in place — no part of the message survives', () => {
       const token = `ATATT3x${'A1b2C3d4E5'.repeat(6)}`;
       const withheld = safeReason(`base=https://jira.example.com token=${token}`);
@@ -357,11 +419,14 @@ describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', (
     expect(payload.result).toBe('UNVERIFIABLE');
   });
 
-  // 🔴 Same family as the invocation refusal below, and the last raw stack
-  // trace this script can still print. `readAdapter` wraps every adapter CALL,
-  // so an unreachable tracker is a verdict — but `loadConfig` and
-  // `resolveAdapter` run OUTSIDE that wrapper, so a queue configuration that
-  // cannot be resolved at all still ends on Node's uncaught printer.
+  // 🔴 Same family as the invocation refusal below. `readAdapter` wraps every
+  // adapter CALL, so an unreachable tracker is a verdict — but `loadConfig`
+  // and `resolveAdapter` run OUTSIDE that wrapper, so a queue configuration
+  // that cannot be resolved at all still ended on Node's uncaught printer.
+  //
+  // NOT the last one in the script: the `outcome` branch reads the run journal
+  // before any of these guards, and a corrupt `events.jsonl` — what a run
+  // killed mid-append leaves — still prints one. That is outside this change.
   //
   // The exit code is deliberately NOT the thing under test: a configuration the
   // operator has to fix is a refusal (exit 1, the `refuse` helper), not a hold.
