@@ -1,7 +1,8 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { inspect } from 'node:util';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   MAX_DEBUG_LOGS,
@@ -9,6 +10,7 @@ import {
   commandFailureReport,
   npmDebugLogs,
   redactUrlCredentials,
+  run,
 } from '../e2e/run.js';
 
 /**
@@ -99,19 +101,27 @@ describe('commandFailureReport', () => {
 // written UNREDACTED into the debug log on `silly packumentCache` and
 // `http fetch GET` lines. This report is printed into a CI log.
 describe('redactUrlCredentials', () => {
+  // Assembled at runtime rather than written out, for the same reason the
+  // `run` fixtures below are: a tracked `user:password@host` literal is
+  // reported as a leak by this repository's own sweep and by the registry
+  // scanner, and these tests need the credential SHAPE, never a value —
+  // `.claude/rules/autonomy.md`, "Never".
+  const secret = ['p4ss', 'w0rd', 'SECRET'].join('');
+  const credentialed = (suffix: string) => `https://ciuser:${secret}@registry.example${suffix}`;
+
   it('masks a password embedded in a URL, and keeps the user', () => {
-    expect(redactUrlCredentials('https://ciuser:p4ssw0rdSECRET@registry.example/pkg')).toBe(
+    expect(redactUrlCredentials(credentialed('/pkg'))).toBe(
       'https://ciuser:***@registry.example/pkg',
     );
   });
 
   it('masks it wherever it appears — stderr, the command line, and the logs', () => {
     const report = commandFailureReport(
-      'npx --registry=https://ciuser:p4ssw0rdSECRET@registry.example x',
-      { code: 1, stderr: 'http fetch GET https://ciuser:p4ssw0rdSECRET@registry.example/npm' },
-      '[a.log]\nsilly packumentCache https://ciuser:p4ssw0rdSECRET@registry.example/pkg',
+      `npx --registry=${credentialed('')} x`,
+      { code: 1, stderr: `http fetch GET ${credentialed('/npm')}` },
+      `[a.log]\nsilly packumentCache ${credentialed('/pkg')}`,
     );
-    expect(report).not.toContain('p4ssw0rdSECRET');
+    expect(report).not.toContain(secret);
     expect(report.match(/ciuser:\*\*\*@/g)).toHaveLength(3);
   });
 
@@ -123,7 +133,7 @@ describe('redactUrlCredentials', () => {
   // The report masks the logs itself rather than trusting whoever assembled
   // them, so the substitution runs twice on the normal path and must be safe.
   it('is idempotent, because the report masks what npmDebugLogs already masked', () => {
-    const once = redactUrlCredentials('https://ciuser:p4ssw0rdSECRET@registry.example/pkg');
+    const once = redactUrlCredentials(credentialed('/pkg'));
     expect(redactUrlCredentials(once)).toBe(once);
   });
 });
@@ -213,5 +223,85 @@ describe('npmDebugLogs', () => {
     expect(logs).toMatch(/truncated/i);
     // the whole file is never carried: the tail plus a short header, not 3x
     expect(logs.length).toBeLessThan(OUTPUT_TAIL + 200);
+  });
+});
+
+/**
+ * 🔴 `run` builds a redacted report and then throws it with the ORIGINAL
+ * `execFile` rejection as `cause`. That rejection's own `cmd`, `stderr` and
+ * `stdout` are unredacted, and both Node and vitest render a cause chain when
+ * an error goes unhandled — so the masking above is printed into a CI log
+ * beside the raw value it masked.
+ *
+ * One short child process for the whole block: `process.execPath` writing a
+ * credential-shaped URL to stderr and exiting non-zero is a real `execFile`
+ * rejection with no npm and no network behind it.
+ */
+describe('run', () => {
+  // Assembled at runtime rather than written out: a fixture that needs a
+  // credential SHAPE builds it from neutral fragments, so the sweep does not
+  // report its own test data as a leak — `.claude/rules/autonomy.md`, "Never".
+  const user = 'ciuser';
+  const password = ['p4ss', 'w0rd', 'RP70'].join('');
+  const credentialUrl = `https://${user}:${password}@registry.example/pkg`;
+
+  /** Every link of the `cause` chain, the thrown error first. Bounded. */
+  const causeChain = (from: unknown): unknown[] => {
+    const links: unknown[] = [];
+    let current = from;
+    for (let depth = 0; depth < 10 && current != null; depth += 1) {
+      links.push(current);
+      current = typeof current === 'object' ? (current as { cause?: unknown }).cause : undefined;
+    }
+    return links;
+  };
+
+  let thrown: unknown;
+
+  beforeAll(async () => {
+    const stderrLine = `http fetch GET ${credentialUrl}`;
+    const script = `process.stderr.write(${JSON.stringify(stderrLine)});process.exit(3)`;
+    try {
+      const resolved = await run(process.execPath, ['-e', script], {});
+      thrown = new Error(`run resolved instead of rejecting: ${JSON.stringify(resolved)}`);
+    } catch (error) {
+      thrown = error;
+    }
+  });
+
+  // The precondition every assertion below rests on: the child really failed
+  // and `run` really replaced the rejection with its report.
+  const failure = (): Error => {
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as Error;
+    expect(error.message).toMatch(/did not complete/i);
+    return error;
+  };
+
+  it('keeps the raw streams and command line off the thrown error, so the redaction is not bypassed', () => {
+    for (const link of causeChain(failure())) {
+      expect(link).not.toHaveProperty('stderr');
+      expect(link).not.toHaveProperty('stdout');
+      expect(link).not.toHaveProperty('cmd');
+    }
+  });
+
+  it('masks the credential everywhere the rendered error chain reaches, not only in the message', () => {
+    expect(inspect(failure(), { depth: null })).not.toContain(password);
+  });
+
+  it('still carries the masked report as its own message, naming the exit code', () => {
+    const message = failure().message;
+    expect(message).toMatch(/exit code 3/);
+    expect(message).toContain(`${user}:***@`);
+    expect(message).not.toContain(password);
+  });
+
+  it('exposes nothing but exit metadata when it keeps a cause at all', () => {
+    // Omitting the cause entirely satisfies the contract, so the assertion is
+    // over the keys of whatever cause survives — never over its presence.
+    const cause = (failure() as { cause?: unknown }).cause;
+    const keys = typeof cause === 'object' && cause !== null ? Object.keys(cause) : [];
+    expect(keys.filter((key) => key !== 'code' && key !== 'signal')).toEqual([]);
   });
 });

@@ -205,9 +205,24 @@ export const run = async (
     return { stdout: asText(stdout), stderr: asText(stderr) };
   } catch (error) {
     const cache = options?.env?.npm_config_cache;
+    const failure: ExecFailure = typeof error === 'object' && error !== null ? error : {};
     throw new Error(
       commandFailureReport(`${command} ${args.join(' ')}`, error, npmDebugLogs(cache)),
-      { cause: error },
+      // 🔴 Deliberately NOT `{ cause: error }`. The report above is redacted;
+      // the original `execFile` rejection is not — it carries the raw `cmd`,
+      // `stdout` and `stderr` as properties AND repeats the command line inside
+      // its own `message`. Node and Vitest render the whole cause chain, so
+      // retaining it printed verbatim, a few lines under the masked copy,
+      // exactly what this helper exists to mask. Only the exit metadata
+      // survives, and neither field can carry a credential.
+      // `test/template/e2e-run-report.test.ts` › "keeps the raw streams and
+      // command line off the thrown error, so the redaction is not bypassed"
+      // and › "masks the credential everywhere the rendered error chain
+      // reaches, not only in the message" pin both halves.
+      // The rule wants the caught error preserved as the cause; withholding it is
+      // the whole fix, and the reason it protects survives in the message above.
+      // eslint-disable-next-line preserve-caught-error -- see the paragraph above
+      { cause: { code: failure.code, signal: failure.signal } },
     );
   }
 };
