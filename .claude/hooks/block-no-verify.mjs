@@ -34,7 +34,10 @@ function main() {
     process.stderr.write(`${refusalText(parsed)}\n`);
     return 2;
   }
-  if (parsed.kind === 'absent') return 0;
+  // Positive test, not a list of the others: a member added later must not
+  // reach `raw.replace(…)` below with `undefined`, which throws, exits 1, and
+  // is read as allow.
+  if (parsed.kind !== 'string') return 0;
   const raw = parsed.command;
 
   // Strip quoted segments first: a commit message that merely MENTIONS a

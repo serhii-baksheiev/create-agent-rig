@@ -49,9 +49,26 @@ const GUARDS: Array<[string, string]> = [
   ['block-no-verify', universalHook('block-no-verify.mjs')],
 ];
 
+/**
+ * The list, read from the SAME tree the guards under test come from. Reading it
+ * from the dogfooded `.claude/` copy while spawning the authored ones would make
+ * this file's matrix depend on two trees agreeing — which `dogfood.test.ts` does
+ * pin, but that is its job, not this one's.
+ */
 const shellTools = async (): Promise<string[]> => {
   const mod = (await import(
-    path.join(repoRoot, '.claude', 'scripts', 'lib', 'shell-tools.mjs').replace(/\\/g, '/')
+    path
+      .join(
+        repoRoot,
+        'templates',
+        'agent-os',
+        'universal',
+        '.claude',
+        'scripts',
+        'lib',
+        'shell-tools.mjs',
+      )
+      .replace(/\\/g, '/')
   )) as { SHELL_TOOLS: string[] };
   return mod.SHELL_TOOLS;
 };

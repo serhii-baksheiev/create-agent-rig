@@ -55,14 +55,23 @@ export const readHookInput = () => {
 };
 
 /**
- * ── The shape of a shell command, decided in ONE place (RP-80) ──────────────
+ * ── The shape of a shell command, for the Never-tier SHELL guards (RP-80) ───
+ *
+ * One place, for the two guards that read `tool_input.command` on a shell tool —
+ * `guard-bash` and `block-no-verify`. It is deliberately NOT a repository-wide
+ * ruling on the word `command`: `guard-secret-file` reads an `apply_patch`
+ * `command` that is a **list of strings**, which is exactly the shape this
+ * module classifies as unreadable, and it is right to — the reasoning is in
+ * `docs/decisions/codex-adapter.md`. Routing a third guard through here without
+ * checking which shape its tool actually sends would start refusing input
+ * another guard exists to read.
  *
  * `.claude/rules/invariants.md` ("Refusing to inspect is a third outcome, not a
  * match and not an error") draws the line these guards need:
  *
  * - **absent** — nothing to judge, so the guard fails OPEN. A `Write` with no
  *   content and a shell tool with no `command` are the same case.
- * - **readable** — a string; the guard inspects it as it always did.
+ * - **`string`** — the guard inspects it as it always did.
  * - **present and unreadable** — the guard was handed something and can tell
  *   that it cannot read it. That is a REFUSAL: block, name the shape expected,
  *   and say to resend in that shape.
@@ -99,8 +108,7 @@ export const readHookInput = () => {
  * - An empty or whitespace-only string is READABLE and allowed. It is a
  *   command that does nothing, not a shape the guard failed to parse.
  * Pinned in hook-command-shape.test.ts (absent in a generated rig) ›
- * "refuses an unreadable command through %s while the kill
- * switch is armed"
+ * "refuses an unreadable command through %s while the kill switch is armed"
  * and › "allows an ABSENT command through %s".
  */
 
@@ -143,5 +151,14 @@ const unreadable = (field, got, expected) => ({
   remedy: `Resend the call with ${field} as ${expected}.`,
 });
 
-/** One refusal, one wording — so two guards cannot drift apart in what they say. */
-export const refusalText = (refusal) => `${refusal.reason} ${refusal.remedy}`;
+/**
+ * One refusal, one wording — so two guards cannot drift apart in what they say.
+ *
+ * It answers for the `unreadable` member only. Handed anything else it returns
+ * the empty string rather than `"undefined undefined"`: a guard that printed
+ * that would be reporting a refusal it cannot explain, and the caller could not
+ * act on it. The call sites below never do this today; the guard is here so a
+ * later one cannot introduce it silently.
+ */
+export const refusalText = (refusal) =>
+  refusal?.kind === 'unreadable' ? `${refusal.reason} ${refusal.remedy}` : '';
