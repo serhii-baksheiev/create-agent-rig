@@ -109,10 +109,12 @@ export const commandFailureReport = (command: string, error: unknown, npmDebugLo
   // landing inside a URL's userinfo leaves the password's suffix with no
   // `//user:` in front of it — the prefix the regex anchors on — so the
   // fragment was emitted verbatim while every later line came out masked.
-  // Measured: 31 of 41 swept cut positions leaked. The truncation count now
-  // reports the masked length, which is the honest figure for what is printed.
+  // Reverting this order makes the sweep in
   // `test/template/e2e-run-report.test.ts` › "masks a credential the stderr
-  // truncation cut through, wherever the cut lands" sweeps the boundary.
+  // truncation cut through, wherever the cut lands" report the offsets that
+  // leak — most of the positions it walks, and the test names them rather than
+  // a count here going quietly stale. The truncation count now reports the
+  // masked length, which is the honest figure for what is printed.
   const streams =
     section('child stderr', tail(redactUrlCredentials(stderr))) +
     section('child stdout', tail(redactUrlCredentials(stdout)));
@@ -141,14 +143,21 @@ const readTail = (file: string): string => {
     if (size <= want) return text;
     // 🔴 Reordering is not available here: only the last `OUTPUT_TAIL` bytes are
     // ever read, so the `//user:` the mask anchors on may never be in memory.
-    // The tail therefore begins mid-line, and that first partial line is the one
-    // fragment nothing downstream can mask — so it is dropped rather than
-    // published. A tail holding no line break at all is unmaskable by the same
-    // argument and yields no body: that costs a diagnostic npm does not emit
-    // (its log lines are far shorter than the window) and is the fail-closed
-    // answer for text that cannot be masked.
+    // The tail usually begins mid-line, and that fragment is the one thing
+    // nothing downstream can mask — so the first line is dropped whether or not
+    // it turned out to be complete. It is not always partial: when the window
+    // happens to start exactly at a line boundary the dropped line is whole,
+    // measured by constructing that case. Deciding it would take reading one
+    // byte before the window; the cost of not deciding is one line off an
+    // already-truncated log, never a leak, so it is dropped unconditionally.
+    // A tail holding no line break at all is unmaskable by the same argument
+    // and yields no body — the fail-closed answer for text that cannot be
+    // masked, at the cost of a diagnostic npm does not emit (its log lines are
+    // far shorter than the window).
     // `test/template/e2e-run-report.test.ts` › "masks a credential the log tail
-    // began inside, wherever the read starts" pins it.
+    // began inside, wherever the read starts" pins the drop, and
+    // › "publishes no body when the log tail holds no whole line that could be masked"
+    // pins the fail-closed branch.
     const firstBreak = text.indexOf('\n');
     const whole = firstBreak === -1 ? '' : text.slice(firstBreak + 1);
     return `… [${size - want} earlier bytes truncated] …\n${whole}`;

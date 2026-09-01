@@ -66,6 +66,17 @@ const straddled = (offset: number): string => {
   return 'n'.repeat(OUTPUT_TAIL) + STRADDLING + '\n' + whole + 'z'.repeat(pad);
 };
 
+/**
+ * The same cut, in a file that holds NO line break anywhere — so the kept
+ * window is one unterminated fragment: the `//user:` the mask anchors on is
+ * outside it, and there is no later whole line to fall back to. Nothing in this
+ * window can be masked, which is the case `straddled` cannot reach.
+ */
+const unbroken = (offset: number): string => {
+  const pad = OUTPUT_TAIL + offset - STRADDLING.length;
+  return 'n'.repeat(OUTPUT_TAIL) + STRADDLING + 'z'.repeat(pad);
+};
+
 /** Every cut position from the start of the URL to just past the password. */
 const CUTS = Array.from(
   { length: PASSWORD_AT - URL_AT + CUT_PASSWORD.length + 4 },
@@ -330,6 +341,40 @@ describe('npmDebugLogs', () => {
       if (leaksCredential(npmDebugLogs(cache))) leaked.push(offset);
     }
     expect(leaked).toEqual([]);
+  });
+
+  // 🔴 The fail-closed branch of the same reader, which every fixture above
+  // walks straight past: those windows all contain a line break, so a whole
+  // line always survives to be masked. A window with NO break has nothing that
+  // can be masked at all, and publishing it anyway republishes the very leak
+  // this file exists to refuse — so it yields a notice and no body.
+  it('publishes no body when the log tail holds no whole line that could be masked', async () => {
+    await writeLog('a-debug-0.log', unbroken(PASSWORD_AT + 4));
+    const unmaskable = npmDebugLogs(cache);
+
+    expect(unmaskable).toContain('[a-debug-0.log]');
+    expect(unmaskable).toMatch(/truncated/i);
+    expect(leaksCredential(unmaskable)).toBe(false);
+    // The property, not the notice's wording: whatever it says, it is the last
+    // thing said — nothing from the unmaskable window follows it.
+    const lines = unmaskable.split('\n');
+    const noticeAt = lines.findIndex((line) => /truncated/i.test(line));
+    expect(noticeAt).toBeGreaterThanOrEqual(0);
+    expect(
+      lines
+        .slice(noticeAt + 1)
+        .join('')
+        .trim(),
+    ).toBe('');
+
+    // The control, and the reason the emptiness above is evidence: the same
+    // file with the line break restored still publishes its later lines, masked.
+    // Without this, "no body" would also be satisfied by a reader that had
+    // stopped returning anything at all.
+    await writeLog('a-debug-0.log', straddled(PASSWORD_AT + 4));
+    const maskable = npmDebugLogs(cache);
+    expect(maskable).toContain(`${CUT_USER}:***@`);
+    expect(maskable.split('\n').length).toBeGreaterThan(lines.length);
   });
 });
 
