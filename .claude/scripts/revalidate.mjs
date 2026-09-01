@@ -5,6 +5,26 @@
  * run took up?
  *
  *   node .claude/scripts/revalidate.mjs --point BEFORE_PR --ticket <id> [--base origin/master] [--config <queue.json>] [--json]
+ *   node .claude/scripts/revalidate.mjs --point BEFORE_PR --owner-directed [--base origin/master] [--json]
+ *
+ * BEFORE_PR has two mutually exclusive modes and neither is inferred (RP-94):
+ * `--ticket` for a branch that is an item's take-up, `--owner-directed` for
+ * owner-directed work or a hotfix that has no item — the path `pr-ship` step 4
+ * already named while step 1 could not execute it. Passing both, or neither,
+ * is exit 1.
+ *
+ * Owner-directed mode reaches NO tracker, adapter or claim record: it runs the
+ * `main:<path>` comparison below and nothing else, and it is refused — exit 1,
+ * nothing journalled — when the run already declares a take-up, when the branch
+ * diff adds or modifies a tracked `.rig/claims/*.json`, at BEFORE_CLOSE, and on
+ * an `outcome`. Those four are what stop it being a way around a claim or
+ * revalidation failure; it never relaxes the drift comparison itself, and a
+ * `hold` there is the same exit 2.
+ *
+ * ⚠ Its own limit, stated because the mode is a governance surface: what makes
+ * a call owner-directed is the CALLER's word plus those four refusals. Nothing
+ * here can prove an item does not exist — only that this run declares none and
+ * this branch writes no claim.
  *
  * One existing checkpoint chain, with one authoritative durable baseline:
  *
@@ -66,6 +86,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +98,7 @@ import { takeUpEvidenceOf } from './queue/core.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 import { projectRootOfConfig } from './queue/index.mjs';
 import {
+  CLAIM_SCHEMA_VERSION,
   revalidateClaim,
   targetShaOf,
   unverifiableResult,
@@ -95,6 +117,7 @@ const parseArgs = (argv) => {
     outcome: false,
     point: null,
     ticket: null,
+    ownerDirected: false,
     base: 'origin/master',
     config: null,
     json: false,
@@ -105,6 +128,7 @@ const parseArgs = (argv) => {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (i === 0 && arg === 'outcome') args.outcome = true;
+    else if (arg === '--owner-directed') args.ownerDirected = true;
     else if (arg === '--json') args.json = true;
     else if (arg === '--action-changed') args.actionChanged = argv[++i] ?? null;
     else if (arg === '--note') args.note = argv[++i] ?? null;
@@ -300,6 +324,56 @@ const answerUnverifiable = ({ runDir, ticket, point, json }, operation, cause) =
   process.exit(2);
 };
 
+/**
+ * A tracked claim record, by path (RP-94). One spelling, used by the refusal
+ * below; `claimPathFor` builds the same shape from the other direction.
+ */
+const CLAIM_RECORD = /^\.rig\/claims\/[^/]+\.json$/;
+
+const OWNER_DIRECTED = 'owner-directed';
+
+/**
+ * The BEFORE_PR verdict for work that has no item (RP-94).
+ *
+ * It carries the SAME `main:<path>` drift decision the ticketed path reaches —
+ * this mode drops the claim comparison because there is no claim, and drops
+ * nothing else. `ticket` is `null` rather than a placeholder: a record naming
+ * an item that does not exist is worse than one that admits it has none, and
+ * every reader downstream distinguishes them by that field.
+ *
+ * Pinned in the generator's `test/template/owner-directed-revalidation.test.ts`
+ * — absent in a generated rig — › "runs BEFORE_PR with no item and no claim
+ * when the default branch did not move under the branch" and › "HOLDs when the
+ * default branch moved under a path the branch touches".
+ */
+const ownerDirectedResult = ({ point, base, mergeBase, cited, changed, now }) => {
+  const source = changed.map((path) => `main:${path}`);
+  const held = source.length > 0;
+  return {
+    schemaVersion: CLAIM_SCHEMA_VERSION,
+    id: createHash('sha256')
+      .update(JSON.stringify({ mode: OWNER_DIRECTED, point, source }))
+      .digest('hex'),
+    ticket: null,
+    mode: OWNER_DIRECTED,
+    point,
+    checkpoint: point,
+    result: held ? 'CHANGED' : 'CURRENT',
+    changed: held,
+    source,
+    action: held ? 'hold' : 'continue',
+    movedFingerprintSet: [],
+    sourcePointer: null,
+    evidence: {
+      claim: 'not compared: owner-directed work has no item, so there is no claim record',
+      tracker: 'not read: owner-directed mode resolves no queue adapter',
+    },
+    observedAt: now,
+    task: { changed: null, from: null, to: null },
+    main: { base, mergeBase, cited, changed },
+  };
+};
+
 /** Every adapter call in this script goes through here, or it can still crash. */
 const readAdapter = async (operation, read, context) => {
   try {
@@ -332,7 +406,37 @@ if (invokedDirectly()) {
   if (!known.includes(args.point)) {
     refuse(`unknown point: ${args.point ?? '(none)'}. This script knows ${known.join(', ')}.`);
   }
-  if (!args.ticket) refuse('--ticket is required: the item whose take-up this branch is.');
+  // RP-94. BEFORE_PR has two modes, and neither is ever inferred. `pr-ship`
+  // already named owner-directed work with no item as a legitimate path while
+  // this script refused every call without `--ticket`, so that path could not
+  // be walked at all. The mode is now stated at the call site — silence is a
+  // refusal, not a default, because a mode chosen by absence is a mode nobody
+  // reviewed.
+  if (args.ticket && args.ownerDirected) {
+    refuse(
+      '--ticket and --owner-directed are mutually exclusive: a branch that is an item\'s ' +
+        'take-up is not owner-directed work. Pass exactly one.',
+    );
+  }
+  if (args.ownerDirected) {
+    if (args.outcome) {
+      refuse(
+        '--owner-directed cannot answer an outcome: an outcome names the ticket whose ' +
+          'revalidation it answers, and owner-directed work has none.',
+      );
+    }
+    if (args.point !== 'BEFORE_PR') {
+      refuse(
+        `--owner-directed is a BEFORE_PR mode only; ${args.point} compares the claim record ` +
+          'itself and still needs --ticket.',
+      );
+    }
+  } else if (!args.ticket) {
+    refuse(
+      '--ticket is required: the item whose take-up this branch is. For owner-directed ' +
+        'work or a hotfix that has no item, pass --owner-directed instead.',
+    );
+  }
 
   const runDir = process.env.RIG_RUN_DIR || null;
 
@@ -379,6 +483,92 @@ if (invokedDirectly()) {
         : `revalidation-outcome: ${args.ticket} at ${args.point} answers seq ${target.seq} — actionChanged ${args.actionChanged}\n`,
     );
     process.exit(0);
+  }
+
+  if (args.ownerDirected) {
+    // RP-94. BEFORE_PR for work that has no item: the same main-vs-branch drift
+    // comparison, with no tracker, no adapter and no claim record.
+    //
+    // 🔴 It sits ABOVE the queue-config resolution on purpose. "This mode reads
+    // no tracker" has to be a property of the control flow rather than a
+    // promise in a comment — nothing below this block runs, so a missing
+    // credential or an adapter name that does not resolve cannot reach it.
+    // Pinned by › "needs no tracker credentials: an adapter name that cannot
+    // resolve is never reached".
+    //
+    // The two refusals below are what keep the mode from becoming a way around
+    // the claim chain, and both are decided BEFORE anything is journalled: a
+    // refusal is not an answer, so it leaves no revalidation record behind.
+    const takenUp = runDir ? Object.keys(readState(runDir).takeUps ?? {}) : [];
+    if (takenUp.length > 0) {
+      refuse(
+        `--owner-directed refused: this run already declares a take-up (${takenUp.join(', ')}). ` +
+          'A run holding an item revalidates with --ticket; owner-directed is for work with none.',
+      );
+    }
+
+    let mergeBase;
+    try {
+      mergeBase = git(['merge-base', args.base, 'HEAD']).trim();
+    } catch (error) {
+      refuse(
+        `--base ${args.base} is not a revision this checkout can compare against: ${error.message}`,
+      );
+    }
+
+    // Added or modified — what the branch WRITES into the claim store. A branch
+    // carrying a claim record IS an item's take-up however the call describes
+    // itself, and this is the check that says so from the diff rather than from
+    // the caller's word for it.
+    const claimsWritten = pathsOf(
+      git(['diff', '--name-only', '--diff-filter=AM', '-z', mergeBase, 'HEAD']),
+    ).filter((path) => CLAIM_RECORD.test(path));
+    if (claimsWritten.length > 0) {
+      refuse(
+        `--owner-directed refused: this branch writes tracked claim records ` +
+          `(${claimsWritten.join(', ')}). A branch that carries a claim is an item's take-up; ` +
+          'revalidate it with --ticket.',
+      );
+    }
+
+    const branchPaths = pathsOf(git(['diff', '--name-only', '-z', mergeBase, 'HEAD']));
+    const mainPaths = pathsOf(git(['diff', '--name-only', '-z', mergeBase, args.base]));
+    const cited = [...new Set([...branchPaths, ...citedByPremises(runDir)])];
+    const mainChanged = mainPaths.filter((path) => cited.includes(path));
+    const result = ownerDirectedResult({
+      point: args.point,
+      base: args.base,
+      mergeBase,
+      cited,
+      changed: mainChanged,
+      now: new Date().toISOString(),
+    });
+
+    if (runDir) {
+      recordEvent({ runDir, kind: 'revalidation', data: result, now: result.observedAt });
+      // 🔴 No run-level revalidation hold is recorded here, and that is a
+      // decision rather than an omission. `recordRevalidationHold` keys a hold
+      // by ticket id and `outcome` clears one by naming that id; owner-directed
+      // work has no id to name, so a hold written here could never be cleared
+      // and every later selection in this run would stop on it forever. The
+      // exit code below is the stop. A latch nothing can release is not a
+      // stronger stop, it is an unusable run.
+    }
+
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      const detail = result.source.length > 0 ? ` — ${result.source.join(', ')}` : '';
+      process.stdout.write(
+        `revalidate ${args.point}: ${OWNER_DIRECTED} (no item) ${result.action}${detail}\n`,
+      );
+      if (result.action === 'hold') {
+        process.stdout.write(
+          '  re-read the default branch on those paths before opening or updating the PR.\n',
+        );
+      }
+    }
+    process.exit(result.action === 'hold' ? 2 : 0);
   }
 
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
