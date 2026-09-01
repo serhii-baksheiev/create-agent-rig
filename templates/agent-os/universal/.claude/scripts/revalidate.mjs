@@ -176,15 +176,26 @@ const invokedDirectly = () => {
  * against the one credential vocabulary this repository has before it goes
  * anywhere.
  *
- * ⚠ **It is defence in depth, not a general redacter, and the vocabulary's own
- * blind spots are its blind spots.** Measured on the shapes an adapter could
- * plausibly produce: an Atlassian token value, an opaque token after a
- * credential keyword, and a token in a query string are WITHHELD; a basic-auth
- * URL password, `Authorization: Bearer <opaque>` and `Authorization: Basic
- * <base64>` are NOT — `secrets.mjs` names those as outside its vocabulary. No
- * adapter in this repository puts any of them in a message (`jira.mjs` builds
- * errors from method, route and status only), which is what makes this a second
- * layer rather than the only one.
+ * ⚠ **It is defence in depth, not a general redacter.** Measured on the shapes
+ * an adapter could plausibly produce: an Atlassian token value, an opaque token
+ * after a credential keyword, and a token in a query string are caught by
+ * `findSecretValues`; `Authorization: Bearer <opaque>` and `Authorization: Basic
+ * <base64>` are NOT, and no shape outside the vocabulary is.
+ *
+ * 🔴 **URL userinfo is matched HERE rather than left to the vocabulary, because
+ * it is reachable through the adapter this repository configures.** `jira.mjs`
+ * builds its own errors from method, route and status — but its network arm
+ * re-raises the underlying error untouched, and `requireCredentials` accepts any
+ * `JIRA_BASE_URL` that begins with `https://`, userinfo included. Undici then
+ * throws "Request cannot be constructed from a URL that includes credentials:
+ * https://user:<password>@host/…". `findSecretValues` does not see that shape,
+ * and unlike the pre-RP-64 crash — which put it on stderr — this path PERSISTS
+ * it into the run journal. So the reason is withheld on userinfo as well.
+ *
+ * An earlier version of this comment argued the blind spots were acceptable
+ * because no adapter here produces them. That was false, and resting a safety
+ * property on a claim about every present and future adapter is the wrong shape
+ * of argument regardless.
  *
  * All-or-nothing on purpose: `findSecretValues` never returns the matched text,
  * so redacting in place would need a second matcher, and a partial redacter is
@@ -195,12 +206,18 @@ const invokedDirectly = () => {
  * — absent in a generated rig — › "publishes a message that names only environment variables"
  * and › "withholds a message carrying a credential-shaped value".
  */
+/**
+ * Credentials in a URL's userinfo — `//user:secret@host`. One forward pass, both
+ * character classes negated and bounded, so it cannot backtrack.
+ */
+const URL_USERINFO = /\/\/[^\s/@:]+:[^\s/@]+@/;
+
 export const safeReason = (text) => {
   // Scan and publish the SAME prefix: findSecretValues reads at most
   // DEFAULT_SCAN_LIMIT, and publishing more than was scanned would ship the
   // unscanned tail verbatim.
   const scanned = String(text ?? '').slice(0, DEFAULT_SCAN_LIMIT);
-  return findSecretValues(scanned).length === 0
+  return findSecretValues(scanned).length === 0 && !URL_USERINFO.test(scanned)
     ? scanned
     : 'the queue adapter could not be read; its message is withheld because it carries a credential-shaped value';
 };
@@ -265,10 +282,15 @@ const readAdapter = async (operation, read, context) => {
     return await read();
   } catch (error) {
     answerUnverifiable(context, operation, error);
-    // answerUnverifiable exits; throwing rather than returning null keeps a
-    // null ticket from ever reaching revalidateClaim and resolving to continue.
-    throw new Error('unreachable: answerUnverifiable did not exit', { cause: error });
   }
+  // Reached only if answerUnverifiable failed to exit. Throwing rather than
+  // returning null keeps a null ticket from reaching revalidateClaim and
+  // resolving to `continue` — the silent pass this whole change forbids.
+  //
+  // Outside the catch on purpose, and it carries no `cause`: the caught error
+  // is the raw adapter message, the one thing the frame above exists to
+  // withhold, and Node's uncaught printer walks a cause chain.
+  throw new Error('unreachable: answerUnverifiable did not exit');
 };
 
 const refuse = (message) => {

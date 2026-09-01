@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -205,6 +205,85 @@ describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', (
       expect(safeReason(undefined)).toBe('');
       expect(safeReason(null)).toBe('');
     });
+  });
+
+  // 🔴 The end-to-end one, and it pins TWO things a unit test of `safeReason`
+  // cannot: that the control is actually WIRED at its only call site, and that
+  // it covers the shape the credential vocabulary misses.
+  //
+  // `requireCredentials` accepts any https base URL, userinfo included; the
+  // adapter's fetch arm re-raises undici's error untouched, and undici names the
+  // whole URL — password and all. Before RP-64 that text went to stderr on a
+  // crash; this path would PERSIST it into the run journal.
+  //
+  // Measured to be non-vacuous: unwiring the control at its call site
+  // (`safeReason(…)` → `String(…)`) turns this red, and so does removing the
+  // userinfo arm.
+  it('withholds a password the base URL carries, on stdout and in the run journal', async () => {
+    const password = `sup3r${Date.now().toString(36)}Passw0rd`;
+    const token = ['placeholder', 'value', Date.now().toString(36)].join('-');
+    const runDir = path.join(work, 'runs', '20260901-000000');
+    await mkdir(runDir, { recursive: true });
+
+    const result = await runRevalidate(
+      work,
+      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
+      {
+        JIRA_BASE_URL: `https://bot%40example.com:${password}@jira.example.invalid`,
+        JIRA_EMAIL: 'bot@example.com',
+        JIRA_API_TOKEN: token,
+        RIG_RUN_DIR: runDir,
+      },
+    );
+
+    expect(result.code, 'an unreadable adapter still holds').toBe(2);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(password);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('jira.example.invalid');
+    expect(result.stdout).toMatch(/withheld/i);
+
+    // and nothing the run wrote to disk carries it either
+    const journal = path.join(runDir, 'events.jsonl');
+    const written = await readFile(journal, 'utf8').catch(() => '');
+    expect(written).not.toContain(password);
+  });
+
+  // The `if (runDir)` branch: `test/setup-env.ts` strips RIG_RUN_DIR from every
+  // test process, so nothing reached this until a caller put it back. What it
+  // holds is not decoration — `recordRevalidationHold` is what makes an
+  // unreadable-adapter hold survive into run state for the loop to see.
+  it('journals the hold, so an unreadable adapter is still a hold the run must clear', async () => {
+    const runDir = path.join(work, 'runs', '20260901-000001');
+    await mkdir(runDir, { recursive: true });
+
+    const result = await runRevalidate(
+      work,
+      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
+      { RIG_RUN_DIR: runDir },
+    );
+
+    expect(result.code).toBe(2);
+    const events = await readFile(path.join(runDir, 'events.jsonl'), 'utf8');
+    expect(events).toContain('revalidation');
+    expect(events).toContain('UNVERIFIABLE');
+    const state = await readFile(path.join(runDir, 'state.json'), 'utf8');
+    expect(state, 'the hold must survive into run state').toContain('UNVERIFIABLE');
+  });
+
+  // A run directory that does not exist made the journal writes throw INSIDE
+  // the catch handling the adapter failure, and the run ended on the Node
+  // stack trace this whole change removes.
+  it('still answers with a verdict when the run directory cannot be written', async () => {
+    const result = await runRevalidate(
+      work,
+      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
+      { RIG_RUN_DIR: path.join(work, 'runs', 'does-not-exist') },
+    );
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).not.toMatch(/^s+at /m);
+    expect(result.stderr).toMatch(/could not journal/i);
+    const payload = JSON.parse(result.stdout) as { result: string };
+    expect(payload.result).toBe('UNVERIFIABLE');
   });
 
   it('still refuses an unusable invocation as before — this did not swallow argument errors', async () => {
