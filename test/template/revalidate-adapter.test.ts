@@ -1,0 +1,499 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+// @ts-expect-error - the rulebook scripts are .mjs without type declarations
+import { safeReason } from '../../.claude/scripts/revalidate.mjs';
+// @ts-expect-error - see above
+import { DEFAULT_SCAN_LIMIT } from '../../.claude/scripts/lib/secrets.mjs';
+
+const exec = promisify(execFile);
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const script = path.join(repoRoot, '.claude', 'scripts', 'revalidate.mjs');
+
+/**
+ * RP-64: `revalidate.mjs --point BEFORE_PR` exited with an unhandled `Error` and
+ * a Node stack trace when the queue adapter could not be read, instead of the
+ * `UNVERIFIABLE` verdict its own header names. A caller that asked "is the
+ * branch still the branch the run took up?" got a crash, which is neither an
+ * answer nor a refusal it can act on.
+ *
+ * The distinction these hold, and it is the whole point of the item:
+ *
+ * - the adapter could not be READ            -> UNVERIFIABLE, exit 2
+ * - the claim really moved                   -> hold, exit 2   (unchanged)
+ * - nothing moved                            -> continue, exit 0 (unchanged)
+ *
+ * An unreadable adapter must never resolve to `continue`: "we could not check"
+ * is not "we checked and it is fine".
+ */
+
+/** Runs the script with the credentials the jira adapter needs deliberately absent. */
+const runRevalidate = async (cwd: string, args: string[], env: Record<string, string> = {}) => {
+  const base = { ...process.env };
+  // strip FIRST, then apply the caller's override — the other order deleted the
+  // very variables a caller was trying to set, which made a test unfalsifiable
+  for (const key of ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN']) delete base[key];
+  Object.assign(base, env);
+  try {
+    const { stdout, stderr } = await exec(process.execPath, [script, ...args], { cwd, env: base });
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const e = error as { code?: number; stdout?: string; stderr?: string };
+    return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+};
+
+describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', () => {
+  let work: string;
+  let config: string;
+
+  beforeEach(async () => {
+    work = await mkdtemp(path.join(tmpdir(), 'rp64-'));
+    await exec('git', ['init', '-q', work]);
+    await exec(
+      'git',
+      ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'base'],
+      { cwd: work },
+    );
+    await mkdir(path.join(work, '.claude'), { recursive: true });
+    config = path.join(work, '.claude', 'queue.json');
+    await writeFile(
+      config,
+      JSON.stringify({ adapter: 'jira', board: 'ZZ', boards: { ZZ: { project: 'ZZ' } } }),
+    );
+  });
+
+  afterEach(async () => {
+    await rm(work, { recursive: true, force: true });
+  });
+
+  it('returns a structured verdict rather than a Node stack trace when credentials are missing', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      config,
+      '--json',
+    ]);
+    expect(result.stderr).not.toMatch(/^\s+at /m);
+    expect(result.stderr).not.toMatch(/node:internal/);
+    const payload = JSON.parse(result.stdout) as { result: string; action: string };
+    expect(payload.result).toBe('UNVERIFIABLE');
+    expect(payload.action).toBe('unverifiable');
+  });
+
+  it('exits through the documented hold path, never 0 — "could not check" is not "checked and fine"', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      config,
+      '--json',
+    ]);
+    expect(result.code).toBe(2);
+  });
+
+  it('names the adapter as the reason, so the caller knows what to fix', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      config,
+      '--json',
+    ]);
+    const payload = JSON.parse(result.stdout) as { evidence?: { error?: string } };
+    expect(payload.evidence?.error ?? '').toMatch(/adapter/i);
+  });
+
+  it('says the same thing in human form, without a stack trace', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      config,
+    ]);
+    expect(result.code).toBe(2);
+    expect(result.stdout).toMatch(/unverifiable/i);
+    expect(result.stderr).not.toMatch(/^\s+at /m);
+  });
+
+  it('holds the same way at BEFORE_CLOSE, which reads the adapter through a different call', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_CLOSE',
+      '--ticket',
+      'ZZ-1',
+      '--config',
+      config,
+      '--json',
+    ]);
+    expect(result.code).toBe(2);
+    const payload = JSON.parse(result.stdout) as { result: string };
+    expect(payload.result).toBe('UNVERIFIABLE');
+  });
+
+  it('names the environment variables in the published reason — that is what a caller acts on', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      config,
+      '--json',
+    ]);
+    expect(result.stdout).toMatch(/JIRA_/);
+  });
+
+  // 🔴 The control that justifies publishing adapter text at all, tested where it
+  // lives rather than only through a subprocess. The previous version of this
+  // suite asserted on a value it never gave the child, and a reviewer proved the
+  // point by replacing the guard with `true` — every test stayed green while
+  // every adapter message was published raw.
+  describe('safeReason — the only net on text that reaches stdout and the run journal', () => {
+    it('publishes a message that names only environment variables', () => {
+      const message =
+        'the jira adapter needs JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN in the environment.';
+      expect(safeReason(message)).toBe(message);
+    });
+
+    it('withholds a message carrying a credential-shaped value', () => {
+      // assembled at runtime so this file never carries a credential shape —
+      // the repo's own sweep would otherwise report its test data as a leak
+      const token = `ATATT3x${'A1b2C3d4E5'.repeat(6)}`;
+      const withheld = safeReason(`jira GET /rest/api/3/issue failed: 401 (${token})`);
+      expect(withheld).not.toContain(token);
+      expect(withheld).toMatch(/withheld/i);
+    });
+
+    // 🔴 The userinfo arm requires a `:` and a NON-EMPTY password, so the form
+    // where the credential IS the username — `https://<token>@host`, the classic
+    // token-in-a-URL shape — walks past it. The vocabulary does not catch it
+    // either: an opaque token following no keyword is not a shape it knows.
+    it('withholds userinfo whose credential is the whole username, with no password at all', () => {
+      // assembled at runtime, per `autonomy.md` ("Never") — the repo's own sweep
+      // would otherwise report this file's test data as a leak
+      const secret = ['placeholder', 'userinfo', 'a1b2c3d4e5f6'].join('-');
+      const withheld = safeReason(
+        `the queue adapter could not be read (listEligible): Request cannot be constructed from a URL that includes credentials: https://${secret}@jira.example.invalid/rest/api/3/search/jql`,
+      );
+      expect(withheld).not.toContain(secret);
+      expect(withheld).toMatch(/withheld/i);
+    });
+
+    it('withholds userinfo whose password is empty — the colon is not what makes it a credential', () => {
+      const secret = ['placeholder', 'userinfo', 'f6e5d4c3b2a1'].join('-');
+      const withheld = safeReason(
+        `the queue adapter could not be read (listEligible): Request cannot be constructed from a URL that includes credentials: https://${secret}:@jira.example.invalid/rest`,
+      );
+      expect(withheld).not.toContain(secret);
+      expect(withheld).toMatch(/withheld/i);
+    });
+
+    // 🔴 The third spelling, and the likeliest accident of the lot: a rig that
+    // builds its base URL as `https://${JIRA_EMAIL}:${JIRA_API_TOKEN}@host`
+    // with JIRA_EMAIL unset produces exactly this — an empty username and the
+    // API token in the password position.
+    it('withholds userinfo that is a password with no username at all', () => {
+      const secret = ['placeholder', 'userinfo', '9f8e7d6c5b4a'].join('-');
+      const withheld = safeReason(
+        `the queue adapter could not be read (listEligible): Request cannot be constructed from a URL that includes credentials: https://:${secret}@jira.example.invalid/rest`,
+      );
+      expect(withheld).not.toContain(secret);
+      expect(withheld).toMatch(/withheld/i);
+    });
+
+    // 🔴 The property, not the spelling. Each fix so far handled the form that
+    // had just been found and left the class open — a `:` was required, then a
+    // non-empty username was. This table is the standing statement: whatever
+    // half of the userinfo is empty, the reason is withheld. A future narrowing
+    // that handles four shapes and misses a fifth fails here rather than in a
+    // run journal.
+    const userinfo = ['placeholder', 'userinfo', 'c3d4e5f6a1b2'].join('-');
+    const credentialBearingUrls: Array<[string, string]> = [
+      ['a username and a password', `https://bot%40example.com:${userinfo}@jira.example.invalid/x`],
+      ['a username that is the whole credential', `https://${userinfo}@jira.example.invalid/x`],
+      ['a username with an empty password', `https://${userinfo}:@jira.example.invalid/x`],
+      ['a password with an empty username', `https://:${userinfo}@jira.example.invalid/x`],
+      [
+        'a percent-encoded password',
+        `https://bot%40example.com:${userinfo}%2Fx@jira.example.invalid/x`,
+      ],
+    ];
+
+    it.each(credentialBearingUrls)(
+      'withholds a URL whose userinfo is %s — every shape, not the ones enumerated so far',
+      (_shape, url) => {
+        const withheld = safeReason(`the queue adapter could not be read (listEligible): ${url}`);
+        expect(withheld).not.toContain(userinfo);
+        expect(withheld).toMatch(/withheld/i);
+      },
+    );
+
+    // The other half of that property, and the reason closing the class is not
+    // free: an `@` near a `//` is ordinary in adapter text. These are what a
+    // widening must not sweep up, pinned so the next person can widen safely.
+    const benignMessages: Array<[string, string]> = [
+      [
+        'an email address beside an ordinary URL',
+        'contact bot@example.com about https://jira.example.com/browse/ZZ-1',
+      ],
+      [
+        'a URL followed later in the sentence by an email address',
+        'https://jira.example.com/browse/ZZ-1 is assigned to bot@example.com',
+      ],
+      [
+        'a registry path containing an @scope',
+        'GET https://registry.example.com/@scope/queue-adapter failed: 404',
+      ],
+    ];
+
+    it.each(benignMessages)('still publishes a message carrying %s', (_shape, message) => {
+      expect(safeReason(message)).toBe(message);
+    });
+
+    it('withholds rather than redacting in place — no part of the message survives', () => {
+      const token = `ATATT3x${'A1b2C3d4E5'.repeat(6)}`;
+      const withheld = safeReason(`base=https://jira.example.com token=${token}`);
+      expect(withheld).not.toContain('jira.example.com');
+    });
+
+    it('never publishes more than it scanned', () => {
+      const token = `ATATT3x${'A1b2C3d4E5'.repeat(6)}`;
+      const published = safeReason(`${'x'.repeat(DEFAULT_SCAN_LIMIT + 10)}${token}`);
+      expect(published).not.toContain(token);
+    });
+
+    it('is total on a non-string, rather than throwing inside a catch block', () => {
+      expect(safeReason(undefined)).toBe('');
+      expect(safeReason(null)).toBe('');
+    });
+  });
+
+  // 🔴 The end-to-end one, and it pins TWO things a unit test of `safeReason`
+  // cannot: that the control is actually WIRED at its only call site, and that
+  // it covers the shape the credential vocabulary misses.
+  //
+  // `requireCredentials` accepts any https base URL, userinfo included; the
+  // adapter's fetch arm re-raises undici's error untouched, and undici names the
+  // whole URL — password and all. Before RP-64 that text went to stderr on a
+  // crash; this path would PERSIST it into the run journal.
+  //
+  // Measured to be non-vacuous: unwiring the control at its call site
+  // (`safeReason(…)` → `String(…)`) turns this red, and so does removing the
+  // userinfo arm.
+  it('withholds a password the base URL carries, on stdout and in the run journal', async () => {
+    const password = ['placeholder', 'secret', Date.now().toString(36)].join('-');
+    const token = ['placeholder', 'value', Date.now().toString(36)].join('-');
+    const runDir = path.join(work, 'runs', '20260901-000000');
+    await mkdir(runDir, { recursive: true });
+
+    const result = await runRevalidate(
+      work,
+      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
+      {
+        JIRA_BASE_URL: `https://bot%40example.com:${password}@jira.example.invalid`,
+        JIRA_EMAIL: 'bot@example.com',
+        JIRA_API_TOKEN: token,
+        RIG_RUN_DIR: runDir,
+      },
+    );
+
+    expect(result.code, 'an unreadable adapter still holds').toBe(2);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(password);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('jira.example.invalid');
+    expect(result.stdout).toMatch(/withheld/i);
+
+    // and nothing the run wrote to disk carries it either
+    const journal = path.join(runDir, 'events.jsonl');
+    const written = await readFile(journal, 'utf8').catch(() => '');
+    expect(written).not.toContain(password);
+  });
+
+  // 🔴 The same end-to-end path as the test above, for the userinfo form that
+  // test cannot distinguish: the credential is the USERNAME, and there is no
+  // password. `requireCredentials` accepts it (any `https://` prefix), undici
+  // refuses the request naming the whole URL, and the adapter's fetch arm
+  // re-raises that message untouched — so it reaches stdout AND is persisted
+  // into the run journal, which is the property that makes this worse than the
+  // pre-RP-64 stderr crash.
+  //
+  // The positive control lives in the two assertions on the verdict below (a
+  // fix may not be "withhold everything by breaking the path") and in the
+  // published-message tests already in this file — › "publishes a message that
+  // names only environment variables" and › "names the environment variables in
+  // the published reason — that is what a caller acts on" — so a benign adapter
+  // message is proven to still be published rather than withheld, and this test
+  // does not duplicate that.
+  it('withholds a base URL whose whole credential is the username, on stdout and in the run journal', async () => {
+    const secret = ['placeholder', 'userinfo', Date.now().toString(36), 'a1b2c3d4e5'].join('-');
+    const token = ['placeholder', 'value', Date.now().toString(36)].join('-');
+    const runDir = path.join(work, 'runs', '20260901-000002');
+    await mkdir(runDir, { recursive: true });
+
+    const result = await runRevalidate(
+      work,
+      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
+      {
+        JIRA_BASE_URL: `https://${secret}@jira.example.invalid`,
+        JIRA_EMAIL: 'bot@example.com',
+        JIRA_API_TOKEN: token,
+        RIG_RUN_DIR: runDir,
+      },
+    );
+
+    // the verdict is unchanged — withholding may not come from breaking the path
+    expect(result.code, 'an unreadable adapter still holds').toBe(2);
+    const payload = JSON.parse(result.stdout) as { result: string };
+    expect(payload.result).toBe('UNVERIFIABLE');
+
+    expect(`${result.stdout}${result.stderr}`).not.toContain(secret);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('jira.example.invalid');
+    expect(result.stdout).toMatch(/withheld/i);
+
+    // and nothing the run wrote to disk carries it either
+    const written = await readFile(path.join(runDir, 'events.jsonl'), 'utf8').catch(() => '');
+    expect(written).not.toContain(secret);
+    expect(written, 'the hold is still journalled, not skipped').toContain('UNVERIFIABLE');
+  });
+
+  // The `if (runDir)` branch: `test/setup-env.ts` strips RIG_RUN_DIR from every
+  // test process, so nothing reached this until a caller put it back. What it
+  // holds is not decoration — `recordRevalidationHold` is what makes an
+  // unreadable-adapter hold survive into run state for the loop to see.
+  it('journals the hold, so an unreadable adapter is still a hold the run must clear', async () => {
+    const runDir = path.join(work, 'runs', '20260901-000001');
+    await mkdir(runDir, { recursive: true });
+
+    const result = await runRevalidate(
+      work,
+      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
+      { RIG_RUN_DIR: runDir },
+    );
+
+    expect(result.code).toBe(2);
+    const events = await readFile(path.join(runDir, 'events.jsonl'), 'utf8');
+    expect(events).toContain('revalidation');
+    expect(events).toContain('UNVERIFIABLE');
+    const state = await readFile(path.join(runDir, 'state.json'), 'utf8');
+    expect(state, 'the hold must survive into run state').toContain('UNVERIFIABLE');
+  });
+
+  // A run directory that does not exist made the journal writes throw INSIDE
+  // the catch handling the adapter failure, and the run ended on the Node
+  // stack trace this whole change removes.
+  it('still answers with a verdict when the run directory cannot be written', async () => {
+    const result = await runRevalidate(
+      work,
+      ['--point', 'BEFORE_PR', '--ticket', 'ZZ-1', '--base', 'HEAD', '--config', config, '--json'],
+      { RIG_RUN_DIR: path.join(work, 'runs', 'does-not-exist') },
+    );
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).not.toMatch(/^\s+at /m);
+    expect(result.stderr).toMatch(/could not journal/i);
+    const payload = JSON.parse(result.stdout) as { result: string };
+    expect(payload.result).toBe('UNVERIFIABLE');
+  });
+
+  // 🔴 Same family as the invocation refusal below. `readAdapter` wraps every
+  // adapter CALL, so an unreachable tracker is a verdict — but `loadConfig`
+  // and `resolveAdapter` run OUTSIDE that wrapper, so a queue configuration
+  // that cannot be resolved at all still ended on Node's uncaught printer.
+  //
+  // NOT the last one in the script: the `outcome` branch reads the run journal
+  // before any of these guards, and a corrupt `events.jsonl` — what a run
+  // killed mid-append leaves — still prints one. That is outside this change.
+  //
+  // The exit code is deliberately NOT the thing under test: a configuration the
+  // operator has to fix is a refusal (exit 1, the `refuse` helper), not a hold.
+  // What must change is the stack trace.
+  it('refuses an adapter name it cannot resolve with a readable message, not a stack trace', async () => {
+    const badConfig = path.join(work, '.claude', 'queue-unknown-adapter.json');
+    await writeFile(badConfig, JSON.stringify({ adapter: 'nope' }));
+
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      badConfig,
+      '--json',
+    ]);
+
+    expect(result.code, 'a configuration the operator must fix is a refusal').toBe(1);
+    const output = `${result.stdout}${result.stderr}`;
+    // the control: "prints nothing at all" must not pass this
+    expect(output.trim().length, 'a refusal that says nothing is not a refusal').toBeGreaterThan(0);
+    expect(output, 'the caller is told which adapter name failed').toMatch(/nope/);
+    expect(output).toMatch(/adapter/i);
+    expect(output).not.toMatch(/^\s+at /m);
+    expect(output).not.toMatch(/node:internal/);
+  });
+
+  it('refuses a queue config that is not valid JSON with a readable message, not a stack trace', async () => {
+    const badConfig = path.join(work, '.claude', 'queue-malformed.json');
+    await writeFile(badConfig, '{invalid');
+
+    const result = await runRevalidate(work, [
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'ZZ-1',
+      '--base',
+      'HEAD',
+      '--config',
+      badConfig,
+      '--json',
+    ]);
+
+    expect(result.code, 'a configuration the operator must fix is a refusal').toBe(1);
+    const output = `${result.stdout}${result.stderr}`;
+    expect(output.trim().length, 'a refusal that says nothing is not a refusal').toBeGreaterThan(0);
+    expect(output, 'the caller is told which file could not be read').toContain(
+      'queue-malformed.json',
+    );
+    expect(output).toMatch(/json/i);
+    expect(output).not.toMatch(/^\s+at /m);
+    expect(output).not.toMatch(/node:internal/);
+  });
+
+  it('still refuses an unusable invocation as before — this did not swallow argument errors', async () => {
+    const result = await runRevalidate(work, [
+      '--point',
+      'NOPE',
+      '--ticket',
+      'ZZ-1',
+      '--config',
+      config,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/unknown point/i);
+  });
+});

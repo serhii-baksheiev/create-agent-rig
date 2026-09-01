@@ -11,7 +11,17 @@
  * - `.rig/claims/<ticket>.json` carries versioned, content-blind `scope` and
  *   `commentary` fingerprint sets. Scope is authoritative at BEFORE_PR;
  *   commentary is observed but does not hold until BEFORE_CLOSE. Missing,
- *   untracked or unreadable claim state is `UNVERIFIABLE` and exits 2.
+ *   untracked or unreadable claim state is `UNVERIFIABLE` and exits 2. So is a
+ *   tracker whose adapter this script cannot READ (RP-64) — that one means the
+ *   question was never put, rather than that the claim record is unreadable.
+ *   ⚠ Reads, precisely: the queue CONFIG failing to resolve at all — an unknown
+ *   adapter name, a malformed `queue.json` — is exit 1, the refusal path, not a
+ *   hold, and it is the operator's to fix rather than a claim waiting on a
+ *   tracker. Pinned in the generator's
+ *   `test/template/revalidate-adapter.test.ts` — absent in a generated rig —
+ *   › "refuses an adapter name it cannot resolve with a readable message, not a
+ *   stack trace" and › "refuses a queue config that is not valid JSON with a
+ *   readable message, not a stack trace".
  * - `main:<path>` — what the default branch changed since this branch forked
  *   (`git merge-base <base> HEAD` … `<base>`), intersected with the CITED
  *   paths. Cited is a labelled assumption, not a recorded fact: the paths the
@@ -43,10 +53,10 @@
  * without a run, without a matching revalidation, and with any word but
  * `true`/`false`, and writes nothing then. The typed resolution names the
  * stable detection id and clears only the matching run-level hold. Exit 2 on
- * `hold` or `unverifiable`, 0 on `continue`, and 1 when
- * the arguments cannot be acted on (unknown point, no ticket, a base that is
- * not a revision) — and then nothing is journalled, because a refusal is not
- * an answer.
+ * `hold` or `unverifiable`, 0 on `continue`, and 1 when the call cannot be
+ * acted on (unknown point, no ticket, a base that is not a revision — or, on
+ * the paths that reach it, a queue config that does not resolve) — and then
+ * nothing is journalled, because a refusal is not an answer.
  *
  * ⚠ It reads `<base>` as it is in this checkout and never updates the remote
  * ref itself; `pr-ship` step 1 does that before calling this. A stale ref
@@ -66,7 +76,13 @@ import { POINTS as ALL_POINTS, REVALIDATES } from './lib/revalidation-points.mjs
 import { takeUpEvidenceOf } from './queue/core.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 import { projectRootOfConfig } from './queue/index.mjs';
-import { revalidateClaim, targetShaOf, withAdditionalDrift } from './lib/claim-records.mjs';
+import {
+  revalidateClaim,
+  targetShaOf,
+  unverifiableResult,
+  withAdditionalDrift,
+} from './lib/claim-records.mjs';
+import { DEFAULT_SCAN_LIMIT, findSecretValues } from './lib/secrets.mjs';
 
 // Derived from the one source, never restated here (AR-137).
 export const POINTS = REVALIDATES;
@@ -157,6 +173,150 @@ const invokedDirectly = () => {
   return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
 };
 
+/**
+ * The adapter's own message, unless it carries something credential-shaped.
+ *
+ * The messages this is written for name environment VARIABLES rather than their
+ * values, and naming them is exactly what the caller acts on. But an adapter is
+ * free to put a URL or a response body into a message, and this text is
+ * published to stdout and into a verdict a run journals — neither of which
+ * `guard-secret-file` or `validate-no-secrets` can see — so it is checked
+ * against the one credential vocabulary this repository has before it goes
+ * anywhere.
+ *
+ * ⚠ **It is defence in depth, not a general redacter.** Measured on the shapes
+ * an adapter could plausibly produce: an Atlassian token value, an opaque token
+ * after a credential keyword, and a token in a query string are caught by
+ * `findSecretValues`; `Authorization: Bearer <opaque>` and `Authorization: Basic
+ * <base64>` are NOT, and no shape outside the vocabulary is.
+ *
+ * 🔴 **URL userinfo is matched HERE rather than left to the vocabulary, because
+ * it is reachable through the adapter this repository configures.** `jira.mjs`
+ * builds its own errors from method, route and status — but its network arm
+ * re-raises the underlying error untouched, and `requireCredentials` accepts any
+ * `JIRA_BASE_URL` that begins with `https://`, userinfo included. Undici then
+ * throws "Request cannot be constructed from a URL that includes credentials:
+ * https://user:<password>@host/…". `findSecretValues` does not see that shape,
+ * and unlike the pre-RP-64 crash — which put it on stderr — this path PERSISTS
+ * it into the run journal. So the reason is withheld on userinfo as well.
+ *
+ * An earlier version of this comment argued the blind spots were acceptable
+ * because no adapter here produces them. That was false, and resting a safety
+ * property on a claim about every present and future adapter is the wrong shape
+ * of argument regardless.
+ *
+ * All-or-nothing on purpose: `findSecretValues` never returns the matched text,
+ * so redacting in place would need a second matcher, and a partial redacter is
+ * where redacters leak.
+ *
+ * Exported so the control itself is testable rather than only reachable through
+ * a subprocess. Pinned in the generator's `test/template/revalidate-adapter.test.ts`
+ * — absent in a generated rig — › "publishes a message that names only environment variables"
+ * and › "withholds a message carrying a credential-shaped value".
+ */
+/**
+ * Userinfo present in a URL at all — `//<anything but a slash or space>@host`.
+ * One forward pass, one negated bounded class, so it cannot backtrack.
+ *
+ * 🔴 It matches the CLASS, not a list of spellings, and that is the whole
+ * lesson of how it got here. It first required `user:pass@`, which published
+ * `//<token>@host`. Widened to make the password optional, it published
+ * `//:<token>@host` — the shape `https://${JIRA_EMAIL}:${JIRA_API_TOKEN}@host`
+ * degrades to when the first variable is unset, so the likeliest accident of
+ * the three. Two rounds of enumerating forms; the invariant was always "there
+ * is userinfo here", and it is shorter than any enumeration of it.
+ *
+ * The class excludes `/` and whitespace, which is what keeps an ordinary URL,
+ * a bare email address in prose, and a registry path carrying an `@scope`
+ * published. Pinned in the generator's `test/template/revalidate-adapter.test.ts`
+ * — absent in a generated rig — › "withholds a URL whose userinfo is %s — every
+ * shape, not the ones enumerated so far" and › "still publishes a message
+ * carrying %s", which are tables rather than cases so a future narrowing that
+ * handles the known spellings and reopens the class goes red.
+ */
+const URL_USERINFO = /\/\/[^\s/@]*@/;
+
+export const safeReason = (text) => {
+  // Scan and publish the SAME prefix: findSecretValues reads at most
+  // DEFAULT_SCAN_LIMIT, and publishing more than was scanned would ship the
+  // unscanned tail verbatim.
+  const scanned = String(text ?? '').slice(0, DEFAULT_SCAN_LIMIT);
+  return findSecretValues(scanned).length === 0 && !URL_USERINFO.test(scanned)
+    ? scanned
+    : 'the queue adapter could not be read; its message is withheld because it carries a credential-shaped value';
+};
+
+/**
+ * The revalidation boundary for a tracker that cannot be read (RP-64).
+ *
+ * 🔴 It answers `UNVERIFIABLE` and exits 2 — the same hold path a real drift
+ * takes, and never 0. "The adapter was unreachable" is not evidence that the
+ * branch is still the branch the run took up, and a caller that read it as a
+ * pass would carry an unchecked claim into a PR. A drift the adapter DID report
+ * still comes back as `hold`, and an unchanged claim still as `continue`;
+ * this only replaces the crash. Pinned in the generator's
+ * `test/template/revalidate-adapter.test.ts` — absent in a generated rig — ›
+ * "holds the same way at BEFORE_CLOSE, which reads the adapter through a different call"
+ * and › "still refuses an unusable invocation as before — this did not swallow argument errors".
+ *
+ * The detection `identity` names the point and the operation and NOT the
+ * message, so it is stable across retries of the same outage — which also means
+ * two unrelated failures at one operation share an id, and one `outcome`
+ * answers both.
+ */
+const answerUnverifiable = ({ runDir, ticket, point, json }, operation, cause) => {
+  const result = unverifiableResult({
+    ticket: { id: ticket },
+    point,
+    reason: safeReason(
+      `the queue adapter could not be read (${operation}): ${cause?.message ?? cause}`,
+    ),
+    identity: `adapter-unreadable:${operation}`,
+  });
+  if (runDir) {
+    // Announce, never throw: a stale or unwritable RIG_RUN_DIR made these throw
+    // INSIDE the catch that was handling the adapter failure, and the run ended
+    // on the Node stack trace this whole change exists to remove.
+    try {
+      recordEvent({ runDir, kind: 'revalidation', data: result, now: new Date().toISOString() });
+      recordRevalidationHold(runDir, result);
+    } catch (error) {
+      process.stderr.write(
+        `could not journal this revalidation into ${runDir}: ${error?.message ?? error}\n`,
+      );
+    }
+  }
+  if (json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    process.stdout.write(
+      `revalidate ${point}: ${ticket} unverifiable — the queue adapter could not be read (${operation})\n`,
+    );
+    process.stdout.write(`  ${result.evidence.error}\n`);
+    process.stdout.write(
+      '  this is NOT a pass: nothing about the claim was observed. Fix the adapter and run it again.\n',
+    );
+  }
+  process.exit(2);
+};
+
+/** Every adapter call in this script goes through here, or it can still crash. */
+const readAdapter = async (operation, read, context) => {
+  try {
+    return await read();
+  } catch (error) {
+    answerUnverifiable(context, operation, error);
+  }
+  // Reached only if answerUnverifiable failed to exit. Throwing rather than
+  // returning null keeps a null ticket from reaching revalidateClaim and
+  // resolving to `continue` — the silent pass this whole change forbids.
+  //
+  // Outside the catch on purpose, and it carries no `cause`: the caught error
+  // is the raw adapter message, the one thing the frame above exists to
+  // withhold, and Node's uncaught printer walks a cause chain.
+  throw new Error('unreachable: answerUnverifiable did not exit');
+};
+
 const refuse = (message) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);
@@ -223,13 +383,32 @@ if (invokedDirectly()) {
 
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
-  const config = loadConfig(configPath);
-  const adapter = await resolveAdapter(config.adapter ?? 'plan-md');
+  // 🔴 The queue CONFIG, not the tracker behind it. `readAdapter` covers every
+  // adapter CALL, but resolving the config sat outside it, so an unknown
+  // adapter name or a malformed `queue.json` still crashed with the raw Node
+  // stack trace this script exists to remove — and the `[cause]` chain of the
+  // malformed case printed the parse error underneath it.
+  //
+  // It stays exit 1 rather than becoming `UNVERIFIABLE`: a config the operator
+  // has to fix is the command refusing, not a claim held pending a tracker
+  // that might come back. `refuse` is the path this file already uses for that.
+  let config;
+  let adapter;
+  try {
+    config = loadConfig(configPath);
+    adapter = await resolveAdapter(config.adapter ?? 'plan-md');
+  } catch (error) {
+    refuse(
+      `the queue configuration at ${configPath} could not be resolved: ` +
+        safeReason(error?.message ?? String(error)),
+    );
+  }
   const options = optionsWithPlanPath(config.options, configPath);
   const claimRoot = projectRootOfConfig(configPath) ?? projectRoot;
 
   if (args.point === 'BEFORE_CLOSE') {
-    const ticket = await adapter.find(args.ticket, options);
+    const context = { runDir, ticket: args.ticket, point: args.point, json: args.json };
+    const ticket = await readAdapter('find', () => adapter.find(args.ticket, options), context);
     const takeUp = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;
     // Preserve the newest compatibility marker as evidence. This comparison
     // never decides drift; the durable claim below is the authority.
@@ -253,7 +432,9 @@ if (invokedDirectly()) {
     const dependants = Array.isArray(ticket?.blocks) ? ticket.blocks : [];
     const dependantState = {};
     for (const dependant of dependants) {
-      dependantState[dependant] = (await adapter.find(dependant, options))?.state ?? 'missing';
+      dependantState[dependant] =
+        (await readAdapter('find dependant', () => adapter.find(dependant, options), context))
+          ?.state ?? 'missing';
     }
     const claim = revalidateClaim({
       projectRoot: claimRoot,
@@ -298,7 +479,12 @@ if (invokedDirectly()) {
     refuse(`--base ${args.base} is not a revision this checkout can compare against: ${error.message}`);
   }
 
-  const tickets = await adapter.listEligible(options);
+  const tickets = await readAdapter('listEligible', () => adapter.listEligible(options), {
+    runDir,
+    ticket: args.ticket,
+    point: args.point,
+    json: args.json,
+  });
   const ticket = tickets.find((candidate) => String(candidate.id) === String(args.ticket)) ?? null;
 
   const snapshot = runDir ? (readState(runDir).takeUps?.[args.ticket] ?? null) : null;

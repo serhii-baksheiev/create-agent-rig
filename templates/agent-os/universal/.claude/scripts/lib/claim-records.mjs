@@ -557,6 +557,29 @@ const resultOf = ({
   };
 };
 
+/**
+ * An UNVERIFIABLE result for a failure OUTSIDE the claim comparison — the
+ * tracker could not be read at all, so nothing about the claim was observed.
+ *
+ * Distinct from the UNVERIFIABLE results `revalidateClaim` itself returns:
+ * those mean the claim RECORD is missing, untracked or unreadable. This one
+ * means the question was never put to the tracker. Both carry `changed: null`
+ * and both hold, which is the property that matters — "could not check" is
+ * never "checked and fine". Pinned in the generator's
+ * `test/template/revalidate-adapter.test.ts` — absent in a generated rig — ›
+ * "returns a structured verdict rather than a Node stack trace when credentials are missing".
+ */
+export const unverifiableResult = ({ ticket, point, reason, identity }) =>
+  resultOf({
+    ticket,
+    point,
+    result: 'UNVERIFIABLE',
+    action: 'unverifiable',
+    pointer: null,
+    evidence: { error: reason },
+    identity,
+  });
+
 export const revalidateClaim = ({
   projectRoot,
   ticket,
