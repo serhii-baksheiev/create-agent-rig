@@ -11,6 +11,53 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## 0.7.1
+
+**The gate could not be run on work that has no queue item.** `pr-ship` names
+owner-directed work and hotfixes with no item as a legitimate path — step 4
+tells the fan-out to declare it and have the reviewer skip the item-contract
+check openly. Step 1 then made that path unexecutable: it called
+`revalidate.mjs` with an unconditional `--ticket`, and the script refused
+without one. A newly scaffolded project inherited a rulebook that contradicted
+itself at the one checkpoint before every PR, so the first hotfix in a fresh rig
+had nothing it was allowed to do. Found downstream while integrating published
+0.7.0.
+
+A patch: no file is added or removed, no new dependency, and the public CLI of
+the generator is untouched. What changes is one flag on one internal script and
+the skill step that calls it.
+
+### Fixed
+
+- **`revalidate.mjs` BEFORE_PR now has two modes, and neither is inferred.**
+  `--ticket <key>` is unchanged, including the mandatory claim comparison.
+  `--owner-directed` runs the same default-branch drift comparison for work
+  with no item, reaching no tracker, no adapter and no claim record — so it
+  needs no tracker credentials. Passing both flags, or neither, is exit 1: a
+  mode chosen by absence is a mode nobody reviewed.
+
+  It is not a lighter checkpoint. A default-branch change under a path the
+  branch touches, or one a `check-premises` record cited, holds with the same
+  exit 2. What it drops is the claim comparison, because work with no item has
+  no claim to compare, and it records `ticket: null` rather than inventing an
+  id.
+
+  **Four refusals keep it from becoming a bypass** — exit 1, nothing
+  journalled: when the run already declares a take-up, when the branch diff
+  adds or modifies a tracked `.rig/claims/*.json`, at `BEFORE_CLOSE`, and on an
+  `outcome`. Re-running a held or `UNVERIFIABLE` ticketed call as
+  owner-directed is the bypass the mode was shaped to refuse, not a remedy.
+
+  ⚠ Its stated limit: nothing can prove an item does not exist. The command
+  checks that this run declares none and this branch writes no claim; the rest
+  is the caller's word, recorded as such.
+
+- **`pr-ship` step 1 states both paths**, and step 4 now spells the words the
+  fan-out is launched with — `no item — owner-directed` — and says that this
+  skips the item-contract check and **nothing else**: the checks, the routing,
+  the security, code and prose/governance reviews, the coverage check and the
+  DoD all still run.
+
 ## 0.7.0
 
 **A durable claim record under the revalidation 0.6.2 already had, and the
