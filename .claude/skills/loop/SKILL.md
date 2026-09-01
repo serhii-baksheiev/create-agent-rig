@@ -45,7 +45,7 @@ composed file:
 
 ```bash
 node .claude/scripts/queue/index.mjs board        # the active board and the declared ones
-node .claude/scripts/queue/index.mjs board RP     # switch this checkout: writes .claude/queue.board
+node .claude/scripts/queue/index.mjs board <board-id>  # switch this checkout: writes .claude/queue.board
 ```
 
 The selector is per-checkout runtime state, the same class as
@@ -164,9 +164,8 @@ rig — › "blocks a hook-config edit with an empty allow-list, naming path, it
 
 ⚠ **The export outlives the run's own calls.** Everything the session spawns
 inherits it — and a test suite that spawns the queue CLI would write fixture
-records into this run's trace (AR-139: 38 fixture selections and 22 fixture
-revalidation events in one session, two tests exiting 1). So preflight refuses
-to start on a `RIG_RUN_DIR` already exported. The generator's own test harness
+records into this run's trace. So preflight refuses to start on a
+`RIG_RUN_DIR` already exported. The generator's own test harness
 also scrubs the variable before any test file loads — its `test/setup-env.ts`,
 pinned by its `test/template/rig-run-dir-scrub.test.ts` (absent in a generated
 rig) › "holds with the variable exported around the whole vitest process" — and **neither file ships
@@ -221,12 +220,12 @@ reported by `hygiene` as `owner-mismatch`. It clears the way `trigger-human`
 does: a human moves the item or re-marks it. An unmarked item is unconditional.
 Two items of another product once entered this queue as normal spacers and
 escalated `PREMISE FALSE` back to back — a run-level stop spent on work that
-was never this checkout's (AR-132). Pinned in the generator's
+was never this checkout's. Pinned in the generator's
 `test/template/queue-owner.test.ts` — absent in a generated rig — › "holds an
 item whose owner is another repository, with the cause named".
 
 🔴 **An item's lifecycle is a label a human wrote, and the loop infers none of
-it** (AR-144). Four words, read by `lifecycleOf` in `core.mjs` so every adapter
+it**. Four words, read by `lifecycleOf` in `core.mjs` so every adapter
 means the same thing — three of lifecycle, one of scheduling:
 
 - `keep-core` — the problem and the responsibility are valid and the item is
@@ -407,7 +406,7 @@ exits 1 whatever the reviewer said. Save the whole answer to a file under the ru
 directory — `$RIG_RUN_DIR/check-premises.md`, one file per gate so two answers
 never overwrite each other — and pass that path (`-` reads stdin instead). The
 same holds for every `<report>` in this skill, as `pr-ship` already does for its
-reviewers (AR-117). Pinned in the generator's `test/template/loop-report-file.test.ts`
+reviewers. Pinned in the generator's `test/template/loop-report-file.test.ts`
 — absent in a generated rig — › "states that the report is a file the session
 writes from the subagent answer, before the first check".
 
@@ -603,7 +602,7 @@ inventory of findings** — and this had to be settled, because the two readings
 disagreed the first time a stop arrived without an inventory. An exhausted
 gate-round cap names its stage (the gate) and its wall (the branch's rounds are
 spent — the count, not a verdict on whether the fixes were converging, which the
-counter never measured; AR-115), while the individual blockers behind it are not persisted anywhere until
+counter never measured), while the individual blockers behind it are not persisted anywhere until
 per-round verdicts exist. That is a `documented-stall`: the record locates the wall
 and the next reader knows where to look.
 
@@ -832,10 +831,10 @@ node --input-type=module -e '
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
 
-**A finding can say what it measured and what it inferred, as two paired fields**
-(AR-142). A proposal whose premise was never true had no check at filing, only at
-take-up — AR-124 was filed, promoted and claimed before its platform conclusion
-was traced to a probe that had touched one hook. So `measured` and `inferred`
+**A finding can say what it measured and what it inferred, as two paired fields.**
+A proposal whose premise was never true had no check at filing, only at take-up
+— one such proposal was filed, promoted and claimed before its platform
+conclusion was traced to a probe that had touched one hook. So `measured` and `inferred`
 are separate, and `validateProposal` refuses an `inferred` that cites a path
 `measured` does not, naming both fields and the path; one field without the
 other is refused too, and neither files as before. The surface is a cited path
@@ -844,7 +843,7 @@ catches the path-shaped overreach and nothing subtler.
 
 ⚠ **The pair is how a proposal opts into the check, and a proposal filed without
 it is not checked at all** — `validateProposal` keeps the four-part contract, so
-the AR-124 shape with neither field still files as it always did. That is the
+that shape with neither field still files as it always did. That is the
 stated limit, not an oversight: making the fields mandatory would refuse every
 proposal the three adapters already file, and the loop is the author this rule
 is for. So **every proposal this loop files carries both fields** — the snippet
@@ -865,7 +864,7 @@ reports one whose cited paths changed since its `asOf` as
 one git cannot diff from as `proposal-asof-unanswerable` — never as clean. Two
 proposals in a row once escalated `PREMISE FALSE` because the merge that
 falsified each landed after it was filed, and selection hands out the oldest
-first (AR-116). The behaviour is pinned in the generator's
+first. The behaviour is pinned in the generator's
 `test/template/proposal-asof.test.ts` — absent in a generated rig — ›
 "names the overtaken one, the unanswerable one, and stays silent on the current one".
 
@@ -882,7 +881,7 @@ the selection query cannot reach. Add the heading — never the Agent queue.
 
 One adapter needs the second argument the snippet above carries: `jira` requires
 `options.project` and throws rather than filing without it — loudly, so nothing
-is lost, but a call that drops it files nothing (AR-117).
+is lost, but a call that drops it files nothing.
 
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on
@@ -918,7 +917,7 @@ three poisons the only channel by which this project learns.
   the very next query.
 - **Closing:** first ask whether the item is still the item you took up — a
   late comment or a status somebody else moved is not published as `Done`
-  underneath it (AR-135):
+  underneath it:
 
   ```bash
   node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id>

@@ -35,7 +35,7 @@ blockers.
      flow, and this gate with it, begins when the project has a remote
      (`workflow.md`, "PR flow"). The refusal exists because two rounds were once counted ahead of a
      commit pre-commit then refused, so the counter and the fan-out's verdicts
-     named a head that never shipped (AR-141) — pinned in the generator's
+     named a head that never shipped — pinned in the generator's
      `test/template/gate-rounds.test.ts` — absent in a generated rig — ›
      "refuses to count a round on a dirty tree, and counts nothing".
 
@@ -57,7 +57,7 @@ blockers.
    confidently-wrong reviews. Everything below is scoped to this diff.
 
    Then, on the fetched ref, ask whether the branch is still the branch the run
-   took up (AR-134):
+   took up:
 
    ```sh
    node .claude/scripts/revalidate.mjs --point BEFORE_PR --ticket <item-id> --base origin/<default>
