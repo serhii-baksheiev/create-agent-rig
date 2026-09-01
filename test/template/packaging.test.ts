@@ -61,20 +61,27 @@ describe('the root manifest is publish-complete', () => {
     expect(first?.[2]).toMatch(/minor/i);
   });
 
-  it('records 0.6.2 as published and leaves only 0.7.0 pending the owner', async () => {
+  it('records 0.7.0 as published and names it `latest` in both places', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
-    expect(plan).toMatch(/Status \(0\.7\.0 prepared, publish pending the owner/);
-    expect(plan).toMatch(/0\.6\.2 is `latest`/);
+    expect(plan).toMatch(/Status \(0\.7\.0 published/);
+    expect(plan).toMatch(/0\.7\.0 is `latest`/);
     // 🔴 The negative guards tolerate the backticked spelling, because the
-    // version they were written against slipped past them. §11 read "`0.6.2` is
-    // prepared and waiting on the owner" while this asserted /0\.6\.2 prepared/,
-    // so PLAN.md contradicted its own status line for a whole release with the
-    // suite green. One fact, two places, and only one of them was guarded.
-    expect(plan).not.toMatch(/`?0\.6\.2`? (?:is )?prepared|owner publishes `?0\.6\.2`?/);
-    expect(plan).not.toMatch(/`?0\.6\.1`? is `latest`/);
+    // version they were written against slipped past them. §11 once read
+    // "`0.6.2` is prepared and waiting on the owner" while the positive guard
+    // asserted /0\.6\.2 prepared/, so PLAN.md contradicted its own status line
+    // for a whole release with the suite green. One fact, two places, and only
+    // one of them was guarded.
+    //
+    // 🔴 The second guard is the one this release needed: 0.7.0 was published
+    // while both places still called it pending and still called 0.6.2
+    // `latest`. A status line that describes a release as unshipped after it
+    // has shipped is worse than none — PLAN.md is the map a reader opens
+    // first — so "still pending" is now as red as "wrong version" is.
+    expect(plan).not.toMatch(/`?0\.7\.0`? (?:is )?prepared|publish pending|waiting on the owner/);
+    expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
     // and the two places that carry it must agree: whatever §11 calls the
     // current `latest` is what the status line calls live.
-    expect(plan).toMatch(/done through `0\.6\.2`, the current `latest`/);
+    expect(plan).toMatch(/done through `0\.7\.0`, the current `latest`/);
   });
 
   it('has the publishable identity and the npm-facing fields', async () => {

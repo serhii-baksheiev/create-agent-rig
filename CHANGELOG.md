@@ -56,6 +56,21 @@ a patch is the case the rule exists to prevent.
   was allowed on the original surface too — and it is unchanged by this
   release.
 
+- **A command a Never-tier guard cannot read is refused, where it used to be
+  allowed.** The guards read the `command` a hook hands them, and asked only
+  whether it was a string. A command that was **there** in some other container —
+  an array of argv words, an object — failed that test and returned _allow_
+  before the kill switch was ever consulted, so restating a forbidden command in
+  another shape stepped over an armed brake. The three outcomes are now decided
+  in one shared place: an **absent** command still allows, because there is
+  nothing to judge; a **string** is inspected as before; a command that is
+  present in a shape the guard cannot read is **refused**, naming the shape it
+  expected.
+
+  ⚠ This changes only the unreadable case. The name-exact bound described just
+  above is untouched, and an absent field remains fail-open on purpose — a guard
+  that blocked when handed nothing would be turned off within the hour.
+
 - **An adapter it cannot read is `UNVERIFIABLE`, not a stack trace.** A
   revalidation whose queue adapter could not be reached exited on a raw Node
   stack trace, which a caller could read as noise rather than as a hold. It now
