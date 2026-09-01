@@ -11,6 +11,66 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## 0.7.1
+
+**The gate could not be run on work that has no queue item.** `pr-ship` names
+owner-directed work and hotfixes with no item as a legitimate path — step 4
+tells the fan-out to declare it and have the reviewer skip the item-contract
+check openly. Step 1 then made that path unexecutable: it called
+`revalidate.mjs` with an unconditional `--ticket`, and the script refused
+without one. A newly scaffolded project inherited a rulebook that contradicted
+itself at the one checkpoint before every PR, so the first hotfix in a fresh rig
+had nothing it was allowed to do. Found downstream while integrating published
+0.7.0.
+
+A patch: no file is added or removed, no new dependency, and the public CLI of
+the generator is untouched. What changes is one flag on one internal script and
+the skill step that calls it.
+
+### Fixed
+
+- **`revalidate.mjs` BEFORE_PR now has two modes, and neither is inferred.**
+  `--ticket <key>` is unchanged, including the mandatory claim comparison.
+  `--owner-directed` runs the same default-branch drift comparison for work
+  with no item, reaching no tracker, no adapter and no claim record — so it
+  needs no tracker credentials. Passing both flags, or neither, is exit 1: a
+  mode chosen by absence is a mode nobody reviewed.
+
+  It is not a lighter checkpoint. A default-branch change under a path the
+  branch touches, or one a `check-premises` record cited, holds with the same
+  exit 2. What it drops is the claim comparison, because work with no item has
+  no claim to compare, and it records `ticket: null` rather than inventing an
+  id.
+
+  **Four refusals keep it from becoming a bypass** — exit 1, nothing
+  journalled: when the run carries an unresolved `revalidationHold`, when the
+  run declares a take-up, when the branch touches a tracked
+  `.rig/claims/*.json` in any direction (added, modified, removed or renamed),
+  and at `BEFORE_CLOSE`. The first is the one that makes re-running a held or
+  `UNVERIFIABLE` ticketed call in this mode a refusal rather than a way past
+  it; the run's stop inputs are read fail-closed, so an unreadable
+  `state.json` refuses instead of reading as an empty run.
+
+  An owner-directed HOLD is answered the same way a ticketed one is, with
+  `revalidate.mjs outcome` at the same point, passing `--owner-directed`
+  instead of `--ticket`. It addresses the detection by mode, since that
+  detection carries no ticket to name.
+
+  ⚠ Its stated limits, because a governance mode is trusted as far as it is
+  described. Nothing can prove an item does not exist. With no `RIG_RUN_DIR`
+  there is no run state, so the hold and take-up refusals cannot fire — the
+  command says so on stdout and in `evidence.runState` rather than reporting a
+  clean check. The claim refusal reads the branch diff, so a record already on
+  the default branch or not yet committed is not seen. And `--base` is the sole
+  authority for the verdict here, the claim comparison that would otherwise
+  survive a wrong base being absent.
+
+- **`pr-ship` step 1 states both paths**, and step 4 now spells the words the
+  fan-out is launched with — `no item — owner-directed` — and says that this
+  skips the item-contract check and **nothing else**: the checks, the routing,
+  the security, code and prose/governance reviews, the coverage check and the
+  DoD all still run.
+
 ## 0.7.0
 
 **A durable claim record under the revalidation 0.6.2 already had, and the

@@ -34,51 +34,73 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('ships 0.7.0 as one release in both package manifests', async () => {
+  it('prepares 0.7.1 as one release in both package manifests', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
     const inner = JSON.parse(
       await readFile(path.join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
     ) as { version: string };
-    expect(root.version).toBe('0.7.0');
+    expect(root.version).toBe('0.7.1');
     expect(inner.version).toBe(root.version);
   });
 
-  it('puts the 0.7.0 revalidation-claims release first in the changelog', async () => {
+  it('puts the 0.7.1 owner-directed-gate release first in the changelog', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     const first = changelog.match(/^## (\d+\.\d+\.\d+)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(first?.[1]).toBe('0.7.0');
-    // The four things a newly scaffolded project gains or has fixed. Each is a
-    // named subject rather than a word that any release note would contain, so
-    // an entry copied forward from the previous version fails here.
-    expect(first?.[2]).toMatch(/revalidation[\s\S]*claim|claim[\s\S]*revalidation/i);
-    expect(first?.[2]).toMatch(/kill switch|Never tier/i);
-    expect(first?.[2]).toMatch(/UNVERIFIABLE/);
-    expect(first?.[2]).toMatch(/generator-neutral|backlog identifier/i);
-    // and why it is a minor rather than a patch, since that is the call a
+    expect(first?.[1]).toBe('0.7.1');
+    // The named subjects of THIS release, not words any release note would
+    // contain — so an entry copied forward from 0.7.0 fails here.
+    expect(first?.[2]).toMatch(/owner-directed/);
+    expect(first?.[2]).toMatch(/BEFORE_PR/);
+    expect(first?.[2]).toMatch(/--ticket/);
+    // The four refusals are the reason this is not a bypass, so the note that
+    // omits them is a note that undersells what a reader has to know.
+    expect(first?.[2]).toMatch(/take-up/);
+    expect(first?.[2]).toMatch(/\.rig\/claims/);
+    expect(first?.[2]).toMatch(/BEFORE_CLOSE/);
+    // and why it is a patch rather than a minor, since that is the call a
     // consumer on "I only take minors" depends on being made deliberately.
-    expect(first?.[2]).toMatch(/minor/i);
+    expect(first?.[2]).toMatch(/patch/i);
+    // 🔴 The 0.7.0 section must still be BELOW it, unedited in place: a patch
+    // that rewrites the previous release's note is describing bytes that
+    // already shipped.
+    expect(changelog).toMatch(/^## 0\.7\.0$/m);
+    expect(changelog.indexOf('## 0.7.1')).toBeLessThan(changelog.indexOf('## 0.7.0'));
   });
 
-  it('records 0.7.0 as published and names it `latest` in both places', async () => {
+  it('records 0.7.1 as prepared, 0.7.0 as published, and only one of them as `latest`', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
-    expect(plan).toMatch(/Status \(0\.7\.0 published/);
-    expect(plan).toMatch(/0\.7\.0 is `latest`/);
-    // 🔴 The negative guards tolerate the backticked spelling, because the
-    // version they were written against slipped past them. §11 once read
-    // "`0.6.2` is prepared and waiting on the owner" while the positive guard
-    // asserted /0\.6\.2 prepared/, so PLAN.md contradicted its own status line
-    // for a whole release with the suite green. One fact, two places, and only
-    // one of them was guarded.
+    // 🔴 This assertion has been wrong in BOTH directions now, one release
+    // apart, and it carries a guard for each.
     //
-    // 🔴 The second guard is the one this release needed: 0.7.0 was published
-    // while both places still called it pending and still called 0.6.2
-    // `latest`. A status line that describes a release as unshipped after it
-    // has shipped is worse than none — PLAN.md is the map a reader opens
-    // first — so "still pending" is now as red as "wrong version" is.
+    // 0.6.2's mistake: §11 read "`0.6.2` is prepared and waiting on the owner"
+    // while the positive guard asserted /0\.6\.2 prepared/ — one fact in two
+    // places, only one of them guarded, and PLAN.md contradicted its own
+    // status line for a whole release with the suite green.
+    //
+    // 0.7.0's mistake, the mirror: it was published while both places still
+    // called it pending and still called 0.6.2 `latest`. A status line calling
+    // a shipped release unshipped is worse than none — PLAN.md is the map a
+    // reader opens first.
+    //
+    // So the shape from here is: the PREPARED version is named prepared and
+    // never published; the PUBLISHED version is named published and is the one
+    // and only `latest`. Both directions are red.
+    expect(plan).toMatch(/Status \(0\.7\.1 prepared/);
+    expect(plan).toMatch(/0\.7\.0 published/);
+    expect(plan).toMatch(/0\.7\.0 is `latest`/);
+    // 0.7.1 is not published, and must not be described as though it were —
+    // this is the guard the previous release needed pointing the other way.
     expect(plan).not.toMatch(
-      /`?0\.7\.0`? (?:is )?prepared|publish pending|waiting on the owner|owner publishes `?0\.7\.0`?/,
+      /`?0\.7\.1`? (?:is |was )?published|`?0\.7\.1`? is `latest`|through `?0\.7\.1`?, the current/,
+    );
+    // 0.7.0 is published, so it may not be described as pending.
+    // Scoped to the version rather than dropped: `waiting on the owner` is now
+    // legitimately true of 0.7.1, but saying it of the PUBLISHED 0.7.0 is the
+    // 0.6.2 mistake returning, so it stays red for that one.
+    expect(plan).not.toMatch(
+      /`?0\.7\.0`? (?:is )?prepared|0\.7\.0 publish pending|owner publishes `?0\.7\.0`?|`?0\.7\.0`? is waiting on the owner/,
     );
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
     // and the two places that carry it must agree: whatever §11 calls the

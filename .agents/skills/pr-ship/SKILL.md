@@ -57,13 +57,66 @@ blockers.
    confidently-wrong reviews. Everything below is scoped to this diff.
 
    Then, on the fetched ref, ask whether the branch is still the branch the run
-   took up:
+   took up. **Two paths, and you state which one — the command infers neither.**
+   A branch that is a queue item's take-up:
 
    ```sh
    node .claude/scripts/revalidate.mjs --point BEFORE_PR --ticket <item-id> --base origin/<default>
    ```
 
-   It runs the existing revalidation chain against the tracked, versioned
+   Owner-directed work or a hotfix that has **no item** — the case step 4 below
+   already tells you to declare to the reviewers:
+
+   ```sh
+   node .claude/scripts/revalidate.mjs --point BEFORE_PR --owner-directed --base origin/<default>
+   ```
+
+   🔴 **The second path is not a lighter checkpoint, and it is never a skip.**
+   It runs the same `main:<path>` comparison and holds on the same exit 2; what
+   it drops is the claim comparison, because work with no item has no claim to
+   compare. It resolves no queue config, so it reaches no tracker and needs no
+   credentials. Passing both flags, or neither, is exit 1.
+
+   **Four refusals** — exit 1, nothing journalled — keep it from being the way
+   around a claim or revalidation failure. It is refused when this run carries
+   an **unresolved revalidation hold** (what the ticketed path writes when it
+   holds or answers `UNVERIFIABLE`), when this run **declares a take-up**, when
+   the branch **touches a tracked `.rig/claims/*.json`** in any direction —
+   added, modified, removed or renamed — and at `BEFORE_CLOSE`. So re-running a
+   held ticketed call in this mode does not get past it: resolve the hold with
+   `outcome` instead.
+
+   ⚠ **What those refusals do not cover**, because a governance mode is trusted
+   exactly as far as it is described:
+
+   - **With no `RIG_RUN_DIR` there is no run state to read**, so the hold and
+     take-up refusals cannot fire — and nothing is journalled. The command says
+     so on stdout and in `evidence.runState`; it is not evidence that neither
+     exists. An attended gate run is exactly this shape, so read that line.
+   - The claim refusal reads the **branch diff**, so a claim record already on
+     the default branch, or written and not committed, is not seen.
+   - **`--base` is the sole authority for the verdict here**, the claim
+     comparison that would otherwise survive a wrong base being absent. Pass
+     the fetched `origin/<default>`, not a local copy and not `HEAD`.
+   - Nothing can prove an item does not exist. The rest is your word, recorded
+     as such, with `ticket: null` and no invented id.
+
+   Pinned in the generator's `test/template/owner-directed-revalidation.test.ts`
+   (absent in a generated rig) › "refuses when this run carries an unresolved
+   revalidation hold", › "refuses when the declared run already carries a
+   take-up", › "refuses when the branch RENAMES a claim record — the case
+   --diff-filter=AM could not see" and › "says out loud that an undeclared run
+   checked neither the hold nor the take-up".
+
+   **Exit 2 here is a HOLD with the same shape as the ticketed one**, and the
+   same two-step remedy: re-read the default branch on each named path, then
+   record what the re-read concluded — `node .claude/scripts/revalidate.mjs
+   outcome --point BEFORE_PR --owner-directed --action-changed <true | false>
+   --note '…'` — and come back through step 0. The owner-directed detection
+   carries no ticket, so `--owner-directed` is how the outcome addresses it;
+   the ticketed `--ticket <item-id>` form below cannot match it and is refused.
+
+   The ticketed path runs the existing revalidation chain against the tracked, versioned
    `.rig/claims/<item-id>.json`: the content-blind `scope` fingerprint set is
    authoritative here, while `takeUps` / `updatedAt` remain evidence only. It
    also names what the default branch changed since this branch forked on paths
@@ -71,14 +124,18 @@ blockers.
    journals one `revalidation` event at `point: BEFORE_PR`; **exit code 2 is a HOLD**, with one blocker per named source: re-read the item, or the default
    branch on that path, record what the re-read concluded —
    `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket <item-id> --action-changed <true | false> --note '…'`
-   — and come back through step 0. A hold with no outcome is counted by the
-   report as a re-read the run skipped. A missing, untracked, unreadable or
+   — and come back through step 0. **That `--ticket` form is this path's, not
+   both paths'** — the owner-directed detection carries no ticket for it to
+   name, and its own `--owner-directed` outcome is written out above. A hold
+   with no outcome, in either mode, is counted by the report as a re-read the
+   run skipped. A missing, untracked, unreadable or
    unsupported claim is `UNVERIFIABLE`, exits 2, and stops automatic progress;
    so is a tracker whose adapter the command cannot READ, which means the
    question was never put rather than that the claim record is unreadable.
    Neither is ever read as a pass. Exit 1 is the command refusing (unknown
-   point, no ticket, a base that is not a revision, or a queue config that does
-   not resolve): fix the call or the config — the message says which. Its limits are its own header's; the
+   point, neither mode or both, a base that is not a revision, or a queue config
+   that does not resolve — plus, on the owner-directed path, the four refusals
+   above): fix the call or the config — the message says which. Its limits are its own header's; the
    cited-path set is a labelled assumption, not a recorded fact. Pinned in the
    generator's `test/template/revalidate.test.ts` (absent in a generated rig) ›
    "continues when only updatedAt moved and still reports the marker evidence"
@@ -182,9 +239,13 @@ blockers.
    **Whatever you launch, pass it the text of the queue item this branch
    implements.** A reviewer given only a diff cannot check the change against
    what was asked: a cold context has no way to know, and reconstructing it from
-   the PR description would mean trusting the run under review. If there is no
-   item — owner-directed work, a hotfix — say so when launching, and the
-   reviewer skips that check openly instead of guessing at it.
+   the PR description would mean trusting the run under review. When there is
+   no item — owner-directed work, a hotfix — launch every reviewer with the
+   words **`no item — owner-directed`** instead. That skips the item-contract
+   check, openly, and **nothing else**: the checks, the routing, the security,
+   code and prose/governance reviews, the coverage check and the DoD all still
+   run. It is one check narrower than a ticketed fan-out, not a cheaper gate,
+   and the same words are what step 1's `--owner-directed` call records.
 
    🔴 **The triggers below are lane-independent and may only ADD.** They read
    *what the code does*; the router reads *paths*, and a path cannot say that a
