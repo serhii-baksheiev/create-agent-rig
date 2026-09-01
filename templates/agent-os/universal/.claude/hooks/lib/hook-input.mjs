@@ -53,3 +53,95 @@ export const readHookInput = () => {
     return null;
   }
 };
+
+/**
+ * ── The shape of a shell command, decided in ONE place (RP-80) ──────────────
+ *
+ * `.claude/rules/invariants.md` ("Refusing to inspect is a third outcome, not a
+ * match and not an error") draws the line these guards need:
+ *
+ * - **absent** — nothing to judge, so the guard fails OPEN. A `Write` with no
+ *   content and a shell tool with no `command` are the same case.
+ * - **readable** — a string; the guard inspects it as it always did.
+ * - **present and unreadable** — the guard was handed something and can tell
+ *   that it cannot read it. That is a REFUSAL: block, name the shape expected,
+ *   and say to resend in that shape.
+ *
+ * 🔴 Getting that last line backwards costs the whole rule set. Measured on
+ * `master` at `254b25c8`: a payload whose `command` was `["gh","pr","merge","1"]`
+ * exited 0 from `guard-bash` **with the kill switch armed** — the brake was
+ * never consulted, because the guard had already excused itself. `block-no-verify`
+ * had the same hole by another road: `String(argv)` comma-joins, and its
+ * tokeniser never splits on a comma, so `--no-verify` became invisible rather
+ * than unreadable.
+ *
+ * 🔴 The remedy is carried as a FIELD beside the reason, not inferred from the
+ * reason's wording by whoever prints it — `invariants.md` again. A remedy
+ * chosen by pattern-matching a sentence is wrong the day somebody rewords the
+ * sentence, in every copy at once. And it is deliberately NOT "split the change
+ * and retry": that advice belongs to a crossed BOUND, where a smaller input
+ * really does fit. Nothing about splitting changes a container's shape, so
+ * offering it here would turn a refusal into a loop.
+ *
+ * Bounded work, because a fail-open guard is a total bypass if any input can
+ * make it spin or throw: a fixed number of `typeof` tests and one lookup. The
+ * offending value is NEVER serialised into the message — only its shape word —
+ * so an enormous or cyclic `command` costs nothing and leaks nothing.
+ *
+ * Limits, stated rather than implied:
+ * - It reads `tool_input.command`. A surface that names its command field
+ *   differently is not seen at all, and that is the same blind spot the whole
+ *   list in `.claude/scripts/lib/shell-tools.mjs` has: harness → guard is
+ *   guarded by nobody.
+ * - `absent` covers `null` as well as `undefined`, on both `tool_input` and
+ *   `command`. A key explicitly set to null carries no command to read, and
+ *   refusing it would fire on payloads that mean "no command".
+ * - An empty or whitespace-only string is READABLE and allowed. It is a
+ *   command that does nothing, not a shape the guard failed to parse.
+ * Pinned in hook-command-shape.test.ts (absent in a generated rig) ›
+ * "refuses an unreadable command through %s while the kill
+ * switch is armed"
+ * and › "allows an ABSENT command through %s".
+ */
+
+/** The shape word for a value, bounded: never the value itself. */
+const shapeOf = (value) => {
+  if (Array.isArray(value)) return 'an array';
+  const type = typeof value;
+  return type === 'object' ? 'an object' : `a ${type}`;
+};
+
+/**
+ * What a shell guard was handed, as one of three outcomes.
+ *
+ * @returns {{kind:'absent'}
+ *          |{kind:'string', command:string}
+ *          |{kind:'unreadable', reason:string, remedy:string}}
+ */
+export const shellCommandOf = (input) => {
+  const toolInput = input?.tool_input;
+  if (toolInput === undefined || toolInput === null) return { kind: 'absent' };
+  if (typeof toolInput !== 'object' || Array.isArray(toolInput)) {
+    return unreadable('tool_input', shapeOf(toolInput), 'an object');
+  }
+  const command = toolInput.command;
+  if (command === undefined || command === null) return { kind: 'absent' };
+  if (typeof command !== 'string') {
+    return unreadable('tool_input.command', shapeOf(command), 'a string');
+  }
+  return { kind: 'string', command };
+};
+
+const unreadable = (field, got, expected) => ({
+  kind: 'unreadable',
+  reason:
+    `BLOCKED — ${field} is present as ${got}, and this guard reads ${expected}. ` +
+    'An input it cannot read is refused, never allowed: the Never-tier rules and ' +
+    'the kill switch are decided by reading the command, so allowing what was ' +
+    'not read would report a check that did not happen ' +
+    '(.claude/rules/invariants.md, "Refusing to inspect is a third outcome").',
+  remedy: `Resend the call with ${field} as ${expected}.`,
+});
+
+/** One refusal, one wording — so two guards cannot drift apart in what they say. */
+export const refusalText = (refusal) => `${refusal.reason} ${refusal.remedy}`;

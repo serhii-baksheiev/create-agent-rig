@@ -104,7 +104,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { brakeIsOn } from '../scripts/stop-flag.mjs';
 import { SHELL_TOOLS } from '../scripts/lib/shell-tools.mjs';
-import { readHookInput } from './lib/hook-input.mjs';
+import { readHookInput, refusalText, shellCommandOf } from './lib/hook-input.mjs';
 
 /** Branches that are shared by definition. */
 const PROTECTED_BRANCH = /^(main|master|develop|development|trunk)$/;
@@ -837,22 +837,19 @@ function main() {
   // but one, so the Never tier and the kill switch stayed bypassable on the
   // other. Two spellings of one fact, and the one that ran was the wrong one.
   if (!SHELL_TOOLS.includes(input.tool_name)) return 0;
-  const commandValue = input.tool_input?.command;
-  // ⚠ A `command` that is PRESENT but not a string is allowed here, and two
-  // authorities in this rulebook disagree about that. `invariants.md`
-  // ("Refusing to inspect is a third outcome") says a field present in a shape
-  // the guard cannot read must fail CLOSED and name the shape it expected,
-  // while ABSENT is the fail-open case. This hook's own suite pins the
-  // opposite, in `test/template/guard-bash.test.ts` (absent in a generated rig)
-  // › "allows unsupported non-string command input". Measured, so the cost is
-  // on record rather than assumed: with the kill switch armed, a payload whose
-  // `command` is an array of argv words is allowed without the brake ever
-  // being consulted. Left as it stands deliberately — a collision between a
-  // rule and a test is resolved in the rulebook, not in one PR's history —
-  // and tracked as RP-80, which also covers the same shape in
-  // `block-no-verify.mjs`, where `String(argv)` defeats its tokeniser.
-  if (typeof commandValue !== 'string') return 0;
-  const raw = commandValue;
+  // Three outcomes, decided in one shared place (RP-80): absent → allow, a
+  // string → inspect, present-in-a-shape-this-cannot-read → REFUSE. The last
+  // one used to be an allow, and the cost was exact: with the kill switch
+  // armed, a `command` spelled as an array of argv words returned 0 here
+  // before `brakeIsOn()` was ever consulted. A rule that can be stepped over
+  // by restating the same command in another container is not a rule.
+  const command = shellCommandOf(input);
+  if (command.kind === 'unreadable') {
+    process.stderr.write(`${refusalText(command)}\n`);
+    return 2;
+  }
+  if (command.kind === 'absent') return 0;
+  const raw = command.command;
   if (!raw.trim()) return 0;
 
   try {

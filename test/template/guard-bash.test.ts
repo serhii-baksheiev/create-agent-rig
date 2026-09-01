@@ -201,7 +201,17 @@ describe('guard-bash: the ordinary day-to-day commands stay allowed', () => {
   ])('allows %s', (command) => allow(command)());
 });
 
-describe('guard-bash: it fails open on anything it does not understand', () => {
+/**
+ * Fail-open and refuse-to-inspect are DIFFERENT outcomes, and the title of
+ * this block used to conflate them (RP-80). `invariants.md` splits them: a
+ * field that is ABSENT leaves nothing to judge, so the guard allows; a field
+ * that is PRESENT in a shape it cannot read is a refusal, because allowing it
+ * would report a check that never happened. The whole contract, for both
+ * shell guards and every shell surface, is in
+ * `test/template/hook-command-shape.test.ts`; the one case below stays here
+ * because it is where a reader of this file will look for it.
+ */
+describe('guard-bash: what it allows because there is nothing to judge', () => {
   it('allows a non-Bash tool and an empty command', async () => {
     const nonBash = await new Promise<number>((resolve, reject) => {
       const child = execFile(process.execPath, [hook], (error) =>
@@ -215,9 +225,11 @@ describe('guard-bash: it fails open on anything it does not understand', () => {
     await allow('')();
   });
 
-  it('allows unsupported non-string command input', async () => {
+  it('refuses a command present in a shape it cannot read', async () => {
     const result = await runHook(['bash', '-lc', 'git push --force origin master']);
-    expect(result.code).toBe(0);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/array/i);
+    expect(result.stderr).toMatch(/string/i);
   });
 
   it('stops looking for compact shell options at the script operand', async () => {

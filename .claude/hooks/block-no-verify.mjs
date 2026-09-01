@@ -12,7 +12,7 @@
 // to tokenise: it owns exactly one invariant and stays readable because of it
 // (see .claude/rules/invariants.md, "One invariant per hook"). Use a file rather
 // than a heredoc, or quote the example.
-import { readHookInput } from './lib/hook-input.mjs';
+import { readHookInput, refusalText, shellCommandOf } from './lib/hook-input.mjs';
 import { SHELL_TOOLS } from '../scripts/lib/shell-tools.mjs';
 
 function main() {
@@ -22,7 +22,20 @@ function main() {
   // and then excused itself from all but Bash, so the pre-commit gate stayed
   // bypassable on the other one.
   if (!SHELL_TOOLS.includes(input.tool_name)) return 0;
-  const raw = String(input.tool_input?.command ?? '');
+  // Three outcomes, from the one shared contract (RP-80). `String(argv)` used
+  // to stand here, and it did not merely fail to read an array — it produced a
+  // plausible-looking string: `["git","commit","--no-verify"]` became
+  // `git,commit,--no-verify`, where the tokeniser below never splits on a comma,
+  // so the one flag this hook exists to refuse was silently absent. A guard that
+  // converts what it cannot read into something it can is worse than one that
+  // refuses, because it reports a check it did not perform.
+  const parsed = shellCommandOf(input);
+  if (parsed.kind === 'unreadable') {
+    process.stderr.write(`${refusalText(parsed)}\n`);
+    return 2;
+  }
+  if (parsed.kind === 'absent') return 0;
+  const raw = parsed.command;
 
   // Strip quoted segments first: a commit message that merely MENTIONS a
   // forbidden flag is prose, not a bypass. Only unquoted flags count.
