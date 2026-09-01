@@ -34,7 +34,7 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('prepares 0.7.0 as one release in both package manifests', async () => {
+  it('ships 0.7.0 as one release in both package manifests', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
@@ -77,7 +77,9 @@ describe('the root manifest is publish-complete', () => {
     // `latest`. A status line that describes a release as unshipped after it
     // has shipped is worse than none — PLAN.md is the map a reader opens
     // first — so "still pending" is now as red as "wrong version" is.
-    expect(plan).not.toMatch(/`?0\.7\.0`? (?:is )?prepared|publish pending|waiting on the owner/);
+    expect(plan).not.toMatch(
+      /`?0\.7\.0`? (?:is )?prepared|publish pending|waiting on the owner|owner publishes `?0\.7\.0`?/,
+    );
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
     // and the two places that carry it must agree: whatever §11 calls the
     // current `latest` is what the status line calls live.
