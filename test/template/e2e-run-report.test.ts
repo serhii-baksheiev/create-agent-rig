@@ -26,6 +26,67 @@ import {
  * is exactly the shape of the change that introduced it. These assertions are
  * pure (no spawning, no network), so they belong where a check reaches them.
  */
+/**
+ * 🔴 Both readers TRUNCATE before they mask, and `redactUrlCredentials` anchors
+ * on the `//user:` prefix — so when the cut lands inside a URL's userinfo the
+ * surviving password suffix has lost the prefix the regex needs, and is emitted
+ * verbatim into a CI log. These fixtures walk the cut across a realistic npm
+ * fetch line, so the assertions below state the property (no cut position
+ * leaks) rather than pinning one lucky offset.
+ *
+ * The credential is assembled at runtime from neutral fragments rather than
+ * written out — a fixture that needs a credential SHAPE builds it, so this
+ * repository's own sweep does not report its test data as a leak
+ * (`.claude/rules/autonomy.md`, "Never"). The fragments are long and
+ * distinctive on purpose: "no leak" is only a real assertion if a surviving
+ * piece of the password could not appear in the text by chance.
+ */
+const CUT_USER = 'ciuser';
+const CUT_PASSWORD = ['p4ss', 'w0rd', 'BOUNDARY', 'X7QZV9'].join('');
+const cutFetchLine = (n: number) =>
+  `${n} http fetch GET 200 https://${CUT_USER}:${CUT_PASSWORD}@registry.example/create-agent-rig 45ms (cache miss)`;
+
+/** The line the cut falls inside, and the two positions of interest within it. */
+const STRADDLING = cutFetchLine(366);
+const URL_AT = STRADDLING.indexOf('https://');
+const PASSWORD_AT = STRADDLING.indexOf(CUT_PASSWORD);
+
+/**
+ * Text whose last `OUTPUT_TAIL` characters begin exactly `offset` characters
+ * into the straddling line: the reader keeps `STRADDLING.slice(offset)`, then a
+ * whole credentialed line (which must still come out masked), then filler.
+ */
+const straddled = (offset: number): string => {
+  const whole = `${cutFetchLine(367)}\n`;
+  // The line break after the straddling line is not decoration: npm writes
+  // newline-terminated lines, and without it the fragment the cut leaves and
+  // the following whole line would be ONE line, which no log ever contains.
+  // The `- 1` keeps the cut landing exactly `offset` into the straddling line.
+  const pad = OUTPUT_TAIL + offset - STRADDLING.length - whole.length - 1;
+  return 'n'.repeat(OUTPUT_TAIL) + STRADDLING + '\n' + whole + 'z'.repeat(pad);
+};
+
+/** Every cut position from the start of the URL to just past the password. */
+const CUTS = Array.from(
+  { length: PASSWORD_AT - URL_AT + CUT_PASSWORD.length + 4 },
+  (_, index) => URL_AT + index,
+);
+
+/**
+ * Text leaks when a distinctive tail of the password survives it, or when any
+ * `@registry.example` is reached without `***` in front of it — the second
+ * catches a cut that left only two or three password characters behind.
+ */
+const PASSWORD_TAILS = Array.from({ length: CUT_PASSWORD.length - 3 }, (_, index) =>
+  CUT_PASSWORD.slice(index),
+);
+const leaksCredential = (text: string): boolean =>
+  PASSWORD_TAILS.some((fragment) => text.includes(fragment)) ||
+  text
+    .split('@registry.example')
+    .slice(0, -1)
+    .some((before) => !before.endsWith('***'));
+
 describe('commandFailureReport', () => {
   const failure = (over: Record<string, unknown> = {}) =>
     Object.assign(new Error('Command failed: npx --yes create-agent-rig'), {
@@ -83,6 +144,34 @@ describe('commandFailureReport', () => {
     expect(report).toContain('THE REAL REASON');
     expect(report).toMatch(/truncated/i);
     expect(report.length).toBeLessThan(OUTPUT_TAIL * 2 + 2000);
+  });
+
+  // 🔴 `tail()` runs BEFORE `redactUrlCredentials`, so the first line of a
+  // truncated section is whatever the cut left behind — and a password suffix
+  // no longer carries the `//user:` prefix the mask anchors on.
+  it('masks a credential the stderr truncation cut through, wherever the cut lands', () => {
+    // The sweep would also pass on a report that carried nothing, so first pin
+    // that a cut section is still a section: masked line, truncation notice.
+    const sample = commandFailureReport('npx x', failure({ stderr: straddled(PASSWORD_AT + 4) }));
+    expect(sample).toContain(`${CUT_USER}:***@`);
+    expect(sample).toMatch(/truncated/i);
+
+    const leaked = CUTS.filter((offset) =>
+      leaksCredential(commandFailureReport('npx x', failure({ stderr: straddled(offset) }))),
+    );
+    expect(leaked).toEqual([]);
+  });
+
+  it('masks a credential the stdout truncation cut through, wherever the cut lands', () => {
+    const cut = (offset: number) => failure({ stderr: '', stdout: straddled(offset) });
+    const sample = commandFailureReport('npx x', cut(PASSWORD_AT + 4));
+    expect(sample).toContain(`${CUT_USER}:***@`);
+    expect(sample).toMatch(/truncated/i);
+
+    const leaked = CUTS.filter((offset) =>
+      leaksCredential(commandFailureReport('npx x', cut(offset))),
+    );
+    expect(leaked).toEqual([]);
   });
 
   it('says so plainly when the child produced no output at all', () => {
@@ -223,6 +312,24 @@ describe('npmDebugLogs', () => {
     expect(logs).toMatch(/truncated/i);
     // the whole file is never carried: the tail plus a short header, not 3x
     expect(logs.length).toBeLessThan(OUTPUT_TAIL + 200);
+  });
+
+  // 🔴 Here redact-before-truncate is not even available: `readTail` reads only
+  // the last OUTPUT_TAIL bytes, so when the read begins inside a URL's userinfo
+  // the surviving password suffix reaches the mask with no `//user:` in front
+  // of it — and npm writes these URLs into the log unredacted.
+  it('masks a credential the log tail began inside, wherever the read starts', async () => {
+    await writeLog('a-debug-0.log', straddled(PASSWORD_AT + 4));
+    const sample = npmDebugLogs(cache);
+    expect(sample).toContain(`${CUT_USER}:***@`);
+    expect(sample).toMatch(/truncated/i);
+
+    const leaked: number[] = [];
+    for (const offset of CUTS) {
+      await writeLog('a-debug-0.log', straddled(offset));
+      if (leaksCredential(npmDebugLogs(cache))) leaked.push(offset);
+    }
+    expect(leaked).toEqual([]);
   });
 });
 
