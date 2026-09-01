@@ -74,10 +74,11 @@ blockers.
    — and come back through step 0. A hold with no outcome is counted by the
    report as a re-read the run skipped. A missing, untracked, unreadable or
    unsupported claim is `UNVERIFIABLE`, exits 2, and stops automatic progress;
-   so is a tracker the command cannot read at all, which means the question was
-   never put rather than that the claim record is unreadable. Neither is ever
-   read as a pass. Exit 1 is the command refusing (unknown point, no ticket, a base
-   that is not a revision): fix the call. Its limits are its own header's; the
+   so is a tracker whose adapter the command cannot READ, which means the
+   question was never put rather than that the claim record is unreadable.
+   Neither is ever read as a pass. Exit 1 is the command refusing (unknown
+   point, no ticket, a base that is not a revision, or a queue config that does
+   not resolve): fix the call or the config — the message says which. Its limits are its own header's; the
    cited-path set is a labelled assumption, not a recorded fact. Pinned in the
    generator's `test/template/revalidate.test.ts` (absent in a generated rig) ›
    "continues when only updatedAt moved and still reports the marker evidence"

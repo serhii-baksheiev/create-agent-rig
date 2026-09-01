@@ -12,8 +12,12 @@
  *   `commentary` fingerprint sets. Scope is authoritative at BEFORE_PR;
  *   commentary is observed but does not hold until BEFORE_CLOSE. Missing,
  *   untracked or unreadable claim state is `UNVERIFIABLE` and exits 2. So is a
- *   tracker this script cannot read at all (RP-64) — that one means the question
- *   was never put, rather than that the claim record is unreadable.
+ *   tracker whose adapter this script cannot READ (RP-64) — that one means the
+ *   question was never put, rather than that the claim record is unreadable.
+ *   ⚠ Reads, precisely: the queue CONFIG failing to resolve at all — an unknown
+ *   adapter name, a malformed `queue.json` — is exit 1, the refusal path, not a
+ *   hold. It no longer prints a stack trace either, but it is the operator's to
+ *   fix rather than a claim waiting on a tracker.
  * - `main:<path>` — what the default branch changed since this branch forked
  *   (`git merge-base <base> HEAD` … `<base>`), intersected with the CITED
  *   paths. Cited is a labelled assumption, not a recorded fact: the paths the
@@ -210,7 +214,7 @@ const invokedDirectly = () => {
  * Credentials in a URL's userinfo — `//user:secret@host`. One forward pass, both
  * character classes negated and bounded, so it cannot backtrack.
  */
-const URL_USERINFO = /\/\/[^\s/@:]+:[^\s/@]+@/;
+const URL_USERINFO = /\/\/[^\s/@:]+(?::[^\s/@]*)?@/;
 
 export const safeReason = (text) => {
   // Scan and publish the SAME prefix: findSecretValues reads at most
@@ -359,8 +363,26 @@ if (invokedDirectly()) {
 
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
-  const config = loadConfig(configPath);
-  const adapter = await resolveAdapter(config.adapter ?? 'plan-md');
+  // 🔴 The queue CONFIG, not the tracker behind it. `readAdapter` covers every
+  // adapter CALL, but resolving the config sat outside it, so an unknown
+  // adapter name or a malformed `queue.json` still crashed with the raw Node
+  // stack trace this script exists to remove — and the `[cause]` chain of the
+  // malformed case printed the parse error underneath it.
+  //
+  // It stays exit 1 rather than becoming `UNVERIFIABLE`: a config the operator
+  // has to fix is the command refusing, not a claim held pending a tracker
+  // that might come back. `refuse` is the path this file already uses for that.
+  let config;
+  let adapter;
+  try {
+    config = loadConfig(configPath);
+    adapter = await resolveAdapter(config.adapter ?? 'plan-md');
+  } catch (error) {
+    refuse(
+      `the queue configuration at ${configPath} could not be resolved: ` +
+        safeReason(error?.message ?? String(error)),
+    );
+  }
   const options = optionsWithPlanPath(config.options, configPath);
   const claimRoot = projectRootOfConfig(configPath) ?? projectRoot;
 
