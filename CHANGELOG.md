@@ -13,17 +13,21 @@ content as a patch by the owner's call and stays recorded as one.
 
 ## 0.7.0
 
-**A revalidation layer a generated project did not have, and the governance
-fixes that followed it.** A newly scaffolded project gains a mechanism it had no
-part of in 0.6.2: a run can now record what it claimed at each checkpoint and
-re-check it later without trusting its own memory of it. The public CLI is
-unchanged — no new command, no new flag, no new dependency.
+**A durable claim record under the revalidation 0.6.2 already had, and the
+governance fixes that followed it.** 0.6.2 could already re-check at a
+checkpoint whether the branch about to ship is still the branch the run took
+up. What a newly scaffolded project gains here is the layer under that: a
+content-blind record of what was claimed, so the re-check no longer rests on
+the run's own take-up snapshot. The public CLI is unchanged — no new command,
+no new flag, no new dependency.
 
 **Numbered a minor deliberately.** The rule at the top of this file is that
 additive is a minor and a fix is a patch, so that "I only take minors" stays a
-usable policy. Four files land in a generated rig that the published 0.6.2 does
-not contain, one of them a config file the project owns. Shipping that as a
-patch is the case the rule exists to prevent.
+usable policy. **Five** files land in a generated rig that the published 0.6.2
+does not contain — the four listed under Added, plus
+`.claude/scripts/lib/shell-tools.mjs`, the shared shell-tool list the Never-tier
+guards read. One of the five is a config file the project owns. Shipping that as
+a patch is the case the rule exists to prevent.
 
 ### Added
 
@@ -36,13 +40,21 @@ patch is the case the rule exists to prevent.
 
 ### Fixed
 
-- **The Never tier and the kill switch now cover every shell surface.** They
-  were wired under one tool matcher, so a second shell surface reached none of
-  them: a force-push of a shared branch, a filesystem wipe and a pre-commit
-  bypass all ran there, with the brake armed. The guards now read one shared
-  list of shell tools rather than each comparing its own literal, and the tests
-  spawn them on every entry in that list instead of checking the wiring alone —
-  which is how the gap survived its own test suite.
+- **The Never-tier guards, and the kill switch they carry, run on every shell
+  surface — where before they ran on one.** They were wired under a single tool
+  matcher, so a second shell surface reached none of them: a force-push of a shared branch, a filesystem wipe and a
+  pre-commit bypass all ran there with the brake armed. The guards now read one
+  shared list of shell tools rather than each comparing its own literal, and the
+  tests spawn them on every entry in that list instead of checking the wiring
+  alone — which is how the gap survived its own test suite.
+
+  ⚠ Running is not the same as covering, and the limit is stated where the list
+  is. The rules match a command NAME, so they refuse an operation only in that
+  spelling: with the brake armed, `gh pr merge …` is refused on both surfaces
+  while `gh.exe pr merge …` and `Remove-Item -Recurse -Force C:\` are not. That
+  bound belongs to the rule set rather than to the matcher — the `.exe` spelling
+  was allowed on the original surface too — and it is unchanged by this
+  release.
 
 - **An adapter it cannot read is `UNVERIFIABLE`, not a stack trace.** A
   revalidation whose queue adapter could not be reached exited on a raw Node
@@ -53,22 +65,39 @@ patch is the case the rule exists to prevent.
   found and left the next one open. A queue configuration that cannot be
   resolved at all is a refusal with a readable message rather than a crash.
 
-- **The generator-neutral surface no longer cites this repository's backlog.**
-  The `loop` and `pr-ship` skills and the Node/TypeScript stack rule carried
-  ticket identifiers, commit SHAs and PR numbers from the tracker that built
-  them — provenance a downstream reader cannot open, in artifacts whose only job
-  is to instruct. A mechanical check now scans the instruction surface of every
-  layer and fails on a backlog identifier, without banning those letters
-  repository-wide.
+- **The instruction surface no longer cites this repository's backlog.** The
+  `loop` and `pr-ship` skills and the Node/TypeScript stack rule carried ticket
+  identifiers, commit SHAs and PR numbers from the tracker that built them —
+  provenance a downstream reader cannot open, in artifacts whose only job is to
+  instruct. A mechanical check now scans every layer's rules, skills, agent
+  specs and top-level instruction files and fails on a backlog identifier,
+  without banning those letters repository-wide.
 
-- **Every evidence pointer the rig ships resolves.** A pointer of the form
+  ⚠ Scoped deliberately, and the scope is not the whole rig. The shipped
+  `.claude/scripts/**` and `.claude/hooks/**` are excluded: those citations are
+  comments addressed to whoever edits the mechanism rather than instructions the
+  agent follows. 78 of them, across 24 files, still arrive with a generated
+  project. Whether they are the same defect is a live question this release does
+  not settle.
+
+- **Evidence pointers are checked rather than trusted.** A pointer of the form
   `file › "test name"` is what keeps a claim about a mechanism honest; several
-  named tests that had been renamed or moved. They are checked now, and a
+  named tests that had been renamed or moved. A check now resolves them, and a
   pointer into a suite a generated project never receives has to say so.
 
-- **The run directory reaches four of the five commands one way only.** The
-  `loop` skill described a directory most of its own commands could not be told
-  about, so a run could journal into one place while a check looked in another.
+  ⚠ Its coverage is partial and it states that itself: it reads a citation's
+  names from the line the file is named on and the two after it, and resolves a
+  target by basename, so a test moved to another directory still passes. A green
+  run means no citation it read has gone dead — not that every pointer was
+  verified.
+
+- **The `loop` skill now describes how the run directory actually reaches each
+  command.** It had described a directory most of its own commands could not be
+  told about, so a reader could journal into one place while a check looked in
+  another. The correction is to the skill's text, not to the plumbing: the two
+  commands that take it as an argument rather than from the environment are now
+  named, and a correspondence check walks every script rather than a list
+  somebody maintains.
 
 ### Documentation
 

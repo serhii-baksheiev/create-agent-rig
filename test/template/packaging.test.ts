@@ -65,8 +65,16 @@ describe('the root manifest is publish-complete', () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
     expect(plan).toMatch(/Status \(0\.7\.0 prepared, publish pending the owner/);
     expect(plan).toMatch(/0\.6\.2 is `latest`/);
-    expect(plan).not.toMatch(/0\.6\.2 prepared|owner publishes `0\.6\.2`/);
-    expect(plan).not.toMatch(/`0\.6\.1` is `latest`/);
+    // 🔴 The negative guards tolerate the backticked spelling, because the
+    // version they were written against slipped past them. §11 read "`0.6.2` is
+    // prepared and waiting on the owner" while this asserted /0\.6\.2 prepared/,
+    // so PLAN.md contradicted its own status line for a whole release with the
+    // suite green. One fact, two places, and only one of them was guarded.
+    expect(plan).not.toMatch(/`?0\.6\.2`? (?:is )?prepared|owner publishes `?0\.6\.2`?/);
+    expect(plan).not.toMatch(/`?0\.6\.1`? is `latest`/);
+    // and the two places that carry it must agree: whatever §11 calls the
+    // current `latest` is what the status line calls live.
+    expect(plan).toMatch(/done through `0\.6\.2`, the current `latest`/);
   });
 
   it('has the publishable identity and the npm-facing fields', async () => {
