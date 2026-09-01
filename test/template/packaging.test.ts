@@ -96,8 +96,11 @@ describe('the root manifest is publish-complete', () => {
       /`?0\.7\.1`? (?:is |was )?published|`?0\.7\.1`? is `latest`|through `?0\.7\.1`?, the current/,
     );
     // 0.7.0 is published, so it may not be described as pending.
+    // Scoped to the version rather than dropped: `waiting on the owner` is now
+    // legitimately true of 0.7.1, but saying it of the PUBLISHED 0.7.0 is the
+    // 0.6.2 mistake returning, so it stays red for that one.
     expect(plan).not.toMatch(
-      /`?0\.7\.0`? (?:is )?prepared|0\.7\.0 publish pending|owner publishes `?0\.7\.0`?/,
+      /`?0\.7\.0`? (?:is )?prepared|0\.7\.0 publish pending|owner publishes `?0\.7\.0`?|`?0\.7\.0`? is waiting on the owner/,
     );
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
     // and the two places that carry it must agree: whatever §11 calls the

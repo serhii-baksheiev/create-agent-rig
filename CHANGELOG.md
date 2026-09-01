@@ -43,14 +43,27 @@ the skill step that calls it.
   id.
 
   **Four refusals keep it from becoming a bypass** — exit 1, nothing
-  journalled: when the run already declares a take-up, when the branch diff
-  adds or modifies a tracked `.rig/claims/*.json`, at `BEFORE_CLOSE`, and on an
-  `outcome`. Re-running a held or `UNVERIFIABLE` ticketed call as
-  owner-directed is the bypass the mode was shaped to refuse, not a remedy.
+  journalled: when the run carries an unresolved `revalidationHold`, when the
+  run declares a take-up, when the branch touches a tracked
+  `.rig/claims/*.json` in any direction (added, modified, removed or renamed),
+  and at `BEFORE_CLOSE`. The first is the one that makes re-running a held or
+  `UNVERIFIABLE` ticketed call in this mode a refusal rather than a way past
+  it; the run's stop inputs are read fail-closed, so an unreadable
+  `state.json` refuses instead of reading as an empty run.
 
-  ⚠ Its stated limit: nothing can prove an item does not exist. The command
-  checks that this run declares none and this branch writes no claim; the rest
-  is the caller's word, recorded as such.
+  An owner-directed HOLD is answered the same way a ticketed one is —
+  `revalidate.mjs outcome --point BEFORE_PR --owner-directed --action-changed
+<true | false>` — which addresses the detection by mode, since it carries no
+  ticket to name.
+
+  ⚠ Its stated limits, because a governance mode is trusted as far as it is
+  described. Nothing can prove an item does not exist. With no `RIG_RUN_DIR`
+  there is no run state, so the hold and take-up refusals cannot fire — the
+  command says so on stdout and in `evidence.runState` rather than reporting a
+  clean check. The claim refusal reads the branch diff, so a record already on
+  the default branch or not yet committed is not seen. And `--base` is the sole
+  authority for the verdict here, the claim comparison that would otherwise
+  survive a wrong base being absent.
 
 - **`pr-ship` step 1 states both paths**, and step 4 now spells the words the
   fan-out is launched with — `no item — owner-directed` — and says that this

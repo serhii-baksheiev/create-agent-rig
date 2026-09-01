@@ -282,26 +282,65 @@ describe('revalidate.mjs — the mode is always explicit (RP-94)', () => {
     const r = await revalidate(f, ['--point', 'BEFORE_CLOSE', '--owner-directed']);
     expect(r.code, r.out).toBe(1);
     expect(r.stdout).toBe('');
+    // 🔴 Assert the refusal's OWN message, not just exit 1. A review found the
+    // first version of this file asserting only `code === 1` and empty stdout,
+    // which several unrelated failures also produce — the test passed with the
+    // refusal deleted. Every refusal below names itself.
+    expect(r.stderr).toMatch(/BEFORE_PR mode only/);
     expect(r.stderr).toMatch(/BEFORE_CLOSE/);
     expect(revalidationEvents(f.runDir)).toHaveLength(0);
-  });
-
-  it('refuses owner-directed on an outcome — an outcome answers a ticketed revalidation', async () => {
-    const f = await fixture();
-    const r = await revalidate(f, [
-      'outcome',
-      '--point',
-      'BEFORE_PR',
-      '--owner-directed',
-      '--action-changed',
-      'false',
-    ]);
-    expect(r.code, r.out).toBe(1);
-    expect(r.stdout).toBe('');
   });
 });
 
 describe('revalidate.mjs — owner-directed is never a way around the claim chain (RP-94)', () => {
+  // 🔴 THE refusal this mode most needs, and the one the first version of it
+  // shipped without. Measured by a reviewer: a ticketed BEFORE_PR that exited 2
+  // UNVERIFIABLE latched a `revalidationHold`, and re-running the SAME
+  // checkpoint as `--owner-directed` in the same run exited 0 with nothing in
+  // the repository changed. Neither other refusal could fire in that state —
+  // `takeUps` is never populated at all on the default `plan-md` adapter, and
+  // the commonest hold is a MISSING claim record, which is exactly when the
+  // branch writes none. This is the end-to-end sequence, not a synthesised
+  // state file: the hold is written by the ticketed path itself.
+  it('refuses when this run carries an unresolved revalidation hold', async () => {
+    const f = await fixture();
+    const configPath = path.join(f.clone, 'queue.json');
+    await writeFile(configPath, JSON.stringify({ adapter: 'jira', options: { project: 'RP' } }));
+    const bare = { ...f.env };
+    for (const key of ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN']) delete bare[key];
+
+    const ticketed = await run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_PR',
+        '--ticket',
+        'RP-1',
+        '--base',
+        'origin/master',
+        '--config',
+        configPath,
+      ],
+      f.clone,
+      bare,
+    );
+    expect(ticketed.code, ticketed.out).toBe(2);
+    const state = JSON.parse(await readFile(path.join(f.runDir, 'state.json'), 'utf8')) as {
+      revalidationHold?: { ticket: string; result: string; detectionId: string };
+    };
+    expect(state.revalidationHold?.result).toBe('UNVERIFIABLE');
+
+    const laundered = await ownerDirected(f);
+    expect(laundered.code, laundered.out).toBe(1);
+    expect(laundered.stdout).toBe('');
+    expect(laundered.stderr).toMatch(/unresolved revalidation hold/);
+    expect(laundered.stderr).toMatch(/RP-1/);
+    expect(laundered.stderr).toMatch(new RegExp(state.revalidationHold!.detectionId));
+    // and the refusal journalled nothing of its own
+    expect(revalidationEvents(f.runDir)).toHaveLength(1);
+  });
+
   it('refuses when the declared run already carries a take-up', async () => {
     const f = await fixture();
     await writeFile(
@@ -311,9 +350,122 @@ describe('revalidate.mjs — owner-directed is never a way around the claim chai
     const r = await ownerDirected(f);
     expect(r.code, r.out).toBe(1);
     expect(r.stdout).toBe('');
-    expect(r.stderr).toMatch(/take-up/);
+    expect(r.stderr).toMatch(/already declares a take-up/);
     expect(r.stderr).toMatch(/RP-1/);
     expect(revalidationEvents(f.runDir)).toHaveLength(0);
+  });
+
+  // 🔴 The stop inputs are read FAIL-CLOSED. `readState` — the reader the first
+  // version used — swallows every parse failure and answers `{}`, and its own
+  // header forbids exactly this use: "a corrupt file there may be hiding a
+  // persisted stop". Measured: a truncated state.json carrying a take-up
+  // continued.
+  it.each([
+    ['truncated JSON', '{"takeUps": {"RP-1": "2026-09-01T00:00:00.000Z"'],
+    ['not an object at all', '"a string"'],
+  ])('refuses a run whose state.json is %s, rather than reading it as empty', async (_l, body) => {
+    const f = await fixture();
+    await writeFile(path.join(f.runDir, 'state.json'), body);
+    const r = await ownerDirected(f);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toMatch(/could not be read|not readable/);
+    expect(revalidationEvents(f.runDir)).toHaveLength(0);
+  });
+
+  // `Object.keys` answers `[]` for both of these, so a permissive read would
+  // turn "this cannot be read" into "there is nothing here".
+  it.each([
+    ['a list', '[]'],
+    ['a number', '5'],
+  ])('refuses when takeUps is %s rather than an object', async (_label, value) => {
+    const f = await fixture();
+    await writeFile(path.join(f.runDir, 'state.json'), `{"takeUps": ${value}}`);
+    const r = await ownerDirected(f);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stderr).toMatch(/take-up record is not readable/);
+    expect(revalidationEvents(f.runDir)).toHaveLength(0);
+  });
+
+  // 🔴 The case `--diff-filter=AM` could not see, measured by a reviewer: git
+  // reports `git mv .rig/claims/RP-1.json .rig/claims/RP-2.json` as `R100`, so
+  // the AM filter returned NOTHING and a branch demonstrably ending up with a
+  // claim record it did not have at the merge base passed the check. Matching
+  // the CLASS — "this branch touched the claim store" — is what closes it,
+  // rather than enumerating the statuses the class can wear.
+  it('refuses when the branch RENAMES a claim record — the case --diff-filter=AM could not see', async () => {
+    const f = await fixture();
+    await mkdir(path.join(f.clone, '.rig', 'claims'), { recursive: true });
+    await writeFile(
+      path.join(f.clone, '.rig', 'claims', 'RP-1.json'),
+      JSON.stringify({ schemaVersion: 1, ticket: 'RP-1' }),
+    );
+    await git(['add', '-A'], f.clone);
+    await git(['commit', '-q', '-m', 'seed the claim'], f.clone);
+    await git(['push', '-q', 'origin', 'HEAD:master'], f.clone);
+    await git(['fetch', '-q', 'origin'], f.clone);
+    await git(['mv', '.rig/claims/RP-1.json', '.rig/claims/RP-2.json'], f.clone);
+    await git(['commit', '-q', '-a', '-m', 'move the claim'], f.clone);
+    // the shape that defeated the narrower filter
+    expect(await git(['diff', '--name-status', 'origin/master', 'HEAD'], f.clone)).toMatch(/^R/m);
+    expect(
+      await git(['diff', '--name-only', '--diff-filter=AM', 'origin/master', 'HEAD'], f.clone),
+    ).toBe('');
+    const r = await ownerDirected(f);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stderr).toMatch(/touches tracked claim records/);
+    expect(r.stderr).toMatch(/RP-2\.json/);
+  });
+
+  // A branch that deletes its claim makes the TICKETED call UNVERIFIABLE, so
+  // excluding `D` left the deletion on the bypass path rather than out of scope.
+  it('refuses when the branch DELETES its claim record', async () => {
+    const f = await fixture();
+    await mkdir(path.join(f.clone, '.rig', 'claims'), { recursive: true });
+    await writeFile(path.join(f.clone, '.rig', 'claims', 'RP-3.json'), '{}');
+    await git(['add', '-A'], f.clone);
+    await git(['commit', '-q', '-m', 'seed the claim'], f.clone);
+    await git(['push', '-q', 'origin', 'HEAD:master'], f.clone);
+    await git(['fetch', '-q', 'origin'], f.clone);
+    await git(['rm', '-q', '.rig/claims/RP-3.json'], f.clone);
+    await git(['commit', '-q', '-m', 'remove the claim'], f.clone);
+    const r = await ownerDirected(f);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stderr).toMatch(/RP-3\.json/);
+  });
+
+  // This mode resolves no queue config, so it cannot ask where the rig root is;
+  // anchoring the pattern at the repository root alone missed a nested one.
+  it('refuses a claim record under a rig root nested below the git root', async () => {
+    const f = await fixture();
+    await mkdir(path.join(f.clone, 'sub', '.rig', 'claims'), { recursive: true });
+    await writeFile(path.join(f.clone, 'sub', '.rig', 'claims', 'RP-9.json'), '{}');
+    await git(['add', '-A'], f.clone);
+    await git(['commit', '-q', '-m', 'a nested claim record'], f.clone);
+    const r = await ownerDirected(f);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stderr).toMatch(/sub\/\.rig\/claims\/RP-9\.json/);
+  });
+
+  it('matches the path claimPathFor actually builds, from the repository root and from a nested rig root', async () => {
+    const claims = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href
+    )) as { claimPathFor: (root: string, ticket: unknown) => string };
+    const source = await readFile(revalidateScript, 'utf8');
+    const pattern = source.match(/const CLAIM_RECORD = (\/.*\/);/)?.[1];
+    expect(pattern, 'CLAIM_RECORD is no longer declared as a literal').toBeTruthy();
+    const claimRecord = new RegExp(pattern!.slice(1, -1));
+    // The real builder decides the shape; this test is the correspondence
+    // check that keeps the second spelling in step with it.
+    for (const root of ['/repo', '/repo/sub']) {
+      const built = claims.claimPathFor(root, { id: 'RP-1' }).split(path.sep).join('/');
+      const relative = built.slice(built.indexOf('/repo/') + '/repo/'.length);
+      expect(claimRecord.test(relative), `${relative} is not matched`).toBe(true);
+    }
+    expect(claimRecord.test('.rig/claims/RP-1.json')).toBe(true);
+    // and it stays narrow: neither a nested subdirectory nor a neighbour
+    expect(claimRecord.test('.rig/claims/nested/RP-1.json')).toBe(false);
+    expect(claimRecord.test('.rig/revalidation.json')).toBe(false);
   });
 
   it('refuses when the branch diff adds a tracked claim record', async () => {
@@ -395,6 +547,120 @@ describe('revalidate.mjs — owner-directed is never a way around the claim chai
     const result = await jsonOf(r);
     expect(result.action).toBe('unverifiable');
     expect(result.ticket).toBe('RP-1');
+  });
+});
+
+describe('revalidate.mjs — an owner-directed HOLD can be answered (RP-94)', () => {
+  // 🔴 Without this the skill's stated exit-2 remedy was a command the script
+  // refused — the same shape of contradiction RP-94 exists to remove. The
+  // detection carries `ticket: null`, so the outcome addresses it by MODE.
+  it('answers an owner-directed hold with an owner-directed outcome', async () => {
+    const f = await fixture();
+    await f.moveMain(['a.txt']);
+    const held = await ownerDirected(f, ['--json']);
+    expect(held.code, held.out).toBe(2);
+    const detection = await jsonOf(held);
+
+    const outcome = await revalidate(f, [
+      'outcome',
+      '--point',
+      'BEFORE_PR',
+      '--owner-directed',
+      '--action-changed',
+      'false',
+      '--note',
+      'main moved on a.txt, the hotfix is unaffected',
+      '--json',
+    ]);
+    expect(outcome.code, outcome.out).toBe(0);
+    const record = JSON.parse(outcome.stdout) as {
+      data: { detectionId: string; ticket: string | null; mode?: string; actionRequired: boolean };
+    };
+    // It answers THAT detection, and invents no id for the record either.
+    expect(record.data.detectionId).toBe((detection as unknown as { id: string }).id);
+    expect(record.data.ticket).toBeNull();
+    expect(record.data.mode).toBe('owner-directed');
+    expect(record.data.actionRequired).toBe(false);
+  });
+
+  it('refuses a ticketed outcome aimed at an owner-directed detection', async () => {
+    const f = await fixture();
+    await f.moveMain(['a.txt']);
+    expect((await ownerDirected(f)).code).toBe(2);
+    const r = await revalidate(f, [
+      'outcome',
+      '--point',
+      'BEFORE_PR',
+      '--ticket',
+      'null',
+      '--action-changed',
+      'false',
+    ]);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stderr).toMatch(/no revalidation of null at BEFORE_PR/);
+  });
+
+  it('refuses an owner-directed outcome when this run holds no owner-directed detection', async () => {
+    const f = await fixture();
+    const r = await revalidate(f, [
+      'outcome',
+      '--point',
+      'BEFORE_PR',
+      '--owner-directed',
+      '--action-changed',
+      'false',
+    ]);
+    expect(r.code, r.out).toBe(1);
+    expect(r.stderr).toMatch(/no revalidation of owner-directed work at BEFORE_PR/);
+  });
+});
+
+describe('revalidate.mjs — an undeclared run says what it could not check (RP-94)', () => {
+  // 🔴 With no RIG_RUN_DIR the hold and take-up refusals have nothing to read.
+  // That is inherent; reading as though they had passed is not. "Could not
+  // check" is reported as itself, on stdout and in the record.
+  it('says out loud that an undeclared run checked neither the hold nor the take-up', async () => {
+    const f = await fixture();
+    const noRun = { ...f.env };
+    delete noRun.RIG_RUN_DIR;
+    const r = await run(
+      process.execPath,
+      [revalidateScript, '--point', 'BEFORE_PR', '--owner-directed', '--base', 'origin/master'],
+      f.clone,
+      noRun,
+    );
+    expect(r.code, r.out).toBe(0);
+    expect(r.stdout).toMatch(/no RIG_RUN_DIR/);
+    expect(r.stdout).toMatch(/were NOT checked/);
+    // and nothing was journalled into the run that was never declared
+    expect(revalidationEvents(f.runDir)).toHaveLength(0);
+  });
+
+  it('records the same thing in evidence.runState, both ways round', async () => {
+    const f = await fixture();
+    const declared = await jsonOf(await ownerDirected(f, ['--json']));
+    expect(declared.evidence?.runState).toMatch(/read fail-closed/);
+
+    const noRun = { ...f.env };
+    delete noRun.RIG_RUN_DIR;
+    const undeclaredRun = await run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_PR',
+        '--owner-directed',
+        '--base',
+        'origin/master',
+        '--json',
+      ],
+      f.clone,
+      noRun,
+    );
+    const undeclared = JSON.parse(
+      undeclaredRun.stdout.slice(undeclaredRun.stdout.indexOf('{')),
+    ) as Result;
+    expect(undeclared.evidence?.runState).toMatch(/NOT read/);
   });
 });
 

@@ -74,23 +74,47 @@ blockers.
    🔴 **The second path is not a lighter checkpoint, and it is never a skip.**
    It runs the same `main:<path>` comparison and holds on the same exit 2; what
    it drops is the claim comparison, because work with no item has no claim to
-   compare. It reaches no tracker, so it needs no tracker credentials — and it
-   is **refused**, exit 1 with nothing journalled, when this run already
-   declares a take-up, when the branch diff adds or modifies a tracked
-   `.rig/claims/*.json`, at `BEFORE_CLOSE`, or on an `outcome`. Those refusals
-   are what stop it being the way around a claim or revalidation failure: if
-   the ticketed call held or came back `UNVERIFIABLE`, re-running it as
-   owner-directed is not a remedy, it is the bypass this mode was shaped to
-   refuse. Passing both flags, or neither, is exit 1.
+   compare. It resolves no queue config, so it reaches no tracker and needs no
+   credentials. Passing both flags, or neither, is exit 1.
 
-   ⚠ Its limit, because a governance mode is trusted exactly as far as it is
-   described: nothing can prove an item does not exist. The command checks that
-   **this run declares none and this branch writes no claim** — the rest is
-   your word, and it is recorded as such, with `ticket: null` and no invented
-   id. Pinned in the generator's
-   `test/template/owner-directed-revalidation.test.ts` (absent in a generated
-   rig) › "refuses when the declared run already carries a take-up" and ›
-   "refuses when the branch diff adds a tracked claim record".
+   **Four refusals** — exit 1, nothing journalled — keep it from being the way
+   around a claim or revalidation failure. It is refused when this run carries
+   an **unresolved revalidation hold** (what the ticketed path writes when it
+   holds or answers `UNVERIFIABLE`), when this run **declares a take-up**, when
+   the branch **touches a tracked `.rig/claims/*.json`** in any direction —
+   added, modified, removed or renamed — and at `BEFORE_CLOSE`. So re-running a
+   held ticketed call in this mode does not get past it: resolve the hold with
+   `outcome` instead.
+
+   ⚠ **What those refusals do not cover**, because a governance mode is trusted
+   exactly as far as it is described:
+
+   - **With no `RIG_RUN_DIR` there is no run state to read**, so the hold and
+     take-up refusals cannot fire — and nothing is journalled. The command says
+     so on stdout and in `evidence.runState`; it is not evidence that neither
+     exists. An attended gate run is exactly this shape, so read that line.
+   - The claim refusal reads the **branch diff**, so a claim record already on
+     the default branch, or written and not committed, is not seen.
+   - **`--base` is the sole authority for the verdict here**, the claim
+     comparison that would otherwise survive a wrong base being absent. Pass
+     the fetched `origin/<default>`, not a local copy and not `HEAD`.
+   - Nothing can prove an item does not exist. The rest is your word, recorded
+     as such, with `ticket: null` and no invented id.
+
+   Pinned in the generator's `test/template/owner-directed-revalidation.test.ts`
+   (absent in a generated rig) › "refuses when this run carries an unresolved
+   revalidation hold", › "refuses when the declared run already carries a
+   take-up", › "refuses when the branch RENAMES a claim record — the case
+   --diff-filter=AM could not see" and › "says out loud that an undeclared run
+   checked neither the hold nor the take-up".
+
+   **Exit 2 here is a HOLD with the same shape as the ticketed one**, and the
+   same two-step remedy: re-read the default branch on each named path, then
+   record what the re-read concluded — `node .claude/scripts/revalidate.mjs
+   outcome --point BEFORE_PR --owner-directed --action-changed <true | false>
+   --note '…'` — and come back through step 0. The owner-directed detection
+   carries no ticket, so `--owner-directed` is how the outcome addresses it;
+   the ticketed `--ticket <item-id>` form below cannot match it and is refused.
 
    The ticketed path runs the existing revalidation chain against the tracked, versioned
    `.rig/claims/<item-id>.json`: the content-blind `scope` fingerprint set is
@@ -100,8 +124,11 @@ blockers.
    journals one `revalidation` event at `point: BEFORE_PR`; **exit code 2 is a HOLD**, with one blocker per named source: re-read the item, or the default
    branch on that path, record what the re-read concluded —
    `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket <item-id> --action-changed <true | false> --note '…'`
-   — and come back through step 0. A hold with no outcome is counted by the
-   report as a re-read the run skipped. A missing, untracked, unreadable or
+   — and come back through step 0. **That `--ticket` form is this path's, not
+   both paths'** — the owner-directed detection carries no ticket for it to
+   name, and its own `--owner-directed` outcome is written out above. A hold
+   with no outcome, in either mode, is counted by the report as a re-read the
+   run skipped. A missing, untracked, unreadable or
    unsupported claim is `UNVERIFIABLE`, exits 2, and stops automatic progress;
    so is a tracker whose adapter the command cannot READ, which means the
    question was never put rather than that the claim record is unreadable.
