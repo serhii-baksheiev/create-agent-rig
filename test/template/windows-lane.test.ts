@@ -1,97 +1,130 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import config from '../../vitest.config.js';
 
 /**
- * RP-62 — the hosted Windows lane reported contention identically to a real
+ * RP-62 — the hosted Windows lane reports contention identically to a real
  * failure.
  *
- * The measured shape, across five occurrences: always `Test timed out`, never
- * an AssertionError; the failing file among the suite's heaviest
- * process-spawning tests; a normal duration of ~6-8 s against a 15 s budget;
- * and — the sharpest instance — the victim MOVING between two runs of one
- * commit whose diff was eight lines of comment. Telling that apart from a
- * regression meant querying neighbouring heads by hand.
+ * The measured shape, across occurrences: always `Test timed out`, never an
+ * AssertionError; the victim among the suite's heaviest process-spawning
+ * tests; a normal duration of ~6-8 s against a 15 s budget; and — the sharpest
+ * instance — the victim MOVING between two runs of one commit whose diff was
+ * eight lines of comment. Telling that apart from a regression meant querying
+ * neighbouring heads by hand.
  *
  * The owner ruling fixed the remedy and its order: reduce worker concurrency on
  * that lane FIRST; a lane-specific 30 s budget only if that does not hold;
  * never a global raise, because the same cases finish far inside the budget on
  * Linux and a uniform raise masks a genuine slowdown everywhere.
  *
- * What this file pins is the SHAPE of that remedy — lane-specific, and not the
- * timeout. It deliberately does not pin the cap's VALUE: the ruling asks for
- * the smallest stable figure, which is a measurement on the hosted runner and
- * will move.
+ * 🔴 The cap is passed on the COMMAND LINE, not set per project, and that was
+ * measured rather than chosen. `test:unit` runs `--project unit --project
+ * template`; vitest 4 refuses two projects that share `sequence.groupOrder`
+ * but resolve different `maxWorkers`, so capping the template project alone
+ * aborts the whole run with "no tests" and exits 1 — the lane goes red having
+ * executed nothing. The ruling permits this shape exactly when the per-project
+ * one "costs more than it buys", and a lane that runs zero tests is that.
+ *
+ * What this file pins is the SHAPE of the remedy: lane-specific, on the command
+ * line, and not the timeout. It deliberately does NOT pin the cap's value — the
+ * ruling asks for the smallest stable figure, which is a measurement on the
+ * hosted runner and will move.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const ciPath = path.join(repoRoot, '.github', 'workflows', 'ci.yml');
+const workflowDir = path.join(repoRoot, '.github', 'workflows');
 
-const projects = (config as { test?: { projects?: unknown[] } }).test?.projects ?? [];
-const templateProject = projects.find(
-  (p): p is { test: { name: string; maxWorkers?: number } } =>
-    typeof p === 'object' &&
-    p !== null &&
-    (p as { test?: { name?: string } }).test?.name === 'template',
-);
+/** Every workflow, so "and nowhere else" means the repository, not one file. */
+const workflows = async () => {
+  const names = (await readdir(workflowDir)).filter((n) => /\.ya?ml$/.test(n));
+  return Promise.all(
+    names.map(async (name) => ({
+      name,
+      body: await readFile(path.join(workflowDir, name), 'utf8'),
+    })),
+  );
+};
 
-/** The `windows-unit:` job block, up to the next job at the same indent. */
-const windowsJob = (ci: string) =>
-  ci.split(/^ {2}windows-unit:$/m)[1]?.split(/^ {2}\w[\w-]*:$/m)[0];
+/**
+ * Lines that actually RUN, with comments stripped — whole-line and inline.
+ *
+ * 🔴 Both forms, and the second was measured rather than anticipated. A regex
+ * over the raw file matches a commented-out setting: `code-reviewer` showed
+ * that replacing this job's `env:` block with `# RIG_TEMPLATE_MAX_WORKERS: 2`
+ * left the first version of this test green. Stripping whole-line comments
+ * alone then let `run: pnpm test:unit … # --maxWorkers=2` pass too — a real
+ * mutation, because YAML ends a plain scalar at ` #` and the flag would never
+ * reach the command. A check a comment can satisfy is not checking the
+ * workflow.
+ *
+ * ⚠ The inline strip is textual, so it also truncates a ` #` inside a `run: |`
+ * script body — the spawn-baseline `echo` is one. That costs nothing here (the
+ * tokens this file looks for sit before any such `#`), and erring toward
+ * removing too much keeps the failure direction safe: it can only hide a
+ * token, never invent one.
+ */
+const executable = (body: string) =>
+  body
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .map((line) => line.replace(/\s#.*$/, ''))
+    .join('\n');
 
-describe('the hosted Windows lane caps template concurrency, and only there', () => {
-  it('sets RIG_TEMPLATE_MAX_WORKERS in the windows-unit job and in no other', async () => {
-    const ci = await readFile(ciPath, 'utf8');
-    const job = windowsJob(ci);
+const windowsJob = (body: string) =>
+  body.split(/^ {2}windows-unit:$/m)[1]?.split(/^ {2}\w[\w-]*:$/m)[0];
+
+describe('the hosted Windows lane caps test concurrency, and only there', () => {
+  it('passes --maxWorkers in the windows-unit job', async () => {
+    const ci = (await workflows()).find((w) => w.name === 'ci.yml');
+    expect(ci, 'there is no ci.yml').toBeDefined();
+    const job = windowsJob(executable(ci!.body));
     expect(job, 'ci.yml has no windows-unit job').toBeDefined();
-    expect(job, 'the Windows lane does not cap template concurrency').toMatch(
-      /RIG_TEMPLATE_MAX_WORKERS:\s*\d+/,
-    );
-
-    // Lane-specific is the whole point: a cap set anywhere else would slow a
-    // lane that has no contention problem, and would stop being evidence about
-    // this one.
-    const everywhere = [...ci.matchAll(/RIG_TEMPLATE_MAX_WORKERS/g)];
-    const inJob = [...job!.matchAll(/RIG_TEMPLATE_MAX_WORKERS/g)];
-    expect(everywhere.length, 'RIG_TEMPLATE_MAX_WORKERS is set outside the windows-unit job').toBe(
-      inJob.length,
-    );
+    expect(job, 'the Windows lane does not cap concurrency').toMatch(/--maxWorkers[= ]\d+/);
   });
 
-  it('reads that cap into the template project, so the lane setting reaches the runner', () => {
-    expect(templateProject, 'vitest.config.ts declares no template project').toBeDefined();
-
-    const configSource = process.env.RIG_TEMPLATE_MAX_WORKERS;
-    if (configSource === undefined) {
-      // The ordinary case, and the one every other lane runs in: no cap.
-      expect(
-        templateProject?.test.maxWorkers,
-        'the template project caps workers when the lane did not ask it to',
-      ).toBeUndefined();
-      return;
+  it('caps no other lane, in any workflow', async () => {
+    const offenders: string[] = [];
+    for (const { name, body } of await workflows()) {
+      const runs = executable(body);
+      const job = name === 'ci.yml' ? windowsJob(runs) : undefined;
+      // Everything outside the one capped job must be free of a cap: another
+      // lane has no contention problem, and slowing it would both cost time and
+      // stop this lane being evidence about itself.
+      const elsewhere = job ? runs.split(job).join('') : runs;
+      if (/--maxWorkers/.test(elsewhere)) offenders.push(name);
     }
-    // Under the Windows lane's own environment the figure must arrive.
-    expect(templateProject?.test.maxWorkers).toBe(Number(configSource));
+    expect(offenders, 'a lane other than windows-unit caps concurrency').toEqual([]);
   });
 
   it('leaves the timeout alone — the cap is concurrency, never the budget', async () => {
-    const ci = await readFile(ciPath, 'utf8');
-    // Every --testTimeout in the workflow is the same figure. A lane-specific
-    // budget is the ruled fallback, and adopting it silently here would blind
-    // the lane it applies to; vitest-timeouts.test.ts pins the figure itself
-    // equal to vitest.config.ts's.
-    const figures = new Set([...ci.matchAll(/--testTimeout=(\d+)/g)].map((m) => m[1]));
-    expect(figures.size, 'the workflow now carries more than one --testTimeout figure').toBe(1);
+    // A lane-specific budget is the ruled FALLBACK, and adopting it silently
+    // would blind the lane it applies to. Both the count and the distinct set
+    // are asserted: counting distinct values alone stays green if a lane drops
+    // the flag entirely (`security-scanner`, round 1).
+    const figures: string[] = [];
+    for (const { body } of await workflows()) {
+      for (const m of executable(body).matchAll(/--testTimeout=(\d+)/g)) figures.push(m[1]!);
+    }
+    expect(figures.length, 'no workflow passes --testTimeout any more').toBeGreaterThan(0);
+    expect(new Set(figures).size, 'the workflows carry more than one --testTimeout figure').toBe(1);
   });
 
-  it('records a spawn baseline on that lane, so a slow runner is visible in the log', async () => {
-    const ci = await readFile(ciPath, 'utf8');
-    const job = windowsJob(ci);
-    // The diagnosis the ruling asked for: when a case times out, the run should
-    // carry enough timing to tell contention from a regression without querying
-    // neighbouring heads by hand.
-    expect(job, 'the Windows lane records no spawn timing').toMatch(/node -e/);
+  it('brackets the suite with a spawn baseline, so a slowdown DURING it is visible', async () => {
+    const ci = (await workflows()).find((w) => w.name === 'ci.yml')!;
+    const job = windowsJob(executable(ci.body))!;
+    // One reading at t0 characterises the runner before the load; the timeouts
+    // happen under it. Two readings bracket the suite, which is what tells a
+    // contended run from a slow one without querying neighbouring heads.
+    const readings = [...job.matchAll(/node -e/g)];
+    expect(
+      readings.length,
+      'the Windows lane does not bracket the suite with spawn timings',
+    ).toBeGreaterThanOrEqual(2);
+    // The second must survive a red suite, or it is absent exactly when needed.
+    expect(job, 'the post-suite baseline does not run on a failed suite').toMatch(
+      /if:\s*always\(\)/,
+    );
   });
 });

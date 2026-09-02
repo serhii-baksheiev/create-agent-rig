@@ -83,19 +83,31 @@ jobs:
       # the two apart meant querying other heads by hand. This step is the
       # diagnosis the next occurrence carries with it: a spawn baseline in the
       # log, so a slow runner is visible without that manual comparison.
+      # It is `continue-on-error` because a diagnostic must never decide the
+      # lane: under `bash -eo pipefail` a hiccup in `date` or `node` would
+      # otherwise redden this job before a single test ran — the very shape
+      # this item exists to remove.
       - name: Record the spawn baseline (RP-62 diagnostics)
         shell: bash
+        continue-on-error: true
         run: |
           for i in 1 2 3 4 5; do
             start=$(date +%s%N)
             node -e '0'
             echo "  bare node spawn #$i: $(( ($(date +%s%N) - start) / 1000000 )) ms"
           done
-      # RIG_TEMPLATE_MAX_WORKERS caps how many TEMPLATE files run at once, and
-      # it is set here and nowhere else — the reduction is lane-specific, which
-      # is what the ruling on RP-62 required. The template tests spawn stub
-      # subprocesses, so they are process-bound rather than CPU-bound, and this
-      # is a hosted 2-core runner.
+      # `--maxWorkers` caps how many test files run at once, and it is passed
+      # here and nowhere else — the reduction is lane-specific, which is what
+      # the ruling on RP-62 required (it asked for lane-specific, explicitly not
+      # for per-project). The tests spawn stub subprocesses, so they are
+      # process-bound rather than CPU-bound, and this is a hosted 2-core runner.
+      #
+      # 🔴 On the COMMAND LINE, not per project, and that is measured rather
+      # than preferred. `test:unit` runs `--project unit --project template`;
+      # vitest 4 refuses two projects that share `sequence.groupOrder` but
+      # resolve different `maxWorkers`, so capping the template project alone
+      # aborts the run with "no tests" and exits 1. The ruling allows this shape
+      # exactly when the per-project one "costs more than it buys".
       #
       # 🔴 --testTimeout is deliberately NOT touched. It stays 15000 on every
       # lane, and test/template/vitest-timeouts.test.ts keeps this figure equal
@@ -103,6 +115,20 @@ jobs:
       # capping concurrency does not hold; raising it globally is refused
       # outright, because the same cases finish far inside the budget on Linux.
       - name: Run the unit suite on Windows
-        env:
-          RIG_TEMPLATE_MAX_WORKERS: 2
-        run: pnpm test:unit --testTimeout=15000
+        run: pnpm test:unit --testTimeout=15000 --maxWorkers=2
+      # The pair is the point: a baseline taken only at t0 characterises the
+      # runner before the load, and the timeouts happen under it. Two readings
+      # bracket the suite, so a run that slowed DURING the suite says so in its
+      # own log — which is what "diagnose the next occurrence without querying
+      # neighbouring heads" needs. `always()` so it is recorded on a red run,
+      # which is the run that needs it.
+      - name: Record the spawn baseline again, after the suite (RP-62)
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: |
+          for i in 1 2 3; do
+            start=$(date +%s%N)
+            node -e '0'
+            echo "  bare node spawn after the suite #$i: $(( ($(date +%s%N) - start) / 1000000 )) ms"
+          done
