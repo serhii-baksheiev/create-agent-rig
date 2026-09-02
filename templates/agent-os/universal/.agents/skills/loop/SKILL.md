@@ -157,9 +157,8 @@ rulebook is refused unless its
 path starts with an allowed prefix. 🔴 **Which paths that covers is
 `RULEBOOK_PREFIXES` in `.claude/scripts/unattended-flag.mjs`** — read it before
 composing an allow-list, rather than working from a summary here. A summary is a
-second copy, and the one that used to sit in this sentence went stale: it omitted
-the doctor exemptions and the hook wiring, which is the surface a run must least
-believe it may edit. One fact the set cannot carry, so it is stated: the board
+second copy, and the one that used to sit in this sentence had gone stale against
+the set it described. One fact the set cannot carry, so it is stated: the board
 selector is the one always-refused
 exception and cannot be admitted by an allow-list. With no flag the guard does nothing. An
 item that needs a rulebook path names it here — a decision made at claim
