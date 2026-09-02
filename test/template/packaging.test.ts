@@ -71,6 +71,15 @@ describe('the root manifest is publish-complete', () => {
 
   it('records 0.7.1 as published and names it `latest` in both places', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
+    // The published sha has ONE source here — the ledger row, which the test
+    // below pins to a full literal. Spelling it a third time as a bare
+    // substring would both duplicate the fact and match anywhere in the file,
+    // including inside an unrelated hash.
+    const publishedSha = (
+      JSON.parse(
+        await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
+      ) as Record<string, string | null>
+    )['0.7.1'] as string;
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -85,16 +94,27 @@ describe('the root manifest is publish-complete', () => {
     // reader opens first.
     //
     // So the shape from here is: the PUBLISHED version is named published and
-    // is the one and only `latest`; no version is left described as pending
-    // after it has shipped. Both directions stay red.
+    // is the one and only `latest`, and **the version that just shipped** is
+    // not left described as pending. Both directions stay red.
+    //
+    // 🔴 The asymmetry below is deliberate, and this comment is copied forward
+    // into the next release's test — which is how the 0.6.2 mistake travelled —
+    // so it says exactly what the assertions do. `latest` is a SINGLETON fact:
+    // two versions claiming it is a contradiction detectable only by naming
+    // each overtaken version, so that negative accumulates. "Pending" is
+    // PER-VERSION, and the status line names one version's state at a time, so
+    // only the just-shipped version needs guarding; accumulating those would
+    // grow a list forever against a shape that cannot recur.
     //
     // 0.7.1 shipped, so this assertion moved with it. `latest` is a fact about
     // the registry, and the guards below are what stop this file drifting from
     // it in either direction again.
     expect(plan).toMatch(/Status \(0\.7\.1 published/);
     expect(plan).toMatch(/0\.7\.1 is `latest`/);
-    // The published identity is recorded, not just the version number.
-    expect(plan).toMatch(/52e879b6/);
+    // The published identity is recorded, not just the version number — and it
+    // is asserted BESIDE `gitHead`, so a stray occurrence of those characters
+    // elsewhere in the file cannot satisfy it.
+    expect(plan).toMatch(new RegExp(`gitHead\`? \`?${publishedSha.slice(0, 8)}`));
     // 0.7.1 is live, so it may not be described as pending anywhere — the
     // 0.6.2 mistake, now pointed at the current release.
     expect(plan).not.toMatch(
