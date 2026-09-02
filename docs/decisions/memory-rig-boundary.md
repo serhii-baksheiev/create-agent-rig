@@ -1,0 +1,229 @@
+# ADR-RP-002 — the Memory ↔ Rig boundary
+
+Status: accepted (Architecture Review passes 1–3, 2026-09-02). Recorded for
+RP-75.
+
+🔴 **Read this first: almost nothing here is enforced in this repository
+today.** This record is a *forward contract*. `packages/` in this repo contains
+exactly one entry, `packages/cli`; there is no `packages/memory`, and the
+structural test R1 requires has no second side to compare against yet. What the
+rulings below govern is the work RP-57, RP-18, RP-19 (0.9.0) and RP-58, RP-95,
+RP-24 (0.10.0) will do. A reader who takes them as descriptions of present code
+will be wrong about every mechanism they name. Where something *is* already
+written down, this record cites it rather than restating it — see "What already
+exists" at the end.
+
+## Why this record exists
+
+Memory is a subsystem the Rig Platform ships as one product, and the question
+that keeps recurring is not *where the code lives* but *what may depend on
+what*. Two repositories, one product, and a user's durable data in the middle of
+it. Answering that per-ticket produced contradictory assumptions three times, so
+the answer is written once, here, and the tickets implement it.
+
+The one sentence the rest of this record elaborates:
+
+> Memory is part of the Rig Platform **product** — one install, one CI, one
+> release train — without being part of Rig Core's **implementation**.
+> Repository co-location is composition; an `import` would be coupling. The
+> structural test is what keeps the two apart.
+
+## The rulings, R1–R7
+
+Carried verbatim from the Architecture Review, because the tickets that
+implement them cite them by number and a paraphrase would fork the fact.
+
+**R1 — Implementation coupling.** Rig Core (`packages/cli`) has no source-level
+or runtime API dependency on Memory. A structural test enforces: no
+import/require across `packages/cli` ↔ `packages/memory`; no path literal into
+the other package in non-test source; `packages/memory` builds and tests green
+with `packages/cli` absent. The only permitted cross-package read is
+`packages/cli` tests reading `packages/memory/contract/**` as data.
+`packages/memory` has no dependency of any kind on `packages/cli`; root
+workspace scripts orchestrate CI only. The Rig distribution may declare Memory
+as `optionalDependencies`; if so, `setup` derives the manifest entry from that
+resolved copy, exactly one Memory installation is active, and compatibility is
+established by the `{name, version, contractVersion}` handshake at every call —
+never by a package version range.
+
+**R2 — Incubation.** `claude-config/shared-memory` — implementation, contract,
+schemas, fixtures as one unit — is an incubation location and is vacated before
+the first non-owner installation. This does not decide the eventual location of
+the Claude/Codex harness adapters. Memory storage is user data, is never
+incubated anywhere, and is never part of a product repository or a project
+working tree.
+
+**R3 — Preferred destination.** `create-agent-rig/packages/memory`. RP-58 fixes
+the destination at the start of 0.10.0 on 0.9 evidence. Named reversal
+triggers: a named second maintainer requiring independent ownership; a second
+Memory implementation requiring an independent lifecycle; an external adopter
+requiring an independent release cadence. Absent one, the workspace destination
+executes (RP-95). Leaving `claude-config` before the first non-owner install is
+not reversible; only the exact destination is, until RP-58.
+
+**R4 — Timeout and command safety.** Timeout duration and its degradation
+mapping belong to the consumer. The Memory contract defines no latency number.
+It does define: every command is kill-safe (observable state after termination
+at any instant is pre-state or post-state); `load` performs no network I/O;
+`publish` is idempotent.
+
+**R5 — Canonical identity.** Identity is the normalized Git remote URL
+(scheme-insensitive where equivalent; host case-normalized; embedded
+credentials and `user@` stripped; default ports stripped; `.git` and trailing
+slash stripped; SSH `:` ≡ `/`). Remote selection deterministic (`origin`, else
+first in documented order) and recorded. Root commit is provenance:
+`firstSeenRootCommit` per namespace, stamped per record. On divergence:
+`identity.status = diverged`, visible in `load` and `doctor`, subsystem
+`DEGRADED` / `identity-diverged`; reads and writes continue with provenance;
+nothing silent, no new namespace. No remote → `unresolved` → `UNSUPPORTED`, no
+namespace. Threat model: canonical identity is not a security identity; a
+working-tree owner can set any remote; deliberate local spoofing is an accepted
+risk inside this ADR's cooperative-developer boundary; the cross-machine
+variant — a poisoned candidate arriving through sync — is the security case for
+human-gated promotion (RP-52). Memory never executes repository-provided
+content; repository content never travels on argv; malformed present output is
+a fault, never absence.
+
+**R6 — Manifest.** Installation metadata, not a service registry. One writer
+(`setup`; `upgrade` re-runs derivation); one scope (machine/user,
+`~/.config/create-agent-rig/`); one entry per subsystem (executable location +
+declared contract requirement); no project-local normal-path edits; no search
+path, no fallback chain, no PATH scan; `doctor` validates existence and
+handshake (`INTEGRATION-FAILED` / `manifest-stale` otherwise). Rig Core and
+harness adapters read the same entry. They are peer consumers at runtime;
+installation of executable, manifest and adapter registrations is owned by
+`setup`; uninstall removes registrations and manifest, never storage.
+
+**R7 — Sequencing.** 0.9.0 establishes the seam (RP-57 both backends + D-1/D-2
++ location-independence + kill-safety + network-free `load`; RP-18; RP-19).
+0.10.0 runs RP-58 → RP-95 → RP-24; RP-95 Blocks RP-24, Relates RP-22; RP-24
+verifies the distribution model and is not evidence for choosing it. RP-13's
+pinned-ref fetch is the 0.9.0 mechanism. RP-78 may decide a packaging channel,
+never a repository move.
+
+## The canonical data model is authority-neutral
+
+Canonical Memory is immutable logical record bodies plus append-only lifecycle
+events. **Physical layout is not part of the executable contract.**
+
+1. One logical record per stable surrogate `recordId`; body immutable after
+   publish; `contentHash` identifies content.
+2. Lifecycle is append-only events, and current state is their deterministic
+   fold.
+3. Supersession is explicit: the new record references `supersedes`, the old
+   record receives a superseded event.
+4. A full store read reconstructs complete logical state with no external
+   input.
+5. Physical layout carries an independent `storageLayoutVersion`; changing
+   layout requires a migration plus an export/import round-trip proving
+   identical logical state.
+6. Derived projection or index data never lives in the canonical repository.
+7. A Git authority implementation uses text/diffable units and avoids one
+   global write hotspot — but that is implementation-specific, not a rule of
+   the model.
+
+## The authority contract
+
+**Git is the first authority implementation, not the Memory architecture.** The
+rules that survive a backend swap:
+
+1. Exactly one authority per scope is the sole writer of approved transitions
+   for that scope.
+2. Approval is serialized, human-attributed and auditable; contradictory
+   transitions cannot both be silently accepted.
+3. Record and event IDs contain no authority coordinate — no commit, path,
+   branch, row or URL.
+4. Sync is idempotent and incremental against an opaque, node-local,
+   authority-specific cursor.
+5. Conflicts are surfaced, never auto-resolved.
+6. The authority stores canonical records and events only, never derived
+   projections.
+
+Git pilot behaviour — protected `main`, PR merge, per-author candidates — is an
+implementation of this contract rather than an ADR invariant. A future API
+authority must preserve IDs and pass the same authority-neutral fixtures.
+
+## Identity, so a backend can be replaced
+
+- `recordId` and `eventId` are surrogate, creation-time IDs, independent of
+  authority, path and content.
+- Natural uniqueness is `(projectRemote, sourceKey)` over live records. The
+  same `contentHash` is idempotent; new content creates a new record plus a
+  supersession.
+- `projectRemote` is immutable and stores the normalized remote observed at
+  creation.
+- Canonical grouping (`projectId`) is resolved at read time through an alias
+  map, never persisted into every record.
+- `author` is the platform-assigned user identity. A Git commit author or SHA
+  is a provenance assertion only.
+- Authority is node configuration (`scope → authority`), never a record or
+  event body.
+- Scope is lifecycle state, not a mutable envelope field.
+- Export and import of records plus events must preserve identical logical
+  state **and** identical IDs.
+
+## Semantic retrieval is never authoritative
+
+Retrieval is a discovery aid. **No gate, verdict, promotion or policy outcome
+may depend on a similarity score, a rank position, or the presence or absence
+of a semantic match.** Retrieval may propose candidate records and nothing
+more.
+
+Any record that influences governance must be identified by `recordId`, read
+from canonical storage, evaluated deterministically, and listed in the decision
+evidence. The decision must replay to the same outcome from the same explicit
+`recordId` list **with retrieval disabled**. No semantic match is not evidence
+of absence.
+
+This is the same rule the policy layer already applies to capability states:
+"could not check" is never "checked and fine"
+(`packages/cli/src/policy/core/decision-record.ts`, the never-silent-pass rule).
+
+## Projections and embeddings
+
+The canonical envelope is embedding-neutral. SQLite, FTS5 and vectors are
+derived, rebuildable and deletable, and are never synced as canonical data. An
+optional retrieval policy may later become authority data (`modelId`, version,
+dimension, normalization, chunking) without central vectors. A missing local
+model means semantic recall is unsupported while lexical recall may remain
+supported; a stale or mixed index is degraded.
+
+## Network boundary
+
+No Memory network path except an explicit `sync` or `publish`. `load` stays
+network-free. A future `recall` must be local: no embedding API call hidden
+inside Memory.
+
+## What 0.10 does not do
+
+No SQLite, FTS, vector, embedding, recall or service rewrite in 0.10.
+Team-capability work influences the schema and the authority-neutral boundaries
+only. **RP-8 performs the data migration; RP-95 performs the implementation
+relocation** — two tickets, two concerns, in that order.
+
+## What already exists, and is cited rather than restated
+
+Three documents in this repository already cover ground these rulings touch.
+They are the source for their own subject; this record adds the boundary, not a
+second copy.
+
+- `docs/identity-discovery.md` — the six-axis identity table across bus, memory
+  and rig, with citations into all three repositories. R5 lands on its
+  *project* row.
+- `docs/command-contract.md` — scoped by an owner ruling to the published tool
+  bins, explicitly not `.claude/scripts/`. R4 is the same subject for the same
+  bins.
+- `.claude/rules/invariants.md` — "one mechanism, one implementation", which is
+  why the two above are cited here instead of summarised.
+
+## Risk, and how this is undone
+
+The risk this record accepts is that a forward contract written before its
+subject exists can be wrong about what the implementation needs. That is why R3
+names three reversal triggers and RP-58 re-decides the destination on 0.9
+evidence rather than on this document.
+
+Rollback is per-ruling and cheap while nothing is built: amend the section here
+and re-point the ticket, because no code depends on this file. Once RP-95 has
+executed, R3 is no longer reversible — that is stated in R3 itself, and it is
+the one line in this record with a deadline attached.
