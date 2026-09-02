@@ -100,7 +100,14 @@ jobs:
       # here and nowhere else — the reduction is lane-specific, which is what
       # the ruling on RP-62 required (it asked for lane-specific, explicitly not
       # for per-project). The tests spawn stub subprocesses, so they are
-      # process-bound rather than CPU-bound, and this is a hosted 2-core runner.
+      # process-bound rather than CPU-bound.
+      #
+      # The figure is a starting point, not an optimum: uncapped master runs
+      # measured ~2.6-2.7x average concurrency (wall against summed test time)
+      # and this cap brings it to ~1.9x, with total test time falling from
+      # 493-662 s to 409 s. Derived from run logs by `code-reviewer`, which also
+      # disproves the "2-core runner" this comment first asserted — 2.7x
+      # sustained needs at least three workers.
       #
       # 🔴 On the COMMAND LINE, not per project, and that is measured rather
       # than preferred. `test:unit` runs `--project unit --project template`;

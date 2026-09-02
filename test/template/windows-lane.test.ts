@@ -50,20 +50,22 @@ const workflows = async () => {
 /**
  * Lines that actually RUN, with comments stripped — whole-line and inline.
  *
- * 🔴 Both forms, and the second was measured rather than anticipated. A regex
- * over the raw file matches a commented-out setting: `code-reviewer` showed
- * that replacing this job's `env:` block with `# RIG_TEMPLATE_MAX_WORKERS: 2`
- * left the first version of this test green. Stripping whole-line comments
- * alone then let `run: pnpm test:unit … # --maxWorkers=2` pass too — a real
- * mutation, because YAML ends a plain scalar at ` #` and the flag would never
- * reach the command. A check a comment can satisfy is not checking the
- * workflow.
+ * Use for a PRESENCE claim only. 🔴 Both strips were measured rather than
+ * anticipated: `code-reviewer` showed a commented-out `env:` block satisfied
+ * the first version of this test, and stripping whole-line comments alone then
+ * let `run: pnpm test:unit … # --maxWorkers=2` pass, because YAML ends a plain
+ * scalar at ` #` and the flag never reaches the command. A check a comment can
+ * satisfy is not checking the workflow.
  *
- * ⚠ The inline strip is textual, so it also truncates a ` #` inside a `run: |`
- * script body — the spawn-baseline `echo` is one. That costs nothing here (the
- * tokens this file looks for sit before any such `#`), and erring toward
- * removing too much keeps the failure direction safe: it can only hide a
- * token, never invent one.
+ * 🔴 **Never use it for an ABSENCE claim**, and this is the correction to a
+ * limit this file previously stated backwards. The strip is textual, so it also
+ * truncates a ` #` inside a `run: |` block — where YAML does NOT start a
+ * comment and the shell really does receive the rest of the line. `echo "cap #1
+ * of 1" && pnpm test:unit --maxWorkers=1` genuinely caps a second lane, and
+ * `executable()` would hide exactly that. Over-stripping is safe when it can
+ * only turn a check red; it is unsafe the moment the check asserts something is
+ * missing. Measured by `code-reviewer`, and this PR's own log prints
+ * `bare node spawn #1: …` from such a block.
  */
 const executable = (body: string) =>
   body
@@ -87,12 +89,13 @@ describe('the hosted Windows lane caps test concurrency, and only there', () => 
   it('caps no other lane, in any workflow', async () => {
     const offenders: string[] = [];
     for (const { name, body } of await workflows()) {
-      const runs = executable(body);
-      const job = name === 'ci.yml' ? windowsJob(runs) : undefined;
-      // Everything outside the one capped job must be free of a cap: another
-      // lane has no contention problem, and slowing it would both cost time and
-      // stop this lane being evidence about itself.
-      const elsewhere = job ? runs.split(job).join('') : runs;
+      // 🔴 RAW, not `executable()`. This asserts a token is ABSENT, so
+      // stripping comments here would hide the very thing it looks for — see
+      // that helper's own note. The cost is the opposite error: a mention of
+      // `--maxWorkers` in a comment on another lane turns this red. That is the
+      // safe direction, and the remedy is to not write it.
+      const job = name === 'ci.yml' ? windowsJob(body) : undefined;
+      const elsewhere = job ? body.split(job).join('') : body;
       if (/--maxWorkers/.test(elsewhere)) offenders.push(name);
     }
     expect(offenders, 'a lane other than windows-unit caps concurrency').toEqual([]);
@@ -100,15 +103,24 @@ describe('the hosted Windows lane caps test concurrency, and only there', () => 
 
   it('leaves the timeout alone — the cap is concurrency, never the budget', async () => {
     // A lane-specific budget is the ruled FALLBACK, and adopting it silently
-    // would blind the lane it applies to. Both the count and the distinct set
-    // are asserted: counting distinct values alone stays green if a lane drops
-    // the flag entirely (`security-scanner`, round 1).
+    // would blind the lane it applies to.
     const figures: string[] = [];
     for (const { body } of await workflows()) {
       for (const m of executable(body).matchAll(/--testTimeout=(\d+)/g)) figures.push(m[1]!);
     }
-    expect(figures.length, 'no workflow passes --testTimeout any more').toBeGreaterThan(0);
     expect(new Set(figures).size, 'the workflows carry more than one --testTimeout figure').toBe(1);
+
+    // 🔴 And THIS lane specifically still passes one. An earlier version
+    // asserted only `figures.length > 0`, and its comment claimed that caught a
+    // lane dropping the flag — `code-reviewer` measured that it does not:
+    // removing `--testTimeout` from the windows job alone stayed green across
+    // this file, `vitest-timeouts` and `root-ci`, and the `unit` project would
+    // silently fall back to vitest's 5 s default on the one lane this item
+    // exists to stabilise. (The ubuntu lane is covered, but by
+    // `root-ci.test.ts` — not by anything here.)
+    const ci = (await workflows()).find((w) => w.name === 'ci.yml')!;
+    const job = windowsJob(executable(ci.body));
+    expect(job, 'the Windows lane no longer passes --testTimeout').toMatch(/--testTimeout=\d+/);
   });
 
   it('brackets the suite with a spawn baseline, so a slowdown DURING it is visible', async () => {
@@ -122,8 +134,24 @@ describe('the hosted Windows lane caps test concurrency, and only there', () => 
       readings.length,
       'the Windows lane does not bracket the suite with spawn timings',
     ).toBeGreaterThanOrEqual(2);
-    // The second must survive a red suite, or it is absent exactly when needed.
-    expect(job, 'the post-suite baseline does not run on a failed suite').toMatch(
+
+    // 🔴 Position, not just presence, and per step rather than job-wide.
+    // `code-reviewer` measured that a job-wide count plus a job-wide
+    // /if: always()/ stays GREEN when the second baseline is moved BEFORE the
+    // suite, or when `always()` is moved onto the first one — leaving a test
+    // named for bracketing that does not check it.
+    const steps = job.split(/^ {6}- name:/m).slice(1);
+    const suiteAt = steps.findIndex((s) => /run:\s*pnpm test:unit/.test(s));
+    const afterSuite = steps.slice(suiteAt + 1);
+    expect(suiteAt, 'no step in the job runs the suite').toBeGreaterThanOrEqual(0);
+    expect(
+      steps.slice(0, suiteAt).some((s) => /node -e/.test(s)),
+      'nothing measures spawn latency before the suite',
+    ).toBe(true);
+    const post = afterSuite.find((s) => /node -e/.test(s));
+    expect(post, 'nothing measures spawn latency after the suite').toBeDefined();
+    // It must survive a red suite, or it is absent exactly when it is needed.
+    expect(post, 'the post-suite baseline does not run on a failed suite').toMatch(
       /if:\s*always\(\)/,
     );
   });
