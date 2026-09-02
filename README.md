@@ -116,7 +116,7 @@ wired by both `.claude/settings.json` and `.codex/hooks.json`:
   carries a credential VALUE. Both arms read one vocabulary,
   `.claude/scripts/lib/secrets.mjs`, and a refusal names the pattern and the line
   and **never the matched value** — printing it would leak the secret in the act
-  of refusing it. Its four blind spots are in its own header, each naming the
+  of refusing it. Its blind spots are in its own header, each naming the
   test that pins it or saying plainly that none does — and those tests live in
   this generator, not in the rig;
 - **`block-no-verify`** — refuses bypassing pre-commit checks (and knows the

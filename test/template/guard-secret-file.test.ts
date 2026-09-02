@@ -520,6 +520,61 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     // and the pointer it carries has to name a test that exists
     expect(failOpenLimit).toMatch(/refuses, rather than failing open/);
   });
+
+  // RP-97, and `.claude/rules/invariants.md`, "One mechanism, one implementation
+  // — and one spelling of a fact". The count above is a mechanical fact about the
+  // guard, and the guard's header is where it is written. Every prose copy of it
+  // is a second writing that nothing keeps in step: `51402e99` raised the header
+  // from FOUR to FIVE, the rule and the README kept saying `four`, and the
+  // mismatch shipped in 0.6.1, 0.6.2, 0.7.0 and 0.7.1 — a security rule
+  // describing its own mechanism wrongly for four releases.
+  //
+  // So the fix is not `four` → `five`, which would only reset the same clock.
+  // The prose points at the header and states no number, and this test is what
+  // makes putting the number back observable. Historical CHANGELOG entries are
+  // deliberately out of scope: they record what shipped, and correcting one
+  // would falsify the record rather than the rule.
+  it('no rulebook document restates the guard’s limit count — the header is the only place it is written', async () => {
+    // The canonical template, its synced copy in this repo, and the README that
+    // describes the same guard to a human reader.
+    const surfaces = [
+      path.join('templates', 'agent-os', 'universal', '.claude', 'rules', 'autonomy.md'),
+      path.join('.claude', 'rules', 'autonomy.md'),
+      'README.md',
+    ];
+    // "four blind spots", "5 limits" — a number attached to this guard's reach.
+    const copiedCardinality =
+      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:blind[-\s]spots?|limits?)\b/i;
+    // Bullets and paragraphs, so "blind spot" used generically elsewhere in the
+    // document is not this test's business — only the prose about this guard is.
+    const guardProse = (text: string) =>
+      text.split(/\n(?=\s*[-*]\s)|\n\s*\n/).filter((block) => block.includes('guard-secret-file'));
+
+    const offenders: string[] = [];
+    for (const surface of surfaces) {
+      const blocks = guardProse(await readFile(path.join(repoRoot, surface), 'utf8'));
+      expect(
+        blocks.length,
+        `${surface} no longer describes guard-secret-file at all`,
+      ).toBeGreaterThan(0);
+      for (const block of blocks) {
+        const copied = copiedCardinality.exec(block)?.[0];
+        if (copied) offenders.push(`${surface} restates the count: “${copied}”`);
+      }
+      // Deleting the sentence would satisfy the check above and lose the reader.
+      // Wording-tolerant on purpose: any rewrite that still sends them to the
+      // guard's own source for the limits passes.
+      expect(
+        blocks.join('\n'),
+        `${surface} must still point the reader at the guard's own header for its limits`,
+      ).toMatch(/own header|its header|the hook(?:'s|’s) own (?:header|source)/i);
+    }
+
+    expect(
+      offenders,
+      'the number of limits is stated in guard-secret-file.mjs and nowhere else',
+    ).toEqual([]);
+  });
 });
 
 describe('guard-secret-file: a checkout is judged by its repo-relative path', () => {
