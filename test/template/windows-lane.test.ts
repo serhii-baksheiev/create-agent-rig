@@ -106,7 +106,8 @@ describe('the hosted Windows lane caps test concurrency, and only there', () => 
     // would blind the lane it applies to.
     const figures: string[] = [];
     for (const { body } of await workflows()) {
-      for (const m of executable(body).matchAll(/--testTimeout=(\d+)/g)) figures.push(m[1]!);
+      // 🔴 RAW, like the absence assertion above and for the same reason.
+      for (const m of body.matchAll(/--testTimeout=(\d+)/g)) figures.push(m[1]!);
     }
     expect(new Set(figures).size, 'the workflows carry more than one --testTimeout figure').toBe(1);
 
