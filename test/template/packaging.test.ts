@@ -34,7 +34,7 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('prepares 0.7.1 as one release in both package manifests', async () => {
+  it('ships 0.7.1 as one release in both package manifests', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
@@ -69,8 +69,17 @@ describe('the root manifest is publish-complete', () => {
     expect(changelog.indexOf('## 0.7.1')).toBeLessThan(changelog.indexOf('## 0.7.0'));
   });
 
-  it('records 0.7.1 as prepared, 0.7.0 as published, and only one of them as `latest`', async () => {
+  it('records 0.7.1 as published and names it `latest` in both places', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
+    // The published sha has ONE source here — the ledger row, which the test
+    // below pins to a full literal. Spelling it a third time as a bare
+    // substring would both duplicate the fact and match anywhere in the file,
+    // including inside an unrelated hash.
+    const publishedSha = (
+      JSON.parse(
+        await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
+      ) as Record<string, string | null>
+    )['0.7.1'] as string;
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -84,28 +93,57 @@ describe('the root manifest is publish-complete', () => {
     // a shipped release unshipped is worse than none — PLAN.md is the map a
     // reader opens first.
     //
-    // So the shape from here is: the PREPARED version is named prepared and
-    // never published; the PUBLISHED version is named published and is the one
-    // and only `latest`. Both directions are red.
-    expect(plan).toMatch(/Status \(0\.7\.1 prepared/);
-    expect(plan).toMatch(/0\.7\.0 published/);
-    expect(plan).toMatch(/0\.7\.0 is `latest`/);
-    // 0.7.1 is not published, and must not be described as though it were —
-    // this is the guard the previous release needed pointing the other way.
+    // So the shape from here is: the PUBLISHED version is named published and
+    // is the one and only `latest`, and **the version that just shipped** is
+    // not left described as pending. Both directions stay red.
+    //
+    // 🔴 The asymmetry below is deliberate, and this comment is copied forward
+    // into the next release's test — which is how the 0.6.2 mistake travelled —
+    // so it says exactly what the assertions do. `latest` is a SINGLETON fact:
+    // two versions claiming it is a contradiction detectable only by naming
+    // each overtaken version, so that negative accumulates. "Pending" is
+    // PER-VERSION, and the status line names one version's state at a time, so
+    // only the just-shipped version needs guarding; accumulating those would
+    // grow a list forever against a shape that cannot recur.
+    //
+    // 0.7.1 shipped, so this assertion moved with it. `latest` is a fact about
+    // the registry, and the guards below are what stop this file drifting from
+    // it in either direction again.
+    expect(plan).toMatch(/Status \(0\.7\.1 published/);
+    expect(plan).toMatch(/0\.7\.1 is `latest`/);
+    // The published identity is recorded, not just the version number — and it
+    // is asserted BESIDE `gitHead`, so a stray occurrence of those characters
+    // elsewhere in the file cannot satisfy it.
+    expect(plan).toMatch(new RegExp(`gitHead\`? \`?${publishedSha.slice(0, 8)}`));
+    // 0.7.1 is live, so it may not be described as pending anywhere — the
+    // 0.6.2 mistake, now pointed at the current release.
     expect(plan).not.toMatch(
-      /`?0\.7\.1`? (?:is |was )?published|`?0\.7\.1`? is `latest`|through `?0\.7\.1`?, the current/,
+      /`?0\.7\.1`? (?:is )?prepared|0\.7\.1 publish pending|owner publishes `?0\.7\.1`?|`?0\.7\.1`? is waiting on the owner/,
     );
-    // 0.7.0 is published, so it may not be described as pending.
-    // Scoped to the version rather than dropped: `waiting on the owner` is now
-    // legitimately true of 0.7.1, but saying it of the PUBLISHED 0.7.0 is the
-    // 0.6.2 mistake returning, so it stays red for that one.
-    expect(plan).not.toMatch(
-      /`?0\.7\.0`? (?:is )?prepared|0\.7\.0 publish pending|owner publishes `?0\.7\.0`?|`?0\.7\.0`? is waiting on the owner/,
-    );
+    // and no superseded version may still be called `latest` — the 0.7.0
+    // mistake, kept red for every version that has been overtaken.
+    expect(plan).not.toMatch(/`?0\.7\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
-    // and the two places that carry it must agree: whatever §11 calls the
+    // the two places that carry it must agree: whatever §11 calls the
     // current `latest` is what the status line calls live.
-    expect(plan).toMatch(/done through `0\.7\.0`, the current `latest`/);
+    expect(plan).toMatch(/done through `0\.7\.1`, the current `latest`/);
+  });
+
+  // 🔴 The ledger records where a version was published FROM, so a row may
+  // exist only once that version is on the registry. 0.7.1's row is written
+  // here because 0.7.1 is published; a row for an unpublished version would be
+  // a guess wearing the shape of a measurement.
+  it('records 0.7.1 in the ledger at the commit it was published from', async () => {
+    const ledger = JSON.parse(
+      await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
+    ) as Record<string, string | null>;
+    expect(ledger['0.7.1']).toBe('52e879b6c103f6ba70493007b6a6466c57ea9824');
+    // the previous release's row is not disturbed by adding a new one
+    expect(ledger['0.7.0']).toBe('6589db36e1daa63a99ec595191db1cccf7373196');
+    // and every row is a full sha, never an abbreviation
+    for (const [version, sha] of Object.entries(ledger)) {
+      if (sha !== null) expect(sha, `${version} is not a full sha`).toMatch(/^[0-9a-f]{40}$/);
+    }
   });
 
   it('has the publishable identity and the npm-facing fields', async () => {
