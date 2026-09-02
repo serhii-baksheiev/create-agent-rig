@@ -1,0 +1,42 @@
+/**
+ * The Claude Code adapter: a declaration → the native hook surface Claude Code
+ * wires for it. The authoring surface of this rulebook is Claude-shaped
+ * (`CLAUDE.md`, "One operating system, two harnesses"), so the hook files
+ * themselves live in the historical directory `./shared-hooks.ts` names and are
+ * shared by every harness.
+ *
+ * What is native here and nowhere in the core: the `PreToolUse` event, the
+ * tool names in the matchers, and the snapshot path. The matcher strings are
+ * the ones `.claude/settings.json` carries; if either side changes without the
+ * other, `test/template/policy-declaration.test.ts` › "every registered policy
+ * is wired in the %s snapshot under its event, matcher and hook path" goes red
+ * for this adapter. The shell matcher's tool set is owned by `shell-tools.mjs` in the
+ * shipped scripts, and `test/template/shell-tools.test.ts` holds that
+ * correspondence.
+ */
+
+import type { HarnessAdapter, NativeHookSurface } from '../core/adapter.js';
+import type { PolicyDeclaration } from '../core/declaration.js';
+import type { EnforcementTiming, Operation } from '../core/vocabulary.js';
+import { SHARED_HOOKS_DIR } from './shared-hooks.js';
+
+const EVENT_OF: Record<EnforcementTiming, string> = {
+  'before-operation': 'PreToolUse',
+};
+
+const MATCHER_OF: Record<Operation, string> = {
+  'file-edit': 'Write|Edit|MultiEdit|NotebookEdit|apply_patch',
+  'shell-command': 'Bash|PowerShell',
+};
+
+export const nativeSurfaceOf = (policy: PolicyDeclaration): NativeHookSurface => ({
+  event: EVENT_OF[policy.timing],
+  matcher: policy.operations.map((operation) => MATCHER_OF[operation]).join('|'),
+  hookPath: `${SHARED_HOOKS_DIR}/${policy.mechanism}.mjs`,
+});
+
+export const claudeAdapter: HarnessAdapter = Object.freeze({
+  harness: 'claude',
+  surfaceFile: '.claude/settings.json',
+  nativeSurfaceOf,
+});

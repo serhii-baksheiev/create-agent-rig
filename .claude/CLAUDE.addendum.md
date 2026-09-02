@@ -7,7 +7,9 @@ The map above describes the projects this tool **generates**. This repo is the
 generator itself, dogfooding the same rulebook. Its own map:
 
 ```
-packages/cli/       the generator (TS, tested): copy-tree, substitute, targets
+packages/cli/       the generator (TS, tested): copy-tree, substitute, targets,
+                    and policy/ — the typed policy declaration, registry and
+                    decision-record schema with one adapter per harness
 templates/agent-os/ layer 1 — universal rules, stack/<name> overlays, and
                     init/ (overrides `init` applies when the rig goes into an
                     existing repo whose shape we know nothing about)
