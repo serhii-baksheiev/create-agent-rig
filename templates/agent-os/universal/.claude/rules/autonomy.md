@@ -110,13 +110,16 @@ own cost figures are read next to the lane they do not cover.
 - touch production data outside a reviewed migration
 - edit the rulebook from an **unattended** run outside the item's allow-list — `guard-rulebook` refuses it.
   The rulebook is both harnesses' instruction, agent, skill, script and hook
-  trees (`CLAUDE.md`, `AGENTS.md`, `.claude/{agents,hooks,rules,scripts,skills}`,
-  `.agents/`, `.codex/`), plus `.claude/settings.json`, the queue config and its
-  always-refused board selector, and the integrity manifest. Mechanical:
+  trees, plus the settings, queue and integrity files that decide what a session
+  may do. **Which paths exactly is not restated here**: `RULEBOOK_PREFIXES` in
+  `.claude/scripts/unattended-flag.mjs` is the one place that set is written, and
+  both readers take it from there — the guard, to judge an edit, and the flag
+  writer, to refuse an allow-list reaching outside it. A second copy in prose is
+  a copy that goes stale, and this one did. Mechanical:
   the hook refuses the edit while the unattended flag the `loop` skill writes
   at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), and does
   nothing in an attended session. ⚠ It sees edit tool calls only — a
-  shell redirect into `.claude/settings.json` is not one — and the flag, not
+  shell redirect into a protected file is not one — and the flag, not
   the run, is what arms it; its header states the rest of its limits.
 
 ## Stop rules — by work-state, not by feelings

@@ -541,6 +541,68 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
     expect(bullet).toMatch(/unattended/i);
   });
 
+  // RP-98. The Never bullet used to define the protected set by listing it, and
+  // the list went stale the day `.claude/doctor-exemptions.json` was added to
+  // RULEBOOK_PREFIXES (`0be11cfd`, 0.6.2) and the prose was not touched. A rule
+  // that says a governance file is outside the rulebook, while the guard treats
+  // it as inside, is worse than a rule that declines to enumerate: an unattended
+  // run reads the prose, believes the file is ordinary project input, and then
+  // meets a refusal the rule gave it no reason to expect.
+  //
+  // So the fix was subtraction, and this pins the shape rather than the list —
+  // per `invariants.md`, "one mechanism, one implementation ... and one spelling
+  // of a fact". Asserting the prose names all 14 entries would have re-created
+  // the second copy one level up, where it would go stale the same way.
+  //
+  // ⚠ What this does NOT catch, measured rather than guessed: a DESCRIPTIVE
+  // paraphrase. Before the fix the bullet named ten prefixes literally and three
+  // more only in words — "the integrity manifest" (`.claude/.rig-manifest.json`),
+  // "the queue config" (`.claude/queue.json`), "its always-refused board
+  // selector" (`.claude/queue.board`). Those three are invisible here, and that
+  // is exactly how the fourth, `doctor-exemptions.json`, went missing without a
+  // check noticing.
+  it('points the Never bullet at RULEBOOK_PREFIXES instead of re-listing the protected set', async () => {
+    const { RULEBOOK_PREFIXES } = (await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    )) as { RULEBOOK_PREFIXES: readonly string[] };
+
+    const autonomy = await readFile(
+      path.join(universal, '.claude', 'rules', 'autonomy.md'),
+      'utf8',
+    );
+    const never = autonomy.split(/^### Never/m)[1]?.split(/^## /m)[0] ?? '';
+    // The WHOLE bullet, continuation lines included — the list this guards
+    // against lived on the lines after the one naming the hook, so a
+    // first-line-only read would have found nothing to object to.
+    const lines = never.split('\n');
+    const start = lines.findIndex((line) => /^- /.test(line) && line.includes('guard-rulebook'));
+    expect(start, 'no Never bullet names guard-rulebook').toBeGreaterThanOrEqual(0);
+    const rest = lines.slice(start + 1);
+    const end = rest.findIndex((line) => /^- /.test(line));
+    const bullet = [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].join('\n');
+    expect(bullet.length, 'the bullet read back empty').toBeGreaterThan(0);
+
+    // The pointer has to be live: a renamed export leaves the prose aiming at
+    // nothing, which is the dead-reference half of the same defect.
+    expect(bullet, 'the bullet must name the authoritative export').toContain('RULEBOOK_PREFIXES');
+
+    // `.claude/{agents,hooks,...}` is one mention of five prefixes; expanded
+    // first, or the enumeration this exists to forbid scores 4 instead of 10.
+    const expanded = bullet.replace(/([\w./-]*)\{([^}]*)\}/g, (_m, prefix: string, inner: string) =>
+      inner
+        .split(',')
+        .map((part) => prefix + part.trim())
+        .join(' '),
+    );
+    // Naming the directory that HOLDS the source is how you point at it, so
+    // `.claude/scripts/` is allowed — via `.claude/scripts/unattended-flag.mjs`.
+    // Every other protected path in the bullet is a second spelling of the set.
+    const relisted = RULEBOOK_PREFIXES.filter(
+      (prefix) => prefix !== '.claude/scripts/' && expanded.includes(prefix.replace(/\/$/, '')),
+    );
+    expect(relisted, 'the Never bullet re-lists protected paths instead of pointing').toEqual([]);
+  });
+
   it('the loop skill arms the flag in §1 and disarms it in §7', async () => {
     const skill = await readFile(
       path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
