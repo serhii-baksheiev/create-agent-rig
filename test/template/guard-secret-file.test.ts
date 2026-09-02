@@ -531,10 +531,17 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
   //
   // So the fix is not `four` → `five`, which would only reset the same clock.
   // The prose points at the header and states no number, and this test is what
-  // makes putting the number back observable. Historical CHANGELOG entries are
-  // deliberately out of scope: they record what shipped, and correcting one
-  // would falsify the record rather than the rule.
-  it('no rulebook document restates the guard’s limit count — the header is the only place it is written', async () => {
+  // makes putting the number back observable.
+  //
+  // ⚠ Scoped to the rulebook prose, and the name says so rather than claiming
+  // the header is the only place in the repository the number appears — it is
+  // not. `CHANGELOG.md` writes `four` under `## 0.6.0`, where the header really
+  // did read FOUR: that entry was accurate when written, and correcting it
+  // would falsify a true record rather than fix a stale copy. The comment above
+  // line 452 writes the count too. A test whose message claims more than its
+  // `surfaces` list checks is the overstatement this file's own describe block
+  // exists to prevent.
+  it('the rulebook prose describing the guard restates no limit count of its own', async () => {
     // The canonical template, its synced copy in this repo, and the README that
     // describes the same guard to a human reader.
     const surfaces = [
@@ -542,9 +549,19 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
       path.join('.claude', 'rules', 'autonomy.md'),
       'README.md',
     ];
-    // "four blind spots", "5 limits" — a number attached to this guard's reach.
+    // "four blind spots", "5 limits", "a fifth blind spot" — a number attached
+    // to this guard's reach. Ordinals are in the alternation because "a fifth
+    // blind spot" is the shape a later addition reaches for, and it pins the
+    // count exactly as a cardinal does.
+    //
+    // ⚠ What it does NOT catch, measured rather than guessed: a numeral
+    // separated from the noun ("four documented limits"), and a count placed in
+    // a block that does not itself name the guard. Widening far enough to cover
+    // those would start matching ordinary prose, and RP-97 asked for the cheap
+    // check rather than a general framework — so the gap is stated here instead
+    // of being papered over.
     const copiedCardinality =
-      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:blind[-\s]spots?|limits?)\b/i;
+      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+)\s+(?:blind[-\s]spots?|limits?)\b/i;
     // Bullets and paragraphs, so "blind spot" used generically elsewhere in the
     // document is not this test's business — only the prose about this guard is.
     const guardProse = (text: string) =>
@@ -560,19 +577,24 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
       for (const block of blocks) {
         const copied = copiedCardinality.exec(block)?.[0];
         if (copied) offenders.push(`${surface} restates the count: “${copied}”`);
+        // Deleting the sentence would satisfy the check above and lose the
+        // reader. Wording-tolerant on purpose: any rewrite that still sends
+        // them to the guard's own source for the limits passes.
+        //
+        // Asserted per block, not against the joined text: with one block per
+        // surface today the two are identical, but a surface that later gains a
+        // second mention would let one block carrying the pointer satisfy the
+        // check for a sibling that had dropped it.
+        expect(
+          block,
+          `${surface} must still point the reader at the guard's own header for its limits`,
+        ).toMatch(/own header|its header|the hook(?:'s|’s) own (?:header|source)/i);
       }
-      // Deleting the sentence would satisfy the check above and lose the reader.
-      // Wording-tolerant on purpose: any rewrite that still sends them to the
-      // guard's own source for the limits passes.
-      expect(
-        blocks.join('\n'),
-        `${surface} must still point the reader at the guard's own header for its limits`,
-      ).toMatch(/own header|its header|the hook(?:'s|’s) own (?:header|source)/i);
     }
 
     expect(
       offenders,
-      'the number of limits is stated in guard-secret-file.mjs and nowhere else',
+      'the rulebook prose must state no count of its own; the guard header states it',
     ).toEqual([]);
   });
 });

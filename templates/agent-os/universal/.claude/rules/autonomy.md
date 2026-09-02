@@ -99,11 +99,10 @@ own cost figures are read next to the lane they do not cover.
   `MultiEdit`, `NotebookEdit`, or `apply_patch` that names a credential file or carries a credential value,
   reading its vocabulary from `.claude/scripts/lib/secrets.mjs`. ⚠ **Only that
   part.** The hook sees what an agent writes through those five tools and
-  nothing else — its own header states its blind spots, and is the one place
-  their number is written, so a count restated here could only go stale against
-  it — so whether a credential typed by a human, or committed from disk, is
-  also refused depends on whether this project has a commit-time check. Look at
-  `.husky/` and the CI workflow; this file cannot tell you, and a
+  nothing else — its own header states its blind spots — so whether a
+  credential typed by a human, or committed from disk, is also refused depends
+  on whether this project has a commit-time check. Look at `.husky/` and the CI
+  workflow; this file cannot tell you, and a
   rule that implied it could would be worse than one that stays a rule. One
   convention if you do add one: a fixture needing a credential SHAPE assembles it
   at runtime instead of writing it out, or the check reports its own test data as
