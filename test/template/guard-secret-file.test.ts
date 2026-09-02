@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY, GITHUB_PAT, PEM_HEADER } from './secrets-fixtures.js';
@@ -27,6 +28,7 @@ import { needsGitRoot, skipUnless } from '../helpers/env.js';
 // edit in the session, which `.claude/rules/invariants.md` says gets it deleted
 // within the hour. So both directions are pinned, and so is fail-open.
 
+const run = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const hook = path.join(universal, '.claude', 'hooks', 'guard-secret-file.mjs');
@@ -519,6 +521,138 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     expect(failOpenLimit).toMatch(/shape/i);
     // and the pointer it carries has to name a test that exists
     expect(failOpenLimit).toMatch(/refuses, rather than failing open/);
+  });
+
+  // RP-97, and `.claude/rules/invariants.md`, "One mechanism, one implementation
+  // — and one spelling of a fact". The count above is a mechanical fact about the
+  // guard, and the guard's header is where it is written. Every prose copy of it
+  // is a second writing that nothing keeps in step: `51402e99` raised the header
+  // from FOUR to FIVE, the rule and the README kept saying `four`, and the
+  // mismatch shipped in 0.6.1, 0.6.2, 0.7.0 and 0.7.1 — a security rule
+  // describing its own mechanism wrongly for four releases.
+  //
+  // So the fix is not `four` → `five`, which would only reset the same clock.
+  // The prose points at the header and states no number, and this test is what
+  // makes putting the number back observable.
+  //
+  // ⚠ The two checks below have DIFFERENT surface sets, and that is why they
+  // are two tests rather than one. Every live rulebook document that names the
+  // guard must state no count; only the three that discuss its limits carry the
+  // pointer. One test asserting both scopes would have to name the wider one,
+  // and would then claim more than half of it checks — which is the exact
+  // overstatement this describe block exists to prevent.
+  //
+  // 🔴 The surface list is DISCOVERED, not written down. A hand-maintained list
+  // of documents is the same defect as a hand-maintained copy of the count, one
+  // level up: it goes stale silently, and the file that was added after it was
+  // written is the one nobody checks. Two review rounds found exactly that —
+  // a three-file list under a name that spoke for the whole rulebook.
+  //
+  // Historical records are excluded, and for one stated reason: they record what
+  // was true when written. `CHANGELOG.md` writes `four` under `## 0.6.0`, and at
+  // that release the header really did read FOUR — correcting it would falsify a
+  // true record rather than fix a stale copy. The journal and the archived
+  // reviews are the same kind of writing. This file's own describe block above
+  // writes the count too, next to the assertion that pins it, which is the one
+  // place a count belongs outside the guard.
+  const HISTORICAL = /^(?:CHANGELOG\.md$|journal\/|docs\/reviews\/)/;
+
+  // 🔴 TRACKED files, not a directory walk. A walk also reads what git ignores —
+  // `.claude/runs/<id>/*.md`, the gate reports a previous run left on disk — so
+  // the check would depend on local detritus: green in CI, red or green locally
+  // depending on what an earlier session happened to write. The rulebook is what
+  // is committed.
+  const rulebookMarkdown = async () =>
+    (await run('git', ['ls-files', '-z', '*.md'], { cwd: repoRoot })).stdout
+      .split('\0')
+      .filter((file) => file !== '' && !HISTORICAL.test(file));
+
+  // Bullets and paragraphs, so "blind spot" used generically elsewhere in a
+  // document is not this test's business — only the prose about this guard is.
+  const guardProse = (text: string) =>
+    text.split(/\n(?=\s*[-*]\s)|\n\s*\n/).filter((block) => block.includes('guard-secret-file'));
+
+  const describingSurfaces = async () => {
+    const surfaces: Array<{ file: string; blocks: string[] }> = [];
+    for (const file of await rulebookMarkdown()) {
+      const blocks = guardProse(await readFile(path.join(repoRoot, file), 'utf8'));
+      if (blocks.length > 0) surfaces.push({ file, blocks });
+    }
+    return surfaces;
+  };
+
+  it('no live rulebook document restates the guard’s limit count', async (ctx) => {
+    // The surface set comes from `git ls-files`, so without a repository this
+    // would pass having read nothing — named as a skip rather than counted green.
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    // "four blind spots", "5 limits" — a number attached to this guard's reach.
+    //
+    // 🔴 Cardinals only. The ordinals that were briefly here are gone because
+    // the repository writes ordinal POINTERS into a header's numbered list on
+    // purpose — the form `invariants.md` asks for, and the opposite of a copied
+    // count. `invariants.md`, "Match a rule's precision to the cost of a false
+    // positive": a guard that fires on the idiom the rulebook recommends is one
+    // an editor routes around. That reading came from a repository-wide grep;
+    // under this test's own block filter no such pointer is reachable today, so
+    // dropping the ordinals cost this test no live coverage.
+    //
+    // ⚠ What it does NOT catch, measured rather than guessed: an ordinal, a
+    // numeral separated from the noun ("four documented limits"), and a count in
+    // a block that does not itself name the guard.
+    const copiedCardinality =
+      /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:blind[-\s]spots?|limits?)\b/i;
+
+    const surfaces = await describingSurfaces();
+    // Discovery that silently found nothing would pass every assertion below.
+    expect(
+      surfaces.map(({ file }) => file),
+      'the walk found no rulebook document describing guard-secret-file at all',
+    ).toEqual(expect.arrayContaining(['CLAUDE.md', 'README.md', '.claude/rules/autonomy.md']));
+
+    const offenders = surfaces.flatMap(({ file, blocks }) =>
+      blocks
+        .map((block) => copiedCardinality.exec(block)?.[0])
+        .filter((copied): copied is string => Boolean(copied))
+        .map((copied) => `${file} restates the count: “${copied}”`),
+    );
+    expect(
+      offenders,
+      'a live rulebook document must state no count of its own; the guard header states it',
+    ).toEqual([]);
+  });
+
+  it('the rule and the README still send the reader to the guard’s own header', async () => {
+    // Deleting the sentence would satisfy the check above and lose the reader,
+    // so the pointer is pinned too. Wording-tolerant on purpose: any rewrite
+    // that still sends them to the guard's own source passes.
+    //
+    // These three are named rather than discovered, because this is a claim
+    // about the three documents that DISCUSS the guard's limits. The other
+    // rulebook documents mention the guard without describing its reach, and
+    // requiring the pointer of them would demand prose they have no reason to
+    // carry — measured: appending them turns this assertion red today.
+    const carryTheLimits = [
+      path.join('templates', 'agent-os', 'universal', '.claude', 'rules', 'autonomy.md'),
+      path.join('.claude', 'rules', 'autonomy.md'),
+      'README.md',
+    ];
+    for (const surface of carryTheLimits) {
+      const blocks = guardProse(await readFile(path.join(repoRoot, surface), 'utf8'));
+      expect(
+        blocks.length,
+        `${surface} no longer describes guard-secret-file at all`,
+      ).toBeGreaterThan(0);
+      // Per block, not against the joined text: with one block per surface today
+      // the two are identical, but a surface that later gains a second mention
+      // would let one block carrying the pointer satisfy the check for a sibling
+      // that had dropped it.
+      for (const block of blocks) {
+        expect(
+          block,
+          `${surface} must still point the reader at the guard's own header for its limits`,
+        ).toMatch(/own header|its header|the hook(?:'s|’s) own (?:header|source)/i);
+      }
+    }
   });
 });
 
