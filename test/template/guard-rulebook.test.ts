@@ -614,6 +614,67 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
     expect(relisted, 'the Never bullet re-lists protected paths instead of pointing').toEqual([]);
   });
 
+  // RP-102, and it is RP-98's defect one document downstream. `autonomy.md`
+  // STATES the rule; the `loop` skill is where a run WRITES the allow-list, at
+  // claim time, with `--allow <prefix>`. A gloss that is short of the protected
+  // set therefore misleads at the point of use rather than at the point of
+  // statement — and the two entries this block covered in neither literal nor
+  // descriptive form were `.claude/doctor-exemptions.json` and, worse,
+  // `.claude/settings.json`: the hook wiring itself, so a run reading it could
+  // believe it may rewire its own enforcement.
+  //
+  // Two exceptions below, and each is a fact the pointer cannot carry:
+  //
+  //  - `.claude/scripts/` — naming the directory that HOLDS the source is how
+  //    you point at it, exactly as in the `autonomy.md` check above.
+  //  - `.claude/queue.board` — refused EVEN WHEN an item's allow-list names it
+  //    (`guard-rulebook.mjs` tests that path before consulting the allow-list).
+  //    That does not follow from membership in RULEBOOK_PREFIXES — its sibling
+  //    `.claude/queue.json` is allow-listable — so a run composing an allow-list
+  //    has to be told, and telling it means naming the path.
+  //
+  // ⚠ What this does NOT catch, measured rather than guessed, and it is the
+  // same blind spot the `autonomy.md` check documents: a DESCRIPTIVE paraphrase.
+  // The stale text this replaced said "rules, skills, agents and hook wiring,
+  // plus their scripts, queue config and integrity manifest" and named only
+  // three prefixes literally, so the assertion below was GREEN on it. The
+  // pointer assertion is what was red. A reference to a specific file
+  // (`.claude/rules/autonomy.md`) is deliberately not counted as re-listing the
+  // `.claude/rules/` prefix — that is a citation, not an enumeration.
+  it('points the loop skill at RULEBOOK_PREFIXES rather than glossing the protected set', async () => {
+    const { RULEBOOK_PREFIXES } = (await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    )) as { RULEBOOK_PREFIXES: readonly string[] };
+
+    const skill = await readFile(
+      path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
+      'utf8',
+    );
+    const blocks = skill.split(/\n\s*\n/).filter((block) => /is refused unless/.test(block));
+    expect(blocks, 'no block in the loop skill describes what the guard refuses').toHaveLength(1);
+    const block = blocks[0]!;
+
+    expect(block, 'the block must name the authoritative export').toContain('RULEBOOK_PREFIXES');
+
+    const expanded = block.replace(/([\w./-]*)\{([^}]*)\}/g, (_m, prefix: string, inner: string) =>
+      inner
+        .split(',')
+        .map((part) => prefix + part.trim())
+        .join(' '),
+    );
+    const relisted = RULEBOOK_PREFIXES.filter((prefix) => {
+      if (prefix === '.claude/scripts/' || prefix === '.claude/queue.board') return false;
+      const bare = prefix.replace(/\/$/, '');
+      // A directory prefix followed by a filename is a citation of that file,
+      // not a restatement of the prefix.
+      const asEnumeration = new RegExp(
+        `${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w./-]*\\.\\w)`,
+      );
+      return asEnumeration.test(expanded);
+    });
+    expect(relisted, 'the loop skill re-lists protected paths instead of pointing').toEqual([]);
+  });
+
   it('the loop skill arms the flag in §1 and disarms it in §7', async () => {
     const skill = await readFile(
       path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
