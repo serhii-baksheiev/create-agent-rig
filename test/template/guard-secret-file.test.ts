@@ -587,16 +587,14 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     // "four blind spots", "5 limits" — a number attached to this guard's reach.
     //
-    // 🔴 Cardinals only, and the ordinals that were briefly here are gone on
-    // measurement rather than on taste. They caught one further regression
-    // shape ("a fifth blind spot") and matched three the repository writes on
-    // purpose — "that module's first limit" (`.claude/rules/workflow.md`),
-    // "a fifth limit" (`test/template/verdict.test.ts`), "Two limits, stated
-    // because…" (`.claude/skills/pr-ship/SKILL.md`). Those are POINTERS into a
-    // header's numbered list, which is the form `invariants.md` asks for — the
-    // opposite of a copied count. `invariants.md`, "Match a rule's precision to
-    // the cost of a false positive": a guard that fires on the idiom the
-    // rulebook recommends is one an editor routes around.
+    // 🔴 Cardinals only. The ordinals that were briefly here are gone because
+    // the repository writes ordinal POINTERS into a header's numbered list on
+    // purpose — the form `invariants.md` asks for, and the opposite of a copied
+    // count. `invariants.md`, "Match a rule's precision to the cost of a false
+    // positive": a guard that fires on the idiom the rulebook recommends is one
+    // an editor routes around. That reading came from a repository-wide grep;
+    // under this test's own block filter no such pointer is reachable today, so
+    // dropping the ordinals cost this test no live coverage.
     //
     // ⚠ What it does NOT catch, measured rather than guessed: an ordinal, a
     // numeral separated from the noun ("four documented limits"), and a count in
