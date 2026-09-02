@@ -11,6 +11,72 @@ Numbering is ordinary semver — **additive is a minor, a fix is a patch** — s
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one.
 
+## 0.8.0
+
+**Three documents a rig obeys described the mechanism behind them wrongly, and
+each fix is a deletion.** A count, a path list, and a paraphrase of that same
+path list — three second copies of facts the code owns, each of which had
+drifted from its source while the suite stayed green. The payload gains no file
+and loses none: measured tarball to tarball, `npm pack create-agent-rig@0.7.1`
+against this release's own `npm pack`, the `templates/agent-os/` file set is
+identical and exactly three files differ in content.
+
+**Numbered a minor by the owner's call, not by this file's rule.** The rule at
+the top — additive is a minor, a fix is a patch — makes this delta a patch,
+because nothing is added to what a project installs. It ships as `0.8.0`
+because the owner's milestone of that name closes here and the number was fixed
+before the delta was measured. Recorded rather than reconciled, the way `0.3.2`
+is recorded above: a consumer on "I only take minors" receives three corrected
+documents and no new capability.
+
+### Fixed
+
+- **`.claude/rules/autonomy.md` stated a blind-spot count `guard-secret-file`
+  had outgrown.** The Never bullet said the guard's header "states the four
+  blind spots"; the header had been raised past four in `51402e99`, and the
+  stale copy shipped in 0.6.1, 0.6.2, 0.7.0 and 0.7.1 — a security rule
+  describing its own mechanism wrongly for four releases. The fix is not a
+  corrected number, which would only restart the same clock: the prose states
+  no count and points at the header, and `README.md` moved with it for the same
+  reason. Pinned in the generator's `test/template/guard-secret-file.test.ts`
+  (absent in a generated rig) › "no live rulebook document restates the guard’s
+  limit count" and › "the rule and the README still send the reader to the
+  guard’s own header".
+
+- **The same file re-listed the paths `guard-rulebook` protects, and its list
+  was incomplete.** The enumeration of trees an unattended run may not edit
+  omitted `.claude/doctor-exemptions.json`, which the guard does refuse. It is
+  replaced by a pointer to `RULEBOOK_PREFIXES` in
+  `.claude/scripts/unattended-flag.mjs` — the set the guard judges an edit
+  against — so there is one spelling of it rather than two. One fact that
+  pointer cannot carry is stated beside it, because it does not follow from the
+  set: the checkout board selector is refused **even when an item's allow-list
+  names it**.
+
+- **`loop/SKILL.md` paraphrased that set too, in both harnesses' copies.** The
+  step where a session composes an allow-list summarised the protected rulebook
+  in prose, so the one moment the set is read in anger was the moment it was
+  read from a summary that had already drifted. It now names
+  `RULEBOOK_PREFIXES` and says to open it. Both copies carry the change — the
+  Claude skill at `.claude/skills/loop/SKILL.md` and its Codex projection at
+  `.agents/skills/loop/SKILL.md`.
+
+### Inside the generator, and not inside a rig
+
+`packages/cli/src/policy/` is new — a typed policy declaration, a registry, a
+decision-record schema and one adapter per harness. Its compiled output adds
+eleven files to the published tarball, 245 → 256. **No command imports it**: a
+project scaffolded from this release receives nothing from it and behaves
+exactly as one scaffolded from 0.7.1. It is named here only because a reader
+diffing the two tarballs sees eleven new files and is owed the reason they
+change nothing.
+
+`templates/release-ledger.json` carries `0.7.1` at `52e879b6`, the commit it was
+published from, read from `npm view create-agent-rig@0.7.1 gitHead` and verified
+an ancestor of `master`. `templates/hash-history.json` is regenerated from it and
+now covers eleven releases, `0.2.0` through `0.7.1`, so `upgrade` can tell an
+untouched file from an edited one in a rig installed from 0.7.1.
+
 ## 0.7.1
 
 **The gate could not be run on work that has no queue item.** `pr-ship` names
