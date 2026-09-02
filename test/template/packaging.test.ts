@@ -77,7 +77,7 @@ describe('the root manifest is publish-complete', () => {
     expect(changelog.indexOf('## 0.7.1')).toBeLessThan(changelog.indexOf('## 0.7.0'));
   });
 
-  it('records 0.7.1 as published and names it `latest` in both places', async () => {
+  it('records 0.7.1 as the published `latest` and 0.8.0 as merely prepared', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
     // The published sha has ONE source here — the ledger row, which the test
     // below pins to a full literal. Spelling it a third time as a bare
@@ -145,7 +145,13 @@ describe('the root manifest is publish-complete', () => {
     // `0.7.1 is \`latest\`` joins the overtaken list.
     expect(plan).toMatch(/`0\.8\.0` is prepared/);
     expect(plan).not.toMatch(/`?0\.8\.0`? is `latest`/);
-    expect(plan).not.toMatch(/0\.8\.0 published|`?0\.8\.0`? is live/);
+    // 🔴 `(?:is )?published` and not the bare word: PLAN.md's status line opens
+    // `Status (0.7.1 published`, so the shape a shipped release is announced in
+    // here is BOTH `0.8.0 published` and `0.8.0 is published`. A negative that
+    // covers only the first reads green on the sentence most likely to be
+    // written — the same asymmetry the 0.7.1 guard above closes with
+    // `(?:is )?prepared`.
+    expect(plan).not.toMatch(/`?0\.8\.0`? (?:is )?published|`?0\.8\.0`? is live/);
   });
 
   // 🔴 The ledger records where a version was published FROM, so a row may

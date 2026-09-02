@@ -9,17 +9,25 @@ Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/pack
 
 Numbering is ordinary semver — **additive is a minor, a fix is a patch** — so
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
-content as a patch by the owner's call and stays recorded as one.
+content as a patch by the owner's call and stays recorded as one, and 0.8.0
+ships fixes as a minor by the same kind of call in the opposite direction. Both
+departures are the owner's, and each is recorded in its own entry rather than
+reconciled here.
 
 ## 0.8.0
 
-**Three documents a rig obeys described the mechanism behind them wrongly, and
-each fix is a deletion.** A count, a path list, and a paraphrase of that same
-path list — three second copies of facts the code owns, each of which had
-drifted from its source while the suite stayed green. The payload gains no file
-and loses none: measured tarball to tarball, `npm pack create-agent-rig@0.7.1`
-against this release's own `npm pack`, the `templates/agent-os/` file set is
-identical and exactly three files differ in content.
+**Three stale second copies, spread over three payload files a rig obeys,
+described the mechanisms behind them wrongly — and each fix is a deletion.** A
+count and a path list, both in `.claude/rules/autonomy.md`, and a paraphrase of
+that same path list in `loop/SKILL.md`, which ships in both harnesses' copies.
+Every one of them was a second writing of a fact the code owns, and every one
+had drifted from its source while the suite stayed green.
+
+**The `templates/agent-os/` payload gains no file and loses none**, measured
+tarball to tarball — `npm pack create-agent-rig@0.7.1` unpacked, against this
+release's own `npm pack`. That payload is the same 95 files either way, and
+exactly three of them differ in content. ⚠ The tarball as a whole is **not**
+unchanged: it grows by eleven files, and the section below names which and why.
 
 **Numbered a minor by the owner's call, not by this file's rule.** The rule at
 the top — additive is a minor, a fix is a patch — makes this delta a patch,
@@ -65,11 +73,12 @@ documents and no new capability.
 
 `packages/cli/src/policy/` is new — a typed policy declaration, a registry, a
 decision-record schema and one adapter per harness. Its compiled output adds
-eleven files to the published tarball, 245 → 256. **No command imports it**: a
-project scaffolded from this release receives nothing from it and behaves
-exactly as one scaffolded from 0.7.1. It is named here only because a reader
-diffing the two tarballs sees eleven new files and is owed the reason they
-change nothing.
+eleven files to the published tarball, 245 → 256. **No command imports it**, so nothing a
+project scaffolded from this release does comes from it. What such a project
+does get from this release is the three corrected documents above — and an
+installed 0.7.1 rig still needs `create-agent-rig upgrade` to receive them.
+This module is named here only because a reader diffing the two tarballs sees
+eleven new files and is owed the reason they are not part of that answer.
 
 `templates/release-ledger.json` carries `0.7.1` at `52e879b6`, the commit it was
 published from, read from `npm view create-agent-rig@0.7.1 gitHead` and verified
