@@ -29,14 +29,21 @@ const quote = (value: unknown): string => {
 
 const list = (vocabulary: readonly string[]): string => vocabulary.map(quote).join(', ');
 
-/** Refuse a key the shape does not declare — the shape is closed on purpose. */
+/**
+ * Refuse a key the shape does not declare — the shape is closed on purpose.
+ * A nested shape passes its own field name as `prefix`, so the problem names
+ * `verdict.severity` rather than a bare `severity` the caller cannot place.
+ */
 export const unknownKeys = (
   problems: Problem[],
   input: Record<string, unknown>,
   known: readonly string[],
+  prefix = '',
 ): void => {
   for (const key of Object.keys(input)) {
-    if (!known.includes(key)) problems.push({ field: key, message: 'unknown field' });
+    if (!known.includes(key)) {
+      problems.push({ field: prefix === '' ? key : `${prefix}.${key}`, message: 'unknown field' });
+    }
   }
 };
 

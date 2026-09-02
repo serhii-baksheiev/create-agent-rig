@@ -15,10 +15,20 @@
  *   pass (`./vocabulary.ts`, `CAPABILITY_STATES`);
  * - every evidence kind the policy requires must be present;
  * - a policy that redacts must not be recorded with unredacted diagnostics;
- * - the timestamp is supplied by the caller and must parse — no clock here.
+ * - the timestamp is supplied by the caller and must be an ISO-8601 date-time
+ *   with seconds and an explicit zone (`ISO_8601` below; a bare date is
+ *   refused) — no clock here.
  *
  * Each rule is one test in `packages/cli/test/policy-declaration.test.ts`
  * under "validating a decision record".
+ *
+ * ⚠ `diagnostics.redacted` is the emitter's claim, and this validator enforces
+ * the claim's presence, not the property: a record marked redacted whose
+ * `diagnostics.text`, `observedFacts[].value` or `evidence[].value` still
+ * carries a matched value is accepted here. Scanning content would pull the
+ * secret vocabulary into the core, which the dependency-direction test
+ * forbids — so the emitting task owns that scan, over those three fields,
+ * before it persists a record.
  */
 
 import { compatibilityOf, findPolicy } from './registry.js';
@@ -93,6 +103,9 @@ const KEYS = [
 
 const NEVER_SILENT_PASS: readonly CapabilityState[] = ['UNSUPPORTED', 'INTEGRATION-FAILED'];
 
+/** Date, `T`, time to the second (fractions allowed), and an explicit zone. */
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
 const namedPairs = (
   problems: Problem[],
   field: string,
@@ -108,7 +121,7 @@ const namedPairs = (
       problems.push({ field: `${field}[${index}]`, message: 'must be an object' });
       return;
     }
-    unknownKeys(problems, entry, keys);
+    unknownKeys(problems, entry, keys, `${field}[${index}]`);
     for (const key of keys) nonEmptyString(problems, `${field}[${index}].${key}`, entry[key]);
   });
 };
@@ -122,12 +135,12 @@ const checkVerdict = (
     problems.push({ field: 'verdict', message: 'must be an object' });
     return;
   }
-  unknownKeys(problems, value, ['outcome', 'qualifier', 'reason']);
+  unknownKeys(problems, value, ['outcome', 'qualifier', 'reason'], 'verdict');
   member(problems, 'verdict.outcome', value.outcome, DECISION_OUTCOMES);
   const qualified = 'qualifier' in value;
   if (qualified) {
     member(problems, 'verdict.qualifier', value.qualifier, VERDICT_QUALIFIERS);
-    if (typeof value.reason !== 'string' || value.reason === '') {
+    if (typeof value.reason !== 'string' || value.reason.trim() === '') {
       problems.push({
         field: 'verdict.reason',
         message: `a ${String(value.qualifier)} verdict must say why`,
@@ -163,7 +176,7 @@ const checkEvidence = (
       problems.push({ field: `evidence[${index}]`, message: 'must be an object' });
       return;
     }
-    unknownKeys(problems, entry, ['kind', 'value']);
+    unknownKeys(problems, entry, ['kind', 'value'], `evidence[${index}]`);
     if (member(problems, `evidence[${index}].kind`, entry.kind, EVIDENCE_KINDS)) {
       present.add(entry.kind);
     }
@@ -181,7 +194,7 @@ const checkDiagnostics = (problems: Problem[], value: unknown, mustRedact: boole
     problems.push({ field: 'diagnostics', message: 'must be an object' });
     return;
   }
-  unknownKeys(problems, value, ['redacted', 'text']);
+  unknownKeys(problems, value, ['redacted', 'text'], 'diagnostics');
   if (typeof value.redacted !== 'boolean') {
     problems.push({ field: 'diagnostics.redacted', message: 'must be a boolean' });
   } else if (mustRedact && !value.redacted) {
@@ -250,10 +263,14 @@ export function validateDecisionRecord(input: unknown): Validation<DecisionRecor
   checkEvidence(problems, input.evidence, policy?.requiredEvidence ?? []);
   nonEmptyString(problems, 'artifactVersion', input.artifactVersion);
   checkDiagnostics(problems, input.diagnostics, policy !== null && policy.redaction !== 'none');
-  if (typeof input.recordedAt !== 'string' || Number.isNaN(Date.parse(input.recordedAt))) {
+  if (
+    typeof input.recordedAt !== 'string' ||
+    !ISO_8601.test(input.recordedAt) ||
+    Number.isNaN(Date.parse(input.recordedAt))
+  ) {
     problems.push({
       field: 'recordedAt',
-      message: `must be an ISO-8601 timestamp, got ${JSON.stringify(input.recordedAt)}`,
+      message: `must be an ISO-8601 date-time with seconds and an explicit zone, got ${JSON.stringify(input.recordedAt)}`,
     });
   }
 

@@ -286,10 +286,15 @@ describe('the registry', () => {
     expect(outcomes).toEqual(expect.arrayContaining(['allow', 'block', 'refuse-to-inspect']));
   });
 
-  it.each(REGISTERED)('%s requires an exit code and diagnostic text as evidence', (policyId) => {
-    const evidence = findPolicy(policyId)?.requiredEvidence ?? [];
-    expect(evidence).toEqual(expect.arrayContaining(['exit-code', 'diagnostic-text']));
-  });
+  // Exit code only: an allow prints no diagnostic line, so requiring one would
+  // make every allow verdict unrecordable.
+  it.each(REGISTERED)(
+    '%s requires an exit code as evidence, and nothing an allow lacks',
+    (policyId) => {
+      const evidence = findPolicy(policyId)?.requiredEvidence ?? [];
+      expect(evidence).toEqual(['exit-code']);
+    },
+  );
 
   it('the secret-write refusal is guard-secret-file over file edits with matched values redacted', () => {
     expect(findPolicy('secret-write-refusal')).toMatchObject({
@@ -455,11 +460,51 @@ describe('validating a decision record', () => {
     expect(problems.some((p) => p.field.startsWith('verdict'))).toBe(true);
   });
 
-  it('refuses a qualifier whose reason is empty', () => {
+  it.each(['', ' ', '\n\t'])('refuses a qualifier whose reason is blank (%j)', (reason) => {
     const problems = problemsOfRecord(
-      recordWith({ verdict: { outcome: 'allow', qualifier: 'UNMEASURED', reason: '' } }),
+      recordWith({ verdict: { outcome: 'allow', qualifier: 'UNMEASURED', reason } }),
     );
     expect(problems.some((p) => p.field.startsWith('verdict'))).toBe(true);
+  });
+
+  it('refuses an unknown key inside the verdict, because that shape is closed too', () => {
+    const problems = problemsOfRecord(
+      recordWith({ verdict: { outcome: 'block', reason: 'named a credential file', severity: 9 } }),
+    );
+    expect(fieldsOf(problems)).toContain('verdict.severity');
+  });
+
+  it('accepts an allow verdict that carries only an exit code as evidence', () => {
+    const result = validateDecisionRecord(
+      recordWith({
+        verdict: { outcome: 'allow' },
+        evidence: [{ kind: 'exit-code', value: '0' }],
+        diagnostics: { redacted: true, text: '' },
+      }),
+    );
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+  });
+
+  it.each([
+    ['an entry that is not an object', ['not-a-fact']],
+    ['an entry missing its value', [{ name: 'file_path' }]],
+    ['an entry with an empty name', [{ name: '', value: '.env' }]],
+    ['an entry carrying an unknown key', [{ name: 'file_path', value: '.env', source: 'x' }]],
+  ])('refuses observedFacts with %s', (_case, observedFacts) => {
+    const problems = problemsOfRecord(recordWith({ observedFacts }));
+    expect(problems.some((p) => p.field.startsWith('observedFacts'))).toBe(true);
+  });
+
+  it('refuses observedFacts that is not a list', () => {
+    expect(fieldsOf(problemsOfRecord(recordWith({ observedFacts: 'none' })))).toContain(
+      'observedFacts',
+    );
+  });
+
+  it('refuses an empty artifactVersion', () => {
+    expect(fieldsOf(problemsOfRecord(recordWith({ artifactVersion: '' })))).toContain(
+      'artifactVersion',
+    );
   });
 
   it.each(['UNSUPPORTED', 'INTEGRATION-FAILED'])(
@@ -499,11 +544,11 @@ describe('validating a decision record', () => {
 
   it('refuses a record missing a required evidence kind and names the kind', () => {
     const problems = problemsOfRecord(
-      recordWith({ evidence: validRecord().evidence.filter((e) => e.kind !== 'diagnostic-text') }),
+      recordWith({ evidence: validRecord().evidence.filter((e) => e.kind !== 'exit-code') }),
     );
     const named = problems.filter((p) => p.field.startsWith('evidence'));
     expect(named.length, 'no problem names the evidence').toBeGreaterThan(0);
-    expect(named.some((p) => p.message.includes('diagnostic-text'))).toBe(true);
+    expect(named.some((p) => p.message.includes('exit-code'))).toBe(true);
   });
 
   it('refuses unredacted diagnostics for a policy whose redaction rule is not none', () => {
@@ -524,11 +569,19 @@ describe('validating a decision record', () => {
     expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
   });
 
-  it('refuses a recordedAt that does not parse as a date', () => {
-    expect(fieldsOf(problemsOfRecord(recordWith({ recordedAt: 'yesterday' })))).toContain(
-      'recordedAt',
-    );
-  });
+  it.each(['yesterday', 'Sep 2 2026', '2026-09-02', '2026-09-02T10:00:00'])(
+    'refuses a recordedAt that is not an ISO-8601 timestamp with a zone (%j)',
+    (recordedAt) => {
+      expect(fieldsOf(problemsOfRecord(recordWith({ recordedAt })))).toContain('recordedAt');
+    },
+  );
+
+  it.each(['2026-09-02T10:00:00Z', '2026-09-02T10:00:00.250+04:00'])(
+    'accepts the ISO-8601 timestamp %j',
+    (recordedAt) => {
+      expect(validateDecisionRecord(recordWith({ recordedAt })).ok).toBe(true);
+    },
+  );
 });
 
 describe('the harness adapters', () => {

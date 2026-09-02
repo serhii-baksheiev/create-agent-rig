@@ -20,8 +20,7 @@ const closed = <const T extends readonly string[]>(values: T): T => Object.freez
  * Whether a declared policy can actually be enforced on a given harness
  * surface. `UNSUPPORTED` and `INTEGRATION-FAILED` never yield a silent pass:
  * a decision record carrying either must qualify its verdict `UNVERIFIABLE`
- * (`./decision-record.ts`). The four states are defined here, first: nothing
- * else in this repository spells them.
+ * (`./decision-record.ts`). The four states are defined here.
  */
 export const CAPABILITY_STATES = closed([
   'SUPPORTED',

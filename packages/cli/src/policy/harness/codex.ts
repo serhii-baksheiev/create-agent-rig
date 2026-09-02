@@ -6,10 +6,15 @@
  * spellings, adds the canonical edit tool `apply_patch`, and runs the same hook
  * files from the shared hooks directory. So the strings below coincide with the
  * other adapter's today — by derivation, not by accident — and each adapter
- * still owns its own spelling: if the derived snapshot ever diverges,
- * `test/template/policy-declaration.test.ts` › "every registered policy is
- * wired in the %s snapshot under its event, matcher and hook path" goes red
- * for this adapter alone.
+ * still owns its own spelling. The correspondence test holds this adapter's
+ * matcher and the derived snapshot's to the SAME tool set, so a tool the
+ * snapshot gains or loses, or one this adapter drops, is reported for this
+ * adapter alone — `test/template/policy-declaration.test.ts` › "reports the
+ * no-verify policy on %s when the shell matcher loses PowerShell (mutation:
+ * matcher)", › "reports the no-verify policy on %s when the snapshot gains a
+ * tool the adapter does not name (mutation: widened snapshot)" and › "reports
+ * a policy on %s whose adapter matcher drops a tool the snapshot still wires
+ * (mutation: narrowed adapter)".
  *
  * The shared hooks directory is imported from `./shared-hooks.ts` rather than
  * restated, for the same reason the snapshot is derived rather than

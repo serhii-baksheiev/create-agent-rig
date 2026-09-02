@@ -7,10 +7,15 @@
  *
  * What is native here and nowhere in the core: the `PreToolUse` event, the
  * tool names in the matchers, and the snapshot path. The matcher strings are
- * the ones `.claude/settings.json` carries; if either side changes without the
- * other, `test/template/policy-declaration.test.ts` › "every registered policy
- * is wired in the %s snapshot under its event, matcher and hook path" goes red
- * for this adapter. The shell matcher's tool set is owned by `shell-tools.mjs` in the
+ * the ones `.claude/settings.json` carries, and the correspondence test holds
+ * the two to the SAME tool set, not a subset: a tool dropped here or gained
+ * there is reported for this adapter —
+ * `test/template/policy-declaration.test.ts` › "reports the no-verify policy
+ * on %s when the shell matcher loses PowerShell (mutation: matcher)", › "reports
+ * the no-verify policy on %s when the snapshot gains a tool the adapter does
+ * not name (mutation: widened snapshot)" and › "reports a policy on %s whose
+ * adapter matcher drops a tool the snapshot still wires (mutation: narrowed
+ * adapter)". The shell matcher's tool set is owned by `shell-tools.mjs` in the
  * shipped scripts, and `test/template/shell-tools.test.ts` holds that
  * correspondence.
  */

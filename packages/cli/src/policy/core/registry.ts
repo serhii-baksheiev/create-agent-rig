@@ -23,8 +23,9 @@ const NEVER_TIER = 'rules/autonomy.md#never';
  * Never tier that can allow, block, or refuse to inspect; each fails open on
  * its own error and closed on input it can see but cannot read
  * (`rules/invariants.md`, "Fail closed on a match, fail open on an error" and
- * "Refusing to inspect is a third outcome"); each reports an exit code and a
- * diagnostic line.
+ * "Refusing to inspect is a third outcome"). The one evidence every outcome
+ * carries is the exit code; a refusal also prints a diagnostic line, an allow
+ * prints nothing, so `diagnostic-text` is not required of every record.
  */
 const guard = (
   declaration: Pick<
@@ -41,7 +42,7 @@ const guard = (
     outcomes: ['allow', 'block', 'refuse-to-inspect'],
     onInternalError: 'fail-open',
     onUnreadableInput: 'fail-closed',
-    requiredEvidence: ['exit-code', 'diagnostic-text'],
+    requiredEvidence: ['exit-code'],
     statedIn: NEVER_TIER,
     ...declaration,
   });
@@ -62,8 +63,8 @@ const secretWriteRefusal = guard({
 
 /**
  * No-verify refusal. The guard refuses a shell command that bypasses the
- * pre-commit gate — `test/template/hooks.test.ts` and
- * `test/template/shell-tools.test.ts` pin the block on every shell tool. The
+ * pre-commit gate — `test/template/shell-tools.test.ts` › "refuses a
+ * pre-commit bypass through %s" pins the block on every shell tool. The
  * refuse-to-inspect outcome and the fail-open on an unparseable payload are
  * `test/template/hook-command-shape.test.ts` › "%s does not tell the caller to
  * split and retry" and › "allows a malformed payload it cannot parse at all".
@@ -82,8 +83,9 @@ const noVerifyRefusal = guard({
 /**
  * Rulebook-mutation restriction. In an unattended run the guard refuses an
  * edit under a rulebook prefix outside the current item's allow-list; in an
- * attended session it does nothing. Behaviour pinned in the generator's
- * `test/template/guard-rulebook.test.ts`.
+ * attended session it does nothing — `test/template/guard-rulebook.test.ts` ›
+ * "blocks an edit to a rulebook path the allow-list does not name" and ›
+ * "allows a hook edit when no unattended flag exists".
  */
 const rulebookMutationRestriction = guard({
   policyId: 'rulebook-mutation-restriction',
