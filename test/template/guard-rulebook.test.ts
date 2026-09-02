@@ -565,11 +565,11 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
   //
   // A list somewhere ELSE. This reads one bullet of one file, so a competing
   // enumeration in another paragraph of `autonomy.md`, or in another rulebook
-  // document, passes. One exists today: `.claude/skills/loop/SKILL.md` spells
-  // the set out in prose and omits `doctor-exemptions.json` — the same
-  // staleness, in a document with the same audience. Naming it here rather than
-  // widening this check, because a check that swept every rulebook file would
-  // be a different mechanism than the one this test is about.
+  // document, passes. One such gloss did exist in
+  // `.claude/skills/loop/SKILL.md`; RP-102 replaced it with a pointer and gave
+  // it its own check below. That is one document, not a sweep — a check that
+  // walked every rulebook file would be a different mechanism than this one,
+  // and it is RP-69's.
   it('points the Never bullet at RULEBOOK_PREFIXES instead of re-listing the protected set', async () => {
     const { RULEBOOK_PREFIXES } = (await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
@@ -612,6 +612,86 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
       (prefix) => prefix !== '.claude/scripts/' && expanded.includes(prefix.replace(/\/$/, '')),
     );
     expect(relisted, 'the Never bullet re-lists protected paths instead of pointing').toEqual([]);
+  });
+
+  // RP-102, and it is RP-98's defect one document downstream. `autonomy.md`
+  // STATES the rule; the `loop` skill is where a run WRITES the allow-list, at
+  // claim time, with `--allow <prefix>`. A gloss that is short of the protected
+  // set therefore misleads at the point of use rather than at the point of
+  // statement. `.claude/doctor-exemptions.json` had no covering noun in the
+  // replaced gloss at all; several others — the settings file, `CLAUDE.md`,
+  // `.codex/` — were reachable only by reading a category generously ("hook
+  // wiring" may just as well be taken as the hooks directory alone). Which of
+  // those a given reader would have got right is not measurable, and is not
+  // claimed here.
+  //
+  // Three exclusions below, each named rather than pattern-matched, because a
+  // rule shaped to the text it checks is a rule that stops checking:
+  //
+  //  - `.claude/scripts/` — naming the directory that HOLDS the source is how
+  //    you point at it, exactly as in the `autonomy.md` check above.
+  //  - `.claude/queue.board` — refused EVEN WHEN an item's allow-list names it
+  //    (`guard-rulebook.mjs` tests that path before consulting the allow-list).
+  //    That does not follow from membership in RULEBOOK_PREFIXES — its sibling
+  //    `.claude/queue.json` is allow-listable — so a run composing an allow-list
+  //    has to be told, and telling it means naming the path.
+  //  - the one citation the block makes, `.claude/rules/autonomy.md`, is cut
+  //    from the text before matching. 🔴 It is cut by NAME. An earlier draft
+  //    excluded any prefix followed by a filename, which read as the same rule
+  //    and was not: `code-reviewer` measured that it let all six
+  //    directory-shaped entries through whenever a file was named under them —
+  //    "the hooks in `.claude/hooks/x.mjs`, the rules in …" is how a re-listing
+  //    actually gets written, and it was green. Cutting one known citation
+  //    keeps the assertion narrow, and a new citation OUTSIDE the two prefixes
+  //    above goes red — which is intended: a document that names a protected
+  //    path should say why.
+  //
+  // ⚠ Three things this does NOT catch. Each was run through the assertion
+  // below rather than reasoned about, and none of them is theoretical:
+  //
+  //  1. A DESCRIPTIVE paraphrase — the same blind spot the `autonomy.md` check
+  //     documents, and the one that matters here. On the stale text this
+  //     replaced the assertion was GREEN: outside its citation of
+  //     `autonomy.md` that block named no protected prefix at all. The POINTER
+  //     assertion is what was red. So this check did not catch the defect it
+  //     was written for, and says so rather than implying it did.
+  //  2. A list somewhere ELSE. This reads one blank-line-delimited paragraph,
+  //     so the full enumeration placed in the paragraph immediately after the
+  //     block, with the block untouched, is GREEN.
+  //  3. `.claude/rules/` re-listed in the exact spelling of the cut citation.
+  //     That is the price of cutting by name, it costs one prefix in one
+  //     spelling, and it is textually indistinguishable from the citation.
+  it('points the loop skill at RULEBOOK_PREFIXES rather than glossing the protected set', async () => {
+    const { RULEBOOK_PREFIXES } = (await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    )) as { RULEBOOK_PREFIXES: readonly string[] };
+
+    const skill = await readFile(
+      path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
+      'utf8',
+    );
+    const blocks = skill.split(/\n\s*\n/).filter((block) => /is refused unless/.test(block));
+    expect(blocks, 'no block in the loop skill describes what the guard refuses').toHaveLength(1);
+    const block = blocks[0]!;
+
+    expect(block, 'the block must name the authoritative export').toContain('RULEBOOK_PREFIXES');
+
+    const expanded = block.replace(/([\w./-]*)\{([^}]*)\}/g, (_m, prefix: string, inner: string) =>
+      inner
+        .split(',')
+        .map((part) => prefix + part.trim())
+        .join(' '),
+    );
+    // The block's one citation, removed by name before matching — see the
+    // comment above for why this is not a "prefix followed by a filename" rule.
+    const withoutCitations = expanded.split('.claude/rules/autonomy.md').join('');
+    const relisted = RULEBOOK_PREFIXES.filter(
+      (prefix) =>
+        prefix !== '.claude/scripts/' &&
+        prefix !== '.claude/queue.board' &&
+        withoutCitations.includes(prefix.replace(/\/$/, '')),
+    );
+    expect(relisted, 'the loop skill re-lists protected paths instead of pointing').toEqual([]);
   });
 
   it('the loop skill arms the flag in §1 and disarms it in §7', async () => {
