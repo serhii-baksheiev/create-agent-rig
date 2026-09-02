@@ -1,8 +1,10 @@
 # Why the queue's cost guards bound a cost and not a growth ratio
 
-⚠ **This record is not synced.** Every other file in this directory is composed
+⚠ **This record is not synced.** Most files in this directory are composed
 from `templates/agent-os/universal/docs/decisions/` by `scripts/sync-agent-os.mjs`
-and travels into every generated project. This one is authored here and stays
+and travel into every generated project; the exceptions are this record and
+`memory-rig-boundary.md`, which carries the same banner for the same reason.
+This one is authored here and stays
 here: the guard it explains is `test/template/queue.test.ts`, a test of the
 **generator**, and no rule in the shipped rulebook cites it. Editing it in the
 template directory would make it a record no generated rulebook points at, which

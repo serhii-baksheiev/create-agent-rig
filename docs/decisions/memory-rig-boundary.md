@@ -13,7 +13,9 @@ Status: accepted. The rulings R1–R7 are recorded on RP-75 as comment `15643`,
 which attributes them to Architecture Review **passes 1–3**; the pass-2
 sections below come from the item's own description, which cites **pass 2**.
 Both provenance lines are the tracker's, not this repository's, and neither is
-checkable here.
+checkable here — nor is the word "verbatim" below, for the same reason. What a
+reader here can check is that the rulings keep their numbering R1…R7 and are
+quoted as blocks rather than folded into prose.
 
 🔴 **Read this first: almost nothing here is enforced in this repository
 today.** This record is a *forward contract*. `packages/` in this repo contains
@@ -74,12 +76,15 @@ carries neither a `dependencies` nor an `optionalDependencies` field. R1 says
 the distribution *may* declare Memory as an optional dependency. Those two
 cannot both be followed.
 
-Nothing here picks a side: two rules of this project genuinely collide, and the
-resolution belongs in the rules rather than in the history of one pull request.
-Until an owner decides, **read R1's clause as blocked by rule 3** — a session
-implementing RP-24, whose job R7 gives as verifying the distribution model,
-would otherwise add the dependency on exactly the install paths rule 3 names
-and quietly falsify the README.
+This record does not resolve the collision — two rules of this project genuinely
+collide, and the resolution belongs in the rules rather than in the history of
+one pull request. It does take the non-destructive side while the owner decides,
+and says so rather than leaving the gap silent: **treat R1's clause as blocked
+by rule 3 until an owner rules.** Concretely, a session implementing RP-24 —
+whose job R7 gives as verifying the distribution model — proceeds with
+everything else in RP-24 and simply does not exercise the permission; it does
+not need to stop, and it must not add the dependency, because that would land on
+exactly the install paths rule 3 names and quietly falsify the README.
 
 **R2 — Incubation.** `claude-config/shared-memory` — implementation, contract,
 schemas, fixtures as one unit — is an incubation location and is vacated before
@@ -128,6 +133,13 @@ handshake (`INTEGRATION-FAILED` / `manifest-stale` otherwise). Rig Core and
 harness adapters read the same entry. They are peer consumers at runtime;
 installation of executable, manifest and adapter registrations is owned by
 `setup`; uninstall removes registrations and manifest, never storage.
+
+⚠ **R6 is about a Memory manifest that does not exist yet, not about the rig's
+own.** This repository already has `.claude/.rig-manifest.json`, written by
+`create`, `init` and `upgrade` and read by `doctor` — project-local, committed,
+and untouched by this record. R6's "no project-local normal-path edits" governs
+the machine-scoped subsystem manifest it describes; read together with the
+warning at the top of this file, it rules on nothing that exists here today.
 
 **R7 — Sequencing.** 0.9.0 establishes the seam (RP-57 both backends + D-1/D-2
 + location-independence + kill-safety + network-free `load`; RP-18; RP-19).
