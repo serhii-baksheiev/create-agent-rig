@@ -554,13 +554,22 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
   // of a fact". Asserting the prose names all 14 entries would have re-created
   // the second copy one level up, where it would go stale the same way.
   //
-  // ⚠ What this does NOT catch, measured rather than guessed: a DESCRIPTIVE
-  // paraphrase. Before the fix the bullet named ten prefixes literally and three
-  // more only in words — "the integrity manifest" (`.claude/.rig-manifest.json`),
-  // "the queue config" (`.claude/queue.json`), "its always-refused board
-  // selector" (`.claude/queue.board`). Those three are invisible here, and that
-  // is exactly how the fourth, `doctor-exemptions.json`, went missing without a
-  // check noticing.
+  // ⚠ Two things this does NOT catch, measured rather than guessed.
+  //
+  // A DESCRIPTIVE paraphrase. Before the fix the bullet named ten prefixes
+  // literally and three more only in words — "the integrity manifest"
+  // (`.claude/.rig-manifest.json`), "the queue config" (`.claude/queue.json`),
+  // "its always-refused board selector" (`.claude/queue.board`). Those three are
+  // invisible here, and that is exactly how the fourth,
+  // `doctor-exemptions.json`, went missing without a check noticing.
+  //
+  // A list somewhere ELSE. This reads one bullet of one file, so a competing
+  // enumeration in another paragraph of `autonomy.md`, or in another rulebook
+  // document, passes. One exists today: `.claude/skills/loop/SKILL.md` spells
+  // the set out in prose and omits `doctor-exemptions.json` — the same
+  // staleness, in a document with the same audience. Naming it here rather than
+  // widening this check, because a check that swept every rulebook file would
+  // be a different mechanism than the one this test is about.
   it('points the Never bullet at RULEBOOK_PREFIXES instead of re-listing the protected set', async () => {
     const { RULEBOOK_PREFIXES } = (await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
@@ -586,8 +595,10 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
     // nothing, which is the dead-reference half of the same defect.
     expect(bullet, 'the bullet must name the authoritative export').toContain('RULEBOOK_PREFIXES');
 
-    // `.claude/{agents,hooks,...}` is one mention of five prefixes; expanded
-    // first, or the enumeration this exists to forbid scores 4 instead of 10.
+    // `.claude/{agents,hooks,...}` is one mention of five prefixes, so expand
+    // before matching. Measured against the stale bullet this replaced, under
+    // the `.claude/scripts/` exclusion below: expanded reports 9, unexpanded
+    // reports 5 — four of the paths it re-listed would have slipped past.
     const expanded = bullet.replace(/([\w./-]*)\{([^}]*)\}/g, (_m, prefix: string, inner: string) =>
       inner
         .split(',')

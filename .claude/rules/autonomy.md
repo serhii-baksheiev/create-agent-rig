@@ -108,14 +108,18 @@ own cost figures are read next to the lane they do not cover.
   at runtime instead of writing it out, or the check reports its own test data as
   a leak.
 - touch production data outside a reviewed migration
-- edit the rulebook from an **unattended** run outside the item's allow-list — `guard-rulebook` refuses it.
+- edit the rulebook from an **unattended** run outside the item's allow-list — `guard-rulebook` refuses it,
+  and the checkout board selector is refused **even when the item's allow-list
+  names it**; that one carve-out does not follow from the set below.
   The rulebook is both harnesses' instruction, agent, skill, script and hook
-  trees, plus the settings, queue and integrity files that decide what a session
-  may do. **Which paths exactly is not restated here**: `RULEBOOK_PREFIXES` in
-  `.claude/scripts/unattended-flag.mjs` is the one place that set is written, and
-  both readers take it from there — the guard, to judge an edit, and the flag
-  writer, to refuse an allow-list reaching outside it. A second copy in prose is
-  a copy that goes stale, and this one did. Mechanical:
+  trees, plus the settings, queue, exemption and integrity files that decide what
+  a session may do. **Which paths exactly is not restated here**: the mechanism
+  reads them from `RULEBOOK_PREFIXES` in `.claude/scripts/unattended-flag.mjs`,
+  and so should you — the guard judges an edit against it, and the flag writer
+  refuses an allow entry that *widens* it, meaning one that is a prefix of a
+  protected path and would admit that path plus its siblings. An entry outside
+  the set — ordinary source — is not widening and is accepted. A second copy in
+  prose is a copy that goes stale, and this one did. Mechanical:
   the hook refuses the edit while the unattended flag the `loop` skill writes
   at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), and does
   nothing in an attended session. ⚠ It sees edit tool calls only — a
