@@ -51,8 +51,7 @@ Carried verbatim from the Architecture Review — RP-75, comment `15643`,
 2026-09-02, in the tracker rather than here — because the tickets that implement them cite them by
 number and a paraphrase would fork the fact. ⚠ A reader inside this repository
 cannot check that word "verbatim": the source is a tracker comment, not a file
-here. What is checkable is that nothing below has been renumbered or
-abbreviated, and that the ruling text is quoted rather than summarised.
+here. What is checkable is that nothing below has been renumbered, and that the ruling text is quoted rather than summarised.
 
 **R1 — Implementation coupling.** Rig Core (`packages/cli`) has no source-level
 or runtime API dependency on Memory. A structural test enforces: no
@@ -67,24 +66,20 @@ resolved copy, exactly one Memory installation is active, and compatibility is
 established by the `{name, version, contractVersion}` handshake at every call —
 never by a package version range.
 
-🔴 **R1's `optionalDependencies` clause collides with a rule of this
-repository, and this record does not resolve it.** `CLAUDE.md` rule 3 states
-that the CLI keeps **zero runtime dependencies**, and gives the reason: it is
-what keeps the `npx github:…` and tarball paths working. `README.md` states the
-same as a property of the published package, and the root `package.json`
-carries neither a `dependencies` nor an `optionalDependencies` field. R1 says
-the distribution *may* declare Memory as an optional dependency. Those two
-cannot both be followed.
+**Owner ruling, 2026-09-02 — keep the published CLI at zero runtime
+dependencies.** R1's permission to declare Memory through
+`optionalDependencies` is not exercised by the current distribution.
+`packages/cli` must not declare Memory in `dependencies` or
+`optionalDependencies`; this preserves the `npx github:…` and tarball install
+paths required by `CLAUDE.md` rule 3 and documented in `README.md`.
 
-This record does not resolve the collision — two rules of this project genuinely
-collide, and the resolution belongs in the rules rather than in the history of
-one pull request. It does take the non-destructive side while the owner decides,
-and says so rather than leaving the gap silent: **treat R1's clause as blocked
-by rule 3 until an owner rules.** Concretely, a session implementing RP-24 —
-whose job R7 gives as verifying the distribution model — proceeds with
-everything else in RP-24 and simply does not exercise the permission; it does
-not need to stop, and it must not add the dependency, because that would land on
-exactly the install paths rule 3 names and quietly falsify the README.
+Distribution composition instead stays at the setup/manifest boundary: `setup`
+may install or locate the independently versioned Memory executable and record
+its resolved location, while every call verifies the
+`{name, version, contractVersion}` handshake. Changing the zero-dependency
+constraint requires a separate owner ruling plus evidence that both protected
+install paths remain valid. RP-24 verifies this model; it does not reopen it
+implicitly.
 
 **R2 — Incubation.** `claude-config/shared-memory` — implementation, contract,
 schemas, fixtures as one unit — is an incubation location and is vacated before
@@ -134,12 +129,13 @@ harness adapters read the same entry. They are peer consumers at runtime;
 installation of executable, manifest and adapter registrations is owned by
 `setup`; uninstall removes registrations and manifest, never storage.
 
-⚠ **R6 is about a Memory manifest that does not exist yet, not about the rig's
-own.** This repository already has `.claude/.rig-manifest.json`, written by
-`create`, `init` and `upgrade` and read by `doctor` — project-local, committed,
-and untouched by this record. R6's "no project-local normal-path edits" governs
-the machine-scoped subsystem manifest it describes; read together with the
-warning at the top of this file, it rules on nothing that exists here today.
+⚠ **R6 is about a Memory manifest that does not exist yet, not about the
+installed rig's existing manifest.** This generator repository does not commit
+`.claude/.rig-manifest.json`. The `create`, `init` and `upgrade` commands may
+write that project-local rig manifest into a generated installation, where
+`doctor` reads it. R6's "no project-local normal-path edits" governs only the
+future machine-scoped Memory subsystem manifest; it does not retroactively
+redefine the installed rig artifact.
 
 **R7 — Sequencing.** 0.9.0 establishes the seam (RP-57 both backends + D-1/D-2
 + location-independence + kill-safety + network-free `load`; RP-18; RP-19).
