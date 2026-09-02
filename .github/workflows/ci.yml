@@ -76,5 +76,33 @@ jobs:
       # absent on Windows skips through a helper that names the reason, and
       # test/template/platform-skips.test.ts counts those sites and refuses a
       # skipIf/runIf keyed on process.platform that bypasses them.
+      #
+      # RP-62: this lane reported contention identically to a real failure —
+      # the victim moved between two runs of ONE commit, always a timeout and
+      # never an AssertionError, while neighbouring heads were green. Telling
+      # the two apart meant querying other heads by hand. This step is the
+      # diagnosis the next occurrence carries with it: a spawn baseline in the
+      # log, so a slow runner is visible without that manual comparison.
+      - name: Record the spawn baseline (RP-62 diagnostics)
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            start=$(date +%s%N)
+            node -e '0'
+            echo "  bare node spawn #$i: $(( ($(date +%s%N) - start) / 1000000 )) ms"
+          done
+      # RIG_TEMPLATE_MAX_WORKERS caps how many TEMPLATE files run at once, and
+      # it is set here and nowhere else — the reduction is lane-specific, which
+      # is what the ruling on RP-62 required. The template tests spawn stub
+      # subprocesses, so they are process-bound rather than CPU-bound, and this
+      # is a hosted 2-core runner.
+      #
+      # 🔴 --testTimeout is deliberately NOT touched. It stays 15000 on every
+      # lane, and test/template/vitest-timeouts.test.ts keeps this figure equal
+      # to vitest.config.ts's. A lane-specific budget is the ruled FALLBACK if
+      # capping concurrency does not hold; raising it globally is refused
+      # outright, because the same cases finish far inside the budget on Linux.
       - name: Run the unit suite on Windows
+        env:
+          RIG_TEMPLATE_MAX_WORKERS: 2
         run: pnpm test:unit --testTimeout=15000
