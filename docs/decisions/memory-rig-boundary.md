@@ -8,8 +8,10 @@ today.** This record is a *forward contract*. `packages/` in this repo contains
 exactly one entry, `packages/cli`; there is no `packages/memory`, and the
 structural test R1 requires has no second side to compare against yet. What the
 rulings below govern is the work RP-57, RP-18, RP-19 (0.9.0) and RP-58, RP-95,
-RP-24 (0.10.0) will do. A reader who takes them as descriptions of present code
-will be wrong about every mechanism they name. Where something *is* already
+RP-24 (0.10.0) will do — **board state as of 2026-09-02**, which this
+repository cannot confirm and a reader should re-check on the tracker. A reader
+who takes the rulings as descriptions of present code will be wrong about every
+mechanism they name. Where something *is* already
 written down, this record cites it rather than restating it — see "What already
 exists" at the end.
 
@@ -18,8 +20,9 @@ exists" at the end.
 Memory is a subsystem the Rig Platform ships as one product, and the question
 that keeps recurring is not *where the code lives* but *what may depend on
 what*. Two repositories, one product, and a user's durable data in the middle of
-it. Answering that per-ticket produced contradictory assumptions three times, so
-the answer is written once, here, and the tickets implement it.
+it. Answered per-ticket, that question gets a different answer each time — so it
+is answered once, here, and the tickets implement this rather than re-deriving
+it.
 
 The one sentence the rest of this record elaborates:
 
@@ -30,8 +33,12 @@ The one sentence the rest of this record elaborates:
 
 ## The rulings, R1–R7
 
-Carried verbatim from the Architecture Review, because the tickets that
-implement them cite them by number and a paraphrase would fork the fact.
+Carried verbatim from the Architecture Review — RP-75, comment `15643`,
+2026-09-02, in the tracker rather than here — because the tickets that implement them cite them by
+number and a paraphrase would fork the fact. ⚠ A reader inside this repository
+cannot check that word "verbatim": the source is a tracker comment, not a file
+here. What is checkable is that nothing below has been renumbered or
+abbreviated, and that the ruling text is quoted rather than summarised.
 
 **R1 — Implementation coupling.** Rig Core (`packages/cli`) has no source-level
 or runtime API dependency on Memory. A structural test enforces: no
@@ -211,8 +218,12 @@ second copy.
   and rig, with citations into all three repositories. R5 lands on its
   *project* row.
 - `docs/command-contract.md` — scoped by an owner ruling to the published tool
-  bins, explicitly not `.claude/scripts/`. R4 is the same subject for the same
-  bins.
+  bins, explicitly not `.claude/scripts/`. It is the contract R4's `publish`
+  obligation meets: its "declared idempotence property" requires the
+  documentation to say whether re-running a command repeats its effect. ⚠ It
+  covers **none** of R4's other three parts — timeout ownership, kill-safety
+  and the network-free `load` — and the words do not appear in it at all, so
+  those three are stated here first and have no contract behind them yet.
 - `.claude/rules/invariants.md` — "one mechanism, one implementation", which is
   why the two above are cited here instead of summarised.
 
@@ -224,6 +235,10 @@ names three reversal triggers and RP-58 re-decides the destination on 0.9
 evidence rather than on this document.
 
 Rollback is per-ruling and cheap while nothing is built: amend the section here
-and re-point the ticket, because no code depends on this file. Once RP-95 has
-executed, R3 is no longer reversible — that is stated in R3 itself, and it is
-the one line in this record with a deadline attached.
+and re-point the ticket, because nothing in this repository imports, reads or
+executes this file.
+
+Two rulings carry a deadline rather than a decision, and each states its own:
+R2 vacates the incubation location **before the first non-owner installation**,
+and R3 keeps only the exact destination reversible, and only **until RP-58** —
+leaving `claude-config` is irreversible from the moment it happens.
