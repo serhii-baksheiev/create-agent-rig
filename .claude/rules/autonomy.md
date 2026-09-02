@@ -111,15 +111,18 @@ own cost figures are read next to the lane they do not cover.
 - edit the rulebook from an **unattended** run outside the item's allow-list — `guard-rulebook` refuses it,
   and the checkout board selector is refused **even when the item's allow-list
   names it**; that one carve-out does not follow from the set below.
-  The rulebook is both harnesses' instruction, agent, skill, script and hook
-  trees, plus the settings, queue, exemption and integrity files that decide what
-  a session may do. **Which paths exactly is not restated here**: the mechanism
-  reads them from `RULEBOOK_PREFIXES` in `.claude/scripts/unattended-flag.mjs`,
-  and so should you — the guard judges an edit against it, and the flag writer
-  refuses an allow entry that *widens* it, meaning one that is a prefix of a
-  protected path and would admit that path plus its siblings. An entry outside
-  the set — ordinary source — is not widening and is accepted. A second copy in
-  prose is a copy that goes stale, and this one did. Mechanical:
+  The rulebook is both harnesses' instruction, rule, agent, skill, script and
+  hook trees, plus the settings, queue, exemption and integrity files that decide
+  what a session may do. **Which paths exactly is not restated here**: the
+  mechanism reads them from `RULEBOOK_PREFIXES` in
+  `.claude/scripts/unattended-flag.mjs`, and so should you — the guard judges an
+  edit against it, and the flag writer refuses an allow entry that *widens* it.
+  Which entries those are is `isWidening`'s answer in that same module, not a
+  paraphrase here: pinned in the generator's `unattended-flag.test.ts` — absent
+  in a generated rig — › "explains exact protected-prefix refusal separately
+  from proper-prefix widening". An entry
+  outside the set — ordinary source — is not widening and is accepted. A second
+  copy in prose is a copy that goes stale, and this one did. Mechanical:
   the hook refuses the edit while the unattended flag the `loop` skill writes
   at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), and does
   nothing in an attended session. ⚠ It sees edit tool calls only — a
