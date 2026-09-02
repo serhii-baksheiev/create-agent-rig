@@ -9,10 +9,10 @@ Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/pack
 
 Numbering is ordinary semver — **additive is a minor, a fix is a patch** — so
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
-content as a patch by the owner's call and stays recorded as one, and 0.8.0
-ships fixes as a minor by the same kind of call in the opposite direction. Both
-departures are the owner's, and each is recorded in its own entry rather than
-reconciled here.
+content as a patch by the owner's call and stays recorded as one. 0.8.0 is the
+second recorded departure; its own entry states the direction and the reason,
+and this paragraph deliberately does not restate them — a numbering rule with
+two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## 0.8.0
 
@@ -76,7 +76,10 @@ decision-record schema and one adapter per harness. Its compiled output adds
 eleven files to the published tarball, 245 → 256. **No command imports it**, so nothing a
 project scaffolded from this release does comes from it. What such a project
 does get from this release is the three corrected documents above — and an
-installed 0.7.1 rig still needs `create-agent-rig upgrade` to receive them.
+installed 0.7.1 rig still needs `create-agent-rig upgrade` to receive them —
+which is a necessary condition and not a sufficient one, because a rig whose
+owner has edited one of those three files is handed a conflict to merge rather
+than an overwrite.
 This module is named here only because a reader diffing the two tarballs sees
 eleven new files and is owed the reason they are not part of that answer.
 

@@ -145,13 +145,20 @@ describe('the root manifest is publish-complete', () => {
     // `0.7.1 is \`latest\`` joins the overtaken list.
     expect(plan).toMatch(/`0\.8\.0` is prepared/);
     expect(plan).not.toMatch(/`?0\.8\.0`? is `latest`/);
-    // 🔴 `(?:is )?published` and not the bare word: PLAN.md's status line opens
-    // `Status (0.7.1 published`, so the shape a shipped release is announced in
-    // here is BOTH `0.8.0 published` and `0.8.0 is published`. A negative that
-    // covers only the first reads green on the sentence most likely to be
-    // written — the same asymmetry the 0.7.1 guard above closes with
-    // `(?:is )?prepared`.
-    expect(plan).not.toMatch(/`?0\.8\.0`? (?:is )?published|`?0\.8\.0`? is live/);
+    // 🔴 An enumeration, not a bare word — matching the shape of the 0.7.1
+    // guard above, and for the same reason. This file announces a shipped
+    // release in more than one voice, and each was written here at least once:
+    // `Status (0.7.1 published`, `0.7.1 is \`latest\``, ``0.1.0` through
+    // `0.7.1` are live`, and `done through \`0.7.1\`, the current \`latest\``.
+    // A negative covering only `0.8.0 published` reads green on every one of
+    // the others, so it would pass on the sentence most likely to be written.
+    //
+    // The near-miss this must NOT catch is the true one: `0.8.0` is prepared
+    // and not yet published` — `(?:is |was )?` cannot absorb the intervening
+    // `not yet`, so the alternation stays false while the release is pending.
+    expect(plan).not.toMatch(
+      /`?0\.8\.0`? (?:is |was )?published|published `?0\.8\.0`?|`?0\.8\.0`? (?:is|are) live|through `?0\.8\.0`?, the current|`?0\.8\.0`? shipped/,
+    );
   });
 
   // 🔴 The ledger records where a version was published FROM, so a row may
