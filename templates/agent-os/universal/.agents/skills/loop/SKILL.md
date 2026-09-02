@@ -153,9 +153,13 @@ node .claude/scripts/unattended-flag.mjs on --root "$PWD" --item <item-id> --run
 
 `guard-rulebook` reads it (`.claude/rules/autonomy.md`, "Never"): with the flag
 on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under the generated
-rulebook — both harnesses' rules, skills, agents and hook wiring, plus their
-scripts, queue config and integrity manifest — is refused unless its
-path starts with an allowed prefix; the board selector is the one always-refused
+rulebook is refused unless its
+path starts with an allowed prefix. 🔴 **Which paths that covers is
+`RULEBOOK_PREFIXES` in `.claude/scripts/unattended-flag.mjs`** — read it before
+composing an allow-list, rather than working from a summary here. A summary is a
+second copy, and the one that used to sit in this sentence had gone stale against
+the set it described. One fact the set cannot carry, so it is stated: the board
+selector is the one always-refused
 exception and cannot be admitted by an allow-list. With no flag the guard does nothing. An
 item that needs a rulebook path names it here — a decision made at claim
 time, never a default — and the stop step below turns the flag off. Pinned in

@@ -541,6 +541,159 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
     expect(bullet).toMatch(/unattended/i);
   });
 
+  // RP-98. The Never bullet used to define the protected set by listing it, and
+  // the list went stale the day `.claude/doctor-exemptions.json` was added to
+  // RULEBOOK_PREFIXES (`0be11cfd`, 0.6.2) and the prose was not touched. A rule
+  // that says a governance file is outside the rulebook, while the guard treats
+  // it as inside, is worse than a rule that declines to enumerate: an unattended
+  // run reads the prose, believes the file is ordinary project input, and then
+  // meets a refusal the rule gave it no reason to expect.
+  //
+  // So the fix was subtraction, and this pins the shape rather than the list —
+  // per `invariants.md`, "one mechanism, one implementation ... and one spelling
+  // of a fact". Asserting the prose names all 14 entries would have re-created
+  // the second copy one level up, where it would go stale the same way.
+  //
+  // ⚠ Two things this does NOT catch, measured rather than guessed.
+  //
+  // A DESCRIPTIVE paraphrase. Before the fix the bullet named ten prefixes
+  // literally and three more only in words — "the integrity manifest"
+  // (`.claude/.rig-manifest.json`), "the queue config" (`.claude/queue.json`),
+  // "its always-refused board selector" (`.claude/queue.board`). Those three are
+  // invisible here, and that is exactly how the fourth,
+  // `doctor-exemptions.json`, went missing without a check noticing.
+  //
+  // A list somewhere ELSE. This reads one bullet of one file, so a competing
+  // enumeration in another paragraph of `autonomy.md`, or in another rulebook
+  // document, passes. One such gloss did exist in
+  // `.claude/skills/loop/SKILL.md`; RP-102 replaced it with a pointer and gave
+  // it its own check below. That is one document, not a sweep — a check that
+  // walked every rulebook file would be a different mechanism than this one,
+  // and it is RP-69's.
+  it('points the Never bullet at RULEBOOK_PREFIXES instead of re-listing the protected set', async () => {
+    const { RULEBOOK_PREFIXES } = (await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    )) as { RULEBOOK_PREFIXES: readonly string[] };
+
+    const autonomy = await readFile(
+      path.join(universal, '.claude', 'rules', 'autonomy.md'),
+      'utf8',
+    );
+    const never = autonomy.split(/^### Never/m)[1]?.split(/^## /m)[0] ?? '';
+    // The WHOLE bullet, continuation lines included — the list this guards
+    // against lived on the lines after the one naming the hook, so a
+    // first-line-only read would have found nothing to object to.
+    const lines = never.split('\n');
+    const start = lines.findIndex((line) => /^- /.test(line) && line.includes('guard-rulebook'));
+    expect(start, 'no Never bullet names guard-rulebook').toBeGreaterThanOrEqual(0);
+    const rest = lines.slice(start + 1);
+    const end = rest.findIndex((line) => /^- /.test(line));
+    const bullet = [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].join('\n');
+    expect(bullet.length, 'the bullet read back empty').toBeGreaterThan(0);
+
+    // The pointer has to be live: a renamed export leaves the prose aiming at
+    // nothing, which is the dead-reference half of the same defect.
+    expect(bullet, 'the bullet must name the authoritative export').toContain('RULEBOOK_PREFIXES');
+
+    // `.claude/{agents,hooks,...}` is one mention of five prefixes, so expand
+    // before matching. Measured against the stale bullet this replaced, under
+    // the `.claude/scripts/` exclusion below: expanded reports 9, unexpanded
+    // reports 5 — four of the paths it re-listed would have slipped past.
+    const expanded = bullet.replace(/([\w./-]*)\{([^}]*)\}/g, (_m, prefix: string, inner: string) =>
+      inner
+        .split(',')
+        .map((part) => prefix + part.trim())
+        .join(' '),
+    );
+    // Naming the directory that HOLDS the source is how you point at it, so
+    // `.claude/scripts/` is allowed — via `.claude/scripts/unattended-flag.mjs`.
+    // Every other protected path in the bullet is a second spelling of the set.
+    const relisted = RULEBOOK_PREFIXES.filter(
+      (prefix) => prefix !== '.claude/scripts/' && expanded.includes(prefix.replace(/\/$/, '')),
+    );
+    expect(relisted, 'the Never bullet re-lists protected paths instead of pointing').toEqual([]);
+  });
+
+  // RP-102, and it is RP-98's defect one document downstream. `autonomy.md`
+  // STATES the rule; the `loop` skill is where a run WRITES the allow-list, at
+  // claim time, with `--allow <prefix>`. A gloss that is short of the protected
+  // set therefore misleads at the point of use rather than at the point of
+  // statement. `.claude/doctor-exemptions.json` had no covering noun in the
+  // replaced gloss at all; several others — the settings file, `CLAUDE.md`,
+  // `.codex/` — were reachable only by reading a category generously ("hook
+  // wiring" may just as well be taken as the hooks directory alone). Which of
+  // those a given reader would have got right is not measurable, and is not
+  // claimed here.
+  //
+  // Three exclusions below, each named rather than pattern-matched, because a
+  // rule shaped to the text it checks is a rule that stops checking:
+  //
+  //  - `.claude/scripts/` — naming the directory that HOLDS the source is how
+  //    you point at it, exactly as in the `autonomy.md` check above.
+  //  - `.claude/queue.board` — refused EVEN WHEN an item's allow-list names it
+  //    (`guard-rulebook.mjs` tests that path before consulting the allow-list).
+  //    That does not follow from membership in RULEBOOK_PREFIXES — its sibling
+  //    `.claude/queue.json` is allow-listable — so a run composing an allow-list
+  //    has to be told, and telling it means naming the path.
+  //  - the one citation the block makes, `.claude/rules/autonomy.md`, is cut
+  //    from the text before matching. 🔴 It is cut by NAME. An earlier draft
+  //    excluded any prefix followed by a filename, which read as the same rule
+  //    and was not: `code-reviewer` measured that it let all six
+  //    directory-shaped entries through whenever a file was named under them —
+  //    "the hooks in `.claude/hooks/x.mjs`, the rules in …" is how a re-listing
+  //    actually gets written, and it was green. Cutting one known citation
+  //    keeps the assertion narrow, and a new citation OUTSIDE the two prefixes
+  //    above goes red — which is intended: a document that names a protected
+  //    path should say why.
+  //
+  // ⚠ Three things this does NOT catch. Each was run through the assertion
+  // below rather than reasoned about, and none of them is theoretical:
+  //
+  //  1. A DESCRIPTIVE paraphrase — the same blind spot the `autonomy.md` check
+  //     documents, and the one that matters here. On the stale text this
+  //     replaced the assertion was GREEN: outside its citation of
+  //     `autonomy.md` that block named no protected prefix at all. The POINTER
+  //     assertion is what was red. So this check did not catch the defect it
+  //     was written for, and says so rather than implying it did.
+  //  2. A list somewhere ELSE. This reads one blank-line-delimited paragraph,
+  //     so the full enumeration placed in the paragraph immediately after the
+  //     block, with the block untouched, is GREEN.
+  //  3. `.claude/rules/` re-listed in the exact spelling of the cut citation.
+  //     That is the price of cutting by name, it costs one prefix in one
+  //     spelling, and it is textually indistinguishable from the citation.
+  it('points the loop skill at RULEBOOK_PREFIXES rather than glossing the protected set', async () => {
+    const { RULEBOOK_PREFIXES } = (await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    )) as { RULEBOOK_PREFIXES: readonly string[] };
+
+    const skill = await readFile(
+      path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
+      'utf8',
+    );
+    const blocks = skill.split(/\n\s*\n/).filter((block) => /is refused unless/.test(block));
+    expect(blocks, 'no block in the loop skill describes what the guard refuses').toHaveLength(1);
+    const block = blocks[0]!;
+
+    expect(block, 'the block must name the authoritative export').toContain('RULEBOOK_PREFIXES');
+
+    const expanded = block.replace(/([\w./-]*)\{([^}]*)\}/g, (_m, prefix: string, inner: string) =>
+      inner
+        .split(',')
+        .map((part) => prefix + part.trim())
+        .join(' '),
+    );
+    // The block's one citation, removed by name before matching — see the
+    // comment above for why this is not a "prefix followed by a filename" rule.
+    const withoutCitations = expanded.split('.claude/rules/autonomy.md').join('');
+    const relisted = RULEBOOK_PREFIXES.filter(
+      (prefix) =>
+        prefix !== '.claude/scripts/' &&
+        prefix !== '.claude/queue.board' &&
+        withoutCitations.includes(prefix.replace(/\/$/, '')),
+    );
+    expect(relisted, 'the loop skill re-lists protected paths instead of pointing').toEqual([]);
+  });
+
   it('the loop skill arms the flag in §1 and disarms it in §7', async () => {
     const skill = await readFile(
       path.join(universal, '.claude', 'skills', 'loop', 'SKILL.md'),
