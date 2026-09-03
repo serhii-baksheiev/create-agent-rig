@@ -567,6 +567,81 @@ describe('the CLI the loop skill calls', () => {
   });
 });
 
+/**
+ * RP-103 — a widening `--allow` makes `writeUnattended` throw BEFORE anything
+ * lands on disk, and the `on` CLI branch turns that throw into `exit 1` on
+ * stderr. That is correct for the write itself, but the caller is the `loop`
+ * skill, which does not read the exit code (SKILL.md line ~151) — so the run
+ * carries on with NO flag on disk, and `guard-rulebook` reads "no flag" as
+ * "attended session" and does nothing for the whole run. The failure is loud
+ * at arming and then completely silent for everything after it.
+ *
+ * `verify` is the read-back the loop calls right after `on`, so a run that
+ * kept going past a failed arm gets caught immediately instead of relying on
+ * a caller that already ignored one exit code to notice a second one.
+ *
+ * Shape decision: "the item asked about" travels as `--item <id>`, the exact
+ * flag `on` already takes (line ~402 above) — not a new flag name, and not an
+ * implicit "whatever `on` last wrote". The loop already has the item id in
+ * hand at arm time (it is what it just passed to `on --item`), so asking it
+ * to repeat that one flag is the smallest addition; inventing a second
+ * vocabulary for "which item" would just be one more place the two calls
+ * could drift apart. A flag on disk for a DIFFERENT item is exactly the
+ * shape a stale record from a previous run leaves behind, and that must not
+ * silently vouch for this one.
+ */
+describe('verify: RP-103 — the read-back the loop calls immediately after arming', () => {
+  // ⚠ These two names are kept on ONE line each, deliberately. The `loop`
+  // skill cites them, and `evidence-pointers.test.ts` resolves a citation by
+  // looking for the quoted name in this file — a name assembled from
+  // concatenated string literals is not found, so the citation reads as dead
+  // even while the test passes. Measured: it reported exactly that.
+  it('refuses when no flag is armed, naming the item and the unguarded rulebook', async () => {
+    const result = await runCli(['verify', '--item', 'AR-103'], home);
+    expect(result.code).not.toBe(0);
+    // Not just "a file is missing" — the reader needs the CONSEQUENCE, or
+    // this refusal reads exactly like every other "no such file" message
+    // and the operator has no reason to treat it differently.
+    expect(result.stderr).toMatch(/AR-103/);
+    expect(result.stderr).toMatch(/rulebook/i);
+    expect(result.stderr).toMatch(
+      /unguarded|no guard|not (?:being )?guarded|not (?:being )?enforced/i,
+    );
+  });
+
+  it('refuses when the armed flag names a different item, naming both', async () => {
+    await arm(JSON.stringify({ item: 'AR-OTHER', runDir: '/runs/other', allow: [] }));
+    const result = await runCli(['verify', '--item', 'AR-103'], home);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/AR-103/);
+    expect(result.stderr).toMatch(/AR-OTHER/);
+  });
+
+  // The passing direction, so the check above cannot be satisfied by a
+  // `verify` that simply always exits nonzero.
+  it('exits 0 when a flag armed with a narrow allow-list matches the item asked about', async () => {
+    const onResult = await runCli(
+      ['on', '--item', 'AR-103', '--run-dir', '/runs/1', '--allow', '.claude/skills/loop/'],
+      home,
+    );
+    expect(onResult.code, onResult.stderr).toBe(0);
+
+    const result = await runCli(['verify', '--item', 'AR-103'], home);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  // Acceptance item 4: no guard behaviour changes. A widening `--allow`
+  // still refuses at `on` and still writes NOTHING — this is the existing
+  // case near line 264 above, restated here only to spell out that `verify`
+  // must not be the thing that makes that refusal write a flag after all.
+  it('does not change `on`: a widening --allow still exits 1 and still writes no flag', async () => {
+    const result = await runCli(['on', '--item', 'AR-103', '--allow', '.'], home);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/rulebook/);
+    expect(existsSync(flagPath())).toBe(false);
+  });
+});
+
 describe('the process layer declares the new files', () => {
   it('explains exact protected-prefix refusal separately from proper-prefix widening', async () => {
     const source = await readFile(scriptPath, 'utf8');
