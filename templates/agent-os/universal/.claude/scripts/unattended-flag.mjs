@@ -445,6 +445,65 @@ if (invokedDirectly()) {
     process.stdout.write(removed.length === 0 ? 'no unattended flag was set\n' : `${removed.join('\n')}\n`);
     process.exit(0);
   }
-  process.stderr.write(`unknown word: ${word ?? '(none)'}. This CLI has two: on, off.\n`);
+  // 🔴 **The read-back `on` did not have, and the reason it is a subcommand
+  // rather than a line in the skill (RP-103).**
+  //
+  // `on` refuses a widening allow entry — correctly — by throwing before it
+  // writes anything, so the refusal leaves NO flag on disk. And `guard-rulebook`
+  // reads "no flag" as "attended session" and does nothing. So the run that was
+  // meant to be the most constrained became the LEAST: every rulebook path
+  // editable, including the hook wiring that enforces the rule. Loud at arming
+  // (exit 1), and completely silent for the rest of the run.
+  //
+  // The asymmetry is what made it a defect rather than a rough edge: the `off`
+  // branch above ALREADY reads back, and refuses while naming the record it
+  // found. One direction of the same operation verified itself and the other
+  // did not.
+  //
+  // ⚠ **Stating the limit, because this whole file is about a mechanism being
+  // trusted further than it goes.** `verify` is mechanical where it runs; that
+  // it runs is still the `loop` skill's prose. This closes "the refusal was
+  // silent" — the run is told, in a command whose exit status is its whole
+  // output — and does NOT close "a run that ignores exit statuses ignores this
+  // one too". The hook-enforced version would need `guard-rulebook` to tell
+  // "attended" from "unattended but unarmed", and it cannot: absence of a flag
+  // is all it sees.
+  if (word === 'verify') {
+    const item = valueOf('--item');
+    if (!item || item.startsWith('--')) {
+      process.stderr.write(
+        'unattended-flag verify: --item <id> is required — verifying "some flag is armed" would pass on a stale one from a previous run\n',
+      );
+      process.exit(1);
+    }
+    const state = readUnattended(cliEnv);
+    // ⚠ `unreadable` carries `on: true` — it means "a flag is THERE and cannot be
+    // trusted", which is what `off` needs in order to refuse to clear it blindly.
+    // For a read-back it is a FAILURE, not an arming: an unreadable record
+    // authorizes nothing, and its `item` is absent, so testing only `!state.on`
+    // would fall through to the item-mismatch branch and print the wrong reason
+    // for the right refusal.
+    if (!state.on || state.unreadable) {
+      const why = state.why ? ` (${state.why})` : '';
+      process.stderr.write(
+        `unattended-flag verify: NO usable unattended flag is armed for ${item}${why}. ` +
+          'guard-rulebook reads an absent flag as an attended session and refuses nothing, so this run is ' +
+          'UNGUARDED against the rulebook — every rule, hook, skill and settings path is editable. ' +
+          'Arm it with a narrower --allow (an allow-list narrows the rulebook, never widens it) and verify again, or stop the run.\n',
+      );
+      process.exit(1);
+    }
+    if (state.item !== item) {
+      process.stderr.write(
+        `unattended-flag verify: the armed flag names ${JSON.stringify(state.item)}, not ${JSON.stringify(item)} — ` +
+          `it is a leftover from another run and does not authorize this one. This run is UNGUARDED against the rulebook. ` +
+          `Clear it with \`off\` and arm it for ${item}, or stop the run.\n`,
+      );
+      process.exit(1);
+    }
+    process.stdout.write(`${state.path ?? 'armed'}\n`);
+    process.exit(0);
+  }
+  process.stderr.write(`unknown word: ${word ?? '(none)'}. This CLI has three: on, verify, off.\n`);
   process.exit(1);
 }
