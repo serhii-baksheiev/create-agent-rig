@@ -991,7 +991,18 @@ sometimes earlier (step 6). Everything before that is mechanical:
    `test/template/hash-history.test.ts` › "builds the table from the ledger
    alone — tags are a warning source, never an input".
 
-8. **Owner:** `npm publish`.
+8. **Owner:** `npm publish` — and immediately before it, from the checkout you
+   are about to publish from:
+
+   ```sh
+   node scripts/release-preflight.mjs   # exit 0, or it names what to fix
+   ```
+
+   It checks the manifests, the ledger, the checkout, and the tarball `npm pack`
+   would actually produce. What it looks at is the code, not this list; what it
+   cannot see is stated in its own header. It is a preflight, not a gate —
+   nothing runs it for you, and exit 0 is not a verdict on the release.
+
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and
    `upgrade --dry-run` in a rig installed from the previous version.

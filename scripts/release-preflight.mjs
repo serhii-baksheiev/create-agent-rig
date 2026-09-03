@@ -12,45 +12,68 @@
 // Deliberately phrased as what it LOOKS AT rather than as what it guarantees.
 // The limits block below says what it cannot see.
 //
-// 🔴 IT IS A PREFLIGHT, NOT A GATE. Nothing enforces it: it holds because the
-// runbook says to run it, exactly like the reviewer gates in this rulebook. A
-// green run means no check below found a fault — never that the release is
-// good. `pnpm test`, the reviewer fan-out and CI are the things that decide
-// that, and this runs after all of them.
+// 🔴 IT IS A PREFLIGHT, NOT A GATE. Nothing runs it: no hook fires it and no CI
+// job invokes it. It holds only because `CHANGELOG.md`'s "Releasing" step 8 and
+// `docs/releasing.md` tell the owner to. A green run means no check below found
+// a fault — never that the release is good. `pnpm test`, the reviewer fan-out
+// and CI are what decide that, and this runs after all of them.
+//
+// 🔴 WHAT IT CHECKS IS THE CODE BELOW, and this header states no count of them
+// on purpose. An earlier draft said "six specific mistakes" while the code
+// emitted eleven findings — the same stale second copy of a fact that
+// `.claude/rules/autonomy.md` carried about `guard-secret-file` for four
+// releases, reproduced inside the change written to remove it. A corrected
+// number would only restart that clock. Read the exported functions, or run it.
 //
 // ⚠ The limits, stated rather than implied.
 //
-//  1. **It cannot tell you the release is correct**, only that six specific
-//     mistakes are absent. Every one of them is a mistake this project has
-//     actually made or nearly made; none of them is the interesting half of a
-//     release.
+//  1. **It cannot tell you the release is correct**, only that the specific
+//     mistakes below are absent. Every one of them is a mistake this project
+//     has made or nearly made; none is the interesting half of a release.
 //  2. **`npm pack` builds.** Reading the payload means running the real pack,
 //     which runs `prepare`, which runs `tsc`. That is the point — it inspects
 //     the artifact that would ship rather than a description of it — but it is
 //     not free and it writes into `packages/cli/dist`.
 //  3. **It reads `origin/master` as git already has it.** It does not fetch, so
 //     a stale remote ref reads as agreement. Fetch first if that matters.
-//  4. **The suspicious-entry list is a denylist**, so it catches the shapes
-//     named in `suspiciousTarballEntries` and nothing else. It is not a secret
-//     scanner: `node scripts/validate-no-secrets.mjs` is, and it reads tracked
-//     files rather than the tarball. The two overlap and neither contains the
-//     other.
+//  4. **It asks about NAMES, never content.** The credential question is
+//     delegated to `isCredentialPath` in `.claude/scripts/lib/secrets.mjs` — the
+//     same module `guard-secret-file` and `validate-no-secrets.mjs` read, so the
+//     vocabulary has one spelling rather than three. A credential inside a file
+//     with an innocent name is invisible here; `validate-no-secrets.mjs` is the
+//     one that reads content, over TRACKED files. Neither set contains the
+//     other: the tarball carries `packages/cli/dist`, which is built and
+//     untracked, and the sweep reads `.claude/`, `test/` and `docs/`, which
+//     `files` never packs.
 //  5. **A version absent from the ledger is not proof it is unpublished** — the
 //     ledger records where a version was published FROM, and its row is written
 //     by the NEXT release. The authoritative answer is
 //     `npm view create-agent-rig versions`, which this does not call, because a
 //     preflight that fails when the network is down is a preflight nobody runs.
 //
-// The pure parts are exported and tested; `main` does the reading and hands
-// them the results. Pinned in `test/template/release-preflight.test.ts` —
-// absent in a generated rig, this being the generator's own script.
+// The pure parts are exported and tested; `main` reads the world and hands them
+// the results. Pinned in `test/template/release-preflight.test.ts` — absent in a
+// generated rig, this being the generator's own script.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, '..');
+
+// One spelling of the credential vocabulary, imported rather than restated.
+// `.claude/rules/invariants.md`: "One mechanism, one implementation. And one
+// spelling of a fact… the copy nobody is looking at is the one that is wrong."
+// A first draft of this file re-listed those names and was already weaker on the
+// day it landed — it missed `.envrc`, `id_rsa`, `.netrc`, `.pgpass`, the
+// `secrets/` segment arm, every uppercase spelling and every backslash path.
+// The dynamic form is how `scripts/validate-no-secrets.mjs` reaches the same
+// module from this directory.
+const { isCredentialPath } = await import(
+  pathToFileURL(path.join(here, '..', '.claude', 'scripts', 'lib', 'secrets.mjs')).href
+);
 
 /** The npm package this repository publishes. One name, spelled once. */
 const PACKAGE_NAME = 'create-agent-rig';
@@ -65,7 +88,12 @@ const PACKAGE_NAME = 'create-agent-rig';
 const RULEBOOK_PAYLOAD_PREFIX = 'templates/agent-os/universal/.claude/';
 
 /**
- * What must never reach a published tarball.
+ * The junk arms — the ones about a TARBALL rather than about credentials.
+ *
+ * These stay local because they are not credential vocabulary, and the shared
+ * module rightly says nothing about them: a `node_modules` tree, a `.git`
+ * directory, a previous pack left lying around, a Finder artifact. Each doubles
+ * the published size or ships stale bytes under a fresh version.
  *
  * 🔴 Written against path SEGMENTS and file NAMES, never against a leading dot.
  * The payload of this package is dotted — `.claude/`, `.agents/`, `.codex/`,
@@ -73,52 +101,33 @@ const RULEBOOK_PAYLOAD_PREFIX = 'templates/agent-os/universal/.claude/';
  * shipped, and the tarball would still pack. That direction breaks the release
  * rather than a rule, which is why the test pins it explicitly.
  */
-const FORBIDDEN_SEGMENTS = new Set(['node_modules', '.git']);
-const FORBIDDEN_NAMES = new Set(['.npmrc', '.DS_Store']);
-const FORBIDDEN_SUFFIXES = ['.pem', '.key', '.tgz'];
-
-/**
- * The environment files a real project is SUPPOSED to publish.
- *
- * `templates/skeleton/*` are runnable projects, and an example env file is the
- * ordinary way such a project documents the variables it needs. Flagging one
- * would block a release with a message that is true ("would be published") and
- * wrong.
- *
- * 🔴 Matched on the WHOLE basename, and checked before the `.env.` prefix arm.
- * Written as a prefix — "anything after `.env.` is an example" — it would wave
- * through `.env.local`, which is exactly where a real credential lives and the
- * reason the env arm exists at all. Pinned in
- * `test/template/release-preflight.test.ts` › "still flags the real environment
- * files sitting beside the exempt ones", which asserts both kinds in one list
- * so a widened carve-out shows up as a missing entry.
- *
- * Their CONTENT is not this script's job. `scripts/validate-no-secrets.mjs`
- * reads content, over every tracked file, and would catch a credential pasted
- * into an example.
- */
-const ENV_EXAMPLE_NAMES = new Set(['.env.example', '.env.sample', '.env.template']);
-
-const isEnvFile = (name) =>
-  !ENV_EXAMPLE_NAMES.has(name) && (name === '.env' || name.startsWith('.env.'));
+const JUNK_SEGMENTS = new Set(['node_modules', '.git']);
+const JUNK_NAMES = new Set(['.DS_Store']);
+const JUNK_SUFFIXES = ['.tgz'];
 
 /**
  * The entries in a packed file list that must not ship.
  *
  * Returns them in the order given, so the report reads in the order the owner
  * would see them in `npm pack`'s own output. One forward pass, no rescanning.
+ *
+ * The credential half is `isCredentialPath`'s answer, which already lowercases
+ * every segment and normalises `\` to `/` — so `.ENV`, `.Env.local` and
+ * `templates\skeleton\.env` are caught here without this file knowing why. It
+ * also already exempts the documented placeholder forms (`.env.example`,
+ * `.env.sample`, `.env.template`), which a real skeleton is supposed to ship.
  */
 export const suspiciousTarballEntries = (paths) => {
   const offenders = [];
   for (const entry of paths ?? []) {
-    const segments = String(entry).split('/');
+    const text = String(entry);
+    const segments = text.replaceAll('\\', '/').split('/');
     const name = segments[segments.length - 1] ?? '';
-    const forbidden =
-      segments.some((segment) => FORBIDDEN_SEGMENTS.has(segment)) ||
-      FORBIDDEN_NAMES.has(name) ||
-      isEnvFile(name) ||
-      FORBIDDEN_SUFFIXES.some((suffix) => name.endsWith(suffix));
-    if (forbidden) offenders.push(entry);
+    const junk =
+      segments.some((segment) => JUNK_SEGMENTS.has(segment)) ||
+      JUNK_NAMES.has(name) ||
+      JUNK_SUFFIXES.some((suffix) => name.endsWith(suffix));
+    if (junk || isCredentialPath(text)) offenders.push(entry);
   }
   return offenders;
 };
@@ -199,8 +208,63 @@ export const ledgerFindings = (ledger, version) =>
       ]
     : [];
 
+/**
+ * The checkout the publish would run from.
+ *
+ * `status` is `git status --porcelain` (empty means clean), `head` and `remote`
+ * are shas, and `remote` is `''` when `origin/master` could not be resolved.
+ *
+ * 🔴 The `remote` guard is load-bearing in both directions. Dropping it reports
+ * a mismatch against nothing on top of the unresolvable finding — two lines for
+ * one fault, the second naming a comparison nobody made. Inverting the
+ * comparison is worse: the preflight then passes on any branch head and the
+ * owner publishes bytes that are not the reviewed merge commit. Both mutations
+ * are pinned by the finding COUNT rather than by wording, in
+ * `test/template/release-preflight.test.ts`.
+ *
+ * `--porcelain` counts untracked files deliberately: `npm pack` reads the
+ * working directory rather than the index, so an untracked file under
+ * `templates/` ships.
+ */
+export const gitFindings = ({ status, head, remote }) => {
+  const findings = [];
+
+  if (String(status ?? '') !== '') {
+    findings.push(
+      'the working tree is not clean — publish from a checkout whose bytes are all committed, ' +
+        'since npm pack reads the working directory and not the index',
+    );
+  }
+
+  if (!remote) {
+    findings.push(
+      'origin/master could not be resolved — cannot confirm HEAD is the merge commit that was reviewed',
+    );
+  } else if (head !== remote) {
+    findings.push(
+      `HEAD is ${head} but origin/master is ${remote} — publish the merge commit, not a branch head`,
+    );
+  }
+
+  return findings;
+};
+
 /** The file `npm pack` writes for a version. */
 export const expectedTarballName = (version) => `${PACKAGE_NAME}-${version}.tgz`;
+
+/**
+ * The tarball npm actually produced, against the one this version should make.
+ *
+ * A missing filename is a mismatch rather than nothing to check: `npm pack
+ * --json` changing shape would otherwise read as agreement, which is the
+ * failure mode of every check that treats absence as a pass.
+ */
+export const tarballNameFindings = (filename, version) => {
+  const expected = expectedTarballName(version);
+  return filename === expected
+    ? []
+    : [`npm pack produced ${filename || '(no filename)'}, expected ${expected}`];
+};
 
 /**
  * The report the owner reads before typing `npm publish`.
@@ -218,6 +282,15 @@ export const formatReport = (findings) => {
   );
 };
 
+/**
+ * The one value the owner's shell reacts to.
+ *
+ * Exported so it is pinned beside the report rather than left as a ternary
+ * inside `main`, where no test could reach it: a preflight whose exit code
+ * disagrees with its printed verdict is worse than one that prints nothing.
+ */
+export const exitCodeFor = (findings) => ((findings ?? []).length === 0 ? 0 : 1);
+
 const readJson = (relative) => JSON.parse(readFileSync(path.join(root, relative), 'utf8'));
 
 const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
@@ -227,6 +300,11 @@ const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' })
  *
  * `--json` is asked for so the listing is parsed rather than scraped out of the
  * `npm notice` prose, which is formatting and has changed between npm majors.
+ *
+ * `shell` on win32 because `npm` is a `.cmd` shim there, which `execFile`
+ * cannot run without one; the argv is three literal words with nothing
+ * interpolated, so the shell adds no parsing risk. Same construct and the same
+ * reasoning as `test/template/packaging.test.ts`.
  */
 const packedPaths = () => {
   const output = execFileSync('npm', ['pack', '--dry-run', '--json'], {
@@ -253,33 +331,19 @@ function main() {
   findings.push(...manifestFindings({ root: rootManifest, inner }));
   findings.push(...ledgerFindings(readJson('templates/release-ledger.json'), version));
 
-  // Publishing from a dirty tree publishes bytes that are in no commit, and
-  // publishing from an old head publishes something nobody reviewed.
-  if (git(['status', '--porcelain']) !== '') {
-    findings.push(
-      'the working tree is not clean — publish from a checkout whose bytes are all committed',
-    );
-  }
   const head = git(['rev-parse', 'HEAD']);
   let remote = '';
   try {
     remote = git(['rev-parse', 'origin/master']);
   } catch {
-    findings.push('origin/master could not be resolved — cannot confirm HEAD is the merge commit');
+    // Left as '' — `gitFindings` reports it, and reports it once.
   }
-  if (remote && head !== remote) {
-    findings.push(
-      `HEAD is ${head} but origin/master is ${remote} — publish the merge commit, not a branch head`,
-    );
-  }
+  findings.push(...gitFindings({ status: git(['status', '--porcelain']), head, remote }));
 
   const { filename, paths } = packedPaths();
   findings.push(...payloadFindings(paths));
-  const suspicious = suspiciousTarballEntries(paths);
-  for (const entry of suspicious) findings.push(`${entry} would be published`);
-  if (filename !== expectedTarballName(version)) {
-    findings.push(`npm pack produced ${filename}, expected ${expectedTarballName(version)}`);
-  }
+  for (const entry of suspiciousTarballEntries(paths)) findings.push(`${entry} would be published`);
+  findings.push(...tarballNameFindings(filename, version));
 
   console.log(formatReport(findings));
   if (findings.length === 0) {
@@ -288,7 +352,7 @@ function main() {
         '\nNext: `npm publish` (2FA), then CHANGELOG "Releasing" step 9 — smoke the REGISTRY artifact.',
     );
   }
-  return findings.length === 0 ? 0 : 1;
+  return exitCodeFor(findings);
 }
 
 // Run only when executed, never when imported: a test that imports this module

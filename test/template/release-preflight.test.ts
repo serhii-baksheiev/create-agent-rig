@@ -12,6 +12,26 @@ import {
   suspiciousTarballEntries,
   // @ts-expect-error — a plain .mjs release script, imported for its pure parts
 } from '../../scripts/release-preflight.mjs';
+// @ts-expect-error — see above; the same script, taken as a namespace
+import * as preflight from '../../scripts/release-preflight.mjs';
+import {
+  CREDENTIAL_BASENAMES,
+  CREDENTIAL_EXTENSIONS,
+  CREDENTIAL_SEGMENTS,
+  isCredentialPath,
+  // @ts-expect-error — the rulebook scripts are .mjs without type declarations
+} from '../../.claude/scripts/lib/secrets.mjs';
+
+// The parts of the script that do not exist yet are taken off the NAMESPACE
+// rather than by name. A named import of an absent export is a link-time error
+// that fails the whole file, which would hide every guarantee below it behind
+// one red line; off the namespace, a missing export fails exactly the tests that
+// use it and leaves the rest readable.
+const { exitCodeFor, gitFindings, tarballNameFindings } = preflight as {
+  exitCodeFor: (findings: readonly string[]) => number;
+  gitFindings: (state: { status: string; head: string; remote: string }) => string[];
+  tarballNameFindings: (filename: string | undefined, version: string) => string[];
+};
 
 // `npm publish` here needs 2FA and cannot be undone, so the last check before it
 // is the one that has to be mechanical. Today it is prose: step 8 of CHANGELOG's
@@ -253,6 +273,24 @@ describe('release preflight — what must never reach a published tarball', () =
     ]);
   });
 
+  // 🔴 The junk arms do their OWN separator normalisation, and this is the test
+  // that says so. The backslash case above it is a credential, which
+  // `isCredentialPath` normalises internally — so deleting the `replaceAll` in
+  // `suspiciousTarballEntries` left every other test green. A mutation run found
+  // that gap: with the normalisation gone, `a\b\node_modules\x.js` is one
+  // segment that matches no junk name, and a packed `node_modules` ships.
+  it('flags junk spelled with Windows separators, which the credential arm cannot cover', () => {
+    expect(suspiciousTarballEntries([...PAYLOAD, 'a\\b\\node_modules\\x.js'])).toEqual([
+      'a\\b\\node_modules\\x.js',
+    ]);
+    expect(suspiciousTarballEntries([...PAYLOAD, 'templates\\.git\\HEAD'])).toEqual([
+      'templates\\.git\\HEAD',
+    ]);
+    expect(suspiciousTarballEntries([...PAYLOAD, 'templates\\.DS_Store'])).toEqual([
+      'templates\\.DS_Store',
+    ]);
+  });
+
   it('flags key material', () => {
     expect(suspiciousTarballEntries([...PAYLOAD, 'certs/server.pem'])).toEqual([
       'certs/server.pem',
@@ -308,6 +346,125 @@ describe('release preflight — what must never reach a published tarball', () =
   });
 });
 
+// 🔴 The block above pins the tarball-specific arms — `node_modules/`, `.git/`,
+// a stray `.tgz`, a `.DS_Store`. This one pins the OTHER half, and the reason it
+// is a separate block is that the other half is not this script's to decide.
+//
+// `.claude/scripts/lib/secrets.mjs` is where this project spells "is this file a
+// credential BY ITS NAME" — one vocabulary, read by the guard, the commit-time
+// sweep and the ignore rules (`.claude/rules/invariants.md`, "one mechanism, one
+// implementation"). A second spelling inside the release script is two lists
+// answering one question, and the one nobody is looking at is the one that is
+// wrong. It already was: every entry below is a credential the shared module
+// refuses and the release preflight, today, would publish.
+describe('release preflight — the credential vocabulary is the shared one, not a second copy', () => {
+  // 🔴 macOS and Windows are case-insensitive filesystems, so `.ENV` and `.env`
+  // are the SAME FILE — git records whichever spelling was typed, and the owner
+  // publishes from Windows. `isCredentialPath` lowercases once before every arm
+  // and says so in its own comment; a case-sensitive copy refuses one spelling
+  // and waves the other through, which is the worse of the two failures because
+  // it reads as coverage.
+  it('flags a credential file however its name is cased', () => {
+    for (const entry of ['.ENV', '.Env.local', '.NPMRC', 'x.PEM', 'id_rsa.KEY']) {
+      expect(suspiciousTarballEntries([...PAYLOAD, entry]), entry).toEqual([entry]);
+    }
+  });
+
+  // The shapes a hand-written local list never had. `.envrc` is the expensive
+  // one: direnv writes `export …_TOKEN=…` into it verbatim, and the shared
+  // module carries it deliberately wider than the router for exactly that
+  // reason.
+  it('flags the credential filenames the tarball-local list never knew', () => {
+    for (const entry of ['.envrc', 'id_rsa', '.netrc', '.pgpass']) {
+      expect(suspiciousTarballEntries([...PAYLOAD, entry]), entry).toEqual([entry]);
+    }
+  });
+
+  // A directory whose contents are credentials whatever the files are called —
+  // the arm no suffix list can express, because the give-away is the segment.
+  it('flags anything sitting under a secrets or credentials directory', () => {
+    expect(suspiciousTarballEntries([...PAYLOAD, 'a/secrets/x.json'])).toEqual([
+      'a/secrets/x.json',
+    ]);
+    expect(suspiciousTarballEntries([...PAYLOAD, 'credentials/x'])).toEqual(['credentials/x']);
+  });
+
+  // `npm pack --json` reports POSIX paths, but the listing is not the only way
+  // a path reaches this function and the release is cut on Windows. Splitting on
+  // '/' alone reads a backslash path as one long basename, and one long basename
+  // matches nothing. `isCredentialPath` normalises the separators first.
+  it('flags a path spelled with Windows separators', () => {
+    const entry = 'templates\\skeleton\\.env';
+    expect(suspiciousTarballEntries([...PAYLOAD, entry])).toEqual([entry]);
+  });
+
+  // 🔴 The test that stops the copy coming back. It is driven from the shared
+  // module's OWN exported lists rather than from names typed here, so a word
+  // added to the vocabulary tomorrow is a name this release check must already
+  // flag — nobody has to remember to come back and widen a second list. The
+  // first assertion guards the fixture: if a list member stops being a
+  // credential, this reports the fixture, not the preflight.
+  const sharedCredentialNames = [
+    ...[...CREDENTIAL_BASENAMES].map((name: string) => `templates/skeleton/node-service/${name}`),
+    ...[...CREDENTIAL_EXTENSIONS].map((ext: string) => `packages/cli/dist/server.${ext}`),
+    ...[...CREDENTIAL_SEGMENTS].map((segment: string) => `templates/${segment}/anything.json`),
+  ];
+
+  it('flags every name the shared vocabulary calls a credential', () => {
+    expect(
+      sharedCredentialNames.length,
+      'the vocabulary exported nothing to check',
+    ).toBeGreaterThan(6);
+    for (const entry of sharedCredentialNames) {
+      expect(isCredentialPath(entry), `${entry}: the fixture is wrong, not the preflight`).toBe(
+        true,
+      );
+      expect(suspiciousTarballEntries([...PAYLOAD, entry]), entry).toEqual([entry]);
+    }
+  });
+
+  // The negative half, and the guarantee the delegation must not cost. The
+  // shared module ALREADY exempts these: `PLACEHOLDER_SUFFIXES` in secrets.mjs
+  // is `['.example', '.sample', '.template']`, applied inside its env arm, so
+  // `isCredentialPath('.env.example')` is false and the carve-out survives
+  // delegation without a local wrapper. Asserted here rather than assumed,
+  // because "the shared module handles it" is the sentence that would be
+  // discovered to be wrong by a blocked release.
+  it('leaves the conventional example env files alone, as the shared vocabulary does', () => {
+    for (const name of ['.env.example', '.env.sample', '.env.template']) {
+      expect(isCredentialPath(name), `${name} is exempt in secrets.mjs`).toBe(false);
+    }
+    expect(
+      suspiciousTarballEntries([
+        ...PAYLOAD,
+        'templates/skeleton/node-service/.env.example',
+        'templates/skeleton/aws-serverless/.env.sample',
+        '.env.template',
+        // The lowercasing must not widen the carve-out either: shouted or not,
+        // an example file is still an example file.
+        'templates/skeleton/node-service/.ENV.EXAMPLE',
+      ]),
+    ).toEqual([]);
+  });
+
+  // 🔴 And the direction that costs a release rather than a rule, restated
+  // against the shared module: it is now the thing deciding, so the payload has
+  // to survive ITS judgement too. `.claude/`, `.agents/`, `.github/` and a file
+  // literally named `secrets.mjs` all ship in this tarball on purpose — and so
+  // does a dotted BASENAME, which the payload above happens not to carry: every
+  // dot in it leads a directory, so a filter reading "the basename starts with a
+  // dot" would pass that list and still strip half of every skeleton.
+  it('leaves the real payload alone once the shared vocabulary is the one deciding', () => {
+    const shipped = [
+      ...PAYLOAD,
+      'templates/agent-os/universal/.claude/scripts/lib/secrets.mjs',
+      'templates/skeleton/node-service/.gitignore',
+      'templates/agent-os/universal/.codex/config.toml',
+    ];
+    expect(suspiciousTarballEntries(shipped)).toEqual([]);
+  });
+});
+
 describe('release preflight — the payload the git path cannot check', () => {
   // Step 2 of the release runbook, mechanised: "this is where scaffolders
   // break, and the git path cannot catch it". The two file sets differ exactly
@@ -332,6 +489,120 @@ describe('release preflight — the artifact the owner is about to publish', () 
   it('names the tarball npm pack produces for a version', () => {
     expect(expectedTarballName('0.9.0')).toBe('create-agent-rig-0.9.0.tgz');
     expect(expectedTarballName('0.10.1')).toBe('create-agent-rig-0.10.1.tgz');
+  });
+
+  // The comparison, not just the expected name. `npm pack --json` reports what
+  // it actually wrote, and a mismatch means the bytes about to be published
+  // belong to a different version than the manifest the checks above cleared.
+  it('clears a tarball named for the version being released', () => {
+    expect(tarballNameFindings(expectedTarballName('0.9.0'), '0.9.0')).toEqual([]);
+  });
+
+  it('reports a tarball named for another version, naming what it got and what it wanted', () => {
+    const findings = tarballNameFindings('create-agent-rig-0.8.0.tgz', '0.9.0');
+    expect(findings).toHaveLength(1);
+    // Both names, so the owner does not have to reconstruct the expected one to
+    // see which half is wrong — the same courtesy the version finding pays.
+    expect(findings[0]).toContain('create-agent-rig-0.8.0.tgz');
+    expect(findings[0]).toContain('create-agent-rig-0.9.0.tgz');
+  });
+
+  // 🔴 What `npm pack --json` gives if its output shape changes: no filename at
+  // all. The comparison must read that as a mismatch, never as "nothing to
+  // compare" — a silent pass here is the whole check going quiet on the day the
+  // tool it reads changes, which is exactly when it is needed.
+  it('treats a filename it never got as a mismatch rather than as nothing to check', () => {
+    for (const filename of [undefined, '']) {
+      const findings = tarballNameFindings(filename, '0.9.0');
+      expect(findings, String(filename)).toHaveLength(1);
+      expect(findings[0]).toContain('create-agent-rig-0.9.0.tgz');
+    }
+  });
+});
+
+const HEAD_SHA = '1f0c9a4b2d3e5f60718293a4b5c6d7e8f9012345';
+const MASTER_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+
+// 🔴 These four rules decide WHICH BYTES get published, and until now nothing
+// tested them. The demonstration is a one-character mutation: inverting
+// `head !== remote` to `head === remote`, or dropping the `remote &&` guard,
+// leaves the rest of this file green while the preflight prints PASS on any
+// branch head — and the owner publishes something that is not the reviewed
+// merge commit. That is not a rule failing loudly; it is the check agreeing.
+describe('release preflight — the checkout the bytes would be published from', () => {
+  it('clears a clean checkout sitting exactly on origin/master', () => {
+    expect(gitFindings({ status: '', head: HEAD_SHA, remote: HEAD_SHA })).toEqual([]);
+  });
+
+  // Publishing from a dirty tree publishes bytes that are in no commit — nothing
+  // reviewed them, and nothing can reconstruct them afterwards.
+  it('reports a working tree carrying uncommitted bytes', () => {
+    const findings = gitFindings({
+      status: ' M scripts/release-preflight.mjs\n?? notes.txt',
+      head: HEAD_SHA,
+      remote: HEAD_SHA,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatch(/clean/i);
+  });
+
+  // 🔴 The pair that must never both fire. When `origin/master` cannot be
+  // resolved there is nothing to compare HEAD against, so a head-comparison
+  // finding here would name an empty sha and contradict the finding beside it —
+  // and a contradictory pair is worse than either alone, because the owner has
+  // to decide which of the two the script means. Dropping the `remote &&` guard
+  // is what produces it, and the count below is what catches that.
+  it('reports an unresolvable origin/master without also comparing HEAD against nothing', () => {
+    const findings = gitFindings({ status: '', head: HEAD_SHA, remote: '' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain('origin/master');
+    expect(findings[0]).toMatch(/resolv/i);
+  });
+
+  // The rule the whole block exists for: publish the merge commit, not a branch
+  // head. Both shas are named because "HEAD disagrees" without them tells the
+  // owner to go run two git commands to find out how.
+  it('reports a HEAD that is not the commit origin/master points at, naming both shas', () => {
+    const findings = gitFindings({ status: '', head: HEAD_SHA, remote: MASTER_SHA });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain(HEAD_SHA);
+    expect(findings[0]).toContain(MASTER_SHA);
+  });
+
+  it('names each fault separately when the checkout is wrong in every way', () => {
+    const findings = gitFindings({
+      status: ' M package.json',
+      head: HEAD_SHA,
+      remote: MASTER_SHA,
+    });
+    // A dirty tree and a wrong head are two independent things to fix, and a
+    // fault folded into another line is a fault that ships.
+    expect(findings).toHaveLength(2);
+    expect(new Set(findings).size, 'two findings read identically').toBe(2);
+  });
+});
+
+// The contract the owner's shell reads, and the only part of `main` that decides
+// whether a release stops. `npm publish` is typed by hand after this, so an exit
+// code that says 0 while findings were printed is a check that has been running
+// green through every one of the faults above.
+describe('release preflight — the exit code, which is what actually stops a publish', () => {
+  it('exits 0 when there is no finding and 1 when there is any', () => {
+    expect(exitCodeFor([])).toBe(0);
+    expect(exitCodeFor(['.env would be published'])).toBe(1);
+    expect(exitCodeFor(['a', 'b', 'c'])).toBe(1);
+  });
+
+  // The two halves of the same answer, pinned together. The report is what the
+  // owner reads and the code is what a script reads, and the combination that
+  // gets a bad release published is the one where they disagree.
+  it('agrees with the report printed above it, in both directions', () => {
+    for (const findings of [[], ['one finding'], ['one finding', 'another']]) {
+      const passed = /PASS/.test(formatReport(findings));
+      expect(passed, `report and exit code disagree for ${findings.length} finding(s)`).toBe(
+        exitCodeFor(findings) === 0,
+      );
+    }
   });
 });
 
