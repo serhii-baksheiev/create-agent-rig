@@ -34,10 +34,12 @@ const { exitCodeFor, gitFindings, tarballNameFindings } = preflight as {
 };
 
 // `npm publish` here needs 2FA and cannot be undone, so the last check before it
-// is the one that has to be mechanical. Today it is prose: step 8 of CHANGELOG's
-// "Releasing" section hands the owner a checklist that restates facts the
-// repository already owns — the two manifests, the ledger, the `files` payload —
-// and a restated fact is a fact that goes stale.
+// is the one that has to be mechanical. When these tests were written it was
+// prose: step 8 of CHANGELOG's "Releasing" section handed the owner a checklist
+// that restated facts the repository already owns — the two manifests, the
+// ledger, the `files` payload — and a restated fact is a fact that goes stale.
+// The same branch changed step 8 to name the script, so that sentence describes
+// the world these tests were written against, not this one.
 //
 // So these pin the PURE parts: functions that take already-read data and return
 // findings. Nothing here runs `npm pack` or reads the network; the script's own
@@ -355,11 +357,15 @@ describe('release preflight — what must never reach a published tarball', () =
 // sweep and the ignore rules (`.claude/rules/invariants.md`, "one mechanism, one
 // implementation"). A second spelling inside the release script is two lists
 // answering one question, and the one nobody is looking at is the one that is
-// wrong. It already was: when these tests were written, every entry below was a
-// credential the shared module refused and the release script would have
-// published. They are red-to-green history, and they stay because the
-// delegation they forced is the thing that can regress — reinstate a local list
-// and they go red again.
+// wrong. It already was: when these tests were written, the hand-typed positive
+// entries below — `.ENV`, `.envrc`, `id_rsa`, `.netrc`, `.pgpass`, the
+// `secrets/` segment, the backslash path — were credentials the shared module
+// refused and the local list would have published. NOT every entry below: the
+// negative cases are here precisely because they must stay clean, and three of
+// the generated fixtures (`.npmrc`, `server.pem`, `server.key`) the local list
+// did catch. They are red-to-green history, and they stay because the
+// delegation they forced is the thing that can regress — put that weaker list
+// back and they go red again.
 describe('release preflight — the credential vocabulary is the shared one, not a second copy', () => {
   // 🔴 macOS and Windows are case-insensitive filesystems, so `.ENV` and `.env`
   // are the SAME FILE — git records whichever spelling was typed, and the owner
