@@ -355,8 +355,11 @@ describe('release preflight — what must never reach a published tarball', () =
 // sweep and the ignore rules (`.claude/rules/invariants.md`, "one mechanism, one
 // implementation"). A second spelling inside the release script is two lists
 // answering one question, and the one nobody is looking at is the one that is
-// wrong. It already was: every entry below is a credential the shared module
-// refuses and the release preflight, today, would publish.
+// wrong. It already was: when these tests were written, every entry below was a
+// credential the shared module refused and the release script would have
+// published. They are red-to-green history, and they stay because the
+// delegation they forced is the thing that can regress — reinstate a local list
+// and they go red again.
 describe('release preflight — the credential vocabulary is the shared one, not a second copy', () => {
   // 🔴 macOS and Windows are case-insensitive filesystems, so `.ENV` and `.env`
   // are the SAME FILE — git records whichever spelling was typed, and the owner
@@ -633,6 +636,19 @@ describe('release preflight — importing the module must not run the release ch
   it('carries the entry-point guard prepare.mjs uses', async () => {
     const source = await readFile(script, 'utf8');
     expect(source).toMatch(/import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href/);
+  });
+
+  // 🔴 The same shape, for the same reason, on the one value the owner's shell
+  // reacts to. `exitCodeFor` is pinned above, but nothing reached the wiring:
+  // replacing `main`'s last line with `return 0` left the whole suite green
+  // while the preflight exited 0 over a list of findings it had just printed —
+  // a measured mutation, not a hypothetical. Running `main` in a test is not
+  // the alternative: it would spawn a real `npm pack`, and a check that
+  // expensive is a check that gets skipped.
+  it('returns exitCodeFor from main rather than a literal the report can contradict', async () => {
+    const source = await readFile(script, 'utf8');
+    expect(source).toMatch(/return exitCodeFor\(findings\);/);
+    expect(source).toMatch(/process\.exit\(main\(\)\)/);
   });
 
   // And the behaviour, because the grep above passes on a module that runs its
