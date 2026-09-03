@@ -49,9 +49,73 @@ const MAX_PATCH_SECTIONS = 128;
 const MAX_MULTI_EDITS = 256;
 const MAX_PATCH_PATH_COMPONENTS = 512;
 
+/**
+ * The surfaces this normaliser answers for. A tool outside the set is one the
+ * hook does not understand, and the refusal below must not reach it: a guard
+ * that blocks payloads it was never asked about is a guard that gets deleted.
+ */
+const EDIT_TOOL_NAMES = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
+
+/**
+ * The one refusal for a container this file cannot read, on every surface it
+ * owns. `apply_patch` keeps its own wording because the shape it expects is a
+ * different shape — a patch string — and a remedy naming an object would be
+ * advice its caller cannot act on.
+ */
+const unreadableToolInput = (toolName) =>
+  toolName === 'apply_patch'
+    ? {
+        filePath: '',
+        fragment: '',
+        inspectionRefusal:
+          'the apply_patch command arrived in a shape this guard cannot read — it is a ' +
+          'string, or a list of strings, and nothing else. Nothing was inspected, so ' +
+          'nothing about this patch is vouched for.',
+        remedy: 'Send the command as a patch string, or a list of strings.',
+        appliesToAll: true,
+      }
+    : {
+        filePath: '',
+        fragment: '',
+        inspectionRefusal:
+          'the tool_input arrived in a shape this guard cannot read — it is an object ' +
+          'carrying the edit fields, and nothing else. Nothing was inspected, so nothing ' +
+          'about this edit is vouched for.',
+        remedy: 'Send the tool_input as an object carrying the edit fields.',
+        appliesToAll: true,
+      };
+
 export function editFragments(input) {
   const toolName = input?.tool_name;
-  const toolInput = input?.tool_input ?? {};
+  const rawToolInput = input?.tool_input;
+  // 🔴 **"I could not look" is not "there was nothing to look at" — and this
+  // file used to answer both ways depending on which arm you reached.**
+  // `?? {}` substitutes only for null/undefined, so a `tool_input` PRESENT as a
+  // string, a number or an array flowed on as that value: every field read came
+  // back `undefined`, and the Write/Edit/NotebookEdit arms returned a fragment
+  // with an empty path and empty text — which every consuming guard reads as a
+  // clean edit. Measured on master `6589db36`: a `tool_input` that is a string
+  // carrying a credential exited 0 through Write, Edit, MultiEdit and
+  // NotebookEdit, while the SAME shape through `apply_patch` exited 2. The
+  // divergence was between arms of this one file, which is why the contract
+  // belongs here rather than in each guard (RP-85, applying RP-80's ruling).
+  //
+  // ⚠ **ABSENT stays fail-open, and the difference is the whole rule.**
+  // `.claude/rules/invariants.md`: a field that is simply absent is the case the
+  // guard has nothing to judge — it must allow, exactly as a `Write` carrying no
+  // content does. A field PRESENT in a shape the guard does not accept is the
+  // case where it was handed something and could tell it could not read it,
+  // which is the one thing reporting is for. Getting these backwards costs a
+  // credential in either direction.
+  if (
+    EDIT_TOOL_NAMES.has(toolName) &&
+    rawToolInput !== null &&
+    rawToolInput !== undefined &&
+    (typeof rawToolInput !== 'object' || Array.isArray(rawToolInput))
+  ) {
+    return [unreadableToolInput(toolName)];
+  }
+  const toolInput = rawToolInput ?? {};
   if (toolName === 'Write' || toolName === 'Edit') {
     return [
       {
@@ -107,21 +171,10 @@ export function editFragments(input) {
   // they exited 1 with a stack trace, which neither harness treats as blocking, so
   // a crash here was an ALLOW. A `tool_input` that is not an object is the same
   // case as a `command` whose container this guard cannot read: detected, not
-  // readable, refused.
-  if (typeof toolInput !== 'object' || toolInput === null || Array.isArray(toolInput)) {
-    return [
-      {
-        filePath: '',
-        fragment: '',
-        inspectionRefusal:
-          'the apply_patch command arrived in a shape this guard cannot read — it is a ' +
-          'string, or a list of strings, and nothing else. Nothing was inspected, so ' +
-          'nothing about this patch is vouched for.',
-        remedy: 'Send the command as a patch string, or a list of strings.',
-        appliesToAll: true,
-      },
-    ];
-  }
+  // readable, refused. That check used to sit HERE, guarding this one arm; it is
+  // now the first thing `editFragments` does, for every surface in
+  // `EDIT_TOOL_NAMES`, so `toolInput` is an object by the time this line runs and
+  // `in` cannot throw (RP-85). One mechanism, one implementation.
   if (!('command' in toolInput)) return [];
   if (
     typeof rawCommand !== 'string' &&
@@ -140,22 +193,12 @@ export function editFragments(input) {
     // "a crashed guard that blocks everything gets deleted within the hour" —
     // and this branch is neither. Two opposite answers to one question, ten
     // lines apart, was the real defect.
-    return [
-      {
-        filePath: '',
-        fragment: '',
-        inspectionRefusal:
-          'the apply_patch command arrived in a shape this guard cannot read — it is a ' +
-          'string, or a list of strings, and nothing else. Nothing was inspected, so ' +
-          'nothing about this patch is vouched for.',
-        // 🔴 The remedy travels WITH the refusal that earns it. It was chosen by
-        // `/shape/i.test(reason)` in six copies — correct only by coincidence of
-        // wording, so rewording the reason silently restored the retry loop this
-        // remedy exists to replace. One field, one place.
-        remedy: 'Send the command as a patch string, or a list of strings.',
-        appliesToAll: true,
-      },
-    ];
+    // 🔴 The remedy travels WITH the refusal that earns it. It was chosen by
+    // `/shape/i.test(reason)` in six copies — correct only by coincidence of
+    // wording, so rewording the reason silently restored the retry loop this
+    // remedy exists to replace. One field, one place — and since RP-85 that
+    // place is `unreadableToolInput`, shared with the four edit surfaces.
+    return [unreadableToolInput(toolName)];
   }
   const command = typeof rawCommand === 'string' ? rawCommand : rawCommand.join('\n');
   if (command.length > MAX_PATCH_CHARACTERS) {

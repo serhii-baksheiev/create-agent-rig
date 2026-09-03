@@ -9,7 +9,85 @@ Versions are published to npm as [`create-agent-rig`](https://www.npmjs.com/pack
 
 Numbering is ordinary semver — **additive is a minor, a fix is a patch** — so
 that "I only take minors" remains a usable policy; 0.3.2 shipped additive
-content as a patch by the owner's call and stays recorded as one.
+content as a patch by the owner's call and stays recorded as one. 0.8.0 is the
+second recorded departure; its own entry states the direction and the reason,
+and this paragraph deliberately does not restate them — a numbering rule with
+two copies of its exceptions is the shape 0.8.0 exists to remove.
+
+## 0.8.0
+
+**Three stale second copies, spread over three payload files a rig obeys,
+described the mechanisms behind them wrongly — and each fix is a deletion.** A
+count and a path list, both in `.claude/rules/autonomy.md`, and a paraphrase of
+that same path list in `loop/SKILL.md`, which ships in both harnesses' copies.
+Every one of them was a second writing of a fact the code owns, and every one
+had drifted from its source while the suite stayed green.
+
+**The `templates/agent-os/` payload gains no file and loses none**, measured
+tarball to tarball — `npm pack create-agent-rig@0.7.1` unpacked, against this
+release's own `npm pack`. That payload is the same 95 files either way, and
+exactly three of them differ in content. ⚠ The tarball as a whole is **not**
+unchanged: it grows by eleven files, and the section below names which and why.
+
+**Numbered a minor by the owner's call, not by this file's rule.** The rule at
+the top — additive is a minor, a fix is a patch — makes this delta a patch,
+because nothing is added to what a project installs. It ships as `0.8.0`
+because the owner's milestone of that name closes here and the number was fixed
+before the delta was measured. Recorded rather than reconciled, the way `0.3.2`
+is recorded above: a consumer on "I only take minors" receives three corrected
+documents and no new capability.
+
+### Fixed
+
+- **`.claude/rules/autonomy.md` stated a blind-spot count `guard-secret-file`
+  had outgrown.** The Never bullet said the guard's header "states the four
+  blind spots"; the header had been raised past four in `51402e99`, and the
+  stale copy shipped in 0.6.1, 0.6.2, 0.7.0 and 0.7.1 — a security rule
+  describing its own mechanism wrongly for four releases. The fix is not a
+  corrected number, which would only restart the same clock: the prose states
+  no count and points at the header, and `README.md` moved with it for the same
+  reason. Pinned in the generator's `test/template/guard-secret-file.test.ts`
+  (absent in a generated rig) › "no live rulebook document restates the guard’s
+  limit count" and › "the rule and the README still send the reader to the
+  guard’s own header".
+
+- **The same file re-listed the paths `guard-rulebook` protects, and its list
+  was incomplete.** The enumeration of trees an unattended run may not edit
+  omitted `.claude/doctor-exemptions.json`, which the guard does refuse. It is
+  replaced by a pointer to `RULEBOOK_PREFIXES` in
+  `.claude/scripts/unattended-flag.mjs` — the set the guard judges an edit
+  against — so there is one spelling of it rather than two. One fact that
+  pointer cannot carry is stated beside it, because it does not follow from the
+  set: the checkout board selector is refused **even when an item's allow-list
+  names it**.
+
+- **`loop/SKILL.md` paraphrased that set too, in both harnesses' copies.** The
+  step where a session composes an allow-list summarised the protected rulebook
+  in prose, so the one moment the set is read in anger was the moment it was
+  read from a summary that had already drifted. It now names
+  `RULEBOOK_PREFIXES` and says to open it. Both copies carry the change — the
+  Claude skill at `.claude/skills/loop/SKILL.md` and its Codex projection at
+  `.agents/skills/loop/SKILL.md`.
+
+### Inside the generator, and not inside a rig
+
+`packages/cli/src/policy/` is new — a typed policy declaration, a registry, a
+decision-record schema and one adapter per harness. Its compiled output adds
+eleven files to the published tarball, 245 → 256. **No command imports it**, so nothing a
+project scaffolded from this release does comes from it. What such a project
+does get from this release is the three corrected documents above — and an
+installed 0.7.1 rig still needs `create-agent-rig upgrade` to receive them —
+which is a necessary condition and not a sufficient one, because a rig whose
+owner has edited one of those three files is handed a conflict to merge rather
+than an overwrite.
+This module is named here only because a reader diffing the two tarballs sees
+eleven new files and is owed the reason they are not part of that answer.
+
+`templates/release-ledger.json` carries `0.7.1` at `52e879b6`, the commit it was
+published from, read from `npm view create-agent-rig@0.7.1 gitHead` and verified
+an ancestor of `master`. `templates/hash-history.json` is regenerated from it and
+now covers eleven releases, `0.2.0` through `0.7.1`, so `upgrade` can tell an
+untouched file from an edited one in a rig installed from 0.7.1.
 
 ## 0.7.1
 
@@ -913,7 +991,18 @@ sometimes earlier (step 6). Everything before that is mechanical:
    `test/template/hash-history.test.ts` › "builds the table from the ledger
    alone — tags are a warning source, never an input".
 
-8. **Owner:** `npm publish`.
+8. **Owner:** `npm publish` — and immediately before it, from the checkout you
+   are about to publish from:
+
+   ```sh
+   node scripts/release-preflight.mjs   # exit 0, or it names what to fix
+   ```
+
+   It checks the manifests, the ledger, the checkout, and the tarball `npm pack`
+   would actually produce. What it looks at is the code, not this list; what it
+   cannot see is stated in its own header. It is a preflight, not a gate —
+   nothing runs it for you, and exit 0 is not a verdict on the release.
+
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and
    `upgrade --dry-run` in a rig installed from the previous version.

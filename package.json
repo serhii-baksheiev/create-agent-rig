@@ -1,6 +1,6 @@
 {
   "name": "create-agent-rig",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Scaffold a new project with an agent operating system (rules, gates, hooks) and a runnable code skeleton",
   "keywords": [
     "create",
@@ -59,6 +59,6 @@
     "prettier": "^3.9.6",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.0"
   }
 }

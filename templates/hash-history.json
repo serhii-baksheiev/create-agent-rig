@@ -9,7 +9,8 @@
     "0.6.0",
     "0.6.1",
     "0.6.2",
-    "0.7.0"
+    "0.7.0",
+    "0.7.1"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -59,7 +60,8 @@
       "hashes": [
         "a2fb0d03c65701af9d2d69cbcb2582ae573f097b1e1071eb2916e5e4f7832b37",
         "9616e4767942b2021e34ab7bb76eec9a5c280cc608a0756abb02743741d5fc8a",
-        "a6340b95a03000b89fb27f5357cdd9c7ec12b714054b5334b61a30da600405e8"
+        "a6340b95a03000b89fb27f5357cdd9c7ec12b714054b5334b61a30da600405e8",
+        "dc1d9c02879e383448f2336ae6433f960f86e8f8efb4ab8ccf9a17a5f7f524c3"
       ]
     },
     ".agents/skills/ro-debug/SKILL.md": {
@@ -438,7 +440,8 @@
       "hashes": [
         "32f847a2a3a5136cabcb42f6447da9f8cf98e2d20512212ee5201461128d7798",
         "b62348a27bcaa1d62a0e4ddd53873fab6cb75f9af8e8c69d24f6ce81c592c4e3",
-        "b151045e8083c398e94571b35dc9568dfa0102abcb847cdf764f6f694914d53e"
+        "b151045e8083c398e94571b35dc9568dfa0102abcb847cdf764f6f694914d53e",
+        "f756b7ccc2a4459e58b2125408de1f91372cd6093bf6f4ed14e26dc2eb4190fc"
       ]
     },
     ".claude/scripts/revalidation-report.mjs": {
@@ -550,7 +553,8 @@
         "75adb84414a330db621ff4f1363b3926f537133199236a9e25bb9880b935e02e",
         "a2fb0d03c65701af9d2d69cbcb2582ae573f097b1e1071eb2916e5e4f7832b37",
         "9616e4767942b2021e34ab7bb76eec9a5c280cc608a0756abb02743741d5fc8a",
-        "a6340b95a03000b89fb27f5357cdd9c7ec12b714054b5334b61a30da600405e8"
+        "a6340b95a03000b89fb27f5357cdd9c7ec12b714054b5334b61a30da600405e8",
+        "dc1d9c02879e383448f2336ae6433f960f86e8f8efb4ab8ccf9a17a5f7f524c3"
       ]
     },
     ".claude/skills/ro-debug/SKILL.md": {
