@@ -449,7 +449,11 @@ if (invokedDirectly()) {
   // rather than a line in the skill (RP-103).**
   //
   // `on` refuses a widening allow entry — correctly — by throwing before it
-  // writes anything, so the refusal leaves NO flag on disk. And `guard-rulebook`
+  // writes anything, so the refusal leaves NO flag on disk. Pinned in the
+  // generator's `test/template/unattended-flag.test.ts` (absent in a generated
+  // rig) › "does not change `on`: a widening --allow still exits 1 and still
+  // writes no flag" — the claim is checkable, so it carries a pointer rather
+  // than standing on its own. And `guard-rulebook`
   // reads "no flag" as "attended session" and does nothing. So the run that was
   // meant to be the most constrained became the LEAST: every rulebook path
   // editable, including the hook wiring that enforces the rule. Loud at arming

@@ -156,9 +156,11 @@ node .claude/scripts/unattended-flag.mjs verify --root "$PWD" --item <item-id>
 
 🔴 **The second command is the one that makes the first one's failure
 visible, and skipping it inverts the whole mechanism.** `on` refuses an allow
-entry that *widens* the rulebook — and the refusal leaves **no flag on disk**,
-while `guard-rulebook` reads an absent flag as an attended session and refuses
-nothing. So a run that armed with a widening entry and did not check is the
+entry that *widens* the rulebook — and the refusal leaves **no flag on disk**
+(pinned in the generator's `test/template/unattended-flag.test.ts`, absent in a
+generated rig, › "does not change `on`: a widening --allow still exits 1 and
+still writes no flag"), while `guard-rulebook` reads an absent flag as an
+attended session and refuses nothing. So a run that armed with a widening entry and did not check is the
 **least** constrained run this project can produce: every rule, hook, skill and
 settings path editable, with nothing downstream saying so. The failure is loud
 for one line at claim time and silent for the rest of the session.
