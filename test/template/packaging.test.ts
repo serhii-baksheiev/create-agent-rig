@@ -34,42 +34,50 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('ships 0.7.1 as one release in both package manifests', async () => {
+  it('ships 0.8.0 as one release in both package manifests', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
     const inner = JSON.parse(
       await readFile(path.join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
     ) as { version: string };
-    expect(root.version).toBe('0.7.1');
+    expect(root.version).toBe('0.8.0');
     expect(inner.version).toBe(root.version);
   });
 
-  it('puts the 0.7.1 owner-directed-gate release first in the changelog', async () => {
+  it('puts the 0.8.0 stale-second-copy release first in the changelog', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     const first = changelog.match(/^## (\d+\.\d+\.\d+)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(first?.[1]).toBe('0.7.1');
+    expect(first?.[1]).toBe('0.8.0');
     // The named subjects of THIS release, not words any release note would
-    // contain — so an entry copied forward from 0.7.0 fails here.
-    expect(first?.[2]).toMatch(/owner-directed/);
-    expect(first?.[2]).toMatch(/BEFORE_PR/);
-    expect(first?.[2]).toMatch(/--ticket/);
-    // The four refusals are the reason this is not a bypass, so the note that
-    // omits them is a note that undersells what a reader has to know.
-    expect(first?.[2]).toMatch(/take-up/);
-    expect(first?.[2]).toMatch(/\.rig\/claims/);
-    expect(first?.[2]).toMatch(/BEFORE_CLOSE/);
-    // and why it is a patch rather than a minor, since that is the call a
-    // consumer on "I only take minors" depends on being made deliberately.
-    expect(first?.[2]).toMatch(/patch/i);
-    // 🔴 The 0.7.0 section must still be BELOW it, unedited in place: a patch
+    // contain — so an entry copied forward from 0.7.1 fails here. All three
+    // fixes are one shape: a prose copy of a fact the code owns, gone stale.
+    expect(first?.[2]).toMatch(/RULEBOOK_PREFIXES/);
+    expect(first?.[2]).toMatch(/guard-secret-file/);
+    expect(first?.[2]).toMatch(/doctor-exemptions\.json/);
+    // the one fact the pointer cannot carry, which is why the note states it
+    expect(first?.[2]).toMatch(/board selector/);
+    // both harnesses' copies of the skill moved, and a note naming only the
+    // Claude one would leave a Codex reader believing their copy still drifts
+    expect(first?.[2]).toMatch(/\.agents\/skills\/loop\/SKILL\.md/);
+    // 🔴 This release inverts the call 0.3.2 records: it is numbered a MINOR
+    // while the delta is a fix, because the owner's milestone fixed the number
+    // before the delta was measured. A consumer on "I only take minors" is owed
+    // that sentence, so the note may not quietly drop it.
+    expect(first?.[2]).toMatch(/minor/i);
+    expect(first?.[2]).toMatch(/owner's call/);
+    // and the eleven dormant files a tarball diff shows, with the reason they
+    // change nothing for a scaffolded project
+    expect(first?.[2]).toMatch(/No command imports it/);
+    // 🔴 The 0.7.1 section must still be BELOW it, unedited in place: a release
     // that rewrites the previous release's note is describing bytes that
     // already shipped.
-    expect(changelog).toMatch(/^## 0\.7\.0$/m);
+    expect(changelog).toMatch(/^## 0\.7\.1$/m);
+    expect(changelog.indexOf('## 0.8.0')).toBeLessThan(changelog.indexOf('## 0.7.1'));
     expect(changelog.indexOf('## 0.7.1')).toBeLessThan(changelog.indexOf('## 0.7.0'));
   });
 
-  it('records 0.7.1 as published and names it `latest` in both places', async () => {
+  it('records 0.7.1 as the published `latest` and 0.8.0 as merely prepared', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
     // The published sha has ONE source here — the ledger row, which the test
     // below pins to a full literal. Spelling it a third time as a bare
@@ -127,6 +135,30 @@ describe('the root manifest is publish-complete', () => {
     // the two places that carry it must agree: whatever §11 calls the
     // current `latest` is what the status line calls live.
     expect(plan).toMatch(/done through `0\.7\.1`, the current `latest`/);
+
+    // 🔴 0.8.0 is PREPARED and not published, which is the other half of the
+    // 0.6.2 mistake this test was written for: that release read "`0.6.2` is
+    // prepared" in §11 while only the positive guard existed, so the two places
+    // drifted apart with the suite green. Both directions are guarded here, and
+    // when 0.8.0 ships these three lines move together with the block above —
+    // the negative becomes the "may not still be called prepared" assertion and
+    // `0.7.1 is \`latest\`` joins the overtaken list.
+    expect(plan).toMatch(/`0\.8\.0` is prepared/);
+    expect(plan).not.toMatch(/`?0\.8\.0`? is `latest`/);
+    // 🔴 An enumeration, not a bare word — matching the shape of the 0.7.1
+    // guard above, and for the same reason. This file announces a shipped
+    // release in more than one voice, and each was written here at least once:
+    // `Status (0.7.1 published`, `0.7.1 is \`latest\``, ``0.1.0` through
+    // `0.7.1` are live`, and `done through \`0.7.1\`, the current \`latest\``.
+    // A negative covering only `0.8.0 published` reads green on every one of
+    // the others, so it would pass on the sentence most likely to be written.
+    //
+    // The near-miss this must NOT catch is the true one: `0.8.0` is prepared
+    // and not yet published` — `(?:is |was )?` cannot absorb the intervening
+    // `not yet`, so the alternation stays false while the release is pending.
+    expect(plan).not.toMatch(
+      /`?0\.8\.0`? (?:is |was )?published|published `?0\.8\.0`?|`?0\.8\.0`? (?:is|are) live|through `?0\.8\.0`?, the current|`?0\.8\.0`? shipped/,
+    );
   });
 
   // 🔴 The ledger records where a version was published FROM, so a row may
