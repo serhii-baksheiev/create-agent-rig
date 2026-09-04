@@ -107,9 +107,13 @@ type Group = { matcher: string; wiring: readonly PolicyDeclaration[] };
  * own invention rather than the thing under test. `commands[0]` is the shell
  * spelling; an adapter may offer more than one, and only the first is needed to
  * build a wiring the probe must recognise.
+ *
+ * A full entry needs EVERY field the adapter generates for, which is what
+ * `generatedEntry` below builds; this is the shell spelling alone, for the
+ * cases that mutate one command's text.
  */
 const generatedCommand = (adapter: HarnessAdapter, policy: PolicyDeclaration): string => {
-  const command = adapter.nativeSurfaceOf(policy).commands[0];
+  const command = adapter.nativeSurfaceOf(policy).commands['command']?.[0];
   if (command === undefined) {
     throw new Error(`the ${adapter.harness} adapter generates no command for ${policy.policyId}`);
   }
@@ -141,7 +145,7 @@ const snapshotWith = (
   hooks: {
     [event]: groups.map(({ matcher, wiring }) => ({
       matcher,
-      hooks: wiring.map((policy) => ({ command: generatedCommand(adapter, policy) })),
+      hooks: wiring.map((policy) => generatedEntry(adapter, policy)),
     })),
   },
 });
@@ -181,7 +185,15 @@ const SECRET_WRITE_SURFACE = claudeAdapter.nativeSurfaceOf(SECRET_WRITE);
 const runningExactly = (...commands: readonly string[]): unknown => ({
   hooks: {
     [EVENT]: [
-      { matcher: SECRET_WRITE_SURFACE.matcher, hooks: commands.map((command) => ({ command })) },
+      {
+        matcher: SECRET_WRITE_SURFACE.matcher,
+        // The other fields carry what the harness generates, so a case that
+        // mutates `command` measures that field and not a missing sibling.
+        hooks: commands.map((command) => ({
+          ...generatedEntry(claudeAdapter, SECRET_WRITE),
+          command,
+        })),
+      },
     ],
   },
 });
@@ -440,7 +452,13 @@ const runningOn = (adapter: HarnessAdapter, ...commands: readonly string[]): unk
   return {
     hooks: {
       [surface.event]: [
-        { matcher: surface.matcher, hooks: commands.map((command) => ({ command })) },
+        {
+          matcher: surface.matcher,
+          hooks: commands.map((command) => ({
+            ...generatedEntry(adapter, SECRET_WRITE),
+            command,
+          })),
+        },
       ],
     },
   };
@@ -457,14 +475,22 @@ describe('a harness adapter states the commands it generates for a hook', () => 
     'the %s surface offers at least one generated command, each naming the hook path it runs',
     (_harness, adapter) => {
       const surface = adapter.nativeSurfaceOf(SECRET_WRITE);
-      expect(Array.isArray(surface.commands), 'commands is not a list').toBe(true);
-      expect(surface.commands.length, 'the adapter generates no command at all').toBeGreaterThan(0);
-      for (const command of surface.commands) {
-        expect(typeof command).toBe('string');
-        expect(command, 'a generated command does not name the hook it runs').toContain(
-          surface.hookPath,
-        );
+      const fields = Object.entries(surface.commands);
+      expect(fields.length, 'the adapter generates no command at all').toBeGreaterThan(0);
+      for (const [field, spellings] of fields) {
+        expect(Array.isArray(spellings), `${field} does not carry a list of spellings`).toBe(true);
+        expect(spellings.length, `${field} offers no spelling`).toBeGreaterThan(0);
+        for (const command of spellings) {
+          expect(typeof command).toBe('string');
+        }
       }
+      // Only the shell spelling has to name the path literally: an encoded
+      // wrapper carries it inside its payload, which is exactly why the probe
+      // compares whole commands rather than searching them.
+      expect(
+        surface.commands['command']?.[0],
+        'the generated shell command does not name the hook it runs',
+      ).toContain(surface.hookPath);
     },
   );
 
@@ -480,6 +506,238 @@ describe('a harness adapter states the commands it generates for a hook', () => 
     expect(new Set(commands).size).toBe(POLICIES.length);
   });
 });
+
+/** A hook-entry FIELD name → the command spellings this harness accepts in it. */
+type FieldSpellings = Readonly<Record<string, readonly string[]>>;
+
+const isFieldSpellings = (value: unknown): value is FieldSpellings => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const fields: [string, unknown][] = Object.entries(value);
+  return (
+    fields.length > 0 &&
+    fields.every(
+      ([field, spellings]) =>
+        field !== '' &&
+        Array.isArray(spellings) &&
+        spellings.length > 0 &&
+        spellings.every((spelling: unknown) => typeof spelling === 'string'),
+    )
+  );
+};
+
+/**
+ * What this harness generates for a hook, per hook-entry field.
+ *
+ * Read through a guard rather than indexed, so an adapter that cannot say which
+ * FIELD a command belongs to fails with that sentence — instead of quietly
+ * handing back the first character of a string, which is what indexing a
+ * flat list of commands by field name would produce.
+ */
+const fieldSpellingsOf = (adapter: HarnessAdapter, policy: PolicyDeclaration): FieldSpellings => {
+  // Read through `unknown` because the property's declared type is exactly what
+  // is under test here: a flat list of commands cannot say which hook-entry
+  // field each of them is the spelling for.
+  const declared: unknown = adapter.nativeSurfaceOf(policy).commands;
+  if (!isFieldSpellings(declared)) {
+    throw new Error(
+      `the ${adapter.harness} adapter does not name the hook-entry field each command it generates belongs to; it states ${JSON.stringify(declared)}`,
+    );
+  }
+  return declared;
+};
+
+/** The hook entry this harness generates: every field it names, in its first spelling. */
+const generatedEntry = (
+  adapter: HarnessAdapter,
+  policy: PolicyDeclaration,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(fieldSpellingsOf(adapter, policy)).map(([field, spellings]) => {
+      const first = spellings[0];
+      if (first === undefined) {
+        throw new Error(`the ${adapter.harness} adapter states no spelling for the field ${field}`);
+      }
+      return [field, first];
+    }),
+  );
+
+/** The adapter's own event and matcher, wiring exactly the hook entries given. */
+const wiringEntries = (
+  adapter: HarnessAdapter,
+  policy: PolicyDeclaration,
+  ...entries: readonly unknown[]
+): unknown => {
+  const surface = adapter.nativeSurfaceOf(policy);
+  return { hooks: { [surface.event]: [{ matcher: surface.matcher, hooks: entries }] } };
+};
+
+/**
+ * A hook entry is not one command.
+ *
+ * The derived harness ships TWO per entry — the portable one it runs on macOS
+ * and Linux, and a second field it runs on Windows — and a probe that compares
+ * only the first credits a surface for a command nobody looked at. Measured on
+ * the file this rig really ships, not on a fixture: replacing every Windows
+ * spelling in `templates/agent-os/universal/.codex/hooks.json` with `echo
+ * "guard disabled"` left all three registered policies `SUPPORTED`. The
+ * acceptance half of that measurement is `test/template/policy-coverage.test.ts`
+ * › "reports %s policy %s as not SUPPORTED when any one command field of its
+ * shipped entry carries a different command (mutation: one spelling replaced)".
+ *
+ * So what an adapter generates is a MAPPING from hook-entry field to the
+ * spellings accepted there, and an entry runs the hook only when every field the
+ * adapter names is present and matches. A named field that is missing, not a
+ * string, or spelled otherwise leaves an entry this cannot verify.
+ *
+ * The fields are read off the adapter INSIDE each test rather than tabled at
+ * collection time: an `it.each` table is built when the module is evaluated, so
+ * an adapter that cannot answer would stop the whole file from collecting
+ * instead of failing the tests that ask it.
+ */
+describe('a hook entry runs the hook only when every field the harness generates for it matches', () => {
+  const DISABLED = 'echo "guard disabled"';
+
+  it.each(EACH_ADAPTER)(
+    'the %s surface names a hook-entry field for every command it generates, and a spelling for each',
+    (_harness, adapter) => {
+      const spellings = fieldSpellingsOf(adapter, SECRET_WRITE);
+      expect(Object.keys(spellings).length, 'the adapter names no field at all').toBeGreaterThan(0);
+      expect(
+        Object.entries(spellings).map(([field, accepted]) => [field, accepted.length > 0]),
+        'a field the adapter names carries no spelling of the command',
+      ).toEqual(Object.keys(spellings).map((field) => [field, true]));
+    },
+  );
+
+  it.each(EACH_ADAPTER)(
+    'reads a %s entry carrying every field that harness generates, in the spelling it generates, as SUPPORTED',
+    (_harness, adapter) => {
+      const entry = generatedEntry(adapter, SECRET_WRITE);
+      expect(
+        probePolicy(SECRET_WRITE, adapter, wiringEntries(adapter, SECRET_WRITE, entry)),
+      ).toEqual({ state: 'SUPPORTED' });
+    },
+  );
+
+  it.each(EACH_ADAPTER)(
+    'refuses a %s entry in which any one field that harness generates carries a different command',
+    (_harness, adapter) => {
+      const entry = generatedEntry(adapter, SECRET_WRITE);
+      const fields = Object.keys(entry);
+      const answers = fields.map(
+        (field) =>
+          [
+            field,
+            probePolicy(
+              SECRET_WRITE,
+              adapter,
+              wiringEntries(adapter, SECRET_WRITE, { ...entry, [field]: DISABLED }),
+            ).state,
+          ] as const,
+      );
+      expect(
+        answers.filter(([, state]) => state === 'SUPPORTED'),
+        'a field this harness generates a command for carried another command, and the wiring still read as enforcement',
+      ).toEqual([]);
+    },
+  );
+
+  it.each(EACH_ADAPTER)(
+    'refuses a %s entry that omits a field that harness generates',
+    (_harness, adapter) => {
+      const entry = generatedEntry(adapter, SECRET_WRITE);
+      const fields = Object.keys(entry);
+      const answers = fields.map((field) => {
+        const without = Object.fromEntries(
+          Object.entries(entry).filter(([name]) => name !== field),
+        );
+        return [
+          field,
+          probePolicy(SECRET_WRITE, adapter, wiringEntries(adapter, SECRET_WRITE, without)).state,
+        ] as const;
+      });
+      expect(
+        answers.filter(([, state]) => state === 'SUPPORTED'),
+        'a field this harness generates a command for was absent, and the wiring still read as enforcement',
+      ).toEqual([]);
+    },
+  );
+
+  it.each(EACH_ADAPTER)(
+    'reports INTEGRATION-FAILED when a field the %s harness generates is present in a shape it cannot read',
+    (_harness, adapter) => {
+      const entry = generatedEntry(adapter, SECRET_WRITE);
+      const fields = Object.keys(entry);
+      const answers = fields.map((field) => [
+        field,
+        probePolicy(
+          SECRET_WRITE,
+          adapter,
+          wiringEntries(adapter, SECRET_WRITE, { ...entry, [field]: 42 }),
+        ).state,
+      ]);
+      expect(answers).toEqual(fields.map((field) => [field, 'INTEGRATION-FAILED']));
+    },
+  );
+
+  /**
+   * The other half of the rule, and the half that keeps it from firing on
+   * honest work: the entry must carry every field the adapter NAMES, not every
+   * field that looks like a command. The shipped surfaces already carry fields
+   * no adapter generates — `type` on both, `timeout` on one — and a harness
+   * that grows a platform this rig does not target would add another.
+   */
+  it.each(EACH_ADAPTER)(
+    'still reads a %s entry carrying a command field that harness generates nothing for, because the rule is about the fields it does',
+    (_harness, adapter) => {
+      const entry = generatedEntry(adapter, SECRET_WRITE);
+      const undeclared = 'commandLegacy';
+      expect(
+        Object.keys(entry),
+        'the adapter generates a spelling for this field after all, so it pins nothing',
+      ).not.toContain(undeclared);
+      expect(
+        probePolicy(
+          SECRET_WRITE,
+          adapter,
+          wiringEntries(adapter, SECRET_WRITE, {
+            ...entry,
+            type: 'command',
+            [undeclared]: DISABLED,
+          }),
+        ),
+      ).toEqual({ state: 'SUPPORTED' });
+    },
+  );
+});
+
+/**
+ * A command of a given length that names no hook, for pinning the length cap.
+ *
+ * The scan is bounded, and the bound is a number the caller can read rather
+ * than a constant buried in the module: `rules/invariants.md`, "A guard that
+ * fails open must do provably bounded work".
+ *
+ * The two sides of the bound are told apart on a command that does NOT name
+ * the hook path, because that is the only input the cap changes the answer
+ * for: inside the cap it is read and found to be another mechanism's business
+ * (`UNSUPPORTED`), past it the command is not read at all, and an unread
+ * command is not evidence of absence (`INTEGRATION-FAILED`). Measured on a
+ * command that mentions the hook, both sides answer `INTEGRATION-FAILED` and
+ * the cap would be pinned by a test that cannot go red.
+ *
+ * Module-scoped because two describes need it: the one that pins the cap, and
+ * the one that pins what the refusal past the cap SAYS.
+ */
+const unrelatedOfLength = (length: number): string => {
+  const head = `node "$CLAUDE_PROJECT_DIR/${SHARED_HOOKS_DIR}/other-`;
+  const tail = '.mjs"';
+  const filler = length - head.length - tail.length;
+  if (filler < 1) {
+    throw new Error(`the cap ${String(length)} is too small to pad a command up to`);
+  }
+  return `${head}${'x'.repeat(filler)}${tail}`;
+};
 
 describe('a command wires the hook only when it is the command this harness generates', () => {
   const { hookPath } = SECRET_WRITE_SURFACE;
@@ -614,29 +872,6 @@ describe('a command wires the hook only when it is the command this harness gene
     ).toEqual(mentions.map(() => 'INTEGRATION-FAILED'));
   });
 
-  /**
-   * The scan is bounded, and the bound is a number the caller can read rather
-   * than a constant buried in the module: `rules/invariants.md`, "A guard that
-   * fails open must do provably bounded work".
-   *
-   * The two sides of the bound are told apart on a command that does NOT name
-   * the hook path, because that is the only input the cap changes the answer
-   * for: inside the cap it is read and found to be another mechanism's business
-   * (`UNSUPPORTED`), past it the command is not read at all, and an unread
-   * command is not evidence of absence (`INTEGRATION-FAILED`). Measured on a
-   * command that mentions the hook, both sides answer `INTEGRATION-FAILED` and
-   * the cap would be pinned by a test that cannot go red.
-   */
-  const unrelatedOfLength = (length: number): string => {
-    const head = `node "$CLAUDE_PROJECT_DIR/${SHARED_HOOKS_DIR}/other-`;
-    const tail = '.mjs"';
-    const filler = length - head.length - tail.length;
-    if (filler < 1) {
-      throw new Error(`the cap ${String(length)} is too small to pad a command up to`);
-    }
-    return `${head}${'x'.repeat(filler)}${tail}`;
-  };
-
   it('states its command-length cap as a whole number, and one that admits the commands the rig ships', () => {
     expect(Number.isInteger(MAX_HOOK_COMMAND_LENGTH)).toBe(true);
     expect(MAX_HOOK_COMMAND_LENGTH).toBeGreaterThan(REAL_DERIVED_COMMAND.length);
@@ -697,6 +932,79 @@ describe('a command wires the hook only when it is the command this harness gene
       '\u001b',
     );
     expect(reason, 'a raw newline let the command forge a line of its own').not.toContain('\n');
+  });
+});
+
+/**
+ * A refusal is stored on a coverage entry and shown to an operator, so the
+ * cause it states has to be the cause that happened. Two different things end
+ * in `INTEGRATION-FAILED`, and they ask for different actions:
+ *
+ * - a command was READ, and names the hook in a spelling this harness does not
+ *   generate — a tampered or hand-edited surface, worth opening the file for;
+ * - a command was NOT READ at all, being past the length cap — nothing was
+ *   observed about it, including whether it names the hook.
+ *
+ * Reporting the second as the first asserts an observation that did not occur.
+ * The cap's own test asserts only that the reason is non-empty and short, which
+ * is satisfied by the wrong sentence, so the two causes are pinned here
+ * separately and pinned APART: one sentence serving both is a diagnostic that
+ * cannot direct anyone anywhere.
+ */
+describe('a refusal states the cause that really happened, and the two causes do not read alike', () => {
+  const { hookPath } = SECRET_WRITE_SURFACE;
+  const tooLong = unrelatedOfLength(MAX_HOOK_COMMAND_LENGTH + 1);
+  const commented = `# ${REAL_AUTHORING_COMMAND}`;
+
+  const refusalOf = (command: string) =>
+    probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+
+  it('says a command past the cap was not read, instead of claiming something named the hook', () => {
+    expect(
+      tooLong,
+      'the padded command names the hook, so this measures the other cause',
+    ).not.toContain(hookPath);
+    const result = refusalOf(tooLong);
+    expect(result.state).toBe('INTEGRATION-FAILED');
+    const reason = result.reason ?? '';
+    expect(
+      reason,
+      'the refusal reports that something named the hook, which nothing in this wiring did',
+    ).not.toContain(`names ${hookPath}`);
+    expect(reason, 'the refusal does not say the command was too long to read').toMatch(
+      new RegExp(`${String(MAX_HOOK_COMMAND_LENGTH)}|too long|not read|never read|unread`, 'i'),
+    );
+    expect(
+      reason.length,
+      `an operator-facing reason of ${String(reason.length)} characters quoted the command back`,
+    ).toBeLessThan(400);
+  });
+
+  // KEEP GREEN. The other branch, whose sentence is true and must stay: this is
+  // what the cap's refusal is being separated FROM.
+  it('still says a command it did read names the hook in a spelling this harness does not generate', () => {
+    expect(commented, 'the mention no longer names the hook').toContain(hookPath);
+    const result = refusalOf(commented);
+    expect(result.state).toBe('INTEGRATION-FAILED');
+    const reason = result.reason ?? '';
+    expect(reason, 'the refusal does not name the hook it read').toContain(hookPath);
+    expect(reason, 'the refusal does not say that something named the hook').toMatch(
+      /\bnam(?:e|es|ed)\b/i,
+    );
+    expect(
+      reason,
+      'the refusal does not say the spelling is not one this harness generates',
+    ).toMatch(/generat/i);
+  });
+
+  it('gives the command it did not read a different reason from the one it read and could not verify', () => {
+    const unread = refusalOf(tooLong);
+    const read = refusalOf(commented);
+    expect([unread.state, read.state]).toEqual(['INTEGRATION-FAILED', 'INTEGRATION-FAILED']);
+    expect(
+      unread.reason ?? '',
+      'one sentence serves two causes, so an operator cannot tell a command that was never read from one that was read and could not be verified',
+    ).not.toBe(read.reason ?? '');
   });
 });
 
@@ -944,8 +1252,18 @@ describe('the only difference from a generated command that still reads as a wir
     },
   );
 
+  /**
+   * The four characters a shell really does NOT split words on. A newline is
+   * out of this table and has a case of its own below: it IS a default IFS
+   * character, so this reason would be false of it \u2014 and false in the one
+   * direction that costs something, since a reader who believed it would put
+   * `\n` back beside these four the day the normaliser is touched.
+   *
+   * Measured rather than asserted: `set -- $(printf 'a\nb')` leaves two
+   * positional parameters, `set -- $(printf 'a\rb')` leaves one, and the
+   * default IFS is space, tab and newline exactly.
+   */
   const REFUSED_WHITESPACE = [
-    ['a newline', '\n'],
     ['a carriage return', '\r'],
     ['a vertical tab', '\v'],
     ['a form feed', '\f'],
@@ -968,6 +1286,30 @@ describe('the only difference from a generated command that still reads as a wir
       expect(
         result.state,
         `${label} was collapsed to a space and the result read as enforcement`,
+      ).toBe('INTEGRATION-FAILED');
+    },
+  );
+
+  /**
+   * The newline is refused for the OPPOSITE reason to the four above, which is
+   * why it is not in their table. A shell does separate words on it — it is one
+   * of the three default IFS characters — so "a shell does not separate words
+   * on it" is simply false here. What makes it inadmissible is that it also
+   * ends a COMMAND: `node` on one line and the hook path on the next is two
+   * commands, the second executing the hook file directly under no interpreter
+   * this rig chose, so collapsing it to a space would manufacture a match
+   * against the generated string and hand back the one answer this module must
+   * never give without evidence.
+   */
+  it.each(EACH_ADAPTER)(
+    'refuses a %s wiring whose spaces became a newline, because that ends the command rather than joining words',
+    (_harness, adapter) => {
+      const canonical = generatedCommand(adapter, SECRET_WRITE);
+      const command = canonical.replaceAll(' ', '\n');
+      expect(command, 'the newline left the generated command untouched').not.toBe(canonical);
+      expect(
+        probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command)).state,
+        'a newline was collapsed to a space and the result read as enforcement',
       ).toBe('INTEGRATION-FAILED');
     },
   );

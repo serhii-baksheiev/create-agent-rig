@@ -14,7 +14,7 @@
  *
  * | input | answer | pinned by |
  * | --- | --- | --- |
- * | a group naming exactly the declared tools and RUNNING the hook | `SUPPORTED` | › "%s generates exactly the command its shipped snapshot carries" |
+ * | a group naming exactly the declared tools and RUNNING the hook | `SUPPORTED` | › "reads the real %s command as running the hook, because it is what the rig really ships" |
  * | the hook run under that event, but by no group naming exactly those tools | `DEGRADED` | › "reads a wiring that drops a declared tool as DEGRADED, naming the tool that is missing" |
  * | a readable snapshot that runs the hook nowhere under that event | `UNSUPPORTED` | › "reads a hook wired nowhere under the policy event as UNSUPPORTED, naming the hook path" |
  * | a snapshot, or any level of wiring under it, in a shape this module cannot read | `INTEGRATION-FAILED` | › "reports INTEGRATION-FAILED when %s, naming the event it could not read" |
@@ -26,9 +26,13 @@
  * is exactly the case worth reporting. Read as one, either an honest absence
  * becomes a false alarm or an unreadable surface becomes a quiet, uncounted
  * zero — the second being the shape a past guard here actually shipped. The
- * costly case is an unreadable element BESIDE a valid group, held by ›
- * "does not report SUPPORTED when an unreadable element sits beside a valid
- * group, because that is a partial read".
+ * costly case is an element BESIDE a valid group whose STRUCTURE cannot be
+ * read, held by › "does not report SUPPORTED when an unreadable element sits
+ * beside a valid group, because that is a partial read". ⚠ That is the
+ * structural level only. A readable command that merely names the hook in an
+ * unverified spelling does NOT outrank a group carrying the generated command:
+ * a hook list is conjunctive, so an entry the probe could not verify cannot
+ * un-run one it did verify, and the surface reads `SUPPORTED`.
  *
  * Neither weak answer can pass silently: `./coverage.ts` › `qualifierFor` maps
  * both to `UNVERIFIABLE`, and `./decision-record.ts` refuses a record carrying
@@ -45,10 +49,15 @@ import type { PolicyDeclaration } from './declaration.js';
 import type { CapabilityState } from './vocabulary.js';
 import { isRecord, quote } from './validation.js';
 
-/** One hook the surface runs; the command is the harness's own spelling. */
-export interface HookEntry {
-  command: string;
-}
+/**
+ * One hook entry as the surface records it.
+ *
+ * The fields are kept as read, because a harness may run MORE THAN ONE command
+ * per hook — a different spelling per platform — and which fields those are is
+ * the adapter's to say (`NativeHookSurface.commands`). Reading one and ignoring
+ * the rest is a false `SUPPORTED`.
+ */
+export type HookEntry = Readonly<Record<string, string>>;
 
 /** One matcher and the hooks the surface runs for it. */
 export interface HookGroup {
@@ -78,8 +87,13 @@ export interface ProbeResult {
  * A command comes off a file on disk, and every line of work done on untrusted
  * input in a module whose callers fail open is a line that can be made
  * expensive (`rules/invariants.md`, "A guard that fails open must do provably
- * bounded work"). Past the cap the command is refused rather than parsed, and
- * a refusal reads `UNSUPPORTED` — the safe direction.
+ * bounded work"). Past the cap the command is not read at all, and the refusal
+ * reads `INTEGRATION-FAILED` — not `UNSUPPORTED`, because a command nobody
+ * looked at is not evidence that the mechanism is absent. An earlier version of
+ * this sentence said the opposite of the code, which is the sentence a
+ * maintainer would read before "simplifying" the branch back into the silent
+ * absence this design removed: › "refuses a command one byte over the cap
+ * rather than reading it, even though it names no hook".
  *
  * The margin, measured rather than asserted over every wiring snapshot this
  * rig ships: the longest command in any of them is 131 bytes, so 4096 is ~31x
@@ -107,8 +121,11 @@ const TAB = String.fromCharCode(9);
 /**
  * The command as a shell would word it, for comparison only.
  *
- * Runs of spaces and tabs collapse to one space; nothing else changes. The
- * tolerance stops exactly there because those two are the only default IFS
+ * Runs of spaces and tabs collapse to one space, and a single leading or
+ * trailing space is then dropped. Those two are the whole tolerance — stated
+ * together because an omitted one is as misleading as an invented one, and the
+ * trim was missing from the first version of this paragraph. Space and tab are
+ * the only default IFS
  * characters that separate WORDS without separating COMMANDS. A newline does
  * separate commands — `node` on one line and the hook path on the next is two
  * commands, the second executing the hook file directly — so collapsing it
@@ -128,12 +145,22 @@ const normalise = (command: string): string =>
   // refuses - and rightly, because it is invisible to a reader.
   command.split(TAB).join(' ').replace(/ +/g, ' ').replace(/^ | $/g, '');
 
-/** What one wired command is, with respect to the policy being probed. */
-type CommandKind = 'runs' | 'unreadable' | 'unrelated';
+/**
+ * What one hook entry is, with respect to the policy being probed — and, when
+ * it cannot be read, WHY.
+ *
+ * The cause travels with the answer rather than being re-derived from a
+ * boolean later. It was re-derived once, and the over-cap branch then reported
+ * that something had named the hook path when nothing had: a refusal that
+ * states a cause which did not occur is worse than a bare one, because an
+ * operator goes looking for a mention that is not in the file.
+ */
+type CommandKind =
+  { kind: 'runs' } | { kind: 'unrelated' } | { kind: 'unreadable'; cause: 'oversize' | 'spelling' };
 
 /**
- * Classify one command — by comparison against what this harness generates,
- * never by parsing it.
+ * Classify one hook entry by comparing every command the harness generates for
+ * this hook against the field it belongs to — never by parsing any of them.
  *
  * 🔴 This replaced a partial shell parser, and the reason is worth keeping
  * because it was expensive to learn. Three gate rounds tried to decide "does
@@ -147,8 +174,11 @@ type CommandKind = 'runs' | 'unreadable' | 'unrelated';
  * was asymmetric, so a partial parser could not win.
  *
  * The rig GENERATES its own wiring, so the probe compares against what it
- * would generate (`NativeHookSurface.commands`). There is no grammar left to
- * lose to.
+ * would generate. There is no grammar left to lose to.
+ *
+ * EVERY declared field must match, because a surface can run a different
+ * spelling per platform: reading only the first left a guard that had been
+ * replaced on one platform reading as enforced on all of them.
  *
  * The substring test survives, and its FAILURE DIRECTION is what makes that
  * safe: it now only chooses between `INTEGRATION-FAILED` and `UNSUPPORTED` —
@@ -158,21 +188,29 @@ type CommandKind = 'runs' | 'unreadable' | 'unrelated';
  *
  * ⚠ What it costs, stated because it is a real loss: a hand-written wiring
  * that genuinely runs the hook — a bare `node <hookPath>`, a flag before the
- * path, a different spelling of the same variable — is now `INTEGRATION-FAILED`
+ * path, a different spelling of the same variable — is `INTEGRATION-FAILED`
  * rather than `SUPPORTED`. That is "I cannot verify this" in place of a
  * confident answer, which is the direction this contract is required to err
  * in, but a rig wiring its hooks by hand will read as unverifiable.
  *
- * Over the length cap the command is not read at all and is `unreadable`, not
- * `unrelated`: refusing to inspect is a third outcome, and a guard that did
- * not look may not report that it found nothing (`rules/invariants.md`,
- * "Refusing to inspect is a third outcome, not a match and not an error").
+ * Over the length cap a command is not read at all: refusing to inspect is a
+ * third outcome, and a guard that did not look may not report that it found
+ * nothing (`rules/invariants.md`, "Refusing to inspect is a third outcome, not
+ * a match and not an error").
  */
-const classify = (command: string, surface: NativeHookSurface): CommandKind => {
-  if (command.length > MAX_HOOK_COMMAND_LENGTH) return 'unreadable';
-  const wired = normalise(command);
-  if (surface.commands.some((generated) => normalise(generated) === wired)) return 'runs';
-  return command.includes(surface.hookPath) ? 'unreadable' : 'unrelated';
+const classify = (entry: HookEntry, surface: NativeHookSurface): CommandKind => {
+  const fields = Object.keys(surface.commands);
+  let matched = true;
+  let mentions = false;
+  for (const field of fields) {
+    const wired = entry[field] ?? '';
+    if (wired.length > MAX_HOOK_COMMAND_LENGTH) return { kind: 'unreadable', cause: 'oversize' };
+    const generated = surface.commands[field] ?? [];
+    if (!generated.some((spelling) => normalise(spelling) === normalise(wired))) matched = false;
+    if (wired.includes(surface.hookPath)) mentions = true;
+  }
+  if (matched) return { kind: 'runs' };
+  return mentions ? { kind: 'unreadable', cause: 'spelling' } : { kind: 'unrelated' };
 };
 
 const toolsOf = (matcher: string): string[] => matcher.split('|').filter((tool) => tool !== '');
@@ -252,10 +290,22 @@ export function probePolicy(
       }
       const hooks: HookEntry[] = [];
       for (const hook of group.hooks) {
-        if (!isRecord(hook) || typeof hook.command !== 'string') {
-          return unreadable(`a hook under ${surface.event} has no readable command`);
+        if (!isRecord(hook)) {
+          return unreadable(`a hook under ${surface.event} is not an object`);
         }
-        hooks.push({ command: hook.command });
+        // Every field this harness generates a command for has to be there and
+        // be a string. An absent one is not an honest absence: the harness
+        // writes them all, so a hook missing one is a wiring this module
+        // cannot vouch for on the platform that field serves.
+        const entry: Record<string, string> = {};
+        for (const field of Object.keys(surface.commands)) {
+          const wired = hook[field];
+          if (typeof wired !== 'string') {
+            return unreadable(`a hook under ${surface.event} has no readable ${field}`);
+          }
+          entry[field] = wired;
+        }
+        hooks.push(entry);
       }
       // The matcher is a level like any other, and it is the level the
       // SUPPORTED/DEGRADED decision is read from. Coercing a present-but-
@@ -277,24 +327,34 @@ export function probePolicy(
   // One pass, three kinds. Whether anything merely NAMED the hook is carried
   // across groups, because that is what separates "nothing here wires this"
   // from "something here names it and I cannot verify that it runs" — the
-  // ABSENT/UNREADABLE pair this module keeps at every other level too.
+  // ABSENT/UNREADABLE pair this module keeps at every other level.
   const running: HookGroup[] = [];
-  let named = false;
+  const refusals = new Set<'oversize' | 'spelling'>();
   for (const group of groups) {
     let runsHere = false;
     for (const hook of group.hooks) {
-      const kind = classify(hook.command, surface);
-      if (kind === 'runs') runsHere = true;
-      else if (kind === 'unreadable') named = true;
+      const kind = classify(hook, surface);
+      if (kind.kind === 'runs') runsHere = true;
+      else if (kind.kind === 'unreadable') refusals.add(kind.cause);
     }
     if (runsHere) running.push(group);
   }
 
   if (running.length === 0) {
-    if (named) {
+    // A cause that really happened, chosen from what was observed. The
+    // spelling case is the more informative of the two, so it wins when both
+    // occurred; the over-cap case must never borrow its sentence, because
+    // nothing named anything in a command that was not read.
+    if (refusals.has('spelling')) {
       return {
         state: 'INTEGRATION-FAILED',
         reason: `something under ${surface.event} names ${surface.hookPath}, but in no command this harness generates, so whether the hook runs cannot be verified from this surface`,
+      };
+    }
+    if (refusals.has('oversize')) {
+      return {
+        state: 'INTEGRATION-FAILED',
+        reason: `a command under ${surface.event} is longer than ${String(MAX_HOOK_COMMAND_LENGTH)} characters and was not read, so whether ${surface.hookPath} runs cannot be verified from this surface`,
       };
     }
     return {

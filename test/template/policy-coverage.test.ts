@@ -11,8 +11,13 @@ import {
   type CoverageMap,
   type SurfaceIdentity,
 } from '../../packages/cli/src/policy/core/coverage.js';
-import { probePolicy, type HookSnapshot } from '../../packages/cli/src/policy/core/probe.js';
+import {
+  probePolicy,
+  type HookGroup,
+  type HookSnapshot,
+} from '../../packages/cli/src/policy/core/probe.js';
 import { validateEvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
+import { isRecord } from '../../packages/cli/src/policy/core/validation.js';
 import {
   HARNESS_ADAPTERS,
   POLICIES,
@@ -89,30 +94,39 @@ const identityOf = (adapter: HarnessAdapter): SurfaceIdentity => ({
   os: 'fixture-os 1.0',
 });
 
-const eachGroup = (
-  snapshot: HookSnapshot,
-  map: (group: { matcher?: string; hooks: readonly { command: string }[] }) => {
-    matcher?: string;
-    hooks: readonly { command: string }[];
-  },
-): HookSnapshot => ({
+const eachGroup = (snapshot: HookSnapshot, map: (group: HookGroup) => HookGroup): HookSnapshot => ({
   hooks: Object.fromEntries(
     Object.entries(snapshot.hooks).map(([event, groups]) => [event, (groups ?? []).map(map)]),
   ),
 });
+
+/**
+ * Does this field's value name the hook file?
+ *
+ * Typed `unknown` on purpose: these helpers read a real snapshot off disk,
+ * where a hook entry also carries `type` and may carry a numeric timeout.
+ */
+const namesHook = (wired: unknown, hookPath: string): boolean =>
+  typeof wired === 'string' && wired.includes(hookPath);
 
 /** How many hook entries in the snapshot run this hook file. */
 const timesWired = (snapshot: HookSnapshot, hookPath: string): number =>
   Object.values(snapshot.hooks)
     .flatMap((groups) => groups ?? [])
     .flatMap((group) => [...group.hooks])
-    .filter((hook) => hook.command.includes(hookPath)).length;
+    // A hook entry no longer guarantees a `command`: a harness may key its
+    // generated commands under other fields too, so ask every field. The type
+    // says string, but this reads a real file — `type` and a timeout are in
+    // there too, and a timeout is a number.
+    .filter((hook) => Object.values(hook).some((wired) => namesHook(wired, hookPath))).length;
 
 /** The real snapshot with one policy's hook command taken out of every group. */
 const withoutHook = (snapshot: HookSnapshot, hookPath: string): HookSnapshot =>
   eachGroup(snapshot, (group) => ({
     ...group,
-    hooks: [...group.hooks].filter((hook) => !hook.command.includes(hookPath)),
+    hooks: [...group.hooks].filter(
+      (hook) => !Object.values(hook).some((wired) => namesHook(wired, hookPath)),
+    ),
   }));
 
 /** The real snapshot with one tool dropped from the groups carrying that matcher. */
@@ -161,9 +175,12 @@ const rewriteCommand = (
   const mutated = eachGroup(snapshot, (group) => ({
     ...group,
     hooks: [...group.hooks].map((hook) => {
-      if (!hook.command.includes(hookPath)) return hook;
+      // Rewrites the shell field only, which is what every caller of this
+      // helper means: the Windows spelling has its own mutations.
+      const command = hook['command'];
+      if (command === undefined || !command.includes(hookPath)) return hook;
       changed += 1;
-      return { ...hook, command: mutate(hook.command) };
+      return { ...hook, command: mutate(command) };
     }),
   }));
   return { snapshot: mutated, changed };
@@ -495,16 +512,19 @@ describe('what each adapter generates is what the shipped snapshot really carrie
       const wired = Object.values(snapshot.hooks)
         .flatMap((groups) => groups ?? [])
         .flatMap((group) => [...group.hooks])
-        .map((hook) => hook.command)
+        .map((hook) => hook['command'] ?? '')
         .filter((command) => command.includes(hookPath));
       expect(wired, `${hookPath} is not wired once in the real snapshot`).toHaveLength(1);
-      const { commands } = adapter.nativeSurfaceOf(policy);
+      // The shell field only. Every field the adapter generates for is checked
+      // by the sibling test below; this one is about the one command a reader
+      // of the snapshot sees first, and about it being wired exactly once.
+      const shell = adapter.nativeSurfaceOf(policy).commands['command'] ?? [];
       expect(
-        Array.isArray(commands),
-        `the ${adapter.harness} adapter states no commands it generates`,
-      ).toBe(true);
+        shell.length,
+        `the ${adapter.harness} adapter states no shell command it generates`,
+      ).toBeGreaterThan(0);
       expect(
-        commands,
+        shell,
         'the shipped snapshot carries a command this adapter would not generate',
       ).toContain(wired[0]);
     },
@@ -521,7 +541,7 @@ describe('what each adapter generates is what the shipped snapshot really carrie
     async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
       const other = HARNESS_ADAPTERS.find((candidate) => candidate.harness !== adapter.harness);
       if (other === undefined) throw new Error('only one harness adapter is registered');
-      const foreign = other.nativeSurfaceOf(policy).commands[0];
+      const foreign = other.nativeSurfaceOf(policy).commands['command']?.[0];
       if (foreign === undefined) throw new Error(`${other.harness} generates no command`);
 
       const snapshot = await readSnapshot(adapter.surfaceFile);
@@ -666,6 +686,309 @@ describe('the coverage module owns no lookup it could get wrong', () => {
       'utf8',
     );
     expect(source, 'coverage.ts still reaches into the registry').not.toMatch(/registry\.js/);
+  });
+});
+
+/**
+ * A hook entry on the derived surface carries TWO commands: `command`, which
+ * Codex runs on macOS and Linux, and `commandWindows`, which it runs on Windows
+ * — `test/template/codex.test.ts` holds the shipped file to that shape. The
+ * probe read the first and nothing else, so a surface whose Windows spelling had
+ * been replaced wholesale still read `SUPPORTED` for every policy. Measured on
+ * this file rather than on a fixture: replacing all eight Windows spellings with
+ * `echo "guard disabled"` left `secret-write-refusal`, `no-verify-refusal` and
+ * `rulebook-mutation-restriction` all `SUPPORTED` — a false pass on a shipped
+ * surface, on the platform this repository runs a Windows CI lane for.
+ *
+ * The command fields are read OFF THE SHIPPED ENTRY rather than listed here, so
+ * a harness that grows a third spelling is covered the day the snapshot gains it
+ * rather than the day someone remembers this file. That also gives the authoring
+ * surface its answer for free: it ships one command field, so every mutation
+ * below touches one field there and the surface is unaffected in every direction
+ * a second field would have moved it.
+ *
+ * The untouched control is › "every registered policy is SUPPORTED on the real
+ * %s surface"; each test here re-establishes it on the same read, so a mutation
+ * is always measured against the file it mutated.
+ */
+const DISABLED = 'echo "guard disabled"';
+
+/** The shipped snapshot exactly as JSON parses it — no field narrowed away. */
+const readRaw = async (surfaceFile: string): Promise<unknown> =>
+  JSON.parse(await readFile(path.join(universal, surfaceFile), 'utf8')) as unknown;
+
+/** Every hook entry in a raw snapshot, at whatever depth the file puts them. */
+const hookEntriesOf = (snapshot: unknown): Record<string, unknown>[] => {
+  if (!isRecord(snapshot) || !isRecord(snapshot.hooks)) return [];
+  const entries: Record<string, unknown>[] = [];
+  for (const groups of Object.values(snapshot.hooks)) {
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      if (!isRecord(group) || !Array.isArray(group.hooks)) continue;
+      for (const entry of group.hooks) if (isRecord(entry)) entries.push(entry);
+    }
+  }
+  return entries;
+};
+
+/**
+ * Every field of a hook entry that carries a spelling of the command: the
+ * portable one and any per-platform sibling beside it. `type` and `timeout` are
+ * not spellings of a command, and are not read here.
+ */
+const commandFieldsOf = (entry: Record<string, unknown>): string[] =>
+  Object.keys(entry).filter((field) => /^command/i.test(field));
+
+/** The one shipped hook entry whose portable command runs `hookPath`. */
+const shippedEntry = (snapshot: unknown, hookPath: string): Record<string, unknown> => {
+  const found = hookEntriesOf(snapshot).filter(
+    (entry) => typeof entry.command === 'string' && entry.command.includes(hookPath),
+  );
+  const entry = found[0];
+  if (found.length !== 1 || entry === undefined) {
+    throw new Error(`${hookPath} is wired ${String(found.length)} times in the shipped snapshot`);
+  }
+  return entry;
+};
+
+/**
+ * The shipped snapshot with the hook entry that runs `hookPath` replaced by
+ * what `mutate` returns, every other byte of the file left where it is.
+ *
+ * The entry is FOUND by its portable command, before the mutation, so a
+ * mutation that removes or rewrites that command still finds its target.
+ */
+const rewriteEntryOf = (
+  snapshot: unknown,
+  hookPath: string,
+  mutate: (entry: Record<string, unknown>) => Record<string, unknown>,
+): { snapshot: unknown; changed: number } => {
+  let changed = 0;
+  if (!isRecord(snapshot) || !isRecord(snapshot.hooks)) return { snapshot, changed };
+  const hooks: Record<string, unknown> = {};
+  for (const [event, groups] of Object.entries(snapshot.hooks)) {
+    hooks[event] = !Array.isArray(groups)
+      ? groups
+      : groups.map((group: unknown) => {
+          if (!isRecord(group) || !Array.isArray(group.hooks)) return group;
+          return {
+            ...group,
+            hooks: group.hooks.map((entry: unknown) => {
+              if (!isRecord(entry) || typeof entry.command !== 'string') return entry;
+              if (!entry.command.includes(hookPath)) return entry;
+              changed += 1;
+              return mutate(entry);
+            }),
+          };
+        });
+  }
+  return { snapshot: { ...snapshot, hooks }, changed };
+};
+
+/**
+ * A hook-entry FIELD name → the command spellings the adapter accepts in it.
+ *
+ * Spelled again here rather than imported from `packages/cli/test/policy-coverage.test.ts`,
+ * for the reason that file states about its own fixtures: a change to one
+ * file's helper must not silently re-aim the other's.
+ */
+type FieldSpellings = Readonly<Record<string, readonly string[]>>;
+
+const isFieldSpellings = (value: unknown): value is FieldSpellings => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const fields: [string, unknown][] = Object.entries(value);
+  return (
+    fields.length > 0 &&
+    fields.every(
+      ([field, spellings]) =>
+        field !== '' &&
+        Array.isArray(spellings) &&
+        spellings.length > 0 &&
+        spellings.every((spelling: unknown) => typeof spelling === 'string'),
+    )
+  );
+};
+
+const fieldSpellingsOf = (adapter: HarnessAdapter, policy: PolicyDeclaration): FieldSpellings => {
+  // Read through `unknown` because the property's declared type is what is
+  // under test: a flat list of commands cannot say which hook-entry field each
+  // of them is the spelling for.
+  const declared: unknown = adapter.nativeSurfaceOf(policy).commands;
+  if (!isFieldSpellings(declared)) {
+    throw new Error(
+      `the ${adapter.harness} adapter does not name the hook-entry field each command it generates belongs to; it states ${JSON.stringify(declared)}`,
+    );
+  }
+  return declared;
+};
+
+describe('every command spelling a surface ships is part of the wiring, not just the first', () => {
+  it.each(combos)(
+    'reports %s policy %s as not SUPPORTED when any one command field of its shipped entry carries a different command (mutation: one spelling replaced)',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readRaw(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      expect(
+        probePolicy(policy, adapter, snapshot).state,
+        'the untouched surface does not read SUPPORTED, so nothing here is measured',
+      ).toBe('SUPPORTED');
+
+      const fields = commandFieldsOf(shippedEntry(snapshot, hookPath));
+      expect(fields.length, 'the shipped entry carries no command field at all').toBeGreaterThan(0);
+
+      const answers = fields.map((field) => {
+        const { snapshot: mutated, changed } = rewriteEntryOf(snapshot, hookPath, (entry) => ({
+          ...entry,
+          [field]: DISABLED,
+        }));
+        expect(changed, `replacing ${field} rewrote no entry in the shipped snapshot`).toBe(1);
+        expect(
+          JSON.stringify(mutated),
+          `replacing ${field} left the shipped snapshot unchanged`,
+        ).not.toBe(JSON.stringify(snapshot));
+        return [field, probePolicy(policy, adapter, mutated).state] as const;
+      });
+
+      expect(
+        answers.filter(([, state]) => state === 'SUPPORTED'),
+        'a command spelling this surface really ships was replaced and the surface still read as enforced',
+      ).toEqual([]);
+    },
+  );
+
+  it.each(combos)(
+    'reports %s policy %s as not SUPPORTED when any one command field of its shipped entry is gone (mutation: one spelling deleted)',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readRaw(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      expect(probePolicy(policy, adapter, snapshot).state).toBe('SUPPORTED');
+
+      const fields = commandFieldsOf(shippedEntry(snapshot, hookPath));
+      const answers = fields.map((field) => {
+        const { snapshot: mutated, changed } = rewriteEntryOf(snapshot, hookPath, (entry) =>
+          Object.fromEntries(Object.entries(entry).filter(([name]) => name !== field)),
+        );
+        expect(changed, `deleting ${field} rewrote no entry in the shipped snapshot`).toBe(1);
+        expect(
+          JSON.stringify(mutated),
+          `deleting ${field} left the shipped snapshot unchanged`,
+        ).not.toBe(JSON.stringify(snapshot));
+        return [field, probePolicy(policy, adapter, mutated).state] as const;
+      });
+
+      expect(
+        answers.filter(([, state]) => state === 'SUPPORTED'),
+        'a command spelling this surface really ships was removed and the surface still read as enforced',
+      ).toEqual([]);
+    },
+  );
+
+  it.each(combos)(
+    'reports %s policy %s as INTEGRATION-FAILED when a command field of its shipped entry is not a string (mutation: unreadable spelling)',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readRaw(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      expect(probePolicy(policy, adapter, snapshot).state).toBe('SUPPORTED');
+
+      const fields = commandFieldsOf(shippedEntry(snapshot, hookPath));
+      const answers = fields.map((field) => {
+        const { snapshot: mutated, changed } = rewriteEntryOf(snapshot, hookPath, (entry) => ({
+          ...entry,
+          [field]: 42,
+        }));
+        expect(changed, `making ${field} unreadable rewrote no entry`).toBe(1);
+        return [field, probePolicy(policy, adapter, mutated).state] as const;
+      });
+
+      expect(answers).toEqual(fields.map((field) => [field, 'INTEGRATION-FAILED']));
+    },
+  );
+
+  /**
+   * KEEP GREEN, and the half of the rule that keeps it from firing on honest
+   * work: an entry must carry every field the ADAPTER names, not every field
+   * that looks like a command. The shipped files already carry fields no adapter
+   * generates — `type` on both surfaces, `timeout` on one — and a harness that
+   * grew a platform this rig does not target would add another.
+   */
+  it.each(combos)(
+    'still reports %s policy %s as SUPPORTED when its shipped entry gains a command field this harness generates nothing for (mutation: undeclared spelling)',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readRaw(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      const undeclared = 'commandLegacy';
+      expect(
+        commandFieldsOf(shippedEntry(snapshot, hookPath)),
+        'the shipped entry already carries this field, so it pins nothing',
+      ).not.toContain(undeclared);
+
+      const { snapshot: mutated, changed } = rewriteEntryOf(snapshot, hookPath, (entry) => ({
+        ...entry,
+        [undeclared]: DISABLED,
+      }));
+      expect(changed, 'the mutation rewrote no entry in the shipped snapshot').toBe(1);
+      expect(
+        probePolicy(policy, adapter, mutated).state,
+        'a field no adapter generates a command for was read as part of the wiring',
+      ).toBe('SUPPORTED');
+    },
+  );
+
+  /**
+   * What makes every `SUPPORTED` above a measurement rather than a fixture
+   * agreeing with itself: the adapter's answer and the bytes in the shipped
+   * file, held equal in EVERY field the adapter generates one for — including
+   * the Windows spelling, whose base64 is derived here from the adapter rather
+   * than pasted, so a change to either side is reported.
+   */
+  it.each(combos)(
+    'the %s snapshot wires %s with exactly the spelling that adapter generates, in every field it generates one for',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readRaw(adapter.surfaceFile);
+      const entry = shippedEntry(snapshot, adapter.nativeSurfaceOf(policy).hookPath);
+      const spellings = fieldSpellingsOf(adapter, policy);
+      expect(
+        Object.entries(spellings).map(([field, accepted]) => {
+          const shipped = entry[field];
+          return [field, typeof shipped === 'string' && accepted.includes(shipped)];
+        }),
+        'the shipped snapshot carries a spelling this adapter would not generate',
+      ).toEqual(Object.keys(spellings).map((field) => [field, true]));
+    },
+  );
+
+  it.each(combos)(
+    'the %s adapter names a spelling for every command field the shipped entry for %s carries, and for no field it does not',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readRaw(adapter.surfaceFile);
+      const entry = shippedEntry(snapshot, adapter.nativeSurfaceOf(policy).hookPath);
+      expect(
+        [...Object.keys(fieldSpellingsOf(adapter, policy))].sort(),
+        'the fields the adapter generates and the command fields the file ships are not the same set',
+      ).toEqual([...commandFieldsOf(entry)].sort());
+    },
+  );
+
+  /**
+   * The correspondence above holds vacuously if every surface ships exactly one
+   * command field — which is the state the probe's old one-field read was
+   * correct for, and the state deleting `commandWindows` from the derived
+   * snapshot would restore.
+   */
+  it('wires a hook through more than one command spelling on at least one shipped surface, or the correspondence above pins nothing', async () => {
+    const policy = POLICIES[0];
+    if (policy === undefined) throw new Error('the registry declares no policy');
+    const counts = await Promise.all(
+      HARNESS_ADAPTERS.map(async (adapter) => {
+        const snapshot = await readRaw(adapter.surfaceFile);
+        const entry = shippedEntry(snapshot, adapter.nativeSurfaceOf(policy).hookPath);
+        return [adapter.harness, commandFieldsOf(entry).length] as const;
+      }),
+    );
+    expect(
+      Math.max(...counts.map(([, count]) => count)),
+      `no shipped surface carries a second command spelling: ${JSON.stringify(counts)}`,
+    ).toBeGreaterThan(1);
   });
 });
 

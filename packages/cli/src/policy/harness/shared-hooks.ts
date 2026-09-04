@@ -11,8 +11,13 @@
 export const SHARED_HOOKS_DIR = '.claude/hooks';
 
 /**
- * The environment variable every shared hook reads to find the repository
+ * The environment variable a shared hook reads when it needs the repository
  * root, and therefore the one each harness sets when it runs one.
+ *
+ * Not every hook needs it: of the eight this rig ships, `guard-rulebook` and
+ * `guard-secret-file` read it, both falling back to the working directory.
+ * The variable is still part of the wiring contract, because the harness sets
+ * it for whichever hook it runs.
  *
  * It carries a harness's name for the same historical reason `.claude/hooks`
  * does — the hooks are shared, so both harnesses speak this one variable — and

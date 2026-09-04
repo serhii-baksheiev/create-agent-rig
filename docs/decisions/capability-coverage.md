@@ -129,6 +129,30 @@ accepts it once qualifierFor speaks". Which states those are is one list,
 `UNENFORCEABLE_STATES`, that both modules import; it was three copies until
 `code-reviewer` pointed out that one of them was a display ordering.
 
+### 6. An incomplete evidence row is refused, not stored
+
+`validateEvidenceRow` refuses a row without an exact `harnessVersion` or an
+ISO-8601 `observedAt` with a zone, refuses any non-`SUPPORTED` row that does
+not say why, and refuses a `SUPPORTED` row that says why anyway.
+
+A row missing either reads like evidence and is not one: nothing in it answers
+"which build was this" or "was this before or after the change". Storing it
+anyway is how a matrix fills with rows a later reader takes for measurements.
+
+**"Exact" is a check, not an adjective** — in both shapes that carry a version.
+`isExactVersion` lives in `validation.ts` and is read by `validateEvidenceRow`
+for a matrix row and by `coverageFromProbe` for a surface identity, so the word
+means one thing wherever it is written.
+
+The same paragraph, before the fix — and it was an adjective for one gate
+round. `latest`, `^2.0` and `2.x` all validated while three separate sentences
+promised an exact version, because the only check on the field was that it was
+not blank. The vague words and the range operators are now refused: ›
+"refuses the harness version %j, because it names a range or a moving target
+rather than a build", with › "accepts the exact harness version %j, including a
+plain build id" holding the other direction so the rule cannot swallow a real
+build id.
+
 ### 7. "Is this hook wired?" is answered by comparison, never by parsing shell
 
 Added after three gate rounds, because the first six decisions were right and
@@ -140,8 +164,8 @@ command. Round 1 shipped `command.includes(hookPath)`, which read a `.bak`
 neighbour, an `echo`, a commented-out line and a vendored copy as enforcement.
 Round 2 replaced it with a narrow parser — `&&` segments, assignments, `node`
 as the executable, an exact path comparison — and that opened four new false
-`SUPPORTED` shapes. Round 3 fixed those and opened five more, ending with two
-that were live against the files this rig actually ships:
+`SUPPORTED` shapes. Round 3 fixed those and opened more, ending with two that were
+live against the files this rig actually ships:
 
 ```
 X="$(exit 1)" && <the real command>     → SUPPORTED, but the hook never runs
@@ -169,8 +193,12 @@ now only chooses between `INTEGRATION-FAILED` and `UNSUPPORTED`, two
 non-passing answers, so a false positive can no longer reach `SUPPORTED`.
 
 **What it costs, stated plainly.** A hand-written wiring that genuinely runs
-the hook — a bare `node <hookPath>`, a flag before the path, `${VAR}` instead
-of `$VAR` — now reads `INTEGRATION-FAILED` rather than `SUPPORTED`. That is a
+the hook now reads `INTEGRATION-FAILED` rather than `SUPPORTED`. Measured
+against the parser this replaced, the spellings that lost a pass are: a bare
+`node <hookPath>`, a `./`-relative path, an unquoted `$VAR/`, `${VAR}` instead
+of `$VAR`, a flag before the path, and a command whose output is redirected
+(`node <hookPath> >/dev/null 2>&1`). That list is what changed here, not a
+guarantee about every spelling a shell would accept. That is a
 real loss of precision on real wirings. It buys an answer that cannot be wrong
 in the dangerous direction, and "I cannot verify this" is the honest thing to
 say about a spelling the rig did not write. A rig that hand-wires its hooks
@@ -184,30 +212,6 @@ a Tier-2 decision, and the wrong trade for one predicate.
 declared and leave "does it run" entirely to the traffic half. Most faithful to
 "never a silent pass", and a larger rework than the contract needs: comparison
 answers it without inference.
-
-### 6. An incomplete evidence row is refused, not stored
-
-`validateEvidenceRow` refuses a row without an exact `harnessVersion` or an
-ISO-8601 `observedAt` with a zone, refuses any non-`SUPPORTED` row that does
-not say why, and refuses a `SUPPORTED` row that says why anyway.
-
-A row missing either reads like evidence and is not one: nothing in it answers
-"which build was this" or "was this before or after the change". Storing it
-anyway is how a matrix fills with rows a later reader takes for measurements.
-
-**"Exact" is a check, not an adjective** — in both shapes that carry a version.
-`isExactVersion` lives in `validation.ts` and is read by `validateEvidenceRow`
-for a matrix row and by `coverageFromProbe` for a surface identity, so the word
-means one thing wherever it is written.
-
-The same paragraph, before the fix — and it was an adjective for one gate
-round. `latest`, `^2.0` and `2.x` all validated while three separate sentences
-promised an exact version, because the only check on the field was that it was
-not blank. The vague words and the range operators are now refused: ›
-"refuses the harness version %j, because it names a range or a moving target
-rather than a build", with › "accepts the exact harness version %j, including a
-plain build id" holding the other direction so the rule cannot swallow a real
-build id.
 
 ## What this does NOT do, stated so the contract is not read wider than it is
 
@@ -247,9 +251,15 @@ build id.
   trigger exists to catch".
 - **The probe compares; it does not parse.** A wiring reads `SUPPORTED` only
   when its command equals one the adapter says this harness generates, modulo
-  runs of spaces and tabs. Every other spelling that names the hook path is
-  `INTEGRATION-FAILED` — including hand-written wirings that really do run it.
-  Decision 7 has the reasoning and the cost.
+  runs of spaces and tabs and a leading or trailing space. A spelling that contains
+  the hook path LITERALLY and matches none of them is `INTEGRATION-FAILED`
+  **when nothing else under that event ran the hook**. A spelling that refers to
+  the hook without containing that exact substring — a different case, a
+  backslash separator, a path split across two variables — is not recognised as
+  naming it at all and reads `UNSUPPORTED` — including hand-written wirings that
+  really do run it. It does not outrank a verified command: a hook list is
+  conjunctive, so an entry the probe could not read cannot un-run one it did
+  read. Decision 7 has the reasoning and the cost.
 
 ## Where the rules are pinned
 

@@ -26,22 +26,29 @@ export interface NativeHookSurface {
   /** Repo-relative path of the hook file the harness runs. */
   hookPath: string;
   /**
-   * The exact command strings this harness generates to run `hookPath`.
+   * Every command this harness generates to run `hookPath`, keyed by the field
+   * of a hook entry it belongs to, with the accepted spellings for that field.
    *
-   * The probe compares a wired command against these instead of parsing it.
-   * That is the whole of how "is this hook wired?" is decided, and it exists
-   * because the parser it replaced lost three gate rounds running: each fix
-   * closed one class of false `SUPPORTED` and opened another, until the shape
-   * that defeated it turned out to be the rig's own derived command. Comparing
-   * against generated output has no grammar to lose to.
+   * Keyed rather than flat because a surface can ship MORE THAN ONE command per
+   * hook and run a different one per platform. Reading only the first is a false
+   * `SUPPORTED`: replacing just the other spelling in the file this rig ships
+   * left every policy reading enforced while the guard no longer ran on that
+   * platform. So an entry counts as running the hook only when EVERY field
+   * named here is present and matches — › "refuses a %s entry in which any one
+   * field that harness generates carries a different command".
    *
-   * A list because a harness may accept more than one generated spelling (a
-   * format change, say); today each declares one. An adapter and the snapshot
-   * this rig ships must agree, which is checked in both directions by
-   * `test/template/policy-coverage.test.ts` (absent in a generated rig) ›
-   * "the %s snapshot wires %s with exactly the command that adapter generates".
+   * A field this map does not name is ignored, which is what keeps `type` and
+   * a timeout out of the comparison: › "still reads a %s entry carrying a
+   * command field that harness generates nothing for, because the rule is about
+   * the fields it does".
+   *
+   * The list per field allows a harness to accept more than one generated
+   * spelling; today each declares one. Adapter and shipped snapshot are held
+   * equal in both directions by `test/template/policy-coverage.test.ts` (absent
+   * in a generated rig) › "the %s snapshot wires %s with exactly the spelling
+   * that adapter generates, in every field it generates one for".
    */
-  commands: readonly string[];
+  commands: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface HarnessAdapter {

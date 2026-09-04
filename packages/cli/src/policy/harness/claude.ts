@@ -43,7 +43,9 @@ export const nativeSurfaceOf = (policy: PolicyDeclaration): NativeHookSurface =>
   // in the shipped snapshot must agree — pinned in both directions by
   // `test/template/policy-coverage.test.ts` (absent in a generated rig) ›
   // "the %s snapshot wires %s with exactly the command that adapter generates".
-  commands: [`node "$${SHARED_HOOK_ROOT_ENV}/${SHARED_HOOKS_DIR}/${policy.mechanism}.mjs"`],
+  commands: {
+    command: [`node "$${SHARED_HOOK_ROOT_ENV}/${SHARED_HOOKS_DIR}/${policy.mechanism}.mjs"`],
+  },
 });
 
 export const claudeAdapter: HarnessAdapter = Object.freeze({
