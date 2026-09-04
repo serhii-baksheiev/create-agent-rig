@@ -19,7 +19,13 @@ export type Validation<T> = { ok: true; value: T } | { ok: false; problems: Prob
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const quote = (value: unknown): string => {
+/**
+ * A value as it appeared, escaped, for a message a person reads. Exported
+ * because every module here that puts OUTSIDE data into a diagnostic must put
+ * it through the same escaping — a raw newline or ANSI sequence in a matcher
+ * can otherwise forge a line of the report it lands in (`./probe.ts`).
+ */
+export const quote = (value: unknown): string => {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
@@ -54,6 +60,73 @@ export const nonEmptyString = (problems: Problem[], field: string, value: unknow
     return false;
   }
   return true;
+};
+
+/**
+ * Refuse a string that is absent, not a string, or has no non-space character.
+ *
+ * Stricter than `nonEmptyString` in exactly one place — a value of whitespace
+ * only — and a separate helper rather than a tightening of that one, because
+ * the shapes already validated by it are not in this change's scope. Where a
+ * field is a fact a later reader has to act on (an exact version, a pointer to
+ * evidence), a blank is the same defect as an absence and is refused as one.
+ */
+export const nonBlankString = (problems: Problem[], field: string, value: unknown): boolean => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    problems.push({ field, message: `must be a non-blank string, got ${quote(value)}` });
+    return false;
+  }
+  return true;
+};
+
+/**
+ * A real calendar date, `T`, time to the second (fractions allowed), and an
+ * explicit zone.
+ *
+ * One spelling of one fact (`rules/invariants.md`, "One mechanism, one
+ * implementation"). Its three readers are `./decision-record.ts`
+ * (`recordedAt`), `./evidence-matrix.ts` (`observedAt`) and `./coverage.ts`
+ * (`verifiedAt`, through `requireTimestamp`), so a bare date is refused the
+ * same way whichever of them is validating — including lexically shaped but
+ * impossible dates — `packages/cli/test/policy-coverage.test.ts`
+ * › "refuses the probe timestamp %j, which is exactly what the shared ISO-8601
+ * pattern refuses" imports this pattern rather than restating it, so the two
+ * sides cannot drift apart. A timestamp is always supplied by the caller —
+ * nothing under this directory reads a clock.
+ */
+const ISO_8601_SHAPE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/**
+ * A date-time shape whose `test` also proves the named calendar instant exists.
+ * Keeping the semantic check behind the same exported predicate prevents the
+ * coverage, decision-record and evidence-row validators from drifting apart.
+ */
+export const ISO_8601 = {
+  test(value: string): boolean {
+    const match = ISO_8601_SHAPE.exec(value);
+    if (match === null) return false;
+    const [, yearText, monthText, dayText, hourText, minuteText, secondText, zoneHour, zoneMinute] =
+      match;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const second = Number(secondText);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return (
+      month >= 1 &&
+      month <= 12 &&
+      day >= 1 &&
+      day <= daysInMonth[month - 1]! &&
+      hour <= 23 &&
+      minute <= 59 &&
+      second <= 59 &&
+      (zoneHour === undefined || (Number(zoneHour) <= 23 && Number(zoneMinute) <= 59))
+    );
+  },
 };
 
 /** Refuse a string outside a closed vocabulary, quoting the offending value. */
@@ -108,10 +181,56 @@ export const matching = (
   problems: Problem[],
   field: string,
   value: unknown,
-  pattern: RegExp,
+  pattern: { test(value: string): boolean },
   expected: string,
 ): boolean => {
   if (typeof value === 'string' && pattern.test(value)) return true;
   problems.push({ field, message: `must be ${expected}, got ${quote(value)}` });
   return false;
+};
+
+/**
+ * A version that names one build rather than a set of them.
+ *
+ * One spelling of one fact: `./evidence-matrix.ts` refuses a matrix row on it
+ * and `./coverage.ts` refuses a surface identity on it, so "the exact version
+ * observed" means the same thing wherever it is written. It was two prose
+ * sentences and one check before, and the shape they did not check was the
+ * `SurfaceIdentity` — the one a coverage map actually carries.
+ *
+ * Refused: the vague words, range OPERATORS, a wildcard component, and the two
+ * npm range spellings that use neither (`1.2.3 || 1.2.4`, `1.2.3 - 1.2.7`).
+ * Accepted: anything else that names a build, including a bare sha, a date
+ * build id, and a pre-release tag carrying an `x` or `X` — a letter in a build
+ * name is not a wildcard, which is why the check reads a wildcard COMPONENT
+ * (`2.x`, `1.0.0.x`) rather than the letter. Pinned in
+ * `packages/cli/test/policy-coverage.test.ts` (absent in a generated rig) ›
+ * "accepts a build identifier carrying a capital X, because that is a
+ * character of a build name and not a wildcard component".
+ */
+const VAGUE_VERSIONS: readonly string[] = ['latest', 'current', 'unknown', 'any', 'head'];
+const RANGE_OPERATOR = /[\^~*<>=]/;
+const WILDCARD_COMPONENT = /(^|\.)[xX*](\.|$)/;
+const RANGE_SPELLING = /\|\||\s-\s/;
+
+export const isExactVersion = (value: string): boolean => {
+  const version = value.trim();
+  if (version === '') return false;
+  if (VAGUE_VERSIONS.includes(version.toLowerCase())) return false;
+  return !(
+    RANGE_OPERATOR.test(version) ||
+    WILDCARD_COMPONENT.test(version) ||
+    RANGE_SPELLING.test(version)
+  );
+};
+
+/** Refuse a version that names a range or a moving target, quoting the value. */
+export const exactVersion = (problems: Problem[], field: string, value: unknown): void => {
+  if (typeof value !== 'string' || value.trim() === '') return;
+  if (!isExactVersion(value)) {
+    problems.push({
+      field,
+      message: `must name the exact version observed, not a range or a moving target; got ${quote(value)}`,
+    });
+  }
 };

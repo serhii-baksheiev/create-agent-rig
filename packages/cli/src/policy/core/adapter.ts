@@ -25,6 +25,30 @@ export interface NativeHookSurface {
   matcher: string;
   /** Repo-relative path of the hook file the harness runs. */
   hookPath: string;
+  /**
+   * Every command this harness generates to run `hookPath`, keyed by the field
+   * of a hook entry it belongs to, with the accepted spellings for that field.
+   *
+   * Keyed rather than flat because a surface can ship MORE THAN ONE command per
+   * hook and run a different one per platform. Reading only the first is a false
+   * `SUPPORTED`: replacing just the other spelling in the file this rig ships
+   * left every policy reading enforced while the guard no longer ran on that
+   * platform. So an entry counts as running the hook only when EVERY field
+   * named here is present and matches — › "refuses a %s entry in which any one
+   * field that harness generates carries a different command".
+   *
+   * A field this map does not name is ignored, which is what keeps `type` and
+   * a timeout out of the comparison: › "still reads a %s entry carrying a
+   * command field that harness generates nothing for, because the rule is about
+   * the fields it does".
+   *
+   * The list per field allows a harness to accept more than one generated
+   * spelling; today each declares one. Adapter and shipped snapshot are held
+   * equal in both directions by `test/template/policy-coverage.test.ts` (absent
+   * in a generated rig) › "the %s snapshot wires %s with exactly the spelling
+   * that adapter generates, in every field it generates one for".
+   */
+  commands: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface HarnessAdapter {
