@@ -1682,7 +1682,7 @@ describe('a probe is occasioned by a named trigger, and the map records which', 
   });
 
   it.each(['periodic', 'schedule', 'timer', 'poll', '', 'INSTALL'])(
-    'refuses the trigger %j, because a probe is occasioned by a change to the surface and by nothing else',
+    'refuses the trigger %j, because the coverage contract accepts only a declared surface-change trigger',
     (trigger) => {
       expect(() => probeWith(trigger as ProbeTrigger)).toThrow();
     },

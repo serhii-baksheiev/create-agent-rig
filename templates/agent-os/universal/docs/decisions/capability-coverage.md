@@ -24,11 +24,10 @@ That is only worth stating because the vocabulary has a **consumer**:
 `coverageFromProbe` takes a `trigger` as a required argument, refuses a word
 outside `PROBE_TRIGGERS`, and records it on every entry as `triggeredBy`. The
 first version of this record claimed the prohibition was kept by the vocabulary
-alone, which `prose-reviewer` refuted in one grep — nothing read it, and a
-vocabulary nothing reads keeps nothing. Pinned in
+alone. Nothing read it, and a vocabulary nothing reads keeps nothing. Pinned in
 `packages/cli/test/policy-coverage.test.ts` (absent in a generated rig) ›
-"refuses the trigger %j, because a probe is occasioned by a change to the
-surface and by nothing else".
+"refuses the trigger %j, because the coverage contract accepts only a declared
+surface-change trigger".
 
 ⚠ What this still does not do: nothing stops a caller supplying `'upgrade'`
 four times an hour. `probe.ts` cannot fetch a snapshot — one arrives as an
@@ -53,7 +52,7 @@ can see for themselves how old the evidence is and decide.
 
 ### 3. Traffic lowers a status; only a probe raises one
 
-This is the asymmetry that took the most argument, so it is written down.
+This asymmetry is load-bearing, so it is written down.
 
 A **missing** signal is evidence the mechanism did not act on an operation it
 should have judged. A **present** signal is evidence it acted *once*. Those are
@@ -166,10 +165,12 @@ non-passing answers, so a false positive can no longer reach `SUPPORTED`.
 
 **What it costs, stated plainly.** The comparison tolerates runs of spaces and
 tabs, but it does not try to prove that other hand-written shell spellings run
-the same hook. A non-matching command that literally names the hook path reads
-`INTEGRATION-FAILED`; one that does not reads `UNSUPPORTED`. Both are
-non-passing answers. A rig that hand-wires its hooks may therefore see
-unverifiable rows until it adopts a generated spelling.
+the same hook. When no verified command runs for the event, a non-matching
+command that literally names the hook path reads `INTEGRATION-FAILED`; one that
+does not reads `UNSUPPORTED`. Both are non-passing answers. Another group with
+the exact generated command can still make the event `SUPPORTED`. A rig that
+hand-wires its hooks may therefore see unverifiable rows until it adopts a
+generated spelling.
 
 *Rejected: a real shell parser.* Correct, and a new runtime dependency in a
 package whose zero-dependency property is what keeps `npx github:…` working —
@@ -198,13 +199,13 @@ answers it without inference.
   supplied by the caller; `coverageFromProbe` refuses one that names a range or
   a moving target, but nothing here asks a live harness which build it is. An
   earlier draft of this bullet said "checked for shape" while nothing checked
-  it — the third place the same unbacked claim was written, and the reason the
-  check now exists.
+  it; the check now exists.
 - **`DEGRADED` carries no verdict qualifier.** An operation on precisely the
-  tool a degraded matcher lost gets an unqualified allow. The item scopes the
-  `UNVERIFIABLE` requirement to the unenforceable states, so this is the
-  contract as written — but it is a limit of the "never a silent PASS" claim
-  and not covered by it.
+  tool a degraded matcher lost does not require a qualifier from this library.
+  The item scopes the `UNVERIFIABLE` requirement to the unenforceable states,
+  so this is the contract as written — but it is a limit of the "never a silent
+  PASS" claim and not covered by it. The caller, not this library, owns the
+  operation verdict.
 - **A `reason` given with a non-degrading miss is discarded.** Only the miss
   that crosses the threshold records one — › "discards the reason given with a
   miss that does not degrade, and records the one given with the miss that

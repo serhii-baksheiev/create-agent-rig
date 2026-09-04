@@ -47,8 +47,9 @@
  *
  * Two limits worth stating rather than leaving to be discovered. `DEGRADED`
  * carries no verdict qualifier, so an operation on precisely the tool a
- * degraded matcher lost gets an unqualified allow — the item scopes the
- * `UNVERIFIABLE` requirement to the unenforceable states. And a `reason`
+ * degraded matcher lost does not require a qualifier from this library — the
+ * item scopes the `UNVERIFIABLE` requirement to the unenforceable states; the
+ * caller owns the operation verdict. And a `reason`
  * supplied with a miss that does not cross the threshold is not retained;
  * only the miss that degrades records one — › "discards the reason given with
  * a miss that does not degrade, and records the one given with the miss that

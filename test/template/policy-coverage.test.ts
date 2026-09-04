@@ -202,7 +202,7 @@ const probeOf = async (
 
 describe('probing the surfaces this rig really ships', () => {
   it.each(['timer', 'hourly'])(
-    'refuses the trigger %j, because a probe is occasioned by a change to the surface and by nothing else',
+    'refuses the trigger %j, because the coverage contract accepts only a declared surface-change trigger',
     async (trigger) => {
       const adapter = HARNESS_ADAPTERS[0];
       if (!adapter) throw new Error('the generated rig declares no harness adapter');
