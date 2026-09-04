@@ -238,17 +238,24 @@ export const npmDebugLogs = (cacheDir: string | undefined): string => {
  * | audit on, fund off                     | 260 834           |
  * | both off                               | 5 584 / 4 558     |
  * | `--offline` against that same cache    | 2 721             |
+ * | 3rd and 4th reuse of ONE cache, audit on | 387 338 / 395 530 |
  *
  * The third row is why this comment credits `audit` and not the pair: with
  * `fund` off and `audit` left on the install still costs 260 s. `fund` is
  * disabled alongside it only because the control below already did, and it was
- * measured not to matter. A warm cache does not help either (387 s and 396 s on
- * the third and fourth reuse), so the time is not the install.
+ * measured not to matter. The last row is why a warm cache is not the answer
+ * either — it is the third and fourth reuse of a single cache, both over six
+ * minutes — while `--offline` against that same cache is two orders of
+ * magnitude faster (119x and 156x). So the time is not the install.
  *
  * Nothing in the e2e suite asserts anything about audit or funding output —
  * the contract under test is pack → install → generate — so the call is pure
- * cost with an unbounded network tail bolted to a fixed budget. No budget in
- * this suite was raised to fix that; the work is gone instead.
+ * cost with an unbounded network tail bolted to a fixed budget. That sentence
+ * is the reason this is a cost saving rather than a coverage loss, so it is
+ * asserted rather than claimed:
+ * `test/template/e2e-install-network.test.ts` › "no e2e file asserts on npm
+ * audit output, which is what makes disabling it a cost saving rather than a
+ * coverage loss". No budget in this suite was raised; the work is gone instead.
  *
  * The suite carried its own control before this existed: `upgrade.test.ts`
  * already installed the same tarball with `--no-audit --no-fund` and took

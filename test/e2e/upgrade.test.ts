@@ -55,9 +55,13 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
 
     const prefix = path.join(work, 'install');
     await mkdir(prefix);
-    // The flags stay as well as the env: this call is the control that first
-    // showed the cost (2.8 s here against a 300 s timeout in pack-install), and
-    // dropping them would erase the comparison the measurement rests on.
+    // The CLI flags are now redundant with the env — npm's precedence puts CLI
+    // above env and both say the same thing. They are kept because the CLI form
+    // is what the historical control used: this call took 2.8 s in the very CI
+    // run where pack-install timed out at 300 s, which is the observation that
+    // pointed at audit. Keeping them does not preserve that comparison — the
+    // comparison is a recorded CI run, and this change deliberately puts every
+    // install on the same footing.
     await exec('npm', ['install', '--no-audit', '--no-fund', '--prefix', prefix, tarball], {
       maxBuffer: 64 * 1024 * 1024,
       env: installEnv(path.join(work, 'npm-cache')),
