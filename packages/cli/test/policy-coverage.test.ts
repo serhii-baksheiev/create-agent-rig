@@ -28,6 +28,7 @@ import {
   SHARED_HOOKS_DIR,
   VERIFICATION_SOURCES,
   claudeAdapter,
+  codexAdapter,
   definePolicy,
   findPolicy,
   validateDecisionRecord,
@@ -102,12 +103,23 @@ type Group = { matcher: string; mechanisms: readonly string[] };
  * rather than imported from it, so a change to that file's fixture cannot
  * silently re-aim this one.
  */
-const snapshotWith = (event: string, groups: readonly Group[]): HookSnapshot => ({
+// The root variable a fixture command uses has to be one the adapter under
+// test actually names, or the fixture is asserting the any-variable strip this
+// change removed. Defaulted rather than threaded through every call site,
+// because most cases here probe one adapter.
+const rootOf = (adapter: HarnessAdapter): string =>
+  adapter.nativeSurfaceOf(SECRET_WRITE).hookRootVariables[0] ?? '';
+
+const snapshotWith = (
+  event: string,
+  groups: readonly Group[],
+  root = rootOf(claudeAdapter),
+): HookSnapshot => ({
   hooks: {
     [event]: groups.map(({ matcher, mechanisms }) => ({
       matcher,
       hooks: mechanisms.map((mechanism) => ({
-        command: `node "$PROJECT_DIR/${SHARED_HOOKS_DIR}/${mechanism}.mjs"`,
+        command: `node "$${root}/${SHARED_HOOKS_DIR}/${mechanism}.mjs"`,
       })),
     })),
   },
@@ -124,6 +136,7 @@ const fullyWired = (adapter: HarnessAdapter): HookSnapshot => {
   return snapshotWith(
     event,
     [...byMatcher].map(([matcher, mechanisms]) => ({ matcher, mechanisms })),
+    rootOf(adapter),
   );
 };
 
@@ -363,32 +376,66 @@ describe('probing a surface for one policy', () => {
  * rather than guessed at, and a refusal reads `UNSUPPORTED`, which is the safe
  * direction: it understates what the surface enforces.
  */
+// Verbatim from the two snapshots this rig ships —
+// `templates/agent-os/universal/.claude/settings.json` and
+// `templates/agent-os/universal/.codex/hooks.json`. Copied rather than read
+// here so this stays a unit test; `test/template/policy-coverage.test.ts`
+// probes the real files and mutates them. Module-scoped rather than declared
+// inside one describe because four groups below pin the same two strings, and
+// two spellings of one fact are two things to keep in step.
+const REAL_AUTHORING_COMMAND = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-secret-file.mjs"';
+const REAL_DERIVED_COMMAND =
+  'repoRoot="$(git rev-parse --show-toplevel)" && CLAUDE_PROJECT_DIR="$repoRoot" node "$repoRoot/.claude/hooks/guard-secret-file.mjs"';
+
+/**
+ * Each harness beside the command ITS OWN snapshot really carries. Paired this
+ * way on purpose: the root variable a command may be rooted at is a fact about
+ * the harness, so a command is only evidence about the adapter that ships it.
+ */
+const SHIPPED_BY_ITS_OWN_HARNESS = [
+  ['claude', claudeAdapter, REAL_AUTHORING_COMMAND],
+  ['codex', codexAdapter, REAL_DERIVED_COMMAND],
+] as const;
+
+/** The declared matcher of one adapter, wiring exactly the commands given. */
+const runningOn = (adapter: HarnessAdapter, ...commands: readonly string[]): unknown => {
+  const surface = adapter.nativeSurfaceOf(SECRET_WRITE);
+  return {
+    hooks: {
+      [surface.event]: [
+        { matcher: surface.matcher, hooks: commands.map((command) => ({ command })) },
+      ],
+    },
+  };
+};
+
 describe('a command wires the hook only when the hook path is the argument it executes', () => {
   const { hookPath } = SECRET_WRITE_SURFACE;
 
-  // Verbatim from the two snapshots this rig ships —
-  // `templates/agent-os/universal/.claude/settings.json` and
-  // `templates/agent-os/universal/.codex/hooks.json`. Copied rather than read
-  // here so this stays a unit test; `test/template/policy-coverage.test.ts`
-  // probes the real files and mutates them.
-  const REAL_AUTHORING_COMMAND = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-secret-file.mjs"';
-  const REAL_DERIVED_COMMAND =
-    'repoRoot="$(git rev-parse --show-toplevel)" && CLAUDE_PROJECT_DIR="$repoRoot" node "$repoRoot/.claude/hooks/guard-secret-file.mjs"';
-
+  // Each shipped command is read through ITS OWN adapter, because the root
+  // variable a command may name is a fact about the harness that wrote it:
+  // `$repoRoot` is the Codex spelling, and the Claude surface never uses it.
+  // Probing both through one adapter is what the old any-variable strip made
+  // look correct.
   it.each([
-    ['the authoring harness spelling', REAL_AUTHORING_COMMAND],
+    ['the authoring harness spelling', REAL_AUTHORING_COMMAND, claudeAdapter],
     [
       'the derived harness spelling, whose assignment and node share a segment',
       REAL_DERIVED_COMMAND,
+      codexAdapter,
     ],
-  ])('reads %s as running the hook, because it is what the rig really ships', (_case, command) => {
-    expect(command, 'the copied literal no longer names the hook the adapter points at').toContain(
-      hookPath,
-    );
-    expect(probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command))).toEqual({
-      state: 'SUPPORTED',
-    });
-  });
+  ])(
+    'reads %s as running the hook, because it is what the rig really ships',
+    (_case, command, adapter) => {
+      expect(
+        command,
+        'the copied literal no longer names the hook the adapter points at',
+      ).toContain(hookPath);
+      expect(probePolicy(SECRET_WRITE, adapter, runningExactly(command))).toEqual({
+        state: 'SUPPORTED',
+      });
+    },
+  );
 
   // The whole of what the rule accepts around the path, so an implementation
   // cannot narrow to "exactly the two shipped strings" and still pass: a flag
@@ -397,7 +444,7 @@ describe('a command wires the hook only when the hook path is the argument it ex
   it.each([
     [
       'a flag before the path, which is not the executed argument',
-      `node --experimental-strip-types "$D/${hookPath}"`,
+      `node --experimental-strip-types "$CLAUDE_PROJECT_DIR/${hookPath}"`,
     ],
     ['a braced variable prefix', `node "\${CLAUDE_PROJECT_DIR}/${hookPath}"`],
     ['an unquoted variable prefix', `node $CLAUDE_PROJECT_DIR/${hookPath}`],
@@ -412,9 +459,9 @@ describe('a command wires the hook only when the hook path is the argument it ex
   it.each([
     [
       'a neighbouring file whose name merely begins with the hook path',
-      `node "$D/${hookPath}.bak"`,
+      `node "$CLAUDE_PROJECT_DIR/${hookPath}.bak"`,
     ],
-    ['a disabled copy of the hook', `node "$D/${hookPath}.disabled"`],
+    ['a disabled copy of the hook', `node "$CLAUDE_PROJECT_DIR/${hookPath}.disabled"`],
     ['a command that only prints the hook path', `echo "${hookPath}"`],
     ['a commented-out wiring', `# node ${hookPath}`],
     [
@@ -450,7 +497,7 @@ describe('a command wires the hook only when the hook path is the argument it ex
    */
   const paddedTo = (length: number): string => {
     const head = 'node -';
-    const tail = ` "$D/${hookPath}"`;
+    const tail = ` "$CLAUDE_PROJECT_DIR/${hookPath}"`;
     const filler = length - head.length - tail.length;
     if (filler < 1) {
       throw new Error(`the cap ${String(length)} is too small to pad a real command up to`);
@@ -483,6 +530,175 @@ describe('a command wires the hook only when the hook path is the argument it ex
 });
 
 /**
+ * `&&` joins segments, and only the LAST one is unconditional. Every segment
+ * before it is a command whose exit status decides whether the hook ever runs,
+ * so a probe that tries each segment independently reads `false && node <hook>`
+ * — a wiring that can never fire — as enforcement. It also re-opens a quoted
+ * string: splitting on `&&` cuts straight through `echo "&& node <hook>"`, and
+ * the tail of the cut looks exactly like a wiring.
+ *
+ * The rule that closes both: every segment BEFORE the one that runs `node`
+ * must consist only of `NAME=value` assignment tokens. That is the shape the
+ * derived harness's command really has, and it is the only shape that cannot
+ * decide whether the hook runs.
+ *
+ * The rule understates rather than overstates when it is unsure — a real
+ * wiring behind `cd` is reported as UNSUPPORTED — which is the safe direction
+ * for a capability contract.
+ */
+describe('a segment that could stop the hook running means the hook is not wired', () => {
+  const { hookPath } = SECRET_WRITE_SURFACE;
+
+  it.each([
+    ['a segment that always fails', `false && node ${hookPath}`],
+    ['a segment that tests for a flag file', `[ -f /tmp/enable ] && node ${hookPath}`],
+    ['a segment that tests an opt-out variable', `test -n "$SKIP_HOOKS" && node ${hookPath}`],
+  ])(
+    'reads %s before the hook as UNSUPPORTED, because that segment decides whether the hook runs at all',
+    (_case, command) => {
+      const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+      expect(result.state, `the command ${command} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.reason ?? '').toContain(hookPath);
+    },
+  );
+
+  it('reads a directory change before the hook as UNSUPPORTED, understating a wiring that may well be real', () => {
+    const command = `cd "$D" && node ${hookPath}`;
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+    expect(result.state).toBe('UNSUPPORTED');
+    expect(result.reason ?? '').toContain(hookPath);
+  });
+
+  it.each([
+    ['a command that prints a whole wiring', `echo "&& node ${hookPath}"`],
+    [
+      'a wiring handed to another program as one quoted argument',
+      `node ./other.mjs "&& node ${hookPath}"`,
+    ],
+  ])(
+    'reads %s as UNSUPPORTED, because splitting on && must not re-open a quoted string',
+    (_case, command) => {
+      const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+      expect(result.state, `the command ${command} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.reason ?? '').toContain(hookPath);
+    },
+  );
+
+  // KEEP GREEN. These are the shapes the rule must not refuse: the two
+  // commands the rig really ships — the derived one's leading segment IS a
+  // `NAME=value` assignment, whose value happens to be a command substitution
+  // — and a flag between `node` and the path. Delete one of these and the
+  // segment rule is free to tighten until every real surface reads UNSUPPORTED.
+  it.each([
+    ['the authoring harness spelling', REAL_AUTHORING_COMMAND, claudeAdapter],
+    [
+      'the derived harness spelling, whose assignment carries a command substitution',
+      REAL_DERIVED_COMMAND,
+      codexAdapter,
+    ],
+    [
+      'a flag between node and the path, rooted at the harness variable',
+      `node --experimental-strip-types "$CLAUDE_PROJECT_DIR/${hookPath}"`,
+      claudeAdapter,
+    ],
+  ])(
+    'still reads %s as running the hook, so the segment rule refuses nothing the rig ships',
+    (_case, command, adapter) => {
+      expect(probePolicy(SECRET_WRITE, adapter, runningExactly(command))).toEqual({
+        state: 'SUPPORTED',
+      });
+    },
+  );
+});
+
+/**
+ * A `$VAR/` prefix is stripped so that `$CLAUDE_PROJECT_DIR/.claude/hooks/x.mjs`
+ * is recognised as this repository's own hook. Stripping ANY variable makes a
+ * hook file under someone else's tree indistinguishable from this one:
+ * `$HOME/.claude/hooks/guard-secret-file.mjs` is a DIFFERENT file, with
+ * different bytes and a different owner, and reading it as this rig's
+ * enforcement is a false SUPPORTED on evidence about another program.
+ *
+ * The variables a harness legitimately roots its hooks at are a fact about
+ * that harness, so the tests below go through the adapter rather than a list
+ * spelled here: each adapter's own shipped command is accepted, and a variable
+ * no harness roots hooks at is refused on every surface.
+ */
+describe('a hook rooted at a variable the harness does not use is a different file', () => {
+  it.each(SHIPPED_BY_ITS_OWN_HARNESS)(
+    'accepts the root variable the real %s command uses, because that is the harness rooting its own hooks',
+    (_harness, adapter, command) => {
+      const { hookPath } = adapter.nativeSurfaceOf(SECRET_WRITE);
+      expect(
+        command,
+        'the copied literal no longer names the hook the adapter points at',
+      ).toContain(hookPath);
+      expect(probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command))).toEqual({
+        state: 'SUPPORTED',
+      });
+    },
+  );
+
+  const FOREIGN_ROOTS = [
+    ['a home directory', (hookPath: string) => `node "$HOME/${hookPath}"`],
+    ['a temporary directory', (hookPath: string) => `node "$TMPDIR/${hookPath}"`],
+    ['an unquoted variable of its own', (hookPath: string) => `node $EVIL/${hookPath}`],
+    ['a braced variable of its own', (hookPath: string) => `node "\${EVIL}/${hookPath}"`],
+  ] as const;
+
+  const foreignCases = HARNESS_ADAPTERS.flatMap((adapter) =>
+    FOREIGN_ROOTS.map(([label, build]) => [adapter.harness, label, adapter, build] as const),
+  );
+
+  it.each(foreignCases)(
+    'reads a hook under %s rooted at %s as UNSUPPORTED, because that tree is not the one the harness runs from',
+    (_harness, _label, adapter, build) => {
+      const { hookPath } = adapter.nativeSurfaceOf(SECRET_WRITE);
+      const command = build(hookPath);
+      const result = probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command));
+      expect(result.state, `the command ${command} was read as this rig's enforcement`).toBe(
+        'UNSUPPORTED',
+      );
+      expect(result.reason ?? '').toContain(hookPath);
+    },
+  );
+});
+
+/**
+ * A backgrounded hook cannot refuse anything. `PreToolUse` enforcement works
+ * because the operation WAITS for the hook's exit code; `node <hook> &` returns
+ * immediately and the operation proceeds while the guard is still starting. So
+ * a trailing `&` is the difference between a mechanism and a log line, and
+ * reading it as enforcement is a false SUPPORTED on a surface that enforces
+ * nothing.
+ */
+describe('a backgrounded hook is not enforcement, because nothing waits for its answer', () => {
+  const { hookPath } = SECRET_WRITE_SURFACE;
+
+  it.each([
+    ['backgrounded', `node ${hookPath} &`],
+    ['backgrounded and disowned', `node ${hookPath} & disown`],
+    ['backgrounded with its output discarded', `node ${hookPath} >/dev/null 2>&1 &`],
+  ])(
+    'reads a %s hook as UNSUPPORTED, because the operation does not wait for its exit code',
+    (_case, command) => {
+      const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+      expect(result.state, `the command ${command} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.reason ?? '').toContain(hookPath);
+    },
+  );
+
+  // KEEP GREEN. `2>&1` carries an `&` that backgrounds nothing, so a rule that
+  // refuses every `&` would turn an ordinary redirected wiring UNSUPPORTED.
+  // What is refused is a `&` that BACKGROUNDS the command, not the character.
+  it('still reads a redirected hook that is not backgrounded as running the hook', () => {
+    expect(
+      probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(`node ${hookPath} >/dev/null 2>&1`)),
+    ).toEqual({ state: 'SUPPORTED' });
+  });
+});
+
+/**
  * The UNREADABLE half of the ABSENT/UNREADABLE pair, one level below `hooks`.
  * `rules/invariants.md`, "Refusing to inspect is a third outcome, not a match
  * and not an error": a field PRESENT in a shape the reader does not accept is
@@ -496,7 +712,7 @@ describe('a command wires the hook only when the hook path is the argument it ex
  */
 describe('wiring below the hooks field that cannot be read is reported, not dropped', () => {
   const { matcher, hookPath } = SECRET_WRITE_SURFACE;
-  const validGroup = { matcher, hooks: [{ command: `node "$D/${hookPath}"` }] };
+  const validGroup = { matcher, hooks: [{ command: `node "$CLAUDE_PROJECT_DIR/${hookPath}"` }] };
 
   it.each([
     [
@@ -541,6 +757,50 @@ describe('wiring below the hooks field that cannot be read is reported, not drop
     expect(result.state).toBe('INTEGRATION-FAILED');
     expect(result.reason ?? '').toContain(EVENT);
   });
+
+  /**
+   * The last level of wiring still read silently. A `matcher` PRESENT in a
+   * shape this cannot read was coerced to `undefined` and then treated as the
+   * EMPTY matcher — so the probe reported `DEGRADED`, naming every declared
+   * tool as uncovered, on a surface whose matcher it never read. That is a
+   * measurement invented from a field it could not parse, and it is exactly
+   * the case `rules/invariants.md` reserves the loud answer for: the reader
+   * was handed something, could tell it could not read it, and said so about
+   * every other level but this one.
+   */
+  it.each([
+    ['a number', 42],
+    ['a list', ['Write', 'Edit']],
+    ['an object', { tools: ['Write'] }],
+    ['null', null],
+  ])(
+    'reports INTEGRATION-FAILED when a matcher is %s, naming the event it could not read',
+    (_case, matcherValue) => {
+      const group = { matcher: matcherValue, hooks: [{ command: `node ${hookPath}` }] };
+      const result = probePolicy(SECRET_WRITE, claudeAdapter, { hooks: { [EVENT]: [group] } });
+      expect(result.state, 'a matcher in an unreadable shape was read as the empty matcher').toBe(
+        'INTEGRATION-FAILED',
+      );
+      expect(result.reason ?? '').toContain(EVENT);
+    },
+  );
+
+  /**
+   * KEEP GREEN, and the ABSENT half of the pair above. A group with no
+   * `matcher` key at all leaves nothing to fail to read, so it is not the
+   * refusal case — the probe reads it as a group that names no tool, which
+   * covers none of the declared ones, which is `DEGRADED`. That is the answer
+   * today, pinned here so that tightening the PRESENT-but-unreadable case
+   * above cannot quietly move it. (Whether an absent matcher should instead
+   * mean "every tool" is a question about harness semantics, not about
+   * readability; it is not what this change decides.)
+   */
+  it('reads a group with no matcher key at all as DEGRADED, because an absent field leaves nothing to fail to read', () => {
+    const group = { hooks: [{ command: `node ${hookPath}` }] };
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, { hooks: { [EVENT]: [group] } });
+    expect(result.state).toBe('DEGRADED');
+    expect(result.reason ?? '').toContain('does not cover');
+  });
 });
 
 /**
@@ -557,7 +817,12 @@ describe('the reason a degraded surface reports is bounded and escaped', () => {
   const { matcher, hookPath } = SECRET_WRITE_SURFACE;
   const wiredUnder = (declaredMatcher: string): unknown => ({
     hooks: {
-      [EVENT]: [{ matcher: declaredMatcher, hooks: [{ command: `node "$D/${hookPath}"` }] }],
+      [EVENT]: [
+        {
+          matcher: declaredMatcher,
+          hooks: [{ command: `node "$CLAUDE_PROJECT_DIR/${hookPath}"` }],
+        },
+      ],
     },
   });
 
@@ -771,6 +1036,46 @@ describe('a coverage entry says when it was verified, in a form a later reader c
   );
 });
 
+/**
+ * `SurfaceIdentity.harnessVersion` is documented as exact — "the version is
+ * exact, never a range" on the interface, "the exact version observed" on the
+ * field, and the same claim in the decision record — and nothing checked it.
+ * `coverageFromProbe` copies the surface through untouched, and no
+ * `SurfaceIdentity` ever reaches the evidence-row validator, so a coverage map
+ * saying `latest` was built and stored exactly like an exact one. That answers
+ * neither of the two questions the field exists for: which build was this, and
+ * was this before or after the change.
+ *
+ * The rule is the same rule the evidence row already applies, and this file
+ * asks only that a probe be refused a moving target — not where the rule
+ * lives. One implementation read by both modules is the point.
+ */
+describe('a coverage map names the exact harness version it was probed on', () => {
+  const probeOnSurfaceVersion = (harnessVersion: string): CoverageMap =>
+    coverageFromProbe({
+      surface: { ...SURFACE, harnessVersion },
+      policies: POLICIES,
+      adapter: claudeAdapter,
+      snapshot: fullyWired(claudeAdapter),
+      at: T0,
+      trigger: 'install',
+    });
+
+  it.each(['latest', '^2.0', '2.x', '*', ''])(
+    'refuses to probe against the harness version %j, because a moving target names no build',
+    (harnessVersion) => {
+      expect(() => probeOnSurfaceVersion(harnessVersion)).toThrow(/version/i);
+    },
+  );
+
+  it.each(['0.0.0-fixture', '1.104.2', '20260904.3'])(
+    'probes against the exact harness version %j, including a plain build id',
+    (harnessVersion) => {
+      expect(probeOnSurfaceVersion(harnessVersion).surface.harnessVersion).toBe(harnessVersion);
+    },
+  );
+});
+
 describe('maintaining a status from observed traffic', () => {
   it('clears the miss count and credits traffic when the expected signal is seen', () => {
     const after = observeExpectedSignal(entryWith({ consecutiveMisses: 2 }), {
@@ -866,6 +1171,42 @@ describe('maintaining a status from observed traffic', () => {
       expect(entry.status).toBe(status === 'SUPPORTED' ? 'DEGRADED' : status);
     },
   );
+
+  /**
+   * `coverage.ts`'s header and `docs/decisions/capability-coverage.md` both
+   * state this as a limit of the design, and until this case nothing measured
+   * it — the sentence was a claim about a mechanism with nothing behind it,
+   * which `rules/invariants.md` gives two exits from: delete it, or make it a
+   * pointer to the test that proves it. This is that test.
+   *
+   * Both halves are here on purpose. A caller supplies a reason with EVERY
+   * observation, and only the observation that actually degrades the entry
+   * puts one on the record — so the reason a reader sees names the miss that
+   * changed the status, not the first one that was merely counted.
+   */
+  it('discards the reason given with a miss that does not degrade, and records the one given with the miss that does', () => {
+    const early = observeExpectedSignal(entryWith(), {
+      seen: false,
+      at: T1,
+      threshold: 2,
+      reason: 'the first miss, which only counts',
+    });
+    expect(early.consecutiveMisses).toBe(1);
+    expect(early.status).toBe('SUPPORTED');
+    expect(
+      early.degradationReason,
+      'a reason from a miss that changed nothing was recorded as a downgrade reason',
+    ).toBeUndefined();
+
+    const degrading = observeExpectedSignal(early, {
+      seen: false,
+      at: T2,
+      threshold: 2,
+      reason: 'the miss that crossed the threshold',
+    });
+    expect(degrading.status).toBe('DEGRADED');
+    expect(degrading.degradationReason).toBe('the miss that crossed the threshold');
+  });
 
   it('says why it degraded, because a degraded row that cannot say why is not evidence', () => {
     const after = observeExpectedSignal(entryWith(), {
@@ -1239,6 +1580,63 @@ describe('reporting what changed between two coverage maps', () => {
     expect(downgradesBetween(map, map)).toEqual([]);
   });
 
+  /**
+   * Two maps of different surfaces are refused rather than diffed, because a
+   * downgrade is attributed to ONE surface identity and reporting one
+   * surface's fall against another sends an operator to the wrong machine.
+   * The refusal had no test at all, so nothing said which fields make two
+   * maps two surfaces — and the answer mattered, because one of them was
+   * wrong.
+   */
+  const fallOn = (surface: SurfaceIdentity): CoverageMap => ({
+    surface,
+    entries: [
+      entryWith({
+        status: 'DEGRADED',
+        verifiedAt: T1,
+        verifiedBy: 'traffic',
+        degradationReason: 'the expected refusal never appeared',
+      }),
+    ],
+  });
+  const holdOn = (surface: SurfaceIdentity): CoverageMap => ({
+    surface,
+    entries: [entryWith()],
+  });
+
+  it.each([
+    ['harness', { harness: 'another-harness' }],
+    ['surface', { surface: 'another/hook-wiring.json' }],
+    ['os', { os: 'another-os 2.0' }],
+  ] as const)(
+    'refuses two maps whose %s differs, because a downgrade is attributed to one surface and these name two',
+    (_field, difference) => {
+      expect(() =>
+        downgradesBetween(holdOn(SURFACE), fallOn({ ...SURFACE, ...difference })),
+      ).toThrow();
+    },
+  );
+
+  /**
+   * The one field that must NOT make two maps two surfaces. A probe before and
+   * after a harness upgrade is the same machine, the same file, the same OS
+   * and a new version — it is precisely what `PROBE_TRIGGERS` names `upgrade`
+   * for, and it is the moment a policy is most likely to have silently lost
+   * its wiring. Refusing that comparison means the one downgrade the trigger
+   * exists to catch is the one downgrade that can never be reported.
+   */
+  it('compares two probes of the same surface across a harness upgrade, which is the fall the upgrade trigger exists to catch', () => {
+    const before = holdOn({ ...SURFACE, harnessVersion: '2.0.14' });
+    const upgraded: SurfaceIdentity = { ...SURFACE, harnessVersion: '2.1.0' };
+    const downgrades = downgradesBetween(before, fallOn(upgraded));
+    expect(downgrades.map((downgrade) => [downgrade.from, downgrade.to])).toEqual([
+      ['SUPPORTED', 'DEGRADED'],
+    ]);
+    // The downgrade is attributed to the version it was observed ON, not the
+    // one it was compared against: an operator acts on the surface as it is now.
+    expect(downgrades[0]?.surface).toEqual(upgraded);
+  });
+
   it('reports one downgrade per policy that fell, and leaves the ones that held out of it', () => {
     const before = mapOf([
       entryWith({ policyId: SECRET_WRITE.policyId }),
@@ -1335,6 +1733,32 @@ describe('validating an evidence-matrix row', () => {
     },
   );
 
+  /**
+   * Two npm range spellings that carry no range OPERATOR character, so a check
+   * looking for `^ ~ * < > =` lets them through. Both name a SET of builds,
+   * which is the thing the column exists to exclude: neither answers "which
+   * build was this", and a row carrying one reads like evidence while being a
+   * dependency constraint.
+   */
+  it.each(['1.2.3 || 1.2.4', '1.2.3 - 1.2.7'])(
+    'refuses the harness version %j, because it names a set of builds without using a range operator',
+    (harnessVersion) => {
+      expect(fieldsOf(problemsOfRow(rowWith({ harnessVersion })))).toContain('harnessVersion');
+    },
+  );
+
+  /**
+   * The other direction of the same rule, and the case a bare `\bx\b` gets
+   * wrong: a capital X inside a build identifier is a character of the build's
+   * name, not a wildcard COMPONENT. `2.x` names every 2, `1.0.0-X` names one
+   * build — refusing it would refuse honest evidence and teach an operator to
+   * work around the check.
+   */
+  it('accepts a build identifier carrying a capital X, because that is a character of a build name and not a wildcard component', () => {
+    const result = validateEvidenceRow(rowWith({ harnessVersion: '1.0.0-X' }));
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+  });
+
   it('refuses a row that does not say when it was observed', () => {
     expect(fieldsOf(problemsOfRow(rowWithout('observedAt')))).toContain('observedAt');
   });
@@ -1405,6 +1829,42 @@ describe('validating an evidence-matrix row', () => {
       );
     },
   );
+
+  /**
+   * The two halves of the shape read `downgradeReason` differently: the
+   * required half reads the VALUE (which walks the prototype chain), and the
+   * forbidden half reads PRESENCE with `in` (which also walks it), while the
+   * closed-shape check reads own keys only. A row whose reason is inherited
+   * therefore satisfies "a DEGRADED row says why" with a value that is not on
+   * the row — and `JSON.stringify` of that same row emits no reason at all, so
+   * what gets stored is precisely the incomplete row the matrix refuses.
+   *
+   * Both halves are pinned, because they must move in OPPOSITE directions: an
+   * inherited reason is not really there, so a row that needs one has not got
+   * one, and a row that must not have one has not got one either.
+   */
+  const withInheritedReason = (own: Record<string, unknown>): Record<string, unknown> =>
+    Object.assign(
+      Object.create({
+        downgradeReason: 'inherited from a prototype, not stored on the row',
+      }) as Record<string, unknown>,
+      own,
+    );
+
+  it('refuses a DEGRADED row whose reason is inherited from a prototype, because the row itself carries none', () => {
+    const row = withInheritedReason(rowWith({ status: 'DEGRADED' }));
+    expect(
+      JSON.parse(JSON.stringify(row)),
+      'the fixture stores the reason after all, so it proves nothing',
+    ).not.toHaveProperty('downgradeReason');
+    expect(fieldsOf(problemsOfRow(row))).toContain('downgradeReason');
+  });
+
+  it('accepts a SUPPORTED row whose only downgrade reason is inherited, because there is nothing on the row to refuse', () => {
+    const row = withInheritedReason(rowWith({ status: 'SUPPORTED' }));
+    const result = validateEvidenceRow(row);
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+  });
 
   it.each(['harness', 'surface', 'os', 'mechanism', 'observableSignal', 'evidencePointer'])(
     'refuses a row whose %s is empty',

@@ -38,6 +38,9 @@ export const nativeSurfaceOf = (policy: PolicyDeclaration): NativeHookSurface =>
   event: EVENT_OF[policy.timing],
   matcher: policy.operations.map((operation) => MATCHER_OF[operation]).join('|'),
   hookPath: `${SHARED_HOOKS_DIR}/${policy.mechanism}.mjs`,
+  // The one variable this harness roots its hook commands at, and the only
+  // prefix the probe will strip before comparing the path it was handed.
+  hookRootVariables: ['CLAUDE_PROJECT_DIR'],
 });
 
 export const claudeAdapter: HarnessAdapter = Object.freeze({

@@ -351,6 +351,196 @@ describe('the probe tells the real surface apart from a broken one', () => {
 });
 
 /**
+ * The mention mutations above change the command into something that plainly
+ * does not run the hook. These four leave a command that a shell WOULD run —
+ * or would run under someone else's tree, or without waiting for it — and each
+ * of them was read as `SUPPORTED` against the files this rig really ships:
+ *
+ * - a `&&` segment in front decides whether the hook runs at all, so `false &&`
+ *   in front of the real command is a wiring that can never fire;
+ * - the executed path may be rooted at any variable, so `$HOME/` in place of
+ *   the harness's own root points at a DIFFERENT file with different bytes;
+ * - a trailing `&` backgrounds the hook, and `PreToolUse` enforcement is the
+ *   operation waiting for the exit code — a backgrounded guard refuses nothing.
+ *
+ * Each asserts that the mutation really changed the command before asserting
+ * the answer, because a mutation that matched nothing would leave the test
+ * passing for the wrong reason.
+ */
+const escapeForRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const RUNNABLE_MUTATIONS: readonly (readonly [
+  string,
+  (command: string, hookPath: string) => string,
+])[] = [
+  ['a segment that always fails in front of it', (command) => `false && ${command}`],
+  [
+    'a segment that tests an opt-out variable in front of it',
+    (command) => `test -n "$SKIP_HOOKS" && ${command}`,
+  ],
+  [
+    'a hook file rooted under the home directory instead',
+    (command, hookPath) =>
+      command.replace(
+        new RegExp(`\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?/${escapeForRegExp(hookPath)}`),
+        `$HOME/${hookPath}`,
+      ),
+  ],
+  ['a backgrounded hook nothing waits for', (command) => `${command} &`],
+];
+
+const runnableCases = combos.flatMap(([harness, policyId, adapter, policy]) =>
+  RUNNABLE_MUTATIONS.map(
+    ([mutation, mutate]) => [harness, policyId, mutation, adapter, policy, mutate] as const,
+  ),
+);
+
+describe('a command a shell would run is still not wiring unless it runs THIS hook, and waits for it', () => {
+  it.each(runnableCases)(
+    'reports %s policy %s as UNSUPPORTED when its real command gains %s (mutation: runnable but not enforcing)',
+    async (_harness, _policyId, mutation, adapter, policy: PolicyDeclaration, mutate) => {
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      let original = '';
+      const { snapshot: mutated, changed } = rewriteCommand(snapshot, hookPath, (command) => {
+        original = command;
+        return mutate(command, hookPath);
+      });
+      expect(changed, 'the mutation rewrote no command in the real snapshot').toBe(1);
+      const rewritten = mutate(original, hookPath);
+      expect(rewritten, `${mutation} left the real command untouched`).not.toBe(original);
+
+      const result = probePolicy(policy, adapter, mutated);
+      expect(result.state, `${mutation} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.reason ?? '').toContain(hookPath);
+    },
+  );
+
+  // KEEP GREEN. A redirection carries an `&` that backgrounds nothing, so a
+  // rule refusing every `&` would turn an ordinary redirected wiring
+  // UNSUPPORTED on both real surfaces. What is refused is a `&` that
+  // BACKGROUNDS the command, not the character.
+  it.each(combos)(
+    'still reports %s policy %s as SUPPORTED when its real command only redirects its output (mutation: redirected, not backgrounded)',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      const { snapshot: mutated, changed } = rewriteCommand(
+        snapshot,
+        hookPath,
+        (command) => `${command} >/dev/null 2>&1`,
+      );
+      expect(changed, 'the mutation rewrote no command in the real snapshot').toBe(1);
+      expect(probePolicy(policy, adapter, mutated)).toEqual({ state: 'SUPPORTED' });
+    },
+  );
+});
+
+/**
+ * The last level of wiring the probe still read silently, measured on the real
+ * files. A `matcher` PRESENT in a shape the probe cannot read was coerced to
+ * `undefined` and treated as the EMPTY matcher, so a surface whose matcher was
+ * never read was reported `DEGRADED` — a specific, actionable finding invented
+ * out of a field the probe could not parse. `rules/invariants.md`, "Refusing to
+ * inspect is a third outcome": the probe was handed something it could tell it
+ * could not read.
+ */
+describe('an unreadable matcher on the real surface is reported, not read as the empty matcher', () => {
+  it.each(combos)(
+    'reports %s policy %s as INTEGRATION-FAILED when the real matchers become unreadable (mutation: matcher shape)',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      const { event } = adapter.nativeSurfaceOf(policy);
+      const groups = snapshot.hooks[event] ?? [];
+      expect(groups.length, `the real snapshot wires nothing under ${event}`).toBeGreaterThan(0);
+      expect(probePolicy(policy, adapter, snapshot).state).toBe('SUPPORTED');
+
+      const mutated: unknown = {
+        ...snapshot,
+        hooks: { ...snapshot.hooks, [event]: groups.map((group) => ({ ...group, matcher: 42 })) },
+      };
+      const result = probePolicy(policy, adapter, mutated);
+      expect(result.state, 'a matcher the probe could not read was read as the empty one').toBe(
+        'INTEGRATION-FAILED',
+      );
+      expect(result.reason ?? '').toContain(event);
+    },
+  );
+});
+
+/**
+ * The two surface-identity rules, measured where they are actually used: a
+ * probe of a real surface.
+ *
+ * `harnessVersion` is documented as exact and nothing checked it, so a
+ * coverage map of a real surface could say `latest` — and the comparison that
+ * an `upgrade` probe exists to make was refused precisely because the version
+ * had changed, which is the one thing an upgrade always changes.
+ */
+describe('a coverage map of a real surface names one exact version, and survives that version changing', () => {
+  it.each(adapters)(
+    'refuses to build a %s coverage map against a moving harness version',
+    async (_harness, adapter) => {
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      expect(() =>
+        coverageFromProbe({
+          surface: { ...identityOf(adapter), harnessVersion: 'latest' },
+          policies: POLICIES,
+          adapter,
+          snapshot,
+          at: PROBED_AT,
+          trigger: 'install',
+        }),
+      ).toThrow(/version/i);
+    },
+  );
+
+  it.each(adapters)(
+    'reports the fall a %s harness upgrade introduced, comparing the surface before and after the new version',
+    async (_harness, adapter) => {
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      const policy = POLICIES[0];
+      if (policy === undefined) throw new Error('the registry declares no policy');
+      const { matcher } = adapter.nativeSurfaceOf(policy);
+      const tool = lastToolOf(matcher);
+      const { snapshot: narrowed, changed } = withoutTool(snapshot, matcher, tool);
+      expect(
+        changed,
+        `no group in the real snapshot carries the matcher ${matcher}`,
+      ).toBeGreaterThan(0);
+
+      const oldVersion: SurfaceIdentity = { ...identityOf(adapter), harnessVersion: '1.104.2' };
+      const newVersion: SurfaceIdentity = { ...identityOf(adapter), harnessVersion: '1.105.0' };
+      const before = coverageFromProbe({
+        surface: oldVersion,
+        policies: POLICIES,
+        adapter,
+        snapshot,
+        at: PROBED_AT,
+        trigger: 'install',
+      });
+      const after = coverageFromProbe({
+        surface: newVersion,
+        policies: POLICIES,
+        adapter,
+        snapshot: narrowed,
+        at: LATER,
+        trigger: 'upgrade',
+      });
+
+      const downgrades = downgradesBetween(before, after);
+      expect(downgrades.map((downgrade) => downgrade.policyId)).toContain(policy.policyId);
+      const downgrade = downgrades.find((d) => d.policyId === policy.policyId);
+      if (downgrade === undefined) throw new Error('no downgrade was reported');
+      expect(
+        downgrade.surface,
+        'the fall was attributed to the version it was compared against',
+      ).toEqual(newVersion);
+    },
+  );
+});
+
+/**
  * The structural half of "the mechanism travels on the entry": `coverage.ts`
  * used to name the downgrade's mechanism by looking the policy id up in the
  * registry, which made the field depend on a lookup that can miss and put an

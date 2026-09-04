@@ -37,18 +37,28 @@
  * is wired is a contradiction, not a pass". It is still not a pass;
  * `qualifierFor` maps it to `UNVERIFIABLE`.
  *
+ * **Why this module throws where its neighbours return a `Validation`.** The
+ * line is what the value IS, not how bad it is: outside data read off a disk
+ * becomes a RESULT — `snapshot: unknown` is never trusted and never throws, it
+ * becomes `INTEGRATION-FAILED` — while a value the CALLER chose (a word from a
+ * closed vocabulary, its own clock, its own claim about which build it saw) is
+ * a programming error and throws. `./evidence-matrix.ts` sits on the first
+ * side, this module's two entry points on the second.
+ *
  * Two limits worth stating rather than leaving to be discovered. `DEGRADED`
  * carries no verdict qualifier, so an operation on precisely the tool a
  * degraded matcher lost gets an unqualified allow — the item scopes the
  * `UNVERIFIABLE` requirement to the unenforceable states. And a `reason`
  * supplied with a miss that does not cross the threshold is not retained;
- * only the miss that degrades records one.
+ * only the miss that degrades records one — › "discards the reason given with
+ * a miss that does not degrade, and records the one given with the miss that
+ * does".
  */
 
 import type { HarnessAdapter } from './adapter.js';
 import type { PolicyDeclaration } from './declaration.js';
 import { probePolicy } from './probe.js';
-import { ISO_8601 } from './validation.js';
+import { isExactVersion, ISO_8601 } from './validation.js';
 import { PROBE_TRIGGERS, UNENFORCEABLE_STATES } from './vocabulary.js';
 import type {
   CapabilityState,
@@ -68,13 +78,25 @@ import type {
  */
 export const DEFAULT_DEGRADATION_THRESHOLD = 3;
 
-/** Which concrete surface a coverage map describes; the version is exact, never a range. */
+/**
+ * Which concrete surface a coverage map describes.
+ *
+ * The version is exact, and that is now a check rather than an adjective:
+ * `coverageFromProbe` refuses an identity whose `harnessVersion` names a range
+ * or a moving target, reading the same `isExactVersion` that
+ * `./evidence-matrix.ts` refuses a row on. Three documents called it exact
+ * while nothing read it, and the shape they all missed was this one.
+ */
 export interface SurfaceIdentity {
   /** The adapter's own id for its harness. */
   harness: string;
   /** The surface within it — the file or channel whose wiring was read. */
   surface: string;
-  /** The exact version observed; `./evidence-matrix.ts` is what refuses a range. */
+  /**
+   * The exact version observed — refused at the door by `coverageFromProbe`
+   * if it names a range or a moving target: › "refuses to probe against the
+   * harness version %j, because a moving target names no build".
+   */
   harnessVersion: string;
   os: string;
 }
@@ -174,6 +196,14 @@ export function coverageFromProbe(args: {
     );
   }
   requireTimestamp('at', at);
+  // The identity is the caller's claim about WHICH build was observed, and
+  // three documents called it exact while nothing read it. A map is the shape
+  // that carries it, so this is where it is refused.
+  if (!isExactVersion(surface.harnessVersion)) {
+    throw new Error(
+      `surface.harnessVersion must name the exact version observed, not a range or a moving target; got ${JSON.stringify(surface.harnessVersion)}`,
+    );
+  }
 
   const entries = policies.map((policy) => {
     const result = probePolicy(policy, adapter, snapshot);
@@ -280,10 +310,14 @@ export function qualifierFor(state: CapabilityState): VerdictQualifier | undefin
  * another is a report an operator would act on in the wrong place.
  */
 export function downgradesBetween(before: CoverageMap, after: CoverageMap): Downgrade[] {
+  // Deliberately NOT harnessVersion. A probe before and after an upgrade
+  // carries two versions of one surface, and that pair is exactly what the
+  // `upgrade` trigger exists to compare — refusing it disabled the comparison
+  // for the case it was added for. Harness, surface and OS are what make it
+  // the same place.
   const sameSurface =
     before.surface.harness === after.surface.harness &&
     before.surface.surface === after.surface.surface &&
-    before.surface.harnessVersion === after.surface.harnessVersion &&
     before.surface.os === after.surface.os;
   if (!sameSurface) {
     throw new Error(

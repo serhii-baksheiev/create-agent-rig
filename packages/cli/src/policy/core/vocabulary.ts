@@ -59,9 +59,20 @@ export const VERIFICATION_SOURCES = closed(['probe', 'traffic'] as const);
 export type VerificationSource = (typeof VERIFICATION_SOURCES)[number];
 
 /**
- * The events that occasion an active probe. Every member is a CHANGE to the
- * surface, never an interval: periodic re-probing is forbidden, and the way
- * that rule is kept is that this vocabulary offers no word for it.
+ * The occasions on which a surface is probed. Every member is an event on the
+ * surface; none of them is an interval.
+ *
+ * What this vocabulary does, exactly: `./coverage.ts` › `coverageFromProbe`
+ * takes a trigger as a required argument and refuses a word outside this list,
+ * so a probe must NAME its occasion and cannot name a schedule — ›
+ * "refuses the trigger %j, because a probe is occasioned by a change to the
+ * surface and by nothing else".
+ *
+ * ⚠ What it does NOT do, stated because an earlier draft of this comment
+ * claimed it: nothing here stops a caller passing `'upgrade'` on a timer. The
+ * check refuses a LABEL outside the vocabulary, not the practice of probing
+ * periodically. `docs/decisions/capability-coverage.md` §1 says the same, and
+ * this file used to contradict it.
  */
 export const PROBE_TRIGGERS = closed(['install', 'upgrade', 'registration', 'reconnect'] as const);
 export type ProbeTrigger = (typeof PROBE_TRIGGERS)[number];

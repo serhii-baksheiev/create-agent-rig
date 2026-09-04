@@ -139,7 +139,12 @@ A row missing either reads like evidence and is not one: nothing in it answers
 "which build was this" or "was this before or after the change". Storing it
 anyway is how a matrix fills with rows a later reader takes for measurements.
 
-**"Exact" is a check, not an adjective** — and it was an adjective for one gate
+**"Exact" is a check, not an adjective** — in both shapes that carry a version.
+`isExactVersion` lives in `validation.ts` and is read by `validateEvidenceRow`
+for a matrix row and by `coverageFromProbe` for a surface identity, so the word
+means one thing wherever it is written.
+
+The same paragraph, before the fix — and it was an adjective for one gate
 round. `latest`, `^2.0` and `2.x` all validated while three separate sentences
 promised an exact version, because the only check on the field was that it was
 not blank. The vague words and the range operators are now refused: ›
@@ -162,16 +167,33 @@ build id.
   Nothing forces a caller to report a miss. The contract makes the answer
   correct once the observation arrives; it does not make the observation
   arrive.
-- **No code reads a harness version.** `SurfaceIdentity.harnessVersion` is
-  supplied by the caller and checked for shape; obtaining a real one from a
-  live harness is not part of this.
+- **No code OBTAINS a harness version.** `SurfaceIdentity.harnessVersion` is
+  supplied by the caller; `coverageFromProbe` refuses one that names a range or
+  a moving target, but nothing here asks a live harness which build it is. An
+  earlier draft of this bullet said "checked for shape" while nothing checked
+  it — the third place the same unbacked claim was written, and the reason the
+  check now exists.
 - **`DEGRADED` carries no verdict qualifier.** An operation on precisely the
   tool a degraded matcher lost gets an unqualified allow. The item scopes the
   `UNVERIFIABLE` requirement to the unenforceable states, so this is the
   contract as written — but it is a limit of the "never a silent PASS" claim
   and not covered by it.
 - **A `reason` given with a non-degrading miss is discarded.** Only the miss
-  that crosses the threshold records one.
+  that crosses the threshold records one — › "discards the reason given with a
+  miss that does not degrade, and records the one given with the miss that
+  does".
+- **`downgradesBetween` compares by harness, surface and OS — not by version.**
+  A probe before and after an upgrade carries two versions of one surface, and
+  that pair is exactly what the `upgrade` trigger exists to compare. Including
+  the version in the equality made the function throw on the only case it was
+  added for, which is what `code-reviewer` caught: › "compares two probes of
+  the same surface across a harness upgrade, which is the fall the upgrade
+  trigger exists to catch".
+- **The probe understates rather than guesses.** `/usr/bin/node <hook>`,
+  `pnpm node <hook>` and `cd "$D" && node <hook>` all read `UNSUPPORTED`: the
+  accepted shape requires `node` as the executable word and assignments-only
+  segments ahead of it. That is the safe direction, and it is a real limit —
+  a rig wiring its hooks any of those ways would be reported as unenforced.
 
 ## Where the rules are pinned
 

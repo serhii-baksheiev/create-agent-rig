@@ -28,12 +28,12 @@
 import { CAPABILITY_STATES } from './vocabulary.js';
 import type { CapabilityState } from './vocabulary.js';
 import {
+  exactVersion,
   ISO_8601,
   isRecord,
   matching,
   member,
   nonBlankString,
-  quote,
   unknownKeys,
 } from './validation.js';
 import type { Problem, Validation } from './validation.js';
@@ -80,34 +80,6 @@ const REQUIRED_TEXT = [
   'evidencePointer',
 ] as const;
 
-/**
- * A version that names a build rather than a moving target.
- *
- * Refused: the vague words, and anything carrying a range operator or a
- * wildcard component. The rule exists because "an exact version" was stated
- * three times in this file while nothing checked it, and a row saying `latest`
- * reads like evidence while answering neither of the two questions the column
- * is for — which build was this, and was this before or after the change.
- * Pinned in `packages/cli/test/policy-coverage.test.ts` › "refuses the harness
- * version %j, because it names a range or a moving target rather than a build"
- * and, in the other direction, › "accepts the exact harness version %j,
- * including a plain build id".
- */
-const VAGUE_VERSIONS: readonly string[] = ['latest', 'current', 'unknown', 'any', 'head'];
-const RANGE_OR_WILDCARD = /[\^~*<>=]|\bx\b|\.x\b/i;
-
-const exactVersion = (problems: Problem[], value: unknown): void => {
-  if (typeof value !== 'string') return;
-  const version = value.trim();
-  if (version === '') return;
-  if (VAGUE_VERSIONS.includes(version.toLowerCase()) || RANGE_OR_WILDCARD.test(version)) {
-    problems.push({
-      field: 'harnessVersion',
-      message: `must name the exact version observed, not a range or a moving target; got ${quote(value)}`,
-    });
-  }
-};
-
 /** Validate an unknown value as one matrix row, reporting every problem at once. */
 export function validateEvidenceRow(input: unknown): Validation<EvidenceRow> {
   if (!isRecord(input)) {
@@ -116,17 +88,24 @@ export function validateEvidenceRow(input: unknown): Validation<EvidenceRow> {
   const problems: Problem[] = [];
   unknownKeys(problems, input, KEYS);
   for (const field of REQUIRED_TEXT) nonBlankString(problems, field, input[field]);
-  exactVersion(problems, input.harnessVersion);
+  exactVersion(problems, 'harnessVersion', input.harnessVersion);
   matching(problems, 'observedAt', input.observedAt, ISO_8601, 'an ISO-8601 date-time with a zone');
   const known = member(problems, 'status', input.status, CAPABILITY_STATES);
+  // Both branches read an OWN key. Mixing `in` with the own-key read that
+  // `unknownKeys` performs let a DEGRADED row inherit its reason from a
+  // prototype: the row validated, and then serialised with no reason at all —
+  // "a row that reads like evidence and is not one", which is the shape this
+  // module exists to refuse.
+  const carriesReason = Object.hasOwn(input, 'downgradeReason');
   if (known && input.status !== 'SUPPORTED') {
-    nonBlankString(problems, 'downgradeReason', input.downgradeReason);
+    if (carriesReason) nonBlankString(problems, 'downgradeReason', input.downgradeReason);
+    else problems.push({ field: 'downgradeReason', message: 'must be a non-blank string' });
   }
   // The shape is closed in both directions: a supported row has no reason to
   // give, so a `downgradeReason` on one is refused rather than ignored. Left
   // unchecked, the field went unvalidated on that branch and the narrowing
   // below handed back a value typed `string` that was not one.
-  if (known && input.status === 'SUPPORTED' && 'downgradeReason' in input) {
+  if (known && input.status === 'SUPPORTED' && carriesReason) {
     problems.push({
       field: 'downgradeReason',
       message: 'a SUPPORTED row has nothing to explain, so it carries no downgrade reason',

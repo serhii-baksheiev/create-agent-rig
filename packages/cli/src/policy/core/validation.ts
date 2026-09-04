@@ -153,3 +153,49 @@ export const matching = (
   problems.push({ field, message: `must be ${expected}, got ${quote(value)}` });
   return false;
 };
+
+/**
+ * A version that names one build rather than a set of them.
+ *
+ * One spelling of one fact: `./evidence-matrix.ts` refuses a matrix row on it
+ * and `./coverage.ts` refuses a surface identity on it, so "the exact version
+ * observed" means the same thing wherever it is written. It was two prose
+ * sentences and one check before, and the shape they did not check was the
+ * `SurfaceIdentity` — the one a coverage map actually carries.
+ *
+ * Refused: the vague words, range OPERATORS, a wildcard component, and the two
+ * npm range spellings that use neither (`1.2.3 || 1.2.4`, `1.2.3 - 1.2.7`).
+ * Accepted: anything else that names a build, including a bare sha, a date
+ * build id, and a pre-release tag carrying an `x` or `X` — a letter in a build
+ * name is not a wildcard, which is why the check reads a wildcard COMPONENT
+ * (`2.x`, `1.0.0.x`) rather than the letter. Pinned in
+ * `packages/cli/test/policy-coverage.test.ts` (absent in a generated rig) ›
+ * "accepts a build identifier carrying a capital X, because that is a
+ * character of a build name and not a wildcard component".
+ */
+const VAGUE_VERSIONS: readonly string[] = ['latest', 'current', 'unknown', 'any', 'head'];
+const RANGE_OPERATOR = /[\^~*<>=]/;
+const WILDCARD_COMPONENT = /(^|\.)[xX*](\.|$)/;
+const RANGE_SPELLING = /\s(\|\||-)\s/;
+
+export const isExactVersion = (value: string): boolean => {
+  const version = value.trim();
+  if (version === '') return false;
+  if (VAGUE_VERSIONS.includes(version.toLowerCase())) return false;
+  return !(
+    RANGE_OPERATOR.test(version) ||
+    WILDCARD_COMPONENT.test(version) ||
+    RANGE_SPELLING.test(version)
+  );
+};
+
+/** Refuse a version that names a range or a moving target, quoting the value. */
+export const exactVersion = (problems: Problem[], field: string, value: unknown): void => {
+  if (typeof value !== 'string' || value.trim() === '') return;
+  if (!isExactVersion(value)) {
+    problems.push({
+      field,
+      message: `must name the exact version observed, not a range or a moving target; got ${quote(value)}`,
+    });
+  }
+};

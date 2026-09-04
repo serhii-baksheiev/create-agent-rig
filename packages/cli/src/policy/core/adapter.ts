@@ -25,6 +25,23 @@ export interface NativeHookSurface {
   matcher: string;
   /** Repo-relative path of the hook file the harness runs. */
   hookPath: string;
+  /**
+   * The shell variable names this harness legitimately roots its own hook
+   * paths at, without the `$`.
+   *
+   * The probe strips one of THESE prefixes before comparing a command's
+   * argument to `hookPath`, and no others. Stripping any `$VAR/` instead
+   * collapsed every tree onto one string, so a hook file rooted at an
+   * unrelated variable — a home directory, a temporary directory — was
+   * indistinguishable from the repository's own and read SUPPORTED: a false
+   * pass on the one question the contract exists to answer.
+   * The list belongs to the adapter because the core may not name a harness's
+   * variables, and it is per-surface because the two harnesses do not agree on
+   * one. Pinned in `packages/cli/test/policy-coverage.test.ts` (absent in a
+   * generated rig) › "reads a hook under %s rooted at %s as UNSUPPORTED,
+   * because that tree is not the one the harness runs from".
+   */
+  hookRootVariables: readonly string[];
 }
 
 export interface HarnessAdapter {

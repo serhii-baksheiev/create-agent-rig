@@ -14,7 +14,7 @@
  *
  * | input | answer | pinned by |
  * | --- | --- | --- |
- * | a group naming exactly the declared tools and RUNNING the hook | `SUPPORTED` | › "reads the authoring harness spelling as running the hook, because it is what the rig really ships" |
+ * | a group naming exactly the declared tools and RUNNING the hook | `SUPPORTED` | › "reads %s as running the hook, because it is what the rig really ships" |
  * | the hook run under that event, but by no group naming exactly those tools | `DEGRADED` | › "reads a wiring that drops a declared tool as DEGRADED, naming the tool that is missing" |
  * | a readable snapshot that runs the hook nowhere under that event | `UNSUPPORTED` | › "reads a hook wired nowhere under the policy event as UNSUPPORTED, naming the hook path" |
  * | a snapshot, or any level of wiring under it, in a shape this module cannot read | `INTEGRATION-FAILED` | › "reports INTEGRATION-FAILED when %s, naming the event it could not read" |
@@ -40,7 +40,7 @@
  * `docs/decisions/capability-coverage.md`.
  */
 
-import type { HarnessAdapter } from './adapter.js';
+import type { HarnessAdapter, NativeHookSurface } from './adapter.js';
 import type { PolicyDeclaration } from './declaration.js';
 import type { CapabilityState } from './vocabulary.js';
 import { isRecord, quote } from './validation.js';
@@ -79,9 +79,14 @@ export interface ProbeResult {
  * input in a module whose callers fail open is a line that can be made
  * expensive (`rules/invariants.md`, "A guard that fails open must do provably
  * bounded work"). Past the cap the command is refused rather than parsed, and
- * a refusal reads `UNSUPPORTED` — the safe direction. Generous by two orders of
- * magnitude against the longest command the rig ships, so the bound never
- * fires on honest wiring: › "states its command-length cap as a whole number,
+ * a refusal reads `UNSUPPORTED` — the safe direction.
+ *
+ * The margin, measured rather than asserted over every wiring snapshot this
+ * rig ships: the longest command in any of them is 131 bytes, so 4096 is ~31x
+ * the longest. An earlier draft of
+ * this comment claimed "two orders of magnitude", which was wrong by 3x and
+ * which nothing checked — the cited test pins that the cap ADMITS the shipped
+ * commands, not any ratio: › "states its command-length cap as a whole number,
  * and one that admits the commands the rig ships".
  */
 export const MAX_HOOK_COMMAND_LENGTH = 4096;
@@ -103,11 +108,83 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 const unquote = (token: string): string => token.replace(/^["']|["']$/g, '');
 
-/** `"$VAR/rest"`, `${VAR}/rest` and `./rest` all denote `rest` relative to the root. */
-const asRepoRelative = (token: string): string =>
-  unquote(token)
-    .replace(/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\//, '')
-    .replace(/^\.\//, '');
+/**
+ * Split a segment into words the way a shell would for this purpose: on
+ * whitespace, except inside quotes or a `$( )` substitution.
+ *
+ * A plain `split(/\s+/)` cannot read a command this rig actually ships. An
+ * assignment whose value is a command substitution is ONE word whose value
+ * happens to contain spaces, and splitting it into three makes the segment
+ * look like an assignment followed by a command — which is exactly what the
+ * rule below refuses. Pinned by the keep-green control ›
+ * "still reads %s as running the hook, so the segment rule refuses nothing the
+ * rig ships".
+ *
+ * One forward pass, one character at a time, with a depth counter that cannot
+ * exceed the input length: the work is linear and the module's callers fail
+ * open, so it may not be otherwise (`rules/invariants.md`, "A guard that fails
+ * open must do provably bounded work").
+ */
+const wordsOf = (segment: string): string[] => {
+  const words: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let depth = 0;
+  for (let index = 0; index < segment.length; index += 1) {
+    const character = segment[index] ?? '';
+    if (quote !== null) {
+      current += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === '$' && segment[index + 1] === '(') depth += 1;
+    else if (character === ')' && depth > 0) depth -= 1;
+    if (/\s/.test(character) && depth === 0) {
+      if (current !== '') words.push(current);
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  if (current !== '') words.push(current);
+  return words;
+};
+
+/**
+ * A word that backgrounds the command, so nothing waits for its exit code.
+ *
+ * A backgrounded hook returns to the harness immediately, so a
+ * fail-closed guard never blocks the operation it was wired to judge — the
+ * mechanism is neutered while the wiring still names it. Matching a trailing
+ * `&` rather than any `&` is what keeps `2>&1` readable: › "still reads a
+ * redirected hook that is not backgrounded as running the hook".
+ */
+const BACKGROUNDS = /&$/;
+
+/**
+ * The repo-relative path a token denotes, or `null` when it is rooted
+ * somewhere this harness never roots its own hooks.
+ *
+ * `roots` comes from the adapter (`NativeHookSurface.hookRootVariables`).
+ * Stripping ANY `$VAR/` collapsed every tree onto the same string, so a hook
+ * rooted at an unrelated variable was indistinguishable from the repository's
+ * own file and read SUPPORTED. Returning `null` for a root the harness does
+ * not name is what makes that a refusal rather than a false pass.
+ */
+const asRepoRelative = (token: string, roots: readonly string[]): string | null => {
+  const bare = unquote(token);
+  const rooted = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.*)$/.exec(bare);
+  if (rooted !== null) {
+    const [, variable = '', rest = ''] = rooted;
+    return roots.includes(variable) ? rest : null;
+  }
+  return bare.replace(/^\.\//, '');
+};
 
 /**
  * Does this command RUN the hook, rather than merely mention it?
@@ -119,27 +196,52 @@ const asRepoRelative = (token: string): string =>
  * never give on evidence it does not have. Every one of those is a case in ›
  * "reads %s as UNSUPPORTED, naming the hook path it looked for".
  *
- * The accepted shape is deliberately narrow: `&&`-joined segments, an optional
- * run of `NAME=value` assignments, `node` as the executable, flags skipped, and
- * the first remaining token EQUAL to the hook path once quotes, a `$VAR/`
- * prefix and a leading `./` are stripped. Anything else is refused rather than
- * guessed at. Both shapes the rig ships are held green by the two cases of ›
- * "reads %s as running the hook, because it is what the rig really ships".
+ * The accepted shape is deliberately narrow, and every clause of it was paid
+ * for by a measured false `SUPPORTED`:
+ *
+ * - no `||`, `;`, single `|` or `#` anywhere — execution must be unconditional;
+ * - `&&`-joined segments, and every segment BEFORE the one that runs the hook
+ *   must consist only of `NAME=value` assignments. Without that clause
+ *   `false && node <hook>` and `[ -f /tmp/enable ] && node <hook>` read as
+ *   enforcement, and so did a mention inside a quoted string: ›
+ *   "reads %s before the hook as UNSUPPORTED, because that segment decides
+ *   whether the hook runs at all";
+ * - no word backgrounds the command;
+ * - `node` is the executable word, flags are skipped, and the first remaining
+ *   word EQUALS the hook path once quotes, a root this harness names, and a
+ *   leading `./` are stripped.
+ *
+ * Anything else is refused rather than guessed at, and a refusal reads
+ * `UNSUPPORTED` — the safe direction, because it understates what the surface
+ * enforces. What it understates is written down: `/usr/bin/node <hook>` and
+ * `pnpm node <hook>` are refused for naming an executable other than `node`,
+ * and `cd "$D" && node <hook>` for a leading segment that is not an
+ * assignment — › "reads a directory change before the hook as UNSUPPORTED,
+ * understating a wiring that may well be real".
  */
-const runs = (command: string, hookPath: string): boolean => {
+const runs = (command: string, surface: NativeHookSurface): boolean => {
   if (command.length > MAX_HOOK_COMMAND_LENGTH) return false;
   if (NOT_UNCONDITIONAL.test(command)) return false;
-  for (const segment of command.split('&&')) {
-    const tokens = segment
-      .trim()
-      .split(/\s+/)
-      .filter((token) => token !== '');
-    let index = 0;
-    while (index < tokens.length && ASSIGNMENT.test(tokens[index] ?? '')) index += 1;
-    if (unquote(tokens[index] ?? '') !== 'node') continue;
-    index += 1;
-    while (index < tokens.length && (tokens[index] ?? '').startsWith('-')) index += 1;
-    if (asRepoRelative(tokens[index] ?? '') === hookPath) return true;
+  const segments = command.split('&&');
+  for (let index = 0; index < segments.length; index += 1) {
+    const words = wordsOf(segments[index] ?? '');
+    if (words.some((word) => BACKGROUNDS.test(word))) return false;
+    let cursor = 0;
+    while (cursor < words.length && ASSIGNMENT.test(words[cursor] ?? '')) cursor += 1;
+    if (unquote(words[cursor] ?? '') !== 'node') continue;
+    // Everything ahead of the segment that runs the hook has to be an
+    // assignment too: a segment that can fail is a segment that decides
+    // whether the hook runs at all.
+    const precededOnlyByAssignments = segments.slice(0, index).every((earlier) => {
+      const earlierWords = wordsOf(earlier);
+      return earlierWords.length > 0 && earlierWords.every((word) => ASSIGNMENT.test(word));
+    });
+    if (!precededOnlyByAssignments) return false;
+    cursor += 1;
+    while (cursor < words.length && (words[cursor] ?? '').startsWith('-')) cursor += 1;
+    if (asRepoRelative(words[cursor] ?? '', surface.hookRootVariables) === surface.hookPath) {
+      return true;
+    }
   }
   return false;
 };
@@ -226,6 +328,14 @@ export function probePolicy(
         }
         hooks.push({ command: hook.command });
       }
+      // The matcher is a level like any other, and it is the level the
+      // SUPPORTED/DEGRADED decision is read from. Coercing a present-but-
+      // unreadable one to `undefined` made it the EMPTY matcher, so an
+      // unreadable group answered DEGRADED — a level skipped, reported as a
+      // whole read. Absent stays absent; present-and-unreadable is a finding.
+      if ('matcher' in group && typeof group.matcher !== 'string') {
+        return unreadable(`the matcher of a group under ${surface.event} is not a string`);
+      }
       groups.push({
         matcher: typeof group.matcher === 'string' ? group.matcher : undefined,
         hooks,
@@ -234,9 +344,7 @@ export function probePolicy(
   }
 
   const declared = toolsOf(surface.matcher);
-  const running = groups.filter((group) =>
-    group.hooks.some((hook) => runs(hook.command, surface.hookPath)),
-  );
+  const running = groups.filter((group) => group.hooks.some((hook) => runs(hook.command, surface)));
 
   if (running.length === 0) {
     return {

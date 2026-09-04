@@ -39,6 +39,10 @@ export const nativeSurfaceOf = (policy: PolicyDeclaration): NativeHookSurface =>
   event: EVENT_OF[policy.timing],
   matcher: policy.operations.map((operation) => MATCHER_OF[operation]).join('|'),
   hookPath: `${SHARED_HOOKS_DIR}/${policy.mechanism}.mjs`,
+  // This harness derives its own root and points the hook path at it. The
+  // other variable its command exports is passed to the hook as environment,
+  // not used to root the path, so it is not a root and is not listed here.
+  hookRootVariables: ['repoRoot'],
 });
 
 export const codexAdapter: HarnessAdapter = Object.freeze({
