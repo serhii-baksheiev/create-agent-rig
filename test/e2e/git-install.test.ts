@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { runNpx } from './run.js';
+import { installEnv, runNpx } from './run.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -39,7 +39,7 @@ describe('git install (the `npx github:…` personal-stage distribution path)', 
       ],
       {
         cwd: appDir,
-        env: { ...process.env, npm_config_cache: path.join(work, 'npx-cache') },
+        env: installEnv(path.join(work, 'npx-cache')),
       },
     );
     const pkg = JSON.parse(await readFile(path.join(appDir, 'git-app', 'package.json'), 'utf8'));

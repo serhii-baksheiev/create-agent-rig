@@ -3,6 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+// Shared with e2e-install-network.test.ts — a second copy of a scanner is a
+// copy that drifts (`.claude/rules/invariants.md`, "One mechanism, one
+// implementation"). This file had the original; it now imports it.
+import { stripComments } from './lib/source-scan.js';
+
 // WHY THIS TEST EXISTS — a measured, intermittent failure of `pnpm test`:
 //
 //   FAIL |e2e| test/e2e/upgrade.test.ts > npm pack → init → upgrade …
@@ -44,48 +49,6 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const e2eDir = path.join(repoRoot, 'test', 'e2e');
-
-/**
- * Blank out comments, preserving string and template literals, so a `pack`
- * mentioned in prose (or in a code sample inside a comment explaining THIS
- * rule) can never be mistaken for an invocation.
- */
-function stripComments(source: string): string {
-  let out = '';
-  let i = 0;
-  while (i < source.length) {
-    const two = source.slice(i, i + 2);
-    if (two === '//') {
-      while (i < source.length && source[i] !== '\n') i += 1;
-      continue;
-    }
-    if (two === '/*') {
-      i += 2;
-      while (i < source.length && source.slice(i, i + 2) !== '*/') i += 1;
-      i += 2;
-      continue;
-    }
-    const char = source[i]!;
-    if (char === "'" || char === '"' || char === '`') {
-      out += char;
-      i += 1;
-      while (i < source.length) {
-        const inner = source[i]!;
-        out += inner;
-        i += 1;
-        if (inner === '\\') {
-          if (i < source.length) out += source[i++]!;
-          continue;
-        }
-        if (inner === char) break;
-      }
-      continue;
-    }
-    out += char;
-    i += 1;
-  }
-  return out;
-}
 
 /**
  * The two spellings of "this process runs `npm pack`":

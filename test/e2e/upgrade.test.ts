@@ -6,6 +6,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
+import { installEnv } from './run.js';
+
 const exec = promisify(execFile);
 const sha256 = (content: string): string =>
   createHash('sha256').update(content, 'utf8').digest('hex');
@@ -53,9 +55,14 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
 
     const prefix = path.join(work, 'install');
     await mkdir(prefix);
+    // The CLI flags are redundant with the env — npm's precedence puts CLI above
+    // env and both say the same thing — and they are kept because this is the
+    // one call site where they were already right: it took 2.8 s in the very CI
+    // run where pack-install timed out at 300 s, which is the observation that
+    // pointed at audit in the first place.
     await exec('npm', ['install', '--no-audit', '--no-fund', '--prefix', prefix, tarball], {
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, npm_config_cache: path.join(work, 'npm-cache') },
+      env: installEnv(path.join(work, 'npm-cache')),
     });
     const pkgRoot = path.join(prefix, 'node_modules', 'create-agent-rig');
     cliBin = path.join(pkgRoot, 'packages', 'cli', 'dist', 'index.js');
