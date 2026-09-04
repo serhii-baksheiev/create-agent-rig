@@ -221,6 +221,50 @@ export const npmDebugLogs = (cacheDir: string | undefined): string => {
 };
 
 /**
+ * The environment every e2e install runs under.
+ *
+ * 🔴 `audit` is off, and that is not tidiness — it is the whole reason the
+ * `e2e` lane stopped timing out. npm's audit is a network call made AROUND the
+ * install, on an endpoint npm's own notice says is being retired ("This
+ * endpoint is being retired. Use the bulk advisory endpoint instead").
+ *
+ * Measured on the WSL host, one packed tarball, ONE shared warm npm cache,
+ * cases alternated so ordering cannot explain the split:
+ *
+ * | what ran                              | ms                |
+ * | ------------------------------------- | ----------------- |
+ * | `npx`, as the suite invoked it before  | 322 574 / 425 581 |
+ * | audit off, fund on                     | 4 782             |
+ * | audit on, fund off                     | 260 834           |
+ * | both off                               | 5 584 / 4 558     |
+ * | `--offline` against that same cache    | 2 721             |
+ *
+ * The third row is why this comment credits `audit` and not the pair: with
+ * `fund` off and `audit` left on the install still costs 260 s. `fund` is
+ * disabled alongside it only because the control below already did, and it was
+ * measured not to matter. A warm cache does not help either (387 s and 396 s on
+ * the third and fourth reuse), so the time is not the install.
+ *
+ * Nothing in the e2e suite asserts anything about audit or funding output —
+ * the contract under test is pack → install → generate — so the call is pure
+ * cost with an unbounded network tail bolted to a fixed budget. No budget in
+ * this suite was raised to fix that; the work is gone instead.
+ *
+ * The suite carried its own control before this existed: `upgrade.test.ts`
+ * already installed the same tarball with `--no-audit --no-fund` and took
+ * 2.8 s in the very CI run where `pack-install` timed out at 300 s.
+ *
+ * `test/template/e2e-install-network.test.ts` holds both halves: what this
+ * builds, and that no e2e file names an npm config variable of its own.
+ */
+export const installEnv = (cache: string): NodeJS.ProcessEnv => ({
+  ...process.env,
+  npm_config_cache: cache,
+  npm_config_audit: 'false',
+  npm_config_fund: 'false',
+});
+
+/**
  * `execFile`, with the child's own output preserved on failure.
  *
  * A drop-in for the bare `exec(…)` calls the install suites used to make.

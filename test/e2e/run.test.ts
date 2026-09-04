@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { runNpx } from './run.js';
+import { installEnv, runNpx } from './run.js';
 
 /**
  * The part of RP-70's helper that actually spawns a child. The pure assertions
@@ -25,7 +25,7 @@ describe('runNpx', () => {
   // Every suite here points npm at its own cache; without it these two would
   // write debug logs into the host's, and the failing case could never reach
   // the debug-log path at all.
-  const env = () => ({ ...process.env, npm_config_cache: path.join(work, 'npx-cache') });
+  const env = () => installEnv(path.join(work, 'npx-cache'));
 
   it('returns the child output when the command succeeds', async () => {
     const { stdout } = await runNpx(['--yes', '--version'], { cwd: work, env: env() });

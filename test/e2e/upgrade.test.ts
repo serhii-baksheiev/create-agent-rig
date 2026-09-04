@@ -6,6 +6,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
+import { installEnv } from './run.js';
+
 const exec = promisify(execFile);
 const sha256 = (content: string): string =>
   createHash('sha256').update(content, 'utf8').digest('hex');
@@ -53,9 +55,12 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
 
     const prefix = path.join(work, 'install');
     await mkdir(prefix);
+    // The flags stay as well as the env: this call is the control that first
+    // showed the cost (2.8 s here against a 300 s timeout in pack-install), and
+    // dropping them would erase the comparison the measurement rests on.
     await exec('npm', ['install', '--no-audit', '--no-fund', '--prefix', prefix, tarball], {
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, npm_config_cache: path.join(work, 'npm-cache') },
+      env: installEnv(path.join(work, 'npm-cache')),
     });
     const pkgRoot = path.join(prefix, 'node_modules', 'create-agent-rig');
     cliBin = path.join(pkgRoot, 'packages', 'cli', 'dist', 'index.js');
