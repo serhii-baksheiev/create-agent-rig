@@ -251,8 +251,8 @@ export const npmDebugLogs = (cacheDir: string | undefined): string => {
  * Nothing in the e2e suite asserts anything about audit or funding output —
  * the contract under test is pack → install → generate — so the call is pure
  * cost with an unbounded network tail bolted to a fixed budget. That sentence
- * is the reason this is a cost saving rather than a coverage loss, so it is
- * asserted rather than claimed:
+ * is the reason this is a cost saving rather than a coverage loss, so BOTH
+ * halves of it are asserted rather than claimed:
  * `test/template/e2e-install-network.test.ts` › "no e2e file asserts on npm
  * audit output, which is what makes disabling it a cost saving rather than a
  * coverage loss". No budget in this suite was raised; the work is gone instead.

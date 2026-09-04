@@ -86,38 +86,64 @@ async function e2eSourceFiles(): Promise<string[]> {
 const HELPER = 'run.ts';
 
 /**
- * The npm-family install calls in one source, as their full call text.
+ * The npm-family install calls in one source, as their full call text — `null`
+ * for one whose text could not be read (see `callTextAt`).
  *
- * Two spellings, and both are how this suite actually writes them:
- *   - `runNpx([...], { … })` — the wrapper every npx path goes through
+ * Three spellings, and all three are how this suite actually writes them:
+ *   - `runNpx([...], { … })` — the wrapper most npx paths go through
+ *   - `exec('npx', [...], { … })` — npx called directly, which `generate.test.ts`
+ *     does; npx runs npm, so it audits exactly as the wrapper does
  *   - `exec('npm', ['install', …], { … })` — npm as an argv-array command
+ *
+ * 🔴 The second spelling is here because leaving it out was a REAL hole, found
+ * by two reviewers independently on gate round 3. `generate.test.ts` — a file
+ * this very change edited to add `installEnv` — reported zero calls, so nothing
+ * held that argument in place: deleting it would have restored the 300 s
+ * timeout with every test in this file still green. A guard that misses the
+ * site it was written for is exactly the failure this file exists to prevent,
+ * and it survived one round of being rewritten for precisely that reason.
  *
  * `npm pack` is not an install and runs no audit, so it is excluded by name
  * rather than by hoping nobody writes it: `pack-once.ts` runs exactly that and
- * must not be dragged in. `pnpm` is a different command and never matches.
+ * must not be dragged in. No such exclusion applies to `npx`, which always
+ * installs. `pnpm` is a different command, runs no audit on install, and never
+ * matches — four sites in this suite legitimately do not use the helper.
  */
-export function npmInstallCalls(source: string): string[] {
+export function npmInstallCalls(source: string): (string | null)[] {
   const code = stripComments(source);
-  const calls: string[] = [];
+  const calls: (string | null)[] = [];
 
   for (const match of code.matchAll(/\brunNpx\s*\(/g)) {
     calls.push(callTextAt(code, match.index + match[0].length - 1));
   }
 
-  // `npm` as the command of an exec-like call, with an argument array whose
-  // first entry is not `pack`.
+  // `npx`, or `npm` with an argument array whose first entry is not `pack`, as
+  // the command of an exec-like call.
   for (const match of code.matchAll(
-    /\b(?:exec|execFile|execSync|execFileSync|spawn|spawnSync|run)\s*\(\s*['"`]npm['"`]\s*,\s*\[\s*['"`]([a-z-]+)['"`]/g,
+    /\b(?:exec|execFile|execSync|execFileSync|spawn|spawnSync|run)\s*\(\s*['"`](npx|npm)['"`]\s*,\s*\[\s*['"`]([^'"`]*)['"`]/g,
   )) {
-    if (match[1] === 'pack') continue;
+    if (match[1] === 'npm' && match[2] === 'pack') continue;
     calls.push(callTextAt(code, code.indexOf('(', match.index)));
   }
 
   return calls;
 }
 
-/** Does this call hand its child the shared install environment? */
-const usesHelper = (call: string): boolean => /\binstallEnv\s*\(/.test(call);
+/** A call's text with the CONTENTS of string literals blanked out. */
+const blankStrings = (call: string): string =>
+  call.replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g, '$1$1');
+
+/**
+ * Does this call hand its child the shared install environment?
+ *
+ * `null` — a call whose text would not balance — is NOT compliant: a guard that
+ * could not read what it was handed must not report that it found nothing
+ * (`.claude/rules/invariants.md`, "Refusing to inspect is a third outcome").
+ * String contents are blanked first, so `'--package=installEnv(x)'` inside an
+ * argument cannot pass for the real call.
+ */
+const usesHelper = (call: string | null): boolean =>
+  call !== null && /\binstallEnv\s*\(/.test(blankStrings(call));
 
 describe('the e2e install env disables npm advisory network calls', () => {
   it('builds an env that turns audit and fund off and keeps the caller cache', () => {
@@ -138,10 +164,16 @@ describe('the e2e install env disables npm advisory network calls', () => {
   it('changes only those three keys, so PATH and an npm auth token still reach the child', () => {
     const env = installEnv('/tmp/some-cache');
     const overridden = new Set(['npm_config_cache', 'npm_config_audit', 'npm_config_fund']);
-    for (const key of Object.keys(process.env)) {
-      if (overridden.has(key)) continue;
-      expect(env[key], key).toBe(process.env[key]);
-    }
+    // 🔴 Compare into a list of KEY NAMES and assert on that. The obvious
+    // spelling — `expect(env[key], key).toBe(process.env[key])` — prints the
+    // expected and received VALUES when it fails, and the key this case is
+    // named for is `npm_config_//registry.npmjs.org/:_authToken`. A red run on
+    // a developer machine would put the token in the log. Found by
+    // `security-scanner` on gate round 3.
+    const changed = Object.keys(process.env).filter(
+      (key) => !overridden.has(key) && env[key] !== process.env[key],
+    );
+    expect(changed).toEqual([]);
   });
 });
 
@@ -164,7 +196,12 @@ describe('every e2e npm install call goes through that one helper', () => {
       if (file === HELPER) continue;
       const source = await readFile(path.join(e2eDir, file), 'utf8');
       for (const call of npmInstallCalls(source)) {
-        if (!usesHelper(call)) offenders.push(`test/e2e/${file}: ${call.slice(0, 60)}…`);
+        if (usesHelper(call)) continue;
+        offenders.push(
+          call === null
+            ? `test/e2e/${file}: an install call whose text could not be read`
+            : `test/e2e/${file}: ${call.slice(0, 60)}…`,
+        );
       }
     }
     expect(offenders).toEqual([]);
@@ -195,7 +232,7 @@ describe('every e2e npm install call goes through that one helper', () => {
     const offenders: string[] = [];
     for (const file of await e2eSourceFiles()) {
       const code = stripComments(await readFile(path.join(e2eDir, file), 'utf8'));
-      if (/\b(?:vulnerabilities|advisories|auditReport)\b/.test(code)) {
+      if (/\b(?:vulnerabilities|advisories|auditReport|fundingUrl|funding)\b/.test(code)) {
         offenders.push(`test/e2e/${file}`);
       }
     }
@@ -236,6 +273,34 @@ describe('the check reads invocations, not prose', () => {
     ]) {
       expect(npmInstallCalls(honest), honest).toEqual([]);
     }
+  });
+
+  /**
+   * Gate round 3, found by both reviewers independently: this exact spelling is
+   * what `test/e2e/generate.test.ts` uses, and the recogniser was blind to it,
+   * so the `installEnv` this change added there was held by nothing.
+   */
+  it('reads npx called directly, not only through the runNpx wrapper', () => {
+    const calls = npmInstallCalls(
+      "await exec('npx', ['--yes', '--package=' + t, 'create-agent-rig', 'a'], { cwd: d });",
+    );
+    expect(calls).toHaveLength(1);
+    expect(usesHelper(calls[0]!)).toBe(false);
+  });
+
+  it('treats a call it cannot read as a violation, never as nothing found', () => {
+    // An unbalanced opening paren the scanner does not model — one inside a
+    // regex literal — used to make callTextAt return the rest of the file, so an
+    // unrelated installEnv further down made an env-less call read as compliant.
+    const calls = npmInstallCalls(
+      'await runNpx(args.filter((x) => /[(]/.test(x)), { cwd: d });\nconst e = installEnv(c);',
+    );
+    expect(calls.some((call) => !usesHelper(call))).toBe(true);
+  });
+
+  it('does not accept the helper named inside an argument string', () => {
+    const calls = npmInstallCalls("await runNpx(['--package=installEnv(x)'], { cwd: d });");
+    expect(usesHelper(calls[0]!)).toBe(false);
   });
 
   it('catches the reintroduction it exists to catch: an install call with no env at all', () => {

@@ -12,6 +12,17 @@
  * fragment and useless against anything assembled at runtime. Every guard
  * built on them has to state that limit for itself, because the limit belongs
  * to the claim, not to the primitive.
+ *
+ * 🔴 Neither models a REGEX LITERAL, and that is the sharpest edge here. A
+ * quote inside one — `/didn't/` — flips `stripComments`'s string parity, and a
+ * later `/*` or `//` sitting inside a genuine string is then read as a comment
+ * opener and blanks the rest of the file. Measured by `security-scanner` on
+ * gate round 3, with a non-compliant install call after it going unseen. The
+ * damage is bounded below rather than eliminated: `'` and `"` string mode now
+ * ends at a newline, which JavaScript forbids inside either, so a stray quote
+ * costs one line instead of a file. A backtick literal may legally span lines
+ * and keeps the old behaviour, so a quote inside a regex followed by an
+ * unterminated template is still a hole.
  */
 
 /**
@@ -40,6 +51,10 @@ export function stripComments(source: string): string {
       i += 1;
       while (i < source.length) {
         const inner = source[i]!;
+        // A raw newline cannot appear inside '' or "" — reaching one means the
+        // opening quote was not a string at all (a regex literal, most likely),
+        // so end the mode here and bound the mis-read to this line.
+        if (inner === '\n' && char !== '`') break;
         out += inner;
         i += 1;
         if (inner === '\\') {
@@ -57,16 +72,24 @@ export function stripComments(source: string): string {
 }
 
 /**
- * The text of one call, from the `(` at `open` to its matching `)`.
+ * The text of one call, from the `(` at `open` to its matching `)`, or `null`
+ * when it does not balance.
  *
  * Parentheses inside string and template literals do not count, or an argument
- * like `'--package=(x)'` would unbalance the scan and silently truncate the
- * call — which for a guard means reading only part of what it judges. An
- * unterminated call yields the rest of the source rather than throwing: the
- * caller is deciding whether a fragment is present, and more text can only
- * make that answer safer.
+ * like `'--package=(x)'` would unbalance the scan and truncate the call —
+ * which for a guard means judging only part of what it was handed.
+ *
+ * 🔴 It returns `null` rather than "the rest of the source", and the direction
+ * is the whole point. A first version returned the remainder, reasoning that
+ * more text can only make a "is this fragment present?" answer safer. That is
+ * backwards for every guard built on this: an unbalanced `(` the scanner does
+ * not model makes the return value swallow the rest of the file, so an
+ * UNRELATED later `installEnv(…)` makes an env-less call read as compliant.
+ * Failing open is how a guard reports coverage it does not have. A caller that
+ * cannot read a call must treat that as a violation and say so — loud, and
+ * fixable.
  */
-export function callTextAt(code: string, open: number): string {
+export function callTextAt(code: string, open: number): string | null {
   let depth = 0;
   let i = open;
   while (i < code.length) {
@@ -91,5 +114,5 @@ export function callTextAt(code: string, open: number): string {
     }
     i += 1;
   }
-  return code.slice(open);
+  return null;
 }
