@@ -6,6 +6,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, inject, it } from 'vitest';
 
+import { installEnv } from './run.js';
+
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const cliBin = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
@@ -130,7 +132,7 @@ describe('npm pack tarball (distribution path)', () => {
       ['--yes', `--package=${tarball}`, 'create-agent-rig', 'tar-app', '--target', 'node-service'],
       {
         cwd: appDir,
-        env: { ...process.env, npm_config_cache: path.join(work, 'npx-cache') },
+        env: installEnv(path.join(work, 'npx-cache')),
       },
     );
     const pkg = JSON.parse(await readFile(path.join(appDir, 'tar-app', 'package.json'), 'utf8'));

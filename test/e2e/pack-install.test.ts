@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
-import { run, runNpx } from './run.js';
+import { installEnv, run, runNpx } from './run.js';
 
 // Phase 8.3: the npm-publish path differs from the git path exactly where
 // scaffolders classically break — the packed file set and the file modes.
@@ -24,7 +24,7 @@ describe('npm pack → install → generate (the publish path)', () => {
       // that does not complete must say why, in the run that saw it.
       await runNpx(
         ['--yes', `--package=${tarball}`, 'create-agent-rig', 'app', '--target', target],
-        { cwd: appDir, env: { ...process.env, npm_config_cache: path.join(work, 'npx-cache') } },
+        { cwd: appDir, env: installEnv(path.join(work, 'npx-cache')) },
       );
     }
   });

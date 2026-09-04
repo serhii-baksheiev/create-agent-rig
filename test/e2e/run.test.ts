@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { runNpx } from './run.js';
+import { installEnv, runNpx } from './run.js';
 
 /**
  * The part of RP-70's helper that actually spawns a child. The pure assertions
@@ -24,11 +24,15 @@ describe('runNpx', () => {
 
   // Every suite here points npm at its own cache; without it these two would
   // write debug logs into the host's, and the failing case could never reach
-  // the debug-log path at all.
-  const env = () => ({ ...process.env, npm_config_cache: path.join(work, 'npx-cache') });
+  // the debug-log path at all. `installEnv` is named at each call site rather
+  // than behind a local alias, because test/template/e2e-install-network.test.ts
+  // judges the call it can see: an alias reads as an install with no helper.
 
   it('returns the child output when the command succeeds', async () => {
-    const { stdout } = await runNpx(['--yes', '--version'], { cwd: work, env: env() });
+    const { stdout } = await runNpx(['--yes', '--version'], {
+      cwd: work,
+      env: installEnv(path.join(work, 'npx-cache')),
+    });
     expect(stdout.trim()).not.toBe('');
   });
 
@@ -37,7 +41,7 @@ describe('runNpx', () => {
   it('throws a report naming the command and the child, not Node\'s "Command failed"', async () => {
     const failure = await runNpx(['--yes', '--package=file:./rp-70-no-such-package.tgz', 'nope'], {
       cwd: work,
-      env: env(),
+      env: installEnv(path.join(work, 'npx-cache')),
     }).catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
 
     expect(failure).toMatch(/did not complete/i);
