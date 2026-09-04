@@ -26,22 +26,22 @@ export interface NativeHookSurface {
   /** Repo-relative path of the hook file the harness runs. */
   hookPath: string;
   /**
-   * The shell variable names this harness legitimately roots its own hook
-   * paths at, without the `$`.
+   * The exact command strings this harness generates to run `hookPath`.
    *
-   * The probe strips one of THESE prefixes before comparing a command's
-   * argument to `hookPath`, and no others. Stripping any `$VAR/` instead
-   * collapsed every tree onto one string, so a hook file rooted at an
-   * unrelated variable — a home directory, a temporary directory — was
-   * indistinguishable from the repository's own and read SUPPORTED: a false
-   * pass on the one question the contract exists to answer.
-   * The list belongs to the adapter because the core may not name a harness's
-   * variables, and it is per-surface because the two harnesses do not agree on
-   * one. Pinned in `packages/cli/test/policy-coverage.test.ts` (absent in a
-   * generated rig) › "reads a hook under %s rooted at %s as UNSUPPORTED,
-   * because that tree is not the one the harness runs from".
+   * The probe compares a wired command against these instead of parsing it.
+   * That is the whole of how "is this hook wired?" is decided, and it exists
+   * because the parser it replaced lost three gate rounds running: each fix
+   * closed one class of false `SUPPORTED` and opened another, until the shape
+   * that defeated it turned out to be the rig's own derived command. Comparing
+   * against generated output has no grammar to lose to.
+   *
+   * A list because a harness may accept more than one generated spelling (a
+   * format change, say); today each declares one. An adapter and the snapshot
+   * this rig ships must agree, which is checked in both directions by
+   * `test/template/policy-coverage.test.ts` (absent in a generated rig) ›
+   * "the %s snapshot wires %s with exactly the command that adapter generates".
    */
-  hookRootVariables: readonly string[];
+  commands: readonly string[];
 }
 
 export interface HarnessAdapter {

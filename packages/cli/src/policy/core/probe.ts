@@ -14,7 +14,7 @@
  *
  * | input | answer | pinned by |
  * | --- | --- | --- |
- * | a group naming exactly the declared tools and RUNNING the hook | `SUPPORTED` | › "reads %s as running the hook, because it is what the rig really ships" |
+ * | a group naming exactly the declared tools and RUNNING the hook | `SUPPORTED` | › "%s generates exactly the command its shipped snapshot carries" |
  * | the hook run under that event, but by no group naming exactly those tools | `DEGRADED` | › "reads a wiring that drops a declared tool as DEGRADED, naming the tool that is missing" |
  * | a readable snapshot that runs the hook nowhere under that event | `UNSUPPORTED` | › "reads a hook wired nowhere under the policy event as UNSUPPORTED, naming the hook path" |
  * | a snapshot, or any level of wiring under it, in a shape this module cannot read | `INTEGRATION-FAILED` | › "reports INTEGRATION-FAILED when %s, naming the event it could not read" |
@@ -101,149 +101,78 @@ export const MAX_HOOK_COMMAND_LENGTH = 4096;
  */
 export const MAX_NAMED_TOOLS_IN_REASON = 5;
 
-/** Shell punctuation that makes execution conditional, piped or commented out. */
-const NOT_UNCONDITIONAL = /(\|\||;|#|\|(?!\|))/;
-
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-
-const unquote = (token: string): string => token.replace(/^["']|["']$/g, '');
+/** One horizontal tab, named so no source line carries an invisible one. */
+const TAB = String.fromCharCode(9);
 
 /**
- * Split a segment into words the way a shell would for this purpose: on
- * whitespace, except inside quotes or a `$( )` substitution.
+ * The command as a shell would word it, for comparison only.
  *
- * A plain `split(/\s+/)` cannot read a command this rig actually ships. An
- * assignment whose value is a command substitution is ONE word whose value
- * happens to contain spaces, and splitting it into three makes the segment
- * look like an assignment followed by a command — which is exactly what the
- * rule below refuses. Pinned by the keep-green control ›
- * "still reads %s as running the hook, so the segment rule refuses nothing the
- * rig ships".
+ * Runs of spaces and tabs collapse to one space; nothing else changes. The
+ * tolerance stops exactly there because those two are the only default IFS
+ * characters that separate WORDS without separating COMMANDS. A newline does
+ * separate commands — `node` on one line and the hook path on the next is two
+ * commands, the second executing the hook file directly — so collapsing it
+ * would manufacture a match against the generated string and hand back the one
+ * answer this module must never give without evidence. The same holds for
+ * carriage return, vertical tab, form feed and a non-breaking space, none of
+ * which a shell splits words on at all.
  *
- * One forward pass, one character at a time, with a depth counter that cannot
- * exceed the input length: the work is linear and the module's callers fail
- * open, so it may not be otherwise (`rules/invariants.md`, "A guard that fails
- * open must do provably bounded work").
+ * Pinned in `packages/cli/test/policy-coverage.test.ts` (absent in a generated
+ * rig) › "still reads a %s wiring with %s as SUPPORTED, because a shell
+ * separates words on both" and, in the other direction, › "refuses a %s wiring
+ * whose spaces became %s, because a shell does not separate words on it".
  */
-const wordsOf = (segment: string): string[] => {
-  const words: string[] = [];
-  let current = '';
-  let quote: '"' | "'" | null = null;
-  let depth = 0;
-  for (let index = 0; index < segment.length; index += 1) {
-    const character = segment[index] ?? '';
-    if (quote !== null) {
-      current += character;
-      if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      current += character;
-      continue;
-    }
-    if (character === '$' && segment[index + 1] === '(') depth += 1;
-    else if (character === ')' && depth > 0) depth -= 1;
-    if (/\s/.test(character) && depth === 0) {
-      if (current !== '') words.push(current);
-      current = '';
-      continue;
-    }
-    current += character;
-  }
-  if (current !== '') words.push(current);
-  return words;
-};
+const normalise = (command: string): string =>
+  // The tab is split out rather than matched: a literal tab inside a character
+  // class is a control character to a regular expression, which `no-control-regex`
+  // refuses - and rightly, because it is invisible to a reader.
+  command.split(TAB).join(' ').replace(/ +/g, ' ').replace(/^ | $/g, '');
+
+/** What one wired command is, with respect to the policy being probed. */
+type CommandKind = 'runs' | 'unreadable' | 'unrelated';
 
 /**
- * A word that backgrounds the command, so nothing waits for its exit code.
+ * Classify one command — by comparison against what this harness generates,
+ * never by parsing it.
  *
- * A backgrounded hook returns to the harness immediately, so a
- * fail-closed guard never blocks the operation it was wired to judge — the
- * mechanism is neutered while the wiring still names it. Matching a trailing
- * `&` rather than any `&` is what keeps `2>&1` readable: › "still reads a
- * redirected hook that is not backgrounded as running the hook".
+ * 🔴 This replaced a partial shell parser, and the reason is worth keeping
+ * because it was expensive to learn. Three gate rounds tried to decide "does
+ * this command execute the hook?" by reading shell syntax. Each round closed a
+ * class of false `SUPPORTED` and opened a new one: a `.bak` neighbour, then a
+ * conditional `&&` segment, then a quoted mention the splitter cut through,
+ * then an unterminated quote, a mismatched brace, a backgrounding `&` on a
+ * later segment, and finally an assignment whose command substitution can fail
+ * — which cannot be refused, because it is the shape this rig's own derived
+ * command uses. The input surface was the whole shell grammar and the error
+ * was asymmetric, so a partial parser could not win.
+ *
+ * The rig GENERATES its own wiring, so the probe compares against what it
+ * would generate (`NativeHookSurface.commands`). There is no grammar left to
+ * lose to.
+ *
+ * The substring test survives, and its FAILURE DIRECTION is what makes that
+ * safe: it now only chooses between `INTEGRATION-FAILED` and `UNSUPPORTED` —
+ * two non-passing answers — so a false positive can no longer reach
+ * `SUPPORTED`. That inversion is the design: › "never reaches SUPPORTED from a
+ * mere mention of the hook path, whichever spelling the mention takes".
+ *
+ * ⚠ What it costs, stated because it is a real loss: a hand-written wiring
+ * that genuinely runs the hook — a bare `node <hookPath>`, a flag before the
+ * path, a different spelling of the same variable — is now `INTEGRATION-FAILED`
+ * rather than `SUPPORTED`. That is "I cannot verify this" in place of a
+ * confident answer, which is the direction this contract is required to err
+ * in, but a rig wiring its hooks by hand will read as unverifiable.
+ *
+ * Over the length cap the command is not read at all and is `unreadable`, not
+ * `unrelated`: refusing to inspect is a third outcome, and a guard that did
+ * not look may not report that it found nothing (`rules/invariants.md`,
+ * "Refusing to inspect is a third outcome, not a match and not an error").
  */
-const BACKGROUNDS = /&$/;
-
-/**
- * The repo-relative path a token denotes, or `null` when it is rooted
- * somewhere this harness never roots its own hooks.
- *
- * `roots` comes from the adapter (`NativeHookSurface.hookRootVariables`).
- * Stripping ANY `$VAR/` collapsed every tree onto the same string, so a hook
- * rooted at an unrelated variable was indistinguishable from the repository's
- * own file and read SUPPORTED. Returning `null` for a root the harness does
- * not name is what makes that a refusal rather than a false pass.
- */
-const asRepoRelative = (token: string, roots: readonly string[]): string | null => {
-  const bare = unquote(token);
-  const rooted = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.*)$/.exec(bare);
-  if (rooted !== null) {
-    const [, variable = '', rest = ''] = rooted;
-    return roots.includes(variable) ? rest : null;
-  }
-  return bare.replace(/^\.\//, '');
-};
-
-/**
- * Does this command RUN the hook, rather than merely mention it?
- *
- * The distinction is the whole point. A substring read reports a `.bak` file,
- * an `echo`, a commented-out line, a path handed to a different program and a
- * vendored copy under another tree as enforcement — the direction that hands
- * back a false `SUPPORTED`, which is the one answer a capability contract must
- * never give on evidence it does not have. Every one of those is a case in ›
- * "reads %s as UNSUPPORTED, naming the hook path it looked for".
- *
- * The accepted shape is deliberately narrow, and every clause of it was paid
- * for by a measured false `SUPPORTED`:
- *
- * - no `||`, `;`, single `|` or `#` anywhere — execution must be unconditional;
- * - `&&`-joined segments, and every segment BEFORE the one that runs the hook
- *   must consist only of `NAME=value` assignments. Without that clause
- *   `false && node <hook>` and `[ -f /tmp/enable ] && node <hook>` read as
- *   enforcement, and so did a mention inside a quoted string: ›
- *   "reads %s before the hook as UNSUPPORTED, because that segment decides
- *   whether the hook runs at all";
- * - no word backgrounds the command;
- * - `node` is the executable word, flags are skipped, and the first remaining
- *   word EQUALS the hook path once quotes, a root this harness names, and a
- *   leading `./` are stripped.
- *
- * Anything else is refused rather than guessed at, and a refusal reads
- * `UNSUPPORTED` — the safe direction, because it understates what the surface
- * enforces. What it understates is written down: `/usr/bin/node <hook>` and
- * `pnpm node <hook>` are refused for naming an executable other than `node`,
- * and `cd "$D" && node <hook>` for a leading segment that is not an
- * assignment — › "reads a directory change before the hook as UNSUPPORTED,
- * understating a wiring that may well be real".
- */
-const runs = (command: string, surface: NativeHookSurface): boolean => {
-  if (command.length > MAX_HOOK_COMMAND_LENGTH) return false;
-  if (NOT_UNCONDITIONAL.test(command)) return false;
-  const segments = command.split('&&');
-  for (let index = 0; index < segments.length; index += 1) {
-    const words = wordsOf(segments[index] ?? '');
-    if (words.some((word) => BACKGROUNDS.test(word))) return false;
-    let cursor = 0;
-    while (cursor < words.length && ASSIGNMENT.test(words[cursor] ?? '')) cursor += 1;
-    if (unquote(words[cursor] ?? '') !== 'node') continue;
-    // Everything ahead of the segment that runs the hook has to be an
-    // assignment too: a segment that can fail is a segment that decides
-    // whether the hook runs at all.
-    const precededOnlyByAssignments = segments.slice(0, index).every((earlier) => {
-      const earlierWords = wordsOf(earlier);
-      return earlierWords.length > 0 && earlierWords.every((word) => ASSIGNMENT.test(word));
-    });
-    if (!precededOnlyByAssignments) return false;
-    cursor += 1;
-    while (cursor < words.length && (words[cursor] ?? '').startsWith('-')) cursor += 1;
-    if (asRepoRelative(words[cursor] ?? '', surface.hookRootVariables) === surface.hookPath) {
-      return true;
-    }
-  }
-  return false;
+const classify = (command: string, surface: NativeHookSurface): CommandKind => {
+  if (command.length > MAX_HOOK_COMMAND_LENGTH) return 'unreadable';
+  const wired = normalise(command);
+  if (surface.commands.some((generated) => normalise(generated) === wired)) return 'runs';
+  return command.includes(surface.hookPath) ? 'unreadable' : 'unrelated';
 };
 
 const toolsOf = (matcher: string): string[] => matcher.split('|').filter((tool) => tool !== '');
@@ -344,9 +273,30 @@ export function probePolicy(
   }
 
   const declared = toolsOf(surface.matcher);
-  const running = groups.filter((group) => group.hooks.some((hook) => runs(hook.command, surface)));
+
+  // One pass, three kinds. Whether anything merely NAMED the hook is carried
+  // across groups, because that is what separates "nothing here wires this"
+  // from "something here names it and I cannot verify that it runs" — the
+  // ABSENT/UNREADABLE pair this module keeps at every other level too.
+  const running: HookGroup[] = [];
+  let named = false;
+  for (const group of groups) {
+    let runsHere = false;
+    for (const hook of group.hooks) {
+      const kind = classify(hook.command, surface);
+      if (kind === 'runs') runsHere = true;
+      else if (kind === 'unreadable') named = true;
+    }
+    if (runsHere) running.push(group);
+  }
 
   if (running.length === 0) {
+    if (named) {
+      return {
+        state: 'INTEGRATION-FAILED',
+        reason: `something under ${surface.event} names ${surface.hookPath}, but in no command this harness generates, so whether the hook runs cannot be verified from this surface`,
+      };
+    }
     return {
       state: 'UNSUPPORTED',
       reason: `no group under ${surface.event} runs ${surface.hookPath}, so the mechanism is absent on this surface`,

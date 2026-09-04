@@ -24,7 +24,7 @@
 import type { HarnessAdapter, NativeHookSurface } from '../core/adapter.js';
 import type { PolicyDeclaration } from '../core/declaration.js';
 import type { EnforcementTiming, Operation } from '../core/vocabulary.js';
-import { SHARED_HOOKS_DIR } from './shared-hooks.js';
+import { SHARED_HOOK_ROOT_ENV, SHARED_HOOKS_DIR } from './shared-hooks.js';
 
 const EVENT_OF: Record<EnforcementTiming, string> = {
   'before-operation': 'PreToolUse',
@@ -39,10 +39,14 @@ export const nativeSurfaceOf = (policy: PolicyDeclaration): NativeHookSurface =>
   event: EVENT_OF[policy.timing],
   matcher: policy.operations.map((operation) => MATCHER_OF[operation]).join('|'),
   hookPath: `${SHARED_HOOKS_DIR}/${policy.mechanism}.mjs`,
-  // This harness derives its own root and points the hook path at it. The
-  // other variable its command exports is passed to the hook as environment,
-  // not used to root the path, so it is not a root and is not listed here.
-  hookRootVariables: ['repoRoot'],
+  // The exact command this harness generates: it derives the repository root
+  // itself, exports the shared hooks' root variable from it, and runs the hook
+  // from it. The variable's name comes from `./shared-hooks.js` because it
+  // belongs to the shared hooks rather than to either harness — which is also
+  // what keeps this file from naming the other one.
+  commands: [
+    `repoRoot="$(git rev-parse --show-toplevel)" && ${SHARED_HOOK_ROOT_ENV}="$repoRoot" node "$repoRoot/${SHARED_HOOKS_DIR}/${policy.mechanism}.mjs"`,
+  ],
 });
 
 export const codexAdapter: HarnessAdapter = Object.freeze({

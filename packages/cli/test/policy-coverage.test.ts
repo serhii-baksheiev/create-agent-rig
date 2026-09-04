@@ -95,7 +95,37 @@ const SURFACE: SurfaceIdentity = {
   os: 'fixture-os 1.0',
 };
 
-type Group = { matcher: string; mechanisms: readonly string[] };
+type Group = { matcher: string; wiring: readonly PolicyDeclaration[] };
+
+/**
+ * The command this harness GENERATES for a policy's hook, read off the adapter
+ * rather than spelled here.
+ *
+ * Every fixture below builds from this, which is the point: the probe answers
+ * `SUPPORTED` by comparing a command against what the rig would generate, so a
+ * fixture that spelled its own version of that command would be asserting its
+ * own invention rather than the thing under test. `commands[0]` is the shell
+ * spelling; an adapter may offer more than one, and only the first is needed to
+ * build a wiring the probe must recognise.
+ */
+const generatedCommand = (adapter: HarnessAdapter, policy: PolicyDeclaration): string => {
+  const command = adapter.nativeSurfaceOf(policy).commands[0];
+  if (command === undefined) {
+    throw new Error(`the ${adapter.harness} adapter generates no command for ${policy.policyId}`);
+  }
+  return command;
+};
+
+/**
+ * A policy the registry does not carry, standing in for one of the guards this
+ * rig ships without declaring — so a fixture can wire ANOTHER mechanism's real
+ * generated command and the probe has something unrelated to read.
+ */
+const CORE_PURITY = definePolicy({
+  ...SECRET_WRITE,
+  policyId: 'fixture-core-purity',
+  mechanism: 'guard-core-purity',
+});
 
 /**
  * An in-memory hook-wiring snapshot, shaped like the ones the rig ships —
@@ -103,40 +133,31 @@ type Group = { matcher: string; mechanisms: readonly string[] };
  * rather than imported from it, so a change to that file's fixture cannot
  * silently re-aim this one.
  */
-// The root variable a fixture command uses has to be one the adapter under
-// test actually names, or the fixture is asserting the any-variable strip this
-// change removed. Defaulted rather than threaded through every call site,
-// because most cases here probe one adapter.
-const rootOf = (adapter: HarnessAdapter): string =>
-  adapter.nativeSurfaceOf(SECRET_WRITE).hookRootVariables[0] ?? '';
-
 const snapshotWith = (
   event: string,
   groups: readonly Group[],
-  root = rootOf(claudeAdapter),
+  adapter: HarnessAdapter = claudeAdapter,
 ): HookSnapshot => ({
   hooks: {
-    [event]: groups.map(({ matcher, mechanisms }) => ({
+    [event]: groups.map(({ matcher, wiring }) => ({
       matcher,
-      hooks: mechanisms.map((mechanism) => ({
-        command: `node "$${root}/${SHARED_HOOKS_DIR}/${mechanism}.mjs"`,
-      })),
+      hooks: wiring.map((policy) => ({ command: generatedCommand(adapter, policy) })),
     })),
   },
 });
 
 /** Every registered policy wired exactly as the adapter says it should be. */
 const fullyWired = (adapter: HarnessAdapter): HookSnapshot => {
-  const byMatcher = new Map<string, string[]>();
+  const byMatcher = new Map<string, PolicyDeclaration[]>();
   for (const policy of POLICIES) {
     const { matcher } = adapter.nativeSurfaceOf(policy);
-    byMatcher.set(matcher, [...(byMatcher.get(matcher) ?? []), policy.mechanism]);
+    byMatcher.set(matcher, [...(byMatcher.get(matcher) ?? []), policy]);
   }
   const event = adapter.nativeSurfaceOf(SECRET_WRITE).event;
   return snapshotWith(
     event,
-    [...byMatcher].map(([matcher, mechanisms]) => ({ matcher, mechanisms })),
-    rootOf(adapter),
+    [...byMatcher].map(([matcher, wiring]) => ({ matcher, wiring })),
+    adapter,
   );
 };
 
@@ -301,7 +322,7 @@ describe('probing a surface for one policy', () => {
 
   it('reads a policy as UNSUPPORTED when only other hooks are wired under its event', () => {
     const { matcher, hookPath } = claudeAdapter.nativeSurfaceOf(SECRET_WRITE);
-    const snapshot = snapshotWith(EVENT, [{ matcher, mechanisms: ['guard-core-purity'] }]);
+    const snapshot = snapshotWith(EVENT, [{ matcher, wiring: [CORE_PURITY] }]);
     const result = probePolicy(SECRET_WRITE, claudeAdapter, snapshot);
     expect(result.state).toBe('UNSUPPORTED');
     expect(result.reason ?? '').toContain(hookPath);
@@ -309,9 +330,7 @@ describe('probing a surface for one policy', () => {
 
   it('reads a hook wired under a different event as UNSUPPORTED, because the event is part of the surface', () => {
     const { matcher, hookPath } = claudeAdapter.nativeSurfaceOf(SECRET_WRITE);
-    const elsewhere = snapshotWith('PostToolUse', [
-      { matcher, mechanisms: [SECRET_WRITE.mechanism] },
-    ]);
+    const elsewhere = snapshotWith('PostToolUse', [{ matcher, wiring: [SECRET_WRITE] }]);
     const result = probePolicy(SECRET_WRITE, claudeAdapter, elsewhere);
     expect(result.state).toBe('UNSUPPORTED');
     expect(result.reason ?? '').toContain(hookPath);
@@ -320,7 +339,7 @@ describe('probing a surface for one policy', () => {
   it('reads a wiring that drops a declared tool as DEGRADED, naming the tool that is missing', () => {
     const surface = claudeAdapter.nativeSurfaceOf(SECRET_WRITE);
     const { matcher, dropped } = dropLastTool(surface.matcher);
-    const snapshot = snapshotWith(EVENT, [{ matcher, mechanisms: [SECRET_WRITE.mechanism] }]);
+    const snapshot = snapshotWith(EVENT, [{ matcher, wiring: [SECRET_WRITE] }]);
     const result = probePolicy(SECRET_WRITE, claudeAdapter, snapshot);
     expect(result.state).toBe('DEGRADED');
     expect(result.reason ?? '').toContain(dropped);
@@ -329,7 +348,7 @@ describe('probing a surface for one policy', () => {
   it('reads a wiring that adds a tool the declaration does not name as DEGRADED, naming that tool', () => {
     const surface = claudeAdapter.nativeSurfaceOf(SECRET_WRITE);
     const snapshot = snapshotWith(EVENT, [
-      { matcher: `${surface.matcher}|Task`, mechanisms: [SECRET_WRITE.mechanism] },
+      { matcher: `${surface.matcher}|Task`, wiring: [SECRET_WRITE] },
     ]);
     const result = probePolicy(SECRET_WRITE, claudeAdapter, snapshot);
     expect(result.state).toBe('DEGRADED');
@@ -341,8 +360,8 @@ describe('probing a surface for one policy', () => {
     const edit = claudeAdapter.nativeSurfaceOf(SECRET_WRITE);
     const { matcher, dropped } = dropLastTool(shell.matcher);
     const snapshot = snapshotWith(EVENT, [
-      { matcher: edit.matcher, mechanisms: [SECRET_WRITE.mechanism] },
-      { matcher, mechanisms: [NO_VERIFY.mechanism] },
+      { matcher: edit.matcher, wiring: [SECRET_WRITE] },
+      { matcher, wiring: [NO_VERIFY] },
     ]);
     expect(probePolicy(SECRET_WRITE, claudeAdapter, snapshot).state).toBe('SUPPORTED');
     const result = probePolicy(NO_VERIFY, claudeAdapter, snapshot);
@@ -354,27 +373,36 @@ describe('probing a surface for one policy', () => {
     const surface = claudeAdapter.nativeSurfaceOf(SECRET_WRITE);
     const { matcher } = dropLastTool(surface.matcher);
     const snapshot = snapshotWith(EVENT, [
-      { matcher, mechanisms: [SECRET_WRITE.mechanism] },
-      { matcher: surface.matcher, mechanisms: [SECRET_WRITE.mechanism] },
+      { matcher, wiring: [SECRET_WRITE] },
+      { matcher: surface.matcher, wiring: [SECRET_WRITE] },
     ]);
     expect(probePolicy(SECRET_WRITE, claudeAdapter, snapshot)).toEqual({ state: 'SUPPORTED' });
   });
 });
 
 /**
- * A hook counts as wired when the command RUNS it, not when the command
- * MENTIONS it. The two are not close: a substring read reports a `.bak` file,
- * an `echo`, a commented-out line and a vendored copy as enforcement, which is
- * the direction that produces a false `SUPPORTED` — the one answer a
- * capability contract must never hand back on evidence it does not have.
+ * A hook counts as wired when the command IS the one this harness generates —
+ * not when a parse of it concludes that a shell would probably run the hook.
  *
- * The shape the rule accepts is narrow on purpose: `&&`-joined segments, an
- * optional run of `NAME=value` assignments, `node` as the executable, flags
- * skipped, and the first remaining token equal to the hook path once quotes, a
- * `$VAR/` or `${VAR}/` prefix and a leading `./` are stripped. Everything else
- * — a pipe, a `;`, a `||`, a `#`, a command past the length cap — is refused
- * rather than guessed at, and a refusal reads `UNSUPPORTED`, which is the safe
- * direction: it understates what the surface enforces.
+ * Three rounds of the second design closed one class of false `SUPPORTED` each
+ * and opened the next, and the last of them could not be tightened further
+ * without refusing the wiring the rig itself ships: `X="$(exit 1)" && node
+ * <hook>` is an assignment whose command substitution can fail, and it is
+ * structurally the shape of the derived harness's own command. So the parse is
+ * gone. The rig GENERATES its wiring, so the probe compares against what it
+ * would have generated:
+ *
+ * - **RUNS** — the command normalises to one the adapter declares in
+ *   `commands`. `normalise` is trim plus collapsing runs of spaces and tabs;
+ *   nothing is tokenised, unquoted or split.
+ * - **UNREADABLE** — not RUNS, and either past the length cap (unread) or
+ *   naming the hook path in a spelling this harness does not generate.
+ * - **UNRELATED** — everything else: another mechanism's hook, wired normally.
+ *
+ * The inversion that makes this safe is the whole point of the redesign, and
+ * it has a test of its own: `includes(hookPath)` survives, but only to choose
+ * between `INTEGRATION-FAILED` and `UNSUPPORTED` — two non-passing answers. A
+ * substring false positive can no longer reach `SUPPORTED`.
  */
 // Verbatim from the two snapshots this rig ships —
 // `templates/agent-os/universal/.claude/settings.json` and
@@ -389,13 +417,22 @@ const REAL_DERIVED_COMMAND =
 
 /**
  * Each harness beside the command ITS OWN snapshot really carries. Paired this
- * way on purpose: the root variable a command may be rooted at is a fact about
- * the harness, so a command is only evidence about the adapter that ships it.
+ * way on purpose: the spelling of a wiring is a fact about the harness that
+ * generates it, so a command is only evidence about the adapter that ships it.
  */
 const SHIPPED_BY_ITS_OWN_HARNESS = [
   ['claude', claudeAdapter, REAL_AUTHORING_COMMAND],
   ['codex', codexAdapter, REAL_DERIVED_COMMAND],
 ] as const;
+
+/** Every adapter, labelled by harness, for an `it.each` over both surfaces. */
+const EACH_ADAPTER = HARNESS_ADAPTERS.map((adapter) => [adapter.harness, adapter] as const);
+
+const escapeForRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** The `$VAR/<hookPath>` a generated command roots its hook path at. */
+const rootedPath = (hookPath: string): RegExp =>
+  new RegExp(`\\$([A-Za-z_][A-Za-z0-9_]*)/${escapeForRegExp(hookPath)}`);
 
 /** The declared matcher of one adapter, wiring exactly the commands given. */
 const runningOn = (adapter: HarnessAdapter, ...commands: readonly string[]): unknown => {
@@ -409,52 +446,122 @@ const runningOn = (adapter: HarnessAdapter, ...commands: readonly string[]): unk
   };
 };
 
-describe('a command wires the hook only when the hook path is the argument it executes', () => {
+/**
+ * The adapter is now the source of the wiring the probe recognises, so what it
+ * offers is itself part of the contract: a list of commands, each naming the
+ * hook path it runs, and no list of root variables — because nothing strips a
+ * prefix any more.
+ */
+describe('a harness adapter states the commands it generates for a hook', () => {
+  it.each(EACH_ADAPTER)(
+    'the %s surface offers at least one generated command, each naming the hook path it runs',
+    (_harness, adapter) => {
+      const surface = adapter.nativeSurfaceOf(SECRET_WRITE);
+      expect(Array.isArray(surface.commands), 'commands is not a list').toBe(true);
+      expect(surface.commands.length, 'the adapter generates no command at all').toBeGreaterThan(0);
+      for (const command of surface.commands) {
+        expect(typeof command).toBe('string');
+        expect(command, 'a generated command does not name the hook it runs').toContain(
+          surface.hookPath,
+        );
+      }
+    },
+  );
+
+  it.each(EACH_ADAPTER)(
+    'the %s surface no longer names root variables, because no prefix is stripped from anything',
+    (_harness, adapter) => {
+      expect(adapter.nativeSurfaceOf(SECRET_WRITE)).not.toHaveProperty('hookRootVariables');
+    },
+  );
+
+  it('generates a distinct command per policy, so one policy is never read off another wiring', () => {
+    const commands = POLICIES.map((policy) => generatedCommand(claudeAdapter, policy));
+    expect(new Set(commands).size).toBe(POLICIES.length);
+  });
+});
+
+describe('a command wires the hook only when it is the command this harness generates', () => {
   const { hookPath } = SECRET_WRITE_SURFACE;
 
-  // Each shipped command is read through ITS OWN adapter, because the root
-  // variable a command may name is a fact about the harness that wrote it:
-  // `$repoRoot` is the Codex spelling, and the Claude surface never uses it.
-  // Probing both through one adapter is what the old any-variable strip made
-  // look correct.
+  // The literals copied off the two shipped snapshots are held to the adapter's
+  // own answer, in both directions at once: this is the unit-level half of "the
+  // probe compares against what the rig would generate", and it goes red either
+  // if an adapter changes its spelling or if the copy here goes stale.
   it.each([
-    ['the authoring harness spelling', REAL_AUTHORING_COMMAND, claudeAdapter],
-    [
-      'the derived harness spelling, whose assignment and node share a segment',
-      REAL_DERIVED_COMMAND,
-      codexAdapter,
-    ],
-  ])(
-    'reads %s as running the hook, because it is what the rig really ships',
-    (_case, command, adapter) => {
+    ['the authoring harness', claudeAdapter, REAL_AUTHORING_COMMAND],
+    ['the derived harness', codexAdapter, REAL_DERIVED_COMMAND],
+  ] as const)(
+    '%s generates exactly the command its shipped snapshot carries',
+    (_harness, adapter, shipped) => {
       expect(
-        command,
+        shipped,
         'the copied literal no longer names the hook the adapter points at',
-      ).toContain(hookPath);
-      expect(probePolicy(SECRET_WRITE, adapter, runningExactly(command))).toEqual({
+      ).toContain(adapter.nativeSurfaceOf(SECRET_WRITE).hookPath);
+      expect(generatedCommand(adapter, SECRET_WRITE)).toBe(shipped);
+    },
+  );
+
+  it.each(SHIPPED_BY_ITS_OWN_HARNESS)(
+    'reads the real %s command as running the hook, because it is what the rig really ships',
+    (_harness, adapter, command) => {
+      expect(probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command))).toEqual({
         state: 'SUPPORTED',
       });
     },
   );
 
-  // The whole of what the rule accepts around the path, so an implementation
-  // cannot narrow to "exactly the two shipped strings" and still pass: a flag
-  // before it, the two ways a shell spells a variable prefix, a relative
-  // prefix, and no prefix at all.
+  /**
+   * Each shipped command read through the OTHER harness's adapter. The two
+   * spellings name the same hook file, so a substring read calls both a wiring;
+   * a comparison against what THIS harness generates calls the foreign one what
+   * it is — a spelling this adapter cannot verify.
+   */
   it.each([
     [
-      'a flag before the path, which is not the executed argument',
-      `node --experimental-strip-types "$CLAUDE_PROJECT_DIR/${hookPath}"`,
+      'the authoring harness command through the derived adapter',
+      codexAdapter,
+      REAL_AUTHORING_COMMAND,
     ],
+    [
+      'the derived harness command through the authoring adapter',
+      claudeAdapter,
+      REAL_DERIVED_COMMAND,
+    ],
+  ] as const)(
+    'refuses %s, because it is not a spelling this harness generates',
+    (_case, adapter, command) => {
+      const surface = adapter.nativeSurfaceOf(SECRET_WRITE);
+      expect(command, 'the two harnesses no longer name one hook file').toContain(surface.hookPath);
+      const result = probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command));
+      expect(result.state, 'one harness command was read as the other harness wiring').toBe(
+        'INTEGRATION-FAILED',
+      );
+      expect(result.reason ?? '').toContain(surface.hookPath);
+    },
+  );
+
+  /**
+   * The spellings a shell WOULD run, and which the old parse accepted around
+   * the path: a flag, the two ways a shell spells a variable prefix, a relative
+   * prefix and no prefix at all. Under canonical comparison every one of them is
+   * a spelling this harness does not generate, so none of them can be verified —
+   * which is the deliberate understatement the redesign trades a parser for.
+   */
+  it.each([
+    ['a flag before the path', `node --experimental-strip-types "$CLAUDE_PROJECT_DIR/${hookPath}"`],
     ['a braced variable prefix', `node "\${CLAUDE_PROJECT_DIR}/${hookPath}"`],
     ['an unquoted variable prefix', `node $CLAUDE_PROJECT_DIR/${hookPath}`],
     ['a relative prefix', `node ./${hookPath}`],
     ['no prefix at all', `node ${hookPath}`],
-  ])('reads %s as running the hook', (_case, command) => {
-    expect(probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command))).toEqual({
-      state: 'SUPPORTED',
-    });
-  });
+  ])(
+    'refuses %s, because a hand-written wiring is a spelling this harness cannot verify',
+    (_case, command) => {
+      const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+      expect(result.state).toBe('INTEGRATION-FAILED');
+      expect(result.reason ?? '').toContain(hookPath);
+    },
+  );
 
   it.each([
     [
@@ -470,37 +577,62 @@ describe('a command wires the hook only when the hook path is the argument it ex
     ],
     ['a copy of the hook vendored under another tree', `node vendor/evil/${hookPath}`],
     ['a wiring that runs only when something else fails', `true || node ${hookPath}`],
-  ])('reads %s as UNSUPPORTED, naming the hook path it looked for', (_case, command) => {
-    const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
-    expect(result.state, `the command ${command} was read as enforcement`).toBe('UNSUPPORTED');
-    expect(result.reason ?? '').toContain(hookPath);
-  });
-
-  it.each([
     ['a second command sequenced after it', `node ${hookPath} ; echo done`],
     ['a pipeline', `node ${hookPath} | tee wiring.log`],
   ])(
-    'refuses to read %s as wiring, because it is not unconditional execution of the hook alone',
+    'reads %s as INTEGRATION-FAILED, because something names this hook in a spelling it cannot verify',
     (_case, command) => {
-      expect(probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command)).state).toBe(
-        'UNSUPPORTED',
+      const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+      expect(result.state, `the command ${command} was read as enforcement`).toBe(
+        'INTEGRATION-FAILED',
       );
+      expect(result.reason ?? '').toContain(hookPath);
     },
   );
 
   /**
-   * The parse is bounded, and the bound is a number the caller can read rather
-   * than a constant buried in the module: `rules/invariants.md`, "A guard that
-   * fails open must do provably bounded work". Both sides of the bound are
-   * pinned, because a cap that also refused the commands the rig ships would
-   * be a cap that turned every real surface UNSUPPORTED.
+   * The headline property of the redesign, stated as its own case rather than
+   * left to be inferred from the table above. `includes(hookPath)` is still
+   * used — but only to choose between `INTEGRATION-FAILED` and `UNSUPPORTED`,
+   * which are both non-passing. A substring false positive costs an operator a
+   * look at a file; it can no longer cost the contract a false `SUPPORTED`.
    */
-  const paddedTo = (length: number): string => {
-    const head = 'node -';
-    const tail = ` "$CLAUDE_PROJECT_DIR/${hookPath}"`;
+  it('never reaches SUPPORTED from a mere mention of the hook path, whichever spelling the mention takes', () => {
+    const mentions = [
+      `node "$CLAUDE_PROJECT_DIR/${hookPath}.bak"`,
+      `echo "${hookPath}"`,
+      `# node ${hookPath}`,
+      `node vendor/evil/${hookPath}`,
+      `node "$HOME/${hookPath}"`,
+      `false && node ${hookPath}`,
+      `node ${hookPath} &`,
+    ];
+    expect(
+      mentions.map(
+        (command) => probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command)).state,
+      ),
+    ).toEqual(mentions.map(() => 'INTEGRATION-FAILED'));
+  });
+
+  /**
+   * The scan is bounded, and the bound is a number the caller can read rather
+   * than a constant buried in the module: `rules/invariants.md`, "A guard that
+   * fails open must do provably bounded work".
+   *
+   * The two sides of the bound are told apart on a command that does NOT name
+   * the hook path, because that is the only input the cap changes the answer
+   * for: inside the cap it is read and found to be another mechanism's business
+   * (`UNSUPPORTED`), past it the command is not read at all, and an unread
+   * command is not evidence of absence (`INTEGRATION-FAILED`). Measured on a
+   * command that mentions the hook, both sides answer `INTEGRATION-FAILED` and
+   * the cap would be pinned by a test that cannot go red.
+   */
+  const unrelatedOfLength = (length: number): string => {
+    const head = `node "$CLAUDE_PROJECT_DIR/${SHARED_HOOKS_DIR}/other-`;
+    const tail = '.mjs"';
     const filler = length - head.length - tail.length;
     if (filler < 1) {
-      throw new Error(`the cap ${String(length)} is too small to pad a real command up to`);
+      throw new Error(`the cap ${String(length)} is too small to pad a command up to`);
     }
     return `${head}${'x'.repeat(filler)}${tail}`;
   };
@@ -510,101 +642,176 @@ describe('a command wires the hook only when the hook path is the argument it ex
     expect(MAX_HOOK_COMMAND_LENGTH).toBeGreaterThan(REAL_DERIVED_COMMAND.length);
   });
 
-  it('still reads a command exactly at the cap, so the bound admits everything it claims to', () => {
-    const command = paddedTo(MAX_HOOK_COMMAND_LENGTH);
+  it('still reads a command exactly at the cap, and finds an unrelated one to be an absence', () => {
+    const command = unrelatedOfLength(MAX_HOOK_COMMAND_LENGTH);
     expect(command).toHaveLength(MAX_HOOK_COMMAND_LENGTH);
-    expect(probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command))).toEqual({
-      state: 'SUPPORTED',
-    });
+    expect(
+      command,
+      'the padded command names the hook, so the cap is not what is measured',
+    ).not.toContain(hookPath);
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
+    expect(result.state, 'a command inside the cap was not read at all').toBe('UNSUPPORTED');
   });
 
-  it('refuses a command one byte over the cap rather than parsing it', () => {
-    const command = paddedTo(MAX_HOOK_COMMAND_LENGTH + 1);
+  it('refuses a command one byte over the cap rather than reading it, even though it names no hook', () => {
+    const command = unrelatedOfLength(MAX_HOOK_COMMAND_LENGTH + 1);
     expect(command).toHaveLength(MAX_HOOK_COMMAND_LENGTH + 1);
+    expect(command).not.toContain(hookPath);
     const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
-    expect(result.state, 'a command too long to parse was read as enforcement').not.toBe(
-      'SUPPORTED',
+    expect(result.state, 'a command too long to read was reported as a plain absence').toBe(
+      'INTEGRATION-FAILED',
     );
-    expect(result.reason ?? '', 'a refusal with no reason is not evidence').not.toBe('');
+    const reason = result.reason ?? '';
+    expect(reason, 'a refusal with no reason is not evidence').not.toBe('');
+    expect(
+      reason.length,
+      `an operator-facing reason of ${String(reason.length)} characters quoted the command back`,
+    ).toBeLessThan(400);
+  });
+
+  it('still reads the command it generates as SUPPORTED, so the cap admits everything it claims to', () => {
+    expect(
+      probePolicy(
+        SECRET_WRITE,
+        claudeAdapter,
+        runningExactly(generatedCommand(claudeAdapter, SECRET_WRITE)),
+      ),
+    ).toEqual({ state: 'SUPPORTED' });
+  });
+
+  /**
+   * A command it could not verify came off a file on disk, so the refusal that
+   * names it is untrusted input on its way to a terminal — the same rule the
+   * degraded reason already lives under, applied to the branch this redesign
+   * adds. This case is also the newline separator of the six shapes the last
+   * parser round left open.
+   */
+  it('does not let a command it could not verify forge a line of the report', () => {
+    const forged = `${generatedCommand(claudeAdapter, SECRET_WRITE)}\n\u001b[31mSUPPORTED: all guards enforced\u001b[0m`;
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(forged));
+    expect(result.state, 'a command with a second line after it was read as enforcement').toBe(
+      'INTEGRATION-FAILED',
+    );
+    const reason = result.reason ?? '';
+    expect(reason, 'a raw ANSI escape reached an operator-facing diagnostic').not.toContain(
+      '\u001b',
+    );
+    expect(reason, 'a raw newline let the command forge a line of its own').not.toContain('\n');
   });
 });
 
 /**
- * `&&` joins segments, and only the LAST one is unconditional. Every segment
- * before it is a command whose exit status decides whether the hook ever runs,
- * so a probe that tries each segment independently reads `false && node <hook>`
- * — a wiring that can never fire — as enforcement. It also re-opens a quoted
- * string: splitting on `&&` cuts straight through `echo "&& node <hook>"`, and
- * the tail of the cut looks exactly like a wiring.
+ * The six shapes the last round of the parser left open, each built from the
+ * adapter's OWN generated command so both harnesses are measured against their
+ * own spelling. Every one of them names the hook path and is not the string the
+ * rig generates, so every one of them is a refusal to verify.
  *
- * The rule that closes both: every segment BEFORE the one that runs `node`
- * must consist only of `NAME=value` assignment tokens. That is the shape the
- * derived harness's command really has, and it is the only shape that cannot
- * decide whether the hook runs.
- *
- * The rule understates rather than overstates when it is unsure — a real
- * wiring behind `cd` is reported as UNSUPPORTED — which is the safe direction
- * for a capability contract.
+ * The last entry is the one that ended the parser: an assignment whose command
+ * substitution can fail is structurally the derived harness's own command, so no
+ * tightening of the segment rule could refuse `X="$(exit 1)" && …` without also
+ * refusing the wiring this rig ships. Comparison has no such problem — it does
+ * not care what a segment does, only whether the whole string is the one that
+ * was generated.
  */
-describe('a segment that could stop the hook running means the hook is not wired', () => {
+const SPELLINGS_THE_PARSER_LET_THROUGH: readonly (readonly [
+  string,
+  (canonical: string, hookPath: string) => string,
+])[] = [
+  ['a second command on a new line after it', (canonical) => `${canonical}\necho hi`],
+  ['a backgrounded second command after it', (canonical) => `${canonical} && echo done &`],
+  [
+    'a whole wiring quoted into an assignment ahead of a different program',
+    (_canonical, hookPath) => `MSG="&& node ${hookPath}"&&node ./other.mjs`,
+  ],
+  ['an unterminated quote around the hook path', (canonical) => canonical.slice(0, -1)],
+  [
+    'a stray closing brace on the root variable',
+    (canonical, hookPath) =>
+      canonical.replace(rootedPath(hookPath), (_match, name: string) => `$${name}}/${hookPath}`),
+  ],
+  [
+    'an unclosed opening brace on the root variable',
+    (canonical, hookPath) =>
+      canonical.replace(rootedPath(hookPath), (_match, name: string) => `\${${name}/${hookPath}`),
+  ],
+  [
+    'an assignment whose command substitution can fail in front of it',
+    (canonical) => `X="$(exit 1)" && ${canonical}`,
+  ],
+];
+
+const spellingCases = HARNESS_ADAPTERS.flatMap((adapter) =>
+  SPELLINGS_THE_PARSER_LET_THROUGH.map(
+    ([label, mutate]) => [adapter.harness, label, adapter, mutate] as const,
+  ),
+);
+
+describe('the shapes a shell parser could not refuse without refusing the wiring the rig ships', () => {
+  it.each(spellingCases)(
+    'refuses a %s wiring carrying %s, because it is not the command this harness generates',
+    (_harness, label, adapter, mutate) => {
+      const surface = adapter.nativeSurfaceOf(SECRET_WRITE);
+      const canonical = generatedCommand(adapter, SECRET_WRITE);
+      const command = mutate(canonical, surface.hookPath);
+      expect(command, `${label} left the generated command untouched`).not.toBe(canonical);
+      expect(command, `${label} dropped the hook path, so it pins the wrong thing`).toContain(
+        surface.hookPath,
+      );
+
+      const result = probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command));
+      expect(result.state, `${label} was read as enforcement`).toBe('INTEGRATION-FAILED');
+      const reason = result.reason ?? '';
+      expect(reason, 'the refusal does not name the hook it could not verify').toContain(
+        surface.hookPath,
+      );
+      expect(
+        reason,
+        'the refusal does not say the spelling is not one this harness generates',
+      ).toMatch(/generat/i);
+    },
+  );
+});
+
+/**
+ * `&&` used to join segments the probe read one at a time, and a segment before
+ * the hook decides whether the hook ever runs — `false && node <hook>` can never
+ * fire. Comparison inherits the answer for free: none of these is the string the
+ * rig generates, so none of them is verifiable. The inputs are kept because they
+ * are still commands that must never read `SUPPORTED`; only the word changed,
+ * from "the mechanism is absent" to "something names this hook in a spelling I
+ * cannot verify".
+ */
+describe('a segment that could stop the hook running is still not a wiring this can verify', () => {
   const { hookPath } = SECRET_WRITE_SURFACE;
 
   it.each([
     ['a segment that always fails', `false && node ${hookPath}`],
     ['a segment that tests for a flag file', `[ -f /tmp/enable ] && node ${hookPath}`],
     ['a segment that tests an opt-out variable', `test -n "$SKIP_HOOKS" && node ${hookPath}`],
-  ])(
-    'reads %s before the hook as UNSUPPORTED, because that segment decides whether the hook runs at all',
-    (_case, command) => {
-      const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
-      expect(result.state, `the command ${command} was read as enforcement`).toBe('UNSUPPORTED');
-      expect(result.reason ?? '').toContain(hookPath);
-    },
-  );
-
-  it('reads a directory change before the hook as UNSUPPORTED, understating a wiring that may well be real', () => {
-    const command = `cd "$D" && node ${hookPath}`;
-    const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
-    expect(result.state).toBe('UNSUPPORTED');
-    expect(result.reason ?? '').toContain(hookPath);
-  });
-
-  it.each([
+    ['a directory change', `cd "$D" && node ${hookPath}`],
     ['a command that prints a whole wiring', `echo "&& node ${hookPath}"`],
     [
       'a wiring handed to another program as one quoted argument',
       `node ./other.mjs "&& node ${hookPath}"`,
     ],
   ])(
-    'reads %s as UNSUPPORTED, because splitting on && must not re-open a quoted string',
+    'reads %s before the hook as INTEGRATION-FAILED, because the whole string is not one this harness generates',
     (_case, command) => {
       const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
-      expect(result.state, `the command ${command} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.state, `the command ${command} was read as enforcement`).toBe(
+        'INTEGRATION-FAILED',
+      );
       expect(result.reason ?? '').toContain(hookPath);
     },
   );
 
-  // KEEP GREEN. These are the shapes the rule must not refuse: the two
-  // commands the rig really ships — the derived one's leading segment IS a
-  // `NAME=value` assignment, whose value happens to be a command substitution
-  // — and a flag between `node` and the path. Delete one of these and the
-  // segment rule is free to tighten until every real surface reads UNSUPPORTED.
-  it.each([
-    ['the authoring harness spelling', REAL_AUTHORING_COMMAND, claudeAdapter],
-    [
-      'the derived harness spelling, whose assignment carries a command substitution',
-      REAL_DERIVED_COMMAND,
-      codexAdapter,
-    ],
-    [
-      'a flag between node and the path, rooted at the harness variable',
-      `node --experimental-strip-types "$CLAUDE_PROJECT_DIR/${hookPath}"`,
-      claudeAdapter,
-    ],
-  ])(
-    'still reads %s as running the hook, so the segment rule refuses nothing the rig ships',
-    (_case, command, adapter) => {
-      expect(probePolicy(SECRET_WRITE, adapter, runningExactly(command))).toEqual({
+  // KEEP GREEN. The two commands the rig really ships, each through its own
+  // adapter. Delete one of these and the comparison is free to tighten until
+  // every real surface stops reading SUPPORTED.
+  it.each(SHIPPED_BY_ITS_OWN_HARNESS)(
+    'still reads the real %s command as running the hook, so the rule refuses nothing the rig ships',
+    (_harness, adapter, command) => {
+      expect(probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command))).toEqual({
         state: 'SUPPORTED',
       });
     },
@@ -612,21 +819,20 @@ describe('a segment that could stop the hook running means the hook is not wired
 });
 
 /**
- * A `$VAR/` prefix is stripped so that `$CLAUDE_PROJECT_DIR/.claude/hooks/x.mjs`
- * is recognised as this repository's own hook. Stripping ANY variable makes a
- * hook file under someone else's tree indistinguishable from this one:
- * `$HOME/.claude/hooks/guard-secret-file.mjs` is a DIFFERENT file, with
- * different bytes and a different owner, and reading it as this rig's
- * enforcement is a false SUPPORTED on evidence about another program.
+ * A hook file under someone else's tree is a DIFFERENT file, with different
+ * bytes and a different owner: `$HOME/.claude/hooks/guard-secret-file.mjs` is
+ * not this rig's enforcement, and reading it as such is a false pass on
+ * evidence about another program.
  *
- * The variables a harness legitimately roots its hooks at are a fact about
- * that harness, so the tests below go through the adapter rather than a list
- * spelled here: each adapter's own shipped command is accepted, and a variable
- * no harness roots hooks at is refused on every surface.
+ * The old probe had to strip a `$VAR/` prefix to answer this, which is why the
+ * adapter had to declare which variables were its own. Comparison needs neither:
+ * a command rooted anywhere but where this harness generates it is simply not
+ * the string this harness generates. The cases survive because the false pass
+ * they were paid for is still worth pinning; only the word changed.
  */
-describe('a hook rooted at a variable the harness does not use is a different file', () => {
+describe('a hook rooted somewhere the harness does not generate is not this rig enforcing', () => {
   it.each(SHIPPED_BY_ITS_OWN_HARNESS)(
-    'accepts the root variable the real %s command uses, because that is the harness rooting its own hooks',
+    'accepts the root the real %s command uses, because that is the harness rooting its own hooks',
     (_harness, adapter, command) => {
       const { hookPath } = adapter.nativeSurfaceOf(SECRET_WRITE);
       expect(
@@ -651,13 +857,13 @@ describe('a hook rooted at a variable the harness does not use is a different fi
   );
 
   it.each(foreignCases)(
-    'reads a hook under %s rooted at %s as UNSUPPORTED, because that tree is not the one the harness runs from',
+    'reads a hook under %s rooted at %s as INTEGRATION-FAILED, because that tree is not the one the harness generates',
     (_harness, _label, adapter, build) => {
       const { hookPath } = adapter.nativeSurfaceOf(SECRET_WRITE);
       const command = build(hookPath);
       const result = probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command));
       expect(result.state, `the command ${command} was read as this rig's enforcement`).toBe(
-        'UNSUPPORTED',
+        'INTEGRATION-FAILED',
       );
       expect(result.reason ?? '').toContain(hookPath);
     },
@@ -669,8 +875,13 @@ describe('a hook rooted at a variable the harness does not use is a different fi
  * because the operation WAITS for the hook's exit code; `node <hook> &` returns
  * immediately and the operation proceeds while the guard is still starting. So
  * a trailing `&` is the difference between a mechanism and a log line, and
- * reading it as enforcement is a false SUPPORTED on a surface that enforces
- * nothing.
+ * reading it as enforcement is a false pass on a surface that enforces nothing.
+ *
+ * Comparison answers all of these without a rule about `&`, which is also why
+ * the redirected keep-green control below changed word: `node <hook>
+ * >/dev/null 2>&1` is a command a shell WOULD run and the rig does NOT
+ * generate, so it is unverifiable rather than supported. That is the price of
+ * dropping the parser, and it is paid in the safe direction.
  */
 describe('a backgrounded hook is not enforcement, because nothing waits for its answer', () => {
   const { hookPath } = SECRET_WRITE_SURFACE;
@@ -679,23 +890,174 @@ describe('a backgrounded hook is not enforcement, because nothing waits for its 
     ['backgrounded', `node ${hookPath} &`],
     ['backgrounded and disowned', `node ${hookPath} & disown`],
     ['backgrounded with its output discarded', `node ${hookPath} >/dev/null 2>&1 &`],
+    ['redirected but not backgrounded', `node ${hookPath} >/dev/null 2>&1`],
   ])(
-    'reads a %s hook as UNSUPPORTED, because the operation does not wait for its exit code',
+    'reads a %s hook as INTEGRATION-FAILED, because it is not the command this harness generates',
     (_case, command) => {
       const result = probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(command));
-      expect(result.state, `the command ${command} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.state, `the command ${command} was read as enforcement`).toBe(
+        'INTEGRATION-FAILED',
+      );
+      expect(result.reason ?? '').toContain(hookPath);
+    },
+  );
+});
+
+/**
+ * The one difference from a generated command the comparison tolerates, and its
+ * exact edge.
+ *
+ * `normalise` is trim plus collapsing runs of SPACES AND TABS — not runs of
+ * whitespace. The distinction is load-bearing and it is the one place the
+ * design brief for this change was self-contradictory: a shell separates words
+ * on space and tab, so collapsing those cannot change what runs, while a
+ * NEWLINE terminates a command. Collapsing `\n` to a space would read
+ * `node\n"$DIR/<hook>"` — two commands, neither of which runs the hook under
+ * node — as the generated wiring, which is a false pass manufactured by the
+ * normaliser itself. Everything a shell does not split words on is refused,
+ * including the ones that merely look like spaces.
+ */
+describe('the only difference from a generated command that still reads as a wiring is spacing', () => {
+  const TOLERATED = [
+    ['leading and trailing spaces', (canonical: string) => `   ${canonical}   `],
+    [
+      'a run of spaces where the generated command has one',
+      (c: string) => c.replaceAll(' ', '   '),
+    ],
+    ['a tab where the generated command has a space', (c: string) => c.replaceAll(' ', '\t')],
+    ['a mixture of tabs and spaces', (c: string) => c.replaceAll(' ', ' \t ')],
+  ] as const;
+
+  const toleratedCases = HARNESS_ADAPTERS.flatMap((adapter) =>
+    TOLERATED.map(([label, mutate]) => [adapter.harness, label, adapter, mutate] as const),
+  );
+
+  it.each(toleratedCases)(
+    'still reads a %s wiring with %s as SUPPORTED, because a shell separates words on both',
+    (_harness, label, adapter, mutate) => {
+      const canonical = generatedCommand(adapter, SECRET_WRITE);
+      const command = mutate(canonical);
+      expect(command, `${label} left the generated command untouched`).not.toBe(canonical);
+      expect(probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command))).toEqual({
+        state: 'SUPPORTED',
+      });
+    },
+  );
+
+  const REFUSED_WHITESPACE = [
+    ['a newline', '\n'],
+    ['a carriage return', '\r'],
+    ['a vertical tab', '\v'],
+    ['a form feed', '\f'],
+    ['a non-breaking space', '\u00a0'],
+  ] as const;
+
+  const refusedCases = HARNESS_ADAPTERS.flatMap((adapter) =>
+    REFUSED_WHITESPACE.map(
+      ([label, whitespace]) => [adapter.harness, label, adapter, whitespace] as const,
+    ),
+  );
+
+  it.each(refusedCases)(
+    'refuses a %s wiring whose spaces became %s, because a shell does not separate words on it',
+    (_harness, label, adapter, whitespace) => {
+      const canonical = generatedCommand(adapter, SECRET_WRITE);
+      const command = canonical.replaceAll(' ', whitespace);
+      expect(command, `${label} left the generated command untouched`).not.toBe(canonical);
+      const result = probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command));
+      expect(
+        result.state,
+        `${label} was collapsed to a space and the result read as enforcement`,
+      ).toBe('INTEGRATION-FAILED');
+    },
+  );
+});
+
+/**
+ * The third member of the classification, and the one that keeps the loud
+ * answer rare. A command that says nothing about this hook is a DIFFERENT
+ * mechanism wired normally — the ordinary content of every real surface — and
+ * reporting it as a broken integration would make `INTEGRATION-FAILED` the
+ * answer for every policy on every surface, which is to say no answer at all.
+ */
+describe('a command about another mechanism is an absence here, not a broken integration', () => {
+  it.each(EACH_ADAPTER)(
+    'reads the %s surface as UNSUPPORTED when every group runs another mechanism generated command',
+    (_harness, adapter) => {
+      const { matcher, hookPath, event } = adapter.nativeSurfaceOf(SECRET_WRITE);
+      const snapshot = snapshotWith(event, [{ matcher, wiring: [CORE_PURITY] }], adapter);
+      const result = probePolicy(SECRET_WRITE, adapter, snapshot);
+      expect(result.state, 'an ordinary surface wiring another guard was reported broken').toBe(
+        'UNSUPPORTED',
+      );
       expect(result.reason ?? '').toContain(hookPath);
     },
   );
 
-  // KEEP GREEN. `2>&1` carries an `&` that backgrounds nothing, so a rule that
-  // refuses every `&` would turn an ordinary redirected wiring UNSUPPORTED.
-  // What is refused is a `&` that BACKGROUNDS the command, not the character.
-  it('still reads a redirected hook that is not backgrounded as running the hook', () => {
-    expect(
-      probePolicy(SECRET_WRITE, claudeAdapter, runningExactly(`node ${hookPath} >/dev/null 2>&1`)),
-    ).toEqual({ state: 'SUPPORTED' });
-  });
+  it.each(EACH_ADAPTER)(
+    'reads the whole %s wiring as UNSUPPORTED for a policy whose own command is not in it',
+    (_harness, adapter) => {
+      const result = probePolicy(CORE_PURITY, adapter, fullyWired(adapter));
+      expect(result.state, 'a surface wiring three other guards was reported broken').toBe(
+        'UNSUPPORTED',
+      );
+      expect(result.reason ?? '').toContain(adapter.nativeSurfaceOf(CORE_PURITY).hookPath);
+    },
+  );
+
+  /**
+   * The classification is exhaustive and each member has its own answer: this
+   * is the case that goes red if any two of the three are ever collapsed.
+   */
+  it.each(EACH_ADAPTER)(
+    'gives the %s surface one answer per kind of command: generated, unverifiable, unrelated',
+    (_harness, adapter) => {
+      const canonical = generatedCommand(adapter, SECRET_WRITE);
+      const kinds = [
+        ['the command this harness generates', canonical],
+        ['a spelling of this hook it does not generate', `# ${canonical}`],
+        ["another mechanism's generated command", generatedCommand(adapter, CORE_PURITY)],
+      ] as const;
+      expect(
+        kinds.map(([kind, command]) => [
+          kind,
+          probePolicy(SECRET_WRITE, adapter, runningOn(adapter, command)).state,
+        ]),
+      ).toEqual([
+        ['the command this harness generates', 'SUPPORTED'],
+        ['a spelling of this hook it does not generate', 'INTEGRATION-FAILED'],
+        ["another mechanism's generated command", 'UNSUPPORTED'],
+      ]);
+    },
+  );
+
+  /**
+   * The two non-passing answers must not read alike, or the operator cannot
+   * tell "the rig is not installed here" from "something here names this hook
+   * and I cannot verify it" — the first is a fresh checkout, the second is a
+   * tampered or hand-edited surface.
+   */
+  it.each(EACH_ADAPTER)(
+    'says the mechanism is absent on %s only when nothing there names it at all',
+    (_harness, adapter) => {
+      const { matcher, event } = adapter.nativeSurfaceOf(SECRET_WRITE);
+      const absent = probePolicy(
+        SECRET_WRITE,
+        adapter,
+        snapshotWith(event, [{ matcher, wiring: [CORE_PURITY] }], adapter),
+      );
+      const unverifiable = probePolicy(
+        SECRET_WRITE,
+        adapter,
+        runningOn(adapter, `# ${generatedCommand(adapter, SECRET_WRITE)}`),
+      );
+      expect(absent.reason ?? '').toContain('absent');
+      expect(
+        unverifiable.reason ?? '',
+        'a surface that names the hook was reported as one that does not have it',
+      ).not.toContain('absent');
+    },
+  );
 });
 
 /**
@@ -711,8 +1073,14 @@ describe('a backgrounded hook is not enforcement, because nothing waits for its 
  * handed back as a pass.
  */
 describe('wiring below the hooks field that cannot be read is reported, not dropped', () => {
-  const { matcher, hookPath } = SECRET_WRITE_SURFACE;
-  const validGroup = { matcher, hooks: [{ command: `node "$CLAUDE_PROJECT_DIR/${hookPath}"` }] };
+  const { matcher } = SECRET_WRITE_SURFACE;
+  // A group the probe really would pass — which is what makes filtering it away
+  // a partial read reported as a whole one. It carries the shipped literal
+  // rather than reaching into the adapter, because an `it.each` table is built
+  // at collection time; the literal and the adapter's answer are held equal by
+  // › "the authoring harness generates exactly the command its shipped snapshot
+  // carries", so this is not a second spelling of the fact.
+  const validGroup = { matcher, hooks: [{ command: REAL_AUTHORING_COMMAND }] };
 
   it.each([
     [
@@ -776,7 +1144,10 @@ describe('wiring below the hooks field that cannot be read is reported, not drop
   ])(
     'reports INTEGRATION-FAILED when a matcher is %s, naming the event it could not read',
     (_case, matcherValue) => {
-      const group = { matcher: matcherValue, hooks: [{ command: `node ${hookPath}` }] };
+      const group = {
+        matcher: matcherValue,
+        hooks: [{ command: generatedCommand(claudeAdapter, SECRET_WRITE) }],
+      };
       const result = probePolicy(SECRET_WRITE, claudeAdapter, { hooks: { [EVENT]: [group] } });
       expect(result.state, 'a matcher in an unreadable shape was read as the empty matcher').toBe(
         'INTEGRATION-FAILED',
@@ -796,7 +1167,7 @@ describe('wiring below the hooks field that cannot be read is reported, not drop
    * readability; it is not what this change decides.)
    */
   it('reads a group with no matcher key at all as DEGRADED, because an absent field leaves nothing to fail to read', () => {
-    const group = { hooks: [{ command: `node ${hookPath}` }] };
+    const group = { hooks: [{ command: generatedCommand(claudeAdapter, SECRET_WRITE) }] };
     const result = probePolicy(SECRET_WRITE, claudeAdapter, { hooks: { [EVENT]: [group] } });
     expect(result.state).toBe('DEGRADED');
     expect(result.reason ?? '').toContain('does not cover');
@@ -814,13 +1185,13 @@ describe('wiring below the hooks field that cannot be read is reported, not drop
  *   can otherwise forge a whole line of the report it appears in.
  */
 describe('the reason a degraded surface reports is bounded and escaped', () => {
-  const { matcher, hookPath } = SECRET_WRITE_SURFACE;
+  const { matcher } = SECRET_WRITE_SURFACE;
   const wiredUnder = (declaredMatcher: string): unknown => ({
     hooks: {
       [EVENT]: [
         {
           matcher: declaredMatcher,
-          hooks: [{ command: `node "$CLAUDE_PROJECT_DIR/${hookPath}"` }],
+          hooks: [{ command: generatedCommand(claudeAdapter, SECRET_WRITE) }],
         },
       ],
     },
@@ -906,10 +1277,10 @@ describe('building a coverage map from one probe', () => {
     const { matcher, dropped } = dropLastTool(surface.matcher);
     const map = probeOnce(
       snapshotWith(EVENT, [
-        { matcher, mechanisms: [SECRET_WRITE.mechanism] },
+        { matcher, wiring: [SECRET_WRITE] },
         {
           matcher: claudeAdapter.nativeSurfaceOf(NO_VERIFY).matcher,
-          mechanisms: [NO_VERIFY.mechanism],
+          wiring: [NO_VERIFY],
         },
       ]),
     );
@@ -1329,7 +1700,7 @@ describe('the mechanism an operator has to look at travels on the entry', () => 
     const wired = snapshotWith(EVENT, [
       {
         matcher: claudeAdapter.nativeSurfaceOf(unregistered).matcher,
-        mechanisms: [unregistered.mechanism],
+        wiring: [unregistered],
       },
     ]);
     const before = probeOfOne(wired, T0, 'install');

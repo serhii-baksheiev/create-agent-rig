@@ -60,6 +60,11 @@ const combos = HARNESS_ADAPTERS.flatMap((adapter) =>
  * from running it. Every one of them was read as `SUPPORTED` while the check
  * was `command.includes(hookPath)` — on the real files this rig ships, not on
  * a fixture — so they are the acceptance half of "a mention is not a wiring".
+ *
+ * Under canonical comparison each of them is a spelling this harness does not
+ * generate, and the answer is `INTEGRATION-FAILED`: still non-passing, but the
+ * honest word. "The mechanism is absent" is reserved for a surface that does
+ * not name the hook at all, which is what the `unwired` mutation produces.
  */
 const MENTION_MUTATIONS: readonly (readonly [
   string,
@@ -232,6 +237,14 @@ describe('probing the surfaces this rig really ships', () => {
 });
 
 describe('the probe tells the real surface apart from a broken one', () => {
+  /**
+   * The one mutation of a real surface that really does mean "the mechanism is
+   * absent": the command is gone, and every command still in the file belongs
+   * to another mechanism. It is also the acceptance half of the third member of
+   * the classification — if an unrelated command were read as unverifiable,
+   * every policy on every real surface would report `INTEGRATION-FAILED` and
+   * the loud answer would carry no information at all.
+   */
   it.each(combos)(
     'reports %s policy %s as UNSUPPORTED when its hook command leaves the real snapshot (mutation: unwired)',
     async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
@@ -245,15 +258,19 @@ describe('the probe tells the real surface apart from a broken one', () => {
       expect(timesWired(mutated, hookPath), 'the mutation removed nothing').toBe(0);
 
       const result = probePolicy(policy, adapter, mutated);
-      expect(result.state).toBe('UNSUPPORTED');
+      expect(
+        result.state,
+        'a surface still wiring every other guard was reported as a broken integration',
+      ).toBe('UNSUPPORTED');
       expect(result.reason ?? '').toContain(hookPath);
     },
   );
 
   // The unwired mutation above removes the command; these three LEAVE the hook
-  // path where it is and change only whether the command RUNS it.
+  // path where it is and change the spelling, so the probe can see that
+  // something here names this hook and cannot verify that it runs it.
   it.each(mentionCases)(
-    'reports %s policy %s as UNSUPPORTED when its real command becomes %s (mutation: mentioned, not run)',
+    'reports %s policy %s as INTEGRATION-FAILED when its real command becomes %s (mutation: mentioned, not run)',
     async (_harness, _policyId, mutation, adapter, policy: PolicyDeclaration, mutate) => {
       const snapshot = await readSnapshot(adapter.surfaceFile);
       const { hookPath } = adapter.nativeSurfaceOf(policy);
@@ -263,7 +280,7 @@ describe('the probe tells the real surface apart from a broken one', () => {
       expect(changed, 'the mutation rewrote no command in the real snapshot').toBe(1);
 
       const result = probePolicy(policy, adapter, mutated);
-      expect(result.state, `${mutation} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.state, `${mutation} was read as enforcement`).toBe('INTEGRATION-FAILED');
       expect(result.reason ?? '').toContain(hookPath);
     },
   );
@@ -352,20 +369,24 @@ describe('the probe tells the real surface apart from a broken one', () => {
 
 /**
  * The mention mutations above change the command into something that plainly
- * does not run the hook. These four leave a command that a shell WOULD run —
- * or would run under someone else's tree, or without waiting for it — and each
- * of them was read as `SUPPORTED` against the files this rig really ships:
+ * does not run the hook. These leave a command that a shell WOULD run — or
+ * would run under someone else's tree, or without waiting for it — and each of
+ * them was read as `SUPPORTED` against the files this rig really ships:
  *
  * - a `&&` segment in front decides whether the hook runs at all, so `false &&`
  *   in front of the real command is a wiring that can never fire;
  * - the executed path may be rooted at any variable, so `$HOME/` in place of
  *   the harness's own root points at a DIFFERENT file with different bytes;
  * - a trailing `&` backgrounds the hook, and `PreToolUse` enforcement is the
- *   operation waiting for the exit code — a backgrounded guard refuses nothing.
+ *   operation waiting for the exit code — a backgrounded guard refuses nothing;
+ * - and the last two are the shapes the parser rounds ended on: an assignment
+ *   whose command substitution can fail, which is structurally the derived
+ *   harness's own command, and a redirection, which the parser had to accept.
  *
- * Each asserts that the mutation really changed the command before asserting
- * the answer, because a mutation that matched nothing would leave the test
- * passing for the wrong reason.
+ * Under canonical comparison every one of them is simply not the string the rig
+ * generates. Each asserts that the mutation really changed the command before
+ * asserting the answer, because a mutation that matched nothing would leave the
+ * test passing for the wrong reason.
  */
 const escapeForRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -387,6 +408,12 @@ const RUNNABLE_MUTATIONS: readonly (readonly [
       ),
   ],
   ['a backgrounded hook nothing waits for', (command) => `${command} &`],
+  [
+    'an assignment whose command substitution can fail in front of it',
+    (command) => `X="$(exit 1)" && ${command}`,
+  ],
+  ['its output redirected away', (command) => `${command} >/dev/null 2>&1`],
+  ['a second command on a new line after it', (command) => `${command}\necho hi`],
 ];
 
 const runnableCases = combos.flatMap(([harness, policyId, adapter, policy]) =>
@@ -395,9 +422,9 @@ const runnableCases = combos.flatMap(([harness, policyId, adapter, policy]) =>
   ),
 );
 
-describe('a command a shell would run is still not wiring unless it runs THIS hook, and waits for it', () => {
+describe('a command a shell would run on the real surface is still not the command the rig generates', () => {
   it.each(runnableCases)(
-    'reports %s policy %s as UNSUPPORTED when its real command gains %s (mutation: runnable but not enforcing)',
+    'reports %s policy %s as INTEGRATION-FAILED when its real command gains %s (mutation: runnable but not generated)',
     async (_harness, _policyId, mutation, adapter, policy: PolicyDeclaration, mutate) => {
       const snapshot = await readSnapshot(adapter.surfaceFile);
       const { hookPath } = adapter.nativeSurfaceOf(policy);
@@ -411,27 +438,109 @@ describe('a command a shell would run is still not wiring unless it runs THIS ho
       expect(rewritten, `${mutation} left the real command untouched`).not.toBe(original);
 
       const result = probePolicy(policy, adapter, mutated);
-      expect(result.state, `${mutation} was read as enforcement`).toBe('UNSUPPORTED');
+      expect(result.state, `${mutation} was read as enforcement`).toBe('INTEGRATION-FAILED');
       expect(result.reason ?? '').toContain(hookPath);
     },
   );
 
-  // KEEP GREEN. A redirection carries an `&` that backgrounds nothing, so a
-  // rule refusing every `&` would turn an ordinary redirected wiring
-  // UNSUPPORTED on both real surfaces. What is refused is a `&` that
-  // BACKGROUNDS the command, not the character.
+  /**
+   * KEEP GREEN, and the tolerance the comparison really does grant on the real
+   * files: a run of spaces or a tab where the shipped command has one space is
+   * the same command to a shell, so re-indenting a snapshot must not turn every
+   * policy on it unverifiable.
+   */
+  const RESPACINGS = [
+    ['a run of spaces where it has one', (command: string) => command.replaceAll(' ', '   ')],
+    ['a tab where it has a space', (command: string) => command.replaceAll(' ', '\t')],
+    ['leading and trailing spaces', (command: string) => `  ${command}  `],
+  ] as const;
+
+  const respacedCases = combos.flatMap(([harness, policyId, adapter, policy]) =>
+    RESPACINGS.map(
+      ([mutation, mutate]) => [harness, policyId, mutation, adapter, policy, mutate] as const,
+    ),
+  );
+
+  it.each(respacedCases)(
+    'still reports %s policy %s as SUPPORTED when its real command carries %s (mutation: respaced)',
+    async (_harness, _policyId, mutation, adapter, policy: PolicyDeclaration, mutate) => {
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      let original = '';
+      const { snapshot: mutated, changed } = rewriteCommand(snapshot, hookPath, (command) => {
+        original = command;
+        return mutate(command);
+      });
+      expect(changed, 'the mutation rewrote no command in the real snapshot').toBe(1);
+      expect(mutate(original), `${mutation} left the real command untouched`).not.toBe(original);
+      expect(probePolicy(policy, adapter, mutated)).toEqual({ state: 'SUPPORTED' });
+    },
+  );
+});
+
+/**
+ * The acceptance half of "the probe compares against what the rig would
+ * generate": the adapter's answer and the bytes in the shipped file, held equal
+ * on the real files rather than on a copied literal. This is what makes every
+ * `SUPPORTED` above a measurement — if an adapter ever generated a command the
+ * rig does not ship, every one of those passes would be a fixture agreeing with
+ * itself.
+ */
+describe('what each adapter generates is what the shipped snapshot really carries', () => {
   it.each(combos)(
-    'still reports %s policy %s as SUPPORTED when its real command only redirects its output (mutation: redirected, not backgrounded)',
+    'the %s snapshot wires %s with exactly the command that adapter generates',
     async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
       const snapshot = await readSnapshot(adapter.surfaceFile);
       const { hookPath } = adapter.nativeSurfaceOf(policy);
-      const { snapshot: mutated, changed } = rewriteCommand(
-        snapshot,
-        hookPath,
-        (command) => `${command} >/dev/null 2>&1`,
-      );
+      const wired = Object.values(snapshot.hooks)
+        .flatMap((groups) => groups ?? [])
+        .flatMap((group) => [...group.hooks])
+        .map((hook) => hook.command)
+        .filter((command) => command.includes(hookPath));
+      expect(wired, `${hookPath} is not wired once in the real snapshot`).toHaveLength(1);
+      const { commands } = adapter.nativeSurfaceOf(policy);
+      expect(
+        Array.isArray(commands),
+        `the ${adapter.harness} adapter states no commands it generates`,
+      ).toBe(true);
+      expect(
+        commands,
+        'the shipped snapshot carries a command this adapter would not generate',
+      ).toContain(wired[0]);
+    },
+  );
+
+  /**
+   * The two harnesses name one hook file in two spellings, so each harness's own
+   * command is the other's unverifiable one. A substring read calls both a
+   * wiring; comparison tells them apart, which is what stops a Codex surface
+   * being credited for a Claude-shaped command it will never run as written.
+   */
+  it.each(combos)(
+    'reports %s policy %s as INTEGRATION-FAILED when its real command becomes the other harness spelling (mutation: foreign harness)',
+    async (_harness, _policyId, adapter, policy: PolicyDeclaration) => {
+      const other = HARNESS_ADAPTERS.find((candidate) => candidate.harness !== adapter.harness);
+      if (other === undefined) throw new Error('only one harness adapter is registered');
+      const foreign = other.nativeSurfaceOf(policy).commands[0];
+      if (foreign === undefined) throw new Error(`${other.harness} generates no command`);
+
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      const { hookPath } = adapter.nativeSurfaceOf(policy);
+      let original = '';
+      const { snapshot: mutated, changed } = rewriteCommand(snapshot, hookPath, (command) => {
+        original = command;
+        return foreign;
+      });
       expect(changed, 'the mutation rewrote no command in the real snapshot').toBe(1);
-      expect(probePolicy(policy, adapter, mutated)).toEqual({ state: 'SUPPORTED' });
+      expect(foreign, 'the two harnesses generate the same command, so this pins nothing').not.toBe(
+        original,
+      );
+
+      const result = probePolicy(policy, adapter, mutated);
+      expect(result.state, 'one harness was credited for the other harness wiring').toBe(
+        'INTEGRATION-FAILED',
+      );
+      expect(result.reason ?? '').toContain(hookPath);
     },
   );
 });

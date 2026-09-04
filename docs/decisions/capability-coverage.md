@@ -129,6 +129,62 @@ accepts it once qualifierFor speaks". Which states those are is one list,
 `UNENFORCEABLE_STATES`, that both modules import; it was three copies until
 `code-reviewer` pointed out that one of them was a display ordering.
 
+### 7. "Is this hook wired?" is answered by comparison, never by parsing shell
+
+Added after three gate rounds, because the first six decisions were right and
+this one was wrong, and the way it was wrong is the most reusable thing in this
+record.
+
+The probe originally answered "does this command run the hook?" by reading the
+command. Round 1 shipped `command.includes(hookPath)`, which read a `.bak`
+neighbour, an `echo`, a commented-out line and a vendored copy as enforcement.
+Round 2 replaced it with a narrow parser — `&&` segments, assignments, `node`
+as the executable, an exact path comparison — and that opened four new false
+`SUPPORTED` shapes. Round 3 fixed those and opened five more, ending with two
+that were live against the files this rig actually ships:
+
+```
+X="$(exit 1)" && <the real command>     → SUPPORTED, but the hook never runs
+<the real command>
+echo hi             → SUPPORTED, but the exit code is discarded
+```
+
+The last one settles the approach. An assignment whose value is a command
+substitution takes that substitution's exit status, so it CAN decide whether
+the hook runs — and it cannot be refused, because it is the shape this rig's
+own derived command uses. There is no tightening that keeps the real wiring
+green and closes the class.
+
+The asymmetry is what makes that fatal rather than merely annoying: a false
+`UNSUPPORTED` understates, while a false `SUPPORTED` is the silent pass on an
+unwired guard that this entire contract exists to prevent. A partial parser
+against the whole shell grammar loses that trade every time.
+
+*Decided: the rig GENERATES its wiring, so the probe compares against what it
+would generate.* `NativeHookSurface.commands` carries the exact strings; a
+command matches or it does not. No grammar, no arms race.
+
+The substring test survives, and its failure direction is why that is safe: it
+now only chooses between `INTEGRATION-FAILED` and `UNSUPPORTED`, two
+non-passing answers, so a false positive can no longer reach `SUPPORTED`.
+
+**What it costs, stated plainly.** A hand-written wiring that genuinely runs
+the hook — a bare `node <hookPath>`, a flag before the path, `${VAR}` instead
+of `$VAR` — now reads `INTEGRATION-FAILED` rather than `SUPPORTED`. That is a
+real loss of precision on real wirings. It buys an answer that cannot be wrong
+in the dangerous direction, and "I cannot verify this" is the honest thing to
+say about a spelling the rig did not write. A rig that hand-wires its hooks
+will see unverifiable rows until it adopts the generated spelling.
+
+*Rejected: a real shell parser.* Correct, and a new runtime dependency in a
+package whose zero-dependency property is what keeps `npx github:…` working —
+a Tier-2 decision, and the wrong trade for one predicate.
+
+*Rejected: dropping the question.* The probe could report only what is
+declared and leave "does it run" entirely to the traffic half. Most faithful to
+"never a silent pass", and a larger rework than the contract needs: comparison
+answers it without inference.
+
 ### 6. An incomplete evidence row is refused, not stored
 
 `validateEvidenceRow` refuses a row without an exact `harnessVersion` or an
@@ -189,11 +245,11 @@ build id.
   added for, which is what `code-reviewer` caught: › "compares two probes of
   the same surface across a harness upgrade, which is the fall the upgrade
   trigger exists to catch".
-- **The probe understates rather than guesses.** `/usr/bin/node <hook>`,
-  `pnpm node <hook>` and `cd "$D" && node <hook>` all read `UNSUPPORTED`: the
-  accepted shape requires `node` as the executable word and assignments-only
-  segments ahead of it. That is the safe direction, and it is a real limit —
-  a rig wiring its hooks any of those ways would be reported as unenforced.
+- **The probe compares; it does not parse.** A wiring reads `SUPPORTED` only
+  when its command equals one the adapter says this harness generates, modulo
+  runs of spaces and tabs. Every other spelling that names the hook path is
+  `INTEGRATION-FAILED` — including hand-written wirings that really do run it.
+  Decision 7 has the reasoning and the cost.
 
 ## Where the rules are pinned
 
