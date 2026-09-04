@@ -19,7 +19,13 @@ export type Validation<T> = { ok: true; value: T } | { ok: false; problems: Prob
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const quote = (value: unknown): string => {
+/**
+ * A value as it appeared, escaped, for a message a person reads. Exported
+ * because every module here that puts OUTSIDE data into a diagnostic must put
+ * it through the same escaping — a raw newline or ANSI sequence in a matcher
+ * can otherwise forge a line of the report it lands in (`./probe.ts`).
+ */
+export const quote = (value: unknown): string => {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
@@ -55,6 +61,38 @@ export const nonEmptyString = (problems: Problem[], field: string, value: unknow
   }
   return true;
 };
+
+/**
+ * Refuse a string that is absent, not a string, or has no non-space character.
+ *
+ * Stricter than `nonEmptyString` in exactly one place — a value of whitespace
+ * only — and a separate helper rather than a tightening of that one, because
+ * the shapes already validated by it are not in this change's scope. Where a
+ * field is a fact a later reader has to act on (an exact version, a pointer to
+ * evidence), a blank is the same defect as an absence and is refused as one.
+ */
+export const nonBlankString = (problems: Problem[], field: string, value: unknown): boolean => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    problems.push({ field, message: `must be a non-blank string, got ${quote(value)}` });
+    return false;
+  }
+  return true;
+};
+
+/**
+ * Date, `T`, time to the second (fractions allowed), and an explicit zone.
+ *
+ * One spelling of one fact (`rules/invariants.md`, "One mechanism, one
+ * implementation"). Its three readers are `./decision-record.ts`
+ * (`recordedAt`), `./evidence-matrix.ts` (`observedAt`) and `./coverage.ts`
+ * (`verifiedAt`, through `requireTimestamp`), so a bare date is refused the
+ * same way whichever of them is validating — `packages/cli/test/policy-coverage.test.ts`
+ * › "refuses the probe timestamp %j, which is exactly what the shared ISO-8601
+ * pattern refuses" imports this pattern rather than restating it, so the two
+ * sides cannot drift apart. A timestamp is always supplied by the caller —
+ * nothing under this directory reads a clock.
+ */
+export const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /** Refuse a string outside a closed vocabulary, quoting the offending value. */
 export const member = <T extends string>(

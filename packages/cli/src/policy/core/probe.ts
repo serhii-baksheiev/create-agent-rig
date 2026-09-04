@@ -1,0 +1,262 @@
+/**
+ * The capability probe (RP-36): given a declaration, a harness adapter and
+ * that surface's hook-wiring snapshot, what can this surface actually enforce?
+ *
+ * ONE active read of a snapshot the caller supplies. This module cannot fetch
+ * one, which bounds what IT does — it does not, on its own, stop a caller
+ * looping it, and the header of an earlier draft claimed otherwise. What
+ * records the occasion of a probe is `./coverage.ts`, whose `coverageFromProbe`
+ * requires a `ProbeTrigger` and refuses a word outside that vocabulary:
+ * `policy-coverage.test.ts` › "refuses the trigger %j, because a probe is
+ * occasioned by a change to the surface and by nothing else".
+ *
+ * The four answers, each pinned in `packages/cli/test/policy-coverage.test.ts`:
+ *
+ * | input | answer | pinned by |
+ * | --- | --- | --- |
+ * | a group naming exactly the declared tools and RUNNING the hook | `SUPPORTED` | › "reads the authoring harness spelling as running the hook, because it is what the rig really ships" |
+ * | the hook run under that event, but by no group naming exactly those tools | `DEGRADED` | › "reads a wiring that drops a declared tool as DEGRADED, naming the tool that is missing" |
+ * | a readable snapshot that runs the hook nowhere under that event | `UNSUPPORTED` | › "reads a hook wired nowhere under the policy event as UNSUPPORTED, naming the hook path" |
+ * | a snapshot, or any level of wiring under it, in a shape this module cannot read | `INTEGRATION-FAILED` | › "reports INTEGRATION-FAILED when %s, naming the event it could not read" |
+ *
+ * 🔴 The last two rows are a distinction, not a duplicate, and collapsing them
+ * costs something in each direction. `rules/invariants.md` states the rule
+ * under "Refusing to inspect is a third outcome": a field that is simply
+ * ABSENT leaves nothing to judge, while a field PRESENT in an unreadable shape
+ * is exactly the case worth reporting. Read as one, either an honest absence
+ * becomes a false alarm or an unreadable surface becomes a quiet, uncounted
+ * zero — the second being the shape a past guard here actually shipped. The
+ * costly case is an unreadable element BESIDE a valid group, held by ›
+ * "does not report SUPPORTED when an unreadable element sits beside a valid
+ * group, because that is a partial read".
+ *
+ * Neither weak answer can pass silently: `./coverage.ts` › `qualifierFor` maps
+ * both to `UNVERIFIABLE`, and `./decision-record.ts` refuses a record carrying
+ * either state with an unqualified verdict — › "refuses the silent pass an
+ * unwired surface would otherwise produce, and accepts it once qualifierFor
+ * speaks".
+ *
+ * The rationale, including what this deliberately does not do, is
+ * `docs/decisions/capability-coverage.md`.
+ */
+
+import type { HarnessAdapter } from './adapter.js';
+import type { PolicyDeclaration } from './declaration.js';
+import type { CapabilityState } from './vocabulary.js';
+import { isRecord, quote } from './validation.js';
+
+/** One hook the surface runs; the command is the harness's own spelling. */
+export interface HookEntry {
+  command: string;
+}
+
+/** One matcher and the hooks the surface runs for it. */
+export interface HookGroup {
+  matcher?: string;
+  hooks: readonly HookEntry[];
+}
+
+/** A surface's hook wiring, as the harness itself records it: event → groups. */
+export interface HookSnapshot {
+  hooks: Record<string, readonly HookGroup[] | undefined>;
+}
+
+export interface ProbeResult {
+  state: CapabilityState;
+  /**
+   * Why the state is not `SUPPORTED`. Absent exactly when it is — ›
+   * "reports no reason when the policy is supported, because there is nothing
+   * to explain" — because an empty reason beside a weak state is how a
+   * downgrade stops being evidence.
+   */
+  reason?: string;
+}
+
+/**
+ * The longest hook command this module will parse.
+ *
+ * A command comes off a file on disk, and every line of work done on untrusted
+ * input in a module whose callers fail open is a line that can be made
+ * expensive (`rules/invariants.md`, "A guard that fails open must do provably
+ * bounded work"). Past the cap the command is refused rather than parsed, and
+ * a refusal reads `UNSUPPORTED` — the safe direction. Generous by two orders of
+ * magnitude against the longest command the rig ships, so the bound never
+ * fires on honest wiring: › "states its command-length cap as a whole number,
+ * and one that admits the commands the rig ships".
+ */
+export const MAX_HOOK_COMMAND_LENGTH = 4096;
+
+/**
+ * How many tool names a reason may list before it says "and N more".
+ *
+ * The names come out of the snapshot's own matcher, so an unbounded join is
+ * both unbounded work and an unbounded string in an operator's terminal: ›
+ * "keeps the reason short when a thousand tools are added, and says how many it
+ * did not name".
+ */
+export const MAX_NAMED_TOOLS_IN_REASON = 5;
+
+/** Shell punctuation that makes execution conditional, piped or commented out. */
+const NOT_UNCONDITIONAL = /(\|\||;|#|\|(?!\|))/;
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+const unquote = (token: string): string => token.replace(/^["']|["']$/g, '');
+
+/** `"$VAR/rest"`, `${VAR}/rest` and `./rest` all denote `rest` relative to the root. */
+const asRepoRelative = (token: string): string =>
+  unquote(token)
+    .replace(/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\//, '')
+    .replace(/^\.\//, '');
+
+/**
+ * Does this command RUN the hook, rather than merely mention it?
+ *
+ * The distinction is the whole point. A substring read reports a `.bak` file,
+ * an `echo`, a commented-out line, a path handed to a different program and a
+ * vendored copy under another tree as enforcement — the direction that hands
+ * back a false `SUPPORTED`, which is the one answer a capability contract must
+ * never give on evidence it does not have. Every one of those is a case in ›
+ * "reads %s as UNSUPPORTED, naming the hook path it looked for".
+ *
+ * The accepted shape is deliberately narrow: `&&`-joined segments, an optional
+ * run of `NAME=value` assignments, `node` as the executable, flags skipped, and
+ * the first remaining token EQUAL to the hook path once quotes, a `$VAR/`
+ * prefix and a leading `./` are stripped. Anything else is refused rather than
+ * guessed at. Both shapes the rig ships are held green by the two cases of ›
+ * "reads %s as running the hook, because it is what the rig really ships".
+ */
+const runs = (command: string, hookPath: string): boolean => {
+  if (command.length > MAX_HOOK_COMMAND_LENGTH) return false;
+  if (NOT_UNCONDITIONAL.test(command)) return false;
+  for (const segment of command.split('&&')) {
+    const tokens = segment
+      .trim()
+      .split(/\s+/)
+      .filter((token) => token !== '');
+    let index = 0;
+    while (index < tokens.length && ASSIGNMENT.test(tokens[index] ?? '')) index += 1;
+    if (unquote(tokens[index] ?? '') !== 'node') continue;
+    index += 1;
+    while (index < tokens.length && (tokens[index] ?? '').startsWith('-')) index += 1;
+    if (asRepoRelative(tokens[index] ?? '') === hookPath) return true;
+  }
+  return false;
+};
+
+const toolsOf = (matcher: string): string[] => matcher.split('|').filter((tool) => tool !== '');
+
+const sameTools = (declared: readonly string[], wired: readonly string[]): boolean =>
+  declared.length === wired.length && declared.every((tool) => wired.includes(tool));
+
+/** What the declaration names and the wiring does not, and the reverse. */
+const differenceOf = (declared: readonly string[], wired: readonly string[]) => ({
+  missing: declared.filter((tool) => !wired.includes(tool)),
+  extra: wired.filter((tool) => !declared.includes(tool)),
+});
+
+/**
+ * Name a bounded number of tools, each escaped.
+ *
+ * Both properties are required of a string assembled from a matcher that came
+ * off disk: bounded, or one probe produces a megabyte of diagnostic; escaped,
+ * or a segment carrying a newline and an ANSI sequence forges a line of the
+ * report it appears in. Held by › "escapes a tool name carrying a newline and
+ * an ANSI sequence, so a matcher cannot forge a line of the report".
+ */
+const names = (tools: readonly string[]): string => {
+  const shown = tools.slice(0, MAX_NAMED_TOOLS_IN_REASON).map(quote).join(', ');
+  const unnamed = tools.length - MAX_NAMED_TOOLS_IN_REASON;
+  return unnamed > 0 ? `${shown}, and ${String(unnamed)} more` : shown;
+};
+
+const describeDifference = (missing: readonly string[], extra: readonly string[]): string => {
+  const parts: string[] = [];
+  if (missing.length > 0) parts.push(`does not cover ${names(missing)}`);
+  if (extra.length > 0) parts.push(`also covers ${names(extra)}, which the policy does not`);
+  return parts.join('; ');
+};
+
+const unreadable = (what: string): ProbeResult => ({
+  state: 'INTEGRATION-FAILED',
+  reason: `the surface snapshot could not be read: ${what}`,
+});
+
+/**
+ * Probe one policy against one surface's snapshot. Pure: the snapshot is the
+ * caller's to obtain, and `snapshot` is `unknown` on purpose — the shape is
+ * checked at every level rather than trusted, because a surface file is
+ * outside data and a level silently skipped is a partial read reported as a
+ * whole one.
+ */
+export function probePolicy(
+  policy: PolicyDeclaration,
+  adapter: HarnessAdapter,
+  snapshot: unknown,
+): ProbeResult {
+  if (!isRecord(snapshot)) {
+    return unreadable('it is not an object carrying a hooks field');
+  }
+  if ('hooks' in snapshot && !isRecord(snapshot.hooks)) {
+    return unreadable('its hooks field is not an object of event names');
+  }
+
+  const surface = adapter.nativeSurfaceOf(policy);
+  const wiring = isRecord(snapshot.hooks) ? snapshot.hooks : {};
+
+  // An event that is ABSENT contributes no groups and is not a finding; an
+  // event PRESENT in a shape this cannot read is the finding.
+  const groups: HookGroup[] = [];
+  if (surface.event in wiring) {
+    const under = wiring[surface.event];
+    if (!Array.isArray(under)) {
+      return unreadable(`the value under ${surface.event} is not a list of groups`);
+    }
+    for (const group of under) {
+      if (!isRecord(group)) {
+        return unreadable(`a group under ${surface.event} is not an object`);
+      }
+      if (!Array.isArray(group.hooks)) {
+        return unreadable(`the hooks of a group under ${surface.event} are not a list`);
+      }
+      const hooks: HookEntry[] = [];
+      for (const hook of group.hooks) {
+        if (!isRecord(hook) || typeof hook.command !== 'string') {
+          return unreadable(`a hook under ${surface.event} has no readable command`);
+        }
+        hooks.push({ command: hook.command });
+      }
+      groups.push({
+        matcher: typeof group.matcher === 'string' ? group.matcher : undefined,
+        hooks,
+      });
+    }
+  }
+
+  const declared = toolsOf(surface.matcher);
+  const running = groups.filter((group) =>
+    group.hooks.some((hook) => runs(hook.command, surface.hookPath)),
+  );
+
+  if (running.length === 0) {
+    return {
+      state: 'UNSUPPORTED',
+      reason: `no group under ${surface.event} runs ${surface.hookPath}, so the mechanism is absent on this surface`,
+    };
+  }
+  if (running.some((group) => sameTools(declared, toolsOf(group.matcher ?? '')))) {
+    return { state: 'SUPPORTED' };
+  }
+
+  // Every group running the hook differs from the declaration; report the
+  // closest one, so the reason names a real discrepancy rather than a union of
+  // several. "Closest" is the fewest tools out of place.
+  const differences = running.map((group) => differenceOf(declared, toolsOf(group.matcher ?? '')));
+  const sizeOf = (d: { missing: string[]; extra: string[] }): number =>
+    d.missing.length + d.extra.length;
+  const closest = differences.reduce((best, d) => (sizeOf(d) < sizeOf(best) ? d : best));
+  return {
+    state: 'DEGRADED',
+    reason: `${surface.hookPath} runs under ${surface.event}, but the matcher ${describeDifference(closest.missing, closest.extra)}`,
+  };
+}

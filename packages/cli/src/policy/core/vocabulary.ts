@@ -30,6 +30,42 @@ export const CAPABILITY_STATES = closed([
 ] as const);
 export type CapabilityState = (typeof CAPABILITY_STATES)[number];
 
+/**
+ * The states under which no question was actually put to a working mechanism.
+ *
+ * One spelling of one fact (`rules/invariants.md`, "One mechanism, one
+ * implementation"): `./decision-record.ts` refuses an unqualified verdict
+ * carrying one of these, and `./coverage.ts` › `qualifierFor` returns
+ * `UNVERIFIABLE` for exactly the same set. Two copies would disagree, and the
+ * one nobody is looking at would be the one that let a silent pass through.
+ *
+ * It is deliberately NOT derived from a rank or an ordering. `coverage.ts`
+ * carries an enforcement ordering for deciding what counts as a downgrade;
+ * keying verdict qualification off that would mean a future re-rank silently
+ * changed which verdicts are unverifiable.
+ */
+export const UNENFORCEABLE_STATES = closed(['UNSUPPORTED', 'INTEGRATION-FAILED'] as const);
+
+/**
+ * The two ways a capability status is established, and the only two.
+ *
+ * `probe` is one active read of the surface's own wiring, taken when the
+ * surface changes (`PROBE_TRIGGERS`). `traffic` is passive: an operation that
+ * was expected to produce an observable signal, and what it actually produced.
+ * There is deliberately no third source meaning "time passed" — silence is
+ * absence of evidence, not evidence of absence.
+ */
+export const VERIFICATION_SOURCES = closed(['probe', 'traffic'] as const);
+export type VerificationSource = (typeof VERIFICATION_SOURCES)[number];
+
+/**
+ * The events that occasion an active probe. Every member is a CHANGE to the
+ * surface, never an interval: periodic re-probing is forbidden, and the way
+ * that rule is kept is that this vocabulary offers no word for it.
+ */
+export const PROBE_TRIGGERS = closed(['install', 'upgrade', 'registration', 'reconnect'] as const);
+export type ProbeTrigger = (typeof PROBE_TRIGGERS)[number];
+
 /** The autonomy tiers of `rules/autonomy.md`; `never` is the tier the guards enforce. */
 export const AUTONOMY_TIERS = closed(['tier-0', 'tier-1', 'tier-2', 'never'] as const);
 export type AutonomyTier = (typeof AUTONOMY_TIERS)[number];

@@ -1,0 +1,186 @@
+# Capability coverage: probe once, maintain passively, never raise on traffic
+
+Extracted rationale for `packages/cli/src/policy/core/{probe,coverage,evidence-matrix}.ts` (RP-36).
+The rules themselves are in those files' headers; this record is why they are
+those rules and not the obvious alternatives.
+
+## The question
+
+A policy is declared once (RP-76) and enforced by a hook on some harness
+surface. Whether it is *actually* enforceable there depends on the surface, its
+version and its OS — a matcher that lost a tool, a hook that was never wired, a
+wiring file the reader cannot parse. Rig has to know which of those it is, and
+say so, without ever letting "we could not tell" read as "it passed".
+
+## What was decided
+
+### 1. One active probe, occasioned by a change — never by a clock
+
+`PROBE_TRIGGERS` is `install`, `upgrade`, `registration`, `reconnect`. Every
+member is an event on the surface, and the vocabulary offers no word for an
+interval.
+
+That is only worth stating because the vocabulary has a **consumer**:
+`coverageFromProbe` takes a `trigger` as a required argument, refuses a word
+outside `PROBE_TRIGGERS`, and records it on every entry as `triggeredBy`. The
+first version of this record claimed the prohibition was kept by the vocabulary
+alone, which `prose-reviewer` refuted in one grep — nothing read it, and a
+vocabulary nothing reads keeps nothing. Pinned in
+`packages/cli/test/policy-coverage.test.ts` (absent in a generated rig) ›
+"refuses the trigger %j, because a probe is occasioned by a change to the
+surface and by nothing else".
+
+⚠ What this still does not do: nothing stops a caller supplying `'upgrade'`
+four times an hour. `probe.ts` cannot fetch a snapshot — one arrives as an
+argument — which bounds the module, not the practice.
+
+*Rejected: periodic re-probing.* It costs a scheduler, it produces a stream of
+identical answers between two events that could have changed the answer, and it
+invites the failure mode below — a status that decays because nothing happened,
+on a surface that is working perfectly.
+
+### 2. Degradation follows an observed miss, never elapsed time
+
+`observeExpectedSignal` takes `{ seen, at }`. There is no parameter for "and
+this much time has passed", and the module exports no function that ages,
+expires or sweeps an entry.
+
+**No traffic is not a failure — it is no evidence.** A rig that ran no edits
+this week learned nothing about `guard-secret-file`, and a contract that
+degrades it anyway is reporting its own idleness as a defect in the mechanism.
+What the entry carries instead is `verifiedAt` and `verifiedBy`, so a reader
+can see for themselves how old the evidence is and decide.
+
+### 3. Traffic lowers a status; only a probe raises one
+
+This is the asymmetry that took the most argument, so it is written down.
+
+A **missing** signal is evidence the mechanism did not act on an operation it
+should have judged. A **present** signal is evidence it acted *once*. Those are
+not symmetric claims: the second says nothing about the wiring defect a probe
+found, because a partially-wired surface still acts on the operations it does
+cover. Promoting on traffic would let a `DEGRADED` matcher that lost one tool
+report itself `SUPPORTED` off the traffic that never used that tool — the exact
+false confidence the four-state vocabulary exists to prevent.
+
+So the seen-signal path resets the miss count and re-stamps `verifiedAt`, and
+leaves `status` and `degradationReason` alone — with one carve-out, which is
+decision 3a below and is a contradiction rather than a promotion.
+
+For the same reason traffic never carries a status past `DEGRADED` in the
+enforcement ordering. Stated exactly, because the carve-out would otherwise
+read as an exception to it: `INTEGRATION-FAILED` ranks EQUAL to `UNSUPPORTED`,
+not above it, so moving between them is a change of diagnosis and not a further
+loss of capability. `UNSUPPORTED` and `INTEGRATION-FAILED` are both claims
+about wiring, and traffic does not read wiring.
+
+### 3a. A signal seen where the record says nothing is wired is a contradiction
+
+The carve-out to decision 3, added after `code-reviewer` observed that
+`INTEGRATION-FAILED` — which RP-36 defines as *"mechanism present but
+probe/evidence contradicts declared behavior"* — was unreachable from evidence
+in the first implementation. It could only be produced by an unreadable
+snapshot, which is a case where the mechanism's presence is precisely what was
+*not* established.
+
+The sharpest instance is `seen: true` on an entry recorded `UNSUPPORTED`: the
+signal was observed on a surface the map says wires nothing. Absorbing that
+silently was worse than either answer it could have given, because the entry
+came out re-stamped `verifiedBy: 'traffic'` — a contradicted status wearing a
+fresh timestamp.
+
+It is **not** a promotion, and decision 3 stands: the status does not go up.
+The entry becomes `INTEGRATION-FAILED` with a reason naming the disagreement,
+and `qualifierFor` still returns `UNVERIFIABLE`, so nothing about it produces a
+pass. Pinned in `packages/cli/test/policy-coverage.test.ts` (absent in a
+generated rig) › "a signal observed where the map says nothing is wired is a
+contradiction, not a pass".
+
+### 4. The threshold is configurable, and its default is 3
+
+One miss is as easily an operation that never reached the mechanism as a
+mechanism that failed to act. Three is a default, not a constant: how much
+evidence is enough depends on how much traffic a surface sees, so every caller
+may set its own. A threshold that is not a whole number ≥ 1 throws rather than
+being coerced — the interesting coercion, `0`, would degrade on the first miss
+while reading like "no threshold".
+
+### 5. Unreadable is not the same answer as absent
+
+`probe.ts` returns `UNSUPPORTED` for a readable snapshot that wires the hook
+nowhere, and `INTEGRATION-FAILED` for a snapshot — or a `hooks` field — in a
+shape it cannot read. `.claude/rules/invariants.md` draws this line under
+"Refusing to inspect is a third outcome": a field that is simply ABSENT leaves
+nothing to judge; a field PRESENT in an unreadable shape is the case worth
+reporting.
+
+Collapsing them costs something in each direction, which is why the
+distinction is worth two states: an honest "not installed on this surface"
+becomes a false alarm, or an unreadable surface becomes a quiet, uncounted
+zero. The second is the one that has actually happened in this repository
+before — a guard reported out loud that it had not looked, and returned the
+value meaning "there was nothing to look at".
+
+Both states are safe by construction anyway: `qualifierFor` maps each to
+`UNVERIFIABLE`, and the decision-record validator refuses an unqualified
+verdict carrying either — held over both modules at once by ›
+"refuses the silent pass an unwired surface would otherwise produce, and
+accepts it once qualifierFor speaks". Which states those are is one list,
+`UNENFORCEABLE_STATES`, that both modules import; it was three copies until
+`code-reviewer` pointed out that one of them was a display ordering.
+
+### 6. An incomplete evidence row is refused, not stored
+
+`validateEvidenceRow` refuses a row without an exact `harnessVersion` or an
+ISO-8601 `observedAt` with a zone, refuses any non-`SUPPORTED` row that does
+not say why, and refuses a `SUPPORTED` row that says why anyway.
+
+A row missing either reads like evidence and is not one: nothing in it answers
+"which build was this" or "was this before or after the change". Storing it
+anyway is how a matrix fills with rows a later reader takes for measurements.
+
+**"Exact" is a check, not an adjective** — and it was an adjective for one gate
+round. `latest`, `^2.0` and `2.x` all validated while three separate sentences
+promised an exact version, because the only check on the field was that it was
+not blank. The vague words and the range operators are now refused: ›
+"refuses the harness version %j, because it names a range or a moving target
+rather than a build", with › "accepts the exact harness version %j, including a
+plain build id" holding the other direction so the rule cannot swallow a real
+build id.
+
+## What this does NOT do, stated so the contract is not read wider than it is
+
+- **Nothing calls it yet.** This is a library surface. `doctor` rendering the
+  coverage report is RP-21; emitting decision records at runtime is its own
+  task; the benchmark that consumes these statuses as expected outcomes is
+  RP-111.
+- **The probe reads a snapshot, not a running harness.** It answers "is the
+  mechanism wired as the declaration says", not "did the harness actually run
+  it". The second question is what the traffic path is for, and the traffic
+  path is fed by a caller that does not exist yet either.
+- **`observeExpectedSignal` is mechanical where it runs; that it runs is not.**
+  Nothing forces a caller to report a miss. The contract makes the answer
+  correct once the observation arrives; it does not make the observation
+  arrive.
+- **No code reads a harness version.** `SurfaceIdentity.harnessVersion` is
+  supplied by the caller and checked for shape; obtaining a real one from a
+  live harness is not part of this.
+- **`DEGRADED` carries no verdict qualifier.** An operation on precisely the
+  tool a degraded matcher lost gets an unqualified allow. The item scopes the
+  `UNVERIFIABLE` requirement to the unenforceable states, so this is the
+  contract as written — but it is a limit of the "never a silent PASS" claim
+  and not covered by it.
+- **A `reason` given with a non-degrading miss is discarded.** Only the miss
+  that crosses the threshold records one.
+
+## Where the rules are pinned
+
+`packages/cli/test/policy-coverage.test.ts` (absent in a generated rig) — the
+unit half: the four probe answers, the threshold rules, the asymmetry, the
+`UNVERIFIABLE` linkage through the real decision-record validator, and the
+evidence-row shape.
+
+`test/template/policy-coverage.test.ts` (absent in a generated rig) — the
+acceptance half: the same probe against the hook-wiring snapshots this rig
+really ships, on both harness surfaces, each paired with a mutation of that
+same real snapshot so a green pass cannot be vacuous.
