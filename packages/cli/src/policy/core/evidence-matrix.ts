@@ -3,10 +3,11 @@
  * the item it supersedes): one row per concrete harness surface, saying what
  * was observed, on exactly which version, when, and where the proof is.
  *
- * The rule that gives the matrix its value is that an incomplete row is
- * REFUSED rather than stored: a row without an exact version or an observed
+ * The rule that gives the matrix its value is that its validator refuses an
+ * incomplete row: a row without an exact version or an observed
  * date-time reads like evidence and is not one, because neither "which build
  * was this" nor "was this before or after the change" can be answered from it.
+ * This module owns validation only; a caller that persists rows owns storage.
  * Both halves are checked — `packages/cli/test/policy-coverage.test.ts` ›
  * "refuses the harness version %j, because it names a range or a moving target
  * rather than a build" and › "refuses an observedAt that is not an ISO-8601

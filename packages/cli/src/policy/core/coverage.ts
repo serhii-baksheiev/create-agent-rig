@@ -179,7 +179,9 @@ const requireTimestamp = (field: string, value: string): void => {
  * changes to the surface, so a caller must say which change occasioned this
  * read and cannot name an interval. `at` is the caller's clock — nothing here
  * reads one — and it is validated, because a status whose time cannot be
- * ordered against a change is not auditable.
+ * ordered against a change is not auditable. The surface harness and path must
+ * also name the adapter doing the read; otherwise valid wiring from one
+ * harness could be labeled as support on another.
  */
 export function coverageFromProbe(args: {
   surface: SurfaceIdentity;
@@ -197,6 +199,11 @@ export function coverageFromProbe(args: {
     );
   }
   requireTimestamp('at', at);
+  if (surface.harness !== adapter.harness || surface.surface !== adapter.surfaceFile) {
+    throw new Error(
+      `surface identity must match the adapter being probed; expected ${JSON.stringify(adapter.harness)} at ${JSON.stringify(adapter.surfaceFile)}, got ${JSON.stringify(surface.harness)} at ${JSON.stringify(surface.surface)}`,
+    );
+  }
   // The identity is the caller's claim about WHICH build was observed, and
   // three documents called it exact while nothing read it. A map is the shape
   // that carries it, so this is where it is refused.
@@ -304,8 +311,9 @@ export function qualifierFor(state: CapabilityState): VerdictQualifier | undefin
 /**
  * Every policy whose status fell between two maps of the same surface.
  *
- * Only policies present in both are compared: an entry that appeared or
- * vanished is a change of what is being measured, not a capability that fell.
+ * Only the same policy id and declaration version present in both are compared:
+ * an entry that appeared, vanished or changed semantics is a change of what is
+ * being measured, not a capability that fell.
  * Two maps of DIFFERENT surfaces are refused rather than diffed — the result
  * is attributed to one surface identity, and attributing one surface's fall to
  * another is a report an operator would act on in the wrong place.
@@ -328,7 +336,10 @@ export function downgradesBetween(before: CoverageMap, after: CoverageMap): Down
 
   const downgrades: Downgrade[] = [];
   for (const next of after.entries) {
-    const previous = statusOf(before, next.policyId);
+    const previous =
+      before.entries.find(
+        (entry) => entry.policyId === next.policyId && entry.policyVersion === next.policyVersion,
+      ) ?? null;
     if (previous === null) continue;
     if (ENFORCEMENT_RANK[next.status] <= ENFORCEMENT_RANK[previous.status]) continue;
     downgrades.push({

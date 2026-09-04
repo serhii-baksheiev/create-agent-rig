@@ -143,4 +143,22 @@ describe('decision records travel with the layer that cites them', () => {
     }
     expect(leaks).toEqual([]);
   });
+
+  it('does not ship generator-only RP tracker keys or CLI paths in the capability-coverage record', async () => {
+    const leaks: string[] = [];
+    const record = (await decisionRecords()).find(
+      (entry) => entry.name === 'capability-coverage.md',
+    );
+    if (record !== undefined) {
+      const trackerKeys = [...record.content.matchAll(/\bRP-\d+\b/g)].map((match) => match[0]);
+      for (const trackerKey of new Set(trackerKeys)) {
+        leaks.push(`docs/decisions/${record.name}: generator tracker key ${trackerKey}`);
+      }
+      if (record.content.includes('packages/cli/')) {
+        leaks.push(`docs/decisions/${record.name}: generator CLI implementation path`);
+      }
+    }
+
+    expect(leaks).toEqual([]);
+  });
 });

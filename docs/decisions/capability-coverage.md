@@ -127,15 +127,16 @@ verdict carrying either — held over both modules at once by ›
 accepts it once qualifierFor speaks". Which states those are is one list,
 `UNENFORCEABLE_STATES`, that both modules import.
 
-### 6. An incomplete evidence row is refused, not stored
+### 6. The validator refuses an incomplete evidence row
 
 `validateEvidenceRow` refuses a row without an exact `harnessVersion` or an
 ISO-8601 `observedAt` with a zone, refuses any non-`SUPPORTED` row that does
 not say why, and refuses a `SUPPORTED` row that says why anyway.
 
 A row missing either reads like evidence and is not one: nothing in it answers
-"which build was this" or "was this before or after the change". Storing it
-anyway is how a matrix fills with rows a later reader takes for measurements.
+"which build was this" or "was this before or after the change". Accepting it
+is how a matrix fills with rows a later reader takes for measurements. This
+module validates and returns a result; a caller that persists rows owns storage.
 
 **"Exact" is a check, not an adjective** — in both shapes that carry a version.
 `isExactVersion` lives in `validation.ts` and is read by `validateEvidenceRow`
@@ -200,6 +201,9 @@ answers it without inference.
   a moving target, but nothing here asks a live harness which build it is. An
   earlier draft of this bullet said "checked for shape" while nothing checked
   it; the check now exists.
+- **The surface identity is bound to its adapter.** `coverageFromProbe` refuses
+  a harness name or surface path that differs from the adapter being probed, so
+  valid wiring from one harness cannot be reported as support on another.
 - **`DEGRADED` carries no verdict qualifier.** An operation on precisely the
   tool a degraded matcher lost does not require a qualifier from this library.
   The item scopes the `UNVERIFIABLE` requirement to the unenforceable states,
@@ -217,6 +221,9 @@ answers it without inference.
   added for, which is what `code-reviewer` caught: › "compares two probes of
   the same surface across a harness upgrade, which is the fall the upgrade
   trigger exists to catch".
+- **Policies are correlated by id and declaration version.** Two entries with
+  the same `policyId` but different `policyVersion` describe different policy
+  semantics, so they are not reported as a capability downgrade.
 - **The probe compares; it does not parse.** A wiring reads `SUPPORTED` only
   when its command equals one the adapter says this harness generates, modulo
   runs of spaces and tabs and a leading or trailing space. A spelling that contains

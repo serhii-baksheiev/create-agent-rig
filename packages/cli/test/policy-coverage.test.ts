@@ -89,8 +89,8 @@ const NO_VERIFY = policyNamed('no-verify-refusal');
 const EVENT = claudeAdapter.nativeSurfaceOf(SECRET_WRITE).event;
 
 const SURFACE: SurfaceIdentity = {
-  harness: 'fixture-harness',
-  surface: 'fixture/hook-wiring.json',
+  harness: claudeAdapter.harness,
+  surface: claudeAdapter.surfaceFile,
   harnessVersion: '2.0.14',
   os: 'fixture-os 1.0',
 };
@@ -1596,6 +1596,25 @@ describe('building a coverage map from one probe', () => {
     expect(probeOnce(fullyWired(claudeAdapter)).surface).toEqual(SURFACE);
   });
 
+  it.each([
+    ['harness', { harness: codexAdapter.harness }],
+    ['surface path', { surface: codexAdapter.surfaceFile }],
+  ] as const)(
+    'refuses a probe whose %s belongs to a different adapter, so valid wiring cannot become a false SUPPORTED result',
+    (_difference, override) => {
+      expect(() =>
+        coverageFromProbe({
+          surface: { ...SURFACE, ...override },
+          policies: POLICIES,
+          adapter: claudeAdapter,
+          snapshot: fullyWired(claudeAdapter),
+          at: T0,
+          trigger: 'install',
+        }),
+      ).toThrow(/adapter|harness|surface/i);
+    },
+  );
+
   it('marks every entry verified by the probe, at the moment the caller supplied, with no misses', () => {
     const map = probeOnce(fullyWired(claudeAdapter), T1);
     for (const entry of map.entries) {
@@ -1726,6 +1745,13 @@ describe('a coverage entry says when it was verified, in a form a later reader c
       trigger: 'install',
     });
 
+  it('refuses an impossible calendar date and clock time even though their fields have ISO-8601 widths', () => {
+    const impossible = '2026-99-99T99:99:99Z';
+    expect(ISO_8601.test(impossible)).toBe(false);
+    expect(() => probeAt(impossible)).toThrow();
+    expect(() => observeExpectedSignal(entryWith(), { seen: true, at: impossible })).toThrow();
+  });
+
   it.each(BAD_TIMESTAMPS)(
     'refuses the probe timestamp %j, which is exactly what the shared ISO-8601 pattern refuses',
     (at) => {
@@ -1780,6 +1806,10 @@ describe('a coverage map names the exact harness version it was probed on', () =
       expect(() => probeOnSurfaceVersion(harnessVersion)).toThrow(/version/i);
     },
   );
+
+  it('refuses an operator-free union of harness versions, because it names more than one build', () => {
+    expect(() => probeOnSurfaceVersion('1.2.3||2.0.0')).toThrow(/version/i);
+  });
 
   it.each(['0.0.0-fixture', '1.104.2', '20260904.3'])(
     'probes against the exact harness version %j, including a plain build id',
@@ -2291,6 +2321,20 @@ describe('reporting what changed between two coverage maps', () => {
   it('reports nothing at all when the whole map is unchanged', () => {
     const map = mapOf(POLICIES.map((policy) => entryWith({ policyId: policy.policyId })));
     expect(downgradesBetween(map, map)).toEqual([]);
+  });
+
+  it('does not correlate two entries whose policy versions differ, because they name different semantics', () => {
+    const before = mapOf([entryWith({ policyVersion: '1.0' })]);
+    const after = mapOf([
+      entryWith({
+        policyVersion: '2.0',
+        status: 'DEGRADED',
+        verifiedAt: T1,
+        degradationReason: 'the expected refusal never appeared',
+      }),
+    ]);
+
+    expect(downgradesBetween(before, after)).toEqual([]);
   });
 
   /**

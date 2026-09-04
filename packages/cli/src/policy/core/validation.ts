@@ -80,19 +80,54 @@ export const nonBlankString = (problems: Problem[], field: string, value: unknow
 };
 
 /**
- * Date, `T`, time to the second (fractions allowed), and an explicit zone.
+ * A real calendar date, `T`, time to the second (fractions allowed), and an
+ * explicit zone.
  *
  * One spelling of one fact (`rules/invariants.md`, "One mechanism, one
  * implementation"). Its three readers are `./decision-record.ts`
  * (`recordedAt`), `./evidence-matrix.ts` (`observedAt`) and `./coverage.ts`
  * (`verifiedAt`, through `requireTimestamp`), so a bare date is refused the
- * same way whichever of them is validating — `packages/cli/test/policy-coverage.test.ts`
+ * same way whichever of them is validating — including lexically shaped but
+ * impossible dates — `packages/cli/test/policy-coverage.test.ts`
  * › "refuses the probe timestamp %j, which is exactly what the shared ISO-8601
  * pattern refuses" imports this pattern rather than restating it, so the two
  * sides cannot drift apart. A timestamp is always supplied by the caller —
  * nothing under this directory reads a clock.
  */
-export const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_8601_SHAPE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/**
+ * A date-time shape whose `test` also proves the named calendar instant exists.
+ * Keeping the semantic check behind the same exported predicate prevents the
+ * coverage, decision-record and evidence-row validators from drifting apart.
+ */
+export const ISO_8601 = {
+  test(value: string): boolean {
+    const match = ISO_8601_SHAPE.exec(value);
+    if (match === null) return false;
+    const [, yearText, monthText, dayText, hourText, minuteText, secondText, zoneHour, zoneMinute] =
+      match;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const second = Number(secondText);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return (
+      month >= 1 &&
+      month <= 12 &&
+      day >= 1 &&
+      day <= daysInMonth[month - 1]! &&
+      hour <= 23 &&
+      minute <= 59 &&
+      second <= 59 &&
+      (zoneHour === undefined || (Number(zoneHour) <= 23 && Number(zoneMinute) <= 59))
+    );
+  },
+};
 
 /** Refuse a string outside a closed vocabulary, quoting the offending value. */
 export const member = <T extends string>(
@@ -146,7 +181,7 @@ export const matching = (
   problems: Problem[],
   field: string,
   value: unknown,
-  pattern: RegExp,
+  pattern: { test(value: string): boolean },
   expected: string,
 ): boolean => {
   if (typeof value === 'string' && pattern.test(value)) return true;
@@ -176,7 +211,7 @@ export const matching = (
 const VAGUE_VERSIONS: readonly string[] = ['latest', 'current', 'unknown', 'any', 'head'];
 const RANGE_OPERATOR = /[\^~*<>=]/;
 const WILDCARD_COMPONENT = /(^|\.)[xX*](\.|$)/;
-const RANGE_SPELLING = /\s(\|\||-)\s/;
+const RANGE_SPELLING = /\|\||\s-\s/;
 
 export const isExactVersion = (value: string): boolean => {
   const version = value.trim();
