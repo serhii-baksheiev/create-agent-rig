@@ -201,6 +201,39 @@ const probeOf = async (
   });
 
 describe('probing the surfaces this rig really ships', () => {
+  it.each(['timer', 'hourly'])(
+    'refuses the trigger %j, because a probe is occasioned by a change to the surface and by nothing else',
+    async (trigger) => {
+      const adapter = HARNESS_ADAPTERS[0];
+      if (!adapter) throw new Error('the generated rig declares no harness adapter');
+      await expect(probeOf(adapter, trigger as ProbeTrigger)).rejects.toThrow(/occasioned/i);
+    },
+  );
+
+  it('a signal observed where the map says nothing is wired is a contradiction, not a pass', async () => {
+    const adapter = HARNESS_ADAPTERS[0];
+    const policy = POLICIES[0];
+    if (!adapter || !policy) throw new Error('the generated rig declares no probe combination');
+    const snapshot = await readSnapshot(adapter.surfaceFile);
+    const { hookPath } = adapter.nativeSurfaceOf(policy);
+    const unwired = withoutHook(snapshot, hookPath);
+    const map = coverageFromProbe({
+      surface: identityOf(adapter),
+      policies: POLICIES,
+      adapter,
+      snapshot: unwired,
+      at: PROBED_AT,
+      trigger: 'install',
+    });
+
+    const after = observeExpectedSignal(entryFor(map, policy.policyId), {
+      seen: true,
+      at: LATER,
+    });
+    expect(after.status).toBe('INTEGRATION-FAILED');
+    expect(after.verifiedBy).toBe('traffic');
+  });
+
   it.each(adapters)(
     'every registered policy is SUPPORTED on the real %s surface',
     async (_harness, adapter) => {

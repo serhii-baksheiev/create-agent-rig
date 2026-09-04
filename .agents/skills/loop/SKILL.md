@@ -91,6 +91,8 @@ still yours.
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you
 nothing.
+The surface-capability vocabulary and its conservative downgrade contract are
+recorded in `docs/decisions/capability-coverage.md`.
 
 **First-ever run: attended and short** — one normal item, owner watching. Go
 unattended only after the escalation path and the post-deploy verdict have each

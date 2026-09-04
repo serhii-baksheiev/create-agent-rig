@@ -66,6 +66,7 @@
     ".rig/revalidation.json",
     "PLAN.md",
     "journal/README.md",
+    "docs/decisions/capability-coverage.md",
     "docs/decisions/gate-coverage.md",
     "docs/decisions/fail-open-guards.md",
     "docs/decisions/codex-adapter.md",
