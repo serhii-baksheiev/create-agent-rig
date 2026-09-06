@@ -736,8 +736,20 @@ describe('a hook entry runs the hook only when every field the harness generates
  * registration. An adapter half-written, or one whose author has not yet
  * decided which field carries its command, must fail loudly on its first probe
  * rather than certify every policy on its surface.
+ *
+ * 🔴 Loud is not enough on its own: the refusal has to state the cause that
+ * really happened, which is the rule the describe below this one already holds
+ * the other two causes to. When no command is generated, nothing is compared
+ * and nothing is searched for a mention of the hook path — so a refusal saying
+ * "something under <event> names <hookPath>" reports an observation that never
+ * took place, and sends an operator to read a wiring file that is fine. The
+ * first version of the cases here asserted only that the reason contained the
+ * word "command", which that false sentence also contains: the assertions
+ * below are written so that they cannot be satisfied by it.
  */
 describe('an adapter that generates no command verifies nothing, and says so instead of passing', () => {
+  const { hookPath } = SECRET_WRITE_SURFACE;
+
   /**
    * The authoring adapter's own answer with `commands` emptied, and every other
    * field left real. Built from `claudeAdapter` rather than spelled out so the
@@ -772,6 +784,10 @@ describe('an adapter that generates no command verifies nothing, and says so ins
   ])(
     'refuses %s under a matcher that matches the declaration exactly, because there was nothing to compare it against',
     (_case, entry) => {
+      expect(
+        JSON.stringify(entry),
+        'the fixture wiring names the hook, so a refusal claiming a mention would be true and this measures nothing',
+      ).not.toContain(hookPath);
       const result = probePolicy(
         SECRET_WRITE,
         NAMES_NO_COMMAND,
@@ -781,12 +797,65 @@ describe('an adapter that generates no command verifies nothing, and says so ins
         result.state,
         'a surface whose adapter generates no command was read as enforcement',
       ).toBe('INTEGRATION-FAILED');
+      const reason = result.reason ?? '';
       expect(
-        result.reason ?? '',
-        'the refusal does not say that the adapter generates no command to compare against',
-      ).toMatch(/command/i);
+        reason,
+        'the refusal claims that something named the hook, which nothing in this wiring did — with no command generated, no command was searched for a mention either',
+      ).not.toContain(`names ${hookPath}`);
+      // Loose about the wording and specific about the CLAIM: something must
+      // be said to generate — or declare, or carry, or have — no command. The
+      // shape matters because the sentence this case exists to refuse also
+      // contains the words "no command" ("…but in no command this harness
+      // generates…"), so a bare search for them measures nothing.
+      expect(
+        reason,
+        'the refusal does not say that this harness generates no command to compare the wiring against',
+      ).toMatch(
+        /\b(?:generat\w*|declar\w*|nam\w*|offer\w*|provid\w*|state[sd]?|carri\w*|has|is)\s+no\s+commands?\b/i,
+      );
     },
   );
+
+  /**
+   * The two refusals told APART, rather than one of them merely changed.
+   *
+   * One snapshot, carrying a command that really does name the hook in a
+   * spelling no harness generates, read through both adapters: the adapter that
+   * generates a command looked at that command and may say so, while the one
+   * that generates none looked at nothing and may not borrow the sentence. If
+   * both answers read alike, the wording changed and the distinction did not —
+   * and an operator still cannot tell a tampered wiring from a half-written
+   * adapter. The mention path itself is pinned by the describe below, ›
+   * "still says a command it did read names the hook in a spelling this harness
+   * does not generate"; what is new here is the contrast.
+   */
+  it('does not borrow the sentence of a wiring that really did name the hook, which still gets it', () => {
+    const mention = `# ${REAL_AUTHORING_COMMAND}`;
+    expect(mention, 'the fixture no longer names the hook, so there is no contrast').toContain(
+      hookPath,
+    );
+    // One snapshot for both, which the fixture's event, matcher and hook path
+    // being the authoring adapter's own is what makes possible.
+    const snapshot = wiringEntries(claudeAdapter, SECRET_WRITE, {
+      ...generatedEntry(claudeAdapter, SECRET_WRITE),
+      command: mention,
+    });
+    const readTheCommand = probePolicy(SECRET_WRITE, claudeAdapter, snapshot);
+    const generatesNone = probePolicy(SECRET_WRITE, NAMES_NO_COMMAND, snapshot);
+
+    expect([readTheCommand.state, generatesNone.state]).toEqual([
+      'INTEGRATION-FAILED',
+      'INTEGRATION-FAILED',
+    ]);
+    expect(
+      readTheCommand.reason ?? '',
+      'the harness that did read a command naming the hook stopped saying so',
+    ).toContain(`names ${hookPath}`);
+    expect(
+      generatesNone.reason ?? '',
+      'one sentence serves both, so an operator cannot tell a surface naming the hook in an unverifiable spelling from an adapter that generated no command to compare it against',
+    ).not.toBe(readTheCommand.reason ?? '');
+  });
 });
 
 /**

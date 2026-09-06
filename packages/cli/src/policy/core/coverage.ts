@@ -302,7 +302,9 @@ export function statusOf(map: CoverageMap, policyId: string): CoverageEntry | nu
  * `./decision-record.ts` refuses the unqualified record, and
  * `packages/cli/test/policy-coverage.test.ts` › "refuses the silent pass an
  * unwired surface would otherwise produce, and accepts it once qualifierFor
- * speaks" holds the two modules to it together.
+ * speaks" holds the two modules to it together. How far that refusal reaches
+ * is stated once, at `UNENFORCEABLE_STATES` in `./vocabulary.ts`: it is a
+ * property of records built the ordinary way, not of every object shape.
  */
 export function qualifierFor(state: CapabilityState): VerdictQualifier | undefined {
   return (UNENFORCEABLE_STATES as readonly CapabilityState[]).includes(state)

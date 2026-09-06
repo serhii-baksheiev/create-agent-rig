@@ -160,11 +160,12 @@ export const MAX_NAMED_TOOLS_IN_REASON = 5;
  * This module cannot name a surface file itself, and
  * `test/template/policy-declaration.test.ts` › "no file under src/policy/core
  * mentions a harness, a vendor, a native tool or a native path" is what stops it
- * trying. The refusal direction is held by ›
- * "refuses a snapshot carrying one group more than it will read, naming the
- * limit it crossed".
+ * trying. The refusal direction is held in the unit file,
+ * `packages/cli/test/policy-coverage.test.ts` › "refuses a snapshot carrying
+ * one group more than it will read, naming the limit it crossed".
  *
- * ⚠ `MAX_MATCHER_LENGTH` is NOT set from that 45. A cap is a promise about what
+ * ⚠ `MAX_MATCHER_LENGTH` is NOT set from the longest matcher this rig ships,
+ * which is far shorter. A cap is a promise about what
  * this module still reads, and the contract had already made a wider one: ›
  * "keeps the reason short when a thousand tools are added, and says how many it
  * did not name" hands the probe a 4,935-character matcher and requires a
@@ -225,7 +226,9 @@ const normalise = (command: string): string =>
  * operator goes looking for a mention that is not in the file.
  */
 type CommandKind =
-  { kind: 'runs' } | { kind: 'unrelated' } | { kind: 'unreadable'; cause: 'oversize' | 'spelling' };
+  | { kind: 'runs' }
+  | { kind: 'unrelated' }
+  | { kind: 'unreadable'; cause: 'oversize' | 'spelling' | 'nothing-generated' };
 
 /**
  * Classify one hook entry by comparing every command the harness generates for
@@ -267,8 +270,12 @@ type CommandKind =
  * nothing (`rules/invariants.md`, "Refusing to inspect is a third outcome, not
  * a match and not an error"). An adapter that generates NO command is the same
  * outcome for the same reason — there is nothing to compare against, so there
- * is nothing verified: › "refuses %s under a matcher that matches the
- * declaration exactly, because there was nothing to compare it against".
+ * is nothing verified — but it carries its OWN cause and its own sentence,
+ * because the fault is in the adapter rather than in the surface being read: ›
+ * "refuses %s under a matcher that matches the declaration exactly, because
+ * there was nothing to compare it against", with the two refusals held apart
+ * by › "does not borrow the sentence of a wiring that really did name the
+ * hook, which still gets it".
  */
 const classify = (entry: HookEntry, surface: NativeHookSurface): CommandKind => {
   const fields = Object.keys(surface.commands);
@@ -277,11 +284,20 @@ const classify = (entry: HookEntry, surface: NativeHookSurface): CommandKind => 
   // empty one, ran the loop zero times and came back as running the hook. A
   // surface whose adapter says nothing about what it would generate is one this
   // module can verify nothing about, which is `INTEGRATION-FAILED`, never a
-  // pass. The two shipped adapters both declare commands, so nothing today took
-  // this branch; the type admits `{}` and adding an adapter is a documented
-  // extension point, which is how a new adapter would have been handed "every
-  // policy enforced" for free.
-  if (fields.length === 0) return { kind: 'unreadable', cause: 'spelling' };
+  // pass. The two shipped adapters both declare commands, so nothing today
+  // takes this branch; the type admits `{}` and adding an adapter is a
+  // documented extension point, which is how a new adapter would have been
+  // handed "every policy enforced" for free.
+  //
+  // 🔴 Its own cause, not a borrowed one. The first version returned
+  // `'spelling'`, which made the refusal say "something under <event> names
+  // <hookPath>" for a hook entry of `{}` — nothing named anything, and
+  // `mentions` had not even been computed. That is the failure this union
+  // exists to prevent, stated above and again at the ladder below, and both
+  // reviewers found it in the same round. The defect is also in the ADAPTER
+  // rather than the surface, and the sentence has to say so, or an operator
+  // goes looking through a wiring file that is fine.
+  if (fields.length === 0) return { kind: 'unreadable', cause: 'nothing-generated' };
   let matched = true;
   let mentions = false;
   for (const field of fields) {
@@ -437,7 +453,7 @@ export function probePolicy(
   // from "something here names it and I cannot verify that it runs" — the
   // ABSENT/UNREADABLE pair this module keeps at every other level.
   const running: HookGroup[] = [];
-  const refusals = new Set<'oversize' | 'spelling'>();
+  const refusals = new Set<'oversize' | 'spelling' | 'nothing-generated'>();
   for (const group of groups) {
     let runsHere = false;
     for (const hook of group.hooks) {
@@ -449,10 +465,18 @@ export function probePolicy(
   }
 
   if (running.length === 0) {
-    // A cause that really happened, chosen from what was observed. The
-    // spelling case is the more informative of the two, so it wins when both
-    // occurred; the over-cap case must never borrow its sentence, because
-    // nothing named anything in a command that was not read.
+    // A cause that really happened, chosen from what was observed. Three of
+    // them now, and each has its own sentence for the same reason: a refusal
+    // that borrows another's cause sends an operator to the wrong file.
+    // `nothing-generated` is answered first because it is a fact about the
+    // ADAPTER — every entry under the event was classified by it, so no
+    // per-entry cause it might sit beside is informative.
+    if (refusals.has('nothing-generated')) {
+      return {
+        state: 'INTEGRATION-FAILED',
+        reason: `the ${adapter.harness} adapter generates no command for this policy, so nothing under ${surface.event} could be compared against one and whether ${surface.hookPath} runs cannot be verified`,
+      };
+    }
     if (refusals.has('spelling')) {
       return {
         state: 'INTEGRATION-FAILED',

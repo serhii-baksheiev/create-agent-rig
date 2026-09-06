@@ -190,6 +190,20 @@ The line that costs the most to get wrong is between a bare channel word and a
 suffix: `beta` names whatever is on that channel today, `1.0.0-beta.2` names one
 build. The grammar draws it by requiring the number first.
 
+**The value is matched as given.** An earlier version validated the trimmed
+string while both readers stored the value verbatim, so `" 2.0.14 "`, a
+trailing `\r\n` and a byte-order mark were accepted and then persisted with
+their padding: two rows for one build that compare unequal, and a version
+carrying a newline sitting in a field a report will one day render. What is
+checked and what is stored are now the same string — ›
+"refuses an evidence row whose harness version carries %s, because the row
+would store what it was not validated on", ›
+"refuses to probe against a harness version carrying %s, so two maps of one
+build cannot compare unequal", and, holding the other side so the rule cannot
+become "refuse everything", ›
+"still accepts the same build once %s is gone, because it is the padding that
+is refused and not the version".
+
 Both directions are held, and over both readers: ›
 "refuses the harness version %j, because it names a moving label or more than
 one build" and › "refuses to probe against the harness version %j, because it

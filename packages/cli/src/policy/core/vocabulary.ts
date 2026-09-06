@@ -18,9 +18,13 @@ const closed = <const T extends readonly string[]>(values: T): T => Object.freez
 
 /**
  * Whether a declared policy can actually be enforced on a given harness
- * surface. `UNSUPPORTED` and `INTEGRATION-FAILED` never yield a silent pass:
- * a decision record carrying either must qualify its verdict `UNVERIFIABLE`
- * (`./decision-record.ts`). The four states are defined here.
+ * surface. `UNSUPPORTED` and `INTEGRATION-FAILED` must never yield a silent
+ * pass: a decision record carrying either has to qualify its verdict
+ * `UNVERIFIABLE` (`./decision-record.ts`). The four states are defined here.
+ *
+ * ⚠ That is the rule, and the enforcement behind it is narrower than the rule
+ * — see `UNENFORCEABLE_STATES` below, which states the gap once for every
+ * reader of this file.
  */
 export const CAPABILITY_STATES = closed([
   'SUPPORTED',
@@ -38,6 +42,18 @@ export type CapabilityState = (typeof CAPABILITY_STATES)[number];
  * carrying one of these, and `./coverage.ts` › `qualifierFor` returns
  * `UNVERIFIABLE` for exactly the same set. Two copies would disagree, and the
  * one nobody is looking at would be the one that let a silent pass through.
+ *
+ * ⚠ **"Refuses" holds for a record built the ordinary way, not against a
+ * hand-built prototype**, and this is the file a reader auditing that question
+ * lands on first. `./decision-record.ts` decides whether a verdict carries a
+ * qualifier with the `in` operator, so a verdict INHERITING one satisfies the
+ * check and then serialises without it — measured by `code-reviewer` on the
+ * change that introduced this note. `./probe.ts` and `./evidence-matrix.ts`
+ * read own, enumerable fields only; that reader was not brought along, and the
+ * repair is filed as RP-153 together with `./declaration.ts`. Until it lands,
+ * do not read this sentence as a closed guarantee, and do not close RP-153 on
+ * the strength of it. `docs/decisions/capability-coverage.md`, "What this does
+ * NOT do", carries the same limit at length.
  *
  * It is deliberately NOT derived from a rank or an ordering. `coverage.ts`
  * carries an enforcement ordering for deciding what counts as a downgrade;
