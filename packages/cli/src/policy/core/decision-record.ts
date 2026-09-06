@@ -16,7 +16,8 @@
  * - every evidence kind the policy requires must be present;
  * - a policy that redacts must not be recorded with unredacted diagnostics;
  * - the timestamp is supplied by the caller and must be an ISO-8601 date-time
- *   with seconds and an explicit zone (`ISO_8601` below; a bare date is
+ *   with seconds and an explicit zone (`ISO_8601` in `./validation.ts`, which
+ *   every shape recording an observation time reads; a bare date is
  *   refused) — no clock here.
  *
  * Each rule is one test in `packages/cli/test/policy-declaration.test.ts`
@@ -34,6 +35,7 @@
 import { compatibilityOf, findPolicy } from './registry.js';
 import {
   CAPABILITY_STATES,
+  UNENFORCEABLE_STATES,
   DECISION_OUTCOMES,
   EVIDENCE_KINDS,
   OPERATIONS,
@@ -46,7 +48,7 @@ import type {
   Operation,
   VerdictQualifier,
 } from './vocabulary.js';
-import { isRecord, member, nonEmptyString, unknownKeys } from './validation.js';
+import { ISO_8601, isRecord, member, nonEmptyString, unknownKeys } from './validation.js';
 import type { Problem, Validation } from './validation.js';
 
 export const DECISION_RECORD_SCHEMA_VERSION = 1;
@@ -101,10 +103,12 @@ const KEYS = [
   'recordedAt',
 ] as const;
 
-const NEVER_SILENT_PASS: readonly CapabilityState[] = ['UNSUPPORTED', 'INTEGRATION-FAILED'];
-
-/** Date, `T`, time to the second (fractions allowed), and an explicit zone. */
-const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+/**
+ * Read from `./vocabulary.ts` rather than restated here: `./coverage.ts` ›
+ * `qualifierFor` answers from the same list, and a second copy is how the two
+ * come to disagree about which verdicts may pass unqualified.
+ */
+const NEVER_SILENT_PASS: readonly CapabilityState[] = UNENFORCEABLE_STATES;
 
 const namedPairs = (
   problems: Problem[],

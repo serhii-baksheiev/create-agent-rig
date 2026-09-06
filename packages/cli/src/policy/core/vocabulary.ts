@@ -18,9 +18,13 @@ const closed = <const T extends readonly string[]>(values: T): T => Object.freez
 
 /**
  * Whether a declared policy can actually be enforced on a given harness
- * surface. `UNSUPPORTED` and `INTEGRATION-FAILED` never yield a silent pass:
- * a decision record carrying either must qualify its verdict `UNVERIFIABLE`
- * (`./decision-record.ts`). The four states are defined here.
+ * surface. `UNSUPPORTED` and `INTEGRATION-FAILED` must never yield a silent
+ * pass: a decision record carrying either has to qualify its verdict
+ * `UNVERIFIABLE` (`./decision-record.ts`). The four states are defined here.
+ *
+ * ⚠ That is the rule, and the enforcement behind it is narrower than the rule
+ * — see `UNENFORCEABLE_STATES` below, which states the gap once for every
+ * reader of this file.
  */
 export const CAPABILITY_STATES = closed([
   'SUPPORTED',
@@ -29,6 +33,65 @@ export const CAPABILITY_STATES = closed([
   'INTEGRATION-FAILED',
 ] as const);
 export type CapabilityState = (typeof CAPABILITY_STATES)[number];
+
+/**
+ * The states under which no question was actually put to a working mechanism.
+ *
+ * One spelling of one fact (`rules/invariants.md`, "One mechanism, one
+ * implementation"): `./decision-record.ts` refuses an unqualified verdict
+ * carrying one of these, and `./coverage.ts` › `qualifierFor` returns
+ * `UNVERIFIABLE` for exactly the same set. Two copies would disagree, and the
+ * one nobody is looking at would be the one that let a silent pass through.
+ *
+ * ⚠ **"Refuses" holds for a record built the ordinary way, not against a
+ * hand-built prototype**, and this is the file a reader auditing that question
+ * lands on first. `./decision-record.ts` decides whether a verdict carries a
+ * qualifier with the `in` operator, so a verdict INHERITING one satisfies the
+ * check and then serialises without it — measured by `code-reviewer` on the
+ * change that introduced this note. `./probe.ts` and `./evidence-matrix.ts`
+ * read own, enumerable fields only; that reader was not brought along, and the
+ * repair is filed as RP-153 together with `./declaration.ts`. Until it lands,
+ * do not read this sentence as a closed guarantee, and do not close RP-153 on
+ * the strength of it. `docs/decisions/capability-coverage.md`, "What this does
+ * NOT do", carries the same limit at length.
+ *
+ * It is deliberately NOT derived from a rank or an ordering. `coverage.ts`
+ * carries an enforcement ordering for deciding what counts as a downgrade;
+ * keying verdict qualification off that would mean a future re-rank silently
+ * changed which verdicts are unverifiable.
+ */
+export const UNENFORCEABLE_STATES = closed(['UNSUPPORTED', 'INTEGRATION-FAILED'] as const);
+
+/**
+ * The two ways a capability status is established, and the only two.
+ *
+ * `probe` is one active read of the surface's own wiring, taken when the
+ * surface changes (`PROBE_TRIGGERS`). `traffic` is passive: an operation that
+ * was expected to produce an observable signal, and what it actually produced.
+ * There is deliberately no third source meaning "time passed" — silence is
+ * absence of evidence, not evidence of absence.
+ */
+export const VERIFICATION_SOURCES = closed(['probe', 'traffic'] as const);
+export type VerificationSource = (typeof VERIFICATION_SOURCES)[number];
+
+/**
+ * The occasions on which a surface is probed. Every member is an event on the
+ * surface; none of them is an interval.
+ *
+ * What this vocabulary does, exactly: `./coverage.ts` › `coverageFromProbe`
+ * takes a trigger as a required argument and refuses a word outside this list,
+ * so a probe must NAME its occasion and cannot name a schedule — ›
+ * "refuses the trigger %j, because the coverage contract accepts only a
+ * declared surface-change trigger".
+ *
+ * ⚠ What it does NOT do, stated because an earlier draft of this comment
+ * claimed it: nothing here stops a caller passing `'upgrade'` on a timer. The
+ * check refuses a LABEL outside the vocabulary, not the practice of probing
+ * periodically. `docs/decisions/capability-coverage.md` §1 says the same, and
+ * this file used to contradict it.
+ */
+export const PROBE_TRIGGERS = closed(['install', 'upgrade', 'registration', 'reconnect'] as const);
+export type ProbeTrigger = (typeof PROBE_TRIGGERS)[number];
 
 /** The autonomy tiers of `rules/autonomy.md`; `never` is the tier the guards enforce. */
 export const AUTONOMY_TIERS = closed(['tier-0', 'tier-1', 'tier-2', 'never'] as const);
