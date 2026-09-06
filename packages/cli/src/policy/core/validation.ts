@@ -20,6 +20,42 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
+ * Whether an outside record CARRIES a field — own and enumerable, which is
+ * exactly the set `Object.keys` walks and exactly the set `JSON.stringify`
+ * writes back out.
+ *
+ * 🔴 The two halves are one rule, and each was a real false pass. A field found
+ * on the PROTOTYPE let a hook serialising as `{}` be read as running the
+ * generated command, and let an evidence row own nothing and still validate; a
+ * field that is own but NOT ENUMERABLE let a row validate and then serialise
+ * without the pointer that made it pass. Both are the same defect stated twice:
+ * something was accepted as evidence that no serialisation of the value
+ * carries. `unknownKeys` already judges a record by `Object.keys`, so reading
+ * by any wider notion made the closed-shape check and the field reads disagree
+ * about what the record even contains — and the reads were the wider of the
+ * two.
+ *
+ * Held over both readers at once: `packages/cli/test/policy-coverage.test.ts`
+ * (absent in a generated rig) › "refuses a hook entry whose command is only
+ * inherited, because the entry itself carries no command" and › "refuses a row
+ * whose evidence pointer is own but not enumerable, because the rule is what
+ * JSON.stringify sees".
+ */
+export const carriesField = (input: object, field: string): boolean =>
+  Object.prototype.propertyIsEnumerable.call(input, field);
+
+/**
+ * Read one field the way the record's own serialisation would carry it, or
+ * `undefined` when the record does not carry it at all.
+ *
+ * Presence and value travel through the same predicate on purpose: a caller
+ * that tested presence one way and read the value another is how the two
+ * came apart the first time.
+ */
+export const ownField = (input: object, field: string): unknown =>
+  carriesField(input, field) ? (input as Record<string, unknown>)[field] : undefined;
+
+/**
  * A value as it appeared, escaped, for a message a person reads. Exported
  * because every module here that puts OUTSIDE data into a diagnostic must put
  * it through the same escaping — a raw newline or ANSI sequence in a matcher
@@ -194,34 +230,52 @@ export const matching = (
  *
  * One spelling of one fact: `./evidence-matrix.ts` refuses a matrix row on it
  * and `./coverage.ts` refuses a surface identity on it, so "the exact version
- * observed" means the same thing wherever it is written. It was two prose
- * sentences and one check before, and the shape they did not check was the
- * `SurfaceIdentity` — the one a coverage map actually carries.
+ * observed" means the same thing wherever it is written.
  *
- * Refused: the vague words, range OPERATORS, a wildcard component, and the two
- * npm range spellings that use neither (`1.2.3 || 1.2.4`, `1.2.3 - 1.2.7`).
- * Accepted: anything else that names a build, including a bare sha, a date
- * build id, and a pre-release tag carrying an `x` or `X` — a letter in a build
- * name is not a wildcard, which is why the check reads a wildcard COMPONENT
- * (`2.x`, `1.0.0.x`) rather than the letter. Pinned in
+ * 🔴 This is an ALLOWLIST, and it replaced a denylist that could not be
+ * finished. The denylist refused four vague words, the range operator
+ * characters, a wildcard component and two npm range spellings — and accepted
+ * `main`, `master`, `stable`, `next`, `nightly`, `dev`, `edge`, `canary` and
+ * `1.2.3 or 2.0.0`, because none of them is any of those things. A moving label
+ * is not a shape you can enumerate: every branch name a harness ever publishes
+ * from is a new entry, added by whoever notices, which is nobody. So the check
+ * asks what a build identifier LOOKS LIKE instead of what a moving target is
+ * called, and a word the grammar does not describe is refused whether or not
+ * anyone anticipated it.
+ *
+ * Two shapes are accepted, and they are the two this rig actually reads:
+ *
+ * - a build NUMBER — a dotted numeric version, optionally `v`-prefixed, with an
+ *   optional pre-release or build-metadata suffix after `-` or `+`. That covers
+ *   `2.0.14`, `v2.0.14`, `1.104.2`, a date build id like `2026-09-05`, a plain
+ *   build id like `20260904.3`, and a suffix carrying any letter at all,
+ *   including `1.0.0-X` and `0.0.0-fixture`;
+ * - a build ID — 7 to 64 hex characters, which is a git object id at every
+ *   length git itself abbreviates to.
+ *
+ * The distinction that costs the most to get wrong is the one between a bare
+ * channel word and a suffix: `beta` names whatever is on that channel today and
+ * is refused, while `1.0.0-beta.2` names one build and is accepted. The grammar
+ * draws that line by requiring the number first — a suffix cannot stand alone.
+ *
+ * Refused, and now by construction rather than by enumeration: the vague words,
+ * every moving branch label, range OPERATORS, wildcard components, both npm
+ * range spellings, and any text carrying whitespace or a comma — which is what
+ * `1.2.3 or 2.0.0` and `1.2.3, 2.0.0` are. Both readers are pinned in
  * `packages/cli/test/policy-coverage.test.ts` (absent in a generated rig) ›
- * "accepts a build identifier carrying a capital X, because that is a
- * character of a build name and not a wildcard component".
+ * "refuses the harness version %j, because it names a moving label or more than
+ * one build" and › "refuses to probe against the harness version %j, because it
+ * names a moving label or more than one build", with the other direction held
+ * so the grammar cannot swallow a real build id: › "still accepts the harness
+ * version %j, because it names one build" and › "still probes against the
+ * harness version %j, because it names one build".
  */
-const VAGUE_VERSIONS: readonly string[] = ['latest', 'current', 'unknown', 'any', 'head'];
-const RANGE_OPERATOR = /[\^~*<>=]/;
-const WILDCARD_COMPONENT = /(^|\.)[xX*](\.|$)/;
-const RANGE_SPELLING = /\|\||\s-\s/;
+const BUILD_NUMBER = /^v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z][0-9A-Za-z.+-]*)?$/;
+const BUILD_ID = /^[0-9a-fA-F]{7,64}$/;
 
 export const isExactVersion = (value: string): boolean => {
   const version = value.trim();
-  if (version === '') return false;
-  if (VAGUE_VERSIONS.includes(version.toLowerCase())) return false;
-  return !(
-    RANGE_OPERATOR.test(version) ||
-    WILDCARD_COMPONENT.test(version) ||
-    RANGE_SPELLING.test(version)
-  );
+  return BUILD_NUMBER.test(version) || BUILD_ID.test(version);
 };
 
 /** Refuse a version that names a range or a moving target, quoting the value. */

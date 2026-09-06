@@ -29,12 +29,14 @@
 import { CAPABILITY_STATES } from './vocabulary.js';
 import type { CapabilityState } from './vocabulary.js';
 import {
+  carriesField,
   exactVersion,
   ISO_8601,
   isRecord,
   matching,
   member,
   nonBlankString,
+  ownField,
   unknownKeys,
 } from './validation.js';
 import type { Problem, Validation } from './validation.js';
@@ -88,25 +90,36 @@ export function validateEvidenceRow(input: unknown): Validation<EvidenceRow> {
   }
   const problems: Problem[] = [];
   unknownKeys(problems, input, KEYS);
-  for (const field of REQUIRED_TEXT) nonBlankString(problems, field, input[field]);
-  exactVersion(problems, 'harnessVersion', input.harnessVersion);
-  matching(problems, 'observedAt', input.observedAt, ISO_8601, 'an ISO-8601 date-time with a zone');
-  const known = member(problems, 'status', input.status, CAPABILITY_STATES);
-  // Both branches read an OWN key. Mixing `in` with the own-key read that
-  // `unknownKeys` performs let a DEGRADED row inherit its reason from a
-  // prototype: the row validated, and then serialised with no reason at all —
-  // "a row that reads like evidence and is not one", which is the shape this
-  // module exists to refuse.
-  const carriesReason = Object.hasOwn(input, 'downgradeReason');
-  if (known && input.status !== 'SUPPORTED') {
-    if (carriesReason) nonBlankString(problems, 'downgradeReason', input.downgradeReason);
+  // EVERY field is read through `ownField`, not off the record directly. A row
+  // is evidence only insofar as it CARRIES what it was validated on: a value
+  // reached through the prototype chain, or held in a non-enumerable own
+  // property, validates and then serialises to nothing — "a row that reads like
+  // evidence and is not one", which is the shape this module exists to refuse.
+  // `unknownKeys` already judges the row by `Object.keys`, and `ownField` is
+  // that same notion, so the closed-shape check and the field reads cannot
+  // disagree about what the row contains.
+  for (const field of REQUIRED_TEXT) nonBlankString(problems, field, ownField(input, field));
+  exactVersion(problems, 'harnessVersion', ownField(input, 'harnessVersion'));
+  matching(
+    problems,
+    'observedAt',
+    ownField(input, 'observedAt'),
+    ISO_8601,
+    'an ISO-8601 date-time with a zone',
+  );
+  const status = ownField(input, 'status');
+  const known = member(problems, 'status', status, CAPABILITY_STATES);
+  const carriesReason = carriesField(input, 'downgradeReason');
+  if (known && status !== 'SUPPORTED') {
+    if (carriesReason)
+      nonBlankString(problems, 'downgradeReason', ownField(input, 'downgradeReason'));
     else problems.push({ field: 'downgradeReason', message: 'must be a non-blank string' });
   }
   // The shape is closed in both directions: a supported row has no reason to
   // give, so a `downgradeReason` on one is refused rather than ignored. Left
   // unchecked, the field went unvalidated on that branch and the narrowing
   // below handed back a value typed `string` that was not one.
-  if (known && input.status === 'SUPPORTED' && carriesReason) {
+  if (known && status === 'SUPPORTED' && carriesReason) {
     problems.push({
       field: 'downgradeReason',
       message: 'a SUPPORTED row has nothing to explain, so it carries no downgrade reason',

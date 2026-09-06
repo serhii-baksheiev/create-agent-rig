@@ -14,8 +14,12 @@ import {
 } from '../src/policy/core/coverage.js';
 import {
   MAX_HOOK_COMMAND_LENGTH,
+  MAX_HOOK_GROUPS,
+  MAX_HOOKS_PER_GROUP,
+  MAX_MATCHER_LENGTH,
   MAX_NAMED_TOOLS_IN_REASON,
   probePolicy,
+  type HookGroup,
   type HookSnapshot,
 } from '../src/policy/core/probe.js';
 import { validateEvidenceRow, type EvidenceRow } from '../src/policy/core/evidence-matrix.js';
@@ -2645,4 +2649,542 @@ describe('validating an evidence-matrix row', () => {
     expect(fields).toContain('observedAt');
     expect(fields).toContain('status');
   });
+});
+
+/**
+ * A field the surface would not SERIALISE is not evidence about the surface.
+ *
+ * Every level of the probe reads its field the way JavaScript resolves a
+ * property — `hook[field]`, `'hooks' in snapshot`, `surface.event in wiring`,
+ * `'matcher' in group` — and all four of those walk the prototype chain. So an
+ * object that OWNS nothing and inherits a fully wired snapshot reads as
+ * enforcement, while `JSON.stringify` of that same object emits `{}`: the probe
+ * reports `SUPPORTED` about wiring that is not in the file it stands for. The
+ * same hole has one more shape, and it needs no prototype at all — an own but
+ * NON-ENUMERABLE `command` is read by `hook[field]` and dropped by
+ * `JSON.stringify`, so an entry can validate and then serialise without the
+ * thing that made it pass.
+ *
+ * The answers below are not new answers. They are the ones this module already
+ * gives when the field is genuinely ABSENT, because an inherited field is not
+ * one the surface carries — the ABSENT/UNREADABLE pair of
+ * `rules/invariants.md` applied one step earlier, at "is this field on the
+ * object at all". Each case is therefore pinned against the answer for the
+ * absent shape rather than against a literal, so tightening one cannot silently
+ * move the other.
+ *
+ * Half of this rule is already in this file, found in the evidence row: ›
+ * "refuses a DEGRADED row whose reason is inherited from a prototype, because
+ * the row itself carries none". The probe reads six fields the same way and
+ * none of them was checked.
+ */
+describe('the probe reads a field the way the surface would serialise it, not the way JavaScript resolves it', () => {
+  const { hookPath, matcher } = SECRET_WRITE_SURFACE;
+
+  /** The entry this harness generates, as ordinary own enumerable properties. */
+  const wiredEntry = (): Record<string, string> => generatedEntry(claudeAdapter, SECRET_WRITE);
+
+  /** The policy event carrying exactly the group elements given. */
+  const eventCarrying = (...groups: readonly unknown[]): unknown => ({
+    hooks: { [EVENT]: groups },
+  });
+
+  /** What `JSON.stringify` — and so the file this snapshot stands for — carries. */
+  const serialised = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+  it('refuses a hook entry whose command is only inherited, because the entry itself carries no command', () => {
+    const inherited = Object.create(wiredEntry()) as Record<string, string>;
+    expect(
+      serialised(inherited),
+      'the fixture owns the command after all, so it proves nothing',
+    ).not.toHaveProperty('command');
+
+    const result = probePolicy(
+      SECRET_WRITE,
+      claudeAdapter,
+      wiringEntries(claudeAdapter, SECRET_WRITE, inherited),
+    );
+    expect(
+      result.state,
+      'a command no serialisation of this entry carries was read as enforcement',
+    ).toBe('INTEGRATION-FAILED');
+    expect(result.reason ?? '').toContain(EVENT);
+    expect(result.reason ?? '').toContain('command');
+    expect(
+      result,
+      'an inherited command answers differently from the absent command it serialises as',
+    ).toEqual(
+      probePolicy(SECRET_WRITE, claudeAdapter, wiringEntries(claudeAdapter, SECRET_WRITE, {})),
+    );
+  });
+
+  it('refuses a hook entry whose command is own but not enumerable, because JSON.stringify of it carries no command', () => {
+    const entry: Record<string, string> = { ...wiredEntry() };
+    Object.defineProperty(entry, 'command', {
+      value: generatedCommand(claudeAdapter, SECRET_WRITE),
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    expect(
+      serialised(entry),
+      'the fixture still serialises the command, so it proves nothing',
+    ).not.toHaveProperty('command');
+
+    const result = probePolicy(
+      SECRET_WRITE,
+      claudeAdapter,
+      wiringEntries(claudeAdapter, SECRET_WRITE, entry),
+    );
+    expect(
+      result.state,
+      'a command that would not survive being written back out was read as enforcement',
+    ).toBe('INTEGRATION-FAILED');
+    expect(result.reason ?? '').toContain('command');
+  });
+
+  it('reads a snapshot whose hooks field is only inherited exactly as it reads one carrying no hooks field', () => {
+    const inherited = Object.create(fullyWired(claudeAdapter)) as HookSnapshot;
+    expect(Object.keys(inherited), 'the fixture owns a field after all').toEqual([]);
+
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, inherited);
+    expect(result.state, 'wiring on a prototype was read as wiring the surface carries').not.toBe(
+      'SUPPORTED',
+    );
+    expect(result.state).toBe('UNSUPPORTED');
+    expect(result.reason ?? '').toContain(hookPath);
+    expect(
+      result,
+      'an inherited hooks field answers differently from the absent one it serialises as',
+    ).toEqual(probePolicy(SECRET_WRITE, claudeAdapter, {}));
+  });
+
+  it('reads a hooks object whose event key is only inherited exactly as it reads one where the event is absent', () => {
+    const inherited = Object.create(fullyWired(claudeAdapter).hooks) as Record<string, unknown>;
+    expect(Object.keys(inherited), 'the fixture owns the event key after all').toEqual([]);
+
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, { hooks: inherited });
+    expect(result.state, 'an event key on a prototype was read as an event the surface wires').toBe(
+      'UNSUPPORTED',
+    );
+    expect(result.reason ?? '').toContain(hookPath);
+    expect(
+      result,
+      'an inherited event key answers differently from the absent one it serialises as',
+    ).toEqual(probePolicy(SECRET_WRITE, claudeAdapter, { hooks: {} }));
+  });
+
+  it('refuses a group whose hooks list is only inherited, because the group itself wires nothing readable', () => {
+    const group = Object.assign(
+      Object.create({ hooks: [wiredEntry()] }) as Record<string, unknown>,
+      {
+        matcher,
+      },
+    );
+    expect(
+      serialised(group),
+      'the fixture owns the hooks list after all, so it proves nothing',
+    ).not.toHaveProperty('hooks');
+
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, eventCarrying(group));
+    expect(result.state, 'a hooks list on a prototype was read as the wiring of the group').toBe(
+      'INTEGRATION-FAILED',
+    );
+    expect(result.reason ?? '').toContain(EVENT);
+  });
+
+  it('reads a group whose matcher is only inherited exactly as it reads a group carrying no matcher at all', () => {
+    const matcherless = { hooks: [wiredEntry()] };
+    const inherited = Object.assign(
+      Object.create({ matcher }) as Record<string, unknown>,
+      matcherless,
+    );
+    expect(
+      serialised(inherited),
+      'the fixture owns the matcher after all, so it proves nothing',
+    ).not.toHaveProperty('matcher');
+
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, eventCarrying(inherited));
+    expect(result.state, 'a matcher on a prototype was read as the matcher of the group').not.toBe(
+      'SUPPORTED',
+    );
+    expect(
+      result,
+      'an inherited matcher answers differently from the absent one it serialises as',
+    ).toEqual(probePolicy(SECRET_WRITE, claudeAdapter, eventCarrying(matcherless)));
+  });
+});
+
+/**
+ * Every command string is capped and nothing else is, so the STRUCTURE around
+ * those strings is unbounded: a snapshot may carry any number of groups, any
+ * number of hooks per group, and a matcher of any length. All three come off a
+ * file on disk, all three are walked in full, and the matcher is additionally
+ * split and joined into an operator-facing reason — which makes them the shape
+ * `rules/invariants.md` names under "A guard that fails open must do provably
+ * bounded work": every line of work a fail-open reader does on attacker-shaped
+ * input is a potential total bypass, not merely a slow probe.
+ *
+ * A cap that refuses silently is no better than none, so the refusal is
+ * `INTEGRATION-FAILED` — the answer for "I was handed something I would not
+ * read" — and its reason NAMES the limit crossed, which is the one thing an
+ * operator can act on. And a cap has two sides: the boundary case is pinned
+ * beside the over-cap case, because a bound that refused the wiring this rig
+ * ships would be worked around within the week.
+ */
+describe('the probe bounds the structure of a snapshot, not only the length of each command', () => {
+  const { matcher } = SECRET_WRITE_SURFACE;
+
+  /**
+   * A cap read through an assertion rather than used raw: an absent export is
+   * `undefined`, and `Array.from({ length: NaN })` builds NOTHING — so a
+   * fixture that trusted the arithmetic would pass while nothing bounded
+   * anything. This makes the missing export the sentence the failure states.
+   */
+  const capNamed = (name: string, value: number): number => {
+    expect(
+      Number.isInteger(value) && value > 0,
+      `${name} is not a whole positive number (it is ${String(value)}), so nothing bounds that level of a snapshot`,
+    ).toBe(true);
+    return value;
+  };
+
+  /** A readable group wiring nothing of interest, for padding a snapshot to a count. */
+  const fillerGroup = (): unknown => ({ matcher: 'Write', hooks: [] });
+
+  /** A readable entry about another mechanism, for padding a group to a count. */
+  const fillerHook = (): unknown => ({ command: `node "${SHARED_HOOKS_DIR}/other.mjs"` });
+
+  /** The group this rig really wires: the declared matcher, running the generated command. */
+  const validGroup = (): unknown => ({
+    matcher,
+    hooks: [generatedEntry(claudeAdapter, SECRET_WRITE)],
+  });
+
+  const underEvent = (groups: readonly unknown[]): unknown => ({ hooks: { [EVENT]: groups } });
+
+  /** The declared matcher padded with one extra tool, to an exact character length. */
+  const matcherOfLength = (length: number): string => {
+    const filler = length - matcher.length - 1;
+    if (filler < 1) {
+      throw new Error(`the cap ${String(length)} is too small to pad the declared matcher up to`);
+    }
+    return `${matcher}|${'X'.repeat(filler)}`;
+  };
+
+  const probeMatcher = (text: string) =>
+    probePolicy(
+      SECRET_WRITE,
+      claudeAdapter,
+      underEvent([{ matcher: text, hooks: [generatedEntry(claudeAdapter, SECRET_WRITE)] }]),
+    );
+
+  it('states each structural cap as a whole positive number', () => {
+    expect(capNamed('MAX_HOOK_GROUPS', MAX_HOOK_GROUPS)).toBeGreaterThan(0);
+    expect(capNamed('MAX_HOOKS_PER_GROUP', MAX_HOOKS_PER_GROUP)).toBeGreaterThan(0);
+    expect(capNamed('MAX_MATCHER_LENGTH', MAX_MATCHER_LENGTH)).toBeGreaterThan(0);
+  });
+
+  it.each(EACH_ADAPTER)(
+    'admits every level of the %s wiring this rig really ships, so no cap refuses honest work',
+    (_harness, adapter) => {
+      const { event } = adapter.nativeSurfaceOf(SECRET_WRITE);
+      const groups: readonly HookGroup[] = fullyWired(adapter).hooks[event] ?? [];
+      expect(
+        groups.length,
+        'the fixture wires no group at all, so it measures nothing',
+      ).toBeGreaterThan(0);
+      expect(groups.length).toBeLessThanOrEqual(capNamed('MAX_HOOK_GROUPS', MAX_HOOK_GROUPS));
+      for (const group of groups) {
+        expect(group.hooks.length).toBeLessThanOrEqual(
+          capNamed('MAX_HOOKS_PER_GROUP', MAX_HOOKS_PER_GROUP),
+        );
+        expect((group.matcher ?? '').length).toBeLessThanOrEqual(
+          capNamed('MAX_MATCHER_LENGTH', MAX_MATCHER_LENGTH),
+        );
+      }
+    },
+  );
+
+  it('refuses a snapshot carrying one group more than it will read, naming the limit it crossed', () => {
+    const cap = capNamed('MAX_HOOK_GROUPS', MAX_HOOK_GROUPS);
+    const groups = [validGroup(), ...Array.from({ length: cap }, fillerGroup)];
+    expect(groups).toHaveLength(cap + 1);
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, underEvent(groups));
+    expect(result.state, 'a snapshot past the group cap was walked in full').toBe(
+      'INTEGRATION-FAILED',
+    );
+    expect(result.reason ?? '', 'the refusal does not name the limit that was crossed').toContain(
+      String(cap),
+    );
+  });
+
+  it('still reads a snapshot carrying exactly as many groups as it will, because a cap admits its own boundary', () => {
+    const cap = capNamed('MAX_HOOK_GROUPS', MAX_HOOK_GROUPS);
+    const groups = [validGroup(), ...Array.from({ length: cap - 1 }, fillerGroup)];
+    expect(groups).toHaveLength(cap);
+    expect(probePolicy(SECRET_WRITE, claudeAdapter, underEvent(groups))).toEqual({
+      state: 'SUPPORTED',
+    });
+  });
+
+  it('refuses a group carrying one hook more than it will read, naming the limit it crossed', () => {
+    const cap = capNamed('MAX_HOOKS_PER_GROUP', MAX_HOOKS_PER_GROUP);
+    const hooks = [
+      generatedEntry(claudeAdapter, SECRET_WRITE),
+      ...Array.from({ length: cap }, fillerHook),
+    ];
+    expect(hooks).toHaveLength(cap + 1);
+    const result = probePolicy(SECRET_WRITE, claudeAdapter, underEvent([{ matcher, hooks }]));
+    expect(result.state, 'a group past the hook cap was walked in full').toBe('INTEGRATION-FAILED');
+    expect(result.reason ?? '', 'the refusal does not name the limit that was crossed').toContain(
+      String(cap),
+    );
+  });
+
+  it('refuses a matcher one character longer than it will read, naming the limit it crossed', () => {
+    const cap = capNamed('MAX_MATCHER_LENGTH', MAX_MATCHER_LENGTH);
+    const oversized = matcherOfLength(cap + 1);
+    expect(oversized).toHaveLength(cap + 1);
+    const result = probeMatcher(oversized);
+    expect(
+      result.state,
+      'a matcher past the cap was split, compared and joined into a reason',
+    ).toBe('INTEGRATION-FAILED');
+    expect(result.reason ?? '', 'the refusal does not name the limit that was crossed').toContain(
+      String(cap),
+    );
+  });
+
+  it('still reads a matcher of exactly the length it will, because a cap admits its own boundary', () => {
+    const cap = capNamed('MAX_MATCHER_LENGTH', MAX_MATCHER_LENGTH);
+    const atCap = matcherOfLength(cap);
+    expect(atCap).toHaveLength(cap);
+    const result = probeMatcher(atCap);
+    expect(result, 'a matcher inside the cap was refused as though it were past it').not.toEqual(
+      probeMatcher(matcherOfLength(cap + 1)),
+    );
+    expect(result.state, 'a matcher inside the cap was not read at all').toBe('DEGRADED');
+  });
+});
+
+/**
+ * An evidence row carries a field the way `JSON.stringify` will see it — own
+ * AND enumerable — or it does not carry it at all.
+ *
+ * `validateEvidenceRow` reads every required field, the timestamp, the version
+ * and the status as `input[field]`, which resolves along the prototype chain,
+ * while the closed-shape check beside it reads own keys only. So a row that
+ * owns NOTHING and inherits a complete one validates, and then stores as `{}`:
+ * "a row that reads like evidence and is not one", which is the single defect
+ * this module exists to refuse. The `downgradeReason` half of the same hole is
+ * already pinned above; these are the nine fields nobody read that way.
+ *
+ * The non-enumerable case needs no prototype, and it is why the rule is own
+ * AND enumerable rather than merely own: `Object.hasOwn` is true of such a
+ * field, and `JSON.stringify` drops it anyway.
+ */
+describe('an evidence row carries a field only when the row itself would serialise it', () => {
+  const REQUIRED_FIELDS = [
+    'harness',
+    'surface',
+    'harnessVersion',
+    'os',
+    'mechanism',
+    'observableSignal',
+    'evidencePointer',
+    'observedAt',
+    'status',
+  ] as const;
+
+  const completeRow = (): Record<string, unknown> => ({
+    harness: 'fixture-harness',
+    surface: 'fixture/hook-wiring.json',
+    harnessVersion: '2.0.14',
+    os: 'fixture-os 1.0',
+    observedAt: '2026-09-04T09:30:00Z',
+    mechanism: 'guard-secret-file',
+    observableSignal: 'a refusal on stderr and a non-zero exit code',
+    status: 'SUPPORTED',
+    evidencePointer: 'guard-secret-file.test.mjs › "refuses a credential file by name"',
+  });
+
+  const refusedFieldsOf = (input: unknown): string[] => {
+    const result = validateEvidenceRow(input);
+    expect(result.ok, 'a row nothing would store validated as evidence').toBe(false);
+    return result.ok ? [] : result.problems.map((problem) => problem.field);
+  };
+
+  it('refuses a row that owns nothing and inherits a complete one, naming every field it does not carry', () => {
+    const inherited = Object.create(completeRow()) as Record<string, unknown>;
+    expect(JSON.parse(JSON.stringify(inherited)), 'the fixture owns a field after all').toEqual({});
+
+    const refused = refusedFieldsOf(inherited);
+    expect(
+      REQUIRED_FIELDS.filter((field) => !refused.includes(field)),
+      'a required field was read off a prototype and reported as present',
+    ).toEqual([]);
+  });
+
+  it('refuses a row whose evidence pointer is only inherited, because the row would then point at nothing', () => {
+    const { evidencePointer, ...owned } = completeRow();
+    const row = Object.assign(Object.create({ evidencePointer }) as Record<string, unknown>, owned);
+    expect(
+      JSON.parse(JSON.stringify(row)),
+      'the fixture owns the pointer after all',
+    ).not.toHaveProperty('evidencePointer');
+
+    expect(refusedFieldsOf(row)).toContain('evidencePointer');
+  });
+
+  it('refuses a row whose evidence pointer is own but not enumerable, because the rule is what JSON.stringify sees', () => {
+    const row = completeRow();
+    Object.defineProperty(row, 'evidencePointer', {
+      value: 'guard-secret-file.test.mjs › "refuses a credential file by name"',
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    expect(Object.hasOwn(row, 'evidencePointer'), 'the fixture does not own the pointer').toBe(
+      true,
+    );
+    expect(
+      JSON.parse(JSON.stringify(row)),
+      'the fixture still serialises the pointer, so it proves nothing',
+    ).not.toHaveProperty('evidencePointer');
+
+    expect(refusedFieldsOf(row)).toContain('evidencePointer');
+  });
+
+  // KEEP GREEN. The positive control the three cases above are measured
+  // against: ordinary own enumerable properties are exactly what a row is.
+  it('still accepts the same row when every field is an ordinary own property', () => {
+    const result = validateEvidenceRow(completeRow());
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+  });
+});
+
+/**
+ * `isExactVersion` refuses by LIST — five vague words, a set of range
+ * operators, a wildcard component, two npm range spellings — and a list of the
+ * ways a version can fail to name a build cannot be finished. Every branch a
+ * harness ever names, every channel a vendor ever ships, every separator a
+ * person ever types between two versions is an entry nobody adds, because
+ * nothing goes red when it is missing. `main` is not `latest`, and it moves
+ * exactly as much.
+ *
+ * So the rule is stated positively: a version is what an immutable build
+ * identifier LOOKS like — a dotted or dated build number, an optional `v`, a
+ * pre-release or build-metadata suffix, a git object id — and everything else
+ * is refused whether or not anyone thought of it. A positive grammar has the
+ * failure direction this contract needs: an unforeseen spelling is refused and
+ * asked about, rather than stored as evidence.
+ *
+ * Both readers are pinned, because the point of the shared helper is that "the
+ * exact version observed" means the same thing in a matrix row and in a
+ * coverage map: `rules/invariants.md`, "One mechanism, one implementation".
+ *
+ * Module-scoped rather than declared inside one of the two describes below,
+ * for the reason the literals above this file's probe cases are: two spellings
+ * of one vocabulary are two things to keep in step.
+ */
+const VERSIONS_THAT_NAME_NO_ONE_BUILD: readonly string[] = [
+  // Moving labels. Each names a different build tomorrow, which is the whole of
+  // what `latest` is refused for.
+  'main',
+  'master',
+  'stable',
+  'next',
+  'nightly',
+  'dev',
+  'edge',
+  'canary',
+  'release',
+  'beta',
+  // More than one build, joined by something that is not a range OPERATOR, so
+  // the character-class check never sees them.
+  '1.2.3 or 2.0.0',
+  '1.2.3, 2.0.0',
+  'v1 v2',
+];
+
+/**
+ * The spellings a real build identifier takes, every one of which passes today
+ * — the regression guard a positive grammar has to be written around. A
+ * grammar that refused one of these would teach an operator to write `0.0.0`
+ * in the column instead, which is worse than the label it was meant to refuse.
+ */
+const VERSIONS_THAT_NAME_ONE_BUILD: readonly string[] = [
+  '2.0.14',
+  '0.0.0-fixture',
+  '1.104.2',
+  '20260904.3',
+  '1.0.0-X',
+  'v2.0.14',
+  '2026-09-05',
+  '1.0.0+build.5',
+  '0a780eac27af667e3939c45cac1e2ee793a64785',
+  '0a780ea',
+];
+
+describe('an evidence row names one immutable build, by a grammar rather than a list of bad words', () => {
+  const rowVersioned = (harnessVersion: string): Record<string, unknown> => ({
+    harness: 'fixture-harness',
+    surface: 'fixture/hook-wiring.json',
+    harnessVersion,
+    os: 'fixture-os 1.0',
+    observedAt: '2026-09-04T09:30:00Z',
+    mechanism: 'guard-secret-file',
+    observableSignal: 'a refusal on stderr and a non-zero exit code',
+    status: 'SUPPORTED',
+    evidencePointer: 'guard-secret-file.test.mjs › "refuses a credential file by name"',
+  });
+
+  it.each(VERSIONS_THAT_NAME_NO_ONE_BUILD)(
+    'refuses the harness version %j, because it names a moving label or more than one build',
+    (harnessVersion) => {
+      const result = validateEvidenceRow(rowVersioned(harnessVersion));
+      expect(result.ok, 'a version naming no single build was stored as evidence').toBe(false);
+      expect(result.ok ? [] : result.problems.map((problem) => problem.field)).toContain(
+        'harnessVersion',
+      );
+    },
+  );
+
+  // KEEP GREEN. Every one of these passes today and must keep passing: the
+  // grammar is written to refuse the cases above WITHOUT losing these.
+  it.each(VERSIONS_THAT_NAME_ONE_BUILD)(
+    'still accepts the harness version %j, because it names one build',
+    (harnessVersion) => {
+      const result = validateEvidenceRow(rowVersioned(harnessVersion));
+      expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+    },
+  );
+});
+
+describe('a coverage map names one immutable build, by the same grammar the row is read with', () => {
+  const probeOnVersion = (harnessVersion: string): CoverageMap =>
+    coverageFromProbe({
+      surface: { ...SURFACE, harnessVersion },
+      policies: POLICIES,
+      adapter: claudeAdapter,
+      snapshot: fullyWired(claudeAdapter),
+      at: T0,
+      trigger: 'install',
+    });
+
+  it.each(VERSIONS_THAT_NAME_NO_ONE_BUILD)(
+    'refuses to probe against the harness version %j, because it names a moving label or more than one build',
+    (harnessVersion) => {
+      expect(() => probeOnVersion(harnessVersion)).toThrow(/version/i);
+    },
+  );
+
+  // KEEP GREEN, and the other half of "one implementation read by both".
+  it.each(VERSIONS_THAT_NAME_ONE_BUILD)(
+    'still probes against the harness version %j, because it names one build',
+    (harnessVersion) => {
+      expect(probeOnVersion(harnessVersion).surface.harnessVersion).toBe(harnessVersion);
+    },
+  );
 });

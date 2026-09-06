@@ -7,8 +7,8 @@
  * looping it, and the header of an earlier draft claimed otherwise. What
  * records the occasion of a probe is `./coverage.ts`, whose `coverageFromProbe`
  * requires a `ProbeTrigger` and refuses a word outside that vocabulary:
- * `policy-coverage.test.ts` › "refuses the trigger %j, because a probe is
- * occasioned by a change to the surface and by nothing else".
+ * `policy-coverage.test.ts` › "refuses the trigger %j, because the coverage
+ * contract accepts only a declared surface-change trigger".
  *
  * The four answers, each pinned in `packages/cli/test/policy-coverage.test.ts`:
  *
@@ -47,7 +47,7 @@
 import type { HarnessAdapter, NativeHookSurface } from './adapter.js';
 import type { PolicyDeclaration } from './declaration.js';
 import type { CapabilityState } from './vocabulary.js';
-import { isRecord, quote } from './validation.js';
+import { carriesField, isRecord, ownField, quote } from './validation.js';
 
 /**
  * One hook entry as the surface records it.
@@ -114,6 +114,56 @@ export const MAX_HOOK_COMMAND_LENGTH = 4096;
  * did not name".
  */
 export const MAX_NAMED_TOOLS_IN_REASON = 5;
+
+/**
+ * How much STRUCTURE this module will read before it refuses to read any.
+ *
+ * 🔴 Capping each command's length bounded the wrong axis alone. A snapshot is
+ * outside data, and its cardinalities were the caller's to choose: a hundred
+ * thousand groups, each carrying a hundred thousand hooks, is a snapshot whose
+ * every command is inside the length cap and whose total work is bounded by
+ * nothing. `rules/invariants.md` ("A guard that fails open must do provably
+ * bounded work") makes that the whole test — not "is it fast on realistic
+ * input" but "can any input make it do unbounded work at all" — and a consumer
+ * of this answer reads an absent verdict as no finding, so exhausting this
+ * module is a way to be reported on by nobody.
+ *
+ * Each cap is checked BEFORE the level it bounds is walked, and each refusal is
+ * `INTEGRATION-FAILED` naming the number crossed — never `UNSUPPORTED`, because
+ * a level nobody walked is not evidence that the mechanism is absent. That is
+ * the rule the over-long command already follows.
+ *
+ * The shipped wiring is measured rather than asserted, over the snapshot every
+ * registered adapter names as its own surface file — this module cannot name
+ * one, and `test/template/policy-declaration.test.ts` › "no file under
+ * src/policy/core mentions a harness, a vendor, a native tool or a native path"
+ * is what stops it trying. Measured on both: the widest event carries 2
+ * groups, the widest group 4 hooks, and the longest matcher 45 characters. What
+ * the cited tests pin is that the caps ADMIT those snapshots and refuse one
+ * entry past themselves — not any ratio, which would be a sentence nothing
+ * checks: › "admits every level of the %s wiring this rig really ships, so no
+ * cap refuses honest work" and › "refuses a snapshot carrying one group more
+ * than it will read, naming the limit it crossed".
+ *
+ * ⚠ `MAX_MATCHER_LENGTH` is NOT set from that 45. A cap is a promise about what
+ * this module still reads, and the contract had already made a wider one: ›
+ * "keeps the reason short when a thousand tools are added, and says how many it
+ * did not name" hands the probe a 4,935-character matcher and requires a
+ * `DEGRADED` answer with a bounded reason. Setting the cap below that would
+ * have turned an answer the suite already demands into a refusal — a cap
+ * chosen from the typical size rather than from the promise, which is how a
+ * bound quietly becomes a behaviour change. 8192 is the first power of two
+ * above what is already read.
+ *
+ * The work that admits is still bounded, and the product is what matters rather
+ * than any one factor: at most `MAX_HOOK_GROUPS` × `MAX_HOOKS_PER_GROUP` hook
+ * entries are classified, each against a fixed number of adapter fields capped
+ * at `MAX_HOOK_COMMAND_LENGTH`, and each group's matcher yields at most
+ * `MAX_MATCHER_LENGTH / 2` tools compared against a declaration of a handful.
+ */
+export const MAX_HOOK_GROUPS = 64;
+export const MAX_HOOKS_PER_GROUP = 64;
+export const MAX_MATCHER_LENGTH = 8192;
 
 /** One horizontal tab, named so no source line carries an invisible one. */
 const TAB = String.fromCharCode(9);
@@ -266,30 +316,50 @@ export function probePolicy(
   if (!isRecord(snapshot)) {
     return unreadable('it is not an object carrying a hooks field');
   }
-  if ('hooks' in snapshot && !isRecord(snapshot.hooks)) {
+  // Every level below is read through `carriesField`/`ownField` rather than
+  // with `in` and a bracket read. A snapshot is outside data, and the question
+  // this module answers is what the SURFACE wires — so a value the surface's
+  // own serialisation would not carry is not wiring, whether it sits on a
+  // prototype or in a non-enumerable own property. Reading one as wiring
+  // reported a hook that serialises as `{}` as running the generated command,
+  // which is the false SUPPORTED this contract exists to make impossible.
+  if (carriesField(snapshot, 'hooks') && !isRecord(ownField(snapshot, 'hooks'))) {
     return unreadable('its hooks field is not an object of event names');
   }
 
   const surface = adapter.nativeSurfaceOf(policy);
-  const wiring = isRecord(snapshot.hooks) ? snapshot.hooks : {};
+  const hooksField = ownField(snapshot, 'hooks');
+  const wiring = isRecord(hooksField) ? hooksField : {};
 
   // An event that is ABSENT contributes no groups and is not a finding; an
-  // event PRESENT in a shape this cannot read is the finding.
+  // event PRESENT in a shape this cannot read is the finding. An event key the
+  // record does not itself carry is the first of those, not the second.
   const groups: HookGroup[] = [];
-  if (surface.event in wiring) {
-    const under = wiring[surface.event];
+  if (carriesField(wiring, surface.event)) {
+    const under = ownField(wiring, surface.event);
     if (!Array.isArray(under)) {
       return unreadable(`the value under ${surface.event} is not a list of groups`);
+    }
+    if (under.length > MAX_HOOK_GROUPS) {
+      return unreadable(
+        `${surface.event} carries more than ${String(MAX_HOOK_GROUPS)} groups, so none of them was read`,
+      );
     }
     for (const group of under) {
       if (!isRecord(group)) {
         return unreadable(`a group under ${surface.event} is not an object`);
       }
-      if (!Array.isArray(group.hooks)) {
+      const groupHooks = ownField(group, 'hooks');
+      if (!Array.isArray(groupHooks)) {
         return unreadable(`the hooks of a group under ${surface.event} are not a list`);
       }
+      if (groupHooks.length > MAX_HOOKS_PER_GROUP) {
+        return unreadable(
+          `a group under ${surface.event} carries more than ${String(MAX_HOOKS_PER_GROUP)} hooks, so none of them was read`,
+        );
+      }
       const hooks: HookEntry[] = [];
-      for (const hook of group.hooks) {
+      for (const hook of groupHooks) {
         if (!isRecord(hook)) {
           return unreadable(`a hook under ${surface.event} is not an object`);
         }
@@ -299,7 +369,7 @@ export function probePolicy(
         // cannot vouch for on the platform that field serves.
         const entry: Record<string, string> = {};
         for (const field of Object.keys(surface.commands)) {
-          const wired = hook[field];
+          const wired = ownField(hook, field);
           if (typeof wired !== 'string') {
             return unreadable(`a hook under ${surface.event} has no readable ${field}`);
           }
@@ -312,11 +382,17 @@ export function probePolicy(
       // unreadable one to `undefined` made it the EMPTY matcher, so an
       // unreadable group answered DEGRADED — a level skipped, reported as a
       // whole read. Absent stays absent; present-and-unreadable is a finding.
-      if ('matcher' in group && typeof group.matcher !== 'string') {
+      const carriedMatcher = ownField(group, 'matcher');
+      if (carriesField(group, 'matcher') && typeof carriedMatcher !== 'string') {
         return unreadable(`the matcher of a group under ${surface.event} is not a string`);
       }
+      if (typeof carriedMatcher === 'string' && carriedMatcher.length > MAX_MATCHER_LENGTH) {
+        return unreadable(
+          `the matcher of a group under ${surface.event} is longer than ${String(MAX_MATCHER_LENGTH)} characters and was not read`,
+        );
+      }
       groups.push({
-        matcher: typeof group.matcher === 'string' ? group.matcher : undefined,
+        matcher: typeof carriedMatcher === 'string' ? carriedMatcher : undefined,
         hooks,
       });
     }

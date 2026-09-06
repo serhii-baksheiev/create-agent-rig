@@ -127,6 +127,30 @@ verdict carrying either — held over both modules at once by ›
 accepts it once qualifierFor speaks". Which states those are is one list,
 `UNENFORCEABLE_STATES`, that both modules import.
 
+### 5a. A field counts only when the value itself carries it
+
+Every field of a snapshot and of an evidence row is read as an **own,
+enumerable** property — the set `Object.keys` walks and the set
+`JSON.stringify` writes back out — through one pair of helpers in
+`validation.ts`, `carriesField` and `ownField`.
+
+Reading a field any other way accepted things that no serialisation of the
+value contains. A hook object owning nothing and INHERITING the generated
+command was reported `SUPPORTED`; an evidence row owning nothing and inheriting
+a complete row validated and then serialised to `{}`; a row holding its
+`evidencePointer` in a non-enumerable own property validated and then serialised
+without the pointer that made it pass. All three are the same defect: something
+was taken as evidence that the artifact does not carry.
+
+The rule also removes a disagreement inside each validator. `unknownKeys`
+already judges a record by `Object.keys`, so a wider read meant the closed-shape
+check and the field reads did not agree about what the record even contained —
+and the reads were the wider of the two, which is the direction that passes.
+
+Presence and value go through the same predicate, because the first version of
+this split them: `Object.hasOwn` for one field beside a bracket read for the
+rest.
+
 ### 6. The validator refuses an incomplete evidence row
 
 `validateEvidenceRow` refuses a row without an exact `harnessVersion` or an
@@ -143,11 +167,29 @@ module validates and returns a result; a caller that persists rows owns storage.
 for a matrix row and by `coverageFromProbe` for a surface identity, so the word
 means one thing wherever it is written.
 
-The vague words and range operators are refused: ›
-"refuses the harness version %j, because it names a range or a moving target
-rather than a build", with › "accepts the exact harness version %j, including a
-plain build id" holding the other direction so the rule cannot swallow a real
-build id.
+**And the check is an allowlist, because the denylist could not be finished.**
+The first version refused four vague words, the range-operator characters, a
+wildcard component and two npm range spellings — and accepted `main`, `master`,
+`stable`, `next`, `nightly`, `dev`, `edge`, `canary` and `1.2.3 or 2.0.0`,
+because none of those is any of those things. A moving label is not a shape that
+can be enumerated: every branch a harness publishes from is one more entry,
+added by whoever notices. So the rule is stated positively — a version is a
+build NUMBER (dotted numeric, optionally `v`-prefixed, with an optional
+pre-release or build-metadata suffix) or a build ID (7 to 64 hex characters) —
+and anything the grammar does not describe is refused whether or not anyone
+anticipated it.
+
+The line that costs the most to get wrong is between a bare channel word and a
+suffix: `beta` names whatever is on that channel today, `1.0.0-beta.2` names one
+build. The grammar draws it by requiring the number first.
+
+Both directions are held, and over both readers: ›
+"refuses the harness version %j, because it names a moving label or more than
+one build" and › "refuses to probe against the harness version %j, because it
+names a moving label or more than one build", against › "still accepts the
+harness version %j, because it names one build" and › "still probes against the
+harness version %j, because it names one build" — so the grammar cannot swallow
+a real build id.
 
 ### 7. "Is this hook wired?" is answered by comparison, never by parsing shell
 
@@ -184,6 +226,17 @@ answers it without inference.
 
 ## What this does NOT do, stated so the contract is not read wider than it is
 
+- **The probe bounds the structure it reads, and a snapshot past those bounds
+  gets a refusal rather than an answer.** `MAX_HOOK_GROUPS`,
+  `MAX_HOOKS_PER_GROUP` and `MAX_MATCHER_LENGTH` sit beside the command-length
+  cap that was there first, because capping each command bounded only one axis:
+  the cardinalities were still the caller's to choose, and a module whose
+  consumers read an absent verdict as no finding must not be exhaustible
+  (`rules/invariants.md`, "A guard that fails open must do provably bounded
+  work"). Crossing one is `INTEGRATION-FAILED` naming the number crossed, never
+  `UNSUPPORTED` — a level nobody walked is not evidence a mechanism is absent.
+  What this costs, stated because it is real: a surface genuinely wiring more
+  than 64 groups under one event is unverifiable here rather than reported.
 - **Nothing calls it yet.** This is a library surface. `doctor` rendering the
   coverage report is RP-21; emitting decision records at runtime is its own
   task; the benchmark that consumes these statuses as expected outcomes is

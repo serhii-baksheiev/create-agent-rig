@@ -65,8 +65,8 @@ export type VerificationSource = (typeof VERIFICATION_SOURCES)[number];
  * What this vocabulary does, exactly: `./coverage.ts` › `coverageFromProbe`
  * takes a trigger as a required argument and refuses a word outside this list,
  * so a probe must NAME its occasion and cannot name a schedule — ›
- * "refuses the trigger %j, because a probe is occasioned by a change to the
- * surface and by nothing else".
+ * "refuses the trigger %j, because the coverage contract accepts only a
+ * declared surface-change trigger".
  *
  * ⚠ What it does NOT do, stated because an earlier draft of this comment
  * claimed it: nothing here stops a caller passing `'upgrade'` on a timer. The
