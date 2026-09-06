@@ -77,17 +77,18 @@ describe('the root manifest is publish-complete', () => {
     expect(changelog.indexOf('## 0.7.1')).toBeLessThan(changelog.indexOf('## 0.7.0'));
   });
 
-  it('records 0.7.1 as the published `latest` and 0.8.0 as merely prepared', async () => {
+  it('records 0.8.0 as the published `latest`, and every overtaken version as neither', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
-    // The published sha has ONE source here — the ledger row, which the test
-    // below pins to a full literal. Spelling it a third time as a bare
-    // substring would both duplicate the fact and match anywhere in the file,
-    // including inside an unrelated hash.
-    const publishedSha = (
-      JSON.parse(
-        await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
-      ) as Record<string, string | null>
-    )['0.7.1'] as string;
+    // The `gitHead` 0.8.0 was published from, measured against the registry
+    // with `npm view create-agent-rig@0.8.0 gitHead`. It is a literal here
+    // rather than read out of `templates/release-ledger.json`, the way this
+    // test read 0.7.1's while 0.7.1 was current: the just-shipped version
+    // deliberately has NO ledger row yet. `docs/releasing.md` writes this
+    // release's row at the NEXT release (a commit cannot carry its own sha),
+    // and `ledgerFindings` in `scripts/release-preflight.mjs` reads a row for
+    // the version in `package.json` as proof it is already published. Until
+    // that next release the pair lives in the journal entry and here.
+    const publishedSha = '870f9a3ecae2881908ece8ec3e2ac13f84f505f5';
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -109,56 +110,52 @@ describe('the root manifest is publish-complete', () => {
     // into the next release's test — which is how the 0.6.2 mistake travelled —
     // so it says exactly what the assertions do. `latest` is a SINGLETON fact:
     // two versions claiming it is a contradiction detectable only by naming
-    // each overtaken version, so that negative accumulates. "Pending" is
+    // each overtaken version, so that negative accumulates — `0.7.1` joined
+    // `0.7.0` and `0.6.2` on that list the day `0.8.0` shipped. "Pending" is
     // PER-VERSION, and the status line names one version's state at a time, so
     // only the just-shipped version needs guarding; accumulating those would
     // grow a list forever against a shape that cannot recur.
     //
-    // 0.7.1 shipped, so this assertion moved with it. `latest` is a fact about
-    // the registry, and the guards below are what stop this file drifting from
-    // it in either direction again.
-    expect(plan).toMatch(/Status \(0\.7\.1 published/);
-    expect(plan).toMatch(/0\.7\.1 is `latest`/);
+    // 0.8.0 shipped on 3 Sep 2026 — the registry reads `dist-tags.latest`
+    // `0.8.0`, published from `gitHead` `870f9a3e` — so this assertion moved
+    // with it, and the three lines that guarded 0.8.0 while it was prepared
+    // are now inverted: the sentences they forbade are the sentences the
+    // positives below require. `latest` is a fact about the registry, and the
+    // guards here are what stop this file drifting from it in either
+    // direction again.
+    expect(plan).toMatch(/Status \(0\.8\.0 published/);
+    expect(plan).toMatch(/0\.8\.0 is `latest`/);
     // The published identity is recorded, not just the version number — and it
     // is asserted BESIDE `gitHead`, so a stray occurrence of those characters
     // elsewhere in the file cannot satisfy it.
     expect(plan).toMatch(new RegExp(`gitHead\`? \`?${publishedSha.slice(0, 8)}`));
-    // 0.7.1 is live, so it may not be described as pending anywhere — the
-    // 0.6.2 mistake, now pointed at the current release.
+    // 0.8.0 is live, so it may not be described as pending anywhere — the
+    // 0.6.2 mistake, now pointed at the current release. This is the same fact
+    // the positive /`0\.8\.0` is prepared/ used to assert, inverted on the day
+    // the release reached the registry rather than deleted.
     expect(plan).not.toMatch(
-      /`?0\.7\.1`? (?:is )?prepared|0\.7\.1 publish pending|owner publishes `?0\.7\.1`?|`?0\.7\.1`? is waiting on the owner/,
+      /`?0\.8\.0`? (?:is )?prepared|0\.8\.0 publish pending|owner publishes `?0\.8\.0`?|`?0\.8\.0`? is waiting on the owner/,
     );
     // and no superseded version may still be called `latest` — the 0.7.0
     // mistake, kept red for every version that has been overtaken.
+    expect(plan).not.toMatch(/`?0\.7\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.7\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
     // the two places that carry it must agree: whatever §11 calls the
     // current `latest` is what the status line calls live.
-    expect(plan).toMatch(/done through `0\.7\.1`, the current `latest`/);
+    expect(plan).toMatch(/done through `0\.8\.0`, the current `latest`/);
 
-    // 🔴 0.8.0 is PREPARED and not published, which is the other half of the
-    // 0.6.2 mistake this test was written for: that release read "`0.6.2` is
-    // prepared" in §11 while only the positive guard existed, so the two places
-    // drifted apart with the suite green. Both directions are guarded here, and
-    // when 0.8.0 ships these three lines move together with the block above —
-    // the negative becomes the "may not still be called prepared" assertion and
-    // `0.7.1 is \`latest\`` joins the overtaken list.
-    expect(plan).toMatch(/`0\.8\.0` is prepared/);
-    expect(plan).not.toMatch(/`?0\.8\.0`? is `latest`/);
-    // 🔴 An enumeration, not a bare word — matching the shape of the 0.7.1
-    // guard above, and for the same reason. This file announces a shipped
-    // release in more than one voice, and each was written here at least once:
-    // `Status (0.7.1 published`, `0.7.1 is \`latest\``, ``0.1.0` through
-    // `0.7.1` are live`, and `done through \`0.7.1\`, the current \`latest\``.
-    // A negative covering only `0.8.0 published` reads green on every one of
-    // the others, so it would pass on the sentence most likely to be written.
-    //
-    // The near-miss this must NOT catch is the true one: `0.8.0` is prepared
-    // and not yet published` — `(?:is |was )?` cannot absorb the intervening
-    // `not yet`, so the alternation stays false while the release is pending.
-    expect(plan).not.toMatch(
-      /`?0\.8\.0`? (?:is |was )?published|published `?0\.8\.0`?|`?0\.8\.0`? (?:is|are) live|through `?0\.8\.0`?, the current|`?0\.8\.0`? shipped/,
-    );
+    // 🔴 What is deliberately NOT here any more, so the next reader does not
+    // restore it: while 0.8.0 was prepared, an ENUMERATED negative forbade
+    // announcing it as shipped in any of this file's voices — `Status (0.8.0
+    // published`, ``0.8.0` is \`latest\``, ``0.1.0` through `0.8.0` are live`,
+    // `done through \`0.8.0\`, the current \`latest\`` — because a negative
+    // covering only `0.8.0 published` would have read green on every one of
+    // the others. That enumeration is now the shape the file MUST have: three
+    // of those four sentences are required positively above. It was not
+    // dropped as a weakening, it was consumed by the release. The NEXT version
+    // to be prepared re-enters it, pointed at its own number, together with
+    // its `is prepared` positive and its `is \`latest\`` negative.
   });
 
   // 🔴 The ledger records where a version was published FROM, so a row may
