@@ -120,9 +120,10 @@ zero. The second is the one that has actually happened in this repository
 before — a guard reported out loud that it had not looked, and returned the
 value meaning "there was nothing to look at".
 
-Both states are safe by construction anyway: `qualifierFor` maps each to
+Both states are safe on the ordinary path: `qualifierFor` maps each to
 `UNVERIFIABLE`, and the decision-record validator refuses an unqualified
-verdict carrying either — held over both modules at once by ›
+verdict carrying either — though not against a hand-built prototype, which is
+the limit the last section states — held over both modules at once by ›
 "refuses the silent pass an unwired surface would otherwise produce, and
 accepts it once qualifierFor speaks". Which states those are is one list,
 `UNENFORCEABLE_STATES`, that both modules import.
@@ -130,9 +131,15 @@ accepts it once qualifierFor speaks". Which states those are is one list,
 ### 5a. A field counts only when the value itself carries it
 
 Every field of a snapshot and of an evidence row is read as an **own,
-enumerable** property — the set `Object.keys` walks and the set
-`JSON.stringify` writes back out — through one pair of helpers in
-`validation.ts`, `carriesField` and `ownField`.
+enumerable** property — the set `Object.keys` walks — through one pair of
+helpers in `validation.ts`, `carriesField` and `ownField`. That is also what
+`JSON.stringify` writes out whenever the value is serialisable, which is the
+property the rule is for; it is a "whenever" and not an equivalence, and this
+paragraph claimed the equivalence until `prose-reviewer` measured the
+difference. `{ downgradeReason: undefined }` is own and enumerable, so the row
+is read as carrying it while its serialisation carries nothing — a refusal,
+which is the conservative direction, but not what a reader predicting from
+"what `JSON.stringify` sees" would expect.
 
 Reading a field any other way accepted things that no serialisation of the
 value contains. A hook object owning nothing and INHERITING the generated
@@ -168,7 +175,7 @@ for a matrix row and by `coverageFromProbe` for a surface identity, so the word
 means one thing wherever it is written.
 
 **And the check is an allowlist, because the denylist could not be finished.**
-The first version refused four vague words, the range-operator characters, a
+The first version refused five vague words, the range-operator characters, a
 wildcard component and two npm range spellings — and accepted `main`, `master`,
 `stable`, `next`, `nightly`, `dev`, `edge`, `canary` and `1.2.3 or 2.0.0`,
 because none of those is any of those things. A moving label is not a shape that
@@ -226,6 +233,20 @@ answers it without inference.
 
 ## What this does NOT do, stated so the contract is not read wider than it is
 
+- 🔴 **"Never a silent PASS" holds for the ordinary path, not by construction.**
+  Decision 5a made a field's own-ness the test of whether a value is evidence,
+  and `decision-record.ts` was not brought along: it still decides whether a
+  verdict carries a qualifier with `in`, so a verdict object INHERITING
+  `qualifier: 'UNVERIFIABLE'` satisfies the check, validates against an
+  `UNSUPPORTED` capability state, and then serialises as a bare unqualified
+  `allow`. Measured on this change's own head by `code-reviewer`, whose report is
+  what put this bullet here. The lines are older than this change and outside its
+  diff, which is why the security review never reached them; the repair is filed
+  as **RP-153**, together with `declaration.ts`, which reads fifteen fields the
+  same way. Until that lands, read decision 5's closing paragraph and the
+  "Neither weak answer can pass silently" sentence in `probe.ts` as claims about
+  records built the ordinary way — from parsed JSON or an object literal — and
+  not as a guarantee against a hand-built prototype.
 - **The probe bounds the structure it reads, and a snapshot past those bounds
   gets a refusal rather than an answer.** `MAX_HOOK_GROUPS`,
   `MAX_HOOKS_PER_GROUP` and `MAX_MATCHER_LENGTH` sit beside the command-length

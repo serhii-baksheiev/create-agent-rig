@@ -34,11 +34,21 @@
  * a hook list is conjunctive, so an entry the probe could not verify cannot
  * un-run one it did verify, and the surface reads `SUPPORTED`.
  *
- * Neither weak answer can pass silently: `./coverage.ts` › `qualifierFor` maps
- * both to `UNVERIFIABLE`, and `./decision-record.ts` refuses a record carrying
- * either state with an unqualified verdict — › "refuses the silent pass an
- * unwired surface would otherwise produce, and accepts it once qualifierFor
- * speaks".
+ * Neither weak answer passes silently on the path this module's own callers
+ * take: `./coverage.ts` › `qualifierFor` maps both to `UNVERIFIABLE`, and
+ * `./decision-record.ts` refuses a record carrying either state with an
+ * unqualified verdict — › "refuses the silent pass an unwired surface would
+ * otherwise produce, and accepts it once qualifierFor speaks".
+ *
+ * ⚠ That is a claim about records built the ordinary way, and it is narrower
+ * than "by construction". `./decision-record.ts` still decides whether a verdict
+ * carries a qualifier with `in`, so a verdict object INHERITING one satisfies
+ * the check and then serialises without it — the same shape this module and
+ * `./evidence-matrix.ts` stopped accepting by reading own, enumerable fields
+ * only. That reader was outside this change and is filed as RP-153;
+ * `docs/decisions/capability-coverage.md` records the limit under "What this
+ * does NOT do". A contract that claims cover it does not have is worse than one
+ * that names the gap.
  *
  * The rationale, including what this deliberately does not do, is
  * `docs/decisions/capability-coverage.md`.
@@ -133,17 +143,26 @@ export const MAX_NAMED_TOOLS_IN_REASON = 5;
  * a level nobody walked is not evidence that the mechanism is absent. That is
  * the rule the over-long command already follows.
  *
- * The shipped wiring is measured rather than asserted, over the snapshot every
- * registered adapter names as its own surface file — this module cannot name
- * one, and `test/template/policy-declaration.test.ts` › "no file under
- * src/policy/core mentions a harness, a vendor, a native tool or a native path"
- * is what stops it trying. Measured on both: the widest event carries 2
- * groups, the widest group 4 hooks, and the longest matcher 45 characters. What
- * the cited tests pin is that the caps ADMIT those snapshots and refuse one
- * entry past themselves — not any ratio, which would be a sentence nothing
- * checks: › "admits every level of the %s wiring this rig really ships, so no
- * cap refuses honest work" and › "refuses a snapshot carrying one group more
- * than it will read, naming the limit it crossed".
+ * A cap must admit the wiring this rig really ships, and that is asserted where
+ * the shipped file is actually opened rather than described here. Two tests, and
+ * the difference between them is the point: `test/template/policy-coverage.test.ts`
+ * (absent in a generated rig) › "keeps every level of the %s wiring this rig
+ * ships inside the caps the probe will read" reads each adapter's own surface
+ * file and measures its group, hook and matcher sizes against these three
+ * numbers, so a shipped surface file that grows past one of them goes red;
+ * `packages/cli/test/policy-coverage.test.ts` › "admits every level of the %s
+ * wiring this rig really ships, so no cap refuses honest work" makes the same
+ * assertion over the REGISTRY-DERIVED fixture, which is narrower and cannot
+ * stand in for the file. An earlier version of this paragraph quoted the three
+ * measured sizes and cited only the second test — a figure nothing regenerates,
+ * pointing at a test that never opens the thing it described.
+ *
+ * This module cannot name a surface file itself, and
+ * `test/template/policy-declaration.test.ts` › "no file under src/policy/core
+ * mentions a harness, a vendor, a native tool or a native path" is what stops it
+ * trying. The refusal direction is held by ›
+ * "refuses a snapshot carrying one group more than it will read, naming the
+ * limit it crossed".
  *
  * ⚠ `MAX_MATCHER_LENGTH` is NOT set from that 45. A cap is a promise about what
  * this module still reads, and the contract had already made a wider one: ›
@@ -246,10 +265,23 @@ type CommandKind =
  * Over the length cap a command is not read at all: refusing to inspect is a
  * third outcome, and a guard that did not look may not report that it found
  * nothing (`rules/invariants.md`, "Refusing to inspect is a third outcome, not
- * a match and not an error").
+ * a match and not an error"). An adapter that generates NO command is the same
+ * outcome for the same reason — there is nothing to compare against, so there
+ * is nothing verified: › "refuses %s under a matcher that matches the
+ * declaration exactly, because there was nothing to compare it against".
  */
 const classify = (entry: HookEntry, surface: NativeHookSurface): CommandKind => {
   const fields = Object.keys(surface.commands);
+  // An adapter that generates no command names nothing to compare against, and
+  // `matched` starts true — so without this, EVERY hook entry, including an
+  // empty one, ran the loop zero times and came back as running the hook. A
+  // surface whose adapter says nothing about what it would generate is one this
+  // module can verify nothing about, which is `INTEGRATION-FAILED`, never a
+  // pass. The two shipped adapters both declare commands, so nothing today took
+  // this branch; the type admits `{}` and adding an adapter is a documented
+  // extension point, which is how a new adapter would have been handed "every
+  // policy enforced" for free.
+  if (fields.length === 0) return { kind: 'unreadable', cause: 'spelling' };
   let matched = true;
   let mentions = false;
   for (const field of fields) {

@@ -12,6 +12,9 @@ import {
   type SurfaceIdentity,
 } from '../../packages/cli/src/policy/core/coverage.js';
 import {
+  MAX_HOOK_GROUPS,
+  MAX_HOOKS_PER_GROUP,
+  MAX_MATCHER_LENGTH,
   probePolicy,
   type HookGroup,
   type HookSnapshot,
@@ -626,6 +629,86 @@ describe('an unreadable matcher on the real surface is reported, not read as the
         'INTEGRATION-FAILED',
       );
       expect(result.reason ?? '').toContain(event);
+    },
+  );
+});
+
+/**
+ * The structural caps, measured against the wiring this rig REALLY ships.
+ *
+ * A cap is a promise that the probe still reads the surfaces this project
+ * installs. Nothing was holding it to that promise on those surfaces: the only
+ * cap test that existed walks a REGISTRY-DERIVED fixture —
+ * `packages/cli/test/policy-coverage.test.ts` › "admits every level of the %s
+ * wiring this rig really ships, so no cap refuses honest work" — which builds
+ * one group per declared matcher out of the policy registry and never opens
+ * `adapter.surfaceFile`. That fixture is strictly narrower than the file: the
+ * shipped snapshots carry events the registry names no policy for, and a group
+ * carrying more hooks than there are registered policies, because guards this
+ * rig ships without declaring are wired beside the declared ones.
+ *
+ * So this is the assertion the unit fixture cannot make, and it is here for one
+ * failure: a future `.claude/settings.json` or `.codex/hooks.json` that grows
+ * past `MAX_HOOK_GROUPS`, `MAX_HOOKS_PER_GROUP` or `MAX_MATCHER_LENGTH` would
+ * silently become a surface the probe refuses to read — every policy on it
+ * `INTEGRATION-FAILED` — while the unit fixture, which never grows, stayed
+ * green. The structure is asserted level by level rather than through a probe
+ * answer, because a probe that returned `SUPPORTED` would say nothing about how
+ * much headroom is left.
+ *
+ * It is expected to PASS on today's files. It is a regression guard, not a
+ * pending behaviour.
+ */
+describe('the probe caps admit every level of the wiring this rig really ships', () => {
+  /**
+   * A cap read through an assertion rather than used raw: an absent export is
+   * `undefined`, and every comparison against `undefined` below would report
+   * the SHIPPED size as the defect instead of the missing bound. This makes the
+   * absent export the sentence the failure states.
+   */
+  const capNamed = (name: string, value: number): number => {
+    expect(
+      Number.isInteger(value) && value > 0,
+      `${name} is not a whole positive number (it is ${String(value)}), so nothing bounds that level of a snapshot`,
+    ).toBe(true);
+    return value;
+  };
+
+  it.each(adapters)(
+    'keeps every level of the %s wiring this rig ships inside the caps the probe will read',
+    async (_harness, adapter) => {
+      const snapshot = await readSnapshot(adapter.surfaceFile);
+      const events = Object.entries(snapshot.hooks);
+      expect(
+        events.length,
+        `${adapter.surfaceFile} wires nothing at all, so this measures nothing`,
+      ).toBeGreaterThan(0);
+
+      const groupCap = capNamed('MAX_HOOK_GROUPS', MAX_HOOK_GROUPS);
+      const hookCap = capNamed('MAX_HOOKS_PER_GROUP', MAX_HOOKS_PER_GROUP);
+      const matcherCap = capNamed('MAX_MATCHER_LENGTH', MAX_MATCHER_LENGTH);
+
+      let measured = 0;
+      for (const [event, wired] of events) {
+        const groups = wired ?? [];
+        expect(
+          groups.length,
+          `${adapter.surfaceFile} wires ${String(groups.length)} groups under ${event}, which is past MAX_HOOK_GROUPS`,
+        ).toBeLessThanOrEqual(groupCap);
+        for (const group of groups) {
+          measured += 1;
+          expect(
+            group.hooks.length,
+            `a group under ${event} in ${adapter.surfaceFile} carries ${String(group.hooks.length)} hooks, which is past MAX_HOOKS_PER_GROUP`,
+          ).toBeLessThanOrEqual(hookCap);
+          const matcher = group.matcher ?? '';
+          expect(
+            matcher.length,
+            `the matcher of a group under ${event} in ${adapter.surfaceFile} is ${String(matcher.length)} characters, which is past MAX_MATCHER_LENGTH`,
+          ).toBeLessThanOrEqual(matcherCap);
+        }
+      }
+      expect(measured, 'no group of the shipped snapshot was measured at all').toBeGreaterThan(0);
     },
   );
 });

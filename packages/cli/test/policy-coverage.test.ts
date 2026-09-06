@@ -23,7 +23,7 @@ import {
   type HookSnapshot,
 } from '../src/policy/core/probe.js';
 import { validateEvidenceRow, type EvidenceRow } from '../src/policy/core/evidence-matrix.js';
-import { ISO_8601 } from '../src/policy/core/validation.js';
+import { EXACT_VERSION_EXPECTED, ISO_8601 } from '../src/policy/core/validation.js';
 import {
   CAPABILITY_STATES,
   HARNESS_ADAPTERS,
@@ -37,6 +37,7 @@ import {
   findPolicy,
   validateDecisionRecord,
   type HarnessAdapter,
+  type NativeHookSurface,
   type PolicyDeclaration,
   type Problem,
   type ProbeTrigger,
@@ -711,6 +712,79 @@ describe('a hook entry runs the hook only when every field the harness generates
           }),
         ),
       ).toEqual({ state: 'SUPPORTED' });
+    },
+  );
+});
+
+/**
+ * An adapter that generates NO command names no wiring to compare against, and
+ * a comparison against nothing succeeds vacuously.
+ *
+ * `classify` reads its fields from `Object.keys(surface.commands)` and starts
+ * from `matched = true`, so an adapter whose `commands` is `{}` runs that loop
+ * zero times and returns `runs` for EVERY hook entry — including one that
+ * carries no command at all, and including one carrying somebody else's. The
+ * probe then finds a group "running" the hook, compares the matcher, and
+ * reports `SUPPORTED` for a surface about which it read nothing. That is the
+ * silent pass this whole contract exists to make impossible: the answer has to
+ * be the loud one, because an adapter that names no command is a surface this
+ * module cannot verify anything about.
+ *
+ * Both shipped adapters declare a command, so nothing here fires on today's
+ * harnesses — but `NativeHookSurface.commands` admits the empty record by type,
+ * and `core/adapter.ts` documents adding a harness as one new module plus a
+ * registration. An adapter half-written, or one whose author has not yet
+ * decided which field carries its command, must fail loudly on its first probe
+ * rather than certify every policy on its surface.
+ */
+describe('an adapter that generates no command verifies nothing, and says so instead of passing', () => {
+  /**
+   * The authoring adapter's own answer with `commands` emptied, and every other
+   * field left real. Built from `claudeAdapter` rather than spelled out so the
+   * fixture differs from a working adapter in exactly one respect — the one
+   * under test.
+   */
+  const NAMES_NO_COMMAND: HarnessAdapter = Object.freeze({
+    harness: 'fixture-harness',
+    surfaceFile: 'fixture/hook-wiring.json',
+    nativeSurfaceOf: (policy: PolicyDeclaration): NativeHookSurface => ({
+      ...claudeAdapter.nativeSurfaceOf(policy),
+      commands: {},
+    }),
+  });
+
+  it('states an event, a matcher and a hook path, and no command at all, or it measures the wrong thing', () => {
+    const surface = NAMES_NO_COMMAND.nativeSurfaceOf(SECRET_WRITE);
+    expect(
+      Object.keys(surface.commands),
+      'the fixture adapter generates a command after all, so it is not the surface under test',
+    ).toEqual([]);
+    expect([surface.event, surface.matcher, surface.hookPath]).toEqual([
+      SECRET_WRITE_SURFACE.event,
+      SECRET_WRITE_SURFACE.matcher,
+      SECRET_WRITE_SURFACE.hookPath,
+    ]);
+  });
+
+  it.each([
+    ['an empty hook entry', {}],
+    ['a hook entry carrying an unrelated command', { command: 'echo nope' }],
+  ])(
+    'refuses %s under a matcher that matches the declaration exactly, because there was nothing to compare it against',
+    (_case, entry) => {
+      const result = probePolicy(
+        SECRET_WRITE,
+        NAMES_NO_COMMAND,
+        wiringEntries(NAMES_NO_COMMAND, SECRET_WRITE, entry),
+      );
+      expect(
+        result.state,
+        'a surface whose adapter generates no command was read as enforcement',
+      ).toBe('INTEGRATION-FAILED');
+      expect(
+        result.reason ?? '',
+        'the refusal does not say that the adapter generates no command to compare against',
+      ).toMatch(/command/i);
     },
   );
 });
@@ -3127,19 +3201,37 @@ const VERSIONS_THAT_NAME_ONE_BUILD: readonly string[] = [
   '0a780ea',
 ];
 
-describe('an evidence row names one immutable build, by a grammar rather than a list of bad words', () => {
-  const rowVersioned = (harnessVersion: string): Record<string, unknown> => ({
-    harness: 'fixture-harness',
-    surface: 'fixture/hook-wiring.json',
-    harnessVersion,
-    os: 'fixture-os 1.0',
-    observedAt: '2026-09-04T09:30:00Z',
-    mechanism: 'guard-secret-file',
-    observableSignal: 'a refusal on stderr and a non-zero exit code',
-    status: 'SUPPORTED',
-    evidencePointer: 'guard-secret-file.test.mjs › "refuses a credential file by name"',
+/**
+ * One row, and one probe, differing from a valid one only in the version — the
+ * two readers of `isExactVersion`, each in the shape it is really called in.
+ *
+ * Module-scoped for the reason the two vocabularies above are: three describes
+ * read them, and three spellings of one fixture are three things to keep in
+ * step.
+ */
+const rowVersioned = (harnessVersion: string): Record<string, unknown> => ({
+  harness: 'fixture-harness',
+  surface: 'fixture/hook-wiring.json',
+  harnessVersion,
+  os: 'fixture-os 1.0',
+  observedAt: '2026-09-04T09:30:00Z',
+  mechanism: 'guard-secret-file',
+  observableSignal: 'a refusal on stderr and a non-zero exit code',
+  status: 'SUPPORTED',
+  evidencePointer: 'guard-secret-file.test.mjs › "refuses a credential file by name"',
+});
+
+const probeOnVersion = (harnessVersion: string): CoverageMap =>
+  coverageFromProbe({
+    surface: { ...SURFACE, harnessVersion },
+    policies: POLICIES,
+    adapter: claudeAdapter,
+    snapshot: fullyWired(claudeAdapter),
+    at: T0,
+    trigger: 'install',
   });
 
+describe('an evidence row names one immutable build, by a grammar rather than a list of bad words', () => {
   it.each(VERSIONS_THAT_NAME_NO_ONE_BUILD)(
     'refuses the harness version %j, because it names a moving label or more than one build',
     (harnessVersion) => {
@@ -3163,16 +3255,6 @@ describe('an evidence row names one immutable build, by a grammar rather than a 
 });
 
 describe('a coverage map names one immutable build, by the same grammar the row is read with', () => {
-  const probeOnVersion = (harnessVersion: string): CoverageMap =>
-    coverageFromProbe({
-      surface: { ...SURFACE, harnessVersion },
-      policies: POLICIES,
-      adapter: claudeAdapter,
-      snapshot: fullyWired(claudeAdapter),
-      at: T0,
-      trigger: 'install',
-    });
-
   it.each(VERSIONS_THAT_NAME_NO_ONE_BUILD)(
     'refuses to probe against the harness version %j, because it names a moving label or more than one build',
     (harnessVersion) => {
@@ -3185,6 +3267,81 @@ describe('a coverage map names one immutable build, by the same grammar the row 
     'still probes against the harness version %j, because it names one build',
     (harnessVersion) => {
       expect(probeOnVersion(harnessVersion).surface.harnessVersion).toBe(harnessVersion);
+    },
+  );
+});
+
+/**
+ * A version is STORED exactly as it was validated.
+ *
+ * `isExactVersion` reads `value.trim()`, while `validateEvidenceRow` and
+ * `coverageFromProbe` keep the value verbatim. So padding is validated away and
+ * then persisted: a row and a map built for one build carry two different
+ * strings for it, and the comparison an `upgrade` probe exists to make —
+ * `downgradesBetween` over a surface identity — reads them as two builds. The
+ * grammar's own promise is that a version "names one build"; a value that
+ * passes on a form the caller does not keep breaks that promise without
+ * refusing anything.
+ *
+ * A trailing `\r\n` is the sharp end of it. The version is operator-facing —
+ * it appears in the evidence matrix and in a coverage report — so a value
+ * carrying a line terminator lets a surface identity forge a line of the report
+ * it lands in, which is the rule `probe.ts` already keeps for a matcher and a
+ * command it could not verify.
+ *
+ * The invisible spellings are here because trimming is what makes them
+ * invisible: a byte-order mark and a non-breaking space are both `WhiteSpace`
+ * to `String.prototype.trim`, so a version pasted out of a terminal or a
+ * spreadsheet is accepted and stored with a character no reader can see and no
+ * `===` ignores.
+ *
+ * Both readers are pinned, for the reason the grammar itself is: "the exact
+ * version observed" has to mean the same thing in a matrix row and in a
+ * coverage map (`rules/invariants.md`, "One mechanism, one implementation").
+ * The third case in each pair is the keep-green one — the same build with the
+ * padding gone still passes, so the fix cannot be to refuse everything.
+ */
+const VERSIONS_PADDED: readonly (readonly [string, string, string])[] = [
+  ['leading and trailing spaces', ' 2.0.14 ', '2.0.14'],
+  ['a trailing carriage return and newline', '2.0.14\r\n', '2.0.14'],
+  ['a byte-order mark in front of it', '\ufeff2.0.14', '2.0.14'],
+  ['a non-breaking space on each side', '\u00a02.0.14\u00a0', '2.0.14'],
+];
+
+describe('a version is stored exactly as it was validated, so padding around one is refused rather than trimmed', () => {
+  it.each(VERSIONS_PADDED)(
+    'refuses an evidence row whose harness version carries %s, because the row would store what it was not validated on',
+    (_case, padded, bare) => {
+      expect(padded, 'the padded spelling is the bare one, so this pins nothing').not.toBe(bare);
+      const result = validateEvidenceRow(rowVersioned(padded));
+      expect(
+        result.ok,
+        'a padded version was validated on its trimmed form and then stored with the padding',
+      ).toBe(false);
+      const problems = result.ok ? [] : result.problems;
+      expect(problems.map((problem) => problem.field)).toContain('harnessVersion');
+      expect(
+        problems.find((problem) => problem.field === 'harnessVersion')?.message ?? '',
+        'the refusal does not say what a version is expected to name',
+      ).toContain(EXACT_VERSION_EXPECTED);
+    },
+  );
+
+  it.each(VERSIONS_PADDED)(
+    'refuses to probe against a harness version carrying %s, so two maps of one build cannot compare unequal',
+    (_case, padded) => {
+      expect(() => probeOnVersion(padded)).toThrow(EXACT_VERSION_EXPECTED);
+    },
+  );
+
+  // KEEP GREEN. The same build with the padding gone passes both readers, so a
+  // fix that refused every version would fail here rather than look correct.
+  it.each(VERSIONS_PADDED)(
+    'still accepts the same build once %s is gone, because it is the padding that is refused and not the version',
+    (_case, _padded, bare) => {
+      const result = validateEvidenceRow(rowVersioned(bare));
+      expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+      expect(probeOnVersion(bare).surface.harnessVersion).toBe(bare);
     },
   );
 });

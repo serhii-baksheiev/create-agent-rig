@@ -21,8 +21,17 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 /**
  * Whether an outside record CARRIES a field — own and enumerable, which is
- * exactly the set `Object.keys` walks and exactly the set `JSON.stringify`
- * writes back out.
+ * exactly the set `Object.keys` walks, and which `JSON.stringify` writes out
+ * whenever the value is serialisable.
+ *
+ * ⚠ The second half is a "whenever", not an equivalence, and the earlier
+ * wording claimed the equivalence. `{ downgradeReason: undefined }` is own and
+ * enumerable, so this returns `true`, while `JSON.stringify` drops it — which
+ * is why a `SUPPORTED` row written that way is refused for carrying a reason
+ * even though its serialisation carries none. The refusal is the conservative
+ * direction, but a reader who took "the rule is what `JSON.stringify` sees"
+ * literally would predict acceptance. `Object.keys` is the set this actually
+ * implements; that is the half to reason from.
  *
  * 🔴 The two halves are one rule, and each was a real false pass. A field found
  * on the PROTOTYPE let a hook serialising as `{}` be read as running the
@@ -233,7 +242,7 @@ export const matching = (
  * observed" means the same thing wherever it is written.
  *
  * 🔴 This is an ALLOWLIST, and it replaced a denylist that could not be
- * finished. The denylist refused four vague words, the range operator
+ * finished. The denylist refused five vague words, the range operator
  * characters, a wildcard component and two npm range spellings — and accepted
  * `main`, `master`, `stable`, `next`, `nightly`, `dev`, `edge`, `canary` and
  * `1.2.3 or 2.0.0`, because none of them is any of those things. A moving label
@@ -258,6 +267,18 @@ export const matching = (
  * is refused, while `1.0.0-beta.2` names one build and is accepted. The grammar
  * draws that line by requiring the number first — a suffix cannot stand alone.
  *
+ * The value is matched AS GIVEN, with no trim. An earlier version validated
+ * `value.trim()` while both callers stored the value verbatim, so `" 2.0.14 "`,
+ * `"2.0.14\r\n"` and a BOM-prefixed form were accepted and then persisted with
+ * their padding: two rows for one build that compare unequal, and a version
+ * carrying a newline sitting in a field a report will one day render. What is
+ * checked and what is stored are now the same string: ›
+ * "refuses an evidence row whose harness version carries %s, because the row
+ * would store what it was not validated on" and › "refuses to probe against a
+ * harness version carrying %s, so two maps of one build cannot compare
+ * unequal", with › "still accepts the same build once %s is gone, because it is
+ * the padding that is refused and not the version" holding the other side.
+ *
  * Refused, and now by construction rather than by enumeration: the vague words,
  * every moving branch label, range OPERATORS, wildcard components, both npm
  * range spellings, and any text carrying whitespace or a comma — which is what
@@ -273,18 +294,32 @@ export const matching = (
 const BUILD_NUMBER = /^v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z][0-9A-Za-z.+-]*)?$/;
 const BUILD_ID = /^[0-9a-fA-F]{7,64}$/;
 
-export const isExactVersion = (value: string): boolean => {
-  const version = value.trim();
-  return BUILD_NUMBER.test(version) || BUILD_ID.test(version);
-};
+/**
+ * What a refusal says is expected — one spelling, read by this module and by
+ * `./coverage.ts`, so the two cannot come to describe different grammars.
+ */
+export const EXACT_VERSION_EXPECTED =
+  'must name one immutable build: a version number like 2.0.14, ' +
+  'optionally v-prefixed and optionally carrying a -pre-release or +build suffix, ' +
+  'or a 7-to-64-character hex build id';
 
-/** Refuse a version that names a range or a moving target, quoting the value. */
+export const isExactVersion = (value: string): boolean =>
+  BUILD_NUMBER.test(value) || BUILD_ID.test(value);
+
+/**
+ * Refuse a version the grammar does not describe, quoting the value and naming
+ * the two shapes that are accepted.
+ *
+ * The message says what would be accepted rather than what was wrong, because
+ * the check is an allowlist: it also refuses `1.0.0.beta` and `2026_09_05`,
+ * which are neither a range nor a moving target, and the earlier message told
+ * their author they had written one. `./probe.ts` states the principle this
+ * trips over — a refusal naming a cause that did not occur sends an operator
+ * looking for something that is not there.
+ */
 export const exactVersion = (problems: Problem[], field: string, value: unknown): void => {
   if (typeof value !== 'string' || value.trim() === '') return;
   if (!isExactVersion(value)) {
-    problems.push({
-      field,
-      message: `must name the exact version observed, not a range or a moving target; got ${quote(value)}`,
-    });
+    problems.push({ field, message: `${EXACT_VERSION_EXPECTED}; got ${quote(value)}` });
   }
 };

@@ -59,7 +59,7 @@
 import type { HarnessAdapter } from './adapter.js';
 import type { PolicyDeclaration } from './declaration.js';
 import { probePolicy } from './probe.js';
-import { isExactVersion, ISO_8601 } from './validation.js';
+import { EXACT_VERSION_EXPECTED, isExactVersion, ISO_8601 } from './validation.js';
 import { PROBE_TRIGGERS, UNENFORCEABLE_STATES } from './vocabulary.js';
 import type {
   CapabilityState,
@@ -95,8 +95,10 @@ export interface SurfaceIdentity {
   surface: string;
   /**
    * The exact version observed — refused at the door by `coverageFromProbe`
-   * if it names a range or a moving target: › "refuses to probe against the
-   * harness version %j, because a moving target names no build".
+   * unless it names one immutable build, by the grammar `isExactVersion`
+   * defines: › "refuses to probe against the harness version %j, because a
+   * moving target names no build" and › "refuses to probe against the harness
+   * version %j, because it names a moving label or more than one build".
    */
   harnessVersion: string;
   os: string;
@@ -209,7 +211,7 @@ export function coverageFromProbe(args: {
   // that carries it, so this is where it is refused.
   if (!isExactVersion(surface.harnessVersion)) {
     throw new Error(
-      `surface.harnessVersion must name the exact version observed, not a range or a moving target; got ${JSON.stringify(surface.harnessVersion)}`,
+      `surface.harnessVersion ${EXACT_VERSION_EXPECTED}; got ${JSON.stringify(surface.harnessVersion)}`,
     );
   }
 
