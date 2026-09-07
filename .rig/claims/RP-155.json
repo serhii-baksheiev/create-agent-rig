@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-155",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "b0f78ed0c5c391994f6d6e99fa18dd9cadc15263d2a510384781cd9d6272ca25",
+      "targetSha": "671cd849878eeef4732f362f88309a68c0304a4e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "72da8b8ecdfb72dbd260030b3b406ce1df08d34cc435e0bf28070e75f0ebba87",
+      "count": 5
+    }
+  }
+}
