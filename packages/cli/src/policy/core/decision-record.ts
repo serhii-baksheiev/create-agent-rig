@@ -33,14 +33,34 @@
  * the two, which is the direction that passes. A decision record is the
  * artifact a later reader audits, and the shape that made this worth fixing
  * before it had a caller is a record whose verdict qualifier is only inherited:
- * it validates as qualified and then serialises as a bare `allow`, which is
- * exactly the silent pass an `UNSUPPORTED` capability state exists to prevent.
- * Held over every reading site in this module, in both shapes — inherited, and
- * own but not enumerable — in `packages/cli/test/policy-declaration.test.ts` ›
- * "refuses an UNSUPPORTED record whose verdict qualifier is only inherited,
- * because what it writes out is a silent pass", with the other direction held
- * by › "still accepts a record whose every field is defined through
- * Object.defineProperty as own and enumerable".
+ * it validates as qualified, and what it then writes out is `{"outcome":
+ * "allow","reason":…}` — the reason survives, the QUALIFIER is what is lost,
+ * which is exactly the silent pass an `UNSUPPORTED` capability state exists to
+ * prevent. Held over every reading site in this module, in both shapes —
+ * inherited, and own but not enumerable — in
+ * `packages/cli/test/policy-declaration.test.ts` › "refuses an UNSUPPORTED
+ * record whose verdict qualifier is only inherited, because what it writes out
+ * is a silent pass", with the other direction held by › "still accepts a record
+ * whose every field is defined through Object.defineProperty as own and
+ * enumerable".
+ *
+ * 🔴 And an outside value only reaches a diagnostic through `quote`
+ * (`./validation.ts`), never through bare `String` or `JSON.stringify`. Both
+ * spellings were here: a qualifier carrying a newline forged two `field:
+ * message` lines of its own in the rendered problem list — the exact shape
+ * `./declaration.ts` › `definePolicy` throws — while the neighbouring line
+ * escaped the same value; and a circular value crashed the validator with a
+ * `TypeError` where `quote` degrades. Held by ›
+ * "escapes a verdict qualifier carrying a newline, so it cannot forge a line of
+ * the refusal report" and › "refuses a record whose policyId is a circular
+ * value, rather than throwing while it renders the refusal".
+ *
+ * ⚠ What this does NOT do: the `ok: true` value is the input object itself, not
+ * a snapshot of the fields that were certified. For a record built from object
+ * literals or `JSON.parse` those are the same thing — JSON cannot express an
+ * accessor — but a caller-built record carrying a live enumerable getter
+ * validates on one read and serialises from another. RP-157 owns that, for this
+ * module and `./declaration.ts` together.
  *
  * ⚠ `diagnostics.redacted` is the emitter's claim, and this validator enforces
  * the claim's presence, not the property: a record marked redacted whose
@@ -74,6 +94,7 @@ import {
   member,
   nonEmptyString,
   ownField,
+  quote,
   unknownKeys,
 } from './validation.js';
 import type { Problem, Validation } from './validation.js';
@@ -176,7 +197,7 @@ const checkVerdict = (
     if (typeof reason !== 'string' || reason.trim() === '') {
       problems.push({
         field: 'verdict.reason',
-        message: `a ${String(qualifier)} verdict must say why`,
+        message: `a ${quote(qualifier)} verdict must say why`,
       });
     }
   } else if (carriesField(value, 'reason') && typeof reason !== 'string') {
@@ -254,7 +275,7 @@ export function validateDecisionRecord(input: unknown): Validation<DecisionRecor
   if (schemaVersion !== DECISION_RECORD_SCHEMA_VERSION) {
     problems.push({
       field: 'schemaVersion',
-      message: `must be ${DECISION_RECORD_SCHEMA_VERSION}, got ${String(schemaVersion)}`,
+      message: `must be ${DECISION_RECORD_SCHEMA_VERSION}, got ${quote(schemaVersion)}`,
     });
   }
 
@@ -264,14 +285,14 @@ export function validateDecisionRecord(input: unknown): Validation<DecisionRecor
   if (policy === null) {
     problems.push({
       field: 'policyId',
-      message: `${JSON.stringify(policyId)} is not a registered policy`,
+      message: `${quote(policyId)} is not a registered policy`,
     });
   } else if (typeof policyVersion === 'string') {
     const compatibility = compatibilityOf(policy.policyId, policyVersion);
     if (compatibility !== 'compatible') {
       problems.push({
         field: 'policyVersion',
-        message: `${JSON.stringify(policyVersion)} is ${compatibility} with ${policy.policyId} ${policy.policyVersion}`,
+        message: `${quote(policyVersion)} is ${compatibility} with ${policy.policyId} ${policy.policyVersion}`,
       });
     }
   } else {
@@ -310,7 +331,7 @@ export function validateDecisionRecord(input: unknown): Validation<DecisionRecor
   ) {
     problems.push({
       field: 'recordedAt',
-      message: `must be an ISO-8601 date-time with seconds and an explicit zone, got ${JSON.stringify(recordedAt)}`,
+      message: `must be an ISO-8601 date-time with seconds and an explicit zone, got ${quote(recordedAt)}`,
     });
   }
 
