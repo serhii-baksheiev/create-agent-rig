@@ -8,8 +8,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { validateEvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
 import type { EvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
 
-// RP-120, narrowed to the Rig's own state: which of it two sessions on one
-// machine share, which of the shared part is protected, and the ruling that
+// RP-120, narrowed to the Rig's own state: which parts of it two sessions on
+// one machine share, which of the shared part is protected, and the ruling that
 // follows — `docs/decisions/concurrent-sessions.md`. The item asked for one test
 // per mechanism found shared AND unprotected, not one per mechanism that was
 // fine, so the mechanisms already pinned elsewhere are cited from the record

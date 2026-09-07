@@ -1,10 +1,12 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 
 // AR-69, the half that needs no verdict schema: a cap on gate rounds.
 //
@@ -375,5 +377,70 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   it('lists the command, so the unknown-command message stays honest', async () => {
     const { COMMANDS } = await load('index.mjs');
     expect(COMMANDS).toContain('gate-round');
+  });
+});
+
+describe('the counter is shared with every worktree, and on Windows a reader can hold it while a gate renames over it', () => {
+  // Measured on the Windows host (RP-120): eight racing callers lost one caller to
+  // `EPERM: operation not permitted, rename` in four rounds of thirty, each time
+  // leaving its temp file behind. A rename over a file another process holds open
+  // is refused there — deterministically, for as long as the handle is open — so
+  // the loser of the race did not lose an increment, it crashed, and the CLI
+  // reported "could not run" for a condition nothing named. On Linux the rename
+  // succeeds regardless, so the first case proves the retry only on Windows and
+  // passes for free elsewhere; the second exists only where the refusal does.
+  const holdOpen = (file: string, ms: number): Promise<ChildProcess> =>
+    new Promise((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [
+          '-e',
+          "const fs = require('node:fs'); const fd = fs.openSync(process.argv[1], 'r'); process.stdout.write('held'); setTimeout(() => fs.closeSync(fd), Number(process.argv[2]));",
+          file,
+          String(ms),
+        ],
+        { stdio: ['ignore', 'pipe', 'inherit'] },
+      );
+      child.stdout!.once('data', () => resolve(child));
+    });
+
+  it('retries the rename while another process holds the counter open, and still counts the round', async () => {
+    const { recordGateRound, gateRoundsFor, RENAME_BUDGET_MS } = await load('gate-rounds.mjs');
+    const roundsPath = await roundsFile({ 'fix/a': 1 });
+    // A reader's hold is a `readFileSync` — microseconds — so 100 ms is a hold
+    // several hundred times longer than the race produces, and the budget has to
+    // cover it with room: the assertion is what keeps the two numbers apart.
+    const HOLD_MS = 100;
+    expect(RENAME_BUDGET_MS).toBeGreaterThan(HOLD_MS);
+    const holder = await holdOpen(roundsPath, HOLD_MS);
+    try {
+      expect(recordGateRound({ roundsPath, branch: 'fix/a' }).rounds).toBe(2);
+      expect(gateRoundsFor({ roundsPath, branch: 'fix/a' })).toBe(2);
+      expect(await readdir(path.dirname(roundsPath))).toEqual(['gate-rounds.json']);
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it('gives up past its budget, removes its temp file, keeps the old count, and names the code and the file', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const { recordGateRound, gateRoundsFor, RENAME_BUDGET_MS } = await load('gate-rounds.mjs');
+    const roundsPath = await roundsFile({ 'fix/a': 1 });
+    const holder = await holdOpen(roundsPath, RENAME_BUDGET_MS * 3);
+    try {
+      let thrown: unknown;
+      try {
+        recordGateRound({ roundsPath, branch: 'fix/a' });
+      } catch (error) {
+        thrown = error;
+      }
+      const message = String((thrown as Error | undefined)?.message);
+      expect(message).toMatch(/EPERM|EBUSY/);
+      expect(message).toContain('gate-rounds.json');
+      expect(await readdir(path.dirname(roundsPath))).toEqual(['gate-rounds.json']);
+      expect(gateRoundsFor({ roundsPath, branch: 'fix/a' })).toBe(1);
+    } finally {
+      holder.kill();
+    }
   });
 });

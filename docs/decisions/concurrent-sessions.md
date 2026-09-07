@@ -6,8 +6,10 @@ and travel into every generated project — and `CLAUDE.md` rule 5 says an edit
 to a synced file is lost at the next sync. This one is authored here and stays
 here, like `memory-rig-boundary.md` beside it: it rules on this product's own
 sessions, names tracker keys, and cites tests of the **generator** that no
-generated rig receives, which `test/template/decision-records.test.ts` refuses
-in the template layer. **Edit it in place**, and cite it only from files this
+generated rig receives — a citation the template layer refuses unless it says
+so beside the pointer (`test/template/evidence-pointers.test.ts` › "says so
+when the test it names is one a generated project never receives"), and this
+record's only reader is this repository. **Edit it in place**, and cite it only from files this
 repository owns (the `CLAUDE.md` addendum, the journal) — a synced rule, skill
 or agent spec that named it would point every generated rulebook at a record it
 does not have.
@@ -34,7 +36,7 @@ rows below are the contract a later `doctor` (RP-21) can report against.
 | surface | what is shared between the sessions | how the shared part is protected | evidence | status |
 | --- | --- | --- | --- | --- |
 | `concurrent-sessions/cross-repository` | the kill switch `~/.claude/create-agent-rig-loop-STOP` (by design — it must stop every session on the machine) and the `~/.claude/` directory the flag files live in | each checkout's unattended flag is named by the sha256 of its own real path, so two repositories never arm one file; nothing else in the table below crosses a repository boundary | `test/template/unattended-flag.test.ts` › "scopes on/off to --root so concurrent checkout CLIs do not share a flag" | `SUPPORTED` |
-| `concurrent-sessions/linked-worktree` | `.claude/queue.state.json` (the spacing ration), `.claude/gate-rounds.json` (the per-branch round counter), the kill switch, and the one `.git` object store | both files resolve to the **main** checkout on purpose (`mainCheckoutRoot`); the state file is refused when torn or mis-shaped rather than read as "nothing closed"; the counter is written through a per-pid temp file and a rename, with no lock — racing gates lose increments in the generous direction and never the file | `test/template/queue.test.ts` › "records a close made inside a worktree into the main checkout"; `test/template/queue.test.ts` › "refuses a state file holding %s"; `test/template/concurrent-sessions.test.ts` › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight" | `DEGRADED` |
+| `concurrent-sessions/linked-worktree` | `.claude/queue.state.json` (the spacing ration), `.claude/gate-rounds.json` (the per-branch round counter), the kill switch, and the one `.git` object store | both files resolve to the **main** checkout on purpose (`mainCheckoutRoot`); the state file is refused when torn or mis-shaped rather than read as "nothing closed"; the counter is written through a per-pid temp file and a rename, with no lock — racing gates lose increments in the generous direction and never the file; on Windows a rename over a counter another process holds open is refused with `EPERM`, so the rename is retried within a fixed budget, and a loser past it removes its temp file and reports the code | `test/template/queue.test.ts` › "records a close made inside a worktree into the main checkout"; `test/template/queue.test.ts` › "refuses a state file holding %s"; `test/template/concurrent-sessions.test.ts` › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight"; `test/template/gate-rounds.test.ts` › "retries the rename while another process holds the counter open, and still counts the round" | `DEGRADED` |
 | `concurrent-sessions/same-directory` | the working tree, the unattended flag, the board selector `.claude/queue.board`, and — if the sessions declare the same run directory — the run journal | nothing between sessions: the second `on` replaces the first session's item and allow-list without refusal, and one `off` disarms both; `verify` detects the mismatch after the fact; two writers on one run journal are refused loudly rather than merged | `test/template/concurrent-sessions.test.ts` › "a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both"; `test/template/run-journal.test.ts` › "prints the item but refuses baseline creation when the run directory holds a broken sequence" | `UNSUPPORTED` |
 
 The rows are also declared as `EvidenceRow` literals in
@@ -74,9 +76,11 @@ design**:
   The write is a whole-file `writeFileSync` with no temp-and-rename; the
   reader compensates by refusing a torn, mis-shaped or out-of-vocabulary file
   instead of reading it as "nothing has closed yet", so a race here costs a
-  refused selection, never a released ration. The previous design — a
-  forgiving reader — was measured reading an unparseable file as `{}` and
-  writing it back fresh, and that is why the counter moved to its own file.
+  refused selection, never a released ration. The design this replaced — a
+  forgiving reader plus a whole-file writer — read an unparseable file as `{}`
+  and wrote it back fresh, and that is why the counter moved to its own file
+  (`test/template/gate-rounds.test.ts` › "refuses a counts file it cannot
+  parse, rather than starting the count over", whose comment records it).
 - **`gate-rounds.json`** — rounds per branch. Same location, same reason: the
   count must outlive the worktree the branch is gated in. `recordGateRound` is
   read-modify-write with no lock; eight concurrent calls on one counter were
@@ -84,8 +88,23 @@ design**:
   loss in the generous direction (each lost increment buys one extra allowed
   round) rather than paying for a lock the sequential loop does not need. What
   was fixed was the crash: a fixed temp name made the losers fail with
-  `ENOENT` on rename. On the Windows host this ruling was measured on, eight
-  callers all exit 0 and leave one parseable counter with no temp file behind.
+  `ENOENT` on rename. Pinning that claim found a second crash: on the Windows
+  host this ruling was measured on, eight racing callers lost one to
+  `EPERM: operation not permitted, rename` in four rounds of thirty, each time
+  leaving the loser's temp file behind — Windows refuses a rename over a file
+  another process holds open, deterministically, for as long as the handle is
+  open, and a reader's `readFileSync` is enough (RP-120, comment `17386`; on
+  Linux the same probe lost increments and never a caller). So the rename is
+  now retried within a fixed budget, and a loser that still cannot rename
+  removes its temp file and reports the code and the file; with that, eight
+  callers all exit 0 and leave one parseable counter with no temp file behind
+  on both hosts (`test/template/concurrent-sessions.test.ts` › "eight concurrent
+  recordGateRound calls all exit 0 and leave one parseable counter between one
+  and eight"; `test/template/gate-rounds.test.ts` › "retries the rename while
+  another process holds the counter open, and still counts the round" and ›
+  "gives up past its budget, removes its temp file, keeps the old count, and
+  names the code and the file"). A bounded retry, not a lock: the count can
+  still lose an increment, and nothing waits on a holder past the budget.
 
 **The condition under which this shape is supported:** one loop per worktree,
 each on its own branch. The counter is per branch, so two sessions gating the
@@ -100,8 +119,10 @@ the Stop gate measures the tree its own hook file sits in, never the cwd
 check reading the tree sees the session project"), and a repository scan or lint run from the
 main checkout no longer walks into `.claude/worktrees/` (RP-155, PR #197 and
 #198 — `test/template/scan-exclusions.test.ts`, `test/template/lint-ignores-worktrees.test.ts`).
-Before RP-155 the main checkout's own `pnpm lint` went red 397 times whenever a
-worktree was live, which was the worst practical cost of this shape.
+Before RP-155 the main checkout's own `pnpm lint` failed with 397–399
+typescript-eslint parsing errors per run whenever a worktree was live — measured
+three times and recorded in PR #197's description — which was the worst
+practical cost of this shape.
 
 ### Two sessions in one directory — UNSUPPORTED
 
@@ -112,8 +133,8 @@ flag is one file per checkout path: a second session's `on` replaces the first
 session's item and allow-list, so the first session runs under an allow-list it
 never declared, and the second session's `off` disarms the guard for both.
 `verify` refuses the mismatch when it is asked — the loop asks at claim time —
-but nothing refuses the overwrite itself. The board selector is a plain write
-with no owner. And two runs that declare one run directory each read a sequence
+but nothing refuses the overwrite itself. The board selector `.claude/queue.board`
+is one file per checkout too. And two runs that declare one run directory each read a sequence
 the other advanced; the journal refuses the broken sequence rather than
 repairing it — the selection still prints its item and refuses to create a
 baseline on that trace (`test/template/run-journal.test.ts` › "prints the item

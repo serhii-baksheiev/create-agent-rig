@@ -35,8 +35,10 @@ const EXPECTED_SITES: Record<(typeof PLATFORM_SKIP_HELPERS)[number], number> = {
   // codex.test.ts: the FIFO move-source fixture; unattended-flag: nonblocking flag read
   fifosAvailable: 2,
   // run-without-git-location.test.ts: two .cmd shim branches; codex.test.ts:
-  // execute the generated PowerShell hook wiring from a nested cwd
-  onlyOnWindows: 3,
+  // execute the generated PowerShell hook wiring from a nested cwd;
+  // gate-rounds.test.ts: the rename retry gives up only where a held-open
+  // counter refuses a rename, which is Windows
+  onlyOnWindows: 4,
   // codex.test.ts: execute the POSIX hook wiring; Windows wiring is decoded separately
   posixShellAvailable: 1,
 };
