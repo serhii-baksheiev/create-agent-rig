@@ -123,11 +123,26 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
   // here rather than rewritten; the two that root under THIS repository's
   // `.claude/` — consistency.test.ts at `.claude` itself, command-contract.test.ts
   // at `.claude/scripts` and `.claude/hooks` — walk through the helper and so are
-  // absent from the record. The last assertion reads every `path.join(repoRoot,
-  // '.claude' …)` root in the directory: only consistency.test.ts may root at
-  // `.claude` exactly, and nothing may root at `.claude/worktrees`. A new walker
-  // added later must either join the recorded list with such a root, or import
-  // the helper.
+  // absent from the record. The next assertion reads the roots spelled as a
+  // path.join of repoRoot with the single-quoted ".claude" segment, alone or
+  // followed by one more single-quoted segment — the two spellings its walkers
+  // use; a multi-segment, double-quoted or path.resolve root is not read: only
+  // consistency.test.ts may root at `.claude` exactly, and nothing may root at
+  // `.claude/worktrees`. A new walker added later must either join the recorded
+  // list with such a root, or import the helper.
+  //
+  // The item enumerated twenty-two test/template files that "resolve a path
+  // into .claude/" and asked that the twenty-one besides consistency "either use
+  // the helper or are shown not to walk a tree at all". The last assertion is
+  // that answer, per file: of the twenty-one, command-contract walks and uses
+  // the helper; decision-records walks, rooted at templates/agent-os/universal,
+  // and is in the record above; the other nineteen open known files and carry
+  // no recursive readdir at all. Tree-walkers outside test/template —
+  // packages/cli/src/lib/copy-tree.ts (the generator's own copy, with its own
+  // node_modules skip), scripts/sync-agent-os.mjs and scripts/sync-codex-adapter.mjs
+  // (the composers, under an elevated path), test/e2e/init.test.ts (a generated
+  // fixture) — are outside the item's enumeration and this record; none roots
+  // at this repository's .claude/.
   it('every other recursive walker in test/template roots outside .claude/, and the list is the record', async () => {
     const RECURSIVE_READDIR =
       /readdir(Sync)?\((?:[^()]|\([^()]*\))*(withFileTypes|recursive): true/;
@@ -170,5 +185,42 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
         `${name} roots a path at .claude/${segments.join(', .claude/')}`,
       ).not.toContain('worktrees');
     }
+
+    // The item's own twenty-two, by name, and the answer for each.
+    const ITEM_SITES = [
+      'codex',
+      'command-contract',
+      'consistency',
+      'content-blind-revalidation',
+      'decision-records',
+      'dogfood',
+      'gate-rounds',
+      'guard-hardening',
+      'guard-rulebook',
+      'owner-directed-revalidation',
+      'proposal-asof',
+      'queue-board',
+      'queue-lifecycle',
+      'queue-owner',
+      'queue-revalidation',
+      'revalidate',
+      'revalidate-adapter',
+      'revalidation-baseline',
+      'revalidation-evidence',
+      'self-inflicted-marker',
+      'shell-tools',
+      'validate-no-secrets',
+    ].map((stem) => `${stem}.test.ts`);
+    const HELPER_IMPORT = /from '\.\.\/helpers\/scan-exclusions\.mjs'/;
+    const usesHelper: string[] = [];
+    const walksWithoutHelper: string[] = [];
+    for (const name of ITEM_SITES) {
+      const source = await readFile(path.join(templateTests, name), 'utf8');
+      if (HELPER_IMPORT.test(source)) usesHelper.push(name);
+      else if (RECURSIVE_READDIR.test(source)) walksWithoutHelper.push(name);
+    }
+    expect(usesHelper).toEqual(['command-contract.test.ts', 'consistency.test.ts']);
+    expect(walksWithoutHelper).toEqual(['decision-records.test.ts']);
+    expect(walkers).toContain('decision-records.test.ts');
   });
 });
