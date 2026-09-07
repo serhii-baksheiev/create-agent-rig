@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-122",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "6bdce056e5d40d60bc023da36d97921881846af0ed48da9dc2f9c93ff62a35d1",
+      "targetSha": "5d44b696ad762d47976e2245ed1fb413884761ff"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "2cb34e1ac632789e40116db4077878c25f574d81af5225ec8950622103abcd2f",
+      "count": 11
+    }
+  }
+}
