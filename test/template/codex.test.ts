@@ -39,7 +39,10 @@ const text = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
 // 7–15 s under load, completing with the right verdict every time. Its
 // irreducible content is that one powershell.exe start — everything else the
 // case does is about 5 % of its wall time — so the figure moves for this case
-// and not for the file. Pinned in vitest-timeouts.test.ts › "carries its own
+// and not for the file. The siblings do not share the exposure: the POSIX twin
+// drives /bin/sh, which starts in milliseconds, and is skipped on Windows; the
+// sync check and the 57 apply_patch cases spawn node directly and ran at
+// 60–140 ms in the same red run. Pinned in vitest-timeouts.test.ts › "carries its own
 // budget, declared once by name and passed as that case's options", › "is
 // bounded above so a genuine hang still fails within a minute, and sits above
 // the lane budget it replaces" and › "is the only case in that file with a

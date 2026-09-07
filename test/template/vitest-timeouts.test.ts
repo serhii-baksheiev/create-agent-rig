@@ -77,8 +77,13 @@ describe('the one case that starts Windows PowerShell', () => {
   });
 
   it('is the only case in that file with a budget of its own — the figure moves for one case, not for the file', async () => {
-    const source = await readCodexTestSource();
-    const perCaseOptions = source.split('{ timeout:').length - 1;
-    expect(perCaseOptions).toBe(1);
+    // Both spellings vitest accepts, read outside comments: a `timeout:` key in
+    // an options object however it is spaced or combined, and the numeric
+    // trailing argument `}, 20_000)` that queue.test.ts uses.
+    const code = (await readCodexTestSource()).replace(/\/\/[^\n]*/g, '');
+    const optionKeys = code.match(/\btimeout\s*:/g) ?? [];
+    const trailingFigures = code.match(/\}\s*,\s*\d[\d_]*\s*\);/g) ?? [];
+    expect(optionKeys, 'timeout keys in options objects').toHaveLength(1);
+    expect(trailingFigures, 'numeric trailing-argument budgets').toHaveLength(0);
   });
 });
