@@ -31,6 +31,24 @@ const hooksDir = path.join(universal, '.claude', 'hooks');
 
 const text = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
 
+// RP-162: the one case below that starts Windows PowerShell carries its own
+// budget. Measured on the hosted windows-unit runner, same code, four runs:
+// 817 / 3 747 / 6 794 ms and a timeout at the template project's 15 000 ms.
+// Per step, on one Windows host, the generated wrapper's round trip
+// (powershell.exe → git rev-parse → node guard) took 1.7–4.7 s idle and
+// 7–15 s under load, completing with the right verdict every time. Its
+// irreducible content is that one powershell.exe start — everything else the
+// case does is about 5 % of its wall time — so the figure moves for this case
+// and not for the file. The siblings do not share the exposure: the POSIX twin
+// drives /bin/sh, which starts in milliseconds, and is skipped on Windows; the
+// sync check and the 57 apply_patch cases spawn node directly and ran at
+// 60–140 ms in the same red run. Pinned in vitest-timeouts.test.ts › "carries its own
+// budget, declared once by name and passed as that case's options", › "is
+// bounded above so a genuine hang still fails within a minute, and sits above
+// the lane budget it replaces" and › "is the only case in that file with a
+// budget of its own — the figure moves for one case, not for the file".
+const WINDOWS_POWERSHELL_CASE_TIMEOUT_MS = 60_000;
+
 describe('Codex adapter is generated from the Claude Code Agent OS', () => {
   it('is in sync with its Claude Code sources', async () => {
     await expect(
@@ -205,145 +223,149 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     }
   });
 
-  it('anchors a nested-cwd Windows Codex rulebook edit to the canonical repository root', async (ctx) => {
-    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+  it(
+    'anchors a nested-cwd Windows Codex rulebook edit to the canonical repository root',
+    { timeout: WINDOWS_POWERSHELL_CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
 
-    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-root-'));
-    const home = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-home-'));
-    const nested = path.join(scratch, 'packages', 'core', 'src');
-    try {
-      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
-      await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
-        recursive: true,
-      });
-      await mkdir(nested, { recursive: true });
+      const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-root-'));
+      const home = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-home-'));
+      const nested = path.join(scratch, 'packages', 'core', 'src');
+      try {
+        await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+        await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
+          recursive: true,
+        });
+        await mkdir(nested, { recursive: true });
 
-      const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: scratch };
-      const { unattendedFlags } = (await import(
-        pathToFileURL(path.join(scratch, '.claude', 'scripts', 'unattended-flag.mjs')).href
-      )) as { unattendedFlags: (env: Record<string, string>) => string[] };
-      const flag = unattendedFlags(scopedEnv).find((candidate) =>
-        path.resolve(candidate).toLowerCase().startsWith(path.resolve(home).toLowerCase()),
-      );
-      expect(flag).toBeDefined();
-      await mkdir(path.dirname(flag!), { recursive: true });
-      await writeFile(flag!, JSON.stringify({ item: 'RP-54', runDir: '/runs/rp-54', allow: [] }));
-
-      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
-        hooks: {
-          PreToolUse: Array<{
-            hooks: Array<{ command: string; commandWindows?: string }>;
-          }>;
-        };
-      };
-      const commandWindows = config.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
-        hook.command.includes('guard-rulebook.mjs'),
-      )?.commandWindows;
-      const encoded = commandWindows?.match(
-        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
-      )?.[1];
-      expect(encoded).toBeDefined();
-
-      const payloadText = JSON.stringify({
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Write',
-        tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
-        cwd: nested,
-      });
-
-      const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
-        const child = execFile(
-          'powershell.exe',
-          ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
-          {
-            cwd: nested,
-            env: {
-              ...withoutGitLocation(process.env),
-              HOME: home,
-              CLAUDE_PROJECT_DIR: '',
-            },
-          },
-          (error, _stdout, stderr) =>
-            resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
+        const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: scratch };
+        const { unattendedFlags } = (await import(
+          pathToFileURL(path.join(scratch, '.claude', 'scripts', 'unattended-flag.mjs')).href
+        )) as { unattendedFlags: (env: Record<string, string>) => string[] };
+        const flag = unattendedFlags(scopedEnv).find((candidate) =>
+          path.resolve(candidate).toLowerCase().startsWith(path.resolve(home).toLowerCase()),
         );
-        if (!child.stdin) return reject(new Error('no stdin'));
-        child.stdin.end(payloadText);
-      });
+        expect(flag).toBeDefined();
+        await mkdir(path.dirname(flag!), { recursive: true });
+        await writeFile(flag!, JSON.stringify({ item: 'RP-54', runDir: '/runs/rp-54', allow: [] }));
 
-      // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
-      // the edit, and the only stderr PowerShell returns on the allow path is
-      // its own CLIXML progress noise — so this failure has to carry the inputs
-      // the guard compared. The spellings are the whole question: the hook
-      // derives its root from `git rev-parse --show-toplevel` while the payload
-      // path comes from `os.tmpdir()`, and the flag is named by a hash of that root.
-      const toplevel = (
-        await exec('git', ['rev-parse', '--show-toplevel'], {
+        const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+          hooks: {
+            PreToolUse: Array<{
+              hooks: Array<{ command: string; commandWindows?: string }>;
+            }>;
+          };
+        };
+        const commandWindows = config.hooks.PreToolUse.flatMap((group) => group.hooks).find(
+          (hook) => hook.command.includes('guard-rulebook.mjs'),
+        )?.commandWindows;
+        const encoded = commandWindows?.match(
+          /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+        )?.[1];
+        expect(encoded).toBeDefined();
+
+        const payloadText = JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Write',
+          tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
           cwd: nested,
-          env: withoutGitLocation(),
-        })
-      ).stdout.trim();
-      // Only when the guard already allowed the edit: re-run the SAME unmodified
-      // wrapper against a probe standing in for the guard, so the failure says
-      // whether the payload reached the child at all. It separates a wrapper
-      // that loses stdin from a guard that reads it and decides "allow" — and
-      // the exit code says whether the wrapper propagates a child's code.
-      const probe =
-        result.code === 2
-          ? '(not probed: the guard blocked)'
-          : await (async () => {
-              await writeFile(
-                path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
-                [
-                  "import { readFileSync } from 'node:fs';",
-                  "let n = -1, err = '';",
-                  'try { n = readFileSync(0).length; } catch (e) { err = String((e && e.code) || e); }',
-                  'process.stderr.write(`PROBE bytes=${n} err=${err}\\n`);',
-                  'process.exit(3);',
-                ].join('\n'),
-              );
-              return new Promise<string>((resolve, reject) => {
-                const child = execFile(
-                  'powershell.exe',
-                  ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
-                  {
-                    cwd: nested,
-                    env: {
-                      ...withoutGitLocation(process.env),
-                      HOME: home,
-                      CLAUDE_PROJECT_DIR: '',
-                    },
-                  },
-                  (error, _stdout, stderr) => {
-                    const code = error ? ((error as { code?: number }).code ?? 1) : 0;
-                    resolve(`exit=${code} ${stderr.replace(/\s+/g, ' ').trim()}`);
-                  },
+        });
+
+        const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+          const child = execFile(
+            'powershell.exe',
+            ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+            {
+              cwd: nested,
+              env: {
+                ...withoutGitLocation(process.env),
+                HOME: home,
+                CLAUDE_PROJECT_DIR: '',
+              },
+            },
+            (error, _stdout, stderr) =>
+              resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
+          );
+          if (!child.stdin) return reject(new Error('no stdin'));
+          child.stdin.end(payloadText);
+        });
+
+        // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
+        // the edit, and the only stderr PowerShell returns on the allow path is
+        // its own CLIXML progress noise — so this failure has to carry the inputs
+        // the guard compared. The spellings are the whole question: the hook
+        // derives its root from `git rev-parse --show-toplevel` while the payload
+        // path comes from `os.tmpdir()`, and the flag is named by a hash of that root.
+        const toplevel = (
+          await exec('git', ['rev-parse', '--show-toplevel'], {
+            cwd: nested,
+            env: withoutGitLocation(),
+          })
+        ).stdout.trim();
+        // Only when the guard already allowed the edit: re-run the SAME unmodified
+        // wrapper against a probe standing in for the guard, so the failure says
+        // whether the payload reached the child at all. It separates a wrapper
+        // that loses stdin from a guard that reads it and decides "allow" — and
+        // the exit code says whether the wrapper propagates a child's code.
+        const probe =
+          result.code === 2
+            ? '(not probed: the guard blocked)'
+            : await (async () => {
+                await writeFile(
+                  path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
+                  [
+                    "import { readFileSync } from 'node:fs';",
+                    "let n = -1, err = '';",
+                    'try { n = readFileSync(0).length; } catch (e) { err = String((e && e.code) || e); }',
+                    'process.stderr.write(`PROBE bytes=${n} err=${err}\\n`);',
+                    'process.exit(3);',
+                  ].join('\n'),
                 );
-                if (!child.stdin) return reject(new Error('no stdin'));
-                child.stdin.end(payloadText);
-              });
-            })();
+                return new Promise<string>((resolve, reject) => {
+                  const child = execFile(
+                    'powershell.exe',
+                    ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+                    {
+                      cwd: nested,
+                      env: {
+                        ...withoutGitLocation(process.env),
+                        HOME: home,
+                        CLAUDE_PROJECT_DIR: '',
+                      },
+                    },
+                    (error, _stdout, stderr) => {
+                      const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+                      resolve(`exit=${code} ${stderr.replace(/\s+/g, ' ').trim()}`);
+                    },
+                  );
+                  if (!child.stdin) return reject(new Error('no stdin'));
+                  child.stdin.end(payloadText);
+                });
+              })();
 
-      const seen = [
-        `tmpdir            ${tmpdir()}`,
-        `scratch           ${scratch}`,
-        `scratch (native)  ${realpathSync.native(scratch)}`,
-        `git toplevel      ${toplevel}`,
-        `payload file_path ${path.join(scratch, '.claude', 'rules', 'autonomy.md')}`,
-        `payload bytes     ${Buffer.byteLength(payloadText)}`,
-        `home              ${home}`,
-        `flag              ${flag}`,
-        `flag exists       ${existsSync(flag!)}`,
-        `transport probe   ${probe}`,
-        `stderr            ${result.stderr}`,
-      ].join('\n');
+        const seen = [
+          `tmpdir            ${tmpdir()}`,
+          `scratch           ${scratch}`,
+          `scratch (native)  ${realpathSync.native(scratch)}`,
+          `git toplevel      ${toplevel}`,
+          `payload file_path ${path.join(scratch, '.claude', 'rules', 'autonomy.md')}`,
+          `payload bytes     ${Buffer.byteLength(payloadText)}`,
+          `home              ${home}`,
+          `flag              ${flag}`,
+          `flag exists       ${existsSync(flag!)}`,
+          `transport probe   ${probe}`,
+          `stderr            ${result.stderr}`,
+        ].join('\n');
 
-      expect(result.code, seen).toBe(2);
-      expect(result.stderr, seen).toMatch(/rulebook|unattended/i);
-    } finally {
-      await rm(scratch, { recursive: true, force: true });
-      await rm(home, { recursive: true, force: true });
-    }
-  });
+        expect(result.code, seen).toBe(2);
+        expect(result.stderr, seen).toMatch(/rulebook|unattended/i);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('emits each tool at most once in generated Codex hook matchers', async () => {
     const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {

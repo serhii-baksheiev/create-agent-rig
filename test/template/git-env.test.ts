@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -10,6 +10,17 @@ import { stubCommand } from '../helpers/stub-command.js';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const execFileAsync = promisify(execFile);
 const PREPARE_TEST_TIMEOUT_MS = 15_000;
+// RP-122 Part B. The two prepare cases below assert which git calls the real
+// entrypoint makes; the tsc it also spawns is incidental to them, and with no
+// `lib`/`types` in the fixture it loaded the whole default lib set plus every
+// @types package above the fixture — 1 255–3 137 ms of a 2.0–2.5 s case on an
+// idle Linux host, against 255–517 ms with the file and one lib. Pinned by
+// › "compiles the fixture against the file it contains and the es5 lib alone
+// — no default lib set, no ambient types", which lists what tsc actually read.
+const PREPARE_FIXTURE_TSCONFIG = {
+  compilerOptions: { noEmit: true, types: [], lib: ['es5'] },
+  files: ['input.ts'],
+};
 
 // The modules under test are plain .mjs — one ships to generated projects, the
 // other runs before the TypeScript build exists — so they are loaded the same
@@ -45,7 +56,7 @@ const runPrepare = async (ci: string | undefined): Promise<string[]> => {
     ]);
     await writeFile(
       path.join(cli, 'tsconfig.build.json'),
-      JSON.stringify({ compilerOptions: { noEmit: true }, files: ['input.ts'] }),
+      JSON.stringify(PREPARE_FIXTURE_TSCONFIG),
     );
     await writeFile(path.join(cli, 'input.ts'), 'export {};\n');
     // A `git` on PATH that records its argv: on POSIX a shell wrapper, on
@@ -115,6 +126,73 @@ describe('prepare.mjs — git config must not be written into another repository
     const source = await readFile(path.join(repoRoot, 'scripts', 'prepare.mjs'), 'utf8');
     expect(source).toMatch(/import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href/);
   });
+
+  // RP-122 Part B. Measured on a Linux host: tsc alone on this fixture shape
+  // takes 1 255–3 137 ms with the default lib set (es5 + es2015… + dom +
+  // scripthost, plus every @types it finds above the fixture) versus
+  // 255–517 ms with `types: []` and `lib: ['es5']`; the two prepare cases below
+  // were recorded at 9.8 s / 8.4 s under load against PREPARE_TEST_TIMEOUT_MS =
+  // 15_000. Pinned by listing what tsc reads, not by timing it. What the es5
+  // lib brings with it is TypeScript's business — since 5.0 it references the
+  // two decorators libs — so the pin is the absence of the expensive members
+  // (the es20xx ladder, dom, scripthost, any @types), not a file count.
+  it(
+    'compiles the fixture against the file it contains and the es5 lib alone — no default lib set, no ambient types',
+    { timeout: PREPARE_TEST_TIMEOUT_MS },
+    async () => {
+      const fixture = await mkdtemp(path.join(repoRoot, '.prepare-fixture-'));
+      try {
+        const input = path.join(fixture, 'input.ts');
+        const tsconfig = path.join(fixture, 'tsconfig.build.json');
+        await writeFile(input, 'export {};\n');
+        await writeFile(tsconfig, JSON.stringify(PREPARE_FIXTURE_TSCONFIG));
+
+        // The same spawn prepare.mjs makes, plus `--listFiles` so the answer is
+        // what tsc actually read rather than what the config says it should.
+        const tsc = path.join(repoRoot, 'node_modules', 'typescript', 'lib', 'tsc.js');
+        const run = await execFileAsync(process.execPath, [
+          tsc,
+          '-p',
+          tsconfig,
+          '--listFiles',
+        ]).then(
+          ({ stdout }) => ({ code: 0, stdout }),
+          (error: NodeJS.ErrnoException & { stdout?: string }) => ({
+            code: error.code,
+            stdout: error.stdout ?? '',
+          }),
+        );
+        expect(run.code, run.stdout).toBe(0);
+
+        const listed = run.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => path.resolve(line));
+        const read = `tsc read:\n${listed.join('\n')}`;
+        // tsc lists real paths; under pnpm `node_modules/typescript` is a link
+        // into the store, so the lib directory is compared resolved as well.
+        const libDir = path.dirname(await realpath(tsc));
+        const others = listed.filter((file) => file !== input);
+        const names = others.map((file) => path.basename(file));
+        expect(listed, read).toContain(input);
+        expect(names, read).toContain('lib.es5.d.ts');
+        // Everything else is TypeScript's own lib directory — never the default
+        // lib ladder, never a @types package found above the fixture.
+        for (const file of others) expect(path.dirname(file), read).toBe(libDir);
+        expect(
+          names.filter((name) => /^lib\.(es20\d\d|esnext|dom|scripthost|webworker)/.test(name)),
+          read,
+        ).toEqual([]);
+        expect(
+          listed.filter((file) => /[\\/]@types[\\/]/.test(file)),
+          read,
+        ).toEqual([]);
+      } finally {
+        await rm(fixture, { recursive: true, force: true });
+      }
+    },
+  );
 
   it(
     'does not configure checkout hooks when CI is set',
