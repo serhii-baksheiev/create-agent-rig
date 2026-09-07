@@ -20,11 +20,12 @@
  * the field reads disagree about what the record contains, with the reads being
  * the wider of the two — the direction that passes. The consequence here is one
  * step worse than in `./decision-record.ts`, because this validator's answer is
- * kept: `definePolicy` copies the validated declaration by spread, so a
- * declaration whose `tier` and `redaction` were only inherited used to be
- * accepted and then FROZEN into the registry carrying `undefined` for both — a
- * malformed entry produced by the function whose whole job is to refuse
- * malformed ones. Held over all fifteen fields, in both shapes (inherited, and
+ * kept: `definePolicy` copies the validated declaration by spread, and a spread
+ * copies own-enumerable keys only. So a declaration whose `tier` and `redaction`
+ * were only inherited used to be accepted and then FROZEN into the registry
+ * with no `tier` key and no `redaction` key at all — reading either yields
+ * `undefined` — a malformed entry produced by the function whose whole job is to
+ * refuse malformed ones. Held over all fifteen fields, in both shapes (inherited, and
  * own but not enumerable), in `packages/cli/test/policy-declaration.test.ts` ›
  * "refuses a declaration whose tier is only inherited, because the declaration
  * it writes out carries no such field" and, for the frozen-entry consequence, ›
@@ -106,7 +107,13 @@ export interface PolicyDeclaration {
   statedIn: string;
 }
 
-const KEYS = [
+/**
+ * The closed set of fields a declaration may carry — exported so a test can
+ * check the fixture against THIS list by name rather than by counting it.
+ * A count agrees with a set that has drifted; `rules/invariants.md`, "One
+ * mechanism, one implementation".
+ */
+export const KEYS = [
   'policyId',
   'policyVersion',
   'lifecycle',

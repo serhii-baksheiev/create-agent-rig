@@ -9,6 +9,7 @@ import {
   FAILURE_SEMANTICS,
   HARNESS_ADAPTERS,
   HARNESS_CAPABILITIES,
+  KEYS as DECLARED_KEYS,
   LIFECYCLE_STATES,
   OPERATIONS,
   POLICIES,
@@ -312,8 +313,13 @@ describe('validating a declaration', () => {
 
   const DECLARATION_FIELDS = Object.keys(validDeclaration());
 
-  it('has a fixture carrying every field of the declaration, so the cases below cover them all', () => {
-    expect(DECLARATION_FIELDS).toHaveLength(15);
+  // The fixture is checked against the module's OWN field set by name, not by
+  // count. A count stays green while the two drift in opposite directions —
+  // `rules/invariants.md`, "One mechanism, one implementation": the cases below
+  // are generated from this list, so a field the validator gains and the fixture
+  // does not would otherwise arrive with no case and nothing saying so.
+  it('has a fixture carrying exactly the fields the declaration declares, so the cases below cover them all', () => {
+    expect([...DECLARATION_FIELDS].sort()).toEqual([...DECLARED_KEYS].sort());
   });
 
   it.each(SHAPES.flatMap((shape) => DECLARATION_FIELDS.map((field) => [field, shape] as const)))(

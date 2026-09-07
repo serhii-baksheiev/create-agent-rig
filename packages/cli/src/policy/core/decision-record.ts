@@ -44,9 +44,13 @@
  * whose every field is defined through Object.defineProperty as own and
  * enumerable".
  *
- * 🔴 And an outside value only reaches a diagnostic through `quote`
- * (`./validation.ts`), never through bare `String` or `JSON.stringify`. Both
- * spellings were here: a qualifier carrying a newline forged two `field:
+ * 🔴 And an UNNARROWED outside value only reaches a diagnostic through `quote`
+ * (`./validation.ts`), never through bare `String` or `JSON.stringify`. The
+ * qualifier is exact: `operation` and `capabilityState` are still interpolated
+ * bare, because `member` has narrowed each to its closed vocabulary by the time
+ * the message is built — a value that reached those lines is one of a handful of
+ * literals this file names. Both unsafe spellings were here: a qualifier
+ * carrying a newline forged two `field:
  * message` lines of its own in the rendered problem list — the exact shape
  * `./declaration.ts` › `definePolicy` throws — while the neighbouring line
  * escaped the same value; and a circular value crashed the validator with a
@@ -55,12 +59,24 @@
  * the refusal report" and › "refuses a record whose policyId is a circular
  * value, rather than throwing while it renders the refusal".
  *
- * ⚠ What this does NOT do: the `ok: true` value is the input object itself, not
- * a snapshot of the fields that were certified. For a record built from object
- * literals or `JSON.parse` those are the same thing — JSON cannot express an
- * accessor — but a caller-built record carrying a live enumerable getter
- * validates on one read and serialises from another. RP-157 owns that, for this
- * module and `./declaration.ts` together.
+ * ⚠ What this does NOT do, and the limits are stated rather than implied:
+ *
+ * - the `ok: true` value is the input object itself, not a snapshot of the
+ *   fields that were certified. Those are the same thing for a value whose
+ *   fields are plain data, which is every record `JSON.parse` can produce; they
+ *   are not the same for one carrying a live accessor, which validates on one
+ *   read and serialises from another. RP-157 owns that, for this module and
+ *   `./declaration.ts` together;
+ * - the work is linear in the input's own size, and nothing here caps that size.
+ *   `Array.prototype.forEach` over `observedFacts` or `evidence` visits a sparse
+ *   array's holes, so a caller-built `new Array(1e7)` costs seconds and
+ *   gigabytes before the refusal. Measured, unchanged by the change that added
+ *   this note, and unreachable from a parsed record — JSON has no holes. It is
+ *   written down because an ABSENT limit is the failure `rules/invariants.md`
+ *   names, and this one had never been stated;
+ * - `quote` itself re-throws for a value whose `JSON.stringify` and `String`
+ *   both throw. The direction is a crash, never an `ok: true`, so nothing
+ *   malformed is certified through it — RP-160.
  *
  * ⚠ `diagnostics.redacted` is the emitter's claim, and this validator enforces
  * the claim's presence, not the property: a record marked redacted whose
