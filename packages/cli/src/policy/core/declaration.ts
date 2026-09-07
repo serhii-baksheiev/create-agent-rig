@@ -35,9 +35,15 @@
  * ⚠ What this does NOT do: `validateDeclaration` returns the input object
  * itself (`input as unknown as PolicyDeclaration`), so what a caller gets back
  * is the record it passed in, not a snapshot of the fields that were certified.
- * For a value built from object literals or `JSON.parse` those are the same
- * thing; for one carrying a live accessor they are not. That gap is RP-157, and
- * it is the same gap `./decision-record.ts` has at its own return.
+ * Those are the same thing for a value whose fields are plain DATA, which is
+ * every declaration `JSON.parse` can produce; they are not the same for one
+ * carrying a live accessor. **An object literal is not the line** — a literal
+ * can carry a getter, and an earlier version of this sentence put literals on
+ * the safe side, which named the one shape that reaches the gap as the shape
+ * that avoids it. Here the consequence is kept rather than merely returned:
+ * `definePolicy` spreads the validated value, so a getter validated on read 1
+ * is FROZEN into the registry from read 2. That gap is RP-157, and
+ * `./decision-record.ts` states the identical limit at its own return.
  */
 
 import {

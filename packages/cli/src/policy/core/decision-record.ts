@@ -44,12 +44,19 @@
  * whose every field is defined through Object.defineProperty as own and
  * enumerable".
  *
- * 🔴 And an UNNARROWED outside value only reaches a diagnostic through `quote`
- * (`./validation.ts`), never through bare `String` or `JSON.stringify`. The
- * qualifier is exact: `operation` and `capabilityState` are still interpolated
- * bare, because `member` has narrowed each to its closed vocabulary by the time
- * the message is built — a value that reached those lines is one of a handful of
- * literals this file names. Both unsafe spellings were here: a qualifier
+ * 🔴 And an unnarrowed outside value reaches a MESSAGE only through `quote`
+ * (`./validation.ts`), never through bare `String` or `JSON.stringify`.
+ * Two qualifications, because an earlier version of this sentence claimed more
+ * than the file delivers. First, `operation` and `capabilityState` are still
+ * interpolated bare into messages, safely: `member` has narrowed each to its
+ * closed vocabulary before the message is built. Second — and this is the part
+ * the sentence used to hide — a `Problem`'s **`field`** is not a message and is
+ * not escaped: `unknownKeys` (`./validation.ts`) puts the outside key name
+ * there verbatim, and `./declaration.ts` › `definePolicy` renders a report as
+ * `${field}: ${message}`, so an unknown key whose NAME carries a newline still
+ * forges a line. Escaping a `field` would break it as the machine-readable
+ * pointer it is, so the fix belongs in the rendering; it is RP-160.
+ * Both unsafe spellings inside messages were here: a qualifier
  * carrying a newline forged two `field:
  * message` lines of its own in the rendered problem list — the exact shape
  * `./declaration.ts` › `definePolicy` throws — while the neighbouring line
@@ -67,13 +74,23 @@
  *   are not the same for one carrying a live accessor, which validates on one
  *   read and serialises from another. RP-157 owns that, for this module and
  *   `./declaration.ts` together;
- * - the work is linear in the input's own size, and nothing here caps that size.
- *   `Array.prototype.forEach` over `observedFacts` or `evidence` visits a sparse
- *   array's holes, so a caller-built `new Array(1e7)` costs seconds and
- *   gigabytes before the refusal. Measured, unchanged by the change that added
- *   this note, and unreachable from a parsed record — JSON has no holes. It is
- *   written down because an ABSENT limit is the failure `rules/invariants.md`
- *   names, and this one had never been stated;
+ * - nothing here caps the cost, and the amplifier is the PROBLEM LIST rather
+ *   than the input: one `Problem` is pushed per bad entry of `observedFacts` or
+ *   `evidence`, so a parsed record carrying a million bad entries produces a
+ *   million objects. That is reachable from ordinary `JSON.parse` input. The
+ *   first version of this bullet was wrong in every clause — it said
+ *   `Array.prototype.forEach` VISITS a sparse array's holes, that
+ *   `new Array(1e7)` cost seconds and gigabytes "before the refusal", and that
+ *   the cost was unreachable from a parsed record. `forEach` SKIPS holes, a
+ *   sparse `observedFacts` is not refused at all, and the dense case is the
+ *   reachable one. Corrected rather than softened, because a stale limit sells
+ *   cover that is not there (`rules/invariants.md`, "State the limits — and
+ *   test them");
+ * - an array HOLE is consequently read by nothing, while `JSON.stringify`
+ *   writes it out as `null`: `observedFacts: [{…}, , ,]` serialises as
+ *   `[{…},null,null]` and validates. That is this module's own rule — read what
+ *   the serialisation carries — failing one level BELOW the field, which is
+ *   where this change did not look. RP-161;
  * - `quote` itself re-throws for a value whose `JSON.stringify` and `String`
  *   both throw. The direction is a crash, never an `ok: true`, so nothing
  *   malformed is certified through it — RP-160.

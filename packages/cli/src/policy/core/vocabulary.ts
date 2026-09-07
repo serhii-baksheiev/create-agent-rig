@@ -43,17 +43,24 @@ export type CapabilityState = (typeof CAPABILITY_STATES)[number];
  * `UNVERIFIABLE` for exactly the same set. Two copies would disagree, and the
  * one nobody is looking at would be the one that let a silent pass through.
  *
- * ⚠ **"Refuses" holds for a record built the ordinary way, not against a
- * hand-built prototype**, and this is the file a reader auditing that question
- * lands on first. `./decision-record.ts` decides whether a verdict carries a
- * qualifier with the `in` operator, so a verdict INHERITING one satisfies the
- * check and then serialises without it — measured by `code-reviewer` on the
- * change that introduced this note. `./probe.ts` and `./evidence-matrix.ts`
- * read own, enumerable fields only; that reader was not brought along, and the
- * repair is filed as RP-153 together with `./declaration.ts`. Until it lands,
- * do not read this sentence as a closed guarantee, and do not close RP-153 on
- * the strength of it. `docs/decisions/capability-coverage.md`, "What this does
- * NOT do", carries the same limit at length.
+ * ⚠ **"Refuses" now holds against a hand-built prototype too** — this note used
+ * to say the opposite, and this is the file a reader auditing that question
+ * lands on first, so it is corrected here rather than only where the fix landed.
+ * `./decision-record.ts` used to decide whether a verdict carries a qualifier
+ * with the `in` operator, so a verdict INHERITING one satisfied the check and
+ * then serialised without it. RP-153 closed that: every field of both
+ * `./decision-record.ts` and `./declaration.ts` is read through
+ * `carriesField`/`ownField`, the way `./probe.ts` and `./evidence-matrix.ts`
+ * already read theirs, and both uncarried shapes are pinned in
+ * `packages/cli/test/policy-declaration.test.ts` › "refuses an UNSUPPORTED
+ * record whose verdict qualifier is only inherited, because what it writes out
+ * is a silent pass".
+ *
+ * What remains is narrower and is NOT this sentence's subject: a value carrying
+ * a live accessor is validated on one read and serialised from another (RP-157),
+ * and an array HOLE is skipped by the readers while serialising as `null`
+ * (RP-161). `docs/decisions/capability-coverage.md`, "What this does NOT do",
+ * carries the current limits at length.
  *
  * It is deliberately NOT derived from a rank or an ordering. `coverage.ts`
  * carries an enforcement ordering for deciding what counts as a downgrade;

@@ -844,11 +844,16 @@ describe('validating a decision record', () => {
    * and the reads were the wider of the two, which is the direction that
    * passes. `carriesField`/`ownField` in `../src/policy/core/validation.ts` are
    * the notion `probe.ts` and `evidence-matrix.ts` already read by: own AND
-   * enumerable, exactly the set `Object.keys` walks and `JSON.stringify` writes
-   * out. A decision record is an audit artifact, so a field no serialisation of
-   * it carries must not be readable as one it does. The `uncarried` fixtures the
-   * cases below build with are at the top of this file, shared with the
-   * declaration validator, which has the same defect.
+   * enumerable — exactly the set `Object.keys` walks, which is the half to
+   * reason from. It is NOT an equivalence with what `JSON.stringify` writes out:
+   * `validation.ts` retracted that wording and names the counterexample
+   * (`{ field: undefined }` is own and enumerable, and `JSON.stringify` drops
+   * it), so restating it here would put the retracted claim back in the file a
+   * reader checks the fixtures against. A decision record is an audit artifact,
+   * so a field no serialisation of it carries must not be readable as one it
+   * does. The `uncarried` fixtures the cases below build with are at the top of
+   * this file, shared with the declaration validator, which had the same defect
+   * and is converted in the same change.
    */
 
   it.each(SHAPES)(

@@ -40,15 +40,17 @@
  * unqualified verdict — › "refuses the silent pass an unwired surface would
  * otherwise produce, and accepts it once qualifierFor speaks".
  *
- * ⚠ That is a claim about records built the ordinary way, and it is narrower
- * than "by construction". `./decision-record.ts` still decides whether a verdict
- * carries a qualifier with `in`, so a verdict object INHERITING one satisfies
- * the check and then serialises without it — the same shape this module and
- * `./evidence-matrix.ts` stopped accepting by reading own, enumerable fields
- * only. That reader was outside this change and is filed as RP-153;
- * `docs/decisions/capability-coverage.md` records the limit under "What this
- * does NOT do". A contract that claims cover it does not have is worse than one
- * that names the gap.
+ * ⚠ That used to be a claim about records built the ordinary way, narrower than
+ * "by construction", because `./decision-record.ts` decided whether a verdict
+ * carries a qualifier with `in` — a verdict object INHERITING one satisfied the
+ * check and then serialised without it. RP-153 brought that reader, and
+ * `./declaration.ts`, onto the same own-and-enumerable rule this module and
+ * `./evidence-matrix.ts` already used, so the gap this paragraph named is
+ * closed. `docs/decisions/capability-coverage.md` records the limits that
+ * remain — an accessor read twice (RP-157), and an array hole that serialises
+ * as `null` and is read by nothing (RP-161). A contract that claims cover it
+ * does not have is worse than one that names the gap, which is why this
+ * paragraph is corrected rather than deleted.
  *
  * The rationale, including what this deliberately does not do, is
  * `docs/decisions/capability-coverage.md`.
