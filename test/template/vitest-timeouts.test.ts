@@ -33,3 +33,52 @@ describe('vitest template project timeout', () => {
     }
   });
 });
+
+// RP-162. test/template/codex.test.ts has exactly one case that starts
+// powershell.exe. Measured on the hosted windows-unit runner, same code, four
+// runs: 817 ms, 3747 ms, 6794 ms and >15000 ms (timed out at the template
+// project's budget). The work cannot shrink: one powershell.exe start is the
+// case. So that one `it(...)` carries its own vitest per-case timeout, and
+// the file-wide figure above stays where it is.
+const WINDOWS_POWERSHELL_CASE_NAME =
+  'anchors a nested-cwd Windows Codex rulebook edit to the canonical repository root';
+const CASE_BUDGET_DECLARATION = /^const WINDOWS_POWERSHELL_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function readCodexTestSource(): Promise<string> {
+  return readFile(path.join(repoRoot, 'test', 'template', 'codex.test.ts'), 'utf8');
+}
+
+describe('the one case that starts Windows PowerShell', () => {
+  it("carries its own budget, declared once by name and passed as that case's options", async () => {
+    const source = await readCodexTestSource();
+
+    expect(source).toMatch(CASE_BUDGET_DECLARATION);
+
+    const caseWithOptions = new RegExp(
+      `it\\(\\s*'${escapeRegExp(WINDOWS_POWERSHELL_CASE_NAME)}'\\s*,\\s*\\{ timeout: WINDOWS_POWERSHELL_CASE_TIMEOUT_MS \\}`,
+    );
+    expect(source).toMatch(caseWithOptions);
+  });
+
+  it('is bounded above so a genuine hang still fails within a minute, and sits above the lane budget it replaces', async () => {
+    const source = await readCodexTestSource();
+    const declared = source.match(CASE_BUDGET_DECLARATION);
+    expect(declared).not.toBeNull();
+
+    const budget = Number((declared?.[1] ?? '').replaceAll('_', ''));
+    expect(Number.isInteger(budget)).toBe(true);
+    expect(templateProject?.test.testTimeout).toBeDefined();
+    expect(budget).toBeGreaterThan(templateProject?.test.testTimeout ?? Number.POSITIVE_INFINITY);
+    expect(budget).toBeLessThanOrEqual(60_000);
+  });
+
+  it('is the only case in that file with a budget of its own — the figure moves for one case, not for the file', async () => {
+    const source = await readCodexTestSource();
+    const perCaseOptions = source.split('{ timeout:').length - 1;
+    expect(perCaseOptions).toBe(1);
+  });
+});
