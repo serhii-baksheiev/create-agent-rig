@@ -101,36 +101,52 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
     expect(source).not.toMatch(/withFileTypes/);
   });
 
+  it('command-contract.test.ts, which roots under .claude/scripts and .claude/hooks, walks through the helper too', async () => {
+    const source = await readFile(path.join(templateTests, 'command-contract.test.ts'), 'utf8');
+    expect(source).toMatch(/from '\.\.\/helpers\/scan-exclusions\.mjs'/);
+    expect(source).not.toMatch(/withFileTypes/);
+  });
+
   it('eslint.config.mjs takes its ignores from the helper, not from literals', async () => {
     const source = await readFile(path.join(repoRoot, 'eslint.config.mjs'), 'utf8');
     expect(source).toMatch(/scan-exclusions\.mjs/);
     expect(source).not.toContain("'.claude/worktrees/**'");
   });
 
-  // The record below is measured, not remembered: it is every test in this
-  // directory that still calls readdir with `withFileTypes: true` or
-  // `recursive: true` itself — every one of them roots inside templates/,
-  // packages/, test/, contracts/ or a fixture, so none can reach
-  // `.claude/worktrees/`. consistency.test.ts is absent from it because it walks
-  // through the helper now; the second assertion is that it is still the only
-  // file rooting a walk at `.claude/` — the one directory where a sibling
-  // checkout can sit. A new walker added later must either join the recorded
-  // list with a root that cannot reach `.claude/worktrees/`, or import the helper.
+  // The record below is measured, not remembered. The item's premise — that only
+  // consistency.test.ts walked a tree — was false: fifteen files here still call
+  // readdir with `withFileTypes: true` or `recursive: true` themselves (the regex
+  // tolerates one level of parentheses in the first argument, so a call whose
+  // directory is itself a path.join(...) expression counts). Every one of
+  // them roots inside templates/, packages/, test/, contracts/, journal/ or a
+  // scratch fixture, where a sibling checkout cannot sit, so they are recorded
+  // here rather than rewritten; the two that root under THIS repository's
+  // `.claude/` — consistency.test.ts at `.claude` itself, command-contract.test.ts
+  // at `.claude/scripts` and `.claude/hooks` — walk through the helper and so are
+  // absent from the record. The last assertion reads every `path.join(repoRoot,
+  // '.claude' …)` root in the directory: only consistency.test.ts may root at
+  // `.claude` exactly, and nothing may root at `.claude/worktrees`. A new walker
+  // added later must either join the recorded list with such a root, or import
+  // the helper.
   it('every other recursive walker in test/template roots outside .claude/, and the list is the record', async () => {
-    const RECURSIVE_READDIR = /readdir(Sync)?\([^)]*(withFileTypes|recursive): true/;
-    const ROOTS_AT_DOT_CLAUDE = /path\.join\(repoRoot,\s*'\.claude'\)/;
+    const RECURSIVE_READDIR =
+      /readdir(Sync)?\((?:[^()]|\([^()]*\))*(withFileTypes|recursive): true/;
+    const DOT_CLAUDE_ROOT = /path\.join\(repoRoot,\s*'\.claude'(?:,\s*'([^']+)')?\)/g;
 
     const names = (await readdir(templateTests)).filter((name) => name.endsWith('.test.ts'));
     const walkers: string[] = [];
     const rootedAtDotClaude: string[] = [];
+    const rootedUnderDotClaude: Record<string, string[]> = {};
     for (const name of names) {
       const source = await readFile(path.join(templateTests, name), 'utf8');
       if (RECURSIVE_READDIR.test(source)) walkers.push(name);
-      if (ROOTS_AT_DOT_CLAUDE.test(source)) rootedAtDotClaude.push(name);
+      for (const match of source.matchAll(DOT_CLAUDE_ROOT)) {
+        if (match[1] === undefined) rootedAtDotClaude.push(name);
+        else (rootedUnderDotClaude[name] ??= []).push(match[1]);
+      }
     }
 
     expect(walkers.sort()).toEqual([
-      'command-contract.test.ts',
       'composition.test.ts',
       'correspondence.test.ts',
       'decision-records.test.ts',
@@ -141,11 +157,18 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
       'git-env.test.ts',
       'hash-history.test.ts',
       'invariants.test.ts',
+      'journal.test.ts',
       'platform-skips.test.ts',
       'policy-declaration.test.ts',
       'run-journal.test.ts',
       'session-messaging-schema.test.ts',
     ]);
-    expect(rootedAtDotClaude).toEqual(['consistency.test.ts']);
+    expect([...new Set(rootedAtDotClaude)]).toEqual(['consistency.test.ts']);
+    for (const [name, segments] of Object.entries(rootedUnderDotClaude)) {
+      expect(
+        segments,
+        `${name} roots a path at .claude/${segments.join(', .claude/')}`,
+      ).not.toContain('worktrees');
+    }
   });
 });

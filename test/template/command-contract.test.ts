@@ -1,7 +1,8 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { filesBelow } from '../helpers/scan-exclusions.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 // The filename is the deliverable RP-17 names, so it is resolved by exact path
@@ -182,20 +183,18 @@ const collectPathLikeStrings = (value: unknown, keyPath: string, out: string[]):
   }
 };
 
+// Two of these roots sit under this repository's `.claude/`, beside the
+// directory where the worktree-task skill nests sibling checkouts, so the walk
+// is the shared one and its exclusion list (RP-155). A root that does not exist
+// answers with nothing, as the walker this replaced did; every other failure is
+// raised.
 async function walkSources(dir: string, extension: string): Promise<string[]> {
-  let entries;
   try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
+    return await filesBelow(repoRoot, dir, { extension });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
   }
-  const found: string[] = [];
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...(await walkSources(full, extension)));
-    else if (entry.name.endsWith(extension)) found.push(full);
-  }
-  return found;
 }
 
 const asRepoPath = (file: string) => path.relative(repoRoot, file).split(path.sep).join('/');

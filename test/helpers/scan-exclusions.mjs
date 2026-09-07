@@ -19,6 +19,13 @@
  * eslint.config.mjs cannot drift from the walkers. Plain JavaScript on purpose:
  * eslint.config.mjs runs before any TypeScript build exists.
  *
+ * Limits, stated rather than implied: `filesBelow` reads directory entries as
+ * `Dirent`s and follows nothing — a symlink or junction is neither descended
+ * nor reported (its `isDirectory()` is false), which is what the walker it
+ * replaced did too; and `skipsScan` judges the spelling it is handed, so a
+ * path that reaches a skipped directory through a link elsewhere is not seen
+ * as skipped. Neither shape exists in this repository's scanned trees today.
+ *
  * Pinned in test/template/scan-exclusions.test.ts › "names node_modules and
  * .git as skipped wherever they sit, and .claude/worktrees as a skipped
  * subtree", › "skipsScan refuses a worktree path, a nested node_modules, and
