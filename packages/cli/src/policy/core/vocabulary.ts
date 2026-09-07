@@ -58,9 +58,11 @@ export type CapabilityState = (typeof CAPABILITY_STATES)[number];
  *
  * What remains is narrower and is NOT this sentence's subject: a value carrying
  * a live accessor is validated on one read and serialised from another (RP-157),
- * and an array HOLE is skipped by the readers while serialising as `null`
- * (RP-161). `docs/decisions/capability-coverage.md`, "What this does NOT do",
- * carries the current limits at length.
+ * and an array HOLE serialises as `null` while the two `forEach` loops in
+ * `./decision-record.ts` skip it (RP-161) — those two only, since `members` in
+ * `./validation.ts` and `./probe.ts` iterate with `for…of`, which sees a hole as
+ * `undefined` and refuses it. `docs/decisions/capability-coverage.md`, "What
+ * this does NOT do", carries the current limits at length.
  *
  * It is deliberately NOT derived from a rank or an ordering. `coverage.ts`
  * carries an enforcement ordering for deciding what counts as a downgrade;

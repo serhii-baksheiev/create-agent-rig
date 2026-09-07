@@ -302,9 +302,13 @@ export function statusOf(map: CoverageMap, policyId: string): CoverageEntry | nu
  * `./decision-record.ts` refuses the unqualified record, and
  * `packages/cli/test/policy-coverage.test.ts` › "refuses the silent pass an
  * unwired surface would otherwise produce, and accepts it once qualifierFor
- * speaks" holds the two modules to it together. How far that refusal reaches
- * is stated once, at `UNENFORCEABLE_STATES` in `./vocabulary.ts`: it is a
- * property of records built the ordinary way, not of every object shape.
+ * speaks" holds the two modules to it together. How far that refusal reaches is
+ * stated once, at `UNENFORCEABLE_STATES` in `./vocabulary.ts` — read it there.
+ * This sentence used to paraphrase it as well, and the paraphrase is what went
+ * stale: it still said the refusal was "a property of records built the
+ * ordinary way" after RP-153 had made it hold against a hand-built prototype
+ * too. A second copy of a fact the same sentence claims is spelled once
+ * (`rules/invariants.md`, "One mechanism, one implementation").
  */
 export function qualifierFor(state: CapabilityState): VerdictQualifier | undefined {
   return (UNENFORCEABLE_STATES as readonly CapabilityState[]).includes(state)

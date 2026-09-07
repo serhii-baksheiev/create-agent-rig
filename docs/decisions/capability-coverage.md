@@ -120,10 +120,11 @@ zero. The second is the one that has actually happened in this repository
 before — a guard reported out loud that it had not looked, and returned the
 value meaning "there was nothing to look at".
 
-Both states are safe on the ordinary path: `qualifierFor` maps each to
-`UNVERIFIABLE`, and the decision-record validator refuses an unqualified
-verdict carrying either — though not against a hand-built prototype, which is
-the limit the last section states — held over both modules at once by ›
+Both states are safe: `qualifierFor` maps each to `UNVERIFIABLE`, and the
+decision-record validator refuses an unqualified verdict carrying either —
+including one whose qualifier is only inherited or own-but-not-enumerable,
+since RP-153 made every read own-and-enumerable; the last section records what
+does still get past it — held over both modules at once by ›
 "refuses the silent pass an unwired surface would otherwise produce, and
 accepts it once qualifierFor speaks". Which states those are is one list,
 `UNENFORCEABLE_STATES`, that both modules import.
