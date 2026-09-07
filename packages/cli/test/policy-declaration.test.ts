@@ -582,6 +582,256 @@ describe('validating a decision record', () => {
       expect(validateDecisionRecord(recordWith({ recordedAt })).ok).toBe(true);
     },
   );
+
+  /**
+   * RP-153: the validator read these fields THROUGH THE PROTOTYPE CHAIN while
+   * `unknownKeys` judged the same record by `Object.keys`, so the closed-shape
+   * check and the field reads disagreed about what the record even contains —
+   * and the reads were the wider of the two, which is the direction that
+   * passes. `carriesField`/`ownField` in `../src/policy/core/validation.ts` are
+   * the notion `probe.ts` and `evidence-matrix.ts` already read by: own AND
+   * enumerable, exactly the set `Object.keys` walks and `JSON.stringify` writes
+   * out. A decision record is an audit artifact, so a field no serialisation of
+   * it carries must not be readable as one it does.
+   */
+
+  /** What `JSON.stringify` — and so the audit file the record becomes — carries. */
+  const serialised = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+  const withoutOwn = (object: Record<string, unknown>, field: string): Record<string, unknown> => {
+    const owned: Record<string, unknown> = { ...object };
+    delete owned[field];
+    return owned;
+  };
+
+  /** The same object with `field` on its PROTOTYPE: resolved by `in`, owned by nothing. */
+  const inherits = (object: Record<string, unknown>, field: string): Record<string, unknown> =>
+    Object.assign(
+      Object.create({ [field]: object[field] }) as Record<string, unknown>,
+      withoutOwn(object, field),
+    );
+
+  /** The same object with `field` own but NOT enumerable: no serialisation carries it. */
+  const hides = (object: Record<string, unknown>, field: string): Record<string, unknown> => {
+    const hidden = withoutOwn(object, field);
+    Object.defineProperty(hidden, field, {
+      value: object[field],
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    return hidden;
+  };
+
+  type UncarriedShape = 'only inherited' | 'own but not enumerable';
+
+  const HIDE: Record<
+    UncarriedShape,
+    (object: Record<string, unknown>, field: string) => Record<string, unknown>
+  > = {
+    'only inherited': inherits,
+    'own but not enumerable': hides,
+  };
+
+  const SHAPES: readonly UncarriedShape[] = ['only inherited', 'own but not enumerable'];
+
+  /**
+   * `object` with `field` present in one of the two uncarried shapes — and the
+   * fixture proven to be that case: JavaScript still resolves the field, and no
+   * serialisation of the object carries it.
+   */
+  const uncarried = (
+    shape: UncarriedShape,
+    object: Record<string, unknown>,
+    field: string,
+  ): Record<string, unknown> => {
+    const result = HIDE[shape](object, field);
+    expect(Object.keys(result), `the fixture owns ${field} after all`).not.toContain(field);
+    expect(
+      serialised(result),
+      `the fixture still serialises ${field}, so it proves nothing`,
+    ).not.toHaveProperty(field);
+    expect(field in result, `the fixture no longer resolves ${field} at all`).toBe(true);
+    return result;
+  };
+
+  it.each(SHAPES)(
+    'refuses an UNSUPPORTED record whose verdict qualifier is %s, because what it writes out is a silent pass',
+    (shape) => {
+      const verdict: Record<string, unknown> = {
+        outcome: 'allow',
+        qualifier: 'UNVERIFIABLE',
+        reason: 'the harness exposes no pre-operation hook',
+      };
+      const problems = problemsOfRecord(
+        recordWith({
+          capabilityState: 'UNSUPPORTED',
+          verdict: uncarried(shape, verdict, 'qualifier'),
+        }),
+      );
+      const named = problems.filter((p) => p.field === 'verdict.qualifier');
+      expect(
+        named.length,
+        'a qualifier no serialisation carries was read as qualifying the verdict',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('silent pass'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'reads a verdict whose qualifier is %s as the plain allow it serialises as, rather than demanding a reason for it',
+    (shape) => {
+      const verdict: Record<string, unknown> = { outcome: 'allow', qualifier: 'UNMEASURED' };
+      const result = validateDecisionRecord(
+        recordWith({ verdict: uncarried(shape, verdict, 'qualifier') }),
+      );
+      expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a qualified verdict whose reason is %s, because the record would say it was qualified and not why',
+    (shape) => {
+      const verdict: Record<string, unknown> = {
+        outcome: 'allow',
+        qualifier: 'UNMEASURED',
+        reason: 'the run recorded no measurement',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ verdict: uncarried(shape, verdict, 'reason') }),
+      );
+      const named = problems.filter((p) => p.field === 'verdict.reason');
+      expect(
+        named.length,
+        'a reason no serialisation carries satisfied the requirement to say why',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('UNMEASURED'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a verdict whose outcome is %s, because the verdict it writes out carries no outcome',
+    (shape) => {
+      const verdict: Record<string, unknown> = {
+        outcome: 'block',
+        reason: 'the path names a credential file',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ verdict: uncarried(shape, verdict, 'outcome') }),
+      );
+      expect(fieldsOf(problems)).toContain('verdict.outcome');
+    },
+  );
+
+  it.each(
+    SHAPES.flatMap((shape) => (['name', 'value'] as const).map((field) => [field, shape] as const)),
+  )(
+    'refuses an observedFacts entry whose %s is %s, because the entry itself records nothing',
+    (field, shape) => {
+      const fact: Record<string, unknown> = { name: 'file_path', value: '.env' };
+      const problems = problemsOfRecord(
+        recordWith({ observedFacts: [uncarried(shape, fact, field)] }),
+      );
+      expect(fieldsOf(problems)).toContain(`observedFacts[0].${field}`);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses an evidence entry whose kind is %s, and still reports the required kind missing, because the record serialises without it',
+    (shape) => {
+      const exitCode: Record<string, unknown> = { kind: 'exit-code', value: '2' };
+      const problems = problemsOfRecord(
+        recordWith({ evidence: [uncarried(shape, exitCode, 'kind')] }),
+      );
+      expect(fieldsOf(problems)).toContain('evidence[0].kind');
+      expect(
+        problems.some((p) => p.field === 'evidence' && p.message.includes('exit-code')),
+        'a kind no serialisation carries counted toward the evidence the policy requires',
+      ).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses an evidence entry whose value is %s, because the entry points at nothing a later reader could open',
+    (shape) => {
+      const pointer: Record<string, unknown> = {
+        kind: 'test-pointer',
+        value: 'guard-secret-file.test.ts › "refuses a credential file by name"',
+      };
+      const problems = problemsOfRecord(
+        recordWith({
+          evidence: [{ kind: 'exit-code', value: '2' }, uncarried(shape, pointer, 'value')],
+        }),
+      );
+      expect(fieldsOf(problems)).toContain('evidence[1].value');
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses diagnostics whose redacted claim is %s, because a redacting policy needs the claim in what is written out',
+    (shape) => {
+      const diagnostics: Record<string, unknown> = {
+        redacted: true,
+        text: 'refused .env (values omitted)',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ diagnostics: uncarried(shape, diagnostics, 'redacted') }),
+      );
+      expect(fieldsOf(problems)).toContain('diagnostics.redacted');
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses diagnostics whose text is %s, because the record would serialise with no diagnostics text',
+    (shape) => {
+      const diagnostics: Record<string, unknown> = {
+        redacted: true,
+        text: 'refused .env (values omitted)',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ diagnostics: uncarried(shape, diagnostics, 'text') }),
+      );
+      expect(fieldsOf(problems)).toContain('diagnostics.text');
+    },
+  );
+
+  it.each(
+    SHAPES.flatMap((shape) =>
+      (['capabilityState', 'recordedAt'] as const).map((field) => [field, shape] as const),
+    ),
+  )(
+    'refuses a record whose %s is %s, because the record it writes out carries no such field',
+    (field, shape) => {
+      const problems = problemsOfRecord(uncarried(shape, recordWith({}), field));
+      expect(fieldsOf(problems)).toContain(field);
+    },
+  );
+
+  it('refuses a record whose schemaVersion is only inherited, because a version on a prototype pins nothing the file carries', () => {
+    const problems = problemsOfRecord(uncarried('only inherited', recordWith({}), 'schemaVersion'));
+    expect(fieldsOf(problems)).toContain('schemaVersion');
+  });
+
+  // KEEP GREEN. The positive control the cases above are measured against: the
+  // rule is enumerability, not the tool that defined the property. A fix that
+  // refused everything `Object.defineProperty` touched would pass them all and
+  // refuse every record an emitter builds that way.
+  it('still accepts a record whose every field is defined through Object.defineProperty as own and enumerable', () => {
+    const record: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(recordWith({}))) {
+      Object.defineProperty(record, field, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    expect(Object.keys(record), 'the fixture no longer carries every field').toEqual(
+      Object.keys(recordWith({})),
+    );
+    const result = validateDecisionRecord(record);
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+  });
 });
 
 describe('the harness adapters', () => {

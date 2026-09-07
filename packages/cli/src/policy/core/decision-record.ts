@@ -23,6 +23,25 @@
  * Each rule is one test in `packages/cli/test/policy-declaration.test.ts`
  * under "validating a decision record".
  *
+ * 🔴 EVERY field of the input is read through `carriesField`/`ownField`
+ * (`./validation.ts`) — own and enumerable, the set `Object.keys` walks — and
+ * never off the record directly. Presence and value travel through the same
+ * predicate: `'qualifier' in value` was the load-bearing half of this defect,
+ * because `unknownKeys` judges the same record by `Object.keys` while the reads
+ * walked the prototype chain, so the closed-shape check and the field reads
+ * disagreed about what the record contained — with the reads being the wider of
+ * the two, which is the direction that passes. A decision record is the
+ * artifact a later reader audits, and the shape that made this worth fixing
+ * before it had a caller is a record whose verdict qualifier is only inherited:
+ * it validates as qualified and then serialises as a bare `allow`, which is
+ * exactly the silent pass an `UNSUPPORTED` capability state exists to prevent.
+ * Held over every reading site in this module, in both shapes — inherited, and
+ * own but not enumerable — in `packages/cli/test/policy-declaration.test.ts` ›
+ * "refuses an UNSUPPORTED record whose verdict qualifier is only inherited,
+ * because what it writes out is a silent pass", with the other direction held
+ * by › "still accepts a record whose every field is defined through
+ * Object.defineProperty as own and enumerable".
+ *
  * ⚠ `diagnostics.redacted` is the emitter's claim, and this validator enforces
  * the claim's presence, not the property: a record marked redacted whose
  * `diagnostics.text`, `observedFacts[].value` or `evidence[].value` still
@@ -48,7 +67,15 @@ import type {
   Operation,
   VerdictQualifier,
 } from './vocabulary.js';
-import { ISO_8601, isRecord, member, nonEmptyString, unknownKeys } from './validation.js';
+import {
+  ISO_8601,
+  carriesField,
+  isRecord,
+  member,
+  nonEmptyString,
+  ownField,
+  unknownKeys,
+} from './validation.js';
 import type { Problem, Validation } from './validation.js';
 
 export const DECISION_RECORD_SCHEMA_VERSION = 1;
@@ -126,7 +153,8 @@ const namedPairs = (
       return;
     }
     unknownKeys(problems, entry, keys, `${field}[${index}]`);
-    for (const key of keys) nonEmptyString(problems, `${field}[${index}].${key}`, entry[key]);
+    for (const key of keys)
+      nonEmptyString(problems, `${field}[${index}].${key}`, ownField(entry, key));
   });
 };
 
@@ -140,21 +168,22 @@ const checkVerdict = (
     return;
   }
   unknownKeys(problems, value, ['outcome', 'qualifier', 'reason'], 'verdict');
-  member(problems, 'verdict.outcome', value.outcome, DECISION_OUTCOMES);
-  const qualified = 'qualifier' in value;
-  if (qualified) {
-    member(problems, 'verdict.qualifier', value.qualifier, VERDICT_QUALIFIERS);
-    if (typeof value.reason !== 'string' || value.reason.trim() === '') {
+  member(problems, 'verdict.outcome', ownField(value, 'outcome'), DECISION_OUTCOMES);
+  const qualifier = ownField(value, 'qualifier');
+  const reason = ownField(value, 'reason');
+  if (carriesField(value, 'qualifier')) {
+    member(problems, 'verdict.qualifier', qualifier, VERDICT_QUALIFIERS);
+    if (typeof reason !== 'string' || reason.trim() === '') {
       problems.push({
         field: 'verdict.reason',
-        message: `a ${String(value.qualifier)} verdict must say why`,
+        message: `a ${String(qualifier)} verdict must say why`,
       });
     }
-  } else if ('reason' in value && typeof value.reason !== 'string') {
+  } else if (carriesField(value, 'reason') && typeof reason !== 'string') {
     problems.push({ field: 'verdict.reason', message: 'must be a string when present' });
   }
   if (capabilityState !== null && NEVER_SILENT_PASS.includes(capabilityState)) {
-    if (value.qualifier !== 'UNVERIFIABLE') {
+    if (qualifier !== 'UNVERIFIABLE') {
       problems.push({
         field: 'verdict.qualifier',
         message:
@@ -181,10 +210,11 @@ const checkEvidence = (
       return;
     }
     unknownKeys(problems, entry, ['kind', 'value'], `evidence[${index}]`);
-    if (member(problems, `evidence[${index}].kind`, entry.kind, EVIDENCE_KINDS)) {
-      present.add(entry.kind);
+    const kind = ownField(entry, 'kind');
+    if (member(problems, `evidence[${index}].kind`, kind, EVIDENCE_KINDS)) {
+      present.add(kind);
     }
-    nonEmptyString(problems, `evidence[${index}].value`, entry.value);
+    nonEmptyString(problems, `evidence[${index}].value`, ownField(entry, 'value'));
   });
   for (const kind of required) {
     if (!present.has(kind)) {
@@ -199,15 +229,16 @@ const checkDiagnostics = (problems: Problem[], value: unknown, mustRedact: boole
     return;
   }
   unknownKeys(problems, value, ['redacted', 'text'], 'diagnostics');
-  if (typeof value.redacted !== 'boolean') {
+  const redacted = ownField(value, 'redacted');
+  if (typeof redacted !== 'boolean') {
     problems.push({ field: 'diagnostics.redacted', message: 'must be a boolean' });
-  } else if (mustRedact && !value.redacted) {
+  } else if (mustRedact && !redacted) {
     problems.push({
       field: 'diagnostics.redacted',
       message: 'the policy redacts matched values, so its diagnostics must be recorded redacted',
     });
   }
-  if (typeof value.text !== 'string') {
+  if (typeof ownField(value, 'text') !== 'string') {
     problems.push({ field: 'diagnostics.text', message: 'must be a string' });
   }
 };
@@ -219,62 +250,67 @@ export function validateDecisionRecord(input: unknown): Validation<DecisionRecor
   }
   const problems: Problem[] = [];
   unknownKeys(problems, input, KEYS);
-  if (input.schemaVersion !== DECISION_RECORD_SCHEMA_VERSION) {
+  const schemaVersion = ownField(input, 'schemaVersion');
+  if (schemaVersion !== DECISION_RECORD_SCHEMA_VERSION) {
     problems.push({
       field: 'schemaVersion',
-      message: `must be ${DECISION_RECORD_SCHEMA_VERSION}, got ${String(input.schemaVersion)}`,
+      message: `must be ${DECISION_RECORD_SCHEMA_VERSION}, got ${String(schemaVersion)}`,
     });
   }
 
-  const policy = typeof input.policyId === 'string' ? findPolicy(input.policyId) : null;
+  const policyId = ownField(input, 'policyId');
+  const policyVersion = ownField(input, 'policyVersion');
+  const policy = typeof policyId === 'string' ? findPolicy(policyId) : null;
   if (policy === null) {
     problems.push({
       field: 'policyId',
-      message: `${JSON.stringify(input.policyId)} is not a registered policy`,
+      message: `${JSON.stringify(policyId)} is not a registered policy`,
     });
-  } else if (typeof input.policyVersion === 'string') {
-    const compatibility = compatibilityOf(policy.policyId, input.policyVersion);
+  } else if (typeof policyVersion === 'string') {
+    const compatibility = compatibilityOf(policy.policyId, policyVersion);
     if (compatibility !== 'compatible') {
       problems.push({
         field: 'policyVersion',
-        message: `${JSON.stringify(input.policyVersion)} is ${compatibility} with ${policy.policyId} ${policy.policyVersion}`,
+        message: `${JSON.stringify(policyVersion)} is ${compatibility} with ${policy.policyId} ${policy.policyVersion}`,
       });
     }
   } else {
-    nonEmptyString(problems, 'policyVersion', input.policyVersion);
+    nonEmptyString(problems, 'policyVersion', policyVersion);
   }
 
-  nonEmptyString(problems, 'harness', input.harness);
-  if (member(problems, 'operation', input.operation, OPERATIONS) && policy !== null) {
-    if (!policy.operations.includes(input.operation)) {
+  nonEmptyString(problems, 'harness', ownField(input, 'harness'));
+  const operation = ownField(input, 'operation');
+  if (member(problems, 'operation', operation, OPERATIONS) && policy !== null) {
+    if (!policy.operations.includes(operation)) {
       problems.push({
         field: 'operation',
-        message: `${policy.policyId} does not apply to ${input.operation}`,
+        message: `${policy.policyId} does not apply to ${operation}`,
       });
     }
   }
-  const capabilityState = member(
-    problems,
-    'capabilityState',
-    input.capabilityState,
-    CAPABILITY_STATES,
-  )
-    ? input.capabilityState
+  const state = ownField(input, 'capabilityState');
+  const capabilityState = member(problems, 'capabilityState', state, CAPABILITY_STATES)
+    ? state
     : null;
 
-  namedPairs(problems, 'observedFacts', input.observedFacts, ['name', 'value']);
-  checkVerdict(problems, input.verdict, capabilityState);
-  checkEvidence(problems, input.evidence, policy?.requiredEvidence ?? []);
-  nonEmptyString(problems, 'artifactVersion', input.artifactVersion);
-  checkDiagnostics(problems, input.diagnostics, policy !== null && policy.redaction !== 'none');
+  namedPairs(problems, 'observedFacts', ownField(input, 'observedFacts'), ['name', 'value']);
+  checkVerdict(problems, ownField(input, 'verdict'), capabilityState);
+  checkEvidence(problems, ownField(input, 'evidence'), policy?.requiredEvidence ?? []);
+  nonEmptyString(problems, 'artifactVersion', ownField(input, 'artifactVersion'));
+  checkDiagnostics(
+    problems,
+    ownField(input, 'diagnostics'),
+    policy !== null && policy.redaction !== 'none',
+  );
+  const recordedAt = ownField(input, 'recordedAt');
   if (
-    typeof input.recordedAt !== 'string' ||
-    !ISO_8601.test(input.recordedAt) ||
-    Number.isNaN(Date.parse(input.recordedAt))
+    typeof recordedAt !== 'string' ||
+    !ISO_8601.test(recordedAt) ||
+    Number.isNaN(Date.parse(recordedAt))
   ) {
     problems.push({
       field: 'recordedAt',
-      message: `must be an ISO-8601 date-time with seconds and an explicit zone, got ${JSON.stringify(input.recordedAt)}`,
+      message: `must be an ISO-8601 date-time with seconds and an explicit zone, got ${JSON.stringify(recordedAt)}`,
     });
   }
 
