@@ -1,7 +1,8 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { filesBelow } from '../helpers/scan-exclusions.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -11,18 +12,11 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const CANONICAL_CHAIN = 'payload → handler → usecase → model';
 const CHAIN_MENTION = /(payload|handler)\s*(\([^)]*\))?\s*→/;
 
-async function walkMarkdown(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map((entry) => {
-      if (entry.name === 'node_modules') return Promise.resolve([]);
-      const p = path.join(dir, entry.name);
-      if (entry.isDirectory()) return walkMarkdown(p);
-      return Promise.resolve(entry.name.endsWith('.md') ? [p] : []);
-    }),
-  );
-  return files.flat();
-}
+// The walk is the shared one (RP-155): this scan roots at `.claude/`, where the
+// worktree-task skill nests sibling checkouts, and a walker of its own once
+// reported `.claude/worktrees/<name>/journal/2026-08.md:311` as this repo's
+// drift — once per worktree present.
+const walkMarkdown = (dir: string) => filesBelow(repoRoot, dir, { extension: '.md' });
 
 describe('the layer chain is stated identically everywhere', () => {
   it('every mention of the request path uses the canonical chain', async () => {
