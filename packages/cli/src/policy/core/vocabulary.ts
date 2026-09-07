@@ -53,8 +53,8 @@ export type CapabilityState = (typeof CAPABILITY_STATES)[number];
  * `carriesField`/`ownField`, the way `./probe.ts` and `./evidence-matrix.ts`
  * already read theirs, and both uncarried shapes are pinned in
  * `packages/cli/test/policy-declaration.test.ts` › "refuses an UNSUPPORTED
- * record whose verdict qualifier is only inherited, because what it writes out
- * is a silent pass".
+ * record whose verdict qualifier is %s, because what it writes out is a silent
+ * pass" — `%s` as the `it.each` case declares it, so one grep lands on it.
  *
  * What remains is narrower and is NOT this sentence's subject: a value carrying
  * a live accessor is validated on one read and serialised from another (RP-157),

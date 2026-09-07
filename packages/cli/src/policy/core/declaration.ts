@@ -25,12 +25,15 @@
  * were only inherited used to be accepted and then FROZEN into the registry
  * with no `tier` key and no `redaction` key at all — reading either yields
  * `undefined` — a malformed entry produced by the function whose whole job is to
- * refuse malformed ones. Held over all fifteen fields, in both shapes (inherited, and
- * own but not enumerable), in `packages/cli/test/policy-declaration.test.ts` ›
- * "refuses a declaration whose tier is only inherited, because the declaration
- * it writes out carries no such field" and, for the frozen-entry consequence, ›
- * "refuses a declaration whose tier is only inherited, rather than freezing an
- * entry with no tier at all".
+ * refuse malformed ones. Held over all fifteen fields, in both shapes (inherited,
+ * and own but not enumerable), in `packages/cli/test/policy-declaration.test.ts`
+ * › "refuses a declaration whose %s is %s, because the declaration it writes out
+ * carries no such field" and, for the frozen-entry consequence, › "refuses a
+ * declaration whose tier is %s, rather than freezing an entry with no tier at
+ * all". The `%s` are the names as the `it.each` cases DECLARE them — quoting an
+ * expanded case instead is a pointer no grep lands on, which is what
+ * `test/template/evidence-pointers.test.ts` treats as a wildcard and what
+ * `rules/invariants.md` means by "the test's whole name".
  *
  * ⚠ What this does NOT do: `validateDeclaration` returns the input object
  * itself (`input as unknown as PolicyDeclaration`), so what a caller gets back

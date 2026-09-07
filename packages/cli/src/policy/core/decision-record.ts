@@ -39,10 +39,11 @@
  * prevent. Held over every reading site in this module, in both shapes —
  * inherited, and own but not enumerable — in
  * `packages/cli/test/policy-declaration.test.ts` › "refuses an UNSUPPORTED
- * record whose verdict qualifier is only inherited, because what it writes out
- * is a silent pass", with the other direction held by › "still accepts a record
- * whose every field is defined through Object.defineProperty as own and
- * enumerable".
+ * record whose verdict qualifier is %s, because what it writes out is a silent
+ * pass", with the other direction held by › "still accepts a record whose every
+ * field is defined through Object.defineProperty as own and enumerable". The
+ * `%s` is the name as the `it.each` case DECLARES it; quoting one expanded case
+ * gives a pointer no grep lands on.
  *
  * 🔴 And an unnarrowed outside value reaches a MESSAGE only through `quote`
  * (`./validation.ts`), never through bare `String` or `JSON.stringify`.
@@ -63,8 +64,8 @@
  * escaped the same value; and a circular value crashed the validator with a
  * `TypeError` where `quote` degrades. Held by ›
  * "escapes a verdict qualifier carrying a newline, so it cannot forge a line of
- * the refusal report" and › "refuses a record whose policyId is a circular
- * value, rather than throwing while it renders the refusal".
+ * the refusal report" and › "refuses a record whose %s is a circular value,
+ * rather than throwing while it renders the refusal".
  *
  * ⚠ What this does NOT do, and the limits are stated rather than implied:
  *
