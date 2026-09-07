@@ -9,6 +9,7 @@ import {
   FAILURE_SEMANTICS,
   HARNESS_ADAPTERS,
   HARNESS_CAPABILITIES,
+  KEYS as DECLARED_KEYS,
   LIFECYCLE_STATES,
   OPERATIONS,
   POLICIES,
@@ -77,6 +78,74 @@ const problemsOfDeclaration = (input: unknown): Problem[] => {
 };
 
 const fieldsOf = (problems: Problem[]): string[] => problems.map((p) => p.field);
+
+/**
+ * The uncarried-field fixtures. They sit at module scope because the defect
+ * they measure is one defect in two sibling modules — `decision-record.ts` and
+ * `declaration.ts` both narrow an `unknown` input and must then read it by what
+ * a serialisation of it carries — and a second copy of the fixtures is how the
+ * two sides come to test different notions of "carries".
+ */
+
+/** What `JSON.stringify` — and so the file the value becomes — carries. */
+const serialised = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+const withoutOwn = (object: Record<string, unknown>, field: string): Record<string, unknown> => {
+  const owned: Record<string, unknown> = { ...object };
+  delete owned[field];
+  return owned;
+};
+
+/** The same object with `field` on its PROTOTYPE: resolved by `in`, owned by nothing. */
+const inherits = (object: Record<string, unknown>, field: string): Record<string, unknown> =>
+  Object.assign(
+    Object.create({ [field]: object[field] }) as Record<string, unknown>,
+    withoutOwn(object, field),
+  );
+
+/** The same object with `field` own but NOT enumerable: no serialisation carries it. */
+const hides = (object: Record<string, unknown>, field: string): Record<string, unknown> => {
+  const hidden = withoutOwn(object, field);
+  Object.defineProperty(hidden, field, {
+    value: object[field],
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  return hidden;
+};
+
+type UncarriedShape = 'only inherited' | 'own but not enumerable';
+
+const HIDE: Record<
+  UncarriedShape,
+  (object: Record<string, unknown>, field: string) => Record<string, unknown>
+> = {
+  'only inherited': inherits,
+  'own but not enumerable': hides,
+};
+
+const SHAPES: readonly UncarriedShape[] = ['only inherited', 'own but not enumerable'];
+
+/**
+ * `object` with `field` present in one of the two uncarried shapes — and the
+ * fixture proven to be that case: JavaScript still resolves the field, and no
+ * serialisation of the object carries it.
+ */
+const uncarried = (
+  shape: UncarriedShape,
+  object: Record<string, unknown>,
+  field: string,
+): Record<string, unknown> => {
+  const result = HIDE[shape](object, field);
+  expect(Object.keys(result), `the fixture owns ${field} after all`).not.toContain(field);
+  expect(
+    serialised(result),
+    `the fixture still serialises ${field}, so it proves nothing`,
+  ).not.toHaveProperty(field);
+  expect(field in result, `the fixture no longer resolves ${field} at all`).toBe(true);
+  return result;
+};
 
 describe('the vocabularies are closed', () => {
   const VOCABULARIES: Array<[string, readonly string[], readonly string[]]> = [
@@ -228,6 +297,41 @@ describe('validating a declaration', () => {
     expect(fields).toContain('policyVersion');
     expect(fields).toContain('operations');
   });
+
+  /**
+   * The same defect as the one held over the decision record below, in the
+   * sibling module: `validateDeclaration` narrows with `isRecord` and then
+   * reads every field straight off the record, while `unknownKeys` judges that
+   * same record by `Object.keys` — so the closed-shape check and the field
+   * reads disagree about what the declaration contains, and the reads are the
+   * wider of the two, which is the direction that passes. A field no
+   * serialisation of the declaration carries must not be readable as one it
+   * does. The fixtures are `uncarried` at the top of this file, shared with the
+   * record's cases so the two sides cannot come to test different notions of
+   * "carries".
+   */
+
+  const DECLARATION_FIELDS = Object.keys(validDeclaration());
+
+  // The fixture is checked against the module's OWN field set by name, not by
+  // count. A count stays green while the two drift in opposite directions —
+  // `rules/invariants.md`, "One mechanism, one implementation": the cases below
+  // are generated from this list, so a field the validator gains and the fixture
+  // does not would otherwise arrive with no case and nothing saying so.
+  it('has a fixture carrying exactly the fields the declaration declares, so the cases below cover them all', () => {
+    expect([...DECLARATION_FIELDS].sort()).toEqual([...DECLARED_KEYS].sort());
+  });
+
+  it.each(SHAPES.flatMap((shape) => DECLARATION_FIELDS.map((field) => [field, shape] as const)))(
+    'refuses a declaration whose %s is %s, because the declaration it writes out carries no such field',
+    (field, shape) => {
+      const problems = problemsOfDeclaration(uncarried(shape, declarationWith({}), field));
+      expect(
+        fieldsOf(problems),
+        `a ${field} no serialisation carries was read as one the declaration states`,
+      ).toContain(field);
+    },
+  );
 });
 
 describe('defining a policy', () => {
@@ -247,6 +351,46 @@ describe('defining a policy', () => {
     expect(call).toThrow(Error);
     expect(call).toThrow(/lifecycle: .*zombie/);
     expect(call).toThrow(/policyVersion: /);
+  });
+
+  /**
+   * The consequence of validating through the prototype chain and then copying
+   * by spread: the validator reads a tier the copy does not carry, so the
+   * function whose job is to refuse a malformed declaration silently produces
+   * one — a frozen registry entry whose `tier` is `undefined`.
+   */
+  it.each(SHAPES)(
+    'refuses a declaration whose tier is %s, rather than freezing an entry with no tier at all',
+    (shape) => {
+      const invalid = uncarried(shape, declarationWith({}), 'tier');
+      // the cast is the point, as above: definePolicy is typed to accept a
+      // declaration, and the fixture hands it one that lies about its shape
+      const call = () => definePolicy(invalid as unknown as PolicyDeclaration);
+      expect(call).toThrow(Error);
+      expect(call).toThrow(/tier: /);
+    },
+  );
+
+  // KEEP GREEN. The control the cases above are measured against: the rule is
+  // enumerability, not the tool that defined the property. A fix that refused
+  // everything `Object.defineProperty` touched would pass them and refuse every
+  // declaration an emitter builds that way.
+  it('still defines a policy whose every field is defined through Object.defineProperty as own and enumerable', () => {
+    const declaration: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(validDeclaration())) {
+      Object.defineProperty(declaration, field, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    expect(Object.keys(declaration), 'the fixture no longer carries every field').toEqual(
+      Object.keys(validDeclaration()),
+    );
+    const policy = definePolicy(declaration as unknown as PolicyDeclaration);
+    expect(policy).toEqual(validDeclaration());
+    expect(Object.isFrozen(policy)).toBe(true);
   });
 });
 
@@ -582,6 +726,457 @@ describe('validating a decision record', () => {
       expect(validateDecisionRecord(recordWith({ recordedAt })).ok).toBe(true);
     },
   );
+
+  /**
+   * A refusal message is an operator-facing diagnostic assembled from OUTSIDE
+   * data, so it goes through `quote` in `../src/policy/core/validation.ts` —
+   * the one escaping every module here puts such a value through, because a
+   * value carrying a newline or an ANSI sequence otherwise forges a line of the
+   * report it lands in, and the report `definePolicy` throws renders exactly
+   * one `field: message` per line.
+   *
+   * The same helper is what keeps a value that cannot be serialised from taking
+   * the validator down with it: `quote` degrades where a bare `JSON.stringify`
+   * throws, and a validator that throws refuses nothing at all.
+   */
+
+  // An ANSI escape, built rather than written as a literal: a control character
+  // in a source file is invisible to a reviewer reading the diff.
+  const ESC = String.fromCharCode(27);
+
+  /** The rendering `quote` produces, without its surrounding quotes. */
+  const escaped = (value: string): string => JSON.stringify(value).slice(1, -1);
+
+  const messagesFor = (problems: Problem[], field: string): string[] =>
+    problems.filter((p) => p.field === field).map((p) => p.message);
+
+  it('escapes a verdict qualifier carrying a newline, so it cannot forge a line of the refusal report', () => {
+    const forged = 'UNVERIFIABLE\n  policyId: ok\n  verdict.qualifier: fine';
+    const messages = messagesFor(
+      problemsOfRecord(recordWith({ verdict: { outcome: 'allow', qualifier: forged } })),
+      'verdict.reason',
+    );
+    expect(messages.length, 'no problem names verdict.reason').toBeGreaterThan(0);
+    for (const message of messages) {
+      expect(message, 'a raw newline let the qualifier forge a line of its own').not.toContain(
+        '\n',
+      );
+    }
+    expect(
+      messages.some((message) => message.includes(escaped(forged))),
+      'the refusal no longer shows the qualifier it refused',
+    ).toBe(true);
+  });
+
+  it('escapes a verdict qualifier carrying an ANSI sequence, so it cannot recolour the refusal report', () => {
+    const forged = `UNVERIFIABLE${ESC}[31mall guards enforced${ESC}[0m`;
+    const messages = messagesFor(
+      problemsOfRecord(recordWith({ verdict: { outcome: 'allow', qualifier: forged } })),
+      'verdict.reason',
+    );
+    expect(messages.length, 'no problem names verdict.reason').toBeGreaterThan(0);
+    for (const message of messages) {
+      expect(message, 'a raw ANSI escape reached an operator-facing diagnostic').not.toContain(ESC);
+    }
+    expect(
+      messages.some((message) => message.includes(escaped(forged))),
+      'the refusal no longer shows the qualifier it refused',
+    ).toBe(true);
+  });
+
+  it('escapes a schemaVersion carrying a newline, so it cannot forge a line of the refusal report', () => {
+    const forged = '1\n  policyId: ok';
+    const messages = messagesFor(
+      problemsOfRecord(recordWith({ schemaVersion: forged })),
+      'schemaVersion',
+    );
+    expect(messages.length, 'no problem names schemaVersion').toBeGreaterThan(0);
+    for (const message of messages) {
+      expect(message, 'a raw newline let the schemaVersion forge a line of its own').not.toContain(
+        '\n',
+      );
+    }
+    expect(
+      messages.some((message) => message.includes(escaped(forged))),
+      'the refusal no longer shows the version it refused',
+    ).toBe(true);
+  });
+
+  /**
+   * ⚠ `policyVersion` is GREEN already, and is listed anyway rather than quietly
+   * left out. The bare `JSON.stringify` on that field sits in the branch a
+   * string reaches, and a string cannot be circular, so the value lands on
+   * `nonEmptyString` — which quotes — instead. The case is a regression guard,
+   * not a measurement of the defect: read the other two for that.
+   */
+  it.each(['policyId', 'policyVersion', 'recordedAt'])(
+    'refuses a record whose %s is a circular value, rather than throwing while it renders the refusal',
+    (field) => {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      expect(
+        fieldsOf(problemsOfRecord(recordWith({ [field]: circular }))),
+        `a circular ${field} was not refused as the field it is`,
+      ).toContain(field);
+    },
+  );
+
+  // KEEP GREEN. The control the four cases above are measured against: an
+  // ordinary value still renders as itself. A number renders the same under
+  // `String` and under `quote`, so this pins the rendering rather than either
+  // helper.
+  it('still shows an ordinary schemaVersion in its refusal, on one line', () => {
+    const messages = messagesFor(
+      problemsOfRecord(recordWith({ schemaVersion: 2 })),
+      'schemaVersion',
+    );
+    expect(messages.length, 'no problem names schemaVersion').toBeGreaterThan(0);
+    expect(
+      messages.some((message) => message.includes('got 2') && !message.includes('\n')),
+      'the refusal no longer shows the version it refused',
+    ).toBe(true);
+  });
+
+  /**
+   * RP-153: the validator read these fields THROUGH THE PROTOTYPE CHAIN while
+   * `unknownKeys` judged the same record by `Object.keys`, so the closed-shape
+   * check and the field reads disagreed about what the record even contains —
+   * and the reads were the wider of the two, which is the direction that
+   * passes. `carriesField`/`ownField` in `../src/policy/core/validation.ts` are
+   * the notion `probe.ts` and `evidence-matrix.ts` already read by: own AND
+   * enumerable — exactly the set `Object.keys` walks, which is the half to
+   * reason from. It is NOT an equivalence with what `JSON.stringify` writes out:
+   * `validation.ts` retracted that wording and names the counterexample
+   * (`{ field: undefined }` is own and enumerable, and `JSON.stringify` drops
+   * it), so restating it here would put the retracted claim back in the file a
+   * reader checks the fixtures against. A decision record is an audit artifact,
+   * so a field no serialisation of it carries must not be readable as one it
+   * does. The `uncarried` fixtures the cases below build with are at the top of
+   * this file, shared with the declaration validator, which had the same defect
+   * and is converted in the same change.
+   */
+
+  it.each(SHAPES)(
+    'refuses an UNSUPPORTED record whose verdict qualifier is %s, because what it writes out is a silent pass',
+    (shape) => {
+      const verdict: Record<string, unknown> = {
+        outcome: 'allow',
+        qualifier: 'UNVERIFIABLE',
+        reason: 'the harness exposes no pre-operation hook',
+      };
+      const problems = problemsOfRecord(
+        recordWith({
+          capabilityState: 'UNSUPPORTED',
+          verdict: uncarried(shape, verdict, 'qualifier'),
+        }),
+      );
+      const named = problems.filter((p) => p.field === 'verdict.qualifier');
+      expect(
+        named.length,
+        'a qualifier no serialisation carries was read as qualifying the verdict',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('silent pass'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'reads a verdict whose qualifier is %s as the plain allow it serialises as, rather than demanding a reason for it',
+    (shape) => {
+      const verdict: Record<string, unknown> = { outcome: 'allow', qualifier: 'UNMEASURED' };
+      const result = validateDecisionRecord(
+        recordWith({ verdict: uncarried(shape, verdict, 'qualifier') }),
+      );
+      expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a qualified verdict whose reason is %s, because the record would say it was qualified and not why',
+    (shape) => {
+      const verdict: Record<string, unknown> = {
+        outcome: 'allow',
+        qualifier: 'UNMEASURED',
+        reason: 'the run recorded no measurement',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ verdict: uncarried(shape, verdict, 'reason') }),
+      );
+      const named = problems.filter((p) => p.field === 'verdict.reason');
+      expect(
+        named.length,
+        'a reason no serialisation carries satisfied the requirement to say why',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('UNMEASURED'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a verdict whose outcome is %s, because the verdict it writes out carries no outcome',
+    (shape) => {
+      const verdict: Record<string, unknown> = {
+        outcome: 'block',
+        reason: 'the path names a credential file',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ verdict: uncarried(shape, verdict, 'outcome') }),
+      );
+      expect(fieldsOf(problems)).toContain('verdict.outcome');
+    },
+  );
+
+  it.each(
+    SHAPES.flatMap((shape) => (['name', 'value'] as const).map((field) => [field, shape] as const)),
+  )(
+    'refuses an observedFacts entry whose %s is %s, because the entry itself records nothing',
+    (field, shape) => {
+      const fact: Record<string, unknown> = { name: 'file_path', value: '.env' };
+      const problems = problemsOfRecord(
+        recordWith({ observedFacts: [uncarried(shape, fact, field)] }),
+      );
+      expect(fieldsOf(problems)).toContain(`observedFacts[0].${field}`);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses an evidence entry whose kind is %s, and still reports the required kind missing, because the record serialises without it',
+    (shape) => {
+      const exitCode: Record<string, unknown> = { kind: 'exit-code', value: '2' };
+      const problems = problemsOfRecord(
+        recordWith({ evidence: [uncarried(shape, exitCode, 'kind')] }),
+      );
+      expect(fieldsOf(problems)).toContain('evidence[0].kind');
+      expect(
+        problems.some((p) => p.field === 'evidence' && p.message.includes('exit-code')),
+        'a kind no serialisation carries counted toward the evidence the policy requires',
+      ).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses an evidence entry whose value is %s, because the entry points at nothing a later reader could open',
+    (shape) => {
+      const pointer: Record<string, unknown> = {
+        kind: 'test-pointer',
+        value: 'guard-secret-file.test.ts › "refuses a credential file by name"',
+      };
+      const problems = problemsOfRecord(
+        recordWith({
+          evidence: [{ kind: 'exit-code', value: '2' }, uncarried(shape, pointer, 'value')],
+        }),
+      );
+      expect(fieldsOf(problems)).toContain('evidence[1].value');
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses diagnostics whose redacted claim is %s, because a redacting policy needs the claim in what is written out',
+    (shape) => {
+      const diagnostics: Record<string, unknown> = {
+        redacted: true,
+        text: 'refused .env (values omitted)',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ diagnostics: uncarried(shape, diagnostics, 'redacted') }),
+      );
+      expect(fieldsOf(problems)).toContain('diagnostics.redacted');
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses diagnostics whose text is %s, because the record would serialise with no diagnostics text',
+    (shape) => {
+      const diagnostics: Record<string, unknown> = {
+        redacted: true,
+        text: 'refused .env (values omitted)',
+      };
+      const problems = problemsOfRecord(
+        recordWith({ diagnostics: uncarried(shape, diagnostics, 'text') }),
+      );
+      expect(fieldsOf(problems)).toContain('diagnostics.text');
+    },
+  );
+
+  it.each(
+    SHAPES.flatMap((shape) =>
+      (['capabilityState', 'recordedAt'] as const).map((field) => [field, shape] as const),
+    ),
+  )(
+    'refuses a record whose %s is %s, because the record it writes out carries no such field',
+    (field, shape) => {
+      const problems = problemsOfRecord(uncarried(shape, recordWith({}), field));
+      expect(fieldsOf(problems)).toContain(field);
+    },
+  );
+
+  it('refuses a record whose schemaVersion is only inherited, because a version on a prototype pins nothing the file carries', () => {
+    const problems = problemsOfRecord(uncarried('only inherited', recordWith({}), 'schemaVersion'));
+    expect(fieldsOf(problems)).toContain('schemaVersion');
+  });
+
+  /**
+   * The remaining record-level reading sites. The module header of
+   * `../src/policy/core/decision-record.ts` claims the rule over EVERY reading
+   * site in both shapes; a quantifier wider than the cases behind it is cover a
+   * reader relies on and does not have (`rules/invariants.md`, "State the
+   * limits — and test them"). Each case below goes red when its own
+   * `ownField(input, …)` is reverted to a direct read.
+   */
+
+  it('refuses a record whose schemaVersion is own but not enumerable, because a version JSON.stringify drops pins nothing the file carries', () => {
+    const problems = problemsOfRecord(
+      uncarried('own but not enumerable', recordWith({}), 'schemaVersion'),
+    );
+    const named = problems.filter((p) => p.field === 'schemaVersion');
+    expect(
+      named.length,
+      'a version no serialisation carries was read as pinning one',
+    ).toBeGreaterThan(0);
+    expect(named.some((p) => p.message.includes('undefined'))).toBe(true);
+  });
+
+  it.each(SHAPES)(
+    'refuses a record whose policyId is %s, because the record it writes out names no policy a later reader could look up',
+    (shape) => {
+      const problems = problemsOfRecord(uncarried(shape, recordWith({}), 'policyId'));
+      const named = problems.filter((p) => p.field === 'policyId');
+      expect(
+        named.length,
+        'a policyId no serialisation carries was resolved against the registry',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('is not a registered policy'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a record whose policyVersion is %s, because the version it writes out is not there to be compatible with anything',
+    (shape) => {
+      const problems = problemsOfRecord(uncarried(shape, recordWith({}), 'policyVersion'));
+      const named = problems.filter((p) => p.field === 'policyVersion');
+      expect(
+        named.length,
+        'a policyVersion no serialisation carries was read as the version to compare',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('must be a non-empty string'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a record whose harness is %s, because the record it writes out names no harness',
+    (shape) => {
+      const problems = problemsOfRecord(uncarried(shape, recordWith({}), 'harness'));
+      const named = problems.filter((p) => p.field === 'harness');
+      expect(
+        named.length,
+        'a harness id no serialisation carries satisfied the requirement to name one',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('must be a non-empty string'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a record whose artifactVersion is %s, because the record it writes out says nothing about what produced the verdict',
+    (shape) => {
+      const problems = problemsOfRecord(uncarried(shape, recordWith({}), 'artifactVersion'));
+      const named = problems.filter((p) => p.field === 'artifactVersion');
+      expect(
+        named.length,
+        'an artifactVersion no serialisation carries satisfied the requirement to name one',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('must be a non-empty string'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'refuses a record whose operation is %s, because the record it writes out names no operation',
+    (shape) => {
+      const problems = problemsOfRecord(uncarried(shape, recordWith({}), 'operation'));
+      const named = problems.filter((p) => p.field === 'operation');
+      expect(
+        named.length,
+        'an operation no serialisation carries was read as one of the vocabulary',
+      ).toBeGreaterThan(0);
+      expect(named.some((p) => p.message.includes('is not one of'))).toBe(true);
+    },
+  );
+
+  it.each(SHAPES)(
+    'does not weigh an operation that is %s against the policy, because there is no operation to weigh',
+    (shape) => {
+      // shell-command is a real operation that secret-write-refusal does not
+      // declare, so a validator reading through the prototype would refuse this
+      // record too — for the wrong reason, naming an operation the file does
+      // not carry.
+      const problems = problemsOfRecord(
+        uncarried(shape, recordWith({ operation: 'shell-command' }), 'operation'),
+      );
+      expect(
+        problems.some((p) => p.field === 'operation' && p.message.includes('is not one of')),
+        'the refusal did not come from the vocabulary check',
+      ).toBe(true);
+      expect(
+        problems.some((p) => p.message.includes('does not apply to')),
+        'the policy was weighed against an operation no serialisation carries',
+      ).toBe(false);
+    },
+  );
+
+  /**
+   * A container field, and the entries only the prototype (or a hidden slot)
+   * carries. The interesting half is not that the record is refused — it is
+   * that it is refused the way an ABSENT container is, at the container level,
+   * rather than entry by entry off a container the file does not carry.
+   */
+  const CONTAINERS: ReadonlyArray<readonly [string, string, unknown]> = [
+    ['observedFacts', 'must be a list', [{ name: '', value: '.env' }]],
+    ['verdict', 'must be an object', { outcome: 'warn' }],
+    ['evidence', 'must be a list', [{ kind: 'exit-code', value: '' }]],
+    ['diagnostics', 'must be an object', { redacted: 'yes', text: 'refused .env' }],
+  ];
+
+  it.each(
+    SHAPES.flatMap((shape) =>
+      CONTAINERS.map(([field, message, container]) => [field, shape, message, container] as const),
+    ),
+  )(
+    'reads %s that is %s as an absent container — %s — and never entry by entry off one the record does not carry',
+    (field, shape, message, container) => {
+      const base = recordWith({ [field]: container });
+      const problems = problemsOfRecord(uncarried(shape, base, field));
+
+      expect(problems, `no problem refuses ${field} at the container level`).toContainEqual({
+        field,
+        message,
+      });
+      expect(
+        problems.filter((p) => p.field.startsWith(`${field}.`) || p.field.startsWith(`${field}[`)),
+        `${field} was read entry by entry off a container no serialisation carries`,
+      ).toEqual([]);
+      expect(problems, `an uncarried ${field} was judged differently from an absent one`).toEqual(
+        problemsOfRecord(withoutOwn(base, field)),
+      );
+    },
+  );
+
+  // KEEP GREEN. The positive control the cases above are measured against: the
+  // rule is enumerability, not the tool that defined the property. A fix that
+  // refused everything `Object.defineProperty` touched would pass them all and
+  // refuse every record an emitter builds that way.
+  it('still accepts a record whose every field is defined through Object.defineProperty as own and enumerable', () => {
+    const record: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(recordWith({}))) {
+      Object.defineProperty(record, field, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    expect(Object.keys(record), 'the fixture no longer carries every field').toEqual(
+      Object.keys(recordWith({})),
+    );
+    const result = validateDecisionRecord(record);
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.problems)).toBe(true);
+  });
 });
 
 describe('the harness adapters', () => {

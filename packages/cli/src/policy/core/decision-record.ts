@@ -23,6 +23,79 @@
  * Each rule is one test in `packages/cli/test/policy-declaration.test.ts`
  * under "validating a decision record".
  *
+ * 🔴 EVERY field of the input is read through `carriesField`/`ownField`
+ * (`./validation.ts`) — own and enumerable, the set `Object.keys` walks — and
+ * never off the record directly. Presence and value travel through the same
+ * predicate: `'qualifier' in value` was the load-bearing half of this defect,
+ * because `unknownKeys` judges the same record by `Object.keys` while the reads
+ * walked the prototype chain, so the closed-shape check and the field reads
+ * disagreed about what the record contained — with the reads being the wider of
+ * the two, which is the direction that passes. A decision record is the
+ * artifact a later reader audits, and the shape that made this worth fixing
+ * before it had a caller is a record whose verdict qualifier is only inherited:
+ * it validates as qualified, and what it then writes out is `{"outcome":
+ * "allow","reason":…}` — the reason survives, the QUALIFIER is what is lost,
+ * which is exactly the silent pass an `UNSUPPORTED` capability state exists to
+ * prevent. Held over every reading site in this module, in both shapes —
+ * inherited, and own but not enumerable — in
+ * `packages/cli/test/policy-declaration.test.ts` › "refuses an UNSUPPORTED
+ * record whose verdict qualifier is %s, because what it writes out is a silent
+ * pass", with the other direction held by › "still accepts a record whose every
+ * field is defined through Object.defineProperty as own and enumerable". The
+ * `%s` is the name as the `it.each` case DECLARES it; quoting one expanded case
+ * gives a pointer no grep lands on.
+ *
+ * 🔴 And an unnarrowed outside value reaches a MESSAGE only through `quote`
+ * (`./validation.ts`), never through bare `String` or `JSON.stringify`.
+ * Two qualifications, because an earlier version of this sentence claimed more
+ * than the file delivers. First, `operation` and `capabilityState` are still
+ * interpolated bare into messages, safely: `member` has narrowed each to its
+ * closed vocabulary before the message is built. Second — and this is the part
+ * the sentence used to hide — a `Problem`'s **`field`** is not a message and is
+ * not escaped: `unknownKeys` (`./validation.ts`) puts the outside key name
+ * there verbatim, and `./declaration.ts` › `definePolicy` renders a report as
+ * `${field}: ${message}`, so an unknown key whose NAME carries a newline still
+ * forges a line. Escaping a `field` would break it as the machine-readable
+ * pointer it is, so the fix belongs in the rendering; it is RP-160.
+ * Both unsafe spellings inside messages were here: a qualifier
+ * carrying a newline forged two `field:
+ * message` lines of its own in the rendered problem list — the exact shape
+ * `./declaration.ts` › `definePolicy` throws — while the neighbouring line
+ * escaped the same value; and a circular value crashed the validator with a
+ * `TypeError` where `quote` degrades. Held by ›
+ * "escapes a verdict qualifier carrying a newline, so it cannot forge a line of
+ * the refusal report" and › "refuses a record whose %s is a circular value,
+ * rather than throwing while it renders the refusal".
+ *
+ * ⚠ What this does NOT do, and the limits are stated rather than implied:
+ *
+ * - the `ok: true` value is the input object itself, not a snapshot of the
+ *   fields that were certified. Those are the same thing for a value whose
+ *   fields are plain data, which is every record `JSON.parse` can produce; they
+ *   are not the same for one carrying a live accessor, which validates on one
+ *   read and serialises from another. RP-157 owns that, for this module and
+ *   `./declaration.ts` together;
+ * - nothing here caps the cost, and the amplifier is the PROBLEM LIST rather
+ *   than the input: one `Problem` is pushed per bad entry of `observedFacts` or
+ *   `evidence`, so a parsed record carrying a million bad entries produces a
+ *   million objects. That is reachable from ordinary `JSON.parse` input. The
+ *   first version of this bullet was wrong in every clause — it said
+ *   `Array.prototype.forEach` VISITS a sparse array's holes, that
+ *   `new Array(1e7)` cost seconds and gigabytes "before the refusal", and that
+ *   the cost was unreachable from a parsed record. `forEach` SKIPS holes, a
+ *   sparse `observedFacts` is not refused at all, and the dense case is the
+ *   reachable one. Corrected rather than softened, because a stale limit sells
+ *   cover that is not there (`rules/invariants.md`, "State the limits — and
+ *   test them");
+ * - an array HOLE is consequently read by nothing, while `JSON.stringify`
+ *   writes it out as `null`: `observedFacts: [{…}, , ,]` serialises as
+ *   `[{…},null,null]` and validates. That is this module's own rule — read what
+ *   the serialisation carries — failing one level BELOW the field, which is
+ *   where this change did not look. RP-161;
+ * - `quote` itself re-throws for a value whose `JSON.stringify` and `String`
+ *   both throw. The direction is a crash, never an `ok: true`, so nothing
+ *   malformed is certified through it — RP-160.
+ *
  * ⚠ `diagnostics.redacted` is the emitter's claim, and this validator enforces
  * the claim's presence, not the property: a record marked redacted whose
  * `diagnostics.text`, `observedFacts[].value` or `evidence[].value` still
@@ -48,7 +121,16 @@ import type {
   Operation,
   VerdictQualifier,
 } from './vocabulary.js';
-import { ISO_8601, isRecord, member, nonEmptyString, unknownKeys } from './validation.js';
+import {
+  ISO_8601,
+  carriesField,
+  isRecord,
+  member,
+  nonEmptyString,
+  ownField,
+  quote,
+  unknownKeys,
+} from './validation.js';
 import type { Problem, Validation } from './validation.js';
 
 export const DECISION_RECORD_SCHEMA_VERSION = 1;
@@ -126,7 +208,8 @@ const namedPairs = (
       return;
     }
     unknownKeys(problems, entry, keys, `${field}[${index}]`);
-    for (const key of keys) nonEmptyString(problems, `${field}[${index}].${key}`, entry[key]);
+    for (const key of keys)
+      nonEmptyString(problems, `${field}[${index}].${key}`, ownField(entry, key));
   });
 };
 
@@ -140,21 +223,22 @@ const checkVerdict = (
     return;
   }
   unknownKeys(problems, value, ['outcome', 'qualifier', 'reason'], 'verdict');
-  member(problems, 'verdict.outcome', value.outcome, DECISION_OUTCOMES);
-  const qualified = 'qualifier' in value;
-  if (qualified) {
-    member(problems, 'verdict.qualifier', value.qualifier, VERDICT_QUALIFIERS);
-    if (typeof value.reason !== 'string' || value.reason.trim() === '') {
+  member(problems, 'verdict.outcome', ownField(value, 'outcome'), DECISION_OUTCOMES);
+  const qualifier = ownField(value, 'qualifier');
+  const reason = ownField(value, 'reason');
+  if (carriesField(value, 'qualifier')) {
+    member(problems, 'verdict.qualifier', qualifier, VERDICT_QUALIFIERS);
+    if (typeof reason !== 'string' || reason.trim() === '') {
       problems.push({
         field: 'verdict.reason',
-        message: `a ${String(value.qualifier)} verdict must say why`,
+        message: `a ${quote(qualifier)} verdict must say why`,
       });
     }
-  } else if ('reason' in value && typeof value.reason !== 'string') {
+  } else if (carriesField(value, 'reason') && typeof reason !== 'string') {
     problems.push({ field: 'verdict.reason', message: 'must be a string when present' });
   }
   if (capabilityState !== null && NEVER_SILENT_PASS.includes(capabilityState)) {
-    if (value.qualifier !== 'UNVERIFIABLE') {
+    if (qualifier !== 'UNVERIFIABLE') {
       problems.push({
         field: 'verdict.qualifier',
         message:
@@ -181,10 +265,11 @@ const checkEvidence = (
       return;
     }
     unknownKeys(problems, entry, ['kind', 'value'], `evidence[${index}]`);
-    if (member(problems, `evidence[${index}].kind`, entry.kind, EVIDENCE_KINDS)) {
-      present.add(entry.kind);
+    const kind = ownField(entry, 'kind');
+    if (member(problems, `evidence[${index}].kind`, kind, EVIDENCE_KINDS)) {
+      present.add(kind);
     }
-    nonEmptyString(problems, `evidence[${index}].value`, entry.value);
+    nonEmptyString(problems, `evidence[${index}].value`, ownField(entry, 'value'));
   });
   for (const kind of required) {
     if (!present.has(kind)) {
@@ -199,15 +284,16 @@ const checkDiagnostics = (problems: Problem[], value: unknown, mustRedact: boole
     return;
   }
   unknownKeys(problems, value, ['redacted', 'text'], 'diagnostics');
-  if (typeof value.redacted !== 'boolean') {
+  const redacted = ownField(value, 'redacted');
+  if (typeof redacted !== 'boolean') {
     problems.push({ field: 'diagnostics.redacted', message: 'must be a boolean' });
-  } else if (mustRedact && !value.redacted) {
+  } else if (mustRedact && !redacted) {
     problems.push({
       field: 'diagnostics.redacted',
       message: 'the policy redacts matched values, so its diagnostics must be recorded redacted',
     });
   }
-  if (typeof value.text !== 'string') {
+  if (typeof ownField(value, 'text') !== 'string') {
     problems.push({ field: 'diagnostics.text', message: 'must be a string' });
   }
 };
@@ -219,62 +305,67 @@ export function validateDecisionRecord(input: unknown): Validation<DecisionRecor
   }
   const problems: Problem[] = [];
   unknownKeys(problems, input, KEYS);
-  if (input.schemaVersion !== DECISION_RECORD_SCHEMA_VERSION) {
+  const schemaVersion = ownField(input, 'schemaVersion');
+  if (schemaVersion !== DECISION_RECORD_SCHEMA_VERSION) {
     problems.push({
       field: 'schemaVersion',
-      message: `must be ${DECISION_RECORD_SCHEMA_VERSION}, got ${String(input.schemaVersion)}`,
+      message: `must be ${DECISION_RECORD_SCHEMA_VERSION}, got ${quote(schemaVersion)}`,
     });
   }
 
-  const policy = typeof input.policyId === 'string' ? findPolicy(input.policyId) : null;
+  const policyId = ownField(input, 'policyId');
+  const policyVersion = ownField(input, 'policyVersion');
+  const policy = typeof policyId === 'string' ? findPolicy(policyId) : null;
   if (policy === null) {
     problems.push({
       field: 'policyId',
-      message: `${JSON.stringify(input.policyId)} is not a registered policy`,
+      message: `${quote(policyId)} is not a registered policy`,
     });
-  } else if (typeof input.policyVersion === 'string') {
-    const compatibility = compatibilityOf(policy.policyId, input.policyVersion);
+  } else if (typeof policyVersion === 'string') {
+    const compatibility = compatibilityOf(policy.policyId, policyVersion);
     if (compatibility !== 'compatible') {
       problems.push({
         field: 'policyVersion',
-        message: `${JSON.stringify(input.policyVersion)} is ${compatibility} with ${policy.policyId} ${policy.policyVersion}`,
+        message: `${quote(policyVersion)} is ${compatibility} with ${policy.policyId} ${policy.policyVersion}`,
       });
     }
   } else {
-    nonEmptyString(problems, 'policyVersion', input.policyVersion);
+    nonEmptyString(problems, 'policyVersion', policyVersion);
   }
 
-  nonEmptyString(problems, 'harness', input.harness);
-  if (member(problems, 'operation', input.operation, OPERATIONS) && policy !== null) {
-    if (!policy.operations.includes(input.operation)) {
+  nonEmptyString(problems, 'harness', ownField(input, 'harness'));
+  const operation = ownField(input, 'operation');
+  if (member(problems, 'operation', operation, OPERATIONS) && policy !== null) {
+    if (!policy.operations.includes(operation)) {
       problems.push({
         field: 'operation',
-        message: `${policy.policyId} does not apply to ${input.operation}`,
+        message: `${policy.policyId} does not apply to ${operation}`,
       });
     }
   }
-  const capabilityState = member(
-    problems,
-    'capabilityState',
-    input.capabilityState,
-    CAPABILITY_STATES,
-  )
-    ? input.capabilityState
+  const state = ownField(input, 'capabilityState');
+  const capabilityState = member(problems, 'capabilityState', state, CAPABILITY_STATES)
+    ? state
     : null;
 
-  namedPairs(problems, 'observedFacts', input.observedFacts, ['name', 'value']);
-  checkVerdict(problems, input.verdict, capabilityState);
-  checkEvidence(problems, input.evidence, policy?.requiredEvidence ?? []);
-  nonEmptyString(problems, 'artifactVersion', input.artifactVersion);
-  checkDiagnostics(problems, input.diagnostics, policy !== null && policy.redaction !== 'none');
+  namedPairs(problems, 'observedFacts', ownField(input, 'observedFacts'), ['name', 'value']);
+  checkVerdict(problems, ownField(input, 'verdict'), capabilityState);
+  checkEvidence(problems, ownField(input, 'evidence'), policy?.requiredEvidence ?? []);
+  nonEmptyString(problems, 'artifactVersion', ownField(input, 'artifactVersion'));
+  checkDiagnostics(
+    problems,
+    ownField(input, 'diagnostics'),
+    policy !== null && policy.redaction !== 'none',
+  );
+  const recordedAt = ownField(input, 'recordedAt');
   if (
-    typeof input.recordedAt !== 'string' ||
-    !ISO_8601.test(input.recordedAt) ||
-    Number.isNaN(Date.parse(input.recordedAt))
+    typeof recordedAt !== 'string' ||
+    !ISO_8601.test(recordedAt) ||
+    Number.isNaN(Date.parse(recordedAt))
   ) {
     problems.push({
       field: 'recordedAt',
-      message: `must be an ISO-8601 date-time with seconds and an explicit zone, got ${JSON.stringify(input.recordedAt)}`,
+      message: `must be an ISO-8601 date-time with seconds and an explicit zone, got ${quote(recordedAt)}`,
     });
   }
 

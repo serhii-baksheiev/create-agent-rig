@@ -120,10 +120,11 @@ zero. The second is the one that has actually happened in this repository
 before — a guard reported out loud that it had not looked, and returned the
 value meaning "there was nothing to look at".
 
-Both states are safe on the ordinary path: `qualifierFor` maps each to
-`UNVERIFIABLE`, and the decision-record validator refuses an unqualified
-verdict carrying either — though not against a hand-built prototype, which is
-the limit the last section states — held over both modules at once by ›
+Both states are safe: `qualifierFor` maps each to `UNVERIFIABLE`, and the
+decision-record validator refuses an unqualified verdict carrying either —
+including one whose qualifier is only inherited or own-but-not-enumerable,
+since RP-153 made every read own-and-enumerable; the last section records what
+does still get past it — held over both modules at once by ›
 "refuses the silent pass an unwired surface would otherwise produce, and
 accepts it once qualifierFor speaks". Which states those are is one list,
 `UNENFORCEABLE_STATES`, that both modules import.
@@ -247,20 +248,29 @@ answers it without inference.
 
 ## What this does NOT do, stated so the contract is not read wider than it is
 
-- 🔴 **"Never a silent PASS" holds for the ordinary path, not by construction.**
+- ✅ **"Never a silent PASS" now holds against a hand-built prototype — RP-153
+  closed it.** This bullet used to say the opposite and is corrected in place,
+  because a limit that outlives its defect misleads in the more expensive
+  direction: a reader trusts it and declines cover they actually have.
   Decision 5a made a field's own-ness the test of whether a value is evidence,
-  and `decision-record.ts` was not brought along: it still decides whether a
-  verdict carries a qualifier with `in`, so a verdict object INHERITING
-  `qualifier: 'UNVERIFIABLE'` satisfies the check, validates against an
-  `UNSUPPORTED` capability state, and then serialises as a bare unqualified
-  `allow`. Measured on this change's own head by `code-reviewer`, whose report is
-  what put this bullet here. The lines are older than this change and outside its
-  diff, which is why the security review never reached them; the repair is filed
-  as **RP-153**, together with `declaration.ts`, which reads fifteen fields the
-  same way. Until that lands, read decision 5's closing paragraph and the
-  "Neither weak answer can pass silently" sentence in `probe.ts` as claims about
-  records built the ordinary way — from parsed JSON or an object literal — and
-  not as a guarantee against a hand-built prototype.
+  and `decision-record.ts` was not brought along at the time: it decided whether
+  a verdict carries a qualifier with `in`, so a verdict object INHERITING
+  `qualifier: 'UNVERIFIABLE'` satisfied the check, validated against an
+  `UNSUPPORTED` capability state, and then serialised as a bare unqualified
+  `allow`. RP-153 converted every field of `decision-record.ts` **and** of
+  `declaration.ts` — the fifteen this bullet already named — onto
+  `carriesField`/`ownField`, with both uncarried shapes pinned per reading site.
+  On `declaration.ts` the consequence had teeth: `definePolicy` copies by spread,
+  so an inherited `tier` used to be certified and then frozen into the registry
+  with no `tier` key at all.
+- 🔴 **Two narrower gaps remain, and neither is the one above.** An object whose
+  field is a live ACCESSOR is validated on one read and serialised from another —
+  including an object literal, which can carry a getter, so "built the ordinary
+  way" is not the line; "fields that are plain data" is (**RP-157**). And an array
+  HOLE serialises as `null` while `Array.prototype.forEach` skips it, so an entry
+  the record's own serialisation carries is read by nothing — the same
+  own-and-enumerable principle failing in the opposite direction, one level down
+  from the field (**RP-161**).
 - **The probe bounds the structure it reads, and a snapshot past those bounds
   gets a refusal rather than an answer.** `MAX_HOOK_GROUPS`,
   `MAX_HOOKS_PER_GROUP` and `MAX_MATCHER_LENGTH` sit beside the command-length
