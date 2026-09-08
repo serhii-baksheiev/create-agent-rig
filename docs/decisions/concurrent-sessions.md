@@ -118,7 +118,11 @@ the Stop gate measures the tree its own hook file sits in, never the cwd
 (`test/template/hooks.test.ts` › "runs the checks in the project root, so a
 check reading the tree sees the session project"), and a repository scan or lint run from the
 main checkout no longer walks into `.claude/worktrees/` (RP-155, PR #197 and
-#198 — `test/template/scan-exclusions.test.ts`, `test/template/lint-ignores-worktrees.test.ts`).
+#198 — `test/template/scan-exclusions.test.ts` › "filesBelow does not report a
+file inside a nested checkout under .claude/worktrees/, and still reports its
+siblings" and `test/template/lint-ignores-worktrees.test.ts` › "ignores every
+path under .claude/worktrees/, so a sibling checkout is not linted as this
+one").
 Before RP-155 the main checkout's own `pnpm lint` failed with 397–399
 typescript-eslint parsing errors per run whenever a worktree was live — measured
 three times and recorded in PR #197's description — which was the worst
@@ -157,12 +161,11 @@ its boundary: where the honest answer is "unsupported same-repo", say so.
   on one machine today (embedded 0.5.0 in `claude-config`, this tree at its own
   version), and nothing on the Rig side measures or refuses skew. Closing the
   gap is **RP-107**; measuring skew is not in this ruling.
-- **The Jira label race** (mechanism 3). The premise was false: the adapter
-  escalates with Jira's atomic `update.labels` add, never by replacing the
-  array — pinned now by `test/template/concurrent-sessions.test.ts` › "escalate
-  PUTs `update.labels: [{ add }]` to the issue and never a `fields.labels`
-  replacement", so a regression to a wholesale replacement is caught rather than
-  rediscovered.
+- **The Jira label race** (mechanism 3). The premise was false when measured
+  (RP-120 comment `16685`: the adapter's `escalate` uses Jira's `update.labels`
+  add, not a replacement of the array), so the mechanism was found fine and,
+  by the item's own rule, gets no test here. Whether that atomic write deserves
+  a pin of its own is a follow-up proposal, not this ruling.
 - **Subagents sharing one working tree within a session** is **RP-68**, and
   **serialising the shared CI runner** is **RP-84**. Both are one-session or
   one-host questions; this record is about sessions.

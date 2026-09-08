@@ -389,8 +389,10 @@ describe('the counter is shared with every worktree, and on Windows a reader can
   // reported "could not run" for a condition nothing named. On Linux the rename
   // succeeds regardless, so the first case proves the retry only on Windows and
   // passes for free elsewhere; the second exists only where the refusal does.
+  // Settles either way: a child that exits before it reports `held` rejects
+  // with its exit code instead of leaving the case to the vitest timeout.
   const holdOpen = (file: string, ms: number): Promise<ChildProcess> =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       const child = spawn(
         process.execPath,
         [
@@ -401,7 +403,15 @@ describe('the counter is shared with every worktree, and on Windows a reader can
         ],
         { stdio: ['ignore', 'pipe', 'inherit'] },
       );
-      child.stdout!.once('data', () => resolve(child));
+      let held = false;
+      child.stdout!.once('data', () => {
+        held = true;
+        resolve(child);
+      });
+      child.once('exit', (code) => {
+        if (!held) reject(new Error(`the holder exited with ${code} before it held ${file}`));
+      });
+      child.once('error', reject);
     });
 
   it('retries the rename while another process holds the counter open, and still counts the round', async () => {

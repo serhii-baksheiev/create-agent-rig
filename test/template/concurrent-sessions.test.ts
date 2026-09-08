@@ -22,10 +22,9 @@ import type { EvidenceRow } from '../../packages/cli/src/policy/core/evidence-ma
 //
 // What this file pins is the part that was measured and never written down as
 // a test: the gate-round counter's lossy race, the flag's silent overwrite in
-// one directory, the adapter label write whose atomicity a false premise once
-// rested on, and the capability rows the ruling publishes — validated through
-// the same `validateEvidenceRow` every other row goes through, and held in
-// correspondence with the record's table in both directions.
+// one directory, and the capability rows the ruling publishes — validated
+// through the same `validateEvidenceRow` every other row goes through, and held
+// in correspondence with the record's table in both directions.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -98,9 +97,16 @@ describe('two sessions in one directory share one unattended flag, and nothing r
   // `off` disarms the first. `verify` sees the mismatch; nothing prevents it.
   // That is the measured reason the ruling marks same-directory concurrency
   // UNSUPPORTED rather than degraded.
+  //
+  // The flag writer mirrors a scoped flag into every home it knows — HOME and
+  // the account's real home — so a failed assertion before the final `off`
+  // would leave a fixture flag in the operator's `~/.claude/`. The `finally`
+  // removes every candidate the module itself would read, as
+  // unattended-flag.test.ts does for the same reason.
   it('a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both', async () => {
-    const { readUnattended } = (await load('unattended-flag.mjs')) as {
+    const { readUnattended, unattendedFlags } = (await load('unattended-flag.mjs')) as {
       readUnattended: (env?: NodeJS.ProcessEnv) => { on: boolean; item?: string };
+      unattendedFlags: (env?: NodeJS.ProcessEnv) => string[];
     };
     home = await mkdtemp(path.join(tmpdir(), 'same-dir-'));
     const checkout = path.join(home, 'checkout');
@@ -108,79 +114,22 @@ describe('two sessions in one directory share one unattended flag, and nothing r
     const env = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     const cli = (args: string[]) => run([scriptPath, ...args], env);
 
-    expect((await cli(['on', '--root', checkout, '--item', 'RP-FIRST'])).code).toBe(0);
-    const second = await cli(['on', '--root', checkout, '--item', 'RP-SECOND']);
-    expect(second.code, second.stderr).toBe(0);
-    expect(readUnattended(env)).toMatchObject({ on: true, item: 'RP-SECOND' });
-
-    const verify = await cli(['verify', '--root', checkout, '--item', 'RP-FIRST']);
-    expect(verify.code).not.toBe(0);
-    expect(verify.stderr).toMatch(/RP-FIRST/);
-    expect(verify.stderr).toMatch(/RP-SECOND/);
-
-    expect((await cli(['off', '--root', checkout])).code).toBe(0);
-    expect(readUnattended(env)).toEqual({ on: false });
-  });
-});
-
-describe('the jira adapter escalates with an atomic label add, so two sessions labelling one item cannot lose a write', () => {
-  // RP-120 was filed on the claim that the adapter replaces the label array
-  // wholesale. It does not — `escalate` sends Jira's atomic `update.labels
-  // add` — and the premise check that found this out left the fact pinned
-  // nowhere. A regression to `fields.labels` would reinstate the race the
-  // item described, silently; this is what notices.
-  const CREDENTIALS = {
-    ...process.env,
-    JIRA_BASE_URL: 'https://example.invalid',
-    JIRA_EMAIL: 'a@b.c',
-    JIRA_API_TOKEN: 'x',
-    RIG_RUN_DIR: '',
-  };
-
-  interface Call {
-    url: string;
-    method: string;
-    body: Record<string, unknown> | null;
-  }
-
-  it('escalate PUTs `update.labels: [{ add }]` to the issue and never a `fields.labels` replacement', async () => {
-    const { escalate } = (await load('queue/jira.mjs')) as {
-      escalate: (
-        ticket: { id: string },
-        diagnosis: string,
-        options: { env: NodeJS.ProcessEnv },
-      ) => Promise<{ ok: boolean }>;
-    };
-    const calls: Call[] = [];
-    const realFetch = globalThis.fetch;
-    // A hand-written structural stub, per the stack rules — no mocking
-    // framework and no patching of module internals.
-    globalThis.fetch = ((input: unknown, init: { method?: string; body?: string } = {}) => {
-      calls.push({
-        url: String(input),
-        method: String(init.method ?? 'GET'),
-        body: init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null,
-      });
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve({}),
-      });
-    }) as unknown as typeof globalThis.fetch;
     try {
-      expect(await escalate({ id: 'RP-1' }, 'diagnosis', { env: CREDENTIALS })).toEqual({
-        ok: true,
-      });
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+      expect((await cli(['on', '--root', checkout, '--item', 'RP-FIRST'])).code).toBe(0);
+      const second = await cli(['on', '--root', checkout, '--item', 'RP-SECOND']);
+      expect(second.code, second.stderr).toBe(0);
+      expect(readUnattended(env)).toMatchObject({ on: true, item: 'RP-SECOND' });
 
-    const puts = calls.filter((call) => call.method === 'PUT');
-    expect(puts).toHaveLength(1);
-    expect(puts[0]!.url).toMatch(/\/rest\/api\/3\/issue\/RP-1$/);
-    expect(puts[0]!.body).toEqual({ update: { labels: [{ add: 'escalated' }] } });
-    expect(JSON.stringify(calls.map((call) => call.body))).not.toContain('"fields"');
+      const verify = await cli(['verify', '--root', checkout, '--item', 'RP-FIRST']);
+      expect(verify.code).not.toBe(0);
+      expect(verify.stderr).toMatch(/RP-FIRST/);
+      expect(verify.stderr).toMatch(/RP-SECOND/);
+
+      expect((await cli(['off', '--root', checkout])).code).toBe(0);
+      expect(readUnattended(env)).toEqual({ on: false });
+    } finally {
+      await Promise.all(unattendedFlags(env).map((candidate) => rm(candidate, { force: true })));
+    }
   });
 });
 
@@ -189,9 +138,10 @@ describe('the jira adapter escalates with an atomic label add, so two sessions l
 // append to), and they go through the same validator every other row does.
 //
 // Measured with Claude Code sessions on the Windows host RP-120's evidence came
-// from; the Rig mechanisms named are harness-neutral, but a Codex row is a
-// separate measurement and is not claimed here.
-const OBSERVED_AT = '2026-09-07T22:00:00+04:00';
+// from (`claude --version` 2.1.263; the race probe ran at the time below); the
+// Rig mechanisms named are harness-neutral, but a Codex row is a separate
+// measurement and is not claimed here.
+const OBSERVED_AT = '2026-09-07T23:58:00+04:00';
 const ROW_BASE = {
   harness: 'claude',
   harnessVersion: '2.1.263',

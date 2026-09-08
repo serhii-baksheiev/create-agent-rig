@@ -34,14 +34,14 @@
  * exactly as long as the handle is open — a reader's `readFileSync` is enough. Eight
  * racing callers lost one to it in four rounds of thirty, and each loser left its
  * temp file behind. So the rename is retried within a fixed budget
- * (`RENAME_BUDGET_MS`, attempts × back-off, never longer), and a loser that still
- * cannot rename removes its temp file and reports the code and the file rather than
- * a bare `EPERM`. That is a bounded retry, not a lock: the count can still lose an
+ * (`RENAME_BUDGET_MS`: the pauses between attempts never exceed it; the rename
+ * calls themselves add their own wall time), and a loser that still cannot rename
+ * removes its temp file and reports the code and the file rather than a bare
+ * `EPERM`. That is a bounded retry, not a lock: the count can still lose an
  * increment, and nothing waits on a holder past the budget. Pinned by the
  * generator's `test/template/gate-rounds.test.ts` (absent in a generated rig) ›
- * "retries the rename while another process holds the counter open, and still counts
- * the round" and › "gives up past its budget, removes its temp file, keeps the old
- * count, and names the code and the file".
+ * "retries the rename while another process holds the counter open, and still counts the round"
+ * and › "gives up past its budget, removes its temp file, keeps the old count, and names the code and the file".
  */
 
 import { renameSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -176,10 +176,10 @@ export const recordGateRound = ({ branch, projectRoot, roundsPath } = {}) => {
   return { rounds: next };
 };
 
-/** How many times the rename is tried, and how long each retry waits. */
-export const RENAME_ATTEMPTS = 20;
-export const RENAME_BACKOFF_MS = 10;
-/** The whole budget a caller can spend waiting on a held-open counter. */
+// How many times the rename is tried, and how long each retry waits.
+const RENAME_ATTEMPTS = 20;
+const RENAME_BACKOFF_MS = 10;
+/** The whole budget a caller can spend pausing on a held-open counter. */
 export const RENAME_BUDGET_MS = RENAME_ATTEMPTS * RENAME_BACKOFF_MS;
 
 const RETRIED_CODES = new Set(['EPERM', 'EBUSY']);
@@ -208,11 +208,19 @@ const replaceWithRetry = (temp, file) => {
         pause(RENAME_BACKOFF_MS);
         continue;
       }
-      rmSync(temp, { force: true });
+      // The cleanup must not displace the diagnosis: a temp file that cannot be
+      // removed (held open too, on Windows) is reported beside the rename
+      // failure, and the rename failure stays the error the caller sees.
+      let cleanup = 'and the temp file was removed';
+      try {
+        rmSync(temp, { force: true });
+      } catch (removal) {
+        cleanup = `but the temp file ${temp} could not be removed (${removal?.code ?? 'unknown error'})`;
+      }
       throw new Error(
         `${file} could not be replaced after ${attempt} attempt${attempt === 1 ? '' : 's'} ` +
           `(${code}): another process may be holding it open. The round was NOT counted ` +
-          'and the temp file was removed; run the command again.',
+          `${cleanup}; run the command again.`,
         { cause: error },
       );
     }
