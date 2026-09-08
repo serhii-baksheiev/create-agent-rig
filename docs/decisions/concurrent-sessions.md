@@ -37,7 +37,7 @@ rows below are the contract a later `doctor` (RP-21) can report against.
 | --- | --- | --- | --- | --- |
 | `concurrent-sessions/cross-repository` | the kill switch `~/.claude/create-agent-rig-loop-STOP` (by design — it must stop every session on the machine) and the `~/.claude/` directory the flag files live in | each checkout's unattended flag is named by the sha256 of its own real path, so two repositories never arm one file; nothing else in the table below crosses a repository boundary | `test/template/unattended-flag.test.ts` › "scopes on/off to --root so concurrent checkout CLIs do not share a flag" | `SUPPORTED` |
 | `concurrent-sessions/linked-worktree` | `.claude/queue.state.json` (the spacing ration), `.claude/gate-rounds.json` (the per-branch round counter), the kill switch, and the one `.git` object store | both files resolve to the **main** checkout on purpose (`mainCheckoutRoot`); the state file is refused when torn or mis-shaped rather than read as "nothing closed"; the counter is written through a per-pid temp file and a rename, with no lock — racing gates lose increments in the generous direction and never the file; on Windows a rename over a counter another process holds open is refused with `EPERM`, so the rename is retried within a fixed budget, and a loser past it removes its temp file and reports the code | `test/template/queue.test.ts` › "records a close made inside a worktree into the main checkout"; `test/template/queue.test.ts` › "refuses a state file holding %s"; `test/template/concurrent-sessions.test.ts` › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight"; `test/template/gate-rounds.test.ts` › "retries the rename while another process holds the counter open, and still counts the round" | `DEGRADED` |
-| `concurrent-sessions/same-directory` | the working tree, the unattended flag, the board selector `.claude/queue.board`, and — if the sessions declare the same run directory — the run journal | nothing between sessions: the second `on` replaces the first session's item and allow-list without refusal, and one `off` disarms both; `verify` detects the mismatch after the fact; two writers on one run journal are refused loudly rather than merged | `test/template/concurrent-sessions.test.ts` › "a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both"; `test/template/run-journal.test.ts` › "prints the item but refuses baseline creation when the run directory holds a broken sequence" | `UNSUPPORTED` |
+| `concurrent-sessions/same-directory` | the working tree, the unattended flag, the board selector `.claude/queue.board`, and — if the sessions declare the same run directory — the run journal | nothing between sessions: the second `on` replaces the first session's item and allow-list without refusal, and one `off` disarms both; `verify` detects the mismatch after the fact; two runs whose appends claim the same journal `seq` are refused rather than merged — interleaved appends are not what that check sees | `test/template/concurrent-sessions.test.ts` › "a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both"; `test/template/run-journal.test.ts` › "prints the item but refuses baseline creation when the run directory holds a broken sequence" | `UNSUPPORTED` |
 
 The rows are also declared as `EvidenceRow` literals in
 `test/template/concurrent-sessions.test.ts` — the capability-contract shape
@@ -138,12 +138,16 @@ session's item and allow-list, so the first session runs under an allow-list it
 never declared, and the second session's `off` disarms the guard for both.
 `verify` refuses the mismatch when it is asked — the loop asks at claim time —
 but nothing refuses the overwrite itself. The board selector `.claude/queue.board`
-is one file per checkout too. And two runs that declare one run directory each read a sequence
-the other advanced; the journal refuses the broken sequence rather than
-repairing it — the selection still prints its item and refuses to create a
+is one file per checkout too. And two runs that declare one run directory
+share its journal. What the journal refuses is two records that claim the same
+`seq`: the selection then still prints its item and refuses to create a
 baseline on that trace (`test/template/run-journal.test.ts` › "prints the item
 but refuses baseline creation when the run directory holds a broken
-sequence") — so the trace is lost loudly and the work is not.
+sequence"), so that collision is lost loudly and the work is not. As the
+module's own header states, that detection covers two processes computing the
+same number and no more — appends that interleave take consecutive numbers —
+so the protection for this shape is the loop's rule of one directory per run
+(`docs/decisions/run-directory.md`), not the journal.
 
 The Rig does not build a coordinator for this shape, and the item said so in
 its boundary: where the honest answer is "unsupported same-repo", say so.
@@ -177,7 +181,8 @@ its boundary: where the honest answer is "unsupported same-repo", say so.
   bound rather than the figure.
 - It does not claim the same-directory shape is detected before harm. It
   claims it is detected when asked (`verify`) and refused where refusal is
-  cheap (the run journal), and is otherwise unsupported.
+  cheap (the run journal, for two records claiming one `seq`), and is otherwise
+  unsupported.
 - It carries one harness and one operating system per row, because that is what
   was measured. The mechanisms are files the Rig owns, so the reading transfers;
   the evidence does not until it is taken.
