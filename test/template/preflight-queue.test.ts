@@ -1,0 +1,221 @@
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
+import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
+
+// RP-56 — preflight is the point before a run can select, claim, or journal.
+// It may read exactly one adapter listing to prove that the configured queue is
+// usable, but an empty listing is a usable queue and must not be mistaken for a
+// failed probe.
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
+
+interface CommandResult {
+  code: number;
+  out: string;
+}
+
+interface Fixture {
+  configPath: string;
+  root: string;
+  planPath: string;
+  journalPath: string;
+  runPath: string;
+}
+
+const run = (file: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
+  new Promise<CommandResult>((resolve) => {
+    execFile(file, args, { cwd, env }, (error, stdout, stderr) => {
+      resolve({
+        code: error ? ((error as { code?: number }).code ?? 1) : 0,
+        out: stdout + stderr,
+      });
+    });
+  });
+
+const contract = {
+  schemaVersion: 1,
+  detection: {
+    mode: 'pull',
+    sources: ['run-state', 'journal'],
+    acceptedLatency: '24h',
+    push: false,
+  },
+  pairedFacts: [],
+};
+
+const fixture = async (config: Record<string, unknown> | null = null): Promise<Fixture> => {
+  const root = await mkdtemp(path.join(tmpdir(), 'preflight-queue-'));
+  const claude = path.join(root, '.claude');
+  await mkdir(claude, { recursive: true });
+  await cp(scriptsDir, path.join(claude, 'scripts'), { recursive: true });
+  await mkdir(path.join(root, '.rig'), { recursive: true });
+  await writeFile(path.join(root, '.rig', 'revalidation.json'), `${JSON.stringify(contract)}\n`);
+  if (config !== null)
+    await writeFile(path.join(claude, 'queue.json'), `${JSON.stringify(config)}\n`);
+  return {
+    configPath: path.join(claude, 'queue.json'),
+    root,
+    planPath: path.join(root, 'PLAN.md'),
+    journalPath: path.join(root, 'journal'),
+    runPath: path.join(claude, 'runs'),
+  };
+};
+
+let stubs: StubHandle[] = [];
+
+afterEach(async () => {
+  for (const stub of stubs.reverse()) stub.restore();
+  stubs = [];
+});
+
+const stubProbes = async () => {
+  // Queue reachability is the only subject here. The other preflight probes
+  // receive determinate local answers, so no fixture reaches a network.
+  stubs.push(
+    await stubCommand(
+      'git',
+      "if (args.includes('symbolic-ref')) return { stdout: 'origin/master\\n' }; if (args.includes('rev-parse')) return { stdout: 'same-sha\\n' }; return {};",
+    ),
+  );
+  stubs.push(await stubCommand('gh', "return { stdout: '[]\\n' };"));
+};
+
+const preflight = async (p: Fixture, extraEnv: NodeJS.ProcessEnv = {}) => {
+  await stubProbes();
+  const result = await run(
+    process.execPath,
+    [path.join(p.root, '.claude', 'scripts', 'preflight.mjs'), '--json'],
+    p.root,
+    {
+      ...process.env,
+      GIT_DIR: undefined,
+      GIT_WORK_TREE: undefined,
+      RIG_RUN_DIR: undefined,
+      JIRA_BASE_URL: undefined,
+      JIRA_EMAIL: undefined,
+      JIRA_API_TOKEN: undefined,
+      ...extraEnv,
+    },
+  );
+  expect(result.code, result.out).toBe(0);
+  return JSON.parse(result.out) as {
+    verdict: string;
+    checks: Record<string, { ok: boolean | string; detail: string }>;
+    unchecked: string[];
+  };
+};
+
+describe('preflight — the configured queue must be readable before an unattended run begins', () => {
+  it.each([
+    ['missing PLAN.md', null],
+    ['an unknown adapter', { adapter: 'does-not-exist' }],
+    ['a Jira adapter without credentials', { adapter: 'jira', options: { project: 'RP' } }],
+  ])('stops when %s cannot be read', async (_case, config) => {
+    const p = await fixture(config);
+    try {
+      const result = await preflight(p);
+
+      expect(result.checks.queue).toMatchObject({ ok: false });
+      expect(result.checks.queue?.detail).toMatch(/queue|plan|adapter|jira|credential/i);
+      expect(result.verdict).toBe('STOP');
+      expect(result.unchecked.join('\n')).not.toMatch(/queue.*reachable|reachable.*queue/i);
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes a readable empty queue without changing the other preflight verdict or queue state', async () => {
+    const p = await fixture();
+    const emptyQueue = '# Plan\n\n## Agent queue\n\n## Operator queue\n';
+    await writeFile(p.planPath, emptyQueue);
+    try {
+      const result = await preflight(p);
+
+      expect(result.checks.queue).toMatchObject({ ok: true });
+      // The stubbed deployment history is deliberately unavailable. A successful
+      // queue probe must preserve that CAUTION instead of upgrading the run to GO.
+      expect(result.checks.lastDeploy).toMatchObject({ ok: 'unknown' });
+      expect(result.verdict).toBe('CAUTION');
+      expect(await readFile(p.planPath, 'utf8')).toBe(emptyQueue);
+      expect(existsSync(p.journalPath)).toBe(false);
+      expect(existsSync(p.runPath)).toBe(false);
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops when queue.json is invalid JSON even though the default plan queue is readable', async () => {
+    const p = await fixture();
+    await writeFile(p.planPath, '## Agent queue\n\n');
+    await writeFile(p.configPath, '{ not JSON }\n');
+    try {
+      const result = await preflight(p);
+
+      expect(result.checks.queue).toMatchObject({ ok: false });
+      expect(result.checks.queue?.detail).toMatch(
+        /queue\.json.*valid JSON|valid JSON.*queue\.json/i,
+      );
+      expect(result.verdict).toBe('STOP');
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops when queue.json is a directory even though the default plan queue is readable', async () => {
+    const p = await fixture();
+    await writeFile(p.planPath, '## Agent queue\n\n');
+    await mkdir(p.configPath);
+    try {
+      const result = await preflight(p);
+
+      expect(result.checks.queue).toMatchObject({ ok: false });
+      expect(result.checks.queue?.detail).toMatch(
+        /queue\.json.*(?:directory|EISDIR|read)|(?:directory|EISDIR|read).*queue\.json/i,
+      );
+      expect(result.verdict).toBe('STOP');
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads exactly one adapter listing without selecting, claiming, or writing queue and run files', async () => {
+    const p = await fixture({ adapter: 'plan-md' });
+    const adapterPath = path.join(p.root, '.claude', 'scripts', 'queue', 'plan-md.mjs');
+    const tracePath = path.join(p.root, 'adapter.trace');
+    const journalFile = path.join(p.journalPath, '2026-09.md');
+    const runFile = path.join(p.runPath, 'previous', 'state.json');
+    const claimPath = path.join(p.root, '.rig', 'claims', '1.json');
+    const plan = '## Agent queue\n- leave this item untouched\n';
+    await writeFile(
+      adapterPath,
+      "import { appendFileSync } from 'node:fs';\n" +
+        "const ticket = new Proxy({}, { get: () => { throw new Error('preflight must not select'); } });\n" +
+        "export const listEligible = () => { appendFileSync(process.env.PREFLIGHT_QUEUE_TRACE, 'listEligible\\n'); return [ticket]; };\n" +
+        "export const next = () => { throw new Error('preflight must not select'); };\n" +
+        "export const claim = () => { throw new Error('preflight must not claim'); };\n",
+    );
+    await writeFile(p.planPath, plan);
+    await mkdir(path.dirname(journalFile), { recursive: true });
+    await mkdir(path.dirname(runFile), { recursive: true });
+    await writeFile(journalFile, 'existing journal entry\n');
+    await writeFile(runFile, '{"existing":"run state"}\n');
+    try {
+      const result = await preflight(p, { PREFLIGHT_QUEUE_TRACE: tracePath });
+
+      expect(result.checks.queue).toMatchObject({ ok: true });
+      expect(await readFile(tracePath, 'utf8')).toBe('listEligible\n');
+      expect(await readFile(p.planPath, 'utf8')).toBe(plan);
+      expect(await readFile(journalFile, 'utf8')).toBe('existing journal entry\n');
+      expect(await readFile(runFile, 'utf8')).toBe('{"existing":"run state"}\n');
+      expect(existsSync(claimPath)).toBe(false);
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+});

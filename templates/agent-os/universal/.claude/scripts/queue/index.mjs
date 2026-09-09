@@ -57,11 +57,16 @@ export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round', 'board'];
  * trailing comma in `queue.json` made the loop read a different queue than the one
  * configured, which is the exact failure this file's header refuses for adapters.
  */
-export const loadConfig = (configPath) => {
+export const loadConfig = (configPath, { strictRead = false } = {}) => {
   let raw;
   try {
     raw = readFileSync(configPath, 'utf8');
-  } catch {
+  } catch (error) {
+    if (strictRead && error?.code !== 'ENOENT') {
+      throw new Error(`${configPath} could not be read (${error?.code ?? 'unknown error'})`, {
+        cause: error,
+      });
+    }
     return {};
   }
   let parsed;
