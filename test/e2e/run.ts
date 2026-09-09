@@ -27,11 +27,10 @@ const cliNameFor = (manager: PackageManager): RegExp => {
 /**
  * The executable and leading argv for one package manager.
  *
- * Windows resolves `npm`, `npx`, and `pnpm` to PowerShell scripts on the
- * dedicated runner. `execFile` cannot execute those scripts, and sending the
- * arguments through a shell would change their meaning. Their JavaScript CLIs
- * are run by the current Node executable instead, so every caller's array
- * remains an argv array through the process boundary.
+ * Windows package-manager script shims cannot be executed by `execFile`.
+ * Run their JavaScript CLIs with the current Node executable to preserve argv.
+ * `test/template/package-manager-transport.test.ts` exercises CLI resolution
+ * and literal argument forwarding through the process boundary.
  */
 export const packageManagerInvocation = (
   manager: PackageManager,

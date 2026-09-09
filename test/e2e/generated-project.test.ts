@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runPackageManager } from './run.js';
+import { filesContaining } from './generated-files.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -43,19 +44,14 @@ describe('generated aws-serverless project passes its own checks', () => {
       'CLAUDE.md',
       'README.md',
     ]) {
-      await expect(exec('test', ['-e', path.join(projectDir, p)])).resolves.toBeTruthy();
+      await expect(stat(path.join(projectDir, p))).resolves.toBeDefined();
     }
   });
 
   it('rewrote the placeholder scope everywhere', async () => {
     const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@proof-app/root');
-    const { stdout } = await exec(
-      'grep',
-      ['-rl', '@app/', '--exclude-dir=node_modules', '--exclude-dir=.next', '.'],
-      { cwd: projectDir },
-    ).catch((e) => e as { stdout: string });
-    expect(stdout ?? '').toBe('');
+    await expect(filesContaining(projectDir, '@app/')).resolves.toEqual([]);
   });
 
   it('passes lint', async () => {

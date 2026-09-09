@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -39,9 +39,9 @@ describe('generated node-service project passes its own checks', () => {
       '.claude/settings.json',
       'CLAUDE.md',
     ]) {
-      await expect(exec('test', ['-e', path.join(projectDir, p)])).resolves.toBeTruthy();
+      await expect(stat(path.join(projectDir, p))).resolves.toBeDefined();
     }
-    await expect(exec('test', ['-e', path.join(projectDir, 'infra')])).rejects.toThrow();
+    await expect(stat(path.join(projectDir, 'infra'))).rejects.toMatchObject({ code: 'ENOENT' });
     const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@svc-app/root');
   });
