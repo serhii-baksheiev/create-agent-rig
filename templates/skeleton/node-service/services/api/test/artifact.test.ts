@@ -1,17 +1,16 @@
 // CD brief §2: node-service's deployable artifact must actually build and run.
 // This bundles the server, boots the bundle over a real socket, and closes the
 // path — proving the artifact is genuine, not a stub.
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runPackageManager } from './package-manager.js';
 
-const exec = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const dist = path.join(projectRoot, 'dist');
 
@@ -38,7 +37,7 @@ describe('deployable artifact (dist/)', () => {
       () => true,
       () => false,
     );
-    if (!built) await exec('pnpm', ['build:artifact'], { cwd: projectRoot });
+    if (!built) await runPackageManager(['build:artifact'], { cwd: projectRoot });
   }, 180_000);
 
   afterAll(async () => {

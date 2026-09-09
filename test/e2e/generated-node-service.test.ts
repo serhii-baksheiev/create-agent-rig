@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runPackageManager } from './run.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -20,7 +21,7 @@ describe('generated node-service project passes its own checks', () => {
     work = await mkdtemp(path.join(tmpdir(), 'caf-gensvc-'));
     projectDir = path.join(work, 'svc-app');
     await exec(process.execPath, [cliBin, 'svc-app', '--target', 'node-service'], { cwd: work });
-    await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
   });
 
   afterAll(async () => {
@@ -46,8 +47,8 @@ describe('generated node-service project passes its own checks', () => {
   });
 
   it('passes lint, typecheck, and its own test suite', async () => {
-    await exec('pnpm', ['lint'], { cwd: projectDir });
-    await exec('pnpm', ['typecheck'], { cwd: projectDir });
-    await exec('pnpm', ['test'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['lint'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['typecheck'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['test'], { cwd: projectDir });
   });
 });

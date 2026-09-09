@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runPackageManager } from './run.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -22,7 +23,7 @@ describe('generated aws-serverless project passes its own checks', () => {
     await exec(process.execPath, [cliBin, 'proof-app', '--target', 'aws-serverless'], {
       cwd: work,
     });
-    await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
   });
 
   afterAll(async () => {
@@ -58,18 +59,18 @@ describe('generated aws-serverless project passes its own checks', () => {
   });
 
   it('passes lint', async () => {
-    await exec('pnpm', ['lint'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['lint'], { cwd: projectDir });
   });
 
   it('passes typecheck', async () => {
-    await exec('pnpm', ['typecheck'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['typecheck'], { cwd: projectDir });
   });
 
   it('passes its own test suite', async () => {
-    await exec('pnpm', ['test'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['test'], { cwd: projectDir });
   });
 
   it('synthesizes its CDK stack', async () => {
-    await exec('pnpm', ['synth'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['synth'], { cwd: projectDir });
   });
 });

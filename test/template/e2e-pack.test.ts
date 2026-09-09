@@ -52,8 +52,8 @@ const e2eDir = path.join(repoRoot, 'test', 'e2e');
 
 /**
  * The two spellings of "this process runs `npm pack`":
- *  - the argument-array form actually used here:
- *      exec('npm', ['pack', '--json', '--pack-destination', packDir], …)
+ *  - the argument-array form actually used here through the literal-argv helper:
+ *      runPackageManager('npm', ['pack', '--json', '--pack-destination', packDir], …)
  *  - a shell string handed to an exec-like call: exec(`npm pack …`)
  *
  * Neither can match the word "pack" in a describe title, nor an identifier
