@@ -24,7 +24,7 @@ export const createBenchmarkEnv = (source, { home, tmp }) => {
   };
 };
 
-const terminateTree = async (pid, env) => {
+const terminateTree = async (pid, env, timeoutMs) => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return;
   if (process.platform === 'win32') {
     const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? env.WINDIR;
@@ -35,8 +35,22 @@ const terminateTree = async (pid, env) => {
         ['/PID', String(pid), '/T', '/F'],
         { env, windowsHide: true, stdio: 'ignore' },
       );
-      killer.once('error', reject);
-      killer.once('close', resolve);
+      const timer = setTimeout(() => {
+        const error = new Error('Windows process cleanup taskkill timed out');
+        reject(new AggregateError([error, ...releaseFailedChild(killer)], error.message));
+      }, timeoutMs);
+      killer.once('error', (error) => {
+        clearTimeout(timer);
+        reject(new Error(`Windows process cleanup taskkill failed: ${error.message}`));
+      });
+      killer.once('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else
+          reject(
+            new Error(`Windows process cleanup taskkill failed: exit ${code}, signal ${signal}`),
+          );
+      });
     });
   } else {
     try {
@@ -47,10 +61,57 @@ const terminateTree = async (pid, env) => {
   }
 };
 
+const cleanupProcess = async (pid, env, closed, timeoutMs) => {
+  let timer;
+  try {
+    await Promise.race([
+      Promise.all([terminateTree(pid, env, timeoutMs), closed]),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('benchmark process cleanup timed out')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const releaseFailedChild = (child) => {
+  // Failure remains a failure: killing the direct child does not prove tree cleanup.
+  const errors = [];
+  for (const release of [
+    () => child.kill(),
+    () => {
+      if (child.connected) child.disconnect();
+    },
+    () => child.stdin?.destroy(),
+    () => child.stdout?.destroy(),
+    () => child.stderr?.destroy(),
+    () => child.unref(),
+  ]) {
+    try {
+      release();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
+};
+
 export const runProcess = (
   file,
   args,
-  { cwd, env, input = '', timeoutMs = 10_000, maxBytes = 1024 * 1024, boundaryPid } = {},
+  {
+    cwd,
+    env,
+    input = '',
+    timeoutMs = 10_000,
+    cleanupTimeoutMs = 5_000,
+    maxBytes = 1024 * 1024,
+    boundaryPid,
+  } = {},
 ) =>
   new Promise((resolve, reject) => {
     if (boundaryPid !== undefined && boundaryPid !== process.pid)
@@ -67,9 +128,20 @@ export const runProcess = (
     let timedOut = false;
     let failure;
     let termination;
+    let markClosed;
+    const closed = new Promise((resolveClosed) => {
+      markClosed = resolveClosed;
+    });
     const stop = () =>
-      (termination ??= terminateTree(boundaryPid ?? child.pid, env).catch((error) => {
+      (termination ??= cleanupProcess(
+        boundaryPid ?? child.pid,
+        env,
+        closed,
+        cleanupTimeoutMs,
+      ).catch((error) => {
         failure = error;
+        clearTimeout(timer);
+        reject(new AggregateError([error, ...releaseFailedChild(child)], error.message));
       }));
     const timer = setTimeout(() => {
       timedOut = true;
@@ -87,8 +159,9 @@ export const runProcess = (
       failure = error;
     });
     child.once('close', async (code) => {
+      markClosed();
       clearTimeout(timer);
-      if (boundaryPid === undefined) await stop();
+      if (boundaryPid === undefined && process.platform !== 'win32') await stop();
       else if (termination) await termination;
       if (failure) reject(failure);
       else
@@ -108,7 +181,11 @@ export const runProcess = (
     child.stdin.end(input);
   });
 
-export const runWorker = (file, payload, { cwd, env, timeoutMs = 60_000, onSpawn } = {}) =>
+export const runWorker = (
+  file,
+  payload,
+  { cwd, env, timeoutMs = 60_000, cleanupTimeoutMs = 5_000, onSpawn } = {},
+) =>
   new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [file], {
       cwd,
@@ -122,9 +199,15 @@ export const runWorker = (file, payload, { cwd, env, timeoutMs = 60_000, onSpawn
     let failure;
     let termination;
     let stderrBytes = 0;
+    let markClosed;
+    const closed = new Promise((resolveClosed) => {
+      markClosed = resolveClosed;
+    });
     const stop = () =>
-      (termination ??= terminateTree(child.pid, env).catch((error) => {
+      (termination ??= cleanupProcess(child.pid, env, closed, cleanupTimeoutMs).catch((error) => {
         failure = error;
+        clearTimeout(timer);
+        reject(new AggregateError([error, ...releaseFailedChild(child)], error.message));
       }));
     const timer = setTimeout(() => {
       failure = new Error('benchmark worker timed out');
@@ -163,7 +246,13 @@ export const runWorker = (file, payload, { cwd, env, timeoutMs = 60_000, onSpawn
       void stop();
     });
     child.once('close', async () => {
+      markClosed();
       clearTimeout(timer);
+      if (!termination) {
+        failure ??= new Error(
+          'benchmark worker exited before process cleanup could establish containment',
+        );
+      }
       await stop();
       if (failure) reject(failure);
       else if (!received) reject(new Error('benchmark worker exited without a report'));
