@@ -45,7 +45,7 @@ const run = (args: string[], env: NodeJS.ProcessEnv): Promise<Exit> =>
     });
   });
 
-describe('gate-rounds.json is one counter for every worktree of a checkout, and racing gates lose increments but never the file', () => {
+describe('racing gate-round callers lose increments but never the counter file', () => {
   // The header of gate-rounds.mjs states the measurement — eight concurrent
   // calls recorded four — and accepts it: the loss is bounded and in the
   // generous direction, and what was worth fixing was the crash a fixed temp
@@ -163,14 +163,14 @@ const CONCURRENT_SESSIONS_ROWS: readonly EvidenceRow[] = [
   {
     ...ROW_BASE,
     surface: 'concurrent-sessions/linked-worktree',
-    mechanism: 'gate-rounds',
+    mechanism: 'queue-state',
     observableSignal:
-      'a gate round counted inside a worktree lands in the main checkout counter; racing gates may lose an increment and never the file',
+      'a close in a linked worktree writes the main-checkout tier, but a selector that read the prior tier can still take an elevated item after that close',
     status: 'DEGRADED',
     downgradeReason:
-      'queue.state.json and gate-rounds.json are shared with the main checkout by design, and recordGateRound is read-modify-write without a lock: two gates racing lose increments in the generous direction',
+      'queue.state.json is shared with the main checkout but a selection snapshots it before listing candidates, with no arbitration against a concurrent close; gate-rounds.json is also shared and its read-modify-write can lose increments in the generous direction',
     evidencePointer:
-      'test/template/concurrent-sessions.test.ts › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight"',
+      'test/template/queue.test.ts › "a selector holding a pre-close snapshot can still take an elevated item after another worktree closes one"',
   },
   {
     ...ROW_BASE,
