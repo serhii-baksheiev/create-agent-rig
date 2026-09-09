@@ -36,7 +36,7 @@ rows below are the contract a later `doctor` (RP-21) can report against.
 | surface | what is shared between the sessions | how the shared part is protected | evidence | status |
 | --- | --- | --- | --- | --- |
 | `concurrent-sessions/cross-repository` | the kill switch `~/.claude/create-agent-rig-loop-STOP` (by design — it must stop every session on the machine) and the `~/.claude/` directory the flag files live in | each checkout's unattended flag is named by the sha256 of its own real path, so two repositories never arm one file; nothing else in the table below crosses a repository boundary | `test/template/unattended-flag.test.ts` › "scopes on/off to --root so concurrent checkout CLIs do not share a flag" | `SUPPORTED` |
-| `concurrent-sessions/linked-worktree` | `.claude/queue.state.json` (the spacing ration), `.claude/gate-rounds.json` (the per-branch round counter), the kill switch, and the one `.git` object store | both files resolve to the **main** checkout on purpose (`mainCheckoutRoot`); the state file is refused when torn or mis-shaped rather than read as "nothing closed"; the counter is written through a per-pid temp file and a rename, with no lock — racing gates lose increments in the generous direction and never the file; on Windows a rename over a counter another process holds open is refused with `EPERM`, so the rename is retried within a fixed budget, and a loser past it removes its temp file and reports the code | `test/template/queue.test.ts` › "records a close made inside a worktree into the main checkout"; `test/template/queue.test.ts` › "refuses a state file holding %s"; `test/template/concurrent-sessions.test.ts` › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight"; `test/template/gate-rounds.test.ts` › "retries the rename while another process holds the counter open, and still counts the round" | `DEGRADED` |
+| `concurrent-sessions/linked-worktree` | `.claude/queue.state.json` (the spacing ration), `.claude/gate-rounds.json` (the per-branch round counter), the kill switch, and the one `.git` object store | both files resolve to the **main** checkout on purpose (`mainCheckoutRoot`); the state reader refuses a torn or mis-shaped file, but selection snapshots a valid tier before listing candidates and has no arbitration with a concurrent close — so a selection already in flight can use the pre-close tier and take an elevated item after another session closes one; the counter is written through a per-pid temp file and a rename, with no lock — racing gates lose increments in the generous direction and never the file; on Windows a rename over a counter another process holds open is refused with `EPERM`, so the rename is retried within a fixed budget, and a loser past it removes its temp file and reports the code | `test/template/queue.test.ts` › "records a close made inside a worktree into the main checkout"; `test/template/queue.test.ts` › "refuses a state file holding %s"; `test/template/queue.test.ts` › "a selector holding a pre-close snapshot can still take an elevated item after another worktree closes one"; `test/template/concurrent-sessions.test.ts` › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight"; `test/template/gate-rounds.test.ts` › "retries the rename while another process holds the counter open, and still counts the round" | `DEGRADED` |
 | `concurrent-sessions/same-directory` | the working tree, the unattended flag, the board selector `.claude/queue.board`, and — if the sessions declare the same run directory — the run journal | nothing between sessions: the second `on` replaces the first session's item and allow-list without refusal, and one `off` disarms both; `verify` detects the mismatch after the fact; two runs whose appends claim the same journal `seq` are refused rather than merged — interleaved appends are not what that check sees | `test/template/concurrent-sessions.test.ts` › "a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both"; `test/template/run-journal.test.ts` › "prints the item but refuses baseline creation when the run directory holds a broken sequence" | `UNSUPPORTED` |
 
 The rows are also declared as `EvidenceRow` literals in
@@ -74,9 +74,15 @@ design**:
   (`docs/decisions/spacing-rations-mechanisms.md`): switching worktrees must
   not turn one session's mechanism close into permission for a second one.
   The write is a whole-file `writeFileSync` with no temp-and-rename; the
-  reader compensates by refusing a torn, mis-shaped or out-of-vocabulary file
-  instead of reading it as "nothing has closed yet", so a race here costs a
-  refused selection, never a released ration. The design this replaced — a
+  reader refuses a torn, mis-shaped or out-of-vocabulary file instead of
+  reading it as "nothing has closed yet". That protects an individual read,
+  not the interval between read and decision: `queue next` snapshots the tier,
+  awaits the adapter's candidate list, and then selects against the snapshot.
+  A selector that read `normal` before another worktree records
+  `elevated-mechanism` can therefore still take an elevated item after that
+  close (`test/template/queue.test.ts` › "a selector holding a pre-close
+  snapshot can still take an elevated item after another worktree closes
+  one"). The design this replaced — a
   forgiving reader plus a whole-file writer — read an unparseable file as `{}`
   and wrote it back fresh, and that is why the counter moved to its own file
   (`test/template/gate-rounds.test.ts` › "refuses a counts file it cannot
@@ -106,12 +112,15 @@ design**:
   names the code and the file"). A bounded retry, not a lock: the count can
   still lose an increment, and nothing waits on a holder past the budget.
 
-**The condition under which this shape is supported:** one loop per worktree,
-each on its own branch. The counter is per branch, so two sessions gating the
+**The condition under which this shape is supported:** one session owns queue
+selection and close; other worktrees execute explicitly assigned branches and
+do not run an independent queue loop. One loop per worktree, each on its own
+branch, is enough for working-tree isolation but not for the spacing ration:
+an overlapping select can keep a pre-close snapshot. Two sessions gating the
 *same* branch from two worktrees are the same-directory case wearing two
-directories — that is unsupported, below. The ration is one value for the
-checkout, and a close in either place moves it for both; that is the intended
-behaviour, not a race.
+directories — that is unsupported, below. Independent queue loops in linked
+worktrees are therefore `DEGRADED`; this record does not add the coordinator
+the item's boundary excludes.
 
 Two facts that a reader of this shape should know and that are already pinned:
 the Stop gate measures the tree its own hook file sits in, never the cwd
