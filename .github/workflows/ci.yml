@@ -97,7 +97,7 @@ jobs:
             echo "  bare node spawn #$i: $(( ($(date +%s%N) - start) / 1000000 )) ms"
           done
       # `--maxWorkers` caps how many test files run at once, and it is passed
-      # here and nowhere else — the reduction is lane-specific, which is what
+      # only in hosted Windows jobs — the reduction is lane-specific, which is what
       # the ruling on RP-62 required (it asked for lane-specific, explicitly not
       # for per-project). The tests spawn stub subprocesses, so they are
       # process-bound rather than CPU-bound.
