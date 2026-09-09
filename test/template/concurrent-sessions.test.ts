@@ -162,13 +162,17 @@ const CONCURRENT_SESSIONS_ROWS: readonly EvidenceRow[] = [
   },
   {
     ...ROW_BASE,
+    harness: 'node',
+    harnessVersion: '24.19.0',
+    os: 'linux',
+    observedAt: '2026-09-09T15:29:46+01:00',
     surface: 'concurrent-sessions/linked-worktree',
     mechanism: 'queue-state',
     observableSignal:
       'a close in a linked worktree writes the main-checkout tier, but a selector that read the prior tier can still take an elevated item after that close',
     status: 'DEGRADED',
     downgradeReason:
-      'queue.state.json is shared with the main checkout but a selection snapshots it before listing candidates, with no arbitration against a concurrent close; gate-rounds.json is also shared and its read-modify-write can lose increments in the generous direction',
+      'queue.state.json is shared with the main checkout but a selection snapshots it before listing candidates, with no arbitration against a concurrent close',
     evidencePointer:
       'test/template/queue.test.ts › "a selector holding a pre-close snapshot can still take an elevated item after another worktree closes one"',
   },
