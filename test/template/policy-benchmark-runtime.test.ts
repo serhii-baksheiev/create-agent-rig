@@ -286,6 +286,33 @@ describe('policy benchmark Windows runtime cleanup', () => {
     });
   });
 
+  it('rejects a reported worker when taskkill closes but the worker remains live', async () => {
+    const worker = createChild(471, {
+      onSend: () =>
+        queueMicrotask(() =>
+          worker.emit('message', {
+            type: 'policy-benchmark:result',
+            report: { order: 'worker-never-closes' },
+          }),
+        ),
+    });
+    const taskkill = createChild(472);
+    childProcess.spawn.mockImplementationOnce(() => worker).mockImplementationOnce(() => taskkill);
+
+    const running = runWorker(
+      'worker.mjs',
+      { scenario: 'worker-never-closes' },
+      { cleanupTimeoutMs: 10, env: WINDOWS_ENV },
+    );
+    queueMicrotask(() => worker.emit('spawn'));
+    await waitForSpawnCount(2);
+    taskkill.emit('close', 0);
+
+    await expect(rejectsWithin(running, 'reported live worker')).rejects.toThrow(
+      /benchmark process cleanup timed out/i,
+    );
+  });
+
   it('accepts an already-exited command without invoking taskkill for its gone PID', async () => {
     const process = createChild(501, {
       onInput: () => queueMicrotask(() => process.emit('close', 0)),
