@@ -95,6 +95,81 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     }
   });
 
+  it('routes every named Codex agent to its role-specific model and reasoning effort', async () => {
+    const expected = new Map([
+      ['universal/test-writer', ['gpt-5.6-terra', 'high']],
+      ['universal/prose-reviewer', ['gpt-5.6-terra', 'high']],
+      ['universal/code-reviewer', ['gpt-5.6-sol', 'high']],
+      ['universal/security-scanner', ['gpt-5.6-sol', 'high']],
+      ['stack/aws-cdk/cdk-diff-reviewer', ['gpt-5.6-sol', 'high']],
+    ]);
+
+    for (const [profile, [model, effort]] of expected) {
+      const [layer, ...parts] = profile.split('/');
+      const name = parts.pop()!;
+      const dir =
+        layer === 'stack' ? path.join(agentOs, layer, ...parts) : path.join(agentOs, layer!);
+      const source = await text(dir, '.codex', 'agents', `${name}.toml`);
+      expect(source).toContain(`model = "${model}"`);
+      expect(source).toContain(`model_reasoning_effort = "${effort}"`);
+    }
+  });
+
+  it('gives unnamed Codex subagents balanced repository defaults without pinning capacity', async () => {
+    const config = await text(universal, '.codex', 'config.toml');
+    expect(config).toContain('[agents]');
+    expect(config).toContain('default_subagent_model = "gpt-5.6-terra"');
+    expect(config).toContain('default_subagent_reasoning_effort = "medium"');
+    expect(config).not.toMatch(/max_concurrent|thread/i);
+  });
+
+  it.each([
+    [
+      'a missing named profile',
+      { default: { model: 'm', effort: 'medium' }, agents: {} },
+      [{ name: 'reviewer', source: 'reviewer.md' }],
+      /missing for reviewer/,
+    ],
+    [
+      'an orphan named profile',
+      {
+        default: { model: 'm', effort: 'medium' },
+        agents: { orphan: { model: 'm', effort: 'high' } },
+      },
+      [],
+      /no source agent: orphan/,
+    ],
+    [
+      'a duplicate source-agent name',
+      {
+        default: { model: 'm', effort: 'medium' },
+        agents: { reviewer: { model: 'm', effort: 'high' } },
+      },
+      [
+        { name: 'reviewer', source: 'a.md' },
+        { name: 'reviewer', source: 'b.md' },
+      ],
+      /duplicated across layers: reviewer/,
+    ],
+    [
+      'an invalid reasoning effort',
+      { default: { model: 'm', effort: 'turbo' }, agents: {} },
+      [],
+      /unsupported effort: turbo/,
+    ],
+  ])('refuses %s in the closed Codex agent policy', async (_case, policy, agents, message) => {
+    const { validateAgentProfiles } = (await import(
+      pathToFileURL(path.join(repoRoot, 'scripts', 'sync-codex-adapter.mjs')).href
+    )) as {
+      validateAgentProfiles: (
+        policy: unknown,
+        sourceAgents: Array<{ name: string; source: string }>,
+      ) => unknown;
+    };
+
+    expect(() => validateAgentProfiles(policy, agents)).toThrow(message);
+  });
+
   it('wires native Codex hooks with portable commands and apply_patch coverage', async () => {
     const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
       hooks: Record<

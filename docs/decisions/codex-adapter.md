@@ -1,6 +1,6 @@
 # Codex adapter: derived parity
 
-Status: accepted for AR-113.
+Status: accepted for AR-113; subagent routing extended for RP-166.
 
 ## Decision
 
@@ -18,7 +18,20 @@ generated release. There is no downstream automatic drift check.
 
 Two hand-maintained rulebooks inevitably diverge. Derivation keeps the generated
 snapshots aligned while preserving native Codex formats. The adapter translates
-the fields for which Codex has native controls and does not invent policy.
+the fields for which Codex has native controls. Codex-only execution policy is
+declared once in `templates/agent-os/codex-agent-profiles.json`, outside the
+portable Claude frontmatter, and the projector refuses a missing or orphaned
+agent profile. It also refuses duplicate source-agent names across layers,
+since one profile name cannot route two definitions.
+
+Frequent bounded work (`test-writer`, `prose-reviewer`) uses `gpt-5.6-terra`;
+correctness, security, and infrastructure gates use `gpt-5.6-sol`. Every named
+gate uses `high` reasoning effort. Unnamed subagents inherit repository defaults
+of `gpt-5.6-terra` and `medium` from `.codex/config.toml`. `xhigh` is not a
+continuous-loop default; using it for a named role requires an intentional
+profile-policy change (or a separate escalation profile), because named-profile
+fields take precedence over spawn and repository defaults. Concurrency remains
+a machine/session decision rather than repository policy.
 
 Claude agent `tools` allowlists have no equivalent custom-agent allowlist in the
 documented Codex TOML schema. The adapter therefore uses those fields only to
@@ -28,7 +41,10 @@ not carried over. This is a known parity limit, not an implicit restriction.
 ## Risk and rollback
 
 The main risks are generated-file drift, downstream edits to only one snapshot,
-and unsupported Claude shapes. In the generator, the adapter fails loudly when
+unsupported Claude shapes, and a pinned model being unavailable in a user's
+workspace. Recovery is to update the central profile policy to an available
+model or use a separate supported escalation profile, not to maintain a
+downstream edit that the next upgrade erases. In the generator, the adapter fails loudly when
 it cannot derive a portable hook command and its drift check catches stale
 output. Generated projects rely on review for subsequent local parity. Rollback
 is deleting the derived Codex files from the generated project and reverting the
@@ -80,8 +96,11 @@ Codex path.
 
 ## Schema and executable contracts
 
-The emitted agent fields are `name`, `description`, `sandbox_mode`, and
-`developer_instructions`, matching the documented Codex custom-agent TOML.
+The emitted agent fields are `name`, `description`, `model`,
+`model_reasoning_effort`, `sandbox_mode`, and `developer_instructions`, matching
+the documented Codex custom-agent TOML. Named-agent fields take precedence over
+the repository defaults in `.codex/config.toml`; the defaults cover only agents
+without their own model or effort assignment.
 For hooks, the [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks)
 documents `tool_input.command` for both `Bash` and `apply_patch` and requires a
 string `command` when a hook replaces that input. The same document is what makes

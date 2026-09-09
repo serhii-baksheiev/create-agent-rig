@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const agentOsRoot = path.join(repoRoot, 'templates', 'agent-os');
+const agentProfilesPath = path.join(agentOsRoot, 'codex-agent-profiles.json');
+const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 
 const slash = (value) => value.replaceAll('\\', '/');
 
@@ -55,7 +57,42 @@ function parseAgent(markdown, source) {
   return { name, description, tools: fields.get('tools') ?? '', body: match[2].trim() };
 }
 
-function codexAgent(markdown, source) {
+function validateProfile(profile, label) {
+  if (!profile || typeof profile.model !== 'string' || profile.model.trim() === '') {
+    throw new Error(`Codex agent profile ${label} is missing model`);
+  }
+  if (!REASONING_EFFORTS.has(profile.effort)) {
+    throw new Error(`Codex agent profile ${label} has unsupported effort: ${profile.effort}`);
+  }
+}
+
+export function validateAgentProfiles(policy, sourceAgents) {
+  validateProfile(policy.default, 'default');
+  if (!policy.agents || typeof policy.agents !== 'object' || Array.isArray(policy.agents)) {
+    throw new Error('Codex agent profiles are missing the agents map');
+  }
+  for (const [name, profile] of Object.entries(policy.agents)) validateProfile(profile, name);
+
+  const sourceNames = new Set();
+  for (const { name, source } of sourceAgents) {
+    if (!policy.agents[name])
+      throw new Error(`Codex agent profile is missing for ${name}: ${source}`);
+    if (sourceNames.has(name))
+      throw new Error(`Codex agent name is duplicated across layers: ${name}`);
+    sourceNames.add(name);
+  }
+  const orphanProfiles = Object.keys(policy.agents).filter((name) => !sourceNames.has(name));
+  if (orphanProfiles.length > 0) {
+    throw new Error(`Codex agent profiles have no source agent: ${orphanProfiles.join(', ')}`);
+  }
+  return policy;
+}
+
+function loadAgentProfiles(sourceAgents) {
+  return validateAgentProfiles(JSON.parse(readFileSync(agentProfilesPath, 'utf8')), sourceAgents);
+}
+
+function codexAgent(markdown, source, profile) {
   const agent = parseAgent(markdown, source);
   const tools = (agent.tools ?? '')
     .split(',')
@@ -67,6 +104,8 @@ function codexAgent(markdown, source) {
   return [
     `name = ${JSON.stringify(agent.name)}`,
     `description = ${JSON.stringify(agent.description)}`,
+    `model = ${JSON.stringify(profile.model)}`,
+    `model_reasoning_effort = ${JSON.stringify(profile.effort)}`,
     `sandbox_mode = ${JSON.stringify(sandbox)}`,
     `developer_instructions = ${JSON.stringify(agent.body)}`,
     '',
@@ -144,6 +183,13 @@ function codexHooks(settings) {
 
 function expectedFiles() {
   const expected = new Map();
+  const sourceAgents = layerDirs().flatMap((layer) => {
+    const claudeAgents = path.join(layer, '.claude', 'agents');
+    return walk(claudeAgents)
+      .filter((source) => path.extname(source) === '.md')
+      .map((source) => ({ ...parseAgent(readFileSync(source, 'utf8'), source), source }));
+  });
+  const policy = loadAgentProfiles(sourceAgents);
   for (const layer of layerDirs()) {
     const claudeMd = path.join(layer, 'CLAUDE.md');
     if (existsSync(claudeMd)) {
@@ -160,9 +206,11 @@ function expectedFiles() {
     for (const source of walk(claudeAgents)) {
       if (path.extname(source) !== '.md') continue;
       const name = `${path.basename(source, '.md')}.toml`;
+      const agent = parseAgent(readFileSync(source, 'utf8'), source);
+      const profile = policy.agents[agent.name];
       expected.set(
         path.join(layer, '.codex', 'agents', name),
-        codexAgent(readFileSync(source, 'utf8'), source),
+        codexAgent(readFileSync(source, 'utf8'), source, profile),
       );
     }
 
@@ -174,6 +222,15 @@ function expectedFiles() {
       );
     }
   }
+  expected.set(
+    path.join(agentOsRoot, 'universal', '.codex', 'config.toml'),
+    [
+      '[agents]',
+      `default_subagent_model = ${JSON.stringify(policy.default.model)}`,
+      `default_subagent_reasoning_effort = ${JSON.stringify(policy.default.effort)}`,
+      '',
+    ].join('\n'),
+  );
   return expected;
 }
 
