@@ -1,6 +1,24 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+const diagnosticBuffer = () => {
+  const bytes = Buffer.alloc(4096);
+  let used = 0;
+  let truncated = false;
+  return {
+    append(chunk) {
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const count = Math.min(value.length, bytes.length - used);
+      value.copy(bytes, used, 0, count);
+      used += count;
+      truncated ||= count < value.length;
+    },
+    text() {
+      return bytes.subarray(0, used).toString('utf8') + (truncated ? ' [truncated]' : '');
+    },
+  };
+};
+
 export const createBenchmarkEnv = (source, { home, tmp }) => {
   const env = {};
   for (const [key, value] of Object.entries(source)) {
@@ -33,8 +51,12 @@ const terminateTree = async (pid, env, timeoutMs) => {
       const killer = spawn(
         path.join(systemRoot, 'System32', 'taskkill.exe'),
         ['/PID', String(pid), '/T', '/F'],
-        { env, windowsHide: true, stdio: 'ignore' },
+        { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
       );
+      const stdout = diagnosticBuffer();
+      const stderr = diagnosticBuffer();
+      killer.stdout.on('data', (chunk) => stdout.append(chunk));
+      killer.stderr.on('data', (chunk) => stderr.append(chunk));
       const timer = setTimeout(() => {
         const error = new Error('Windows process cleanup taskkill timed out');
         reject(new AggregateError([error, ...releaseFailedChild(killer)], error.message));
@@ -48,7 +70,10 @@ const terminateTree = async (pid, env, timeoutMs) => {
         if (code === 0) resolve();
         else
           reject(
-            new Error(`Windows process cleanup taskkill failed: exit ${code}, signal ${signal}`),
+            new Error(
+              `Windows process cleanup taskkill failed: exit ${code}, signal ${signal}; ` +
+                `stdout: ${stdout.text()}; stderr: ${stderr.text()}`,
+            ),
           );
       });
     });
@@ -199,21 +224,30 @@ export const runWorker = (
     let failure;
     let termination;
     let stderrBytes = 0;
+    const workerStderr = diagnosticBuffer();
     let markClosed;
     const closed = new Promise((resolveClosed) => {
       markClosed = resolveClosed;
     });
     const stop = () =>
       (termination ??= cleanupProcess(child.pid, env, closed, cleanupTimeoutMs).catch((error) => {
-        failure = error;
+        const primary = failure;
+        const message = [primary?.message, error.message, `worker stderr: ${workerStderr.text()}`]
+          .filter(Boolean)
+          .join('; ');
+        failure = new AggregateError(
+          [primary, error, ...releaseFailedChild(child)].filter(Boolean),
+          message,
+        );
         clearTimeout(timer);
-        reject(new AggregateError([error, ...releaseFailedChild(child)], error.message));
+        reject(failure);
       }));
     const timer = setTimeout(() => {
       failure = new Error('benchmark worker timed out');
       void stop();
     }, timeoutMs);
     child.stderr.on('data', (chunk) => {
+      workerStderr.append(chunk);
       stderrBytes += chunk.length;
       if (stderrBytes > 64 * 1024) {
         failure = new Error('benchmark worker output limit exceeded');
