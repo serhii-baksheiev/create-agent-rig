@@ -3307,6 +3307,33 @@ describe('the queue state belongs to the checkout, so a worktree writes where th
     await expect(read(stateFile(worktree))).rejects.toThrow();
   }, 20_000);
 
+  it('a selector holding a pre-close snapshot can still take an elevated item after another worktree closes one', async () => {
+    const { main, worktree } = await checkoutWithWorktree();
+    const { loadState } = await loadFrom(queueScript(main, 'index.mjs'));
+    const { selectNext } = await loadFrom(queueScript(main, 'core.mjs'));
+    const { recordCompletedTier } = await loadFrom(queueScript(worktree, 'state.mjs'));
+    const statePath = stateFile(main);
+
+    await writeFile(statePath, '{"lastCompletedTier":"normal"}\n');
+    // This is the lead's snapshot at the start of `queue next`. The real CLI
+    // keeps it while the asynchronous adapter lists eligible items.
+    const beforeClose = loadState(statePath) as { lastCompletedTier?: unknown };
+
+    // During that interval a second session closes an elevated change from its
+    // linked worktree. The durable state moves, but the first session's value
+    // cannot move with it: there is no transaction spanning close and select.
+    recordCompletedTier({ changedFiles: ['packages/db/src/schema.ts'], projectRoot: worktree });
+    const afterClose = loadState(statePath) as { lastCompletedTier?: unknown };
+    const elevated = ticket({ id: 'second-elevated', tier: 'elevated' });
+    const staleSelection = selectNext([elevated], {
+      lastCompletedTier: beforeClose.lastCompletedTier,
+    });
+
+    expect(beforeClose.lastCompletedTier).toBe('normal');
+    expect(afterClose.lastCompletedTier).toBe('elevated-mechanism');
+    expect(staleSelection.ticket?.id).toBe(elevated.id);
+  }, 20_000);
+
   it('still holds the ration after the worktree that recorded the tier has been removed', async () => {
     const { main, worktree } = await checkoutWithWorktree();
     const { recordCompletedTier } = await loadFrom(queueScript(worktree, 'state.mjs'));
