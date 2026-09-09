@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { parseSessionSchema, parseFlagBasename } from './policy-benchmark-schema.mjs';
-import { createBenchmarkEnv, runProcess } from './policy-benchmark-runtime.mjs';
+import { benchmarkTimeouts, createBenchmarkEnv, runProcess } from './policy-benchmark-runtime.mjs';
 
 const requireFromHere = createRequire(import.meta.url);
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -16,7 +16,7 @@ const hookEntries = (snapshot) =>
     .flatMap((group) => group.hooks ?? []);
 const firstPolicy = (policies) =>
   policies.find((policy) => policy.policyId === 'secret-write-refusal') ?? policies[0];
-const CHILD_TIMEOUT_MS = 10_000;
+const CHILD_TIMEOUT_MS = benchmarkTimeouts(process.platform).childMs;
 const MAX_STDERR_BYTES = 64 * 1024;
 
 const resolved = (value) => {

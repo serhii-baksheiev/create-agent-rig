@@ -39,6 +39,14 @@ report names that execution boundary for each harness.
 See `test/template/policy-benchmark.test.ts` > "observes the native process
 boundary of each configured harness command" for the process observations.
 
+Windows functional deadlines allow 30 seconds per benchmark command and 210
+seconds per worker (six commands plus 30 seconds for setup and reporting).
+The integration test allows 240 seconds per run, or 480 seconds for two serial
+runs. See `test/template/policy-benchmark-runtime.test.ts` > "uses the Windows budget for six native commands and preserves the generic non-Windows budget",
+
+> "allows a calibrated Windows command to complete after fifteen seconds", and
+> "returns a stuck nested Windows command at thirty seconds without killing its worker boundary".
+
 The corpus lives in `packages/cli/src/policy/benchmark/corpus.ts`. Its
 classifications are `equivalent`, `intentional-degradation`, and `unsupported`;
 see `packages/cli/test/policy-benchmark.test.ts` > "derives the closed benchmark

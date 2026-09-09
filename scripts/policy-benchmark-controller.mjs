@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createBenchmarkEnv, runWorker } from './policy-benchmark-runtime.mjs';
+import { benchmarkTimeouts, createBenchmarkEnv, runWorker } from './policy-benchmark-runtime.mjs';
 import { benchmarkGit, materializeSnapshot } from './policy-benchmark-snapshot.mjs';
 
 const usage = () => {
@@ -105,7 +105,11 @@ export const runBenchmark = async ({
       return runWorker(
         path.join(verifierRoot, 'scripts/policy-benchmark-worker.mjs'),
         { ...snapshot, harness: adapter.harness, corpus, workspaceRoot },
-        { cwd: verifierRoot, env: environment },
+        {
+          cwd: verifierRoot,
+          env: environment,
+          timeoutMs: benchmarkTimeouts(process.platform).workerMs,
+        },
       );
     }),
   );

@@ -13,7 +13,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const sessionContract = path.join(repoRoot, 'contracts', 'session-messaging', 'v1');
 const runner = path.join(repoRoot, 'scripts', 'policy-benchmark.mjs');
-const BENCHMARK_TIMEOUT_MS = 60_000;
+const { benchmarkTimeouts } = (await import(
+  new URL('../../scripts/policy-benchmark-runtime.mjs', import.meta.url).href
+)) as { benchmarkTimeouts(platform: string): { testMs: number } };
+const BENCHMARK_TIMEOUT_MS = benchmarkTimeouts(process.platform).testMs;
 
 type ScenarioReport = {
   id: string;
@@ -174,7 +177,7 @@ const prefixTargetCommand = async (
 describe('policy benchmark runner', () => {
   it(
     'runs the same versioned corpus in one process per harness and reports adapter-process evidence, not live-harness proof',
-    { timeout: BENCHMARK_TIMEOUT_MS },
+    { timeout: process.platform === 'win32' ? 2 * BENCHMARK_TIMEOUT_MS : BENCHMARK_TIMEOUT_MS },
     async () => {
       const root = await createFixture();
       try {

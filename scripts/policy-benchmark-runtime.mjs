@@ -1,6 +1,13 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+export const benchmarkTimeouts = (platform) => {
+  if (platform !== 'win32') return { childMs: 10_000, workerMs: 60_000, testMs: 60_000 };
+  const childMs = 30_000;
+  const workerMs = 6 * childMs + 30_000;
+  return { childMs, workerMs, testMs: workerMs + 30_000 };
+};
+
 const diagnosticBuffer = () => {
   const bytes = Buffer.alloc(4096);
   let used = 0;

@@ -73,6 +73,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const sessionContract = path.join(repoRoot, 'contracts', 'session-messaging', 'v1');
 const runner = path.join(repoRoot, 'scripts', 'policy-benchmark.mjs');
+const { benchmarkTimeouts } = (await import(
+  new URL('../../scripts/policy-benchmark-runtime.mjs', import.meta.url).href
+)) as { benchmarkTimeouts(platform: string): { testMs: number } };
+const BENCHMARK_TIMEOUT_MS = benchmarkTimeouts(process.platform).testMs;
 
 const git = async (cwd: string, ...args: string[]): Promise<string> => {
   const { stdout } = await execFileAsync('git', args, { cwd, env: withoutGitLocation() });
@@ -470,7 +474,7 @@ describe('policy benchmark security boundaries', () => {
 
   it(
     'refuses adapter-process evidence when the measured target head moves after a worker has begun',
-    { timeout: 60_000 },
+    { timeout: BENCHMARK_TIMEOUT_MS },
     async () => {
       const root = await createBenchmarkFixture();
       const synchronised = path.join(root, '..', `${path.basename(root)}-hook-started`);
@@ -528,7 +532,7 @@ describe('policy benchmark security boundaries', () => {
 
   it(
     'refuses adapter-process evidence when the isolated verifier bytes change after a worker has begun',
-    { timeout: 60_000 },
+    { timeout: BENCHMARK_TIMEOUT_MS },
     async () => {
       const root = await createBenchmarkFixture();
       const verifier = await createVerifierFixture();

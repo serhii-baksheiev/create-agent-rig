@@ -8,6 +8,7 @@ vi.mock('node:child_process', () => childProcess);
 type BenchmarkEnvironment = Record<string, string>;
 
 type RuntimeModule = {
+  benchmarkTimeouts(platform: string): { childMs: number; testMs: number; workerMs: number };
   runProcess(
     file: string,
     args: string[],
@@ -36,6 +37,7 @@ type RuntimeModule = {
 
 let runProcess: RuntimeModule['runProcess'];
 let runWorker: RuntimeModule['runWorker'];
+let benchmarkTimeouts: RuntimeModule['benchmarkTimeouts'];
 
 type FakeStream = EventEmitter & { destroy(error?: Error): void };
 
@@ -145,13 +147,74 @@ beforeEach(() => {
 });
 
 beforeAll(async () => {
-  ({ runProcess, runWorker } = (await import(
+  ({ benchmarkTimeouts, runProcess, runWorker } = (await import(
     new URL('../../scripts/policy-benchmark-runtime.mjs', import.meta.url).href
   )) as RuntimeModule);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+});
+
+describe('policy benchmark timeout calibration', () => {
+  it('uses the Windows budget for six native commands and preserves the generic non-Windows budget', () => {
+    expect(benchmarkTimeouts('win32')).toEqual({
+      childMs: 30_000,
+      workerMs: 210_000,
+      testMs: 240_000,
+    });
+    expect(benchmarkTimeouts('linux')).toEqual({
+      childMs: 10_000,
+      workerMs: 60_000,
+      testMs: 60_000,
+    });
+  });
+
+  it('allows a calibrated Windows command to complete after fifteen seconds', async () => {
+    vi.useFakeTimers();
+    const command = createChild(601, {
+      onInput: () => setTimeout(() => command.emit('close', 0), 15_000),
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const running = runProcess('powershell.exe', ['-File', 'native-wrapper.ps1'], {
+      env: WINDOWS_ENV,
+      input: '',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    });
+    const result = expect(running).resolves.toMatchObject({ code: 0, timedOut: false });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await result;
+  });
+
+  it('returns a stuck nested Windows command at thirty seconds without killing its worker boundary', async () => {
+    vi.useFakeTimers();
+    const command = createChild(611);
+    const kill = vi.fn(() => true);
+    command.kill = kill;
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const running = runProcess('git.exe', ['status'], {
+      boundaryPid: process.pid,
+      env: WINDOWS_ENV,
+      input: '',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    });
+    const failure = expect(running).rejects.toThrow(/git\.exe.*timed out|timed out.*git\.exe/i);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await failure;
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(kill).not.toHaveBeenCalled();
+    expect(childProcess.spawn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/taskkill\.exe$/i),
+      expect.any(Array),
+      expect.any(Object),
+    );
+  });
 });
 
 describe('policy benchmark Windows runtime cleanup', () => {
