@@ -136,7 +136,8 @@ export const checkDetectionContract = (projectRoot) => {
   }
 };
 
-/** Read the configured queue without selecting an item or creating a claim. */
+// See test/template/preflight-queue.test.ts (absent in a generated rig) ›
+// "reads exactly one adapter listing without selecting, claiming, or writing queue and run files".
 export const checkQueue = async (projectRoot) => {
   try {
     const configPath = join(projectRoot, '.claude', 'queue.json');

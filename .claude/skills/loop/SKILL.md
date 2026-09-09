@@ -92,7 +92,9 @@ still yours.
 The queue probe reads one adapter listing without selecting or claiming an item.
 A readable empty queue passes this probe; a configuration, adapter, or queue-read
 failure produces **STOP**. See the generator's `test/template/preflight-queue.test.ts`
-(absent in a generated rig) for the refusal and read-only regression cases.
+(absent in a generated rig) › "reads exactly one adapter listing without selecting, claiming, or writing queue and run files",
+› "passes a readable empty queue without changing the other preflight verdict or queue state",
+and › "stops when %s cannot be read".
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you
 nothing.
