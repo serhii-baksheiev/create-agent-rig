@@ -320,6 +320,108 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
     expect(hygieneOf(ticket({ body: 'Note: nothing is blocked by this item.' }))).toBeNull();
   });
 
+  it('reports its carried outgoing Blocks link that its own body says was removed', async () => {
+    const { hygieneOf, selectionOf } = await load('core.mjs');
+    const declaration = 'The Blocks link RP-1 -> RP-2 is removed';
+    const unsafeSuffix = '\u001B]8;;https://example.test\u0007\u009B';
+    const item = ticket({
+      id: 'RP-1',
+      body:
+        `Context before the declaration.\n${declaration} ` +
+        `(RP-2 is a specification and may be accepted before this gate); Relates kept.${unsafeSuffix}\n` +
+        'This unrelated suffix is not evidence.',
+      blocks: ['RP-2'],
+    });
+    const before = {
+      ...item,
+      blocks: [...item.blocks],
+      blockedBy: item.blockedBy.map((link) => ({ ...link })),
+    };
+    const selectionBefore = selectionOf(item);
+
+    const finding = hygieneOf(item);
+
+    expect(finding).toMatchObject({ kind: 'link-contradicted-by-body', id: 'RP-1' });
+    expect(finding?.why).toContain('line 2');
+    expect(finding?.why).toContain('RP-1 -> RP-2');
+    expect(finding?.why).toContain(declaration);
+    expect(finding?.why).not.toContain('This unrelated suffix is not evidence.');
+    expect(finding?.why).not.toContain(unsafeSuffix);
+    expect(
+      [...(finding?.why ?? '')].some((character) => {
+        const code = character.codePointAt(0) ?? 0;
+        return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+      }),
+    ).toBe(false);
+    expect(item).toEqual(before);
+    expect(selectionOf(item)).toEqual(selectionBefore);
+  });
+
+  it('reports its carried incoming Blocks link that its own body says was removed', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    const declaration = 'The Blocks link #7 -> #1 is removed';
+    const finding = hygieneOf(
+      ticket({
+        id: '1',
+        body: `Context before the declaration.\n  * ${declaration}`,
+        blockedBy: [{ id: '7', resolved: false }],
+      }),
+    );
+
+    expect(finding).toMatchObject({ kind: 'link-contradicted-by-body', id: '1' });
+    expect(finding?.why).toContain('line 2');
+    expect(finding?.why).toContain('#7 -> #1');
+    expect(finding?.why).toContain(declaration);
+  });
+
+  it.each([
+    ['a reversed outgoing declaration', 'The Blocks link RP-2 -> RP-1 is removed', ['RP-2']],
+    ['a mismatched outgoing declaration', 'The Blocks link RP-1 -> RP-3 is removed', ['RP-2']],
+    ['a removed link that is no longer carried', 'The Blocks link RP-1 -> RP-2 is removed', []],
+  ])('does not report %s', async (_case, body, blocks) => {
+    const { hygieneOf } = await load('core.mjs');
+    expect(hygieneOf(ticket({ id: 'RP-1', body, blocks }))).toBeNull();
+  });
+
+  it.each([
+    'The Blocks link RP-1 -> RP-2 is not removed.',
+    'The Blocks link RP-1 -> RP-2 was removed last week.',
+    'The Blocks link RP-1 -> RP-2 is removed? No, it remains.',
+    'The Blocks link RP-1 -> RP-2 is removed yesterday.',
+    'The Blocks link RP-1 -> RP-2 is removed if the release closes.',
+    'Review note: The Blocks link RP-1 -> RP-2 is removed.',
+  ])('does not report negated, historical, or non-directive prose: %s', async (body) => {
+    const { hygieneOf } = await load('core.mjs');
+    expect(hygieneOf(ticket({ id: 'RP-1', body, blocks: ['RP-2'] }))).toBeNull();
+  });
+
+  it('keeps an existing hygiene finding ahead of a body/link contradiction', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    expect(
+      hygieneOf(
+        ticket({
+          id: '1',
+          labels: ['ready'],
+          body: 'The Blocks link #7 -> #1 is removed',
+          blockedBy: [{ id: '7', resolved: false }],
+        }),
+      ),
+    ).toMatchObject({ kind: 'stale-ready-label' });
+  });
+
+  it('keeps a broken document link finding ahead of a body/link contradiction', async () => {
+    const { hygieneOf } = await load('core.mjs');
+    expect(
+      hygieneOf(
+        ticket({
+          id: 'RP-1',
+          body: 'The Blocks link RP-1 -> RP-2 is removed\nSee the [design doc]() before starting.',
+          blocks: ['RP-2'],
+        }),
+      ),
+    ).toMatchObject({ kind: 'broken-document-link', id: 'RP-1' });
+  });
+
   it('reports a document link that is broken on its face', async () => {
     const { hygieneOf } = await load('core.mjs');
     expect(hygieneOf(ticket({ body: 'See the [design doc]() before starting.' }))).toMatchObject({
