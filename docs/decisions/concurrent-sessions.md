@@ -47,10 +47,13 @@ registry of rows exists yet to append to — and validated there through
 are held in correspondence in both directions by
 `test/template/concurrent-sessions.test.ts` › "the decision record tables
 exactly the surfaces above with the same statuses": a surface named here that
-no row carries goes red, and so does a row this table does not name. The rows
-carry `harness: claude` and `os: win32` because that is what was measured; the
-mechanisms are harness-neutral, and a Codex row is a separate measurement that
-is not claimed.
+no row carries goes red, and so does a row this table does not name. The
+cross-repository and same-directory rows carry `harness: claude` and
+`os: win32` because that is where those session behaviours were measured. The
+linked-worktree queue-state row carries `harness: node`, `harnessVersion:
+24.19.0`, and `os: linux`: its evidence is the deterministic module-level
+characterization named in that row. The mechanisms are harness-neutral, but a
+Codex session row is a separate measurement and is not claimed.
 
 ### Cross-repository — SUPPORTED
 
