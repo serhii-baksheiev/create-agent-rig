@@ -113,18 +113,73 @@ const preflight = async (p: Fixture, extraEnv: NodeJS.ProcessEnv = {}) => {
 
 describe('preflight — the configured queue must be readable before an unattended run begins', () => {
   it.each([
-    ['missing PLAN.md', null],
-    ['an unknown adapter', { adapter: 'does-not-exist' }],
-    ['a Jira adapter without credentials', { adapter: 'jira', options: { project: 'RP' } }],
-  ])('stops when %s cannot be read', async (_case, config) => {
+    ['missing PLAN.md', null, /PLAN\.md.*ENOENT|ENOENT.*PLAN\.md/i],
+    [
+      'an unknown adapter',
+      { adapter: 'does-not-exist' },
+      /unknown queue adapter.*does-not-exist|does-not-exist.*unknown queue adapter/i,
+    ],
+    [
+      'a Jira adapter without credentials',
+      { adapter: 'jira', options: { project: 'RP' } },
+      /JIRA_BASE_URL.*JIRA_EMAIL.*JIRA_API_TOKEN/i,
+    ],
+  ])('stops when %s cannot be read', async (_case, config, diagnostic) => {
     const p = await fixture(config);
     try {
       const result = await preflight(p);
 
       expect(result.checks.queue).toMatchObject({ ok: false });
-      expect(result.checks.queue?.detail).toMatch(/queue|plan|adapter|jira|credential/i);
+      expect(result.checks.queue?.detail).toMatch(diagnostic);
       expect(result.verdict).toBe('STOP');
       expect(result.unchecked.join('\n')).not.toMatch(/queue.*reachable|reachable.*queue/i);
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+
+  it('escapes terminal controls from an unknown adapter in JSON diagnostics and rendered output', async () => {
+    const injectedAdapter =
+      'does-not-exist\u001b]8;;https://example.invalid\u0007label\u001b]8;;\u0007\u009b';
+    const p = await fixture({ adapter: injectedAdapter });
+    // Newlines delimit the human report; every other C0 control, DEL, and C1
+    // byte is terminal input and must not reach either diagnostic surface.
+    const hasUnsafeTerminalControl = (value: string) =>
+      [...value].some((character) => {
+        const code = character.codePointAt(0) ?? -1;
+        return code <= 0x08 || (code >= 0x0b && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
+      });
+    try {
+      const json = await preflight(p);
+      await stubProbes();
+      const rendered = await run(
+        process.execPath,
+        [path.join(p.root, '.claude', 'scripts', 'preflight.mjs')],
+        p.root,
+        {
+          ...process.env,
+          GIT_DIR: undefined,
+          GIT_WORK_TREE: undefined,
+          RIG_RUN_DIR: undefined,
+          JIRA_BASE_URL: undefined,
+          JIRA_EMAIL: undefined,
+          JIRA_API_TOKEN: undefined,
+        },
+      );
+      expect(rendered.code, rendered.out).toBe(0);
+      const detail = json.checks.queue?.detail ?? '';
+
+      expect(json.checks.queue).toMatchObject({ ok: false });
+      expect(detail).toMatch(/could not read queue.*unknown queue adapter.*Known adapters/i);
+      expect(detail).toContain('\\u001b');
+      expect(detail).toContain('\\u0007');
+      expect(detail).toContain('\\u009b');
+      expect(hasUnsafeTerminalControl(detail)).toBe(false);
+      expect(rendered.out).toMatch(/could not read queue.*unknown queue adapter.*Known adapters/i);
+      expect(rendered.out).toContain('\\u001b');
+      expect(rendered.out).toContain('\\u0007');
+      expect(rendered.out).toContain('\\u009b');
+      expect(hasUnsafeTerminalControl(rendered.out)).toBe(false);
     } finally {
       await rm(p.root, { recursive: true, force: true });
     }

@@ -146,9 +146,15 @@ export const checkQueue = async (projectRoot) => {
     await adapter.listEligible(optionsWithPlanPath(config.options, configPath));
     return { ok: true, detail: `queue readable through ${adapterName}` };
   } catch (error) {
+    const diagnostic = Array.from(String(error?.message ?? error), (character) => {
+      const code = character.codePointAt(0);
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f)
+        ? `\\u${code.toString(16).padStart(4, '0')}`
+        : character;
+    }).join('');
     return {
       ok: false,
-      detail: `could not read queue: ${String(error?.message ?? error).split('\n')[0]}`,
+      detail: `could not read queue: ${diagnostic}`,
     };
   }
 };
