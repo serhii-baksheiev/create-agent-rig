@@ -13,6 +13,7 @@ type RuntimeModule = {
     args: string[],
     options?: {
       cleanupTimeoutMs?: number;
+      boundaryPid?: number;
       cwd?: string;
       env?: BenchmarkEnvironment;
       input?: string;
@@ -398,6 +399,58 @@ describe('policy benchmark Windows runtime cleanup', () => {
 
     await expect(rejectsWithin(running, 'reported live worker')).rejects.toThrow(
       /benchmark process cleanup timed out/i,
+    );
+  });
+
+  it('returns a nested command timeout to its worker without taskkilling the worker boundary', async () => {
+    const command = createChild(481);
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const failure = await rejectedError(
+      runProcess('C:\\benchmark\\git.exe', [], {
+        boundaryPid: process.pid,
+        cleanupTimeoutMs: 10,
+        env: WINDOWS_ENV,
+        input: '',
+        timeoutMs: 1,
+      }),
+      'nested command timeout',
+    );
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(childProcess.spawn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/taskkill\.exe$/i),
+      expect.any(Array),
+      expect.any(Object),
+    );
+    expect(failure.message).toMatch(/git\.exe.*timed out|timed out.*git\.exe/i);
+  });
+
+  it('returns a nested command output limit to its worker without taskkilling the worker boundary', async () => {
+    const command = createChild(491, {
+      onInput: () => command.stdout.emit('data', Buffer.from('too much output')),
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const failure = await rejectedError(
+      runProcess('C:\\benchmark\\git.exe', [], {
+        boundaryPid: process.pid,
+        cleanupTimeoutMs: 10,
+        env: WINDOWS_ENV,
+        input: '',
+        maxBytes: 1,
+      }),
+      'nested command output limit',
+    );
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(childProcess.spawn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/taskkill\.exe$/i),
+      expect.any(Array),
+      expect.any(Object),
+    );
+    expect(failure.message).toMatch(
+      /git\.exe.*output limit exceeded|output limit exceeded.*git\.exe/i,
     );
   });
 

@@ -157,17 +157,28 @@ export const runProcess = (
     const closed = new Promise((resolveClosed) => {
       markClosed = resolveClosed;
     });
-    const stop = () =>
-      (termination ??= cleanupProcess(
-        boundaryPid ?? child.pid,
-        env,
-        closed,
-        cleanupTimeoutMs,
-      ).catch((error) => {
-        failure = error;
+    const stop = () => {
+      if (termination) return termination;
+      if (boundaryPid !== undefined) {
+        termination = Promise.resolve();
+        // The controller owns this worker's complete process tree. Keep the
+        // worker alive to send its failure; runWorker cleans the tree before
+        // settling. Killing our own boundary here would destroy that report.
+        failure = new Error(
+          `benchmark command ${path.basename(file)}: ${failure?.message ?? 'timed out'}`,
+        );
         clearTimeout(timer);
-        reject(new AggregateError([error, ...releaseFailedChild(child)], error.message));
-      }));
+        reject(failure);
+        return termination;
+      }
+      return (termination ??= cleanupProcess(child.pid, env, closed, cleanupTimeoutMs).catch(
+        (error) => {
+          failure = error;
+          clearTimeout(timer);
+          reject(new AggregateError([error, ...releaseFailedChild(child)], error.message));
+        },
+      ));
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       void stop();
