@@ -84,6 +84,7 @@
   ],
   "meta": [
     ".claude/settings.json",
+    ".codex/config.toml",
     ".codex/hooks.json",
     "CLAUDE.md",
     "AGENTS.md"
