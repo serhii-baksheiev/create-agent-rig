@@ -518,25 +518,27 @@ const BLOCKER_IN_BODY = /^[-*\t ]{0,4}(?:blocked by|depends on|blocker)[ \t:]{0,
 // "reports its carried outgoing Blocks link that its own body says was removed".
 const REMOVAL_ID = '(?:[A-Z][A-Z0-9_]{0,31}-[0-9]{1,16}|#[0-9]{1,16})';
 const REMOVED_DEPENDENCY = new RegExp(
-  `^[ \\t]{0,4}(?:[-*][ \\t]{1,4})?(?:The[ \\t]{1,8})?Blocks[ \\t]{1,8}link[ \\t]{1,8}` +
+  `^[ \\t]{0,4}(?:[-*][ \\t]{1,4})?The[ \\t]{1,8}Blocks[ \\t]{1,8}link[ \\t]{1,8}` +
     `(${REMOVAL_ID})[ \\t]{1,8}->[ \\t]{1,8}(${REMOVAL_ID})[ \\t]{1,8}is[ \\t]{1,8}removed` +
     '(?=[ \\t]{0,8}(?:$|[.;(]))',
   'i',
 );
 const dependencyId = (value) => String(value).replace(/^#/, '').toUpperCase();
 const removedDependencyIn = (body, ticket) => {
+  const ownId = dependencyId(ticket.id);
+  const outgoingIds = new Set((ticket.blocks ?? []).map(dependencyId));
+  const incomingIds = new Set((ticket.blockedBy ?? []).map((link) => dependencyId(link.id)));
   const lines = body.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const match = REMOVED_DEPENDENCY.exec(lines[index]);
     if (!match) continue;
     const [, source, target] = match;
-    const ownId = dependencyId(ticket.id);
     const outgoing =
       dependencyId(source) === ownId &&
-      (ticket.blocks ?? []).some((id) => dependencyId(id) === dependencyId(target));
+      outgoingIds.has(dependencyId(target));
     const incoming =
       dependencyId(target) === ownId &&
-      (ticket.blockedBy ?? []).some((link) => dependencyId(link.id) === dependencyId(source));
+      incomingIds.has(dependencyId(source));
     if (outgoing || incoming)
       return { source, target, line: index + 1, direction: outgoing ? 'blocks' : 'blockedBy' };
   }

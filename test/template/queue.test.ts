@@ -378,6 +378,11 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
     ['a reversed outgoing declaration', 'The Blocks link RP-2 -> RP-1 is removed', ['RP-2']],
     ['a mismatched outgoing declaration', 'The Blocks link RP-1 -> RP-3 is removed', ['RP-2']],
     ['a removed link that is no longer carried', 'The Blocks link RP-1 -> RP-2 is removed', []],
+    [
+      'a declaration that omits its required article',
+      'Blocks link RP-1 -> RP-2 is removed',
+      ['RP-2'],
+    ],
   ])('does not report %s', async (_case, body, blocks) => {
     const { hygieneOf } = await load('core.mjs');
     expect(hygieneOf(ticket({ id: 'RP-1', body, blocks }))).toBeNull();
@@ -394,6 +399,54 @@ describe('🔴 invariant 1 — blockers resolve from links, never from labels', 
     const { hygieneOf } = await load('core.mjs');
     expect(hygieneOf(ticket({ id: 'RP-1', body, blocks: ['RP-2'] }))).toBeNull();
   });
+
+  it.each([
+    ['outgoing', 'blocks', 'RP-1', 'RP-2'],
+    ['incoming', 'blockedBy', 'RP-2', 'RP-1'],
+  ] as const)(
+    'normalizes each carried %s link once when many unmatched declarations precede a contradiction',
+    async (_direction, relation, source, target) => {
+      const { hygieneOf } = await load('core.mjs');
+      const visits = { count: 0 };
+      const linkCount = 128;
+      const countedId = (id: string) => ({
+        [Symbol.toPrimitive]: () => {
+          visits.count += 1;
+          return id;
+        },
+      });
+      const declarations = Array.from({ length: 96 }, (_, index) =>
+        relation === 'blocks'
+          ? `The Blocks link ${source} -> RP-${index + 3} is removed`
+          : `The Blocks link RP-${index + 3} -> ${target} is removed`,
+      );
+      const item = ticket({
+        id: 'RP-1',
+        body: [...declarations, `The Blocks link ${source} -> ${target} is removed`].join('\n'),
+        ...(relation === 'blocks'
+          ? {
+              blocks: [
+                ...Array.from({ length: linkCount - 1 }, (_, index) =>
+                  countedId(`RP-${index + 1_000}`),
+                ),
+                countedId(target),
+              ] as unknown as string[],
+            }
+          : {
+              blockedBy: [
+                ...Array.from({ length: linkCount - 1 }, (_, index) => ({
+                  id: countedId(`RP-${index + 1_000}`) as unknown as string,
+                  resolved: false,
+                })),
+                { id: countedId(source) as unknown as string, resolved: false },
+              ],
+            }),
+      });
+
+      expect(hygieneOf(item)).toMatchObject({ kind: 'link-contradicted-by-body', id: 'RP-1' });
+      expect(visits.count).toBe(linkCount);
+    },
+  );
 
   it('keeps an existing hygiene finding ahead of a body/link contradiction', async () => {
     const { hygieneOf } = await load('core.mjs');
