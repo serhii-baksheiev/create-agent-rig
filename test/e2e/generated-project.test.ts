@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runPackageManager } from './run.js';
+import { filesContaining } from './generated-files.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -22,7 +24,7 @@ describe('generated aws-serverless project passes its own checks', () => {
     await exec(process.execPath, [cliBin, 'proof-app', '--target', 'aws-serverless'], {
       cwd: work,
     });
-    await exec('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
   });
 
   afterAll(async () => {
@@ -42,34 +44,29 @@ describe('generated aws-serverless project passes its own checks', () => {
       'CLAUDE.md',
       'README.md',
     ]) {
-      await expect(exec('test', ['-e', path.join(projectDir, p)])).resolves.toBeTruthy();
+      await expect(stat(path.join(projectDir, p))).resolves.toBeDefined();
     }
   });
 
   it('rewrote the placeholder scope everywhere', async () => {
     const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@proof-app/root');
-    const { stdout } = await exec(
-      'grep',
-      ['-rl', '@app/', '--exclude-dir=node_modules', '--exclude-dir=.next', '.'],
-      { cwd: projectDir },
-    ).catch((e) => e as { stdout: string });
-    expect(stdout ?? '').toBe('');
+    await expect(filesContaining(projectDir, '@app/')).resolves.toEqual([]);
   });
 
   it('passes lint', async () => {
-    await exec('pnpm', ['lint'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['lint'], { cwd: projectDir });
   });
 
   it('passes typecheck', async () => {
-    await exec('pnpm', ['typecheck'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['typecheck'], { cwd: projectDir });
   });
 
   it('passes its own test suite', async () => {
-    await exec('pnpm', ['test'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['test'], { cwd: projectDir });
   });
 
   it('synthesizes its CDK stack', async () => {
-    await exec('pnpm', ['synth'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['synth'], { cwd: projectDir });
   });
 });

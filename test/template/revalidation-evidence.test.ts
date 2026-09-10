@@ -319,9 +319,34 @@ describe('A. one revalidation shape at all three points', () => {
     expect(prEvents).toHaveLength(1);
     expectCommonShape(prEvents[0]!.data, 'BEFORE_PR');
 
-    // BEFORE_CLOSE — the same durable claim contract, with no remote lookup.
-    const close = await project({ status: IN_PROGRESS, updated: T1 });
-    await createAndTrackClaim(close.dir, { status: IN_PROGRESS, updated: T1 }, 'master');
+    // BEFORE_CLOSE reuses SELECT's tracked baseline, acknowledging only the
+    // workflow transition. Its separate run still has exactly one event.
+    const closeRun = await mkdtemp(path.join(tmpdir(), 'run-close-'));
+    const close = {
+      ...select,
+      runDir: closeRun,
+      env: { ...select.env, RIG_RUN_DIR: closeRun },
+    };
+    await writeFile(
+      close.configPath,
+      JSON.stringify({
+        adapter: 'jira',
+        options: { project: 'AR', issues: [jiraIssue({ status: IN_PROGRESS, updated: T1 })] },
+      }),
+    );
+    const claimPath = path.join(close.dir, '.rig', 'claims', 'AR-1.json');
+    const selectedClaim = JSON.parse(await read(claimPath)) as { fingerprints: unknown };
+    const claims = await import(pathToFileURL(path.join(scriptsDir, 'lib/claim-records.mjs')).href);
+    expect(
+      claims.recordClaimTransition({
+        projectRoot: close.dir,
+        ticket: { id: 'AR-1' },
+        claimedState: 'in-progress',
+      }),
+    ).toEqual({ claimedState: 'in-progress' });
+    const closeClaim = await read(claimPath);
+    expect(JSON.parse(closeClaim).fingerprints).toEqual(selectedClaim.fingerprints);
+    await trackClaim(close.dir);
     await writeFile(
       path.join(close.runDir, 'state.json'),
       JSON.stringify({ takeUps: { 'AR-1': T1 } }),
@@ -336,6 +361,7 @@ describe('A. one revalidation shape at all three points', () => {
     const closeEvents = eventsOf(close.runDir, 'revalidation');
     expect(closeEvents).toHaveLength(1);
     expectCommonShape(closeEvents[0]!.data, 'BEFORE_CLOSE');
+    expect(await read(claimPath)).toBe(closeClaim);
   });
 
   it('the SELECT text line does not turn updatedAt-only movement into a hold', async () => {
