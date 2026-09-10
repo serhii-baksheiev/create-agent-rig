@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
 
@@ -14,6 +14,10 @@ import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
+const { createStageDiagnostics } = await import(
+  pathToFileURL(path.join(repoRoot, 'test', 'template', 'lib', 'stage-diagnostics.mjs')).href
+);
+const probeStages = createStageDiagnostics();
 
 interface CommandResult {
   code: number;
@@ -78,30 +82,38 @@ const stubProbes = async () => {
   // Queue reachability is the only subject here. The other preflight probes
   // receive determinate local answers, so no fixture reaches a network.
   stubs.push(
-    await stubCommand(
-      'git',
-      "if (args.includes('symbolic-ref')) return { stdout: 'origin/master\\n' }; if (args.includes('rev-parse')) return { stdout: 'same-sha\\n' }; return {};",
+    await probeStages.run('preflight-git-stub-setup', () =>
+      stubCommand(
+        'git',
+        "if (args.includes('symbolic-ref')) return { stdout: 'origin/master\\n' }; if (args.includes('rev-parse')) return { stdout: 'same-sha\\n' }; return {};",
+      ),
     ),
   );
-  stubs.push(await stubCommand('gh', "return { stdout: '[]\\n' };"));
+  stubs.push(
+    await probeStages.run('preflight-gh-stub-setup', () =>
+      stubCommand('gh', "return { stdout: '[]\\n' };"),
+    ),
+  );
 };
 
 const preflight = async (p: Fixture, extraEnv: NodeJS.ProcessEnv = {}) => {
   await stubProbes();
-  const result = await run(
-    process.execPath,
-    [path.join(p.root, '.claude', 'scripts', 'preflight.mjs'), '--json'],
-    p.root,
-    {
-      ...process.env,
-      GIT_DIR: undefined,
-      GIT_WORK_TREE: undefined,
-      RIG_RUN_DIR: undefined,
-      JIRA_BASE_URL: undefined,
-      JIRA_EMAIL: undefined,
-      JIRA_API_TOKEN: undefined,
-      ...extraEnv,
-    },
+  const result = await probeStages.run('preflight-json-cli', () =>
+    run(
+      process.execPath,
+      [path.join(p.root, '.claude', 'scripts', 'preflight.mjs'), '--json'],
+      p.root,
+      {
+        ...process.env,
+        GIT_DIR: undefined,
+        GIT_WORK_TREE: undefined,
+        RIG_RUN_DIR: undefined,
+        JIRA_BASE_URL: undefined,
+        JIRA_EMAIL: undefined,
+        JIRA_API_TOKEN: undefined,
+        ...extraEnv,
+      },
+    ),
   );
   expect(result.code, result.out).toBe(0);
   return JSON.parse(result.out) as {
@@ -141,7 +153,10 @@ describe('preflight — the configured queue must be readable before an unattend
   it('escapes terminal controls from an unknown adapter in JSON diagnostics and rendered output', async () => {
     const injectedAdapter =
       'does-not-exist\u001b]8;;https://example.invalid\u0007label\u001b]8;;\u0007\u009b';
-    const p = await fixture({ adapter: injectedAdapter });
+    const stages = createStageDiagnostics();
+    const p = await stages.run('terminal-fixture-setup', () =>
+      fixture({ adapter: injectedAdapter }),
+    );
     // Newlines delimit the human report; every other C0 control, DEL, and C1
     // byte is terminal input and must not reach either diagnostic surface.
     const hasUnsafeTerminalControl = (value: string) =>
@@ -150,13 +165,10 @@ describe('preflight — the configured queue must be readable before an unattend
         return code <= 0x08 || (code >= 0x0b && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
       });
     try {
-      const json = await preflight(p);
-      await stubProbes();
-      const rendered = await run(
-        process.execPath,
-        [path.join(p.root, '.claude', 'scripts', 'preflight.mjs')],
-        p.root,
-        {
+      const json = await stages.run('terminal-json-preflight', () => preflight(p));
+      expect(stubs).toHaveLength(2);
+      const rendered = await stages.run('terminal-rendered-cli', () =>
+        run(process.execPath, [path.join(p.root, '.claude', 'scripts', 'preflight.mjs')], p.root, {
           ...process.env,
           GIT_DIR: undefined,
           GIT_WORK_TREE: undefined,
@@ -164,9 +176,10 @@ describe('preflight — the configured queue must be readable before an unattend
           JIRA_BASE_URL: undefined,
           JIRA_EMAIL: undefined,
           JIRA_API_TOKEN: undefined,
-        },
+        }),
       );
       expect(rendered.code, rendered.out).toBe(0);
+      expect(stubs).toHaveLength(2);
       const detail = json.checks.queue?.detail ?? '';
 
       expect(json.checks.queue).toMatchObject({ ok: false });
@@ -181,7 +194,9 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(rendered.out).toContain('\\u009b');
       expect(hasUnsafeTerminalControl(rendered.out)).toBe(false);
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await stages.run('terminal-fixture-teardown', () =>
+        rm(p.root, { recursive: true, force: true }),
+      );
     }
   });
 
@@ -192,6 +207,7 @@ describe('preflight — the configured queue must be readable before an unattend
     try {
       const result = await preflight(p);
 
+      expect(existsSync(p.configPath)).toBe(false);
       expect(result.checks.queue).toMatchObject({ ok: true });
       // The stubbed deployment history is deliberately unavailable. A successful
       // queue probe must preserve that CAUTION instead of upgrading the run to GO.
@@ -200,6 +216,25 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(await readFile(p.planPath, 'utf8')).toBe(emptyQueue);
       expect(existsSync(p.journalPath)).toBe(false);
       expect(existsSync(p.runPath)).toBe(false);
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops when queue.json is a dangling link even though the default plan queue is readable', async () => {
+    const p = await fixture();
+    await writeFile(p.planPath, '## Agent queue\n\n');
+    await symlink(
+      path.join(p.root, 'missing-queue-config'),
+      p.configPath,
+      process.platform === 'win32' ? 'junction' : 'file',
+    );
+    try {
+      const result = await preflight(p);
+
+      expect(result.checks.queue).toMatchObject({ ok: false });
+      expect(result.checks.queue?.detail).toMatch(/queue\.json.*could not be read.*ENOENT/i);
+      expect(result.verdict).toBe('STOP');
     } finally {
       await rm(p.root, { recursive: true, force: true });
     }

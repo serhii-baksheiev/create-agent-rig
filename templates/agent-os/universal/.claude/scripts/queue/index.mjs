@@ -12,7 +12,7 @@
 // defaults to `plan-md`, which is the only adapter that works in a freshly
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import {
@@ -62,7 +62,10 @@ export const loadConfig = (configPath, { strictRead = false } = {}) => {
   try {
     raw = readFileSync(configPath, 'utf8');
   } catch (error) {
-    if (strictRead && error?.code !== 'ENOENT') {
+    if (
+      strictRead &&
+      (error?.code !== 'ENOENT' || lstatSync(configPath, { throwIfNoEntry: false }) !== undefined)
+    ) {
       throw new Error(`${configPath} could not be read (${error?.code ?? 'unknown error'})`, {
         cause: error,
       });
