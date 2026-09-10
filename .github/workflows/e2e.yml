@@ -7,6 +7,8 @@ on:
     paths:
       - 'packages/cli/**'
       - 'templates/**'
+      - '.github/workflows/e2e.yml'
+      - 'test/e2e/**'
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
@@ -32,3 +34,26 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+
+  windows-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test --maxWorkers=2
+      - run: pnpm --dir templates/skeleton/node-service install --frozen-lockfile
+      - name: Require a cold template artifact
+        shell: pwsh
+        run: |
+          if (Test-Path templates/skeleton/node-service/dist) {
+            throw 'Cold template validation requires an absent dist directory'
+          }
+      - run: pnpm --dir templates/skeleton/node-service test

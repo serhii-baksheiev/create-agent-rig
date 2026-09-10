@@ -1,9 +1,88 @@
 import { execFile } from 'node:child_process';
-import { closeSync, fstatSync, openSync, readSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
+
+export type PackageManager = 'npm' | 'pnpm' | 'npx';
+
+type PackageManagerInvocation = { file: string; prefix: string[] };
+export type PackageManagerRuntime = {
+  nodeExecutable?: string;
+  exists?: (file: string) => boolean;
+};
+
+const cliNameFor = (manager: PackageManager): RegExp => {
+  switch (manager) {
+    case 'npm':
+      return /^npm-cli\.js$/i;
+    case 'npx':
+      return /^npx-cli\.js$/i;
+    case 'pnpm':
+      return /^pnpm(?:-cli)?\.(?:cjs|js)$/i;
+  }
+};
+
+/**
+ * The executable and leading argv for one package manager.
+ *
+ * Windows package-manager script shims cannot be executed by `execFile`.
+ * Run their JavaScript CLIs with the current Node executable to preserve argv.
+ * `test/template/package-manager-transport.test.ts` exercises CLI resolution
+ * and literal argument forwarding through the process boundary.
+ */
+export const packageManagerInvocation = (
+  manager: PackageManager,
+  environment: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+  runtime: PackageManagerRuntime = {},
+): PackageManagerInvocation => {
+  if (platform !== 'win32') return { file: manager, prefix: [] };
+
+  const nodeExecutable = runtime.nodeExecutable ?? process.execPath;
+  const fileExists = runtime.exists ?? existsSync;
+
+  const currentCli = environment.npm_execpath;
+  if (currentCli && cliNameFor(manager).test(path.basename(currentCli)) && fileExists(currentCli)) {
+    return { file: nodeExecutable, prefix: [currentCli] };
+  }
+
+  if (manager !== 'pnpm') {
+    const cli = path.join(
+      path.dirname(nodeExecutable),
+      'node_modules',
+      'npm',
+      'bin',
+      manager === 'npm' ? 'npm-cli.js' : 'npx-cli.js',
+    );
+    if (fileExists(cli)) return { file: nodeExecutable, prefix: [cli] };
+  }
+
+  if (manager === 'pnpm') {
+    const installedCli = path.join(
+      path.dirname(nodeExecutable),
+      'node_modules',
+      'pnpm',
+      'bin',
+      'pnpm.cjs',
+    );
+    if (fileExists(installedCli)) return { file: nodeExecutable, prefix: [installedCli] };
+
+    const corepackCli = path.join(
+      path.dirname(nodeExecutable),
+      'node_modules',
+      'corepack',
+      'dist',
+      'pnpm.js',
+    );
+    if (fileExists(corepackCli)) return { file: nodeExecutable, prefix: [corepackCli] };
+  }
+
+  throw new Error(
+    `Cannot locate the JavaScript CLI for ${manager}; npm_execpath must name its installed CLI on Windows`,
+  );
+};
 
 /**
  * RP-70: the two e2e suites that install through `npx` let `execFile`'s
@@ -280,6 +359,7 @@ export const run = async (
   command: string,
   args: string[],
   options: Parameters<typeof exec>[2],
+  reportedCommand = command,
 ): Promise<{ stdout: string; stderr: string }> => {
   try {
     const { stdout, stderr } = await exec(command, args, options);
@@ -288,7 +368,7 @@ export const run = async (
     const cache = options?.env?.npm_config_cache;
     const failure: ExecFailure = typeof error === 'object' && error !== null ? error : {};
     throw new Error(
-      commandFailureReport(`${command} ${args.join(' ')}`, error, npmDebugLogs(cache)),
+      commandFailureReport(`${reportedCommand} ${args.join(' ')}`, error, npmDebugLogs(cache)),
       // 🔴 Deliberately NOT `{ cause: error }`. The report above is redacted;
       // the original `execFile` rejection is not — it carries the raw `cmd`,
       // `stdout` and `stderr` as properties AND repeats the command line inside
@@ -308,8 +388,18 @@ export const run = async (
   }
 };
 
+/** A package-manager run that preserves literal argv on Windows and redacts failures like `run`. */
+export const runPackageManager = (
+  manager: PackageManager,
+  args: string[],
+  options: Parameters<typeof exec>[2],
+): Promise<{ stdout: string; stderr: string }> => {
+  const invocation = packageManagerInvocation(manager, options?.env ?? process.env);
+  return run(invocation.file, [...invocation.prefix, ...args], options, manager);
+};
+
 /** `run`, for the install path RP-70 was filed about. */
 export const runNpx = (
   args: string[],
   options: Parameters<typeof exec>[2],
-): Promise<{ stdout: string; stderr: string }> => run('npx', args, options);
+): Promise<{ stdout: string; stderr: string }> => runPackageManager('npx', args, options);
