@@ -314,7 +314,10 @@ describe('revalidate.mjs — the CLI contract', () => {
     expect(result.action).toBe('continue');
     expect(result.main.changed).toEqual([]);
     // and once the ref is current, the same path is the hold it should be
-    await p.moveMain(['a.txt'], { fetch: true });
+    const publishedBeforeRefresh = await git(['ls-remote', 'origin', 'refs/heads/master'], p.clone);
+    await git(['fetch', '-q', 'origin'], p.clone);
+    const publishedAfterRefresh = await git(['ls-remote', 'origin', 'refs/heads/master'], p.clone);
+    expect(publishedAfterRefresh).toBe(publishedBeforeRefresh);
     expect((await revalidateJson(p)).result.source).toEqual(['claim:scope', 'main:a.txt']);
   });
 
