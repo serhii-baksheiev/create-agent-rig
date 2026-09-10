@@ -26,10 +26,10 @@ import { fileURLToPath } from 'node:url';
 // cycle, because preflight is the only scripted brake check and had no test.
 import { brakeIsOn } from './stop-flag.mjs';
 import { readRevalidationContract } from './lib/claim-records.mjs';
+import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 
 /** The items this script cannot check: judgement, or a call worth more than it saves. */
 export const UNCHECKED = [
-  'the queue is reachable through its adapter (`node .claude/scripts/queue/index.mjs next`)',
   'no stray worktree from a dead session that this run might mistake for its own',
   'a budget is declared for this run, and it is written down somewhere the run can re-read',
 ];
@@ -136,6 +136,30 @@ export const checkDetectionContract = (projectRoot) => {
   }
 };
 
+// See test/template/preflight-queue.test.ts (absent in a generated rig) ›
+// "reads exactly one adapter listing without selecting, claiming, or writing queue and run files".
+export const checkQueue = async (projectRoot) => {
+  try {
+    const configPath = join(projectRoot, '.claude', 'queue.json');
+    const config = loadConfig(configPath, { strictRead: true });
+    const adapterName = config.adapter ?? 'plan-md';
+    const adapter = await resolveAdapter(adapterName);
+    await adapter.listEligible(optionsWithPlanPath(config.options, configPath));
+    return { ok: true, detail: `queue readable through ${adapterName}` };
+  } catch (error) {
+    const diagnostic = Array.from(String(error?.message ?? error), (character) => {
+      const code = character.codePointAt(0);
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f)
+        ? `\\u${code.toString(16).padStart(4, '0')}`
+        : character;
+    }).join('');
+    return {
+      ok: false,
+      detail: `could not read queue: ${diagnostic}`,
+    };
+  }
+};
+
 /** The last deploy must have concluded successfully — never start on a broken runtime. */
 export const checkLastDeploy = ({ workflow = 'deploy' } = {}) => {
   try {
@@ -157,8 +181,7 @@ export const checkLastDeploy = ({ workflow = 'deploy' } = {}) => {
 
 /**
  * STOP on any hard failure; CAUTION on anything that is not a clean pass; GO only
- * when every scripted item genuinely passed. The three unscripted items are still
- * the reader's.
+ * when every scripted item genuinely passed. Unscripted checks remain the reader's.
  *
  * `stale` and `unknown` both give CAUTION but are never merged into one word:
  * "I looked and it is stale" is actionable, "I could not look" is not, and neither
@@ -216,6 +239,7 @@ if (invokedDirectly()) {
     killSwitch: checkKillSwitch(),
     runDirNotExported: checkRunDirNotExported(),
     detectionContract: checkDetectionContract(projectRoot),
+    queue: await checkQueue(projectRoot),
     defaultBranchFresh: checkDefaultBranchFresh(),
     lastDeploy: checkLastDeploy(),
   };

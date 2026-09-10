@@ -1,6 +1,6 @@
 # PLAN — `create-agent-rig` (project generator: agent-os + skeleton)
 
-> **0.9.0, 10 Sep:** RP-169 Done (#203); RP-172 active; #202, #204, RP-59 and
+> **0.9.0, 10 Sep:** RP-169 Done (#203); RP-172 Done (#205); #202, #204, RP-59 and
 > RP-91 open. Evidence: [September journal](journal/2026-09.md). Order: live Jira.
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.
