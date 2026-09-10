@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
-import { installEnv, run, runNpx } from './run.js';
+import { installEnv, runNpx, runPackageManager } from './run.js';
 
 // Phase 8.3: the npm-publish path differs from the git path exactly where
 // scaffolders classically break — the packed file set and the file modes.
@@ -121,14 +121,14 @@ describe('npm pack → install → generate (the publish path)', () => {
   // broken @app/ scope rewrite (workspace deps resolve only if consistent).
   it('a generated node-service project from the tarball passes its own checks', async () => {
     const projectDir = path.join(work, 'node-service', 'app');
-    await run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
-    await run('pnpm', ['check'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['check'], { cwd: projectDir });
   });
 
   it('a generated aws-serverless project from the tarball passes its own checks', async () => {
     const projectDir = path.join(work, 'aws-serverless', 'app');
-    await run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
-    await run('pnpm', ['check'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['install', '--no-frozen-lockfile'], { cwd: projectDir });
+    await runPackageManager('pnpm', ['check'], { cwd: projectDir });
   });
 
   it('file modes survive the pack → generate path', async () => {

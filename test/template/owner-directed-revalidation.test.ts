@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -109,11 +110,13 @@ const fixture = async (): Promise<Fixture> => {
   await writeFile(path.join(clone, 'a.txt'), 'a.txt on the branch\n');
   await git(['commit', '-q', '-a', '-m', 'the hotfix touches a.txt'], clone);
 
+  let mainRevision = 0;
   const moveMain = async (files: string[]): Promise<void> => {
-    await git(['clone', '-q', origin, other], root).catch(() => '');
-    await git(['pull', '-q', 'origin', 'master'], other);
+    mainRevision += 1;
+    // This clone is the origin's sole writer and already has every main commit.
+    if (!existsSync(other)) await git(['clone', '-q', origin, other], root);
     for (const name of files) {
-      await writeFile(path.join(other, name), `${name} moved on main\n`);
+      await writeFile(path.join(other, name), `${name} moved on main ${mainRevision}\n`);
     }
     await git(['add', '-A'], other);
     await git(['commit', '-q', '-m', `main touches ${files.join(',')}`], other);
@@ -605,12 +608,15 @@ describe('revalidate.mjs — an owner-directed HOLD can be answered (RP-94)', ()
     await first.moveMain(['a.txt']);
     const a = await jsonOf(await ownerDirected(first, ['--json']));
 
-    const second = await fixture();
-    await second.moveMain(['a.txt']);
-    const b = await jsonOf(await ownerDirected(second, ['--json']));
+    // Advance the shared history while retaining the feature's content, then
+    // publish a new main change. A second bare origin contributes no coverage.
+    await git(['merge', '-q', '--no-edit', '-s', 'ours', 'origin/master'], first.clone);
+    await first.moveMain(['a.txt']);
+    const b = await jsonOf(await ownerDirected(first, ['--json']));
 
     // same mode, same point, same `source` — and still distinguishable
     expect(a.source).toEqual(b.source);
+    expect(a.main.mergeBase).not.toBe(b.main.mergeBase);
     expect((a as unknown as { id: string }).id).not.toBe((b as unknown as { id: string }).id);
   });
 

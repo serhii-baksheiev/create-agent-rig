@@ -1,12 +1,10 @@
-import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { TestProject } from 'vitest/node';
+import { runPackageManager } from './run.js';
 
-const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // The e2e suite packs the published tarball exactly ONCE, here, before any
@@ -35,10 +33,14 @@ export default async function setup(project: TestProject): Promise<() => Promise
   const packDir = path.join(work, 'pack');
   await mkdir(packDir);
 
-  const { stdout } = await exec('npm', ['pack', '--json', '--pack-destination', packDir], {
-    cwd: repoRoot,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const { stdout } = await runPackageManager(
+    'npm',
+    ['pack', '--json', '--pack-destination', packDir],
+    {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
   const [packed] = JSON.parse(stdout) as Array<{ filename: string; files: { path: string }[] }>;
   if (!packed) throw new Error('npm pack produced no tarball');
 

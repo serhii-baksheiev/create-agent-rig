@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
-import { installEnv } from './run.js';
+import { installEnv, runPackageManager } from './run.js';
 
 const exec = promisify(execFile);
 const sha256 = (content: string): string =>
@@ -60,10 +60,14 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
     // one call site where they were already right: it took 2.8 s in the very CI
     // run where pack-install timed out at 300 s, which is the observation that
     // pointed at audit in the first place.
-    await exec('npm', ['install', '--no-audit', '--no-fund', '--prefix', prefix, tarball], {
-      maxBuffer: 64 * 1024 * 1024,
-      env: installEnv(path.join(work, 'npm-cache')),
-    });
+    await runPackageManager(
+      'npm',
+      ['install', '--no-audit', '--no-fund', '--prefix', prefix, tarball],
+      {
+        maxBuffer: 64 * 1024 * 1024,
+        env: installEnv(path.join(work, 'npm-cache')),
+      },
+    );
     const pkgRoot = path.join(prefix, 'node_modules', 'create-agent-rig');
     cliBin = path.join(pkgRoot, 'packages', 'cli', 'dist', 'index.js');
     installedTemplates = path.join(pkgRoot, 'templates');
