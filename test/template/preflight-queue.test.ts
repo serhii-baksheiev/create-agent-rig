@@ -257,6 +257,46 @@ describe('preflight — the configured queue must be readable before an unattend
     }
   });
 
+  it('does not disclose malformed queue.json bytes in decoded JSON diagnostics or rendered output', async () => {
+    // This short, benign prefix is quoted by the current JSON parser error.
+    // The preflight diagnostic must still identify the bad queue config without
+    // carrying that source excerpt into either report surface.
+    const parserExcerptCanary = 'q-canary';
+    const p = await fixture();
+    await writeFile(p.planPath, '## Agent queue\n\n');
+    await writeFile(p.configPath, `${parserExcerptCanary}\n`);
+    try {
+      const json = await preflight(p);
+      expect(stubs).toHaveLength(2);
+      const rendered = await run(
+        process.execPath,
+        [path.join(p.root, '.claude', 'scripts', 'preflight.mjs')],
+        p.root,
+        {
+          ...process.env,
+          GIT_DIR: undefined,
+          GIT_WORK_TREE: undefined,
+          RIG_RUN_DIR: undefined,
+          JIRA_BASE_URL: undefined,
+          JIRA_EMAIL: undefined,
+          JIRA_API_TOKEN: undefined,
+        },
+      );
+      expect(rendered.code, rendered.out).toBe(0);
+      expect(stubs).toHaveLength(2);
+
+      const detail = json.checks.queue?.detail ?? '';
+      expect(json.checks.queue).toMatchObject({ ok: false });
+      expect(detail).toMatch(/queue\.json.*not valid JSON|not valid JSON.*queue\.json/i);
+      expect(json.verdict).toBe('STOP');
+      expect(detail).not.toContain(parserExcerptCanary);
+      expect(rendered.out).toMatch(/queue\.json.*not valid JSON|not valid JSON.*queue\.json/i);
+      expect(rendered.out).not.toContain(parserExcerptCanary);
+    } finally {
+      await rm(p.root, { recursive: true, force: true });
+    }
+  });
+
   it('stops when queue.json is a directory even though the default plan queue is readable', async () => {
     const p = await fixture();
     await writeFile(p.planPath, '## Agent queue\n\n');

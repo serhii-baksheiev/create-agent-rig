@@ -78,7 +78,7 @@ export const loadConfig = (configPath, { strictRead = false } = {}) => {
   } catch (error) {
     throw new Error(
       `${configPath} exists but is not valid JSON, so the configured queue cannot be ` +
-        `read: ${String(error?.message ?? error).split('\n')[0]}. Fix the file — ` +
+        'read. Fix the file — ' +
         'silently reading a different queue is worse than refusing to start.',
       { cause: error },
     );
