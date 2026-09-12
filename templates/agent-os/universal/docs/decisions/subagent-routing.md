@@ -1,7 +1,8 @@
 # Subagent routing: every gate pins its model and effort
 
 Status: accepted for RP-173 (Claude Code). The Codex half, RP-166, is recorded in
-`codex-adapter.md`; both harnesses are generated from one role table.
+`codex-adapter.md`. Both harnesses' routing comes from one role table: the Codex
+profiles are generated from it, and the Claude agent definitions are checked against it.
 
 ## Decision
 
@@ -44,15 +45,16 @@ Claude Code's changelog states two of the rules:
   definition's `model:`, then `CLAUDE_CODE_SUBAGENT_MODEL`, then the parent session —
   and that order holds from **2.1.251**. Before it the environment variable overrode
   definitions, so the unnamed default this rig sets would replace every gate's pin.
-  That is why 2.1.251 is the minimum version the session-start check enforces; it is
+  That is why 2.1.251 is the version the session-start check warns below; it is
   the release that makes the MODEL pins outrank the shipped default, and nothing more
   is claimed for it — the `effort:` field and the `Agent` tool name the guard matches
   were observed working on 2.1.269 and 2.1.270 only.
 - `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, added in 2.1.257, applies one model to every
   subagent and ignores each definition's `model:`.
 
-The rest is measured. Each row is a live run whose subagent transcript was read
-by a script, never the subagent's own report; the rows are the generator's
+The rest is measured. Each row records a live Claude Code run, read by a script from
+what Claude Code itself wrote — a subagent transcript, a hook's payload or a hook's
+environment — never from a subagent's own report. The rows are the generator's
 `docs/capability-evidence.json` (absent in a generated rig), keyed by `mechanism`
 and `surface`:
 
@@ -133,7 +135,8 @@ and › "refuses a Claude agent template whose model disagrees with the routing 
 ## Risk and rollback
 
 A pinned model can be unavailable to an account. In the generator the recovery is
-changing the table; in a project it is changing the definitions as above — never a
+changing the table and, in the same change, the Claude agent definitions checked
+against it; in a project it is changing the definitions as above — never a
 per-call override. Rollback in a project is deleting the `model:` / `effort:` lines,
 the `env` entry, and the two hooks with their wiring; every gate then inherits the
 session again.

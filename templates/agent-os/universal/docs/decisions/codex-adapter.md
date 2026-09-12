@@ -45,7 +45,9 @@ not carried over. This is a known parity limit, not an implicit restriction.
 The main risks are generated-file drift, downstream edits to only one snapshot,
 unsupported Claude shapes, and a pinned model being unavailable in a user's
 workspace. In the generator, recovery is to update the central routing table to
-an available model or use a separate supported escalation profile. A generated
+an available model or use a separate supported escalation profile — the Codex
+profiles are regenerated from it, while the Claude agent definitions are checked
+against it and are edited to match in the same change. A generated
 project has no copy of that table: there, recovery is editing the role's
 definitions on both harnesses in one reviewed change, and `upgrade` then reports
 those files as the project's own instead of replacing them

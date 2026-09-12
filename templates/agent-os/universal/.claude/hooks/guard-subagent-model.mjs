@@ -76,7 +76,11 @@ const shapeOf = (value) => {
   return type === 'object' ? 'an object' : `a ${type}`;
 };
 
-/** A model name as a refusal may print it: bounded, and escaped so it cannot carry control bytes. */
+/**
+ * A model name as a refusal may print it: at most MAX_ECHOED_MODEL characters,
+ * through JSON.stringify — which escapes C0 control bytes such as ESC, and
+ * leaves other non-ASCII characters (C1 controls, bidi overrides) as they are.
+ */
 const echoed = (model) => JSON.stringify(model.slice(0, MAX_ECHOED_MODEL));
 
 const unreadable = (field, value, expected) => ({
