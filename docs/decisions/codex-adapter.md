@@ -18,11 +18,13 @@ generated release. There is no downstream automatic drift check.
 
 Two hand-maintained rulebooks inevitably diverge. Derivation keeps the generated
 snapshots aligned while preserving native Codex formats. The adapter translates
-the fields for which Codex has native controls. Codex-only execution policy is
-declared once in `templates/agent-os/codex-agent-profiles.json`, outside the
-portable Claude frontmatter, and the projector refuses a missing or orphaned
-agent profile. It also refuses duplicate source-agent names across layers,
-since one profile name cannot route two definitions.
+the fields for which Codex has native controls. Subagent routing — each role's
+model and effort, for both harnesses — is declared once in the generator's
+`templates/agent-os/subagent-routing.json` (rationale:
+`docs/decisions/subagent-routing.md`). The Codex profiles are derived from that
+table, and the projector refuses a missing or orphaned agent profile. It also
+refuses duplicate source-agent names across layers, since one profile name
+cannot route two definitions.
 
 Frequent bounded work (`test-writer`, `prose-reviewer`) uses `gpt-5.6-terra`;
 correctness, security, and infrastructure gates use `gpt-5.6-sol`. Every named

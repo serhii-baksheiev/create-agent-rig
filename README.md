@@ -135,7 +135,14 @@ wired by both `.claude/settings.json` and `.codex/hooks.json`:
 - **`inject-rules`** — re-injects the autonomy rules at session start, so they
   survive compaction and resumes: the whole file, minus the regions the file
   itself marks as reference. What is left out is a decision written in
-  `autonomy.md` on the line above it, not one this hook infers.
+  `autonomy.md` on the line above it, not one this hook infers;
+- **`guard-subagent-model`** (Claude Code) — refuses an `Agent` dispatch that
+  passes a call-site `model` for a subagent whose definition pins one: the
+  definition, not the call, decides which model a gate reads with;
+- **`warn-subagent-routing`** (Claude Code) — at session start, warns when
+  `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` or `CLAUDE_CODE_EFFORT_LEVEL` is set, or when
+  Claude Code is older than 2.1.251 or its version cannot be read — each of which
+  voids the pins below. It warns and never blocks.
 
 **A brake that is a real file.** `touch ~/.claude/<project>-loop-STOP` and no
 merge lands until it is removed — enforced at the tool layer, so it holds even if
@@ -166,6 +173,19 @@ never), **stop rules** (three strikes, flaky ≠ retry, session staleness),
 generator for the invariant→hook→test pattern; `post-deploy-verify` and
 `ro-debug` on the AWS target), and matching one-page `CLAUDE.md` / `AGENTS.md`
 maps a fresh session orients by.
+
+**Each gate reads with a pinned model and effort**, so a SHIP does not change
+meaning with whatever model the session was started on. `code-reviewer`,
+`security-scanner` and `cdk-diff-reviewer` pin `claude-opus-5`; `test-writer` and
+`prose-reviewer` pin `claude-sonnet-5`; all pin `high` effort — and their Codex
+profiles pin `gpt-5.6-sol` / `gpt-5.6-terra` from the same role table. A subagent
+with no definition defaults to `claude-sonnet-5` through
+`CLAUDE_CODE_SUBAGENT_MODEL` in `.claude/settings.json`; its effort cannot be
+pinned and follows the session. The driver session's own model and effort stay
+yours. To change a role in a generated project, edit `model:` / `effort:` in its
+`.claude/agents/<role>.md` — and the matching `.codex/agents/<role>.toml` — in a
+reviewed change; `upgrade` then reports the edited file as yours instead of
+replacing it. Why these values, and what voids them: `docs/decisions/subagent-routing.md`.
 
 **The hooks are examples, not laws.** `.claude/rules/invariants.md` states the
 pattern behind each one — a stated invariant, a mechanical check, a test for the

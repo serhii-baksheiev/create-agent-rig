@@ -114,7 +114,7 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
   });
 
   // The record below is measured, not remembered. The item's premise — that only
-  // consistency.test.ts walked a tree — was false: fifteen files here still call
+  // consistency.test.ts walked a tree — was false: sixteen files here still call
   // readdir with `withFileTypes: true` or `recursive: true` themselves (the regex
   // tolerates one level of parentheses in the first argument, so a call whose
   // directory is itself a path.join(...) expression counts). Every one of
@@ -177,6 +177,7 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
       'policy-declaration.test.ts',
       'run-journal.test.ts',
       'session-messaging-schema.test.ts',
+      'subagent-routing.test.ts',
     ]);
     expect([...new Set(rootedAtDotClaude)]).toEqual(['consistency.test.ts']);
     for (const [name, segments] of Object.entries(rootedUnderDotClaude)) {
