@@ -44,9 +44,12 @@ not carried over. This is a known parity limit, not an implicit restriction.
 
 The main risks are generated-file drift, downstream edits to only one snapshot,
 unsupported Claude shapes, and a pinned model being unavailable in a user's
-workspace. Recovery is to update the central profile policy to an available
-model or use a separate supported escalation profile, not to maintain a
-downstream edit that the next upgrade erases. In the generator, the adapter fails loudly when
+workspace. In the generator, recovery is to update the central routing table to
+an available model or use a separate supported escalation profile. A generated
+project has no copy of that table: there, recovery is editing the role's
+definitions on both harnesses in one reviewed change, and `upgrade` then reports
+those files as the project's own instead of replacing them
+(`docs/decisions/subagent-routing.md`). In the generator, the adapter fails loudly when
 it cannot derive a portable hook command and its drift check catches stale
 output. Generated projects rely on review for subsequent local parity. Rollback
 is deleting the derived Codex files from the generated project and reverting the

@@ -1,9 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fifosAvailable, skipUnless } from '../helpers/env.js';
 
 /**
  * RP-173: the two Claude-only routing hooks, spawned exactly as Claude Code
@@ -20,12 +21,18 @@ interface HookResult {
   stdout: string;
 }
 
-function runHookRaw(script: string, stdin: string, env: NodeJS.ProcessEnv): Promise<HookResult> {
+/** `timeout` kills a hook that has not answered after that many ms; 0 waits for ever. */
+function runHookRaw(
+  script: string,
+  stdin: string,
+  env: NodeJS.ProcessEnv,
+  timeout = 0,
+): Promise<HookResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [path.join(hooksDir, script)],
-      { env },
+      { env, timeout },
       (error, stdout, stderr) => {
         const code = error ? ((error as { code?: number }).code ?? 1) : 0;
         resolve({ code, stderr, stdout });
@@ -85,11 +92,13 @@ describe('guard-subagent-model hook (a call-site model never overrides a pinned 
     await rm(root, { recursive: true, force: true });
   });
 
-  const guard = (payload: unknown) =>
-    runHookRaw('guard-subagent-model.mjs', JSON.stringify(payload), {
-      ...process.env,
-      CLAUDE_PROJECT_DIR: root,
-    });
+  const guard = (payload: unknown, timeout?: number) =>
+    runHookRaw(
+      'guard-subagent-model.mjs',
+      JSON.stringify(payload),
+      { ...process.env, CLAUDE_PROJECT_DIR: root },
+      timeout,
+    );
 
   /** The Agent tool payload measured on Claude Code 2.1.269. */
   const dispatch = (toolInput: Record<string, unknown>) => ({
@@ -173,10 +182,65 @@ describe('guard-subagent-model hook (a call-site model never overrides a pinned 
     expect(result.stderr).not.toMatch(/split/i);
   });
 
+  it.each<[string, unknown]>([
+    ['a string', 'x'],
+    ['an array', ['x']],
+  ])(
+    'refuses to inspect a tool_input that is %s and says to resend it, not to split it',
+    async (_case, toolInput) => {
+      const result = await guard({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Agent',
+        tool_input: toolInput,
+      });
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/resend/i);
+      expect(result.stderr).not.toMatch(/split/i);
+    },
+  );
+
   it('refuses an agent file whose frontmatter does not close within the read bound, and names the bound', async () => {
     const result = await guard(dispatch({ subagent_type: 'big', model: 'haiku' }));
     expect(result.code).toBe(2);
     expect(result.stderr).toMatch(/bytes|limit|bound/i);
+  });
+
+  it('echoes a model pinned in the agent file bounded and escaped', async () => {
+    const esc = String.fromCharCode(0x1b);
+    await writeFile(
+      path.join(root, '.claude', 'agents', 'long-pin.md'),
+      agentFile('long-pin', [`model: ${'a'.repeat(200)}${esc}[31mred`, 'effort: high']),
+    );
+    const result = await guard(dispatch({ subagent_type: 'long-pin', model: 'haiku' }));
+    expect(result.code).toBe(2);
+    expect(result.stderr).not.toContain(esc);
+    expect(result.stderr).not.toContain('a'.repeat(65));
+  });
+
+  it('reads a pin in an agent file that starts with a byte-order mark', async () => {
+    const bom = String.fromCharCode(0xfeff);
+    await writeFile(
+      path.join(root, '.claude', 'agents', 'bom-agent.md'),
+      `${bom}${agentFile('bom-agent', ['model: claude-opus-5', 'effort: high'])}`,
+    );
+    const result = await guard(dispatch({ subagent_type: 'bom-agent', model: 'haiku' }));
+    expect(result.code).toBe(2);
+  });
+
+  it('allows a call-site model without waiting when the agent path is not a regular file', async (ctx) => {
+    skipUnless(ctx, fifosAvailable().ok, fifosAvailable().reason);
+    const fifo = path.join(root, '.claude', 'agents', 'fifo-agent.md');
+    execFileSync('mkfifo', [fifo]);
+    // Opening a FIFO waits for a writer that never comes. The kill turns that
+    // wait into a failed assertion rather than a hook process left behind.
+    const result = await guard(dispatch({ subagent_type: 'fifo-agent', model: 'haiku' }), 5_000);
+    expect(result.code, 'the hook answered instead of waiting on the FIFO').toBe(0);
+  }, 10_000);
+
+  it('allows a call-site model when the agent path is a directory', async () => {
+    await mkdir(path.join(root, '.claude', 'agents', 'dir-agent.md'));
+    const result = await guard(dispatch({ subagent_type: 'dir-agent', model: 'haiku' }));
+    expect(result.code).toBe(0);
   });
 
   it.each([

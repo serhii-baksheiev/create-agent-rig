@@ -27,9 +27,9 @@ export const ROUTING_POLICY_PATH = path.join(
 export const CLAUDE_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
 /**
- * Environment variables that void the pins when set: the first ignores every
- * agent definition's `model:`, the second takes precedence over effort settings.
- * Shipped settings must never set them.
+ * Environment variables shipped settings must never set, because each one
+ * replaces a pin: the rows for `subagent-model-pin` and `subagent-effort-pin` on
+ * their `environment:` surfaces in docs/capability-evidence.json.
  */
 export const FORBIDDEN_CLAUDE_ENV = Object.freeze([
   'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
@@ -38,13 +38,17 @@ export const FORBIDDEN_CLAUDE_ENV = Object.freeze([
 
 const HARNESSES = ['claude', 'codex'];
 const POLICY_KEYS = ['claudeModels', 'unnamed', 'roles'];
-const CLAUDE_ROUTE_KEYS = ['model', 'effort'];
+const ROUTE_KEYS = ['model', 'effort'];
 
 const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const throwIfAny = (problems) => {
   if (problems.length > 0) throw new Error(problems.join('\n'));
 };
+
+/** The fields of one route that the policy does not know. */
+const unknownRouteKeys = (route) =>
+  isRecord(route) ? Object.keys(route).filter((key) => !ROUTE_KEYS.includes(key)) : [];
 
 /** The closed shape of the policy file; returns the policy when it is valid. */
 export function validateRoutingPolicy(policy) {
@@ -76,13 +80,17 @@ export function validateRoutingPolicy(policy) {
     problems.push('routing policy is missing its unnamed mapping');
   } else {
     for (const key of Object.keys(unnamed)) {
-      if (!HARNESSES.includes(key))
+      if (!HARNESSES.includes(key)) {
         problems.push(`unnamed subagents name an unknown harness: ${key}`);
+      }
     }
     for (const harness of HARNESSES) {
       if (!isRecord(unnamed[harness])) {
         problems.push(`unnamed subagents are missing their ${harness} mapping`);
       }
+    }
+    for (const key of unknownRouteKeys(unnamed.codex)) {
+      problems.push(`unnamed Codex subagents carry an unknown field: ${key}`);
     }
     const claude = unnamed.claude;
     if (isRecord(claude)) {
@@ -92,10 +100,8 @@ export function validateRoutingPolicy(policy) {
       if (Object.hasOwn(claude, 'effort')) {
         problems.push('unnamed Claude subagents cannot pin an effort');
       }
-      for (const key of Object.keys(claude)) {
-        if (!CLAUDE_ROUTE_KEYS.includes(key)) {
-          problems.push(`unnamed Claude subagents carry an unknown field: ${key}`);
-        }
+      for (const key of unknownRouteKeys(claude)) {
+        problems.push(`unnamed Claude subagents carry an unknown field: ${key}`);
       }
       if (typeof claude.model !== 'string' || !Object.hasOwn(models, claude.model)) {
         problems.push(`unnamed Claude subagents name an unknown Claude model: ${claude.model}`);
@@ -122,12 +128,13 @@ export function validateRoutingPolicy(policy) {
           problems.push(`routing role ${role} names an unknown harness: ${key}`);
         }
       }
+      for (const key of unknownRouteKeys(entry.codex)) {
+        problems.push(`routing role ${role} carries an unknown Codex field: ${key}`);
+      }
       const claude = entry.claude;
       if (!isRecord(claude)) continue;
-      for (const key of Object.keys(claude)) {
-        if (!CLAUDE_ROUTE_KEYS.includes(key)) {
-          problems.push(`routing role ${role} carries an unknown Claude field: ${key}`);
-        }
+      for (const key of unknownRouteKeys(claude)) {
+        problems.push(`routing role ${role} carries an unknown Claude field: ${key}`);
       }
       if (typeof claude.model !== 'string' || !Object.hasOwn(models, claude.model)) {
         problems.push(`routing role ${role} pins an unknown Claude model: ${claude.model}`);

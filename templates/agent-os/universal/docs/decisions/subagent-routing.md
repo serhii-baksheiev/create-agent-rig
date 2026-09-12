@@ -32,41 +32,47 @@ rulebook rather than of how a session happened to be launched.
   policy change.
 - **The larger model reads correctness, security and infrastructure; the smaller one
   does bounded, frequent work** — the same split as the Codex tiers.
-- **`high` for every gate, and escalation is a policy change.** The `Agent` tool of
-  Claude Code 2.1.269 takes a `model` and no effort, so there is no per-call way to
-  raise a gate's effort, and none is invented here.
+- **`high` for every gate, and escalation is a policy change.** A dispatch has no way
+  to set a subagent's effort — the `per-dispatch-effort` row below — so raising a
+  gate's effort is an edit to its definition, and nothing here invents a per-call knob.
 
 ## How Claude Code resolves a pin, and what voids one
 
-From Claude Code's changelog and documentation:
+Claude Code's changelog states two of the rules:
 
 - A subagent's model comes from the per-dispatch `model` first, then the
-  definition's `model:`, then `CLAUDE_CODE_SUBAGENT_MODEL`, then the parent session.
-  That order holds from **2.1.251**; before it the environment variable overrode
-  definitions, which would put every gate on the unnamed default. 2.1.251 is
-  therefore the minimum version.
-- `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (added in 2.1.257) applies one model to every
+  definition's `model:`, then `CLAUDE_CODE_SUBAGENT_MODEL`, then the parent session —
+  and that order holds from **2.1.251**. Before it the environment variable overrode
+  definitions, so the unnamed default this rig sets would replace every gate's pin.
+  That is why 2.1.251 is the minimum version the session-start check enforces; it is
+  the release that makes the MODEL pins outrank the shipped default, and nothing more
+  is claimed for it — the `effort:` field and the `Agent` tool name the guard matches
+  were observed working on 2.1.269 and 2.1.270 only.
+- `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, added in 2.1.257, applies one model to every
   subagent and ignores each definition's `model:`.
 
-Measured on Claude Code 2.1.269, with each subagent's own transcript as the record
-of what ran (the rows are the generator's `docs/capability-evidence.json`, absent in
-a generated rig):
+The rest is measured. Each row is a live run whose subagent transcript was read
+by a script, never the subagent's own report; the rows are the generator's
+`docs/capability-evidence.json` (absent in a generated rig), keyed by `mechanism`
+and `surface`:
 
-- a definition's model and `effort: high` held under a driver on another model at
-  `medium`;
-- with `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, `code-reviewer` ran on `claude-sonnet-5`
-  — its effort pin still held;
-- with `CLAUDE_CODE_EFFORT_LEVEL=low`, `code-reviewer` ran at `low` — its model pin
-  still held;
-- a subagent with no definition ran on `claude-sonnet-5` at the session's effort;
-- a per-dispatch `model` replaced a definition's `model:`.
+- `subagent-model-pin` and `subagent-effort-pin` hold under a driver on another model
+  and effort (surface `.claude/agents/test-writer.md`);
+- `subagent-model-pin` does not hold with `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, and
+  `subagent-effort-pin` does not hold with `CLAUDE_CODE_EFFORT_LEVEL=low` — each
+  variable replaced only the pin it names;
+- `subagent-model-pin` does not hold against a call-site `model` when no guard
+  refuses the dispatch;
+- `unnamed-subagent-model` holds and `unnamed-subagent-effort` is unsupported: a
+  subagent with no definition ran on the shipped default at the session's effort.
 
 Two mechanisms follow, both in `.claude/hooks/`. `guard-subagent-model` refuses a
-per-dispatch `model` for an agent whose definition pins one. `warn-subagent-routing`
-warns at session start when either variable is set, or when the Claude Code version
-is older than 2.1.251 or cannot be read; it never blocks, because the variables are
-the operator's to set, and the warning makes their cost visible instead of taking
-the decision. Pinned in `subagent-routing-hooks.test.ts` (absent in a generated rig)
+per-dispatch `model` for an agent whose definition pins one (`call-site-model-guard`).
+`warn-subagent-routing` warns at session start when either variable is set, when
+Claude Code is older than 2.1.251, or when its version cannot be read from `AI_AGENT`
+(`claude-code-version-signal`); it never blocks, because the variables are the
+operator's to set and the warning makes their cost visible instead of taking the
+decision. Pinned in `subagent-routing-hooks.test.ts` (absent in a generated rig)
 › "blocks a call-site model on a project agent that pins one, and says to re-dispatch without it"
 and › "warns when %s is set, and never blocks the session".
 
@@ -76,26 +82,41 @@ environment: `subagent-routing.test.ts` (absent in a generated rig) ›
 
 ## What this does not do
 
-- **The effort of a subagent with no definition is not pinned.** No setting or
-  variable sets it; it runs at the session's effort. That is recorded as
-  unsupported, not worked around.
+- **The effort of a subagent with no definition is not pinned.** It runs at the
+  session's effort (`unnamed-subagent-effort`). That is recorded as unsupported, not
+  worked around.
 - **A definition says what was asked for; only the transcript says what ran.** A
   verdict does not yet carry the model and effort it was produced on.
+- **The guard's notion of a role is "a project agent whose definition pins a model".**
+  In a generated project the definitions are the policy (next section), so an agent
+  a project adds with a pin is a role, and a role whose definition is changed to
+  `model: inherit` has stopped being one — by that project's reviewed decision.
 - **The built-in agents get no definitions here.** A general-purpose subagent follows
   the unnamed default like any subagent without a definition.
 - **The warning is a warning.** A session started with `CLAUDE_CODE_EFFORT_LEVEL` set
-  still runs every gate — at that effort.
+  still runs every gate — at that level.
 
 ## Changing a role in this project
 
-This project carries no role table and no routing check: its agent definitions are
-its policy. To move a role, edit `model:` / `effort:` in `.claude/agents/<role>.md`
-and the matching `.codex/agents/<role>.toml` in one reviewed change; both trees are
-elevated paths. `upgrade` then reports the edited agent file as yours and leaves it
-alone, while an agent file nobody edited is replaced by the release's pinned one —
-`subagent-routing-install.test.ts` (absent in a generated rig) ›
-"replaces an untouched pre-pin agent with the pinned one" and ›
-"reports a pre-pin agent the user edited as a conflict and leaves its bytes alone".
+The item this record implements asked that a project lower a default by editing
+"its policy", with "the test following". Here that is realised as follows, and the
+difference from a literal reading is deliberate:
+
+- **The agent definitions are this project's policy.** It receives no copy of the
+  generator's role table and no routing check: a second copy beside the definitions,
+  with no projector here to keep the two aligned, is the drift `rules/invariants.md`
+  forbids ("one mechanism, one implementation"), and the Codex half already shipped
+  that way.
+- **To move a role**, edit `model:` / `effort:` in `.claude/agents/<role>.md` and the
+  matching `.codex/agents/<role>.toml` in one reviewed change; both trees are
+  elevated paths.
+- **The test that follows the table lives in the generator**, where the expected
+  values are read from the table rather than restated.
+- **`upgrade` reports the edited agent file as yours and leaves it alone**, while an
+  agent file nobody edited is replaced by the release's pinned one —
+  `subagent-routing-install.test.ts` (absent in a generated rig) ›
+  "replaces an untouched pre-pin agent with the pinned one" and ›
+  "reports a pre-pin agent the user edited as a conflict and leaves its bytes alone".
 
 ## In the generator
 
@@ -103,14 +124,16 @@ alone, while an agent file nobody edited is replaced by the release's pinned one
 `scripts/sync-codex-adapter.mjs --check` loads it through `scripts/subagent-routing.mjs`,
 derives the Codex profiles from it, and refuses a Claude agent without `model` or
 `effort`, a value that differs from its role, a role without an agent or an agent
-without a role, an effort the pinned model does not support, and shipped settings
-that miss the unnamed default or set either voiding variable —
+without a role, an effort the pinned model does not support, an unknown field in
+either harness's mapping, and shipped settings that miss the unnamed default or set
+either voiding variable —
 `subagent-routing.test.ts` (absent in a generated rig) › "refuses a routing policy with %s"
 and › "refuses a Claude agent template whose model disagrees with the routing policy".
 
 ## Risk and rollback
 
-A pinned model can be unavailable to an account. The recovery is changing the
-table — in this project, the definitions — never a per-call override. Rollback in a
-project is deleting the `model:` / `effort:` lines, the `env` entry, and the two
-hooks with their wiring; every gate then inherits the session again.
+A pinned model can be unavailable to an account. In the generator the recovery is
+changing the table; in a project it is changing the definitions as above — never a
+per-call override. Rollback in a project is deleting the `model:` / `effort:` lines,
+the `env` entry, and the two hooks with their wiring; every gate then inherits the
+session again.

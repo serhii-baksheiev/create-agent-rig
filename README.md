@@ -100,7 +100,8 @@ and `--dry-run` lists it before anything is written.
 one) cannot talk its way past them — each guard is a pre-write scan that stops
 the normal path cold (review and tests back it; the claim is stated exactly,
 never inflated). The hook implementations live once in `.claude/hooks/` and are
-wired by both `.claude/settings.json` and `.codex/hooks.json`:
+wired by both `.claude/settings.json` and `.codex/hooks.json` — except the two
+marked Claude Code, which only `.claude/settings.json` wires:
 
 - **`guard-core-purity`** — refuses any edit that puts I/O, clock, randomness,
   environment access, or a non-allowlisted import into the pure domain core;
@@ -140,9 +141,11 @@ wired by both `.claude/settings.json` and `.codex/hooks.json`:
   passes a call-site `model` for a subagent whose definition pins one: the
   definition, not the call, decides which model a gate reads with;
 - **`warn-subagent-routing`** (Claude Code) — at session start, warns when
-  `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` or `CLAUDE_CODE_EFFORT_LEVEL` is set, or when
-  Claude Code is older than 2.1.251 or its version cannot be read — each of which
-  voids the pins below. It warns and never blocks.
+  `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set (it replaces every model pin below),
+  when `CLAUDE_CODE_EFFORT_LEVEL` is set (it replaces every effort pin), when
+  Claude Code is older than 2.1.251 (the unnamed default then replaces the model
+  pins), or when its version cannot be read (so the pins cannot be confirmed to
+  hold). It warns and never blocks.
 
 **A brake that is a real file.** `touch ~/.claude/<project>-loop-STOP` and no
 merge lands until it is removed — enforced at the tool layer, so it holds even if

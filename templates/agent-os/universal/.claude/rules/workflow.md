@@ -38,6 +38,11 @@ subagent with a fresh context, and why the `pr-ship` gate fans reviewers out
 instead of self-checking. This isolation is load-bearing, not ceremony — do
 not "optimise" it away by reviewing in the authoring session.
 
+A reviewer whose definition pins its model is never dispatched with a call-site
+`model`: which model reads a change is the routing policy's decision, not the
+dispatching session's, and `guard-subagent-model` refuses the override
+(`docs/decisions/subagent-routing.md`).
+
 ## PR flow
 
 This applies **once the project has a remote and CI checks** — a freshly

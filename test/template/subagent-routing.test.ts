@@ -211,6 +211,20 @@ describe('the routing policy is closed', () => {
       /routing role reviewer carries an unknown Claude field: temperature/,
     ],
     [
+      'a role carrying a Codex field the policy does not know',
+      (p) =>
+        withRole(p, 'reviewer', {
+          ...p.roles.reviewer!,
+          codex: { ...p.roles.reviewer!.codex, temperature: 0 },
+        }),
+      /routing role reviewer carries an unknown Codex field: temperature/,
+    ],
+    [
+      'unnamed Codex subagents carrying a field the policy does not know',
+      (p) => ({ ...p, unnamed: { ...p.unnamed, codex: { ...p.unnamed.codex, temperature: 0 } } }),
+      /unnamed Codex subagents carry an unknown field: temperature/,
+    ],
+    [
       'unnamed Claude subagents pinning an effort',
       (p) => withUnnamedClaude(p, { model: 'claude-fixture-small', effort: 'low' }),
       /unnamed Claude subagents cannot pin an effort/,
@@ -685,5 +699,55 @@ describe('capability evidence records what the Claude routing can and cannot pin
     );
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.map((row) => row.status)).toEqual(rows.map(() => 'UNSUPPORTED'));
+  });
+
+  it('records the minimum Claude Code version the pins need, and it is the one the session-start check warns below', async () => {
+    const evidence = JSON.parse(await text(repoRoot, 'docs', 'capability-evidence.json')) as {
+      minimumVersions?: unknown;
+    };
+    expect(Array.isArray(evidence.minimumVersions), 'a top-level minimumVersions array').toBe(true);
+    const claude = ((evidence.minimumVersions ?? []) as Array<Record<string, unknown>>).filter(
+      (entry) => entry.harness === 'claude',
+    );
+    expect(claude).toHaveLength(1);
+    const entry = claude[0] ?? {};
+    const nonBlank = (value: unknown) => typeof value === 'string' && value.trim() !== '';
+    expect(typeof entry.version, 'version is a string').toBe('string');
+    expect(nonBlank(entry.why), 'why is not blank').toBe(true);
+    expect(nonBlank(entry.source), 'source is not blank').toBe(true);
+
+    const { MINIMUM_CLAUDE_CODE_VERSION } = (await import(
+      pathToFileURL(path.join(universal, '.claude', 'hooks', 'warn-subagent-routing.mjs')).href
+    )) as { MINIMUM_CLAUDE_CODE_VERSION: string };
+    expect(entry.version).toBe(MINIMUM_CLAUDE_CODE_VERSION);
+  });
+
+  it('records each measured condition under which a pin does not hold', async () => {
+    const claudeRows = (await evidenceRows()).filter((row) => row.harness === 'claude');
+    const unsupported = (mechanism: string, surfacePart?: string) =>
+      claudeRows.some(
+        (row) =>
+          row.mechanism === mechanism &&
+          row.status === 'UNSUPPORTED' &&
+          (surfacePart === undefined ||
+            (typeof row.surface === 'string' && row.surface.includes(surfacePart))),
+      );
+    expect({
+      'model pin under CLAUDE_CODE_SUBAGENT_MODEL_FORCE': unsupported(
+        'subagent-model-pin',
+        'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+      ),
+      'effort pin under CLAUDE_CODE_EFFORT_LEVEL': unsupported(
+        'subagent-effort-pin',
+        'CLAUDE_CODE_EFFORT_LEVEL',
+      ),
+      'model pin under a call-site model': unsupported('subagent-model-pin', 'call-site'),
+      'per-dispatch effort': unsupported('per-dispatch-effort'),
+    }).toEqual({
+      'model pin under CLAUDE_CODE_SUBAGENT_MODEL_FORCE': true,
+      'effort pin under CLAUDE_CODE_EFFORT_LEVEL': true,
+      'model pin under a call-site model': true,
+      'per-dispatch effort': true,
+    });
   });
 });
