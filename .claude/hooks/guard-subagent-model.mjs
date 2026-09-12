@@ -45,8 +45,9 @@
 // project agent file, so the call is allowed", › "refuses an agent file whose
 // frontmatter does not close within the read bound, and names the bound", ›
 // "allows a call-site model without waiting when the agent path is not a regular
-// file", › "reads a pin in an agent file that starts with a byte-order mark" and
-// › "echoes a model pinned in the agent file bounded and escaped".
+// file", › "reads a pin in an agent file that starts with a byte-order mark", ›
+// "echoes a model pinned in the agent file bounded and escaped" (the bound) and
+// › "escapes a control byte inside the echoed part of both model names".
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

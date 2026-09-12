@@ -217,6 +217,22 @@ describe('guard-subagent-model hook (a call-site model never overrides a pinned 
     expect(result.stderr).not.toContain('a'.repeat(65));
   });
 
+  // The case above proves the bound and nothing else: its control byte sits past
+  // the 64-character cut, so it would pass with no escaping at all. Here the byte
+  // is inside what the refusal repeats, on both sides of the comparison.
+  it('escapes a control byte inside the echoed part of both model names', async () => {
+    const esc = String.fromCharCode(0x1b);
+    await writeFile(
+      path.join(root, '.claude', 'agents', 'esc-pin.md'),
+      agentFile('esc-pin', [`model: x${esc}[31mred`, 'effort: high']),
+    );
+    const result = await guard(dispatch({ subagent_type: 'esc-pin', model: `m${esc}[2J` }));
+    expect(result.code).toBe(2);
+    expect(result.stderr).not.toContain(esc);
+    expect(result.stderr).toContain('x\\u001b[31mred');
+    expect(result.stderr).toContain('m\\u001b[2J');
+  });
+
   it('reads a pin in an agent file that starts with a byte-order mark', async () => {
     const bom = String.fromCharCode(0xfeff);
     await writeFile(
