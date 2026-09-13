@@ -37,12 +37,14 @@ before dispatching in self-hosted mode. A runner on this path needs `bash`
 (both jobs' first step) and, on Windows, `pwsh`, the shells the jobs already
 declare.
 
-Two consequences of the shape, both observed on PR #211's own head
-(`16d53eb`, E2E run 34775448341): on a pull request the `windows-e2e` check reports
-`skipped`, not `success` — the merge criterion in
-`.claude/rules/node-ts.md` reads `ci` and, where the paths trigger it, `e2e`;
-and `gh workflow run e2e.yml --ref <branch>` is a `workflow_dispatch`, so it
-runs **both** jobs, the full Windows suite included, on that branch head.
+Two consequences of the shape. On a pull request the `windows-e2e` check
+reports `skipped`, not `success` — observed on PR #211's own head (`16d53eb`,
+E2E run 34775448341); the merge criterion in `.claude/rules/node-ts.md` reads
+`ci` and, where the paths trigger it, `e2e`. And `gh workflow run e2e.yml
+--ref <branch>` is a `workflow_dispatch`, which the job's `if:` does not
+exclude, so it runs **both** jobs, the full Windows suite included, on that
+branch head — pinned by `test/template/root-ci.test.ts` › "keeps the Windows
+full suite off pull requests — it runs on master, nightly and by dispatch".
 
 ## When to switch
 
