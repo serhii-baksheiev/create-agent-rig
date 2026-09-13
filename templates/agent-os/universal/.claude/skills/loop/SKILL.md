@@ -79,15 +79,22 @@ state-vs-queue split exists to prevent.
 node .claude/scripts/preflight.mjs
 ```
 
-Five items are scripted (kill switch absent · `RIG_RUN_DIR` not already
-exported · the versioned revalidation detection contract is supported · local
-default branch matches the remote · the last deploy concluded successfully)
+Scripted checks cover the kill switch, inherited `RIG_RUN_DIR`, the versioned
+revalidation detection contract, queue readability through its configured adapter,
+default-branch freshness, and the last deploy result,
 and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
 leaves no record cannot tell you it was skipped.
 
 Verdicts: **STOP** → do not start, deal with the cause. **CAUTION** → start,
-knowing which ground is soft. **GO** → the scripted five are clean; the rest are
+knowing which ground is soft. **GO** → the scripted checks are clean; the rest are
 still yours.
+
+The queue probe reads one adapter listing without selecting or claiming an item.
+A readable empty queue passes this probe; a configuration, adapter, or queue-read
+failure produces **STOP**. See the generator's `test/template/preflight-queue.test.ts`
+(absent in a generated rig) › "reads exactly one adapter listing without selecting, claiming, or writing queue and run files",
+› "passes a readable empty queue without changing the other preflight verdict or queue state",
+and › "stops when %s cannot be read".
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you
 nothing.

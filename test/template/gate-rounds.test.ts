@@ -1,7 +1,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -30,6 +30,10 @@ const queueDir = path.join(
   'queue',
 );
 const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).href);
+type Stages = { run: <T>(label: string, operation: () => Promise<T>) => Promise<T> };
+const { createStageDiagnostics } = await import(
+  pathToFileURL(path.join(repoRoot, 'test/template/lib/stage-diagnostics.mjs')).href
+);
 
 /** A counts file in its own directory, so nothing here can touch the checkout. */
 const roundsFile = async (contents?: unknown): Promise<string> => {
@@ -167,16 +171,35 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   // not the cwd, so an earlier version of these tests that set `cwd` to a temp
   // directory silently counted rounds into this repository's own state — visible
   // only because a later case inherited six rounds from earlier ones.
-  const run = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
-    new Promise((resolve) => {
-      execFile(process.execPath, [path.join(queueDir, 'index.mjs'), ...args], {}, (e, out, err) => {
-        resolve({
-          code: e && typeof e.code === 'number' ? e.code : 0,
-          stdout: String(out),
-          stderr: String(err),
-        });
-      });
+  const run = (
+    args: string[],
+    stages?: Stages,
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    let onExit!: () => void;
+    const exited = new Promise<void>((resolve) => {
+      onExit = resolve;
     });
+    const closed = new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+      const child = execFile(
+        process.execPath,
+        [path.join(queueDir, 'index.mjs'), ...args],
+        {},
+        (e, out, err) => {
+          resolve({
+            code: e && typeof e.code === 'number' ? e.code : 0,
+            stdout: String(out),
+            stderr: String(err),
+          });
+        },
+      );
+      child.once('exit', onExit);
+      child.once('error', onExit);
+    });
+    if (!stages) return closed;
+    return stages
+      .run('cli-execution', () => exited)
+      .then(() => stages.run('child-cleanup', () => closed));
+  };
 
   // A config at `<repo>/.claude/queue.json` inside a committed, pushed temp
   // repository: since AR-141 the command refuses to count on a checkout that
@@ -196,9 +219,11 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       },
     }).trim();
 
-  const repo = async (): Promise<string> => {
+  const repo = async (roots?: string[]): Promise<string> => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gate-cli-'));
+    roots?.push(dir);
     const remote = await mkdtemp(path.join(tmpdir(), 'gate-remote-'));
+    roots?.push(remote);
     gitIn(remote, ['init', '--bare', '-q']);
     gitIn(dir, ['init', '-q', '-b', 'main']);
     await mkdir(path.join(dir, '.claude'), { recursive: true });
@@ -214,8 +239,11 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     return dir;
   };
 
-  const config = async (contents: unknown = { adapter: 'plan-md' }): Promise<string> => {
-    const dir = await repo();
+  const config = async (
+    contents: unknown = { adapter: 'plan-md' },
+    roots?: string[],
+  ): Promise<string> => {
+    const dir = await repo(roots);
     const file = path.join(dir, '.claude', 'queue.json');
     await writeFile(file, typeof contents === 'string' ? contents : JSON.stringify(contents));
     gitIn(dir, ['add', '-A']);
@@ -224,11 +252,20 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     return file;
   };
 
+  const configOnly = async (contents: unknown, roots?: string[]): Promise<string> => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gate-config-only-'));
+    roots?.push(dir);
+    const file = path.join(dir, '.claude', 'queue.json');
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, typeof contents === 'string' ? contents : JSON.stringify(contents));
+    return file;
+  };
+
+  const countsFile = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');
+
   // AR-141: a round names a head; a head that is not committed and pushed is
   // not one the reviewers or CI will ever see.
   describe('refuses to count on a checkout that cannot ship', () => {
-    const countsFile = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');
-
     it('refuses to count a round on a dirty tree, and counts nothing', async () => {
       const cfg = await config();
       await writeFile(path.join(path.dirname(cfg), '..', 'scratch.txt'), 'uncommitted');
@@ -317,27 +354,55 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   });
 
   it('exits 1 on its own failures, and says it is not an exhausted cap', async () => {
-    const broken = await run(['gate-round', '--branch', 'fix/a', '--config', await config('{')]);
-    expect(broken.code).toBe(1);
-    expect(broken.stderr).toMatch(/NOT an exhausted cap/);
+    const stages: Stages = createStageDiagnostics();
+    const roots: string[] = [];
+    try {
+      const brokenConfig = await stages.run('broken-config-setup', () => configOnly('{', roots));
+      expect(existsSync(path.join(path.dirname(brokenConfig), '..', '.git'))).toBe(false);
+      const broken = await run(
+        ['gate-round', '--branch', 'fix/a', '--config', brokenConfig],
+        stages,
+      );
+      expect(broken.code).toBe(1);
+      expect(broken.stderr).toMatch(/NOT an exhausted cap/);
+      expect(existsSync(countsFile(brokenConfig))).toBe(false);
 
-    const badCap = await run([
-      'gate-round',
-      '--branch',
-      'fix/a',
-      '--config',
-      await config({ adapter: 'plan-md', options: { maxGateRounds: 0 } }),
-    ]);
-    expect(badCap.code).toBe(1);
-    expect(badCap.stderr).toMatch(/maxGateRounds/);
+      const badCapConfig = await stages.run('bad-cap-setup', () =>
+        configOnly(
+          {
+            adapter: 'plan-md',
+            options: { maxGateRounds: 0 },
+          },
+          roots,
+        ),
+      );
+      expect(existsSync(path.join(path.dirname(badCapConfig), '..', '.git'))).toBe(false);
+      const badCap = await run(
+        ['gate-round', '--branch', 'fix/a', '--config', badCapConfig],
+        stages,
+      );
+      expect(badCap.code).toBe(1);
+      expect(badCap.stderr).toMatch(/maxGateRounds/);
+      expect(existsSync(countsFile(badCapConfig))).toBe(false);
 
-    const detached = await run(['gate-round', '--branch', 'HEAD', '--config', await config()]);
-    expect(detached.code).toBe(1);
-    expect(detached.stderr).toMatch(/detached/);
+      const validConfig = await stages.run('pushed-fixture-setup', () => config(undefined, roots));
+      const detached = await run(
+        ['gate-round', '--branch', 'HEAD', '--config', validConfig],
+        stages,
+      );
+      expect(detached.code).toBe(1);
+      expect(detached.stderr).toMatch(/detached/);
+      expect(existsSync(countsFile(validConfig))).toBe(false);
 
-    const noBranch = await run(['gate-round', '--config', await config()]);
-    expect(noBranch.code).toBe(1);
-    expect(noBranch.stderr).toMatch(/counted per branch/);
+      const noBranch = await run(['gate-round', '--config', validConfig], stages);
+      expect(noBranch.code).toBe(1);
+      expect(noBranch.stderr).toMatch(/counted per branch/);
+      expect(existsSync(countsFile(validConfig))).toBe(false);
+    } finally {
+      await stages.run('fixture-teardown', async () => {
+        for (const root of roots) await rm(root, { recursive: true, force: true });
+      });
+    }
   });
 
   it('takes maxGateRounds from the queue config', async () => {

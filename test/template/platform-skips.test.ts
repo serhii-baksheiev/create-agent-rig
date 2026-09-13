@@ -32,8 +32,9 @@ const EXPECTED_SITES: Record<(typeof PLATFORM_SKIP_HELPERS)[number], number> = {
   modeBitsExist: 1,
   // hooks.test.ts: the two symlink-fixture cases share one wrapper
   symlinksAvailable: 1,
-  // codex.test.ts: the FIFO move-source fixture; unattended-flag: nonblocking flag read
-  fifosAvailable: 2,
+  // codex.test.ts: the FIFO move-source fixture; unattended-flag: nonblocking flag read;
+  // subagent-routing-hooks.test.ts: a FIFO at the agent path the guard must not wait on
+  fifosAvailable: 3,
   // run-without-git-location.test.ts: two .cmd shim branches; codex.test.ts:
   // execute the generated PowerShell hook wiring from a nested cwd;
   // gate-rounds.test.ts: the rename retry gives up only where a held-open

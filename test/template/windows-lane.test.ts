@@ -74,19 +74,48 @@ const executable = (body: string) =>
     .map((line) => line.replace(/\s#.*$/, ''))
     .join('\n');
 
-const windowsJob = (body: string) =>
-  body.split(/^ {2}windows-unit:$/m)[1]?.split(/^ {2}\w[\w-]*:$/m)[0];
+const workflowJobs = (body: string) => {
+  const jobs = body.match(/^jobs:\n([\s\S]*)$/m)?.[1] ?? '';
+  return [...jobs.matchAll(/^ {2}([\w-]+):\n([\s\S]*?)(?=^ {2}[\w-]+:\n|(?![\s\S]))/gm)].map(
+    (match) => ({ name: match[1]!, body: match[0]! }),
+  );
+};
 
-describe('the hosted Windows lane caps test concurrency, and only there', () => {
-  it('passes --maxWorkers in the windows-unit job', async () => {
-    const ci = (await workflows()).find((w) => w.name === 'ci.yml');
-    expect(ci, 'there is no ci.yml').toBeDefined();
-    const job = windowsJob(executable(ci!.body));
-    expect(job, 'ci.yml has no windows-unit job').toBeDefined();
-    expect(job, 'the Windows lane does not cap concurrency').toMatch(/--maxWorkers[= ]\d+/);
+const namedJob = (body: string, name: string) =>
+  workflowJobs(body).find((job) => job.name === name)?.body;
+
+const windowsJob = (body: string) => namedJob(body, 'windows-unit');
+
+const VERIFIED_WINDOWS_JOBS: Record<string, readonly string[]> = {
+  'ci.yml': ['windows-unit'],
+  'e2e.yml': ['windows-e2e'],
+};
+
+const capOffenders = (sources: { name: string; body: string }[]): string[] =>
+  sources.flatMap(({ name, body }) => {
+    const jobs = workflowJobs(body);
+    const permitted = new Set(VERIFIED_WINDOWS_JOBS[name] ?? []);
+    const offenders = jobs
+      .filter((job) => !permitted.has(job.name) && /--maxWorkers/.test(job.body))
+      .map((job) => `${name}: ${job.name}`);
+    const outsideJobs = jobs.reduce((remaining, job) => remaining.replace(job.body, ''), body);
+    if (/--maxWorkers/.test(outsideJobs)) offenders.push(`${name}: workflow scope`);
+    return offenders;
   });
 
-  it('caps no other lane, in any workflow', async () => {
+describe('the hosted Windows lanes cap test concurrency, and only there', () => {
+  it.each([
+    ['ci.yml', 'windows-unit'],
+    ['e2e.yml', 'windows-e2e'],
+  ])('passes --maxWorkers in the verified %s %s job', async (workflowName, jobName) => {
+    const source = (await workflows()).find((workflow) => workflow.name === workflowName);
+    expect(source, `there is no ${workflowName}`).toBeDefined();
+    const job = namedJob(executable(source!.body), jobName);
+    expect(job, `${workflowName} has no ${jobName} job`).toBeDefined();
+    expect(job, 'the verified Windows job does not cap concurrency').toMatch(/--maxWorkers[= ]\d+/);
+  });
+
+  it('caps no other job or workflow scope', async () => {
     const offenders: string[] = [];
     for (const { name, body } of await workflows()) {
       // 🔴 RAW, not `executable()`. This asserts a token is ABSENT, so
@@ -94,11 +123,53 @@ describe('the hosted Windows lane caps test concurrency, and only there', () => 
       // that helper's own note. The cost is the opposite error: a mention of
       // `--maxWorkers` in a comment on another lane turns this red. That is the
       // safe direction, and the remedy is to not write it.
-      const job = name === 'ci.yml' ? windowsJob(body) : undefined;
+      const job =
+        name === 'ci.yml'
+          ? windowsJob(body)
+          : name === 'e2e.yml'
+            ? namedJob(body, 'windows-e2e')
+            : undefined;
       const elsewhere = job ? body.split(job).join('') : body;
       if (/--maxWorkers/.test(elsewhere)) offenders.push(name);
     }
-    expect(offenders, 'a lane other than windows-unit caps concurrency').toEqual([]);
+    expect(offenders, 'an unverified scope caps concurrency').toEqual([]);
+  });
+
+  it('finds no caps outside the two verified Windows jobs', async () => {
+    expect(capOffenders(await workflows())).toEqual([]);
+  });
+
+  it('detects caps in a Linux job, workflow scope or unverified Windows job', () => {
+    expect(
+      capOffenders([
+        {
+          name: 'ci.yml',
+          body: `env:
+  VITEST_ARGS: --maxWorkers=1
+jobs:
+  windows-unit:
+    runs-on: windows-latest
+    steps:
+      - run: pnpm test:unit --maxWorkers=2
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm test --maxWorkers=2`,
+        },
+        {
+          name: 'e2e.yml',
+          body: `jobs:
+  windows-e2e:
+    runs-on: windows-latest
+    steps:
+      - run: pnpm test --maxWorkers=2
+  unknown-windows:
+    runs-on: windows-latest
+    steps:
+      - run: pnpm test --maxWorkers=2`,
+        },
+      ]),
+    ).toEqual(['ci.yml: linux', 'ci.yml: workflow scope', 'e2e.yml: unknown-windows']);
   });
 
   it('leaves the timeout alone — the cap is concurrency, never the budget', async () => {

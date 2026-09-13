@@ -8,7 +8,7 @@
  * never executed at all (AR-138, AR-140 — why six test files' gh/git stubs
  * kept them on the windows-unit exclusion list; AR-93).
  *
- * So on win32 the stub IS a real executable: a copy of the running node
+ * So on win32 the stub IS a real executable: a link to the running node
  * binary named `<name>.exe`, plus `NODE_OPTIONS=--require <preload>` — the
  * preload runs before node resolves its main script, sees that it is running
  * as `<name>`, answers from the handler, and exits. Any other node child
@@ -23,7 +23,7 @@
  * argv after the command name, and returning `{ stdout?, exitCode? }` or
  * writing to stdout itself), so one description serves both platforms.
  */
-import { chmod, copyFile, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -34,6 +34,20 @@ export type StubHandle = {
   env: Record<string, string>;
   /** Restore process.env to what it was. */
   restore: () => void;
+};
+
+// See stub-command.test.ts: same-volume identity, EXDEV fallback, and other errors.
+export const materializeStubExecutable = async (
+  source: string,
+  destination: string,
+  dependencies: { linkFile?: typeof link; copyFile?: typeof copyFile } = {},
+): Promise<void> => {
+  try {
+    await (dependencies.linkFile ?? link)(source, destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
+    await (dependencies.copyFile ?? copyFile)(source, destination);
+  }
 };
 
 const preloadSource = (name: string, handlerBody: string): string => `'use strict';
@@ -77,7 +91,7 @@ export const stubCommand = async (name: string, handlerBody: string): Promise<St
   const savedNodeOptions = process.env['NODE_OPTIONS'];
   const env: Record<string, string> = {};
   if (process.platform === 'win32') {
-    await copyFile(process.execPath, path.join(bin, `${name}.exe`));
+    await materializeStubExecutable(process.execPath, path.join(bin, `${name}.exe`));
     // Forward slashes: NODE_OPTIONS strips a backslash inside its quotes —
     // measured on windows-latest at 9c0eb9c, where the preload path arrived as
     // `C:UsersrunneradminAppData...` (AR-93) — and node accepts a forward-slash

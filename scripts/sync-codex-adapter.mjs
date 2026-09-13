@@ -4,16 +4,35 @@
 // repository guidance, skills, custom agents and hook wiring so both harnesses
 // execute the same operating system without two hand-maintained rulebooks.
 //
+// Subagent routing is read from the one policy both harnesses share
+// (`templates/agent-os/subagent-routing.json`, through `subagent-routing.mjs`):
+// the Codex profiles are derived from it, and the Claude agent frontmatter and
+// shipped settings are checked against it before anything is projected.
+//
 //   node scripts/sync-codex-adapter.mjs           # write derived files
 //   node scripts/sync-codex-adapter.mjs --check   # report drift only
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  ROUTING_POLICY_PATH,
+  codexProfilesOf,
+  validateClaudeAgents,
+  validateClaudeSettings,
+  validateRoutingPolicy,
+} from './subagent-routing.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const agentOsRoot = path.join(repoRoot, 'templates', 'agent-os');
-const agentProfilesPath = path.join(agentOsRoot, 'codex-agent-profiles.json');
 const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
+
+/**
+ * Hooks that act on a Claude Code surface Codex does not have, so they are not
+ * projected: `guard-subagent-model` judges the Claude `Agent` tool's call-site
+ * `model`, and `warn-subagent-routing` reads Claude Code's own environment.
+ * Wiring them into `.codex/hooks.json` would declare enforcement that never runs.
+ */
+const CLAUDE_ONLY_HOOKS = new Set(['guard-subagent-model.mjs', 'warn-subagent-routing.mjs']);
 
 const slash = (value) => value.replaceAll('\\', '/');
 
@@ -54,7 +73,14 @@ function parseAgent(markdown, source) {
   const name = fields.get('name');
   const description = fields.get('description');
   if (!name || !description) throw new Error(`agent is missing name or description: ${source}`);
-  return { name, description, tools: fields.get('tools') ?? '', body: match[2].trim() };
+  return {
+    name,
+    description,
+    tools: fields.get('tools') ?? '',
+    model: fields.get('model'),
+    effort: fields.get('effort'),
+    body: match[2].trim(),
+  };
 }
 
 function validateProfile(profile, label) {
@@ -88,8 +114,17 @@ export function validateAgentProfiles(policy, sourceAgents) {
   return policy;
 }
 
+/** The routing policy, checked against every Claude surface it pins; returns the Codex view. */
 function loadAgentProfiles(sourceAgents) {
-  return validateAgentProfiles(JSON.parse(readFileSync(agentProfilesPath, 'utf8')), sourceAgents);
+  const policy = validateRoutingPolicy(JSON.parse(readFileSync(ROUTING_POLICY_PATH, 'utf8')));
+  validateClaudeAgents(policy, sourceAgents);
+  validateClaudeSettings(
+    policy,
+    JSON.parse(
+      readFileSync(path.join(agentOsRoot, 'universal', '.claude', 'settings.json'), 'utf8'),
+    ),
+  );
+  return validateAgentProfiles(codexProfilesOf(policy), sourceAgents);
 }
 
 function codexAgent(markdown, source, profile) {
@@ -111,6 +146,8 @@ function codexAgent(markdown, source, profile) {
     '',
   ].join('\n');
 }
+
+const hookFileOf = (command) => command.match(/\.claude\/hooks\/([A-Za-z0-9._-]+\.mjs)/)?.[1];
 
 function portableHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
@@ -154,7 +191,9 @@ function codexHooks(settings) {
   const source = JSON.parse(settings);
   const hooks = {};
   for (const [event, groups] of Object.entries(source.hooks ?? {})) {
-    hooks[event] = groups.map((group) => {
+    const projected = groups.flatMap((group) => {
+      const kept = group.hooks.filter((hook) => !CLAUDE_ONLY_HOOKS.has(hookFileOf(hook.command)));
+      if (kept.length === 0) return [];
       const matcherTools =
         typeof group.matcher === 'string'
           ? group.matcher.split('|').map((tool) => tool.trim())
@@ -164,15 +203,18 @@ function codexHooks(settings) {
         !matcherTools.includes('apply_patch')
           ? `${group.matcher}|apply_patch`
           : group.matcher;
-      return {
-        ...group,
-        ...(typeof matcher === 'string' ? { matcher } : {}),
-        hooks: group.hooks.map((hook) => {
-          const command = portableHookCommand(hook.command);
-          return { ...hook, command, commandWindows: windowsHookCommand(hook.command) };
-        }),
-      };
+      return [
+        {
+          ...group,
+          ...(typeof matcher === 'string' ? { matcher } : {}),
+          hooks: kept.map((hook) => {
+            const command = portableHookCommand(hook.command);
+            return { ...hook, command, commandWindows: windowsHookCommand(hook.command) };
+          }),
+        },
+      ];
     });
+    if (projected.length > 0) hooks[event] = projected;
   }
   return `${JSON.stringify(
     { description: 'Codex adapter generated from .claude/settings.json.', hooks },

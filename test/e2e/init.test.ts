@@ -39,7 +39,7 @@ async function hookFiles(root: string, dir = root): Promise<string[]> {
       const full = path.join(dir, entry.name);
       return entry.isDirectory()
         ? hookFiles(root, full)
-        : Promise.resolve([path.relative(root, full)]);
+        : Promise.resolve([path.relative(root, full).split(path.sep).join('/')]);
     }),
   );
   return files.flat().filter((rel) => rel.endsWith('.mjs'));

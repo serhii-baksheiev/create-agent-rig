@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, inject, it } from 'vitest';
 
-import { installEnv } from './run.js';
+import { installEnv, runPackageManager } from './run.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -127,7 +127,7 @@ describe('npm pack tarball (distribution path)', () => {
 
     const appDir = path.join(work, 'from-tarball');
     await mkdir(appDir);
-    await exec(
+    await runPackageManager(
       'npx',
       ['--yes', `--package=${tarball}`, 'create-agent-rig', 'tar-app', '--target', 'node-service'],
       {

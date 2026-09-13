@@ -77,6 +77,9 @@ const UNDECLARED_HOOKS = [
   'guard-core-purity', // candidate: core-purity policy (file-edit)
   'guard-web-boundary', // candidate: web-boundary policy (file-edit)
   'guard-bash', // candidate: never-tier shell policy + kill switch (shell-command)
+  // candidate: subagent-routing policy — needs a subagent-dispatch operation the
+  // vocabulary lacks, and it is Claude-only (Codex has no dispatch hook surface)
+  'guard-subagent-model',
 ];
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
