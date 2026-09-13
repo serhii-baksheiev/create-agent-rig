@@ -113,7 +113,12 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
     },
   );
 
-  it('runs the unit suite on Windows', async () => {
+  it('runs a Windows smoke lane — the unit project only — on the hosted image', async () => {
+    // Hosted-first ruling (2026-09-13): the pull-request path checks the
+    // product's own unit project on Windows and nothing that depends on a
+    // self-hosted machine. The template and benchmark projects — the ones that
+    // spawn git and the guards, and the ones the hosted image times out on —
+    // run in the expensive workflow's Windows job instead.
     const yaml = await workflow('ci.yml');
     const windowsJobs = [
       ...yaml.matchAll(/^ {2}[\w-]+:\n([\s\S]*?)(?=^ {2}[\w-]+:\n|(?![\s\S]))/gm),
@@ -121,15 +126,46 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
       .map((match) => match[0])
       .filter((candidate) => /^ {4}runs-on:\s*windows-latest\s*$/m.test(candidate));
     expect(windowsJobs, 'workflow has no windows-latest job').toHaveLength(1);
-    expect(commandText(windowsJobs[0] ?? '')).toMatch(/\bpnpm test:unit\b/);
+    expect(commandText(windowsJobs[0] ?? '')).toMatch(/\bpnpm test:smoke\b/);
+    expect(commandText(windowsJobs[0] ?? '')).not.toMatch(/\bpnpm test:unit\b|\bpnpm test\b(?!:)/);
   });
 
-  it('runs the whole unit suite on Windows, with no file excluded by name', async () => {
+  it('keeps the pull-request path off self-hosted runners entirely', async () => {
+    // The pull-request path is every ci.yml job plus every e2e.yml job that
+    // is not gated off pull requests. A job on that path either never names
+    // a self-hosted runner, or its runs-on guards the switch behind
+    // `github.event_name != 'pull_request'` — so a standing RUNNER_MODE can
+    // never route a pull request from anywhere onto a machine of ours.
+    expect(await workflow('ci.yml')).not.toMatch(/self-hosted/);
+    const e2e = await workflow('e2e.yml');
+    const jobs = [...e2e.matchAll(/^ {2}([\w-]+):\n([\s\S]*?)(?=^ {2}[\w-]+:\n|(?![\s\S]))/gm)]
+      .map((m) => ({ name: m[1] ?? '', body: m[0] ?? '' }))
+      .filter((j) => !/^ {4}if:\s*github\.event_name != 'pull_request'\s*$/m.test(j.body));
+    expect(jobs.map((j) => j.name)).toContain('e2e');
+    for (const job of jobs) {
+      const runsOn = job.body.match(/^ {4}runs-on:\s*(.+)$/m)?.[1] ?? '';
+      if (/self-hosted/.test(runsOn))
+        expect(runsOn, `${job.name} can reach self-hosted on a pull request`).toMatch(
+          /^\$\{\{ github\.event_name != 'pull_request' && /,
+        );
+    }
+  });
+
+  it('excludes no file by name on either Windows lane', async () => {
     // AR-93: the exclusion list is gone. A capability genuinely absent there
     // skips with its reason and is counted in platform-skips.test.ts; a
     // `--exclude` reappearing here would be a red file hidden, not a fix.
-    const windows = job(await workflow('ci.yml'), 'windows-unit');
-    expect(commandText(windows)).not.toMatch(/--exclude/);
+    expect(commandText(job(await workflow('ci.yml'), 'windows-smoke'))).not.toMatch(/--exclude/);
+    expect(commandText(job(await workflow('e2e.yml'), 'windows-e2e'))).not.toMatch(/--exclude/);
+  });
+});
+
+describe('the smoke script is the unit project and nothing wider', () => {
+  it('declares test:smoke as vitest over the unit project only', async () => {
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    expect(pkg.scripts['test:smoke']).toBe('vitest run --project unit');
   });
 });
 
@@ -145,6 +181,49 @@ describe('expensive root tests have their own narrowly-triggered workflow', () =
     expect(yaml).toMatch(/^ {2}push:\n {4}branches:\s*\[master\]\s*$/m);
     expect(yaml).toMatch(/^ {2}schedule:\n {4}- cron:\s*['"]\d+ \d+ \* \* \*['"]\s*(?:#.*)?$/m);
     expect(yaml).toMatch(/^ {2}workflow_dispatch:\s*$/m);
+  });
+
+  it('accepts runner_mode hosted|self-hosted by dispatch input and by repository variable, hosted by default', async () => {
+    // Owner ruling 2026-09-13 (§3, hosted-first): the release suite runs on
+    // GitHub-hosted runners until a confirmed infrastructure condition; the
+    // self-hosted fallback stays wired through one switch, never as a second
+    // copy of the jobs. The same jobs, the same commands — only runs-on differs.
+    const yaml = await expensiveWorkflow();
+    const dispatch = yaml.match(
+      /^ {2}workflow_dispatch:\n([\s\S]*?)(?=^ {2}[\w-]+:|^permissions:)/m,
+    );
+    expect(dispatch, 'expensive workflow has no workflow_dispatch block').not.toBeNull();
+    const block = dispatch?.[0] ?? '';
+    expect(block).toMatch(/^ {6}runner_mode:\n/m);
+    expect(block).toMatch(/^ {8}type:\s*choice\s*$/m);
+    expect(block).toMatch(/^ {8}default:\s*hosted\s*$/m);
+    expect(block).toMatch(/^ {10}- hosted\s*$/m);
+    expect(block).toMatch(/^ {10}- self-hosted\s*$/m);
+
+    const runsOn = [...yaml.matchAll(/^ {4}runs-on:\s*(.+)$/gm)].map((m) => m[1] ?? '');
+    expect(runsOn.length).toBeGreaterThanOrEqual(2);
+    for (const value of runsOn) {
+      expect(value, 'a job is not switchable').toMatch(/inputs\.runner_mode/);
+      expect(value, 'a job ignores the repository variable').toMatch(/vars\.RUNNER_MODE/);
+      expect(value, 'a job has no self-hosted branch').toMatch(/self-hosted/);
+      expect(value, 'a job has no hosted default').toMatch(/ubuntu-latest|windows-latest/);
+    }
+  });
+
+  it('records which runner executed each job, so release evidence can name it', async () => {
+    const yaml = await expensiveWorkflow();
+    for (const name of ['e2e', 'windows-e2e']) {
+      const body = job(yaml, name);
+      expect(body, `${name} does not print runner.environment`).toMatch(/runner\.environment/);
+      expect(body, `${name} does not print runner.name`).toMatch(/runner\.name/);
+      // Through env:, never interpolated into the shell line.
+      expect(body).not.toMatch(/^\s*echo .*\$\{\{/m);
+    }
+  });
+
+  it('keeps the Windows full suite off pull requests — it runs on master, nightly and by dispatch', async () => {
+    const windows = job(await expensiveWorkflow(), 'windows-e2e');
+    expect(windows).toMatch(/^ {4}if:\s*github\.event_name != 'pull_request'\s*$/m);
   });
 
   it('runs on pull requests when CLI, template, e2e harness or workflow inputs change', async () => {
@@ -168,7 +247,8 @@ describe('the expensive workflow exercises a cold Windows package-manager path',
 
   it('adds a separate full-history Windows job with Node 22 and a frozen root install', async () => {
     const windows = await windowsE2e();
-    expect(windows).toMatch(/^ {4}runs-on:\s*windows-latest\s*$/m);
+    // The hosted image is the default branch of the runner_mode switch.
+    expect(windows).toMatch(/^ {4}runs-on:.*\|\| 'windows-latest' \}\}\s*$/m);
     expect(windows).toMatch(
       /uses:\s*actions\/checkout@v4[\s\S]*?with:\n(?: {10}.+\n)* {10}fetch-depth:\s*0\b/m,
     );
