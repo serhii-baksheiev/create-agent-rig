@@ -79,7 +79,7 @@ export const readSourceSchema = async (root) => {
       `const m = await import(${JSON.stringify(pathToFileURL(file).href)}); ` +
         'process.stdout.write(JSON.stringify(m.sessionMessagingSchema));',
     ],
-    { maxBuffer: 4 * 1024 * 1024 },
+    { maxBuffer: 4 * 1024 * 1024, timeout: 30_000, windowsHide: true },
   );
   return JSON.parse(stdout);
 };

@@ -147,9 +147,18 @@ pinned to the Memory incubation ref"). The generator's CI job
 Memory contract directory at the pinned commit and checks it, plus both bins'
 `--version --json` and Memory's `doctor --json`, against those schemas through
 process boundaries only — no Memory code is imported and no Memory fixture is
-copied here (`test/template/memory-conformance.test.ts`). Re-pinning is one
-edit of `manifest.json`; `node scripts/conformance-payload.mjs --check` keeps
-the generated schema and its source in step.
+copied here (`test/template/memory-conformance.test.ts` › "imports nothing from
+the fetched tree and copies no Memory fixture into the repository"). The CI job needs a
+read-only token for the private Memory repository in the Actions secret
+`MEMORY_CONFORMANCE_TOKEN`; without it the job fails with that reason, never a
+pass. Re-pinning is a deliberate change: edit the template's `manifest.json`,
+run `node scripts/sync-agent-os.mjs` for the dogfood copy, and update the
+tests that pin the commit by value (`packages/cli/test/upgrade.test.ts`,
+`test/template/conformance-payload.test.ts`,
+`test/template/memory-conformance.test.ts`) — they are red on purpose until
+the new pin is the one they name. `node scripts/conformance-payload.mjs
+--check` keeps the generated schema and its source in step; deriving it needs
+Node 22.6 or newer (type stripping), which the CLI a rig installs does not.
 
 ## What you get
 

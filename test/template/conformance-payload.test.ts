@@ -110,6 +110,27 @@ describe('the conformance-v1 payload directory the universal template ships (RP-
     }
   });
 
+  describe('session-identity.schema.json (generated)', () => {
+    it('carries a SessionIdentity subschema inside the subset that accepts a full identity and rejects one missing a required field', async () => {
+      const validate = await loadValidate();
+      const payload = (await readJson('session-identity.schema.json')) as {
+        sessionIdentity: unknown;
+        contractMajor: unknown;
+      };
+      const full = { engineerId: 'e1', harness: 'claude', projectId: 'p', instanceId: 'i1' };
+      expect(validate(payload.sessionIdentity, full)).toEqual({ ok: true, errors: [] });
+      const partial = {
+        engineerId: full.engineerId,
+        harness: full.harness,
+        projectId: full.projectId,
+      };
+      expect(validate(payload.sessionIdentity, partial).ok).toBe(false);
+      expect(validate(payload.sessionIdentity, { ...full, extra: 1 }).ok).toBe(false);
+      expect(validate(payload.contractMajor, 1)).toEqual({ ok: true, errors: [] });
+      expect(validate(payload.contractMajor, 2).ok).toBe(false);
+    });
+  });
+
   describe('version-handshake.schema.json', () => {
     it('accepts the real rig bin handshake', async () => {
       const validate = await loadValidate();

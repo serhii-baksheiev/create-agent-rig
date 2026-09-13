@@ -205,7 +205,7 @@ function compose() {
 execFileSync(
   process.execPath,
   [path.join(repoRoot, 'scripts', 'conformance-payload.mjs'), check ? '--check' : '--write'],
-  { stdio: 'inherit' },
+  { stdio: 'inherit', timeout: 60_000 },
 );
 
 const composed = compose();

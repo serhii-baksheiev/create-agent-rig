@@ -46,9 +46,12 @@ document does not name is not contract, and may change without a version bump.
   not cite"). The item's own text was used instead, and every claim it makes
   about this repository was checked against the code.
 - **`[A4]`** — named by the item as the rig layer that rolls the conformance
-  matrix out. It names nothing this repository defines: outside this document
-  and its test, the token occurs nowhere. The matrix below is therefore
-  specified without a rollout mechanism; whoever supplies `[A4]` binds it.
+  matrix out. When this document was written it named nothing this repository
+  defined, and the matrix was specified without a rollout mechanism. RP-13
+  supplied the layer: the payload under `.claude/contracts/conformance-v1/` and
+  `scripts/memory-conformance.mjs`, as `## Conformance matrix` records. The
+  token itself still occurs nowhere else in this repository; it is the item's
+  name for that layer, not a path.
 - **RP-57's schema** — the lifecycle state vocabulary below is contract now; its
   schema spelling is RP-57's, in another repository. This is the same split
   `docs/session-messaging-contract-v0.md` uses when it defers type spelling to
@@ -556,8 +559,12 @@ the Memory contract directory fetched at that commit: one row per invocation
 (`memory --version --json`, `memory doctor --json`, `create-agent-rig --version
 --json`) plus the contract directory's own presence checks, each row a check
 record with a status, and the whole a pass only when no row fails. Pinned in
-`test/template/conformance-payload.test.ts` and
-`test/template/memory-conformance.test.ts`.
+`test/template/conformance-payload.test.ts` › "carries exactly the manifest
+and the three schema files, nothing else" (the layer), and in
+`test/template/memory-conformance.test.ts` › "passes every check against a
+well-formed local fixture root" (the seven rows and their ids) and › "fails
+memory-handshake and the whole run when the backend answers a foreign contract
+major" (one failing row fails the whole).
 
 ## Conformance today
 

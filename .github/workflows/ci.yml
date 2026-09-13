@@ -70,6 +70,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The job spawns code fetched from another repository; the checkout's
+          # own token must not be within its reach, and this job never pushes.
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -77,7 +81,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # claude-config is private, so the fetch needs a read-only token the
+      # owner stores as the MEMORY_CONFORMANCE_TOKEN secret; the default
+      # GITHUB_TOKEN reaches this repository only. Without it the script
+      # fails with that reason on the record — never a pass, never a skip.
       - run: node scripts/memory-conformance.mjs --json
+        env:
+          MEMORY_CONFORMANCE_TOKEN: ${{ secrets.MEMORY_CONFORMANCE_TOKEN }}
 
   windows-unit:
     runs-on: windows-latest

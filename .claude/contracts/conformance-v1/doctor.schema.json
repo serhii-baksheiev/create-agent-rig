@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:create-agent-rig:conformance:v1:doctor",
   "title": "Command contract v1.0 — `doctor --json`",
-  "description": "A list of check records and their aggregate status. Every record carries all four fields; a consumer acts on status only, and no field but a record's human-facing fix may name a file path. Additive keys are tolerated.",
+  "description": "A list of check records and their aggregate status. What this schema checks: every record carries all four fields, and the status words are the closed set; additive keys are tolerated. What it does not check: the contract's rule that no field but a record's human-facing fix names a file path — that stays a reviewed rule of docs/command-contract.md.",
   "type": "object",
   "required": ["schemaVersion", "status", "checks"],
   "properties": {

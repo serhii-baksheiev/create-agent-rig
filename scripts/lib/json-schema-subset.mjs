@@ -7,10 +7,9 @@
 // so nobody quietly leans on a keyword (`$ref`, `oneOf`, `if`) this validator
 // does not implement: an unknown keyword THROWS rather than being ignored,
 // because a keyword silently skipped is a check that reports a pass it never
-// made. Pinned in test/template/json-schema-subset.test.ts.
-//
-// Bounded work: one pass over the value, recursion bounded by the schema's own
-// depth (a schema is repository data, not input), no rescanning.
+// made. Pinned in test/template/json-schema-subset.test.ts › "throws on a
+// schema keyword outside the documented subset"; the error paths are pinned by
+// › "names the JSON path of a nested type mismatch".
 
 const ANNOTATIONS = new Set(['$schema', '$id', 'title', 'description', 'examples']);
 const KEYWORDS = new Set([
@@ -85,12 +84,14 @@ const check = (schema, value, at, errors) => {
     errors.push(`${at}: shorter than ${schema.minLength}`);
   if (typeOf(value) === 'object') {
     for (const name of schema.required ?? [])
-      if (!(name in value)) errors.push(`${at}.${name}: required`);
+      if (!Object.hasOwn(value, name)) errors.push(`${at}.${name}: required`);
     const properties = schema.properties ?? {};
     for (const [name, child] of Object.entries(value)) {
-      if (name in properties) check(properties[name], child, `${at}.${name}`, errors);
+      // A property name is payload-chosen text; it enters an error message cut.
+      const shown = name.slice(0, 64);
+      if (Object.hasOwn(properties, name)) check(properties[name], child, `${at}.${shown}`, errors);
       else if (schema.additionalProperties === false)
-        errors.push(`${at}.${name}: additional property not allowed`);
+        errors.push(`${at}.${shown}: additional property not allowed`);
     }
   }
   if (typeOf(value) === 'array' && schema.items !== undefined)
