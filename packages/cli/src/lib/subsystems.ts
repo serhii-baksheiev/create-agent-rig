@@ -61,7 +61,7 @@ export type Runner = (
 export type HandshakeResult =
   | { status: 'ok'; version: string; contractVersion: string }
   | { status: 'unsupported'; reason: 'absent' }
-  | { status: 'integration-failed'; reason: 'manifest-stale' | 'invalid-payload' | 'invalid' }
+  | { status: 'integration-failed'; reason: 'manifest-stale' | 'invalid-payload' }
   | {
       status: 'foreign-major';
       contractVersion: string;

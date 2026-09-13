@@ -2,10 +2,12 @@
 
 Language: English
 
-Status: proposed for RP-17, with every field the item requires now fixed. Owner
-acceptance is required before RP-18 and RP-19 build against it; until then this
-document states intent, not installed behaviour. `## What acceptance settled`
-records the five entries this document carried and what closed each.
+Status: accepted for RP-17 by owner acceptance (create-agent-rig PR #159), with
+every field the item requires fixed; `## What acceptance settled` records the
+five entries this document carried and what closed each. RP-18 built the memory
+shim against it in claude-config, and RP-19 built the rig bin's handshake and
+its `memory` consumer surface against it here; `## Conformance today` records
+what of it this repository now implements, row by row.
 
 ## Scope
 
@@ -549,10 +551,13 @@ its delivery to whoever supplies the layer.
 
 ## Conformance today
 
-**Nothing in this repository implements this contract yet.** This section is the
-honest half of the document: it records what was measured about the surfaces
-this change touched, so that no reader takes a statement above as a description
-of installed behaviour.
+**This repository implements exactly the parts of this contract the rows below
+name, and nothing else.** As of RP-19 the rig bin answers the version handshake
+and consumes the memory shim through it (`memory <doctor|load>`); the memory
+shim itself lives in claude-config. This section is the honest half of the
+document: it records what was measured about the surfaces each change touched,
+so that no reader takes a statement above as a description of installed
+behaviour where no row backs it.
 
 Every row below names a test, and that test holds the repository fact the row
 was built on — not the row's wording about it: invert a row into an overclaim
@@ -569,12 +574,15 @@ records a fact, not a fault.
 
 - **The rig bin declares a `--json` flag and answers `--version --json` with
   the handshake object** (RP-19): `{"schemaVersion":1,"name":"create-agent-rig",
-"version":<package version>,"contractVersion":"1.0"}`, one line, nothing else
-  on stdout; `--json` is read on `--version` only, the other rig commands still
-  speak prose. Reach: the test reads `index.ts` alone and recognises one
-  spelling — a `parseArgs` option named `json`; a flag added by a hand-rolled
-  argv scan, or declared in another module under `packages/cli/src`, is
-  invisible to it. Pinned in
+"version":<package version>,"contractVersion":"1.0"}`. That it is one line and
+  nothing else on stdout is pinned by `packages/cli/test/cli-version.test.ts` ›
+  "writes exactly one handshake JSON line to stdout and exits 0", not by this
+  row's test. `--json` is read on `--version` only; `memory` answers its own
+  status lines in machine JSON whether or not the flag is present, and `create`,
+  `init`, `setup` and `upgrade` speak prose. Reach: the test reads `index.ts`
+  alone and recognises one spelling — a `parseArgs` option named `json`; a flag
+  added by a hand-rolled argv scan, or declared in another module under
+  `packages/cli/src`, is invisible to it. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin declares a --json flag and answers the version handshake (RP-19)".
 - **The rig bin answers the version handshake, and names `contractVersion` in
   exactly three modules** — `packages/cli/src/lib/version.ts` (its own
@@ -583,15 +591,19 @@ records a fact, not a fault.
   `packages/cli/src/commands/memory.ts` (the foreign-major refusal payload).
   A fourth namer, or a missing one, makes the row stale. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin answers the version handshake in exactly three modules (RP-19)".
-- **The rig bin's exit codes outside 0 and 1 are `setup`'s 4, and `memory`'s 4
-  and 2** — the contract-major refusal the consumer owns, carried as
+- **The rig bin's exit codes outside 0 and 1 are `setup`'s 4, and `memory`'s 4,
+  3 and 2** — the contract-major refusal the consumer owns, carried as
   `exitCode: 4` in `packages/cli/src/commands/setup.ts` and in
-  `packages/cli/src/commands/memory.ts`, and the invalid-invocation 2 of
-  `memory` (no verb, or a verb outside `doctor`/`load`), each returned by
-  `index.ts` through the command's result; no other literal above 1 is
+  `packages/cli/src/commands/memory.ts`; `memory`'s unmet-prerequisite 3
+  (`prerequisites-unmet` with the unset variable in `missing`, when no
+  configuration root — `APPDATA` on Windows, `HOME` elsewhere — exists to find
+  the manifest under); and `memory`'s invalid-invocation 2 (no verb, or a verb
+  outside `doctor`/`load`), each returned by `index.ts` through the command's
+  result. `setup` still answers the same missing root with 1, as it did before
+  RP-19 — a measured difference, not a rule. No other literal above 1 is
   returned, passed to `process.exit`, or assigned to `process.exitCode`
   anywhere under `packages/cli/src`. Pinned in
-  `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0, 1, setup's 4, and memory's 4 and 2 (RP-19)".
+  `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0, 1, setup's 4, and memory's 4, 3 and 2 (RP-19)".
 - **No reader of `RIG_UNATTENDED` exists under `.claude/scripts/`,
   `.claude/hooks/` or `packages/cli/src/`.** Reach: those three trees and no
   others — the template copies under `templates/agent-os/` are not scanned, and

@@ -112,7 +112,7 @@ Both bins answer the same handshake, and the rig consumes Memory only through it
 ```sh
 npx create-agent-rig@latest --version --json          # {"schemaVersion":1,"name":"create-agent-rig","version":"…","contractVersion":"1.0"}
 npx create-agent-rig@latest memory doctor --json      # handshake first, then Memory's doctor, answer passed through unchanged
-npx create-agent-rig@latest memory load --json --cwd . # same, for load
+npx create-agent-rig@latest memory load --json           # same, for load; every argument after the verb goes to Memory verbatim
 ```
 
 `memory` reads the manifest above, runs Memory's `--version --json`, and only

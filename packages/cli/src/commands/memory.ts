@@ -14,9 +14,11 @@
 // (Memory is not registered here, or its executable is gone — the relocation
 // case), 1 for INTEGRATION-FAILED (the executable answered, but not with a
 // handshake the manifest promised — a broken VERSION is `manifest-stale`,
-// never `absent`), 2 for an invalid invocation, 4 for a foreign contract
-// major. In every one of those the stdout is exactly one JSON object with no
-// file path in it; human hints go to stderr.
+// never `absent`), 3 for an unmet prerequisite (no configuration root: APPDATA
+// or HOME unset), 4 for a foreign contract major. For 0, 1, 3 and 4 the stdout
+// is exactly one JSON object with no file path in it; an invalid invocation
+// (exit 2 — no verb, or one outside doctor/load) writes nothing to stdout and
+// names the verbs on stderr; human hints always go to stderr.
 import { execFileRunner } from './setup.js';
 import {
   MEMORY_CONTRACT_MAJOR,
@@ -40,11 +42,12 @@ export type MemoryOptions = {
   run?: Runner;
 };
 
-export type MemoryResult =
-  | { exitCode: 0 | 1 | 3; stdout: string; stderr: string }
-  | { exitCode: 2; stdout: ''; stderr: string }
-  | { exitCode: 4; stdout: string; stderr: string }
-  | { exitCode: number; stdout: string; stderr: string };
+/**
+ * One shape for every outcome: the rig's own status answers use 0, 1, 2, 3
+ * and 4 as the header describes; a passthrough carries whatever exit code
+ * Memory returned, so the field cannot be narrower than `number`.
+ */
+export type MemoryResult = { exitCode: number; stdout: string; stderr: string };
 
 const jsonLine = (payload: Record<string, unknown>): string => `${JSON.stringify(payload)}\n`;
 
@@ -67,12 +70,21 @@ export async function runMemory(options: MemoryOptions): Promise<MemoryResult> {
   try {
     file = subsystemsManifestPath(env, platform);
   } catch (error) {
-    if (error instanceof SubsystemsError)
+    if (error instanceof SubsystemsError && error.code === 'config-root-unavailable') {
+      // Nothing was attempted: without a configuration root there is no place
+      // the manifest could be. The contract's first exit-3 occasion — a
+      // variable that is not set — with the variable named, never a path.
+      const variable = platform === 'win32' ? 'APPDATA' : 'HOME';
       return {
-        exitCode: 1,
-        stdout: jsonLine({ schemaVersion: 1, result: 'integration-failed', reason: 'unreadable' }),
-        stderr: `memory: ${error.message} (${error.code})\n`,
+        exitCode: 3,
+        stdout: jsonLine({
+          schemaVersion: 1,
+          result: 'prerequisites-unmet',
+          missing: [{ kind: 'environment', name: variable, detail: 'not set' }],
+        }),
+        stderr: `memory: ${variable} is not set, so there is no configuration root to read the subsystem manifest from\n`,
       };
+    }
     throw error;
   }
   let manifest;

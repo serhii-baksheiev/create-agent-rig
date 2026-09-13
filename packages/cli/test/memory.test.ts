@@ -129,6 +129,22 @@ const HOST = process.platform;
 
 const envFor = (dir: string): NodeJS.ProcessEnv => ({ HOME: dir, APPDATA: dir });
 
+/**
+ * The closed set of top-level keys a non-passthrough `runMemory` payload may
+ * carry — shared by the "never names a path" property test below and the
+ * exit-3/no-config-root cases, so the one check covers both without a second,
+ * driftable copy of the list. `missing` is exit 3's own field (RP-19): the
+ * variable name the manifest path could not resolve.
+ */
+const ALLOWED_PAYLOAD_KEYS = new Set([
+  'schemaVersion',
+  'result',
+  'reason',
+  'contractVersion',
+  'requiredMajor',
+  'missing',
+]);
+
 let tmp: string;
 
 beforeEach(async () => {
@@ -168,6 +184,58 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
       expect(result.stdout).toBe('');
       expect(result.stderr).toMatch(/doctor/);
       expect(result.stderr).toMatch(/load/);
+      expect(run.calls).toHaveLength(0);
+    });
+  });
+
+  describe('no config root — exit 3, nothing attempted (RP-19)', () => {
+    it('answers prerequisites-unmet/APPDATA on win32 when APPDATA is not set, and never touches Memory', async () => {
+      const run = neverCalledRun();
+
+      const result = await runMemory({
+        verb: 'doctor',
+        args: [],
+        env: {},
+        platform: 'win32',
+        run,
+      });
+
+      expect(result.exitCode).toBe(3);
+      expect(result.stdout).toBe(
+        `${JSON.stringify({ schemaVersion: 1, result: 'prerequisites-unmet', missing: [{ kind: 'environment', name: 'APPDATA', detail: 'not set' }] })}\n`,
+      );
+      const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+      for (const key of Object.keys(parsed)) {
+        expect(ALLOWED_PAYLOAD_KEYS.has(key), `unexpected key "${key}" in ${result.stdout}`).toBe(
+          true,
+        );
+      }
+      expect(result.stderr).toMatch(/APPDATA/);
+      expect(run.calls).toHaveLength(0);
+    });
+
+    it('answers prerequisites-unmet/HOME on linux when HOME is not set, and never touches Memory', async () => {
+      const run = neverCalledRun();
+
+      const result = await runMemory({
+        verb: 'doctor',
+        args: [],
+        env: {},
+        platform: 'linux',
+        run,
+      });
+
+      expect(result.exitCode).toBe(3);
+      expect(result.stdout).toBe(
+        `${JSON.stringify({ schemaVersion: 1, result: 'prerequisites-unmet', missing: [{ kind: 'environment', name: 'HOME', detail: 'not set' }] })}\n`,
+      );
+      const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+      for (const key of Object.keys(parsed)) {
+        expect(ALLOWED_PAYLOAD_KEYS.has(key), `unexpected key "${key}" in ${result.stdout}`).toBe(
+          true,
+        );
+      }
+      expect(result.stderr).toMatch(/HOME/);
       expect(run.calls).toHaveLength(0);
     });
   });
@@ -427,13 +495,7 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
       nonJsonResult(),
       nameMismatchResult(),
     ];
-    const allowedKeys = new Set([
-      'schemaVersion',
-      'result',
-      'reason',
-      'contractVersion',
-      'requiredMajor',
-    ]);
+    const allowedKeys = ALLOWED_PAYLOAD_KEYS;
 
     for (const outcome of outcomes) {
       const run = scriptedRuns([outcome]);
