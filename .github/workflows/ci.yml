@@ -60,6 +60,25 @@ jobs:
       - run: pnpm --dir templates/skeleton/node-service install --frozen-lockfile
       - run: pnpm --dir templates/skeleton/node-service run check
 
+  # RP-13: the conformance matrix's executable form. Fetches the Memory
+  # contract directory from claude-config at the commit the shipped payload
+  # pins (.claude/contracts/conformance-v1/manifest.json) and checks it, and
+  # both bins' handshakes, against the payload's schemas through process
+  # boundaries only. The one job here with an outbound fetch, by the RP-13
+  # ruling of 2026-09-02 (a checkout at a recorded SHA, not a dispatcher).
+  memory-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: node scripts/memory-conformance.mjs --json
+
   windows-unit:
     runs-on: windows-latest
     steps:

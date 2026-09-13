@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:create-agent-rig:conformance:v1:doctor",
+  "title": "Command contract v1.0 — `doctor --json`",
+  "description": "A list of check records and their aggregate status. Every record carries all four fields; a consumer acts on status only, and no field but a record's human-facing fix may name a file path. Additive keys are tolerated.",
+  "type": "object",
+  "required": ["schemaVersion", "status", "checks"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "status": { "type": "string", "enum": ["ok", "warn", "fail"] },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "detail", "fix"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["ok", "warn", "fail"] },
+          "detail": { "type": "string" },
+          "fix": { "type": "string" }
+        }
+      }
+    }
+  }
+}

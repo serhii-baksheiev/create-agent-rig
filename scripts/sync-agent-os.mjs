@@ -4,6 +4,7 @@
 //
 //   node scripts/sync-agent-os.mjs           # write the composed files
 //   node scripts/sync-agent-os.mjs --check   # exit 1 if anything drifted
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -196,6 +197,16 @@ function compose() {
   );
   return out;
 }
+
+// RP-13: the conformance payload's generated half is derived from
+// contracts/session-messaging/v1/schema.ts before the template is composed, so
+// the dogfood copy below can never carry a session-identity schema its source
+// has moved away from. In check mode a stale derivation is drift like any other.
+execFileSync(
+  process.execPath,
+  [path.join(repoRoot, 'scripts', 'conformance-payload.mjs'), check ? '--check' : '--write'],
+  { stdio: 'inherit' },
+);
 
 const composed = compose();
 const drifted = [];

@@ -546,8 +546,18 @@ satisfy. The matrix is the executable form of this document — a claim here tha
 no row exercises is a claim nothing is holding.
 
 The item names `[A4]` as the rig layer that rolls the matrix out. That referent
-is absent (see above), so this document specifies the matrix's shape and leaves
-its delivery to whoever supplies the layer.
+was absent when this document was written (see above); RP-13 supplied it. The
+layer is the payload every rig carries under `.claude/contracts/conformance-v1/`
+— `manifest.json` with the contract version and the pinned Memory commit, the
+version-handshake and doctor schemas of this document, and the RP-12
+session-identity schema generated from its source — and the matrix's executable
+form is `scripts/memory-conformance.mjs`, which the generator's CI runs against
+the Memory contract directory fetched at that commit: one row per invocation
+(`memory --version --json`, `memory doctor --json`, `create-agent-rig --version
+--json`) plus the contract directory's own presence checks, each row a check
+record with a status, and the whole a pass only when no row fails. Pinned in
+`test/template/conformance-payload.test.ts` and
+`test/template/memory-conformance.test.ts`.
 
 ## Conformance today
 

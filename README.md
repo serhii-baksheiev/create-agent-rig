@@ -132,6 +132,25 @@ it covers was there to be removed. The single case nothing can tell apart is a
 file a **later** release added, which your rig never had — that one is installed,
 and `--dry-run` lists it before anything is written.
 
+### Conformance layer
+
+Every rig carries the core conformance payload under
+`.claude/contracts/conformance-v1/` — `manifest.json` (the contract version,
+the payload file list, and the Memory repository, commit ref, contract
+directory and executable the rig is proven against), the version-handshake and
+doctor JSON schemas of the command contract, and the RP-12 session-identity
+schema generated from `contracts/session-messaging/v1/schema.ts`. `create`,
+`init` and `upgrade` deliver and refresh it like any other rig-owned file
+(`packages/cli/test/upgrade.test.ts` › "installs the conformance manifest,
+pinned to the Memory incubation ref"). The generator's CI job
+`memory-conformance` runs `scripts/memory-conformance.mjs`: it fetches the
+Memory contract directory at the pinned commit and checks it, plus both bins'
+`--version --json` and Memory's `doctor --json`, against those schemas through
+process boundaries only — no Memory code is imported and no Memory fixture is
+copied here (`test/template/memory-conformance.test.ts`). Re-pinning is one
+edit of `manifest.json`; `node scripts/conformance-payload.mjs --check` keeps
+the generated schema and its source in step.
+
 ## What you get
 
 **A system of boundaries, each held by tooling.** An agent (or a human using

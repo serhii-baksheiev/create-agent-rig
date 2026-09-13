@@ -78,7 +78,11 @@
     "docs/decisions/run-directory.md",
     "docs/decisions/spacing-rations-mechanisms.md",
     "docs/decisions/stop-conditions-in-a-file.md",
-    "docs/decisions/two-empty-endings.md"
+    "docs/decisions/two-empty-endings.md",
+    ".claude/contracts/conformance-v1/manifest.json",
+    ".claude/contracts/conformance-v1/version-handshake.schema.json",
+    ".claude/contracts/conformance-v1/doctor.schema.json",
+    ".claude/contracts/conformance-v1/session-identity.schema.json"
   ],
   "architecture": [
     ".claude/rules/architecture.md",
