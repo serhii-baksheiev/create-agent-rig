@@ -5,7 +5,12 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { parseSessionSchema, parseFlagBasename } from './policy-benchmark-schema.mjs';
-import { benchmarkTimeouts, createBenchmarkEnv, runProcess } from './policy-benchmark-runtime.mjs';
+import {
+  benchmarkTimeouts,
+  createBenchmarkEnv,
+  createCommandHistory,
+  runProcess,
+} from './policy-benchmark-runtime.mjs';
 
 const requireFromHere = createRequire(import.meta.url);
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -124,6 +129,9 @@ const mutate = (snapshot, adapter, policy, id) => {
 
 const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
   let workspace;
+  // One history per worker: a command that times out names how long the
+  // earlier commands of this same worker took.
+  const history = createCommandHistory({ limit: 16 });
 
   const setup = async () => {
     const scratch = path.join(workspaceRoot, 'scratch');
@@ -160,6 +168,7 @@ const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
       timeoutMs: CHILD_TIMEOUT_MS,
       maxBytes: MAX_STDERR_BYTES,
       boundaryPid: process.pid,
+      history,
     });
     if (initialized.code !== 0 || initialized.timedOut)
       throw new Error(`benchmark git init failed: ${initialized.stderr}`);
@@ -231,6 +240,7 @@ const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
                 timeoutMs: CHILD_TIMEOUT_MS,
                 maxBytes: MAX_STDERR_BYTES,
                 boundaryPid: process.pid,
+                history,
               },
             )
           ).code;
@@ -244,6 +254,7 @@ const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
               timeoutMs: CHILD_TIMEOUT_MS,
               maxBytes: MAX_STDERR_BYTES,
               boundaryPid: process.pid,
+              history,
             })
           ).code;
         return (
@@ -254,6 +265,7 @@ const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
             timeoutMs: CHILD_TIMEOUT_MS,
             maxBytes: MAX_STDERR_BYTES,
             boundaryPid: process.pid,
+            history,
           })
         ).code;
       };

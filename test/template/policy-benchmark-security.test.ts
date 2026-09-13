@@ -591,6 +591,31 @@ describe('policy benchmark security boundaries', () => {
   );
 
   it(
+    "names the deadline and earlier commands' timings when a real guard command times out inside a benchmark run",
+    { timeout: BENCHMARK_TIMEOUT_MS },
+    async () => {
+      const root = await createBenchmarkFixture();
+      try {
+        const guard = path.join(root, '.claude', 'hooks', 'guard-secret-file.mjs');
+        await writeFile(guard, '// never exits on its own\nsetInterval(() => {}, 0x7fffffff);\n');
+        await git(root, 'add', '.claude/hooks/guard-secret-file.mjs');
+        await git(root, 'commit', '--quiet', '-m', 'guard that never exits');
+        const head = await git(root, 'rev-parse', 'HEAD');
+
+        const result = await runBenchmark(root, head);
+
+        expect(result.code).not.toBe(0);
+        expect(result.err).toMatch(
+          /benchmark command .+: timed out after \d+ ms \(stdout \d+ B, stderr \d+ B\); earlier commands in this worker: .*git(\.exe)? \d+ ms exit 0/,
+        );
+        expect(result.err).not.toContain(root);
+      } finally {
+        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      }
+    },
+  );
+
+  it(
     'holds when a copied verifier runtime restores its benign bytes before the controller first fingerprints it',
     { timeout: 60_000 },
     async () => {
