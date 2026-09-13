@@ -9,7 +9,7 @@
 // Handshake results carry no path — a status is machine JSON a consumer may
 // print, and the manifest itself is the only place a location is written.
 import { statSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
@@ -83,8 +83,28 @@ export function subsystemsManifestPath(env: NodeJS.ProcessEnv, platform: NodeJS.
   return path.join(home, '.config', 'create-agent-rig', 'subsystems.json');
 }
 
-export function memoryExecutablePath(memoryRoot: string): string {
-  return path.join(memoryRoot, ...MEMORY_EXECUTABLE_REL);
+/** The path module of the DECLARED platform, so an entry's encoding is pinned by the platform argument, not by the host. */
+const pathFor = (platform: NodeJS.Platform) => (platform === 'win32' ? path.win32 : path.posix);
+
+export function memoryExecutablePath(memoryRoot: string, platform: NodeJS.Platform): string {
+  return pathFor(platform).join(memoryRoot, ...MEMORY_EXECUTABLE_REL);
+}
+
+/**
+ * The pure half of the derivation: root → invocation, in the declared
+ * platform's encoding. The root is the single declared input
+ * (`setup --memory-root`), so it must be absolute under that platform — a
+ * relative root would make the entry mean a different executable from every
+ * working directory. No filesystem here, so both encodings are pinned by tests
+ * on any host.
+ */
+export function memoryInvocation(
+  input: { memoryRoot: string; nodeExecutable: string },
+  platform: NodeJS.Platform,
+): [string, string] {
+  if (!pathFor(platform).isAbsolute(input.memoryRoot))
+    throw new SubsystemsError('memory-root-relative', 'the Memory root must be an absolute path');
+  return [input.nodeExecutable, memoryExecutablePath(input.memoryRoot, platform)];
 }
 
 function isFile(file: string): boolean {
@@ -96,11 +116,11 @@ function isFile(file: string): boolean {
 }
 
 /**
- * The derivation: root → invocation. The root is the single declared input
- * (`setup --memory-root`), so it must be absolute — a relative root would make
- * the entry mean a different executable from every working directory. The
- * executable must already be there: the manifest records what exists, it does
- * not promise what an install will bring.
+ * The whole derivation: the invocation above, plus the check that the
+ * executable is already there on this host — the manifest records what
+ * exists, it does not promise what an install will bring. So `platform` is
+ * the host's here; the pure half is what a foreign platform's encoding is
+ * tested through.
  */
 export function deriveMemoryEntry(
   input: {
@@ -111,21 +131,15 @@ export function deriveMemoryEntry(
   },
   platform: NodeJS.Platform,
 ): MemoryEntry {
-  const absolute =
-    platform === 'win32'
-      ? path.win32.isAbsolute(input.memoryRoot)
-      : path.posix.isAbsolute(input.memoryRoot);
-  if (!absolute || !path.isAbsolute(input.memoryRoot))
-    throw new SubsystemsError('memory-root-relative', 'the Memory root must be an absolute path');
-  const executable = memoryExecutablePath(input.memoryRoot);
-  if (!isFile(executable))
+  const invocation = memoryInvocation(input, platform);
+  if (!isFile(invocation[1]))
     throw new SubsystemsError(
       'memory-executable-absent',
       `no ${MEMORY_EXECUTABLE_REL.join('/')} under the declared Memory root`,
     );
   return {
     memoryRoot: input.memoryRoot,
-    invocation: [input.nodeExecutable, executable],
+    invocation,
     contractMajor: MEMORY_CONTRACT_MAJOR,
     memoryRef: input.memoryRef,
     installedVersion: input.installedVersion,
@@ -231,8 +245,11 @@ export function parseSubsystemsManifest(text: string): SubsystemsManifest | null
     entries: {
       memory: {
         memoryRoot: m.memoryRoot,
+        // `every(isString)` above proved both elements are strings, but
+        // Array.prototype.every does not narrow a tuple's element type.
         invocation: [invocation[0] as string, invocation[1] as string],
         contractMajor: MEMORY_CONTRACT_MAJOR,
+        // Checked above as `null` or a string; the `||` chain does not narrow `m.memoryRef`.
         memoryRef: m.memoryRef as string | null,
         installedVersion: m.installedVersion,
       },
@@ -273,8 +290,16 @@ export async function writeSubsystemsManifest(
     dir,
     `.${path.basename(file)}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`,
   );
-  await writeFile(temp, serializeSubsystemsManifest(manifest));
-  await rename(temp, file);
+  try {
+    await writeFile(temp, serializeSubsystemsManifest(manifest));
+    await rename(temp, file);
+  } catch (error) {
+    // A rename a scanner or lock holder refused must not leave the temp file
+    // behind as if it were a second manifest; the original error is the one
+    // the caller sees.
+    await rm(temp, { force: true });
+    throw error;
+  }
 }
 
 /**

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { setupSubsystems } from '../src/commands/setup.js';
+import { execFileRunner, setupSubsystems } from '../src/commands/setup.js';
 import { subsystemsManifestPath } from '../src/lib/subsystems.js';
 
 /**
@@ -66,6 +66,13 @@ async function memoryRootWithExecutable(): Promise<string> {
   return root;
 }
 
+// The host this suite actually runs on. `memoryRoot` below is a real mkdtemp
+// path, so setupSubsystems' `platform` argument must judge its absoluteness
+// against THIS platform, not a hardcoded one — env carries both HOME and
+// APPDATA so subsystemsManifestPath resolves regardless of which branch HOST
+// selects.
+const HOST = process.platform;
+
 let home: string;
 let memoryRoot: string;
 
@@ -81,15 +88,15 @@ afterEach(async () => {
 
 describe('create-agent-rig setup (RP-147)', () => {
   it('performs the handshake before writing and writes one Memory entry', async () => {
-    const env = { HOME: home };
-    const file = subsystemsManifestPath(env, 'linux');
+    const env = { HOME: home, APPDATA: home };
+    const file = subsystemsManifestPath(env, HOST);
     const run = okRun('0.1.0', file);
 
     const result = await setupSubsystems({
       memoryRoot,
       memoryRef: 'abc123',
       env,
-      platform: 'linux',
+      platform: HOST, // memoryRoot is a real mkdtemp path — see HOST comment above.
       nodeExecutable: '/usr/bin/node',
       run,
     });
@@ -114,8 +121,8 @@ describe('create-agent-rig setup (RP-147)', () => {
   });
 
   it('refuses a foreign contract major with exit 4 and writes nothing', async () => {
-    const env = { HOME: home };
-    const file = subsystemsManifestPath(env, 'linux');
+    const env = { HOME: home, APPDATA: home };
+    const file = subsystemsManifestPath(env, HOST);
     const run = scriptedRun({
       code: 0,
       stdout: `${JSON.stringify({
@@ -131,7 +138,7 @@ describe('create-agent-rig setup (RP-147)', () => {
       memoryRoot,
       memoryRef: 'abc123',
       env,
-      platform: 'linux',
+      platform: HOST, // memoryRoot is a real mkdtemp path — see HOST comment above.
       nodeExecutable: '/usr/bin/node',
       run,
     });
@@ -142,8 +149,8 @@ describe('create-agent-rig setup (RP-147)', () => {
   });
 
   it('maps an absent executable (ENOENT) to exit 1 and writes nothing', async () => {
-    const env = { HOME: home };
-    const file = subsystemsManifestPath(env, 'linux');
+    const env = { HOME: home, APPDATA: home };
+    const file = subsystemsManifestPath(env, HOST);
     const spawnError = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
     const run = scriptedRun({
       code: -1,
@@ -156,7 +163,7 @@ describe('create-agent-rig setup (RP-147)', () => {
       memoryRoot,
       memoryRef: 'abc123',
       env,
-      platform: 'linux',
+      platform: HOST, // memoryRoot is a real mkdtemp path — see HOST comment above.
       nodeExecutable: '/usr/bin/node',
       run,
     });
@@ -169,8 +176,8 @@ describe('create-agent-rig setup (RP-147)', () => {
   });
 
   it('maps an integration-failed handshake to exit 1 and writes nothing', async () => {
-    const env = { HOME: home };
-    const file = subsystemsManifestPath(env, 'linux');
+    const env = { HOME: home, APPDATA: home };
+    const file = subsystemsManifestPath(env, HOST);
     const run = scriptedRun({
       code: 1,
       stdout: `${JSON.stringify({ schemaVersion: 1, result: 'integration-failed', reason: 'invalid' })}\n`,
@@ -181,7 +188,7 @@ describe('create-agent-rig setup (RP-147)', () => {
       memoryRoot,
       memoryRef: 'abc123',
       env,
-      platform: 'linux',
+      platform: HOST, // memoryRoot is a real mkdtemp path — see HOST comment above.
       nodeExecutable: '/usr/bin/node',
       run,
     });
@@ -194,8 +201,8 @@ describe('create-agent-rig setup (RP-147)', () => {
   });
 
   it('a dry run performs the handshake and writes nothing', async () => {
-    const env = { HOME: home };
-    const file = subsystemsManifestPath(env, 'linux');
+    const env = { HOME: home, APPDATA: home };
+    const file = subsystemsManifestPath(env, HOST);
     const run = okRun('0.1.0', file);
 
     const result = await setupSubsystems({
@@ -203,7 +210,7 @@ describe('create-agent-rig setup (RP-147)', () => {
       memoryRef: 'abc123',
       dryRun: true,
       env,
-      platform: 'linux',
+      platform: HOST, // memoryRoot is a real mkdtemp path — see HOST comment above.
       nodeExecutable: '/usr/bin/node',
       run,
     });
@@ -217,5 +224,50 @@ describe('create-agent-rig setup (RP-147)', () => {
     const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
     expect(source).toContain(`process.argv[2] === 'setup'`);
     expect(source).toContain('setup --memory-root');
+  });
+
+  describe('execFileRunner maps a real child process to the runner contract', () => {
+    it('reports a missing executable as spawnError ENOENT', async () => {
+      const result = await execFileRunner(
+        path.join(home, 'no-such-executable'),
+        ['--version', '--json'],
+        { timeoutMs: 5000 },
+      );
+      expect(result.spawnError?.code).toBe('ENOENT');
+    });
+
+    it("reports the child's exit code and stdout", async () => {
+      const exited = await execFileRunner(
+        process.execPath,
+        ['-e', 'process.stdout.write("hi"); process.exit(3)'],
+        { timeoutMs: 5000 },
+      );
+      expect(exited.spawnError).toBeUndefined();
+      expect(exited.code).toBe(3);
+      expect(exited.stdout).toBe('hi');
+
+      const ok = await execFileRunner(process.execPath, ['-e', 'process.stdout.write("ok")'], {
+        timeoutMs: 5000,
+      });
+      expect(ok.spawnError).toBeUndefined();
+      expect(ok.code).toBe(0);
+      expect(ok.stdout).toBe('ok');
+    });
+
+    it('reports a child that outlives the timeout as a spawn error, not as exit 0', async () => {
+      // Bounded race: a defect that hangs forever must fail this test
+      // within 5s, not hang the suite.
+      const TIMED_OUT = Symbol('execFileRunner did not settle within the race bound');
+      const settled = await Promise.race([
+        execFileRunner(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
+          timeoutMs: 300,
+        }),
+        new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 5000)),
+      ]);
+      expect(settled).not.toBe(TIMED_OUT);
+      const result = settled as RunResult;
+      expect(result.spawnError).toBeDefined();
+      expect(result.code).not.toBe(0);
+    }, 6000);
   });
 });

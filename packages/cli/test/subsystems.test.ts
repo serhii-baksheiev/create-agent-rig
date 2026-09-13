@@ -15,6 +15,10 @@ import {
   writeSubsystemsManifest,
 } from '../src/lib/subsystems.js';
 import type { HandshakeResult, MemoryEntry, SubsystemsManifest } from '../src/lib/subsystems.js';
+// Namespace import so a still-missing `memoryInvocation` export fails inside
+// the assertion (readable) rather than at module load (which would blank out
+// every other test in this file).
+import * as subsystemsModule from '../src/lib/subsystems.js';
 
 /**
  * The injected process runner: `(file, args, { timeoutMs }) => Promise<{ code, stdout, stderr, spawnError? }>`.
@@ -61,6 +65,12 @@ function scriptedRun(result: RunResult): Runner & { calls: RunCall[] } {
   run.calls = calls;
   return run;
 }
+
+// The host this suite actually runs on. A real mkdtemp root is a host path
+// (backslashes + a drive letter on win32, forward slashes on posix), so any
+// test that hands one to deriveMemoryEntry/refreshSubsystems/setupSubsystems
+// must judge its absoluteness against THIS platform, not a hardcoded one.
+const HOST = process.platform;
 
 let tmp: string;
 
@@ -121,7 +131,7 @@ describe('the machine subsystem manifest (RP-147)', () => {
           memoryRef: 'abc123',
           installedVersion: '0.1.0',
         },
-        'linux',
+        HOST, // memoryRoot is a real mkdtemp path — judge it against the actual host.
       );
 
       expect(entry.invocation).toEqual([
@@ -175,13 +185,81 @@ describe('the machine subsystem manifest (RP-147)', () => {
             memoryRef: null,
             installedVersion: '0.1.0',
           },
-          'linux',
+          HOST, // emptyRoot is a real mkdtemp path — judge it against the actual host.
         );
       } catch (error) {
         absentError = error;
       }
       expect(absentError).toBeInstanceOf(SubsystemsError);
       expect((absentError as SubsystemsError).code).toBe('memory-executable-absent');
+    });
+  });
+
+  describe('memoryInvocation pins the invocation encoding per platform', () => {
+    it('derives a Windows invocation with backslashes and a drive root, on any host', () => {
+      expect(subsystemsModule.memoryInvocation).toBeTypeOf('function');
+      const invocation = subsystemsModule.memoryInvocation(
+        {
+          memoryRoot: 'C:\\Users\\u\\claude-config',
+          nodeExecutable: 'C:\\nvm4w\\nodejs\\node.exe',
+        },
+        'win32',
+      );
+      expect(invocation).toEqual([
+        'C:\\nvm4w\\nodejs\\node.exe',
+        'C:\\Users\\u\\claude-config\\shared-memory\\memory.mjs',
+      ]);
+    });
+
+    it('derives a POSIX invocation with forward slashes, on any host', () => {
+      expect(subsystemsModule.memoryInvocation).toBeTypeOf('function');
+      const invocation = subsystemsModule.memoryInvocation(
+        { memoryRoot: '/home/u/claude-config', nodeExecutable: '/usr/bin/node' },
+        'linux',
+      );
+      expect(invocation).toEqual([
+        '/usr/bin/node',
+        '/home/u/claude-config/shared-memory/memory.mjs',
+      ]);
+    });
+
+    it('refuses a root that is not absolute under the declared platform', () => {
+      expect(subsystemsModule.memoryInvocation).toBeTypeOf('function');
+
+      expect(() =>
+        subsystemsModule.memoryInvocation(
+          { memoryRoot: 'rel\\dir', nodeExecutable: 'C:\\nvm4w\\nodejs\\node.exe' },
+          'win32',
+        ),
+      ).toThrow(SubsystemsError);
+
+      expect(() =>
+        subsystemsModule.memoryInvocation(
+          { memoryRoot: 'rel/dir', nodeExecutable: '/usr/bin/node' },
+          'linux',
+        ),
+      ).toThrow(SubsystemsError);
+
+      // A drive-letter path is not POSIX-absolute: it must be refused when the
+      // declared platform is not win32, even though it looks "absolute" to a
+      // human.
+      expect(() =>
+        subsystemsModule.memoryInvocation(
+          { memoryRoot: 'C:\\x', nodeExecutable: '/usr/bin/node' },
+          'linux',
+        ),
+      ).toThrow(SubsystemsError);
+
+      let code: unknown;
+      try {
+        subsystemsModule.memoryInvocation(
+          { memoryRoot: 'rel/dir', nodeExecutable: '/usr/bin/node' },
+          'linux',
+        );
+      } catch (error) {
+        code = (error as SubsystemsError).code;
+      }
+      expect(code).toBe('memory-root-relative');
     });
   });
 
@@ -436,7 +514,8 @@ describe('the machine subsystem manifest (RP-147)', () => {
         file,
         run,
         nodeExecutable: '/usr/bin/node',
-        platform: 'linux',
+        // memoryRoot (recorded in `stale`) is a real mkdtemp path.
+        platform: HOST,
       });
 
       expect(outcome).toBe('refreshed');
@@ -486,7 +565,8 @@ describe('the machine subsystem manifest (RP-147)', () => {
         file,
         run,
         nodeExecutable: '/usr/bin/node',
-        platform: 'linux',
+        // memoryRoot (recorded in `original`) is a real mkdtemp path.
+        platform: HOST,
       });
 
       expect(outcome).toEqual({
