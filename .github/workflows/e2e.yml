@@ -36,12 +36,21 @@ concurrency:
 
 jobs:
   e2e:
-    runs-on: ${{ (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "Linux", "X64"]') || 'ubuntu-latest' }}
+    # This job also runs on pull requests, so the switch is ignored there: a
+    # PR from anywhere must never reach a machine of ours, whatever the
+    # standing variable says.
+    runs-on: ${{ github.event_name != 'pull_request' && (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "Linux", "X64"]') || 'ubuntu-latest' }}
     steps:
       - name: Record the runner
         shell: bash
+        env:
+          RUNNER_NAME_: ${{ runner.name }}
+          RUNNER_OS_: ${{ runner.os }}
+          RUNNER_ENVIRONMENT_: ${{ runner.environment }}
+          RUNNER_ARCH_: ${{ runner.arch }}
+          SHA_: ${{ github.sha }}
         run: |
-          echo "runner.name=${{ runner.name }} runner.os=${{ runner.os }} runner.environment=${{ runner.environment }} runner.arch=${{ runner.arch }} ImageOS=${ImageOS:-} sha=${{ github.sha }}"
+          echo "runner.name=$RUNNER_NAME_ runner.os=$RUNNER_OS_ runner.environment=$RUNNER_ENVIRONMENT_ runner.arch=$RUNNER_ARCH_ ImageOS=${ImageOS:-} sha=$SHA_"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the released-hash ledger test reads commits of past releases
@@ -60,13 +69,19 @@ jobs:
   # nightly and a release dispatch on an exact SHA.
   windows-e2e:
     if: github.event_name != 'pull_request'
-    runs-on: ${{ (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "Windows", "X64"]') || 'windows-latest' }}
+    runs-on: ${{ github.event_name != 'pull_request' && (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "Windows", "X64"]') || 'windows-latest' }}
     timeout-minutes: 45
     steps:
       - name: Record the runner
         shell: bash
+        env:
+          RUNNER_NAME_: ${{ runner.name }}
+          RUNNER_OS_: ${{ runner.os }}
+          RUNNER_ENVIRONMENT_: ${{ runner.environment }}
+          RUNNER_ARCH_: ${{ runner.arch }}
+          SHA_: ${{ github.sha }}
         run: |
-          echo "runner.name=${{ runner.name }} runner.os=${{ runner.os }} runner.environment=${{ runner.environment }} runner.arch=${{ runner.arch }} ImageOS=${ImageOS:-} sha=${{ github.sha }}"
+          echo "runner.name=$RUNNER_NAME_ runner.os=$RUNNER_OS_ runner.environment=$RUNNER_ENVIRONMENT_ runner.arch=$RUNNER_ARCH_ ImageOS=${ImageOS:-} sha=$SHA_"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

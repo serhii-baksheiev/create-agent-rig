@@ -97,7 +97,7 @@ describe('the policy benchmark runs in its own vitest project, alone and last', 
     expect(benchmark?.test.testTimeout).toBe(template?.test.testTimeout);
   });
 
-  it('keeps the benchmark project in the pre-commit and Windows unit lane', () => {
+  it('keeps the benchmark project in the test:unit script — the pre-commit lane and the Linux ci job', () => {
     const packageJsonUrl = new URL('../../package.json', import.meta.url);
     const packageJson = JSON.parse(readFileSync(packageJsonUrl, 'utf8')) as {
       scripts?: Record<string, string>;

@@ -7,32 +7,42 @@ switch on.
 
 ## The two paths
 
-| workflow  | when                                                                          | runner                                                                           |
-| --------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `ci.yml`  | every pull request and push to master                                         | hosted only — `ubuntu-latest`, `windows-latest`; no switch exists on this path   |
-| `e2e.yml` | push to master, nightly, dispatch, PRs on CLI/template paths (Linux job only) | hosted by default; `self-hosted` through one switch, same jobs and same commands |
+| workflow  | when                                                                                | runner                                                                                                                                               |
+| --------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci.yml`  | every pull request and push to master                                               | hosted only — `ubuntu-latest`, `windows-latest`; no switch exists on this path                                                                       |
+| `e2e.yml` | push to master, nightly, dispatch; PRs on CLI/template paths run the Linux job only | hosted by default; `self-hosted` through one switch on push, nightly and dispatch — on a pull request the switch is ignored and the job stays hosted |
 
-What each lane runs, and that the Windows full suite stays off pull requests,
-is pinned in `test/template/root-ci.test.ts` › "runs a Windows smoke lane — the
-unit project only — on the hosted image", › "keeps the pull-request path off
+What each lane runs, that no pull request can reach a self-hosted runner, and
+that the Windows full suite stays off pull requests are pinned in
+`test/template/root-ci.test.ts` › "runs a Windows smoke lane — the unit
+project only — on the hosted image", › "keeps the pull-request path off
 self-hosted runners entirely" and › "keeps the Windows full suite off pull
 requests — it runs on master, nightly and by dispatch".
 
 ## The switch
 
-One switch, read in `runs-on` of every `e2e.yml` job — pinned in
-`test/template/root-ci.test.ts` › "accepts runner_mode hosted|self-hosted by
-dispatch input and by repository variable, hosted by default":
+One switch, read in `runs-on` of every `e2e.yml` job and guarded off pull
+requests — pinned in `test/template/root-ci.test.ts` › "accepts runner_mode
+hosted|self-hosted by dispatch input and by repository variable, hosted by
+default":
 
 - **per run:** `gh workflow run e2e.yml --ref <branch> -f runner_mode=self-hosted`
-- **standing:** the repository variable `RUNNER_MODE=self-hosted`
-  (Settings → Secrets and variables → Actions → Variables); delete it to
-  return to hosted.
+- **standing:** the repository variable `RUNNER_MODE=self-hosted`, spelled
+  exactly so (Settings → Secrets and variables → Actions → Variables); delete
+  it to return to hosted.
 
 Self-hosted runners are selected by label set: `self-hosted, Linux, X64` and
-`self-hosted, Windows, X64`. A dispatch in self-hosted mode with no runner
-registered under those labels queues until one appears — it does not fall back
-to hosted silently, and it does not fail.
+`self-hosted, Windows, X64`. Confirm a runner carrying those labels is online
+before dispatching in self-hosted mode. A runner on this path needs `bash`
+(both jobs' first step) and, on Windows, `pwsh`, the shells the jobs already
+declare.
+
+Two consequences of the shape, both observed on PR #211's own head
+(`16d53eb`, E2E run 34775448341): on a pull request the `windows-e2e` check reports
+`skipped`, not `success` — the merge criterion in
+`.claude/rules/node-ts.md` reads `ci` and, where the paths trigger it, `e2e`;
+and `gh workflow run e2e.yml --ref <branch>` is a `workflow_dispatch`, so it
+runs **both** jobs, the full Windows suite included, on that branch head.
 
 ## When to switch
 
@@ -51,13 +61,15 @@ runner type.
 
 ## What a release transcript records
 
-Every job prints one line before it checks out — `runner.name`, `runner.os`,
-`runner.environment` (`github-hosted` or `self-hosted`), `runner.arch`,
-`ImageOS` and the SHA — pinned in `test/template/root-ci.test.ts` › "records
-which runner executed each job, so release evidence can name it". A release
-entry cites, per required check: the SHA, the run URL, the runner type and
-label from that line, the command, the result with its skips, and the reason
-when the self-hosted fallback was used.
+Every `e2e.yml` job prints one line before it checks out — `runner.name`,
+`runner.os`, `runner.environment` (`github-hosted` or `self-hosted`),
+`runner.arch`, `ImageOS` and the SHA — pinned in
+`test/template/root-ci.test.ts` › "records which runner executed each job, so
+release evidence can name it". The `ci.yml` jobs name their runner in
+`runs-on` literally and print nothing. A release entry cites, per required
+check: the SHA, the run URL, the runner type and label from that line, the
+command, the result with its skips, and the reason when the self-hosted
+fallback was used.
 
 ## Registering a self-hosted runner
 
@@ -65,6 +77,8 @@ This repository has no runner registered today (`gh api
 repos/{owner}/{repo}/actions/runners` → `total_count: 0`). Registration is
 repository-scoped and follows GitHub's own procedure (Settings → Actions →
 Runners → New self-hosted runner), with the labels above added at
-configuration time. Nothing in this repository installs or configures a
-runner; the Memory repository's dedicated Windows host is registered there,
-not here, and cannot be scheduled from this repository's workflows.
+configuration time; register it ephemeral and on an isolated host, because
+the jobs it would run check out and execute this repository's code. Nothing in
+this repository installs or configures a runner; the Memory repository's
+dedicated Windows host is registered there, not here, and cannot be scheduled
+from this repository's workflows.

@@ -131,7 +131,24 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
   });
 
   it('keeps the pull-request path off self-hosted runners entirely', async () => {
+    // The pull-request path is every ci.yml job plus every e2e.yml job that
+    // is not gated off pull requests. A job on that path either never names
+    // a self-hosted runner, or its runs-on guards the switch behind
+    // `github.event_name != 'pull_request'` — so a standing RUNNER_MODE can
+    // never route a pull request from anywhere onto a machine of ours.
     expect(await workflow('ci.yml')).not.toMatch(/self-hosted/);
+    const e2e = await workflow('e2e.yml');
+    const jobs = [...e2e.matchAll(/^ {2}([\w-]+):\n([\s\S]*?)(?=^ {2}[\w-]+:\n|(?![\s\S]))/gm)]
+      .map((m) => ({ name: m[1] ?? '', body: m[0] ?? '' }))
+      .filter((j) => !/^ {4}if:\s*github\.event_name != 'pull_request'\s*$/m.test(j.body));
+    expect(jobs.map((j) => j.name)).toContain('e2e');
+    for (const job of jobs) {
+      const runsOn = job.body.match(/^ {4}runs-on:\s*(.+)$/m)?.[1] ?? '';
+      if (/self-hosted/.test(runsOn))
+        expect(runsOn, `${job.name} can reach self-hosted on a pull request`).toMatch(
+          /^\$\{\{ github\.event_name != 'pull_request' && /,
+        );
+    }
   });
 
   it('excludes no file by name on either Windows lane', async () => {
@@ -199,6 +216,8 @@ describe('expensive root tests have their own narrowly-triggered workflow', () =
       const body = job(yaml, name);
       expect(body, `${name} does not print runner.environment`).toMatch(/runner\.environment/);
       expect(body, `${name} does not print runner.name`).toMatch(/runner\.name/);
+      // Through env:, never interpolated into the shell line.
+      expect(body).not.toMatch(/^\s*echo .*\$\{\{/m);
     }
   });
 
