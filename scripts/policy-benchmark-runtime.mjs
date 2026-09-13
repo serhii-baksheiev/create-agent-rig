@@ -8,6 +8,35 @@ export const benchmarkTimeouts = (platform) => {
   return { childMs, workerMs, testMs: workerMs + 30_000 };
 };
 
+// The durations of the commands one worker ran, so a timeout can say whether
+// every command was slow or only the one that hit the deadline. It keeps a
+// sanitised basename, the elapsed time and the outcome — never arguments,
+// input, environment, cwd or output text.
+const UNSAFE_NAME_CHARACTER = /[^A-Za-z0-9._-]/g;
+export const createCommandHistory = ({ limit, now = () => performance.now() } = {}) => {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 64)
+    throw new Error('command history limit must be an integer from 1 to 64');
+  const entries = [];
+  return {
+    start(file) {
+      const name = path.basename(String(file)).replace(UNSAFE_NAME_CHARACTER, '?').slice(0, 64);
+      const startedAt = now();
+      return (outcome) => {
+        entries.push({ name, elapsedMs: Math.round(now() - startedAt), outcome });
+        if (entries.length > limit) entries.shift();
+      };
+    },
+    summary() {
+      if (entries.length === 0) return '';
+      const described = entries.map(
+        ({ name, elapsedMs, outcome }) =>
+          `${name} ${elapsedMs} ms ${outcome === 'timed out' ? 'timed out' : `exit ${outcome}`}`,
+      );
+      return `earlier commands in this worker: ${described.join('; ')}`;
+    },
+  };
+};
+
 const diagnosticBuffer = () => {
   const bytes = Buffer.alloc(4096);
   let used = 0;
@@ -143,11 +172,20 @@ export const runProcess = (
     cleanupTimeoutMs = 5_000,
     maxBytes = 1024 * 1024,
     boundaryPid,
+    history,
   } = {},
 ) =>
   new Promise((resolve, reject) => {
     if (boundaryPid !== undefined && boundaryPid !== process.pid)
       return reject(new Error('invalid process boundary'));
+    const finishCommand = history?.start(file);
+    let recorded = false;
+    const record = (outcome) => {
+      if (recorded || finishCommand === undefined) return;
+      recorded = true;
+      finishCommand(outcome);
+    };
+    const streamBytes = { stdout: 0, stderr: 0 };
     const child = spawn(file, args, {
       cwd,
       env,
@@ -171,9 +209,14 @@ export const runProcess = (
         // The controller owns this worker's complete process tree. Keep the
         // worker alive to send its failure; runWorker cleans the tree before
         // settling. Killing our own boundary here would destroy that report.
-        failure = new Error(
-          `benchmark command ${path.basename(file)}: ${failure?.message ?? 'timed out'}`,
-        );
+        // Taken before this command is recorded, so it lists only earlier ones.
+        const earlier = failure === undefined ? (history?.summary() ?? '') : '';
+        const reason =
+          failure?.message ??
+          `timed out after ${timeoutMs} ms (stdout ${streamBytes.stdout} B, stderr ${streamBytes.stderr} B)` +
+            (earlier ? `; ${earlier}` : '');
+        if (timedOut) record('timed out');
+        failure = new Error(`benchmark command ${path.basename(file)}: ${reason}`);
         clearTimeout(timer);
         reject(failure);
         return termination;
@@ -193,6 +236,7 @@ export const runProcess = (
     for (const stream of ['stdout', 'stderr'])
       child[stream].on('data', (chunk) => {
         size += chunk.length;
+        streamBytes[stream] += chunk.length;
         if (size > maxBytes) {
           failure = new Error('benchmark process output limit exceeded');
           void stop();
@@ -204,6 +248,7 @@ export const runProcess = (
     child.once('close', async (code) => {
       markClosed();
       clearTimeout(timer);
+      record(timedOut ? 'timed out' : (code ?? 1));
       if (boundaryPid === undefined && process.platform !== 'win32') await stop();
       else if (termination) await termination;
       if (failure) reject(failure);

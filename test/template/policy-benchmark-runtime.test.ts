@@ -7,6 +7,13 @@ vi.mock('node:child_process', () => childProcess);
 
 type BenchmarkEnvironment = Record<string, string>;
 
+type CommandOutcome = number | 'timed out';
+
+type CommandHistory = {
+  start(file: string): (outcome: CommandOutcome) => void;
+  summary(): string;
+};
+
 type RuntimeModule = {
   benchmarkTimeouts(platform: string): { childMs: number; testMs: number; workerMs: number };
   runProcess(
@@ -17,6 +24,7 @@ type RuntimeModule = {
       boundaryPid?: number;
       cwd?: string;
       env?: BenchmarkEnvironment;
+      history?: CommandHistory;
       input?: string;
       maxBytes?: number;
       timeoutMs?: number;
@@ -33,11 +41,15 @@ type RuntimeModule = {
       timeoutMs?: number;
     },
   ): Promise<unknown>;
+  // Not yet exported by scripts/policy-benchmark-runtime.mjs (RP-111 Red step);
+  // optional here so the pre-existing tests still compile and run while it is missing.
+  createCommandHistory?: (options: { limit: number; now?: () => number }) => CommandHistory;
 };
 
 let runProcess: RuntimeModule['runProcess'];
 let runWorker: RuntimeModule['runWorker'];
 let benchmarkTimeouts: RuntimeModule['benchmarkTimeouts'];
+let createCommandHistory: RuntimeModule['createCommandHistory'];
 
 type FakeStream = EventEmitter & { destroy(error?: Error): void };
 
@@ -147,7 +159,7 @@ beforeEach(() => {
 });
 
 beforeAll(async () => {
-  ({ benchmarkTimeouts, runProcess, runWorker } = (await import(
+  ({ benchmarkTimeouts, runProcess, runWorker, createCommandHistory } = (await import(
     new URL('../../scripts/policy-benchmark-runtime.mjs', import.meta.url).href
   )) as RuntimeModule);
 });
@@ -527,5 +539,159 @@ describe('policy benchmark Windows runtime cleanup', () => {
       runProcess('benchmark-command', [], { cleanupTimeoutMs: 10, env: WINDOWS_ENV, input: '' }),
     ).resolves.toMatchObject({ code: 0, timedOut: false });
     expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('policy benchmark command timing diagnostics', () => {
+  const requireCreateCommandHistory = (): NonNullable<RuntimeModule['createCommandHistory']> => {
+    if (!createCommandHistory)
+      throw new Error('createCommandHistory is not exported by policy-benchmark-runtime.mjs');
+    return createCommandHistory;
+  };
+
+  it('summarises earlier commands oldest-first with their elapsed time and exit code', () => {
+    const now = vi
+      .fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(412)
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(22_873);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    const finishGit = history.start('git');
+    finishGit(0);
+    const finishPowershell = history.start('powershell.exe');
+    finishPowershell(2);
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: git 412 ms exit 0; powershell.exe 21873 ms exit 2',
+    );
+  });
+
+  it('records a timed-out command as "timed out" for the next command\'s summary', () => {
+    const now = vi
+      .fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(21_873)
+      .mockReturnValueOnce(21_873)
+      .mockReturnValueOnce(22_285);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    const finishPowershell = history.start('powershell.exe');
+    finishPowershell('timed out');
+    const finishGit = history.start('git');
+    finishGit(0);
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: powershell.exe 21873 ms timed out; git 412 ms exit 0',
+    );
+  });
+
+  it('returns an empty summary before any command has finished', () => {
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+    expect(history.summary()).toBe('');
+  });
+
+  it('keeps only the most recent `limit` entries', () => {
+    let tick = 0;
+    const now = () => {
+      tick += 100;
+      return tick;
+    };
+    const history = requireCreateCommandHistory()({ limit: 2, now });
+
+    history.start('first')(0);
+    history.start('second')(0);
+    history.start('third')(0);
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: second 100 ms exit 0; third 100 ms exit 0',
+    );
+  });
+
+  it('throws for a limit outside the 1..64 integer range', () => {
+    const factory = requireCreateCommandHistory();
+    expect(() => factory({ limit: 0 })).toThrow();
+    expect(() => factory({ limit: 65 })).toThrow();
+    expect(() => factory({ limit: 1.5 })).toThrow();
+  });
+
+  it('sanitises a command name to the allowed character set and cuts it to 64 characters', () => {
+    const rawName = `${'A'.repeat(60)}!!!!!${'B'.repeat(10)}`;
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+
+    history.start(`/benchmarks/${rawName}`)(0);
+
+    const expectedName = `${'A'.repeat(60)}${'?'.repeat(4)}`;
+    expect(expectedName).toHaveLength(64);
+    expect(history.summary()).toBe(`earlier commands in this worker: ${expectedName} 0 ms exit 0`);
+  });
+
+  it('names the deadline, the stdout/stderr byte counts, and earlier commands in a Windows boundary timeout — never the timed-out command itself, its arguments, its input, or an environment value', async () => {
+    vi.useFakeTimers();
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(500);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+    history.start('git.exe')(0);
+
+    const command = createChild(621, {
+      onInput: () => {
+        command.stdout.emit('data', Buffer.from('X'.repeat(37)));
+        command.stderr.emit('data', Buffer.from('Y'.repeat(5)));
+      },
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    let capturedError: Error | undefined;
+    const running = runProcess('powershell.exe', ['-Command', 'SENTINEL_ARG_VALUE'], {
+      boundaryPid: process.pid,
+      env: { ...WINDOWS_ENV, SENTINEL_ENV_VAR: 'SENTINEL_ENV_VALUE' },
+      history,
+      input: 'SENTINEL_INPUT_VALUE',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    }).catch((error: unknown) => {
+      capturedError = error as Error;
+      throw error;
+    });
+    const assertion = expect(running).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(benchmarkTimeouts('win32').childMs);
+    await assertion;
+
+    expect(capturedError).toBeInstanceOf(Error);
+    expect(capturedError?.message).toBe(
+      'benchmark command powershell.exe: timed out after 30000 ms (stdout 37 B, stderr 5 B); ' +
+        'earlier commands in this worker: git.exe 500 ms exit 0',
+    );
+    expect(capturedError?.message).not.toContain('SENTINEL_ARG_VALUE');
+    expect(capturedError?.message).not.toContain('SENTINEL_INPUT_VALUE');
+    expect(capturedError?.message).not.toContain('SENTINEL_ENV_VALUE');
+    expect(capturedError?.message).not.toContain('powershell.exe ');
+  });
+
+  it('still names the deadline and byte counts on a Windows boundary timeout without a history option', async () => {
+    vi.useFakeTimers();
+    const command = createChild(631, {
+      onInput: () => {
+        command.stdout.emit('data', Buffer.from('Z'.repeat(3)));
+      },
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    let capturedError: Error | undefined;
+    const running = runProcess('git.exe', ['status'], {
+      boundaryPid: process.pid,
+      env: WINDOWS_ENV,
+      input: '',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    }).catch((error: unknown) => {
+      capturedError = error as Error;
+      throw error;
+    });
+    const assertion = expect(running).rejects.toThrow(/git\.exe.*timed out|timed out.*git\.exe/i);
+    await vi.advanceTimersByTimeAsync(benchmarkTimeouts('win32').childMs);
+    await assertion;
+
+    expect(capturedError?.message).toBe(
+      'benchmark command git.exe: timed out after 30000 ms (stdout 3 B, stderr 0 B)',
+    );
   });
 });
