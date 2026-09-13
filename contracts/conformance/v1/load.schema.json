@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:create-agent-rig:conformance:v1:load",
   "title": "Command contract v1.0 — `load --json --cwd <repo>` on a non-error outcome",
-  "description": "The shape of a load answer that exited 0. What this schema checks: the result word is one of the two non-error outcomes, the content is a string, and the counters, budget and identity objects are present with identity.status in its closed set; additive keys are tolerated. What it does not check: that the result is `ok` — whether a checkout's remote is mapped is the Memory workflow's assertion, not the shape's — and the error outcomes (integration-failed, unverifiable, prerequisite-unmet, invalid-invocation), which exit non-zero and never reach this schema.",
+  "description": "The shape of a load answer that exited 0. What this schema checks: the result word is one of the two non-error outcomes, and the counters and budget objects the contract names are present with integer fields; the fields Memory answers beyond the contract's fixture — content, empty, degradation, identity — are typed when present and tolerated when absent, and any further additive key is tolerated. What it does not check: that the result is `ok` — whether a checkout's remote is mapped is the Memory workflow's assertion, not the shape's — and the error outcomes (integration-failed, unverifiable, prerequisite-unmet, invalid-invocation), which exit non-zero and never reach this schema.",
   "type": "object",
-  "required": ["schemaVersion", "result", "content", "counters", "budget", "identity"],
+  "required": ["schemaVersion", "result", "counters", "budget"],
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
     "result": { "type": "string", "enum": ["ok", "unsupported"] },

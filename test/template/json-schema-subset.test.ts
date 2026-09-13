@@ -5,9 +5,9 @@ import { describe, expect, it } from 'vitest';
 /**
  * RP-13: the dependency-free JSON-Schema-subset validator
  * `scripts/lib/json-schema-subset.mjs` exports `validate(schema, value) ->
- * { ok, errors }` for exactly: `type` (object/string/integer/array),
- * `properties`, `required`, `additionalProperties: false`, `enum`, `const`,
- * `items`, `pattern`. A schema keyword outside that subset is refused by
+ * { ok, errors }` for exactly: `type` (object/string/integer/number/boolean/
+ * array), `properties`, `required`, `additionalProperties: false`, `enum`,
+ * `const`, `items`, `pattern`, `minLength`. A schema keyword outside that subset is refused by
  * throwing, so nobody silently relies on `$ref`/`oneOf`/etc — this repo's own
  * `contracts/session-messaging/v1/schema.ts` uses ajv for that reason, and
  * this validator is deliberately narrower and dependency-free.
@@ -170,6 +170,41 @@ describe('scripts/lib/json-schema-subset.mjs — nested paths in error messages'
     });
     expect(result.ok).toBe(false);
     expect(result.errors.some((error) => error.includes('checks[0].fix'))).toBe(true);
+  });
+});
+
+describe('scripts/lib/json-schema-subset.mjs — minLength and boolean, the keywords the contract schemas lean on', () => {
+  it('rejects a string shorter than minLength, so an empty name cannot pass a handshake', async () => {
+    const validate = await loadValidate();
+    const schema = { type: 'string', minLength: 1 };
+    expect(validate(schema, 'memory').ok).toBe(true);
+    expect(validate(schema, '').ok).toBe(false);
+    expect(validate({ type: 'string', minLength: 3 }, 'ab').ok).toBe(false);
+    expect(validate({ type: 'string', minLength: 3 }, 'abc').ok).toBe(true);
+  });
+
+  it('accepts true and false for type: boolean and rejects a string or a number', async () => {
+    const validate = await loadValidate();
+    expect(validate({ type: 'boolean' }, true).ok).toBe(true);
+    expect(validate({ type: 'boolean' }, false).ok).toBe(true);
+    expect(validate({ type: 'boolean' }, 'true').ok).toBe(false);
+    expect(validate({ type: 'boolean' }, 0).ok).toBe(false);
+  });
+});
+
+describe('scripts/lib/json-schema-subset.mjs — bounded by the schema', () => {
+  it('walks the schema, not the value — a payload nested far deeper than the schema is judged without recursing into it', async () => {
+    const validate = await loadValidate();
+    let deep: unknown = 'leaf';
+    for (let level = 0; level < 20_000; level += 1) deep = { child: deep };
+    const shallow = {
+      type: 'object',
+      required: ['child'],
+      properties: { child: { type: 'object' } },
+    };
+    expect(validate(shallow, deep)).toEqual({ ok: true, errors: [] });
+    const deepArray = { type: 'array', items: { type: 'object' } };
+    expect(validate(deepArray, [deep, deep]).ok).toBe(true);
   });
 });
 

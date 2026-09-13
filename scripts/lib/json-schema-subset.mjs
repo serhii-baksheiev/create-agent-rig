@@ -1,15 +1,24 @@
 // A dependency-free validator for the closed JSON Schema subset the
-// conformance payload uses (RP-13). The subset is deliberately small — `type`
-// (object / string / integer / array), `properties`, `required`,
-// `additionalProperties: false`, `enum`, `const`, `items`, `pattern`, plus the
-// annotation keywords `$schema`, `$id`, `title`, `description` — so that a
-// schema shipped to every rig can be checked by a rig with no dependency, and
-// so nobody quietly leans on a keyword (`$ref`, `oneOf`, `if`) this validator
-// does not implement: an unknown keyword THROWS rather than being ignored,
-// because a keyword silently skipped is a check that reports a pass it never
-// made. Pinned in test/template/json-schema-subset.test.ts › "throws on a
-// schema keyword outside the documented subset"; the error paths are pinned by
-// › "names the JSON path of a nested type mismatch".
+// conformance contract uses (RP-13). The subset is deliberately small — `type`
+// (object / string / integer / number / boolean / array), `properties`,
+// `required`, `additionalProperties: false`, `enum`, `const`, `items`,
+// `pattern`, `minLength`, plus the annotation keywords `$schema`, `$id`,
+// `title`, `description`, `examples` — so that the contract can be checked
+// with no dependency, and so nobody quietly leans on a keyword (`$ref`,
+// `oneOf`, `if`) this validator does not implement: an unknown keyword THROWS
+// rather than being ignored, because a keyword silently skipped is a check
+// that reports a pass it never made. Pinned in
+// test/template/json-schema-subset.test.ts › "throws on a schema keyword
+// outside the documented subset"; the error paths are pinned by › "names the
+// JSON path of a nested type mismatch".
+//
+// Trust boundary: the SCHEMA is repository-owned text (contracts/conformance/v1),
+// the VALUE is whatever a subprocess printed. `pattern` is compiled with
+// `new RegExp` and so must only ever come from the schema side — never hand
+// this validator a schema a subprocess chose. Recursion follows the schema
+// (`properties`, `items`), never the value, so a value nested deeper than the
+// schema is not walked: › "walks the schema, not the value — a payload nested
+// far deeper than the schema is judged without recursing into it".
 
 const ANNOTATIONS = new Set(['$schema', '$id', 'title', 'description', 'examples']);
 const KEYWORDS = new Set([

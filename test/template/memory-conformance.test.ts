@@ -14,11 +14,9 @@ import { describe, expect, it } from 'vitest';
  * repository, which checks out this repository at an exact SHA and points the
  * runner at its own working tree — and prints one JSON report. These tests
  * drive it entirely against a hand-built checkout: no network, no credential,
- * no Memory code imported. Every full run costs about a dozen node spawns
- * (three Memory verbs, the rig's own handshake, and the rig consuming Memory
- * through `setup` and `memory doctor`), so the tests that need a full run
- * carry a budget above the 15 s default and there are as few of them as the
- * assertions allow.
+ * no Memory code imported. The cases that run the whole runner carry
+ * `FULL_RUN_BUDGET_MS` instead of the project default, and several assertions
+ * share one run rather than each paying for a run of their own.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -76,22 +74,33 @@ function git(args: string[], cwd: string): Promise<string> {
 
 interface FixtureOptions {
   contractVersion?: string;
-  missingReject?: boolean;
+  version?: string;
   doctorStatus?: 'ok' | 'warn' | 'fail';
+  /** `missing-fix` drops the `fix` field from the one check record: exit 0, valid JSON, outside the schema. */
+  doctorShape?: 'valid' | 'missing-fix';
   loadOutcome?: 'unsupported' | 'integration-failed';
+  missingReject?: boolean;
 }
 
-/** A fake `shared-memory/memory.mjs` answering the handshake, doctor and load literals. */
-const fakeMemoryScript = (options: FixtureOptions): string => `#!/usr/bin/env node
+/**
+ * A fake `shared-memory/memory.mjs` answering the handshake, doctor and load
+ * literals. It leaves a marker when RP13_CANARY reaches it, so a run that sets
+ * that variable for the runner can assert the backend never saw it.
+ */
+const fakeMemoryScript = (options: FixtureOptions, marker: string): string => `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+if (process.env.RP13_CANARY) writeFileSync(${JSON.stringify(marker)}, process.env.RP13_CANARY);
 const args = process.argv.slice(2);
 const out = (payload) => process.stdout.write(JSON.stringify(payload) + '\\n');
 if (args.includes('--version') && args.includes('--json')) {
-  out({ schemaVersion: 1, name: 'memory', version: '0.1.0', contractVersion: ${JSON.stringify(options.contractVersion ?? '1.0')} });
+  out({ schemaVersion: 1, name: 'memory', version: ${JSON.stringify(options.version ?? '0.1.0')}, contractVersion: ${JSON.stringify(options.contractVersion ?? '1.0')} });
   process.exit(0);
 }
 if (args[0] === 'doctor' && args.includes('--json')) {
   const status = ${JSON.stringify(options.doctorStatus ?? 'ok')};
-  out({ schemaVersion: 1, status, checks: [{ id: 'core', status, detail: 'fine', fix: '' }] });
+  const record = { id: 'core', status, detail: 'fine', fix: '' };
+  if (${JSON.stringify(options.doctorShape ?? 'valid')} === 'missing-fix') delete record.fix;
+  out({ schemaVersion: 1, status, checks: [record] });
   process.exit(0);
 }
 if (args[0] === 'load' && args.includes('--json') && args.includes('--cwd')) {
@@ -111,8 +120,11 @@ process.exit(2);
 `;
 
 /** A minimal `shared-memory/` checkout: contract doc, event schema, both fixture trees, a fake backend. */
-async function buildMemoryRoot(options: FixtureOptions = {}): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), 'rp13-memory-fixture-'));
+async function buildMemoryRoot(
+  options: FixtureOptions = {},
+  parent: string = tmpdir(),
+): Promise<string> {
+  const root = await mkdtemp(path.join(parent, 'rp13-memory-fixture-'));
   const contractDir = path.join(root, 'shared-memory', 'contract');
   await mkdir(path.join(contractDir, 'fixtures', 'event-schema-v1', 'accept'), { recursive: true });
   await writeFile(
@@ -136,10 +148,14 @@ async function buildMemoryRoot(options: FixtureOptions = {}): Promise<string> {
     path.join(contractDir, 'event-schema-v1.json'),
     JSON.stringify({ $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object' }),
   );
-  await writeFile(path.join(root, 'shared-memory', 'memory.mjs'), fakeMemoryScript(options));
+  await writeFile(
+    path.join(root, 'shared-memory', 'memory.mjs'),
+    fakeMemoryScript(options, markerPath(root)),
+  );
   return root;
 }
 
+const markerPath = (root: string) => path.join(root, 'leak.marker');
 const parseReport = (stdout: string): Report => JSON.parse(stdout.trim()) as Report;
 const row = (report: Report, id: string): Row | undefined => report.rows.find((r) => r.id === id);
 
@@ -156,7 +172,12 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
       const root = await buildMemoryRoot();
       const caller = await callerConfigRoot();
       try {
-        const result = await run(['--json', '--from', root], caller.env);
+        // RP13_CANARY is set for the runner and must never reach the backend:
+        // the fake writes a marker if it sees it.
+        const result = await run(['--json', '--from', root], {
+          ...caller.env,
+          RP13_CANARY: 'leaked',
+        });
         expect(result.stderr, result.stderr).toBe('');
         expect(result.code).toBe(0);
         const lines = result.stdout.trim().split('\n').filter(Boolean);
@@ -180,6 +201,8 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         for (const r of report.rows)
           expect(r.detail, `${r.id} leaked the fixture path`).not.toContain(root);
 
+        // The backend saw the allow-listed environment end to end.
+        expect(existsSync(markerPath(root)), 'RP13_CANARY reached the backend').toBe(false);
         // The rig rows registered Memory somewhere — and that somewhere is the
         // runner's own temporary root, never the caller's configuration root.
         expect(row(report, 'rig-setup')?.status).toBe('pass');
@@ -193,29 +216,32 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
   );
 
   it(
-    'records the HEAD of a --from root that is a git checkout as memorySha',
+    'records the HEAD of a git --from root as memorySha, keeps memory-doctor passing when the doctor answers status fail, and cuts a subprocess-chosen value before it enters a detail',
     async () => {
-      const root = await buildMemoryRoot();
+      const longVersion = 'v'.repeat(200);
+      const root = await buildMemoryRoot({ doctorStatus: 'fail', version: longVersion });
+      const author = ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t'];
       try {
         await git(['init', '-q'], root);
-        await git(['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'add', '.'], root);
-        await git(
-          [
-            '-c',
-            'user.email=t@example.invalid',
-            '-c',
-            'user.name=t',
-            'commit',
-            '-q',
-            '-m',
-            'fixture',
-          ],
-          root,
-        );
+        await git([...author, 'add', '.'], root);
+        await git([...author, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'fixture'], root);
         const head = (await git(['rev-parse', 'HEAD'], root)).trim();
+
         const result = await run(['--json', '--from', root]);
         expect(result.code).toBe(0);
-        expect(parseReport(result.stdout).memorySha).toBe(head);
+        const report = parseReport(result.stdout);
+        expect(report.memorySha).toBe(head);
+
+        // The row measures the doctor payload's SHAPE, never the backend's status.
+        const doctor = row(report, 'memory-doctor');
+        expect(doctor?.status).toBe('pass');
+        expect(doctor?.detail).toContain('doctor status fail');
+
+        // A value the subprocess chose is cut before it enters a detail.
+        const handshake = row(report, 'memory-handshake');
+        expect(handshake?.status).toBe('pass');
+        expect(handshake?.detail).toContain('v'.repeat(32));
+        expect(handshake?.detail).not.toContain('v'.repeat(33));
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -272,13 +298,38 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
   );
 
   it(
-    'fails fixtures-present when the reject fixture directory is missing',
+    'fails a row whose answer is valid JSON outside its schema, one that exits non-zero, and one whose fixture directory is missing — each with its reason',
     async () => {
-      const root = await buildMemoryRoot({ missingReject: true });
+      const root = await buildMemoryRoot({
+        doctorShape: 'missing-fix',
+        loadOutcome: 'integration-failed',
+        missingReject: true,
+      });
       try {
         const result = await run(['--json', '--from', root]);
         expect(result.code).toBe(1);
-        expect(row(parseReport(result.stdout), 'fixtures-present')?.status).toBe('fail');
+        const report = parseReport(result.stdout);
+        expect(report.passed).toBe(false);
+
+        // Exit 0 and well-formed JSON are not enough: the schema is what judges.
+        const doctor = row(report, 'memory-doctor');
+        expect(doctor?.status).toBe('fail');
+        expect(doctor?.detail).toContain('outside the schema');
+        expect(doctor?.detail).toContain('checks[0].fix');
+        // ...and the same shape judged again when the rig passes doctor through.
+        const through = row(report, 'rig-memory-doctor');
+        expect(through?.status).toBe('fail');
+        expect(through?.detail).toContain('outside the schema');
+
+        const load = row(report, 'memory-load');
+        expect(load?.status).toBe('fail');
+        expect(load?.detail).toContain('exit 1');
+
+        expect(row(report, 'fixtures-present')?.status).toBe('fail');
+        // The rows the fixture left intact still pass: one failure does not
+        // paint the others.
+        expect(row(report, 'memory-handshake')?.status).toBe('pass');
+        expect(row(report, 'rig-foreign-major')?.status).toBe('pass');
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -287,15 +338,40 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
   );
 
   it(
-    'fails memory-load when load exits non-zero with an error outcome',
+    'records null, never an ancestor repository’s HEAD, for a --from root that is not itself a checkout root',
     async () => {
-      const root = await buildMemoryRoot({ loadOutcome: 'integration-failed' });
+      const outer = await mkdtemp(path.join(tmpdir(), 'rp13-outer-repo-'));
+      const author = ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t'];
       try {
-        const result = await run(['--json', '--from', root]);
-        expect(result.code).toBe(1);
-        const load = row(parseReport(result.stdout), 'memory-load');
-        expect(load?.status).toBe('fail');
-        expect(load?.detail).toContain('exit 1');
+        await git(['init', '-q'], outer);
+        await writeFile(path.join(outer, 'README'), 'outer\n');
+        await git([...author, 'add', '.'], outer);
+        await git([...author, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'outer'], outer);
+        const inner = await buildMemoryRoot({}, outer);
+        const result = await run(['--json', '--from', inner]);
+        expect(result.code).toBe(0);
+        expect(parseReport(result.stdout).memorySha).toBeNull();
+      } finally {
+        await rm(outer, { recursive: true, force: true });
+      }
+    },
+    FULL_RUN_BUDGET_MS,
+  );
+
+  it(
+    'exits 3, not 1, when the runner itself fails — an --out path whose directory does not exist',
+    async () => {
+      const root = await buildMemoryRoot();
+      try {
+        const result = await run([
+          '--json',
+          '--from',
+          root,
+          '--out',
+          path.join(root, 'no-such-dir', 'report.json'),
+        ]);
+        expect(result.code).toBe(3);
+        expect(result.stderr).toContain('memory-conformance:');
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -309,25 +385,6 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
     expect(result.stdout).toBe('');
     expect(result.stderr).toContain('--from');
   });
-});
-
-describe('scripts/memory-conformance.mjs measures the doctor payload shape, not the backend status (RP-13 constraint)', () => {
-  it(
-    'keeps memory-doctor a passing row when the Memory doctor answers status fail, and says so in the detail',
-    async () => {
-      const root = await buildMemoryRoot({ doctorStatus: 'fail' });
-      try {
-        const result = await run(['--json', '--from', root]);
-        expect(result.code).toBe(0);
-        const doctor = row(parseReport(result.stdout), 'memory-doctor');
-        expect(doctor?.status).toBe('pass');
-        expect(doctor?.detail).toContain('doctor status fail');
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
-    },
-    FULL_RUN_BUDGET_MS,
-  );
 });
 
 describe('scripts/memory-conformance.mjs spawns Memory with a minimal environment (RP-13)', () => {
@@ -346,32 +403,6 @@ describe('scripts/memory-conformance.mjs spawns Memory with a minimal environmen
     expect(Object.keys(child)).not.toContain('GITHUB_TOKEN');
     expect(Object.keys(child)).not.toContain('SOME_SECRET');
   });
-
-  it(
-    'the backend sees that environment end to end: a variable set for the runner does not reach memory.mjs',
-    async () => {
-      const root = await buildMemoryRoot();
-      const marker = path.join(root, 'leak.marker');
-      const backend = await readFile(path.join(root, 'shared-memory', 'memory.mjs'), 'utf8');
-      await writeFile(
-        path.join(root, 'shared-memory', 'memory.mjs'),
-        `import { writeFileSync } from 'node:fs';
-if (process.env.RP13_CANARY) writeFileSync(${JSON.stringify(marker)}, process.env.RP13_CANARY);
-${backend.replace('#!/usr/bin/env node\n', '')}`,
-      );
-      try {
-        const result = await run(['--json', '--from', root], {
-          ...process.env,
-          RP13_CANARY: 'leaked',
-        });
-        expect(result.code).toBe(0);
-        expect(existsSync(marker)).toBe(false);
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
-    },
-    FULL_RUN_BUDGET_MS,
-  );
 });
 
 describe('scripts/memory-conformance.mjs keeps the Memory boundary of ADR-RP-002 R1 and reaches no network (RP-13)', () => {
@@ -391,10 +422,16 @@ describe('scripts/memory-conformance.mjs keeps the Memory boundary of ADR-RP-002
     expect(source).not.toMatch(/require\(/);
   });
 
-  it('carries no fetch, clone or credential: the checkout is always the caller’s', async () => {
+  it("carries no fetch, clone or credential: the checkout is always the caller's", async () => {
+    // Static, like the import scan above, and it measures exactly that much:
+    // the runner's own text names no git transport verb, no GitHub URL and no
+    // token-shaped variable. The behavioural half — no variable set for the
+    // runner reaches the backend — is the RP13_CANARY assertion in › "passes
+    // every row against a well-formed local fixture root and names both SHAs
+    // and the verifier digest".
     const source = await readFile(scriptPath, 'utf8');
     expect(source).not.toMatch(/'fetch'|'clone'|'remote'|https:\/\/github\.com/);
-    expect(source).not.toMatch(/TOKEN|extraheader|GIT_CONFIG/);
+    expect(source).not.toMatch(/TOKEN|extraheader/);
   });
 
   it('the repository carries no Memory fixture', async () => {

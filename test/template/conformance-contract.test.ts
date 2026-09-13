@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -40,7 +41,7 @@ const EXPECTED_MANIFEST = {
   },
 };
 
-describe('the conformance-v1 contract directory (RP-13)', () => {
+describe('the contracts/conformance/v1 directory (RP-13)', () => {
   it('carries exactly the manifest and the three schema files, nothing else', async () => {
     const entries = (await readdir(contractsDir)).sort();
     expect(entries).toEqual([
@@ -78,6 +79,22 @@ describe('the conformance-v1 contract directory (RP-13)', () => {
       'utf8',
     );
     expect(layers).not.toContain('conformance');
+    // And no tracked file anywhere under templates/ — the universal layer, a
+    // stack overlay, a skeleton — is a copy of the contract by any name.
+    const tracked = await new Promise<string>((resolve, reject) => {
+      execFile('git', ['ls-files', 'templates'], { cwd: repoRoot }, (error, stdout) =>
+        error ? reject(error) : resolve(stdout),
+      );
+    });
+    const copies: string[] = [];
+    for (const file of tracked.split('\n').filter(Boolean)) {
+      if (/conformance/i.test(file)) copies.push(file);
+      else if (/\.json$/.test(file) && !/pnpm-lock|package/.test(file)) {
+        const text = await readFile(path.join(repoRoot, file), 'utf8');
+        if (text.includes('urn:create-agent-rig:conformance')) copies.push(file);
+      }
+    }
+    expect(copies).toEqual([]);
   });
 
   it('keeps every schema inside the documented JSON-Schema-2020-12 subset', async () => {
@@ -193,6 +210,21 @@ describe('the conformance-v1 contract directory (RP-13)', () => {
         identity: { status: 'resolved', remoteName: 'origin', remote: 'r', namespace: 'n' },
       };
       expect(validate(schema, ok)).toEqual({ ok: true, errors: [] });
+    });
+
+    it('accepts the load fixture docs/command-contract.md itself carries, so the schema cannot drift from the document it claims to be the schema of', async () => {
+      const validate = await loadValidate();
+      const schema = await readJson('load.schema.json');
+      const contract = await readFile(path.join(repoRoot, 'docs', 'command-contract.md'), 'utf8');
+      const fixtures = contract.slice(contract.indexOf('\n## Fixtures'));
+      const loadIntro = fixtures.indexOf('A memory load reporting');
+      expect(loadIntro, 'the contract document no longer carries a load fixture').toBeGreaterThan(
+        -1,
+      );
+      const block = /```json\n([\s\S]*?)\n```/.exec(fixtures.slice(loadIntro));
+      expect(block, 'no json block follows the load fixture prose').not.toBeNull();
+      const documented = JSON.parse(block![1]!) as unknown;
+      expect(validate(schema, documented)).toEqual({ ok: true, errors: [] });
     });
 
     it('rejects an error outcome, whose result is outside the two non-error words', async () => {

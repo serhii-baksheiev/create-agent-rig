@@ -26,7 +26,10 @@
 // `doctor --json` through it), rig-foreign-major (the rig refusing a stub that
 // answers contract major 2 with exit 4 — the consumer-owned refusal, which
 // Memory itself never emits). Each row is pass | fail | skip; the exit code is
-// 0 iff no row failed, 1 otherwise, 2 for an invalid invocation.
+// 0 iff no row failed, 1 otherwise, 2 for an invalid invocation, 3 when the
+// runner itself failed (test/template/memory-conformance.test.ts › "exits 3,
+// not 1, when the runner itself fails — an --out path whose directory does not
+// exist").
 //
 // What it never does: import anything from the checkout, read Memory's
 // storage, write into the caller's configuration root, or copy fixtures into
@@ -35,11 +38,23 @@
 // (`memoryProcessEnv` is the allow-list), and only its stdout is parsed —
 // against the contract schemas, with the dependency-free validator in
 // ./lib/json-schema-subset.mjs. No `detail` names a path, and text a
-// subprocess chose is cut before it enters one: the report travels into CI
-// logs and PR comments.
+// subprocess chose is cut before it enters one (both in
+// test/template/memory-conformance.test.ts › "records the HEAD of a git --from
+// root as memorySha, keeps memory-doctor passing when the doctor answers status
+// fail, and cuts a subprocess-chosen value before it enters a detail"): the
+// report travels into CI logs and PR comments.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -142,8 +157,30 @@ const validatedAnswer = ({ id, answer, schema, what }) => {
   return { row: pass(id, `${what} answered within the schema (exit 0)`), payload };
 };
 
-const gitHead = async (cwd) => {
-  const head = await run('git', ['rev-parse', 'HEAD'], { cwd });
+/** `git rev-parse HEAD` with the same allow-listed env as every other spawn, and no global or system git config. */
+const sameDirectory = async (a, b) => {
+  try {
+    const [x, y] = await Promise.all([realpath(a), realpath(b)]);
+    return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The HEAD of the checkout whose ROOT is `cwd` — null for a directory that is
+ * not a git checkout root, including one nested inside somebody else's
+ * repository, whose HEAD would otherwise be reported as if it were Memory's.
+ */
+const gitHead = async (cwd, childEnv) => {
+  const env = {
+    ...childEnv,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+  };
+  const top = await run('git', ['rev-parse', '--show-toplevel'], { cwd, env });
+  if (top.code !== 0 || !(await sameDirectory(top.stdout.trim(), cwd))) return null;
+  const head = await run('git', ['rev-parse', 'HEAD'], { cwd, env });
   const sha = head.stdout.trim();
   return head.code === 0 && SHA.test(sha) ? sha : null;
 };
@@ -179,7 +216,11 @@ const contractRows = async (root, manifest) => {
   const contractDoc = path.join(dir, `contract-${manifest.contractVersion}.md`);
   if (await exists(contractDoc)) {
     const text = await readFile(contractDoc, 'utf8');
-    const named = text.includes('contractVersion') && text.includes(manifest.contractVersion);
+    // `contractVersion` followed, within the same line, by the version as a
+    // whole token — `0.1.0` does not satisfy `1.0`.
+    const named = new RegExp(
+      `contractVersion[^\\n]{0,40}(?<![\\d.])${manifest.contractVersion.replace(/\./g, '\\.')}(?!\\.?\\d)`,
+    ).test(text);
     rows.push(
       named
         ? pass(
@@ -357,8 +398,8 @@ export const runConformance = async ({ from, manifest, schemas, env = process.en
   return {
     schemaVersion: 1,
     contractVersion: manifest.contractVersion,
-    rigSha: await gitHead(repoRoot),
-    memorySha: await gitHead(root),
+    rigSha: await gitHead(repoRoot, childEnv),
+    memorySha: await gitHead(root, childEnv),
     verifierDigest: await verifierDigest(manifest),
     rows,
     passed: rows.every((row) => row.status !== 'fail'),
@@ -406,11 +447,17 @@ const main = async () => {
 };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === selfPath) {
+  // `exitCode`, not `exit()`: the report has just been written to stdout, and
+  // an immediate exit can truncate a pipe. A runner failure is 3 — distinct
+  // from 1, a failed row, so the authoritative workflow can tell a crash from
+  // a conformance failure.
   main().then(
-    (code) => process.exit(code),
+    (code) => {
+      process.exitCode = code;
+    },
     (error) => {
       process.stderr.write(`memory-conformance: ${error.message}\n`);
-      process.exit(1);
+      process.exitCode = 3;
     },
   );
 }
