@@ -172,6 +172,18 @@ const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
     });
     if (initialized.code !== 0 || initialized.timedOut)
       throw new Error(`benchmark git init failed: ${initialized.stderr}`);
+    // Diagnostic only: a bare Node start with this workspace's environment and
+    // cwd, recorded in the history, so a timed-out first guard command can be
+    // told apart from a slow Node start in the same environment.
+    await runProcess(process.execPath, ['-e', ''], {
+      cwd: scratch,
+      env,
+      input: '',
+      timeoutMs: CHILD_TIMEOUT_MS,
+      maxBytes: MAX_STDERR_BYTES,
+      boundaryPid: process.pid,
+      history,
+    });
     return { scratch, home, flag, env };
   };
 
