@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
+import { guardProcessesMeasurable, skipUnless } from '../helpers/env.js';
 
 type BenchmarkEnvironment = Record<string, string>;
 type SchemaModule = {
@@ -476,7 +477,8 @@ describe('policy benchmark security boundaries', () => {
   it(
     'refuses adapter-process evidence when the measured target head moves after a worker has begun',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createBenchmarkFixture();
       const synchronised = path.join(root, '..', `${path.basename(root)}-hook-started`);
       const release = path.join(root, '..', `${path.basename(root)}-hook-release`);
@@ -534,7 +536,8 @@ describe('policy benchmark security boundaries', () => {
   it(
     'refuses adapter-process evidence when the isolated verifier bytes change after a worker has begun',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createBenchmarkFixture();
       const verifier = await createVerifierFixture();
       const synchronised = path.join(root, '..', `${path.basename(root)}-verifier-hook-started`);
@@ -594,7 +597,8 @@ describe('policy benchmark security boundaries', () => {
   it(
     "names the deadline, earlier commands' timings, and the fourth setup probe's exit-trace note when a real guard command times out inside a benchmark run",
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createBenchmarkFixture();
       try {
         const guard = path.join(root, '.claude', 'hooks', 'guard-secret-file.mjs');

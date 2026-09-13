@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
+import { guardProcessesMeasurable, skipUnless } from '../helpers/env.js';
 import { BENCHMARK_CORPUS } from '../../packages/cli/src/policy/benchmark/corpus.js';
 
 const execFileAsync = promisify(execFile);
@@ -186,7 +187,8 @@ describe('policy benchmark runner', () => {
   it(
     'runs the same versioned corpus in one process per harness and reports adapter-process evidence, not live-harness proof',
     { timeout: process.platform === 'win32' ? 2 * BENCHMARK_TIMEOUT_MS : BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createFixture();
       try {
         const head = await git(root, 'rev-parse', 'HEAD');
@@ -233,7 +235,8 @@ describe('policy benchmark runner', () => {
   it(
     'records an expected integration failure as unsupported evidence instead of a passing enforcement result',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createFixture();
       try {
         const head = await git(root, 'rev-parse', 'HEAD');
@@ -261,7 +264,8 @@ describe('policy benchmark runner', () => {
   it(
     'observes the native process boundary of each configured harness command',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createFixture();
       const observationFile = `${root}.native-dispatch.ndjson`;
       try {
@@ -309,7 +313,8 @@ describe('policy benchmark runner', () => {
   it(
     'fails the whole benchmark when a committed hook disables the real-wiring baseline',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createFixture();
       try {
         const hook = path.join(root, '.claude', 'hooks', 'guard-secret-file.mjs');
@@ -340,7 +345,8 @@ describe('policy benchmark runner', () => {
   it(
     'fails both harnesses when committed target wiring bypasses the secret-write guard',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createFixture();
       try {
         const hookPath = '.claude/hooks/guard-secret-file.mjs';
@@ -381,7 +387,7 @@ describe('policy benchmark runner', () => {
     },
   );
 
-  it.each([
+  it.for([
     {
       hookFile: 'block-no-verify.mjs',
       scenarioId: 'hook-input',
@@ -395,7 +401,8 @@ describe('policy benchmark runner', () => {
   ])(
     'fails the whole benchmark when a committed no-op disables $description',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async ({ hookFile, scenarioId }) => {
+    async ({ hookFile, scenarioId }, ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createFixture();
       try {
         const hook = path.join(root, '.claude', 'hooks', hookFile);
@@ -427,7 +434,8 @@ describe('policy benchmark runner', () => {
   it(
     'fails compatibility rejection when the foreign-major fixture becomes a valid-major envelope',
     { timeout: BENCHMARK_TIMEOUT_MS },
-    async () => {
+    async (ctx) => {
+      skipUnless(ctx, guardProcessesMeasurable().ok, guardProcessesMeasurable().reason);
       const root = await createFixture();
       try {
         const foreignFixture = path.join(
@@ -531,4 +539,25 @@ describe('policy benchmark runner', () => {
       }
     },
   );
+});
+
+describe('policy benchmark documentation contract', () => {
+  it('names the hosted-Windows evidence limits in docs/policy-benchmark.md', async () => {
+    const doc = await readFile(path.join(repoRoot, 'docs', 'policy-benchmark.md'), 'utf8');
+
+    const heading = /^#{1,6}[^\n]*Windows evidence[^\n]*$/im.exec(doc);
+    expect(heading, 'a heading containing "Windows evidence"').not.toBeNull();
+
+    const afterHeading = doc.slice((heading?.index ?? 0) + (heading?.[0].length ?? 0));
+    const nextHeading = /^#{1,6}\s/m.exec(afterHeading);
+    const section =
+      (heading?.[0] ?? '') + afterHeading.slice(0, nextHeading ? nextHeading.index : undefined);
+
+    for (const term of ['RUNNER_ENVIRONMENT', 'github-hosted', 'UNVERIFIABLE', 'native', 'af21c6d'])
+      expect(section, `"${term}" in the Windows evidence section`).toContain(term);
+    expect(section, 'the hosted lane skips these cases').toMatch(/skip/i);
+    expect(section, 'a native exact-head run is the Windows acceptance').toMatch(
+      /native exact-head run/i,
+    );
+  });
 });

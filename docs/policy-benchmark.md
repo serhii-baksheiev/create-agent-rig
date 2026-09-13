@@ -73,3 +73,33 @@ Done; this benchmark has not yet provided that integration evidence. The report 
 `deferredIntegration`; they must receive their own evidence before RP-91 closes.
 Keep the clean-machine, both-backend, and installed-harness acceptance records
 with that release gate.
+
+## Windows evidence
+
+The hosted `windows-latest` runner cannot measure the cases that spawn a real
+guard child process. On that image a guard — `node .claude/hooks/<guard>.mjs`
+fed a payload — intermittently costs about 24.5 s before its main logic runs:
+on PR #202, head `af21c6d`, the guard's own exit trace read `preload 31`,
+`stderr-write 24601`, `exit-event 2 24601`, `reallyExit 2 24601`, while the
+same worker's bare Node start, stdin read and module import each took under
+80 ms, and the cost did not move under four, two or one concurrent guards.
+Native Windows 11 does not show it. Teardown is not where the time goes; the
+step before the guard's first write is, and it is not a code path this
+repository controls beyond loading the guard and reading stdin.
+
+So on a runner where `RUNNER_ENVIRONMENT` is `github-hosted` and the platform
+is `win32`, the ten guard-spawning cases in `test/template/policy-benchmark.test.ts`
+and `test/template/policy-benchmark-security.test.ts` are **UNVERIFIABLE**:
+they skip through `guardProcessesMeasurable()` with that classification as the
+reason, are reported as skipped and never as passed, and are counted like every
+other platform skip in `test/template/platform-skips.test.ts`. Nothing else
+changes on that lane — the deadlines, the assertions, the cleanup contract and
+the rest of the suite run as before — and a self-hosted Windows runner
+(`RUNNER_ENVIRONMENT=self-hosted`) runs all of them. See
+`test/template/test-env-helpers.test.ts` > "guardProcessesMeasurable is false
+exactly on a github-hosted Windows runner".
+
+The benchmark's Windows acceptance is therefore a **native exact-head run**: the
+benchmark project executed on a Windows host at the release candidate's SHA,
+with its log attached to the PR and to RP-91. A hosted red or skipped lane is
+recorded as what it is; it is not evidence either way.
