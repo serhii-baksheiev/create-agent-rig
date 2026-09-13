@@ -17,19 +17,21 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 ## 0.9.0
 
 **The harness ↔ Memory boundary is executable, and the rig is a consumer of
-Memory rather than a host for it.** A project scaffolded or upgraded to 0.9.0
-gains a `setup --memory-root <checkout>` command that records the Memory
-executable in a machine-scoped subsystem manifest after a `--version --json`
-handshake, and a `memory <doctor|load>` command that runs the registered
-executable through that handshake and refuses a foreign contract major with
-exit 4 before any verb runs. The rig itself answers `--version --json` with
-its name, version and contract version. None of this puts Memory code inside
-the rig: the executable is spawned across a process boundary and only its
-handshake is parsed (`docs/command-contract.md`, "The version handshake";
-`docs/decisions/memory-rig-boundary.md`).
+Memory rather than a host for it.** The CLI gains a `setup --memory-root
+<checkout>` command that records the Memory executable in a machine-scoped
+subsystem manifest after a `--version --json` handshake, and a `memory
+<doctor|load>` command that runs the registered executable through that
+handshake and refuses a foreign contract major with exit 4 before any verb
+runs; the CLI itself answers `--version --json` with its name, version and
+contract version. These are commands of the tool, not files in a project: the
+manifest is machine-scoped and nothing Memory-related is added to what
+`create`, `init` or `upgrade` write into a project. None of this puts
+Memory code inside the rig: the executable is spawned across a process
+boundary and only its handshake is parsed (`docs/command-contract.md`, "The
+version handshake"; `docs/decisions/memory-rig-boundary.md`).
 
-**Deprecated: the application skeletons.** `create <target>` still scaffolds
-`aws-serverless` and `node-service` in this release, unchanged, and they are
+**Deprecated: the application skeletons.** `create <dir> [--target <name>]`
+still scaffolds `aws-serverless` and `node-service` in this release, unchanged, and they are
 **scheduled for removal in 0.10.0**. The product boundary the owner fixed on
 2026-09-13 is a package manager for repository-scoped Claude Code and Codex
 configuration — `init` into an existing repository, `upgrade`, `doctor`, the
@@ -60,8 +62,10 @@ a new payload are additive.
   effort override is in force) — are wired in `.claude/settings.json`
   (RP-166, RP-173; `docs/decisions/subagent-routing.md`).
 - **`preflight` fails on an unreadable configured queue** instead of selecting
-  from nothing (RP-56), and `gate-round` refuses to count a round on a dirty
-  tree, a detached head or an unpushed branch (RP-120).
+  from nothing (RP-56).
+- **Concurrent sessions on one machine** — the ruling on what shared state
+  they may touch, and a bounded rename retry so a Windows gate-round counter
+  is not lost to a transient lock (RP-120; `docs/decisions/concurrent-sessions.md`).
 - **A mechanical release preflight**, `node scripts/release-preflight.mjs`,
   for the step the owner types by hand (`docs/releasing.md`).
 - **The Rig-side conformance runner** for the Memory boundary,
@@ -86,17 +90,22 @@ a new payload are additive.
   URL (RP-168); the e2e harness spawns package managers and file checks on
   Windows (RP-169); the one PowerShell case carries its own measured budget
   (RP-162); the benchmark's guard-spawning cases are classified UNVERIFIABLE
-  on the hosted Windows image rather than reported green on nothing (RP-172).
+  on the hosted Windows image rather than reported green on nothing (RP-111),
+  and the Windows governance fixtures are set up under a bound that names the
+  stage that timed out (RP-172).
 - **Repository scans skip sibling worktrees** under `.claude/worktrees/`, so a
   second checkout is no longer reported as this one's drift (RP-155).
 
 ### Generator CI (not a rig-facing change)
 
-The pull-request path runs on GitHub-hosted runners only: `ci` on Linux and
-`windows-smoke` (the CLI's unit project) on Windows. The full Windows suite,
-the e2e installs and the benchmark run in `e2e.yml` on master, nightly and by
-dispatch, where a `runner_mode` switch selects a self-hosted fallback that the
-pull-request path can never reach (`docs/runners.md`).
+The pull-request path runs on GitHub-hosted runners only: in `ci.yml`, `ci`
+and the two template checks on Linux and `windows-smoke` (the CLI's unit
+project) on Windows; in `e2e.yml`, the Linux `e2e` job — the full suite with
+the e2e installs and the benchmark — when the pull request touches the CLI,
+the templates, the e2e harness or that workflow. The full suite on Windows
+runs in `e2e.yml` on master, nightly and by dispatch only, and a
+`runner_mode` switch there selects a self-hosted fallback that no pull
+request can reach (`docs/runners.md`).
 
 ## 0.8.0
 

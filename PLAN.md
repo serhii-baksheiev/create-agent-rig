@@ -2,7 +2,7 @@
 
 > **0.9.0, 14 Sep:** `0.9.0` is prepared on `release/0.9.0` and awaits the
 > owner's `npm publish`; RP-13 merged (#210), CI hosted-first (#211);
-> RP-91 waits on the claude-config dispatch and RP-117/154/167.
+> RP-91 waits on the claude-config dispatch and RP-117/154/167; RP-59 (0.9.1) open.
 > Evidence: [September journal](journal/2026-09.md). Order: live Jira.
 
 > Working plan for Claude Code. Phases are incremental: each one ends in something **that works**, not a half-built layer. The decisions in §2 are locked — do not re-litigate them without new data.

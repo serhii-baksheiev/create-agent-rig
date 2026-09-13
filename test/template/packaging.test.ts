@@ -71,7 +71,7 @@ describe('the root manifest is publish-complete', () => {
     expect(changelog).toMatch(/^## 0\.8\.0$/m);
     expect(changelog.indexOf('## 0.9.0')).toBeLessThan(changelog.indexOf('## 0.8.0'));
     expect(changelog.indexOf('## 0.8.0')).toBeLessThan(changelog.indexOf('## 0.7.1'));
-    expect(changelog).toMatch(/RULEBOOK_PREFIXES/);
+    expect(changelog.slice(changelog.indexOf('## 0.8.0'))).toMatch(/RULEBOOK_PREFIXES/);
   });
 
   it('records 0.8.0 as the published `latest`, and every overtaken version as neither', async () => {
