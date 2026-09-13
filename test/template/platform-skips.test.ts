@@ -20,6 +20,7 @@ const PLATFORM_SKIP_HELPERS = [
   'fifosAvailable',
   'onlyOnWindows',
   'posixShellAvailable',
+  'guardProcessesMeasurable',
 ] as const;
 
 const EXPECTED_SITES: Record<(typeof PLATFORM_SKIP_HELPERS)[number], number> = {
@@ -42,6 +43,39 @@ const EXPECTED_SITES: Record<(typeof PLATFORM_SKIP_HELPERS)[number], number> = {
   onlyOnWindows: 4,
   // codex.test.ts: execute the POSIX hook wiring; Windows wiring is decoded separately
   posixShellAvailable: 1,
+  // RP-111 (PR #202, head af21c6d): the policy-benchmark cases that spawn a
+  // real guard child process through the benchmark runner, which pays the
+  // hosted-windows-latest guard-startup cost this helper names. Ten sites:
+  // policy-benchmark.test.ts — "runs the same versioned corpus in one process
+  // per harness and reports adapter-process evidence, not live-harness proof"
+  // (the corpus run), "records an expected integration failure as unsupported
+  // evidence instead of a passing enforcement result" (integration-failure),
+  // "observes the native process boundary of each configured harness command"
+  // (native boundary), "fails the whole benchmark when a committed hook
+  // disables the real-wiring baseline" (disabled baseline), "fails both
+  // harnesses when committed target wiring bypasses the secret-write guard"
+  // (bypassed baseline), the it.each "fails the whole benchmark when a
+  // committed no-op disables $description" (one source site for its two
+  // parameterised scenarios), and "fails compatibility rejection when the
+  // foreign-major fixture becomes a valid-major envelope" (foreign-major) —
+  // seven; policy-benchmark-security.test.ts — "refuses adapter-process
+  // evidence when the measured target head moves after a worker has begun"
+  // (moved-head), "refuses adapter-process evidence when the isolated
+  // verifier bytes change after a worker has begun" (verifier-bytes), and
+  // "names the deadline, earlier commands' timings, and the fourth setup
+  // probe's exit-trace note when a real guard command times out inside a
+  // benchmark run" (never-exiting-guard timeout) — three. NOT counted: the
+  // two policy-benchmark.test.ts cases that refuse before any child process
+  // starts ("refuses an exact head that no longer names the tree it was asked
+  // to label before starting child processes" and "refuses to label
+  // adapter-process evidence while a tracked enforcement input is dirty"),
+  // and the policy-benchmark-security.test.ts cases whose refusal is a static
+  // parse or an upfront fingerprint check before any worker spawns ("refuses
+  // a target unattended flag basename that traverses outside its isolated
+  // home" and "holds when a copied verifier runtime restores its benign bytes
+  // before the controller first fingerprints it") — none of these publish a
+  // guard child process, so none pay the hosted cost this helper measures.
+  guardProcessesMeasurable: 10,
 };
 
 const testFiles = async (dir: string): Promise<string[]> => {

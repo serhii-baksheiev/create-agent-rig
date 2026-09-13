@@ -19,8 +19,8 @@ import {
  * says whether the install step finished, was discarded.
  *
  * 🔴 **These live in the `template` project, not beside the helper in `e2e`, on
- * purpose.** `ci.yml` runs `pnpm test:unit`, which is the `unit` and `template`
- * projects; `e2e.yml`'s `pull_request` filter is `packages/cli/**` and
+ * purpose.** `ci.yml` runs `pnpm test:unit`, which is the `unit`, `template`
+ * and `benchmark` projects; `e2e.yml`'s `pull_request` filter is `packages/cli/**` and
  * `templates/**`. A test of this helper placed under `test/e2e/` is therefore
  * run by NO pre-merge job when the only changed paths are `test/e2e/**` — which
  * is exactly the shape of the change that introduced it. These assertions are
