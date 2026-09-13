@@ -41,7 +41,8 @@
 // subprocess chose is cut before it enters one (both in
 // test/template/memory-conformance.test.ts › "records the HEAD of a git --from
 // root as memorySha, keeps memory-doctor passing when the doctor answers status
-// fail, and cuts a subprocess-chosen value before it enters a detail"): the
+// fail, passes a load answer shaped like the contract fixture, and cuts a
+// subprocess-chosen value before it enters a detail"): the
 // report travels into CI logs and PR comments.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -313,7 +314,9 @@ const memoryRows = async (root, manifest, schemas, childEnv) => {
   if (load.payload)
     load.row = pass(
       'memory-load',
-      `load result ${echo(load.payload.result)}, identity ${echo(load.payload.identity.status)}`,
+      // `identity` is beyond the contract's fixture — typed when present,
+      // tolerated when absent — so the detail must not depend on it.
+      `load result ${echo(load.payload.result)}, identity ${echo(load.payload.identity?.status ?? 'not reported')}`,
     );
   rows.push(load.row);
   return rows;
@@ -420,7 +423,10 @@ const main = async () => {
   const args = process.argv.slice(2);
   const option = (name) => {
     const index = args.indexOf(name);
-    return index >= 0 ? (args[index + 1] ?? '') : null;
+    if (index < 0) return null;
+    const value = args[index + 1] ?? '';
+    // A flag where a value should be is an invalid invocation, not a path.
+    return value.startsWith('--') ? '' : value;
   };
   const from = option('--from');
   const out = option('--out');
@@ -429,6 +435,10 @@ const main = async () => {
     return 2;
   }
   const manifest = await readContractFile('manifest.json');
+  // The version reaches a file name and a regex: refuse a manifest whose
+  // contractVersion is not the `major.minor` shape before either use.
+  if (majorOf(manifest.contractVersion) === null)
+    throw new Error('manifest.json contractVersion is not of the form <major>.<minor>');
   const schemas = {
     handshake: await readContractFile('version-handshake.schema.json'),
     doctor: await readContractFile('doctor.schema.json'),

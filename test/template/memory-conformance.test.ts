@@ -79,6 +79,8 @@ interface FixtureOptions {
   /** `missing-fix` drops the `fix` field from the one check record: exit 0, valid JSON, outside the schema. */
   doctorShape?: 'valid' | 'missing-fix';
   loadOutcome?: 'unsupported' | 'integration-failed';
+  /** `contract-fixture` answers exactly the load fixture docs/command-contract.md carries: no content, no identity. */
+  loadShape?: 'full' | 'contract-fixture';
   missingReject?: boolean;
 }
 
@@ -107,6 +109,10 @@ if (args[0] === 'load' && args.includes('--json') && args.includes('--cwd')) {
   if (${JSON.stringify(options.loadOutcome ?? 'unsupported')} === 'integration-failed') {
     out({ schemaVersion: 1, result: 'integration-failed', reason: 'invalid' });
     process.exit(1);
+  }
+  if (${JSON.stringify(options.loadShape ?? 'full')} === 'contract-fixture') {
+    out({ schemaVersion: 1, result: 'ok', counters: { eligible: 7, injected: 4, budgetSkipped: 3, invalid: 0 }, budget: { limitBytes: 8192, usedBytes: 7681 }, degradation: ['budget-skipped'] });
+    process.exit(0);
   }
   out({
     schemaVersion: 1, result: 'unsupported', reason: 'unmapped-identity', empty: true, content: '',
@@ -216,10 +222,14 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
   );
 
   it(
-    'records the HEAD of a git --from root as memorySha, keeps memory-doctor passing when the doctor answers status fail, and cuts a subprocess-chosen value before it enters a detail',
+    'records the HEAD of a git --from root as memorySha, keeps memory-doctor passing when the doctor answers status fail, passes a load answer shaped like the contract fixture, and cuts a subprocess-chosen value before it enters a detail',
     async () => {
       const longVersion = 'v'.repeat(200);
-      const root = await buildMemoryRoot({ doctorStatus: 'fail', version: longVersion });
+      const root = await buildMemoryRoot({
+        doctorStatus: 'fail',
+        version: longVersion,
+        loadShape: 'contract-fixture',
+      });
       const author = ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t'];
       try {
         await git(['init', '-q'], root);
@@ -236,6 +246,13 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         const doctor = row(report, 'memory-doctor');
         expect(doctor?.status).toBe('pass');
         expect(doctor?.detail).toContain('doctor status fail');
+
+        // A load answer shaped exactly like the contract document's own
+        // fixture — no `content`, no `identity` — passes, and the detail
+        // does not depend on the absent field.
+        const load = row(report, 'memory-load');
+        expect(load?.status).toBe('pass');
+        expect(load?.detail).toContain('identity not reported');
 
         // A value the subprocess chose is cut before it enters a detail.
         const handshake = row(report, 'memory-handshake');
@@ -379,11 +396,13 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
     FULL_RUN_BUDGET_MS,
   );
 
-  it('refuses to run without --from: there is no fetch to fall back to', async () => {
-    const result = await run(['--json']);
-    expect(result.code).toBe(2);
-    expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('--from');
+  it('refuses to run without --from, or with a flag where its value should be: there is no fetch to fall back to', async () => {
+    for (const args of [['--json'], ['--from', '--json'], ['--json', '--from', 'x', '--out']]) {
+      const result = await run(args);
+      expect(result.code, args.join(' ')).toBe(2);
+      expect(result.stdout, args.join(' ')).toBe('');
+      expect(result.stderr, args.join(' ')).toContain('--from');
+    }
   });
 });
 
