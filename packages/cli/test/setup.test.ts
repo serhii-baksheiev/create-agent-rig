@@ -238,8 +238,7 @@ describe('create-agent-rig setup (RP-147)', () => {
 
     // Two real node children; the budget is the figure vitest.config.ts
     // already gives subprocess-spawning tests under a parallel `pnpm test`
-    // (15 s), not the unit project's 5 s default — measured crossing that
-    // default on a loaded Windows host at 5.9–6.2 s (RP-147 gate round 2).
+    // (15 s), not the unit project's 5 s default.
     it("reports the child's exit code and stdout", async () => {
       const exited = await execFileRunner(
         process.execPath,
