@@ -132,6 +132,34 @@ it covers was there to be removed. The single case nothing can tell apart is a
 file a **later** release added, which your rig never had — that one is installed,
 and `--dry-run` lists it before anything is written.
 
+### Conformance runner
+
+`contracts/conformance/v1/` holds the JSON schemas of the command contract's
+`--version --json`, `doctor --json` and `load --json` answers, and
+`scripts/memory-conformance.mjs` checks a Memory checkout against them:
+
+```sh
+pnpm build
+node scripts/memory-conformance.mjs --from <claude-config checkout> --json [--out report.json]
+```
+
+It is offline by construction — `--from` is mandatory, nothing is fetched, no
+credential is read — and it never imports Memory code or copies a Memory
+fixture into this repository (`test/template/memory-conformance.test.ts` ›
+"carries no fetch, clone or credential: the checkout is always the caller's"
+and › "the repository carries no Memory fixture"). The contract directory is
+this repository's own, not a rig payload: `create`, `init` and `upgrade` do
+not deliver it (`test/template/conformance-contract.test.ts` › "is not
+delivered to rigs: no template carries a conformance contract"). The report's
+rows, its `rigSha` / `memorySha` / `verifierDigest` fields and the `--out`
+file are pinned by the same test file's › "passes every row against a
+well-formed local fixture root and names both SHAs and the verifier digest"
+and › "derives verifierDigest from the runner, its validator and the contract
+files, in that order, and writes the same report to --out". The authoritative
+cross-repository run lives in the private `claude-config` repository, which
+checks this repository out at an explicit full SHA and runs the command above
+against its own tree; the CI here runs only the offline tests.
+
 ## What you get
 
 **A system of boundaries, each held by tooling.** An agent (or a human using

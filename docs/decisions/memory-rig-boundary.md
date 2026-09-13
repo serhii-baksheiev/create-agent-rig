@@ -141,8 +141,13 @@ redefine the installed rig artifact.
 + location-independence + kill-safety + network-free `load`; RP-18; RP-19).
 0.10.0 runs RP-58 → RP-95 → RP-24; RP-95 Blocks RP-24, Relates RP-22; RP-24
 verifies the distribution model and is not evidence for choosing it. RP-13's
-pinned-ref fetch is the 0.9.0 mechanism. RP-78 may decide a packaging channel,
-never a repository move.
+pinned-ref fetch was the 0.9.0 mechanism as first planned; **superseded
+2026-09-13** by the owner's RP-13 disposition — no private-repository credential
+in public Rig CI, so the Rig side fetches nothing: `scripts/memory-conformance.mjs`
+reads a checkout named with `--from`, and the authoritative run is a
+claude-config workflow that checks out Rig at an exact SHA (`docs/command-contract.md`,
+"Conformance matrix"). RP-78 may decide a packaging channel, never a repository
+move.
 
 ## The canonical data model is authority-neutral
 
