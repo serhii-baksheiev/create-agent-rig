@@ -85,6 +85,27 @@ enough for this one, and a replacement that would stop calling a hook the
 current wiring names — while that hook's file is still in `.claude/hooks/` — is
 handed over instead.
 
+### Registering Memory on this machine
+
+Memory is a separate subsystem with its own version; the rig never imports it
+and never searches for it. `setup` records where it is, once per machine:
+
+```sh
+npx create-agent-rig@latest setup --memory-root ~/claude-config             # the checkout that holds shared-memory/memory.mjs
+npx create-agent-rig@latest setup --memory-root ~/claude-config --dry-run   # handshake only, write nothing
+```
+
+It derives the invocation from that one root, runs Memory's `--version --json`
+first, and refuses a foreign contract major with exit 4 before writing anything.
+What it writes is one machine-scoped manifest —
+`~/.config/create-agent-rig/subsystems.json` (`%APPDATA%\create-agent-rig\` on
+Windows) — carrying the invocation, the required contract major, the pinned
+Memory ref (`--memory-ref`) and the version the handshake observed. `upgrade`
+re-runs the same derivation when the manifest exists; it never creates one. The
+behaviour is pinned in `packages/cli/test/setup.test.ts` and
+`packages/cli/test/subsystems.test.ts`; the seam itself is ADR-RP-002 R6
+(`docs/decisions/memory-rig-boundary.md`).
+
 **A file you deleted stays deleted.** The rules invite you to delete the ones
 whose invariant your project does not have, so an upgrade that quietly restored
 them would be undoing your work. With a manifest that is direct — it names the

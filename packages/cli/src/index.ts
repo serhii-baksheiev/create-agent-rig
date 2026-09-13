@@ -2,10 +2,12 @@
 import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
+import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest } from './lib/manifest.js';
+import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
 import { promptConfirm, promptTarget } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
 import { DEFAULT_TARGET, TARGET_NAMES } from './lib/targets.js';
@@ -34,7 +36,67 @@ Also: create-agent-rig init [--dry-run]
 
 Also: create-agent-rig upgrade [--dry-run] [--yes]
   Bring the rig in the CURRENT repo up to this version. Replaces the files it
-  installed and you did not touch; everything else is reported, never merged.`;
+  installed and you did not touch; everything else is reported, never merged.
+  Re-runs the subsystem manifest derivation when one exists (see setup).
+
+Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dry-run]
+  Record the Memory executable in this machine's subsystem manifest
+  (~/.config/create-agent-rig/subsystems.json; %APPDATA% on Windows) from the
+  one declared root. Performs the --version --json handshake first and refuses
+  a foreign contract major with exit 4 before writing anything.`;
+
+async function runSetup(rawArgs: string[]): Promise<number> {
+  let values: {
+    'memory-root'?: string;
+    'memory-ref'?: string;
+    'dry-run'?: boolean;
+    'no-color'?: boolean;
+  };
+  try {
+    ({ values } = parseArgs({
+      args: rawArgs,
+      options: {
+        'memory-root': { type: 'string' },
+        'memory-ref': { type: 'string' },
+        'dry-run': { type: 'boolean' },
+        'no-color': { type: 'boolean' },
+      },
+      allowPositionals: false,
+    }));
+  } catch (error) {
+    process.stderr.write(`${(error as Error).message}\n\n${USAGE}\n`);
+    return 1;
+  }
+  const memoryRoot = values['memory-root'];
+  if (memoryRoot === undefined) {
+    process.stderr.write(`setup needs --memory-root <checkout>\n\n${USAGE}\n`);
+    return 1;
+  }
+  try {
+    const result = await setupSubsystems({
+      memoryRoot,
+      memoryRef: values['memory-ref'] ?? null,
+      dryRun: values['dry-run'] === true,
+    });
+    if (result.outcome === 'refused') {
+      process.stderr.write(`Memory handshake: ${JSON.stringify(result.handshake)}\n`);
+      return result.exitCode;
+    }
+    process.stdout.write(
+      `Memory handshake: ${JSON.stringify(result.handshake)}\n` +
+        (result.outcome === 'dry-run'
+          ? `Dry run — nothing written (would write ${result.file}).\n`
+          : `Wrote ${result.file}\n`),
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof SubsystemsError) {
+      process.stderr.write(`setup: ${error.message} (${error.code})\n`);
+      return 1;
+    }
+    throw error;
+  }
+}
 
 async function runInit(rawArgs: string[]): Promise<number> {
   let values: { 'dry-run'?: boolean; force?: boolean; 'no-color'?: boolean };
@@ -252,12 +314,36 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
 
   const result = await applyUpgrade(cwd, plan);
   process.stdout.write(`\nWrote ${result.written.length} files.\n`);
+
+  // The subsystem manifest is machine-scoped and written by `setup`; an
+  // upgrade re-runs the same derivation so `installedVersion` follows the
+  // executable the root now holds. It is never part of the rig manifest or of
+  // `result.written` — that file list is the repository's, this one is the
+  // user's. Absent stays absent: creating it is `setup`'s act.
+  try {
+    const refreshed = await refreshSubsystems({
+      file: subsystemsManifestPath(process.env, process.platform),
+      run: execFileRunner,
+      nodeExecutable: process.execPath,
+      platform: process.platform,
+    });
+    if (refreshed !== 'absent')
+      process.stdout.write(
+        `Subsystem manifest: ${typeof refreshed === 'string' ? refreshed : JSON.stringify(refreshed)}\n`,
+      );
+  } catch (error) {
+    if (!(error instanceof SubsystemsError)) throw error;
+    process.stdout.write(`Subsystem manifest: not refreshed — ${error.message} (${error.code})\n`);
+  }
   return 0;
 }
 
 async function main(): Promise<number> {
   if (process.argv[2] === 'init') {
     return runInit(process.argv.slice(3));
+  }
+  if (process.argv[2] === 'setup') {
+    return runSetup(process.argv.slice(3));
   }
   if (process.argv[2] === 'upgrade') {
     return runUpgrade(process.argv.slice(3));

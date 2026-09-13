@@ -572,13 +572,18 @@ records a fact, not a fault.
   by a hand-rolled argv scan, or declared in another module under
   `packages/cli/src`, is invisible to it. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin has no --json flag".
-- **The rig bin names no `contractVersion` anywhere under `packages/cli/src`**,
-  so nothing it prints in answer to `--version` is a handshake object. Pinned in
+- **The rig bin names `contractVersion` only as a consumer** — in
+  `packages/cli/src/lib/subsystems.ts`, where `setup` classifies Memory's
+  handshake (RP-147) — and nowhere else under `packages/cli/src`, so nothing it
+  prints in answer to its own `--version` is a handshake object; that half is
+  RP-19's. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin answers --version with no contract handshake".
-- **The rig bin has no exit code outside 0 and 1** — no literal above 1 is
-  returned, passed to `process.exit`, or assigned to `process.exitCode` anywhere
-  under `packages/cli/src`. Pinned in
-  `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0 and 1".
+- **The rig bin's only exit code outside 0 and 1 is `setup`'s 4** — the
+  contract-major refusal the consumer owns, carried as `exitCode: 4` in
+  `packages/cli/src/commands/setup.ts` and returned by `index.ts` through that
+  result; no other literal above 1 is returned, passed to `process.exit`, or
+  assigned to `process.exitCode` anywhere under `packages/cli/src`. Pinned in
+  `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0, 1 and setup's 4".
 - **No reader of `RIG_UNATTENDED` exists under `.claude/scripts/`,
   `.claude/hooks/` or `packages/cli/src/`.** Reach: those three trees and no
   others — the template copies under `templates/agent-os/` are not scanned, and

@@ -1931,17 +1931,26 @@ describe('the conformance section stays true about this repository', () => {
     for (const file of sources) {
       if (/\bcontractVersion\b/.test(await readFile(file, 'utf8'))) namers.push(asRepoPath(file));
     }
+    // RP-147: the consumer side names the field — `subsystems.ts` classifies
+    // Memory's handshake for `setup`. The rig's OWN `--version` still answers
+    // no handshake object (that half is RP-19's), so the row names exactly this
+    // one file, and a second namer, or none, makes it stale.
     expect(
       namers,
-      `the rig bin now names contractVersion (${namers.join(', ')}) — the conformance row is stale`,
-    ).toEqual([]);
+      `the rig bin names contractVersion in (${namers.join(', ')}) — the conformance row names exactly the consumer module`,
+    ).toEqual(['packages/cli/src/lib/subsystems.ts']);
+    const prose = normalizeProse(await conformance());
     expect(
-      normalizeProse(await conformance()),
+      prose,
       'the conformance section must record that --version answers with no handshake object',
     ).toMatch(/--version[\s\S]{0,80}\bhandshake\b/i);
+    expect(
+      prose,
+      'the conformance section must name the consumer module that carries contractVersion',
+    ).toMatch(/contractVersion[\s\S]{0,80}subsystems\.ts/);
   });
 
-  it("reports that the rig bin's only exit codes are 0 and 1", async () => {
+  it("reports that the rig bin's only exit codes are 0, 1 and setup's 4", async () => {
     const sources = await walkSources(path.join(repoRoot, 'packages', 'cli', 'src'), '.ts');
     expect(sources.length, 'found no rig bin sources to search for an exit code').toBeGreaterThan(
       0,
@@ -1956,7 +1965,12 @@ describe('the conformance section stays true about this repository', () => {
     //   - it is blind to a code that is not a literal at the match site — one
     //     thrown inside an error object, or held in a variable or a constant
     //     (`return EXIT_USAGE`).
-    const WIDER_EXIT = /(?:return|process\.exit\(|process\.exitCode\s*=)\s*([2-9]\d*)\b/g;
+    //   - RP-147 added a fourth spelling, `exitCode: <n>` in a result object,
+    //     which is how `setup` carries its contract-major refusal to `index.ts`
+    //     (`return result.exitCode`, not a literal). It is matched below so the
+    //     row names it; the same weakness applies to any other non-literal path.
+    const WIDER_EXIT =
+      /(?:return|process\.exit\(|process\.exitCode\s*=|\bexitCode:)\s*([2-9]\d*)\b/g;
     const wider: string[] = [];
     for (const file of sources) {
       const source = await readFile(file, 'utf8');
@@ -1964,14 +1978,17 @@ describe('the conformance section stays true about this repository', () => {
         wider.push(`${asRepoPath(file)}: ${hit[0]}`);
       }
     }
+    // One spelling per file: the type of a result and the result itself both
+    // carry `exitCode: 4`, and the row is about which codes exist, not how
+    // many times a file writes one.
     expect(
-      wider,
-      `the rig bin now has an exit code outside {0, 1} (${wider.join(', ')}) — the conformance row is stale`,
-    ).toEqual([]);
+      [...new Set(wider)],
+      `the rig bin's exit codes outside {0, 1} are (${wider.join(', ')}) — the conformance row names exactly setup's 4`,
+    ).toEqual(['packages/cli/src/commands/setup.ts: exitCode: 4']);
     expect(
       normalizeProse(await conformance()),
-      'the conformance section must record that the only exit codes are 0 and 1',
-    ).toMatch(/exit codes are 0 and 1|exit code outside 0 and 1/i);
+      "the conformance section must record that the only exit code outside 0 and 1 is setup's 4",
+    ).toMatch(/only exit code outside 0 and 1 is `setup`'s 4/i);
   });
 
   it("reports the doctor marks the contract's status set has no slot for", async () => {
