@@ -47,6 +47,13 @@ runs. See `test/template/policy-benchmark-runtime.test.ts` > "uses the Windows b
 > "allows a calibrated Windows command to complete after fifteen seconds", and
 > "returns a stuck nested Windows command at thirty seconds without killing its worker boundary".
 
+On Windows the two harness workers run one after another; on every other
+platform they start together. See `test/template/policy-benchmark-runtime.test.ts`
+
+> "runs the harness workers one after another on win32 and keeps adapter order
+> in the settled results" and > "starts every harness worker at once off Windows
+> and keeps adapter order in the settled results".
+
 The corpus lives in `packages/cli/src/policy/benchmark/corpus.ts`. Its
 classifications are `equivalent`, `intentional-degradation`, and `unsupported`;
 see `packages/cli/test/policy-benchmark.test.ts` > "derives the closed benchmark

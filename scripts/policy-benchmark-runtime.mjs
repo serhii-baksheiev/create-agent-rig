@@ -269,6 +269,22 @@ export const runProcess = (
     child.stdin.end(input);
   });
 
+// One worker per harness — and whether they run at once is a measured decision,
+// not a default. On the hosted Windows runner, with two workers per benchmark
+// and two benchmark files in flight, guard commands took 20–28 s each or passed
+// the 30 s child deadline with nothing written, while every probed ingredient in
+// the same worker — node start, stdin to EOF, the guard's module graph, git —
+// stayed under 200 ms (PR #202, heads d43778e, d787770, 0ea2349). So on win32
+// the workers run one after another; elsewhere they still start together. The
+// result keeps `Promise.allSettled`'s shape, in adapter order, on both
+// platforms, so a caller's failure handling reads the same list either way.
+export const runHarnessWorkers = async (adapters, run, { platform }) => {
+  if (platform !== 'win32') return Promise.allSettled(adapters.map((adapter) => run(adapter)));
+  const settled = [];
+  for (const adapter of adapters) settled.push(...(await Promise.allSettled([run(adapter)])));
+  return settled;
+};
+
 export const runWorker = (
   file,
   payload,

@@ -44,12 +44,25 @@ type RuntimeModule = {
   // Not yet exported by scripts/policy-benchmark-runtime.mjs (RP-111 Red step);
   // optional here so the pre-existing tests still compile and run while it is missing.
   createCommandHistory?: (options: { limit: number; now?: () => number }) => CommandHistory;
+  // Optional in the type so the RP-111 Red step compiled before the export
+  // existed; every topology test asserts it is a function before calling it.
+  runHarnessWorkers?: (
+    adapters: HarnessAdapter[],
+    run: (adapter: HarnessAdapter) => Promise<unknown>,
+    options: { platform: string },
+  ) => Promise<SettledWorkerResult[]>;
 };
+
+type HarnessAdapter = { harness: string };
+
+type SettledWorkerResult =
+  { status: 'fulfilled'; value: unknown } | { status: 'rejected'; reason: unknown };
 
 let runProcess: RuntimeModule['runProcess'];
 let runWorker: RuntimeModule['runWorker'];
 let benchmarkTimeouts: RuntimeModule['benchmarkTimeouts'];
 let createCommandHistory: RuntimeModule['createCommandHistory'];
+let runHarnessWorkers: RuntimeModule['runHarnessWorkers'];
 
 type FakeStream = EventEmitter & { destroy(error?: Error): void };
 
@@ -152,6 +165,59 @@ const rejectedError = async (promise: Promise<unknown>, description: string): Pr
 const oversizedDiagnostic = (head: string, tail: string) =>
   `${head}:${'x'.repeat(4 * 1024 + 1)}:${tail}`;
 
+// Lets a test drive a fake worker's completion from the outside, rather than
+// racing real timers, to pin the topology (serial vs. concurrent) precisely.
+type Deferred<T> = {
+  promise: Promise<T>;
+  reject: (reason: unknown) => void;
+  resolve: (value: T) => void;
+};
+
+const createDeferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, reject, resolve };
+};
+
+// Flushes pending microtasks so a fake `run` that is `await deferred.promise`
+// has had the chance to register before the test inspects it.
+const flushMicrotasks = async (): Promise<void> => {
+  for (let iteration = 0; iteration < 5; iteration += 1) await Promise.resolve();
+};
+
+// A hand-written structural fake for the `run(adapter)` callback
+// `runHarnessWorkers` is handed: it records call order, tracks how many
+// invocations are simultaneously in flight, and exposes each adapter's
+// deferred so the test can resolve/reject it on demand.
+const createWorkerHarness = () => {
+  const deferreds = new Map<string, Deferred<unknown>>();
+  const started: string[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const run = async (adapter: HarnessAdapter): Promise<unknown> => {
+    started.push(adapter.harness);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    const deferred = createDeferred<unknown>();
+    deferreds.set(adapter.harness, deferred);
+    try {
+      return await deferred.promise;
+    } finally {
+      inFlight -= 1;
+    }
+  };
+  return {
+    deferreds,
+    maxInFlight: () => maxInFlight,
+    run,
+    started,
+  };
+};
+
 beforeEach(() => {
   if (!platformDescriptor) throw new Error('process.platform must be configurable for this mock');
   Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
@@ -159,9 +225,10 @@ beforeEach(() => {
 });
 
 beforeAll(async () => {
-  ({ benchmarkTimeouts, runProcess, runWorker, createCommandHistory } = (await import(
-    new URL('../../scripts/policy-benchmark-runtime.mjs', import.meta.url).href
-  )) as RuntimeModule);
+  ({ benchmarkTimeouts, runProcess, runWorker, createCommandHistory, runHarnessWorkers } =
+    (await import(
+      new URL('../../scripts/policy-benchmark-runtime.mjs', import.meta.url).href
+    )) as RuntimeModule);
 });
 
 afterEach(() => {
@@ -693,5 +760,104 @@ describe('policy benchmark command timing diagnostics', () => {
     expect(capturedError?.message).toBe(
       'benchmark command git.exe: timed out after 30000 ms (stdout 3 B, stderr 0 B)',
     );
+  });
+});
+
+describe('policy benchmark worker topology', () => {
+  const requireRunHarnessWorkers = (): NonNullable<RuntimeModule['runHarnessWorkers']> => {
+    expect(runHarnessWorkers).toBeTypeOf('function');
+    return runHarnessWorkers as NonNullable<RuntimeModule['runHarnessWorkers']>;
+  };
+
+  it('runs the harness workers one after another on win32 and keeps adapter order in the settled results', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+
+    const settling = run(adapters, workers.run, { platform: 'win32' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude']);
+
+    workers.deferreds.get('claude')?.resolve('claude-report');
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+
+    workers.deferreds.get('codex')?.resolve('codex-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'fulfilled', value: 'claude-report' },
+      { status: 'fulfilled', value: 'codex-report' },
+    ]);
+    expect(workers.maxInFlight()).toBe(1);
+  });
+
+  it('keeps running the remaining harness on win32 when the first worker rejects, and reports the rejection in place', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+    const claudeFailure = new Error('claude worker failed');
+
+    const settling = run(adapters, workers.run, { platform: 'win32' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude']);
+
+    workers.deferreds.get('claude')?.reject(claudeFailure);
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+
+    workers.deferreds.get('codex')?.resolve('codex-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'rejected', reason: claudeFailure },
+      { status: 'fulfilled', value: 'codex-report' },
+    ]);
+    expect(workers.maxInFlight()).toBe(1);
+  });
+
+  it('starts every harness worker at once off Windows and keeps adapter order in the settled results', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+
+    const settling = run(adapters, workers.run, { platform: 'linux' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+    expect(workers.maxInFlight()).toBe(2);
+
+    workers.deferreds.get('codex')?.resolve('codex-report');
+    await flushMicrotasks();
+    workers.deferreds.get('claude')?.resolve('claude-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'fulfilled', value: 'claude-report' },
+      { status: 'fulfilled', value: 'codex-report' },
+    ]);
+  });
+
+  it('keeps the allSettled shape off Windows when one worker rejects', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+    const codexFailure = new Error('codex worker failed');
+
+    const settling = run(adapters, workers.run, { platform: 'linux' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+
+    workers.deferreds.get('codex')?.reject(codexFailure);
+    workers.deferreds.get('claude')?.resolve('claude-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'fulfilled', value: 'claude-report' },
+      { status: 'rejected', reason: codexFailure },
+    ]);
   });
 });

@@ -3,7 +3,12 @@ import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { benchmarkTimeouts, createBenchmarkEnv, runWorker } from './policy-benchmark-runtime.mjs';
+import {
+  benchmarkTimeouts,
+  createBenchmarkEnv,
+  runHarnessWorkers,
+  runWorker,
+} from './policy-benchmark-runtime.mjs';
 import { benchmarkGit, materializeSnapshot } from './policy-benchmark-snapshot.mjs';
 
 const usage = () => {
@@ -98,8 +103,9 @@ export const runBenchmark = async ({
   const policy = await import(
     pathToFileURL(path.join(verifierRoot, 'packages/cli/dist/policy/index.js')).href
   );
-  const results = await Promise.allSettled(
-    policy.HARNESS_ADAPTERS.map(async (adapter) => {
+  const results = await runHarnessWorkers(
+    policy.HARNESS_ADAPTERS,
+    async (adapter) => {
       const workspaceRoot = path.join(temporary, adapter.harness);
       await mkdir(workspaceRoot);
       return runWorker(
@@ -111,7 +117,8 @@ export const runBenchmark = async ({
           timeoutMs: benchmarkTimeouts(process.platform).workerMs,
         },
       );
-    }),
+    },
+    { platform: process.platform },
   );
   const failure = results.find((result) => result.status === 'rejected');
   if (failure) throw failure.reason;
