@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:create-agent-rig:conformance:v1:load",
+  "title": "Command contract v1.0 — `load --json --cwd <repo>` on a non-error outcome",
+  "description": "The shape of a load answer that exited 0. What this schema checks: the result word is one of the two non-error outcomes, the content is a string, and the counters, budget and identity objects are present with identity.status in its closed set; additive keys are tolerated. What it does not check: that the result is `ok` — whether a checkout's remote is mapped is the Memory workflow's assertion, not the shape's — and the error outcomes (integration-failed, unverifiable, prerequisite-unmet, invalid-invocation), which exit non-zero and never reach this schema.",
+  "type": "object",
+  "required": ["schemaVersion", "result", "content", "counters", "budget", "identity"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "result": { "type": "string", "enum": ["ok", "unsupported"] },
+    "reason": { "type": "string" },
+    "empty": { "type": "boolean" },
+    "content": { "type": "string" },
+    "counters": {
+      "type": "object",
+      "required": ["eligible", "injected", "budgetSkipped", "invalid"],
+      "properties": {
+        "eligible": { "type": "integer" },
+        "injected": { "type": "integer" },
+        "budgetSkipped": { "type": "integer" },
+        "invalid": { "type": "integer" }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "required": ["limitBytes", "usedBytes"],
+      "properties": {
+        "limitBytes": { "type": "integer" },
+        "usedBytes": { "type": "integer" }
+      }
+    },
+    "degradation": { "type": "array", "items": { "type": "string" } },
+    "identity": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["resolved", "unresolved"] }
+      }
+    }
+  }
+}

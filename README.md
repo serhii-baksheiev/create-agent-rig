@@ -132,33 +132,33 @@ it covers was there to be removed. The single case nothing can tell apart is a
 file a **later** release added, which your rig never had — that one is installed,
 and `--dry-run` lists it before anything is written.
 
-### Conformance layer
+### Conformance runner
 
-Every rig carries the core conformance payload under
-`.claude/contracts/conformance-v1/` — `manifest.json` (the contract version,
-the payload file list, and the Memory repository, commit ref, contract
-directory and executable the rig is proven against), the version-handshake and
-doctor JSON schemas of the command contract, and the RP-12 session-identity
-schema generated from `contracts/session-messaging/v1/schema.ts`. `create`,
-`init` and `upgrade` deliver and refresh it like any other rig-owned file
-(`packages/cli/test/upgrade.test.ts` › "installs the conformance manifest,
-pinned to the Memory incubation ref"). The generator's CI job
-`memory-conformance` runs `scripts/memory-conformance.mjs`: it fetches the
-Memory contract directory at the pinned commit and checks it, plus both bins'
-`--version --json` and Memory's `doctor --json`, against those schemas through
-process boundaries only — no Memory code is imported and no Memory fixture is
-copied here (`test/template/memory-conformance.test.ts` › "imports nothing from
-the fetched tree and copies no Memory fixture into the repository"). The CI job needs a
-read-only token for the private Memory repository in the Actions secret
-`MEMORY_CONFORMANCE_TOKEN`; without it the job fails with that reason, never a
-pass. Re-pinning is a deliberate change: edit the template's `manifest.json`,
-run `node scripts/sync-agent-os.mjs` for the dogfood copy, and update the
-tests that pin the commit by value (`packages/cli/test/upgrade.test.ts`,
-`test/template/conformance-payload.test.ts`,
-`test/template/memory-conformance.test.ts`) — they are red on purpose until
-the new pin is the one they name. `node scripts/conformance-payload.mjs
---check` keeps the generated schema and its source in step; deriving it needs
-Node 22.6 or newer (type stripping), which the CLI a rig installs does not.
+`contracts/conformance/v1/` holds the JSON schemas of the command contract's
+`--version --json`, `doctor --json` and `load --json` answers, and
+`scripts/memory-conformance.mjs` checks a Memory checkout against them:
+
+```sh
+pnpm build
+node scripts/memory-conformance.mjs --from <claude-config checkout> --json [--out report.json]
+```
+
+It is offline by construction — `--from` is mandatory, nothing is fetched, no
+credential is read — and it never imports Memory code or copies a Memory
+fixture into this repository (`test/template/memory-conformance.test.ts` ›
+"carries no fetch, clone or credential: the checkout is always the caller's"
+and › "the repository carries no Memory fixture"). The contract directory is
+this repository's own, not a rig payload: `create`, `init` and `upgrade` do
+not deliver it (`test/template/conformance-contract.test.ts` › "is not
+delivered to rigs: no template carries a conformance contract"). The report's
+rows, its `rigSha` / `memorySha` / `verifierDigest` fields and the `--out`
+file are pinned by the same test file's › "passes every row against a
+well-formed local fixture root and names both SHAs and the verifier digest"
+and › "derives verifierDigest from the runner, its validator and the contract
+files, in that order, and writes the same report to --out". The authoritative
+cross-repository run lives in the private `claude-config` repository, which
+checks this repository out at an explicit full SHA and runs the command above
+against its own tree; the CI here runs only the offline tests.
 
 ## What you get
 

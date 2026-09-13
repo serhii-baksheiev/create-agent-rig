@@ -79,48 +79,6 @@ describe('init writes the manifest that makes an upgrade possible', () => {
   });
 });
 
-// RP-13: the conformance-v1 payload (docs/decisions/memory-rig-boundary.md,
-// docs/command-contract.md "Conformance matrix") is an ordinary file under the
-// universal template, so it ships and upgrades exactly like every other
-// rig-owned file — no special case in `install-set.ts` or `upgrade.ts`.
-describe('the conformance payload ships and upgrades like any other rig-owned file (RP-13)', () => {
-  const CONFORMANCE_MANIFEST = '.claude/contracts/conformance-v1/manifest.json';
-
-  it('installs the conformance manifest, pinned to the Memory incubation ref', async () => {
-    await installRig();
-    const raw = await read(CONFORMANCE_MANIFEST);
-    const parsed = JSON.parse(raw) as { memory: { ref: string } };
-    expect(parsed.memory.ref).toBe('4b5cee73399765808a2648343057676523005d83');
-    expect((await readManifest(repo))?.files[CONFORMANCE_MANIFEST]).toBe(sha256(raw));
-  });
-
-  it('refreshes the conformance manifest the way it refreshes any other release-changed file', async () => {
-    await installRig();
-    await pretendInstalled(CONFORMANCE_MANIFEST, '{"schemaVersion":1,"contractVersion":"0.9"}\n');
-
-    const plan = await planUpgrade(repo, { history: emptyHistory });
-    expect(verdictFor(plan, CONFORMANCE_MANIFEST)).toBe('update');
-
-    await applyUpgrade(repo, plan);
-    expect(await read(CONFORMANCE_MANIFEST)).toContain('4b5cee73399765808a2648343057676523005d83');
-    expect((await readManifest(repo))?.files[CONFORMANCE_MANIFEST]).toBe(
-      sha256(await read(CONFORMANCE_MANIFEST)),
-    );
-  });
-
-  it('never overwrites a conformance manifest the user edited', async () => {
-    await installRig();
-    const edited = `${await read(CONFORMANCE_MANIFEST)} `;
-    await write(CONFORMANCE_MANIFEST, edited);
-
-    const plan = await planUpgrade(repo, { history: emptyHistory });
-    expect(verdictFor(plan, CONFORMANCE_MANIFEST)).toBe('conflict');
-
-    await applyUpgrade(repo, plan);
-    expect(await read(CONFORMANCE_MANIFEST)).toBe(edited);
-  });
-});
-
 describe('planUpgrade — what it would do, before it does anything', () => {
   it('a freshly installed rig has nothing to update and nothing to resolve', async () => {
     await installRig();

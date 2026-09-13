@@ -48,8 +48,8 @@ document does not name is not contract, and may change without a version bump.
 - **`[A4]`** — named by the item as the rig layer that rolls the conformance
   matrix out. When this document was written it named nothing this repository
   defined, and the matrix was specified without a rollout mechanism. RP-13
-  supplied the layer: the payload under `.claude/contracts/conformance-v1/` and
-  `scripts/memory-conformance.mjs`, as `## Conformance matrix` records. The
+  supplied the layer: the repository contract under `contracts/conformance/v1/`
+  and `scripts/memory-conformance.mjs`, as `## Conformance matrix` records. The
   token itself still occurs nowhere else in this repository; it is the item's
   name for that layer, not a path.
 - **RP-57's schema** — the lifecycle state vocabulary below is contract now; its
@@ -549,22 +549,21 @@ satisfy. The matrix is the executable form of this document — a claim here tha
 no row exercises is a claim nothing is holding.
 
 The item names `[A4]` as the rig layer that rolls the matrix out. That referent
-was absent when this document was written (see above); RP-13 supplied it. The
-layer is the payload every rig carries under `.claude/contracts/conformance-v1/`
-— `manifest.json` with the contract version and the pinned Memory commit, the
-version-handshake and doctor schemas of this document, and the RP-12
-session-identity schema generated from its source — and the matrix's executable
-form is `scripts/memory-conformance.mjs`, which the generator's CI runs against
-the Memory contract directory fetched at that commit: one row per invocation
-(`memory --version --json`, `memory doctor --json`, `create-agent-rig --version
---json`) plus the contract directory's own presence checks, each row a check
-record with a status, and the whole a pass only when no row fails. Pinned in
-`test/template/conformance-payload.test.ts` › "carries exactly the manifest
-and the three schema files, nothing else" (the layer), and in
-`test/template/memory-conformance.test.ts` › "passes every check against a
-well-formed local fixture root" (the seven rows and their ids) and › "fails
-memory-handshake and the whole run when the backend answers a foreign contract
-major" (one failing row fails the whole).
+was absent when this document was written (see above); RP-13 supplied it, at
+the scope the owner fixed on 2026-09-13: a repository contract, not a payload.
+The schemas of this document's handshake, `doctor --json` and `load --json`
+live under `contracts/conformance/v1/` — nothing under `templates/` carries
+them, so no rig receives them (`test/template/conformance-contract.test.ts` ›
+"is not delivered to rigs: no template carries a conformance contract") — and
+the matrix's executable form is `scripts/memory-conformance.mjs`, run offline
+against a Memory checkout the caller names with `--from`. The authoritative run
+is the private claude-config workflow, which checks this repository out at an
+exact SHA and points the runner at its own tree; this repository's CI runs only
+the offline tests. Rows and ids: `test/template/memory-conformance.test.ts` ›
+"passes every row against a well-formed local fixture root and names both SHAs
+and the verifier digest"; one failing row fails the whole, and the consumer's
+exit-4 refusal is a row of its own: › "fails memory-handshake, and the rig
+refuses setup with exit 4, when the backend answers a foreign contract major".
 
 ## Conformance today
 

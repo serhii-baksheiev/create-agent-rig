@@ -1,46 +1,45 @@
 #!/usr/bin/env node
-// The executable form of the conformance matrix (RP-13, docs/command-contract.md
-// "Conformance matrix"): fetch the Memory contract directory at the ref the
-// payload pins, and check — through process boundaries only — that what is
-// there and what the two bins answer match the schemas the rig ships.
+// The Rig-side, offline half of the conformance matrix (RP-13,
+// docs/command-contract.md "Conformance matrix"): given a Memory checkout the
+// caller names, check — through process boundaries only — that what is there
+// and what the two bins answer match the schemas under contracts/conformance/v1,
+// and that the Rig consumes that Memory the way its `setup` and `memory` verbs
+// promise (RP-147, RP-19).
 //
-// Two sources. Without `--from`, the checkout named by
-// `.claude/contracts/conformance-v1/manifest.json` (`memory.repository` at
-// `memory.ref`, a commit SHA) is fetched into a temporary directory with plain
-// git — `planFetch` is the exact command list, pinned by
-// test/template/memory-conformance.test.ts › "builds git init, remote add,
-// fetch and checkout from the manifest repository and ref". With `--from <dir>` an existing
-// checkout root is used (`source: "local"`) and the ref is not verified; that is
-// what the tests use, offline, and what a developer uses against a working copy.
+//   node scripts/memory-conformance.mjs --from <checkout-root> [--json] [--out <file>]
 //
-// The pin is enforced, not reported: a ref that is not a 40-hex commit SHA is
-// refused before anything is fetched, and a fetched commit that is not the pin
-// is refused before anything from the tree is spawned — both leave every other
-// row `skip`. Pinned in test/template/memory-conformance.test.ts › "refuses a
-// ref that is not a 40-hex commit SHA with every other row skipped, and spawns
-// nothing".
+// `--from` is mandatory: this script fetches nothing, holds no credential and
+// reaches no network. The authoritative run lives in the private claude-config
+// repository, whose workflow checks out this repository at an exact SHA and
+// points `--from` at its own working tree; the report carries both SHAs
+// (`rigSha` from this checkout, `memorySha` from the --from root when it is a
+// git checkout, else null) and `verifierDigest` — sha256 over this file, the
+// validator and the contract files, in that order — so a report can be tied
+// to exactly what judged it. Pinned in test/template/memory-conformance.test.ts
+// › "derives verifierDigest from the runner, its validator and the contract
+// files, in that order, and writes the same report to --out".
 //
-// The Memory repository is private. The fetch carries a read-only token the
-// environment supplies as MEMORY_CONFORMANCE_TOKEN — through git's
-// GIT_CONFIG_* environment entries for the git processes only, never as an
-// argument, never on a URL, never in the report, and never in the environment
-// of the Memory process this script spawns (`memoryProcessEnv` is the
-// allow-list). Absent, the fetch is attempted anonymously and the failure
-// names the variable.
+// Rows, in order: contract-document, event-schema, fixtures-present,
+// memory-handshake, memory-doctor, memory-load (Memory spawned directly),
+// rig-handshake, rig-setup, rig-memory-doctor (the built rig bin registering
+// Memory under a temporary configuration root of this run's own and passing
+// `doctor --json` through it), rig-foreign-major (the rig refusing a stub that
+// answers contract major 2 with exit 4 — the consumer-owned refusal, which
+// Memory itself never emits). Each row is pass | fail | skip; the exit code is
+// 0 iff no row failed, 1 otherwise, 2 for an invalid invocation.
 //
-// What it never does: import anything from the fetched tree, read Memory's
-// storage, or copy fixtures into this repository. The Memory executable is
-// spawned exactly as `create-agent-rig memory` would spawn it, and only its
-// stdout is parsed — against the payload's schemas, with the dependency-free
-// validator in ./lib/json-schema-subset.mjs.
-//
-// Output: `--json` prints exactly one JSON object —
-// { schemaVersion: 1, ref, contractVersion, source, checks: [{ id, status, detail }], passed }
-// with status ∈ ok | fail | skip — and the exit code is 0 iff no check failed.
-// No `detail` names a path, and text a subprocess chose is cut before it enters
-// one: the report travels into CI logs and PR comments.
+// What it never does: import anything from the checkout, read Memory's
+// storage, write into the caller's configuration root, or copy fixtures into
+// this repository. The Memory executable is spawned exactly as
+// `create-agent-rig memory` would spawn it, with a minimal environment
+// (`memoryProcessEnv` is the allow-list), and only its stdout is parsed —
+// against the contract schemas, with the dependency-free validator in
+// ./lib/json-schema-subset.mjs. No `detail` names a path, and text a
+// subprocess chose is cut before it enters one: the report travels into CI
+// logs and PR comments.
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,22 +47,15 @@ import { promisify } from 'node:util';
 import { validate } from './lib/json-schema-subset.mjs';
 
 const execFileAsync = promisify(execFile);
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const payloadDir = path.join(repoRoot, '.claude', 'contracts', 'conformance-v1');
-const SHA = /^[0-9a-f]{40}$/;
+const selfPath = fileURLToPath(import.meta.url);
+const repoRoot = path.resolve(path.dirname(selfPath), '..');
+const contractDir = path.join(repoRoot, 'contracts', 'conformance', 'v1');
+const validatorPath = path.join(repoRoot, 'scripts', 'lib', 'json-schema-subset.mjs');
+const rigBin = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
 const SPAWN_TIMEOUT_MS = 30_000;
-const FETCH_TIMEOUT_MS = 120_000;
 const MAX_ECHOED_CHARACTERS = 32;
-const CHECK_IDS = [
-  'ref-pinned',
-  'contract-document',
-  'event-schema',
-  'fixtures-present',
-  'memory-handshake',
-  'memory-doctor',
-  'rig-handshake',
-];
-/** What the spawned Memory process may see of this process's environment. */
+const SHA = /^[0-9a-f]{40}$/;
+/** What the spawned Memory and rig processes may see of this process's environment. */
 const MEMORY_ENV_KEYS = [
   'PATH',
   'HOME',
@@ -81,27 +73,6 @@ const MEMORY_ENV_KEYS = [
   'LANG',
   'LC_ALL',
 ];
-
-export const planFetch = (manifest) => [
-  ['init'],
-  ['remote', 'add', 'origin', `https://github.com/${manifest.memory.repository}.git`],
-  ['fetch', '--depth', '1', 'origin', manifest.memory.ref],
-  ['checkout', 'FETCH_HEAD', '--', 'shared-memory'],
-];
-
-export const gitAuthConfig = (env) => {
-  const token = env.MEMORY_CONFORMANCE_TOKEN;
-  if (typeof token !== 'string' || token === '') return { env: {}, source: 'none' };
-  const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
-  return {
-    env: {
-      GIT_CONFIG_COUNT: '1',
-      GIT_CONFIG_KEY_0: 'http.extraheader',
-      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
-    },
-    source: 'MEMORY_CONFORMANCE_TOKEN',
-  };
-};
 
 export const memoryProcessEnv = (env) =>
   Object.fromEntries(
@@ -125,7 +96,7 @@ const run = async (file, args, options = {}) => {
   try {
     const { stdout, stderr } = await execFileAsync(file, args, {
       timeout: SPAWN_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
+      maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
       ...options,
     });
@@ -145,66 +116,48 @@ const majorOf = (contractVersion) => {
   return match ? Number(match[1]) : null;
 };
 
-/** One handshake or doctor answer, validated: a check record and the parsed payload. */
+const pass = (id, detail) => ({ id, status: 'pass', detail });
+const fail = (id, detail) => ({ id, status: 'fail', detail });
+const skip = (id, detail) => ({ id, status: 'skip', detail });
+
+/** One JSON answer, validated: a row and the parsed payload. Exit 0 is part of the shape. */
 const validatedAnswer = ({ id, answer, schema, what }) => {
   if (answer.spawnError)
-    return {
-      record: { id, status: 'fail', detail: `${what} could not be started (${answer.spawnError})` },
-    };
+    return { row: fail(id, `${what} could not be started (${answer.spawnError})`) };
   let payload;
   try {
     payload = JSON.parse(answer.stdout);
   } catch {
-    return {
-      record: {
-        id,
-        status: 'fail',
-        detail: `${what} did not answer one JSON object (exit ${answer.code})`,
-      },
-    };
+    return { row: fail(id, `${what} did not answer one JSON object (exit ${answer.code})`) };
   }
+  if (answer.code !== 0)
+    return {
+      row: fail(id, `${what} failed (exit ${answer.code}), answering ${echo(payload?.result)}`),
+    };
   const result = validate(schema, payload);
   if (!result.ok)
     return {
-      record: {
-        id,
-        status: 'fail',
-        detail: `${what} answered outside the schema: ${result.errors.slice(0, 3).join('; ')}`,
-      },
+      row: fail(id, `${what} answered outside the schema: ${result.errors.slice(0, 3).join('; ')}`),
     };
-  return {
-    record: {
-      id,
-      status: 'ok',
-      detail: `${what} answered within the schema (exit ${answer.code})`,
-    },
-    payload,
-  };
+  return { row: pass(id, `${what} answered within the schema (exit 0)`), payload };
 };
 
-const acquire = async (manifest, from, env) => {
-  if (from)
-    return { root: path.resolve(from), source: 'local', cleanup: async () => {}, fetchedRef: null };
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'memory-conformance-'));
-  const cleanup = () => rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-  const auth = gitAuthConfig(env);
-  const gitEnv = { ...memoryProcessEnv(env), ...auth.env, GIT_TERMINAL_PROMPT: '0' };
-  for (const step of planFetch(manifest)) {
-    const result = await run('git', step, { cwd: dir, env: gitEnv, timeout: FETCH_TIMEOUT_MS });
-    if (result.code !== 0 || result.spawnError) {
-      await cleanup();
-      const why =
-        auth.source === 'none'
-          ? 'no MEMORY_CONFORMANCE_TOKEN in the environment, and the Memory repository is private'
-          : `authenticated through ${auth.source}`;
-      throw new Error(
-        `git ${step[0]} failed while fetching the pinned Memory ref (${why}); ` +
-          'the matrix is UNVERIFIABLE until the fetch succeeds',
-      );
-    }
-  }
-  const head = await run('git', ['rev-parse', 'FETCH_HEAD'], { cwd: dir, env: gitEnv });
-  return { root: dir, source: 'fetched', fetchedRef: head.stdout.trim(), cleanup };
+const gitHead = async (cwd) => {
+  const head = await run('git', ['rev-parse', 'HEAD'], { cwd });
+  const sha = head.stdout.trim();
+  return head.code === 0 && SHA.test(sha) ? sha : null;
+};
+
+const verifierDigest = async (manifest) => {
+  const hash = createHash('sha256');
+  const files = [
+    selfPath,
+    validatorPath,
+    path.join(contractDir, 'manifest.json'),
+    ...manifest.schemas.map((name) => path.join(contractDir, name)),
+  ];
+  for (const file of files) hash.update(await readFile(file));
+  return hash.digest('hex');
 };
 
 const countMarkdown = async (dir) => {
@@ -215,197 +168,244 @@ const countMarkdown = async (dir) => {
   }
 };
 
-/** Every row but `ref-pinned`, skipped for the reason the pin gave. */
-const skippedRows = (detail) =>
-  CHECK_IDS.filter((id) => id !== 'ref-pinned').map((id) => ({ id, status: 'skip', detail }));
+/** A stub Memory that answers a foreign contract major: what the rig must refuse. */
+const FOREIGN_STUB =
+  "process.stdout.write(JSON.stringify({ schemaVersion: 1, name: 'memory', version: '9.9.9', contractVersion: '2.0' }) + '\\n');\n";
 
-const report = (manifest, source, checks) => ({
-  schemaVersion: 1,
-  ref: manifest.memory.ref,
-  contractVersion: manifest.contractVersion,
-  source,
-  checks,
-  passed: checks.every((check) => check.status !== 'fail'),
-});
+const contractRows = async (root, manifest) => {
+  const rows = [];
+  const dir = path.join(root, ...manifest.memory.contractDirectory.split('/'));
 
-export const runConformance = async ({
-  from = null,
-  manifest,
-  schemas,
-  rigBin,
-  env = process.env,
-}) => {
-  if (!SHA.test(manifest.memory.ref))
-    return report(manifest, from ? 'local' : 'fetched', [
-      { id: 'ref-pinned', status: 'fail', detail: 'the manifest ref is not a 40-hex commit SHA' },
-      ...skippedRows('not run: the pin is not a commit SHA, so nothing was fetched or spawned'),
-    ]);
-  const source = await acquire(manifest, from, env);
-  const checks = [];
-  try {
-    if (source.source === 'local')
-      checks.push({ id: 'ref-pinned', status: 'skip', detail: 'local checkout, ref not verified' });
-    else if (source.fetchedRef === manifest.memory.ref)
-      checks.push({
-        id: 'ref-pinned',
-        status: 'ok',
-        detail: 'fetched commit equals the pinned ref',
-      });
-    else
-      return report(manifest, source.source, [
-        { id: 'ref-pinned', status: 'fail', detail: 'fetched commit differs from the pinned ref' },
-        ...skippedRows(
-          'not run: the fetched commit is not the pin, so nothing from it was spawned',
-        ),
-      ]);
-
-    const contractDir = path.join(source.root, ...manifest.memory.contractDirectory.split('/'));
-    const executable = path.join(source.root, ...manifest.memory.executable.split('/'));
-    const childEnv = memoryProcessEnv(env);
-    const spawnMemory = (args) =>
-      run(process.execPath, [executable, ...args], { cwd: source.root, env: childEnv });
-
-    const contractDoc = path.join(contractDir, 'contract-1.0.md');
-    if (await exists(contractDoc)) {
-      const text = await readFile(contractDoc, 'utf8');
-      const named = text.includes('contractVersion') && text.includes('1.0');
-      checks.push({
-        id: 'contract-document',
-        status: named ? 'ok' : 'fail',
-        detail: named
-          ? 'contract-1.0.md is present and names contractVersion 1.0'
-          : 'contract-1.0.md is present but does not name contractVersion 1.0',
-      });
-    } else
-      checks.push({
-        id: 'contract-document',
-        status: 'fail',
-        detail: 'contract-1.0.md is missing',
-      });
-
-    try {
-      const schema = await readJson(path.join(contractDir, 'event-schema-v1.json'));
-      const isObject = typeof schema === 'object' && schema !== null && !Array.isArray(schema);
-      checks.push({
-        id: 'event-schema',
-        status: isObject ? 'ok' : 'fail',
-        detail: isObject
-          ? 'event-schema-v1.json parses as an object'
-          : 'event-schema-v1.json is not an object',
-      });
-    } catch {
-      checks.push({
-        id: 'event-schema',
-        status: 'fail',
-        detail: 'event-schema-v1.json is missing or does not parse',
-      });
-    }
-
-    const accept = await countMarkdown(
-      path.join(contractDir, 'fixtures', 'event-schema-v1', 'accept'),
+  const contractDoc = path.join(dir, `contract-${manifest.contractVersion}.md`);
+  if (await exists(contractDoc)) {
+    const text = await readFile(contractDoc, 'utf8');
+    const named = text.includes('contractVersion') && text.includes(manifest.contractVersion);
+    rows.push(
+      named
+        ? pass(
+            'contract-document',
+            `contract-${manifest.contractVersion}.md is present and names contractVersion ${manifest.contractVersion}`,
+          )
+        : fail(
+            'contract-document',
+            `contract-${manifest.contractVersion}.md is present but does not name contractVersion ${manifest.contractVersion}`,
+          ),
     );
-    const reject = await countMarkdown(
-      path.join(contractDir, 'fixtures', 'event-schema-v1', 'reject'),
-    );
-    checks.push({
-      id: 'fixtures-present',
-      status: accept > 0 && reject > 0 ? 'ok' : 'fail',
-      detail: `event-schema-v1 fixtures: ${accept} accept, ${reject} reject`,
-    });
+  } else rows.push(fail('contract-document', `contract-${manifest.contractVersion}.md is missing`));
 
-    const handshake = validatedAnswer({
-      id: 'memory-handshake',
-      answer: await spawnMemory(['--version', '--json']),
-      schema: schemas.handshake,
-      what: 'memory --version --json',
-    });
-    if (handshake.payload) {
-      const major = majorOf(handshake.payload.contractVersion);
-      if (handshake.payload.name !== 'memory')
-        handshake.record = {
-          id: 'memory-handshake',
-          status: 'fail',
-          detail: `the handshake names "${echo(handshake.payload.name)}", not memory`,
-        };
-      else if (major !== 1)
-        handshake.record = {
-          id: 'memory-handshake',
-          status: 'fail',
-          detail: `contract major ${major ?? 'unreadable'} is not 1`,
-        };
-      else
-        handshake.record.detail = `memory ${echo(handshake.payload.version)} implements contract ${echo(handshake.payload.contractVersion)}`;
-    }
-    checks.push(handshake.record);
-
-    const doctor = validatedAnswer({
-      id: 'memory-doctor',
-      answer: await spawnMemory(['doctor', '--json']),
-      schema: schemas.doctor,
-      what: 'memory doctor --json',
-    });
-    if (doctor.payload)
-      doctor.record.detail = `doctor status ${echo(doctor.payload.status)}, ${doctor.payload.checks.length} check(s)`;
-    checks.push(doctor.record);
-
-    const rig = validatedAnswer({
-      id: 'rig-handshake',
-      answer: await run(process.execPath, [rigBin, '--version', '--json'], { env: childEnv }),
-      schema: schemas.handshake,
-      what: 'create-agent-rig --version --json',
-    });
-    if (rig.payload && rig.payload.name !== 'create-agent-rig')
-      rig.record = {
-        id: 'rig-handshake',
-        status: 'fail',
-        detail: 'the rig handshake does not name create-agent-rig',
-      };
-    checks.push(rig.record);
-  } finally {
-    await source.cleanup();
-  }
-  return report(manifest, source.source, checks);
-};
-
-const readPayloadFile = async (name) => {
   try {
-    return await readJson(path.join(payloadDir, name));
+    const schema = await readJson(path.join(dir, 'event-schema-v1.json'));
+    const isObject = typeof schema === 'object' && schema !== null && !Array.isArray(schema);
+    rows.push(
+      isObject
+        ? pass('event-schema', 'event-schema-v1.json parses as an object')
+        : fail('event-schema', 'event-schema-v1.json is not an object'),
+    );
   } catch {
-    throw new Error(`cannot read the payload file ${name} under .claude/contracts/conformance-v1`);
+    rows.push(fail('event-schema', 'event-schema-v1.json is missing or does not parse'));
+  }
+
+  const accept = await countMarkdown(path.join(dir, 'fixtures', 'event-schema-v1', 'accept'));
+  const reject = await countMarkdown(path.join(dir, 'fixtures', 'event-schema-v1', 'reject'));
+  rows.push(
+    (accept > 0 && reject > 0 ? pass : fail)(
+      'fixtures-present',
+      `event-schema-v1 fixtures: ${accept} accept, ${reject} reject`,
+    ),
+  );
+  return rows;
+};
+
+const memoryRows = async (root, manifest, schemas, childEnv) => {
+  const executable = path.join(root, ...manifest.memory.executable.split('/'));
+  const spawnMemory = (args) =>
+    run(process.execPath, [executable, ...args], { cwd: root, env: childEnv });
+  const rows = [];
+
+  const handshake = validatedAnswer({
+    id: 'memory-handshake',
+    answer: await spawnMemory(['--version', '--json']),
+    schema: schemas.handshake,
+    what: 'memory --version --json',
+  });
+  if (handshake.payload) {
+    const major = majorOf(handshake.payload.contractVersion);
+    if (handshake.payload.name !== 'memory')
+      handshake.row = fail(
+        'memory-handshake',
+        `the handshake names "${echo(handshake.payload.name)}", not memory`,
+      );
+    else if (major !== majorOf(manifest.contractVersion))
+      handshake.row = fail(
+        'memory-handshake',
+        `contract major ${major ?? 'unreadable'} is not ${majorOf(manifest.contractVersion)}`,
+      );
+    else
+      handshake.row = pass(
+        'memory-handshake',
+        `memory ${echo(handshake.payload.version)} implements contract ${echo(handshake.payload.contractVersion)}`,
+      );
+  }
+  rows.push(handshake.row);
+
+  const doctor = validatedAnswer({
+    id: 'memory-doctor',
+    answer: await spawnMemory(['doctor', '--json']),
+    schema: schemas.doctor,
+    what: 'memory doctor --json',
+  });
+  if (doctor.payload)
+    doctor.row = pass(
+      'memory-doctor',
+      `doctor status ${echo(doctor.payload.status)}, ${doctor.payload.checks.length} check(s)`,
+    );
+  rows.push(doctor.row);
+
+  // Shape only: whether this checkout's remote is mapped is the Memory
+  // workflow's assertion, so `unsupported` is as much a pass here as `ok`.
+  const load = validatedAnswer({
+    id: 'memory-load',
+    answer: await spawnMemory(['load', '--json', '--cwd', root]),
+    schema: schemas.load,
+    what: 'memory load --json --cwd <checkout>',
+  });
+  if (load.payload)
+    load.row = pass(
+      'memory-load',
+      `load result ${echo(load.payload.result)}, identity ${echo(load.payload.identity.status)}`,
+    );
+  rows.push(load.row);
+  return rows;
+};
+
+const rigRows = async (root, schemas, childEnv, scratch) => {
+  const rows = [];
+  // The rig writes its subsystem manifest under HOME (POSIX) or APPDATA
+  // (Windows); both point at this run's scratch directory, so the caller's
+  // configuration root is never read or written.
+  const configRoot = path.join(scratch, 'config');
+  await mkdir(configRoot, { recursive: true });
+  const rigEnv = { ...childEnv, HOME: configRoot, APPDATA: configRoot };
+  const spawnRig = (args) => run(process.execPath, [rigBin, ...args], { env: rigEnv });
+
+  const handshake = validatedAnswer({
+    id: 'rig-handshake',
+    answer: await spawnRig(['--version', '--json']),
+    schema: schemas.handshake,
+    what: 'create-agent-rig --version --json',
+  });
+  if (handshake.payload && handshake.payload.name !== 'create-agent-rig')
+    handshake.row = fail('rig-handshake', 'the rig handshake does not name create-agent-rig');
+  rows.push(handshake.row);
+
+  const setup = await spawnRig(['setup', '--memory-root', root]);
+  const registered = setup.code === 0 && !setup.spawnError;
+  rows.push(
+    registered
+      ? pass('rig-setup', 'setup --memory-root registered the checkout (exit 0)')
+      : fail(
+          'rig-setup',
+          `setup --memory-root failed (exit ${setup.spawnError ?? setup.code})${setup.code === 4 ? ': foreign contract major refused' : ''}`,
+        ),
+  );
+
+  if (!registered) rows.push(skip('rig-memory-doctor', 'not run: setup did not register Memory'));
+  else {
+    const through = validatedAnswer({
+      id: 'rig-memory-doctor',
+      answer: await spawnRig(['memory', 'doctor', '--json']),
+      schema: schemas.doctor,
+      what: 'create-agent-rig memory doctor --json',
+    });
+    if (through.payload)
+      through.row = pass(
+        'rig-memory-doctor',
+        `the rig passed doctor through: status ${echo(through.payload.status)}, ${through.payload.checks.length} check(s)`,
+      );
+    rows.push(through.row);
+  }
+
+  const foreignRoot = path.join(scratch, 'foreign');
+  await mkdir(path.join(foreignRoot, 'shared-memory'), { recursive: true });
+  await writeFile(path.join(foreignRoot, 'shared-memory', 'memory.mjs'), FOREIGN_STUB);
+  const foreign = await spawnRig(['setup', '--memory-root', foreignRoot]);
+  rows.push(
+    foreign.code === 4 && !foreign.spawnError
+      ? pass('rig-foreign-major', 'setup refused a contract major 2 stub with exit 4')
+      : fail(
+          'rig-foreign-major',
+          `setup answered a contract major 2 stub with exit ${foreign.spawnError ?? foreign.code}, not 4`,
+        ),
+  );
+  return rows;
+};
+
+export const runConformance = async ({ from, manifest, schemas, env = process.env }) => {
+  const root = path.resolve(from);
+  const childEnv = memoryProcessEnv(env);
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'memory-conformance-'));
+  let rows;
+  try {
+    rows = [
+      ...(await contractRows(root, manifest)),
+      ...(await memoryRows(root, manifest, schemas, childEnv)),
+      ...(await rigRows(root, schemas, childEnv, scratch)),
+    ];
+  } finally {
+    await rm(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+  return {
+    schemaVersion: 1,
+    contractVersion: manifest.contractVersion,
+    rigSha: await gitHead(repoRoot),
+    memorySha: await gitHead(root),
+    verifierDigest: await verifierDigest(manifest),
+    rows,
+    passed: rows.every((row) => row.status !== 'fail'),
+  };
+};
+
+const readContractFile = async (name) => {
+  try {
+    return await readJson(path.join(contractDir, name));
+  } catch {
+    throw new Error(`cannot read the contract file ${name} under contracts/conformance/v1`);
   }
 };
+
+const USAGE = 'usage: memory-conformance.mjs --from <checkout-root> [--json] [--out <file>]\n';
 
 const main = async () => {
   const args = process.argv.slice(2);
-  const fromIndex = args.indexOf('--from');
-  const from = fromIndex >= 0 ? args[fromIndex + 1] : null;
-  if (fromIndex >= 0 && !from) {
-    process.stderr.write('usage: memory-conformance.mjs [--json] [--from <checkout-root>]\n');
+  const option = (name) => {
+    const index = args.indexOf(name);
+    return index >= 0 ? (args[index + 1] ?? '') : null;
+  };
+  const from = option('--from');
+  const out = option('--out');
+  if (!from || out === '') {
+    process.stderr.write(USAGE);
     return 2;
   }
-  const manifest = await readPayloadFile('manifest.json');
+  const manifest = await readContractFile('manifest.json');
   const schemas = {
-    handshake: await readPayloadFile('version-handshake.schema.json'),
-    doctor: await readPayloadFile('doctor.schema.json'),
+    handshake: await readContractFile('version-handshake.schema.json'),
+    doctor: await readContractFile('doctor.schema.json'),
+    load: await readContractFile('load.schema.json'),
   };
-  const result = await runConformance({
-    from,
-    manifest,
-    schemas,
-    rigBin: path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js'),
-  });
-  if (args.includes('--json')) process.stdout.write(`${JSON.stringify(result)}\n`);
+  const result = await runConformance({ from, manifest, schemas });
+  const json = `${JSON.stringify(result)}\n`;
+  if (out !== null) await writeFile(out, json);
+  if (args.includes('--json')) process.stdout.write(json);
   else
     process.stdout.write(
-      `memory conformance at ${result.ref.slice(0, 7)} (${result.source}): ${result.passed ? 'passed' : 'FAILED'}\n` +
-        result.checks
-          .map((check) => `  ${check.status.padEnd(4)} ${check.id} — ${check.detail}\n`)
-          .join(''),
+      `memory conformance (rig ${result.rigSha?.slice(0, 7) ?? 'unknown'}, memory ${result.memorySha?.slice(0, 7) ?? 'not a git checkout'}): ${result.passed ? 'passed' : 'FAILED'}\n` +
+        result.rows.map((row) => `  ${row.status.padEnd(4)} ${row.id} — ${row.detail}\n`).join(''),
     );
   return result.passed ? 0 : 1;
 };
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === selfPath) {
   main().then(
     (code) => process.exit(code),
     (error) => {
