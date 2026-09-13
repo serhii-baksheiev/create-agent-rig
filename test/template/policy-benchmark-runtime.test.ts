@@ -1,0 +1,863 @@
+import { EventEmitter } from 'node:events';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const childProcess = vi.hoisted(() => ({ spawn: vi.fn() }));
+
+vi.mock('node:child_process', () => childProcess);
+
+type BenchmarkEnvironment = Record<string, string>;
+
+type CommandOutcome = number | 'timed out';
+
+type CommandHistory = {
+  start(file: string): (outcome: CommandOutcome) => void;
+  summary(): string;
+};
+
+type RuntimeModule = {
+  benchmarkTimeouts(platform: string): { childMs: number; testMs: number; workerMs: number };
+  runProcess(
+    file: string,
+    args: string[],
+    options?: {
+      cleanupTimeoutMs?: number;
+      boundaryPid?: number;
+      cwd?: string;
+      env?: BenchmarkEnvironment;
+      history?: CommandHistory;
+      input?: string;
+      maxBytes?: number;
+      timeoutMs?: number;
+    },
+  ): Promise<{ code: number; stderr: Buffer; stdout: Buffer; timedOut: boolean }>;
+  runWorker(
+    file: string,
+    payload: unknown,
+    options?: {
+      cleanupTimeoutMs?: number;
+      cwd?: string;
+      env?: BenchmarkEnvironment;
+      onSpawn?: (pid: number) => void;
+      timeoutMs?: number;
+    },
+  ): Promise<unknown>;
+  // Not yet exported by scripts/policy-benchmark-runtime.mjs (RP-111 Red step);
+  // optional here so the pre-existing tests still compile and run while it is missing.
+  createCommandHistory?: (options: { limit: number; now?: () => number }) => CommandHistory;
+  // Optional in the type so the RP-111 Red step compiled before the export
+  // existed; every topology test asserts it is a function before calling it.
+  runHarnessWorkers?: (
+    adapters: HarnessAdapter[],
+    run: (adapter: HarnessAdapter) => Promise<unknown>,
+    options: { platform: string },
+  ) => Promise<SettledWorkerResult[]>;
+};
+
+type HarnessAdapter = { harness: string };
+
+type SettledWorkerResult =
+  { status: 'fulfilled'; value: unknown } | { status: 'rejected'; reason: unknown };
+
+let runProcess: RuntimeModule['runProcess'];
+let runWorker: RuntimeModule['runWorker'];
+let benchmarkTimeouts: RuntimeModule['benchmarkTimeouts'];
+let createCommandHistory: RuntimeModule['createCommandHistory'];
+let runHarnessWorkers: RuntimeModule['runHarnessWorkers'];
+
+type FakeStream = EventEmitter & { destroy(error?: Error): void };
+
+type FakeChild = EventEmitter & {
+  connected: boolean;
+  pid: number;
+  stderr: FakeStream;
+  stdin: FakeStream & { end(input?: string): void };
+  stdout: FakeStream;
+  disconnect(): void;
+  kill(signal?: string): boolean;
+  send(message: unknown, callback?: (error: Error | null) => void): void;
+  unref(): void;
+};
+
+const WINDOWS_ENV = { SystemRoot: 'C:\\Windows' };
+const CLEANUP_DEADLINE_MS = 250;
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+
+const delay = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const waitForSpawnCount = async (count: number): Promise<void> => {
+  const deadline = Date.now() + CLEANUP_DEADLINE_MS;
+  while (childProcess.spawn.mock.calls.length < count && Date.now() < deadline) await delay(1);
+  if (childProcess.spawn.mock.calls.length < count)
+    throw new Error(`expected ${String(count)} spawned processes before cleanup deadline`);
+};
+
+const createChild = (
+  pid: number,
+  { onInput, onSend }: { onInput?: (input?: string) => void; onSend?: () => void } = {},
+): FakeChild => {
+  const child = new EventEmitter() as FakeChild;
+  child.pid = pid;
+  child.connected = true;
+  child.stdout = Object.assign(new EventEmitter(), { destroy: () => undefined });
+  child.stderr = Object.assign(new EventEmitter(), { destroy: () => undefined });
+  child.stdin = Object.assign(new EventEmitter(), {
+    destroy: () => undefined,
+    end: onInput ?? (() => undefined),
+  });
+  child.disconnect = () => {
+    child.connected = false;
+  };
+  child.kill = () => true;
+  child.send = (_message, callback) => {
+    onSend?.();
+    callback?.(null);
+  };
+  child.unref = () => undefined;
+  return child;
+};
+
+const rejectsWithin = (promise: Promise<unknown>, description: string): Promise<never> =>
+  new Promise((_, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${description} did not settle by its bounded deadline`)),
+      CLEANUP_DEADLINE_MS,
+    );
+    void promise.then(
+      () => {
+        clearTimeout(timer);
+        reject(new Error(`${description} unexpectedly resolved`));
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+
+const resolvesWithin = (promise: Promise<unknown>, description: string): Promise<unknown> =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${description} did not settle by its bounded deadline`)),
+      CLEANUP_DEADLINE_MS,
+    );
+    void promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+
+const rejectedError = async (promise: Promise<unknown>, description: string): Promise<Error> => {
+  const failure = await rejectsWithin(promise, description).then(
+    () => new Error(`${description} unexpectedly resolved`),
+    (error: unknown) => error,
+  );
+  expect(failure).toBeInstanceOf(Error);
+  return failure as Error;
+};
+
+const oversizedDiagnostic = (head: string, tail: string) =>
+  `${head}:${'x'.repeat(4 * 1024 + 1)}:${tail}`;
+
+// Lets a test drive a fake worker's completion from the outside, rather than
+// racing real timers, to pin the topology (serial vs. concurrent) precisely.
+type Deferred<T> = {
+  promise: Promise<T>;
+  reject: (reason: unknown) => void;
+  resolve: (value: T) => void;
+};
+
+const createDeferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, reject, resolve };
+};
+
+// Flushes pending microtasks so a fake `run` that is `await deferred.promise`
+// has had the chance to register before the test inspects it.
+const flushMicrotasks = async (): Promise<void> => {
+  for (let iteration = 0; iteration < 5; iteration += 1) await Promise.resolve();
+};
+
+// A hand-written structural fake for the `run(adapter)` callback
+// `runHarnessWorkers` is handed: it records call order, tracks how many
+// invocations are simultaneously in flight, and exposes each adapter's
+// deferred so the test can resolve/reject it on demand.
+const createWorkerHarness = () => {
+  const deferreds = new Map<string, Deferred<unknown>>();
+  const started: string[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const run = async (adapter: HarnessAdapter): Promise<unknown> => {
+    started.push(adapter.harness);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    const deferred = createDeferred<unknown>();
+    deferreds.set(adapter.harness, deferred);
+    try {
+      return await deferred.promise;
+    } finally {
+      inFlight -= 1;
+    }
+  };
+  return {
+    deferreds,
+    maxInFlight: () => maxInFlight,
+    run,
+    started,
+  };
+};
+
+beforeEach(() => {
+  if (!platformDescriptor) throw new Error('process.platform must be configurable for this mock');
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+  childProcess.spawn.mockReset();
+});
+
+beforeAll(async () => {
+  ({ benchmarkTimeouts, runProcess, runWorker, createCommandHistory, runHarnessWorkers } =
+    (await import(
+      new URL('../../scripts/policy-benchmark-runtime.mjs', import.meta.url).href
+    )) as RuntimeModule);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+});
+
+describe('policy benchmark timeout calibration', () => {
+  it('uses the Windows budget for six native commands and preserves the generic non-Windows budget', () => {
+    expect(benchmarkTimeouts('win32')).toEqual({
+      childMs: 30_000,
+      workerMs: 210_000,
+      testMs: 240_000,
+    });
+    expect(benchmarkTimeouts('linux')).toEqual({
+      childMs: 10_000,
+      workerMs: 60_000,
+      testMs: 60_000,
+    });
+  });
+
+  it('allows a calibrated Windows command to complete after fifteen seconds', async () => {
+    vi.useFakeTimers();
+    const command = createChild(601, {
+      onInput: () => setTimeout(() => command.emit('close', 0), 15_000),
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const running = runProcess('powershell.exe', ['-File', 'native-wrapper.ps1'], {
+      env: WINDOWS_ENV,
+      input: '',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    });
+    const result = expect(running).resolves.toMatchObject({ code: 0, timedOut: false });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await result;
+  });
+
+  it('returns a stuck nested Windows command at thirty seconds without killing its worker boundary', async () => {
+    vi.useFakeTimers();
+    const command = createChild(611);
+    const kill = vi.fn(() => true);
+    command.kill = kill;
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const running = runProcess('git.exe', ['status'], {
+      boundaryPid: process.pid,
+      env: WINDOWS_ENV,
+      input: '',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    });
+    const failure = expect(running).rejects.toThrow(/git\.exe.*timed out|timed out.*git\.exe/i);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await failure;
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(kill).not.toHaveBeenCalled();
+    expect(childProcess.spawn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/taskkill\.exe$/i),
+      expect.any(Array),
+      expect.any(Object),
+    );
+  });
+});
+
+describe('policy benchmark Windows runtime cleanup', () => {
+  it('does not resolve process evidence after active-process taskkill exits nonzero', async () => {
+    const process = createChild(101, {
+      onInput: () => process.stdout.emit('data', Buffer.from('too much output')),
+    });
+    const taskkill = createChild(102);
+    childProcess.spawn.mockImplementationOnce(() => process).mockImplementationOnce(() => taskkill);
+
+    const running = runProcess('benchmark-command', [], {
+      cleanupTimeoutMs: 10,
+      env: WINDOWS_ENV,
+      input: '',
+      maxBytes: 1,
+    });
+    queueMicrotask(() => taskkill.emit('close', 1));
+
+    await expect(rejectsWithin(running, 'process evidence')).rejects.toThrow(
+      /(?:taskkill|Windows process cleanup).*(?:failed|exit|status|code)/i,
+    );
+  });
+
+  it('reports bounded stdout and stderr when taskkill exits 128 instead of treating cleanup as successful', async () => {
+    const process = createChild(111, {
+      onInput: () => process.stdout.emit('data', Buffer.from('too much output')),
+    });
+    const taskkill = createChild(112);
+    const taskkillStdout = oversizedDiagnostic('TASKKILL_STDOUT_HEAD', 'TASKKILL_STDOUT_TAIL');
+    const taskkillStderr = oversizedDiagnostic('TASKKILL_STDERR_HEAD', 'TASKKILL_STDERR_TAIL');
+    childProcess.spawn.mockImplementationOnce(() => process).mockImplementationOnce(() => taskkill);
+
+    const running = runProcess('benchmark-command', [], {
+      cleanupTimeoutMs: 10,
+      env: WINDOWS_ENV,
+      input: '',
+      maxBytes: 1,
+    });
+    queueMicrotask(() => {
+      taskkill.stdout.emit('data', Buffer.from(taskkillStdout));
+      taskkill.stderr.emit('data', Buffer.from(taskkillStderr));
+      taskkill.emit('close', 128);
+    });
+
+    const failure = await rejectedError(running, 'taskkill diagnostics');
+    const message = failure.message;
+    expect(childProcess.spawn.mock.calls[1]?.[2]).toMatchObject({
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    expect(message).toMatch(/taskkill.*(?:exit|status).*128/i);
+    expect(message).toContain('TASKKILL_STDOUT_HEAD');
+    expect(message).toContain('TASKKILL_STDERR_HEAD');
+    expect(message).toMatch(/truncat/i);
+    expect(message).not.toContain('TASKKILL_STDOUT_TAIL');
+    expect(message).not.toContain('TASKKILL_STDERR_TAIL');
+    expect(Buffer.byteLength(message)).toBeLessThanOrEqual(10 * 1024);
+  });
+
+  it('rejects a live worker result when taskkill exits nonzero instead of hanging for worker close', async () => {
+    const worker = createChild(201, {
+      onSend: () =>
+        queueMicrotask(() =>
+          worker.emit('message', { type: 'policy-benchmark:result', report: { ok: true } }),
+        ),
+    });
+    const taskkill = createChild(202);
+    childProcess.spawn.mockImplementationOnce(() => worker).mockImplementationOnce(() => taskkill);
+
+    const running = runWorker(
+      'worker.mjs',
+      { scenario: 'cleanup' },
+      {
+        cleanupTimeoutMs: 10,
+        env: WINDOWS_ENV,
+      },
+    );
+    queueMicrotask(() => worker.emit('spawn'));
+    await waitForSpawnCount(2);
+    queueMicrotask(() => taskkill.emit('close', 1));
+
+    await expect(rejectsWithin(running, 'worker evidence')).rejects.toThrow(
+      /(?:taskkill|Windows process cleanup).*(?:failed|exit|status|code)/i,
+    );
+  });
+
+  it('rejects boundedly when taskkill never exits while an active process times out', async () => {
+    const process = createChild(301);
+    const taskkill = createChild(302);
+    childProcess.spawn.mockImplementationOnce(() => process).mockImplementationOnce(() => taskkill);
+
+    const running = runProcess('benchmark-command', [], {
+      cleanupTimeoutMs: 10,
+      env: WINDOWS_ENV,
+      input: '',
+      timeoutMs: 1,
+    });
+
+    await expect(rejectsWithin(running, 'timed-out process evidence')).rejects.toThrow(
+      /(?:taskkill|Windows process cleanup).*(?:failed|exit|status|code|timed out)/i,
+    );
+  });
+
+  it('rejects a worker that closes before reporting a result can begin cleanup', async () => {
+    const worker = createChild(401, {
+      onSend: () => queueMicrotask(() => worker.emit('close', 0)),
+    });
+    const taskkill = createChild(402);
+    childProcess.spawn.mockImplementationOnce(() => worker).mockImplementationOnce(() => taskkill);
+
+    const running = runWorker(
+      'worker.mjs',
+      { scenario: 'close-before-result' },
+      {
+        cleanupTimeoutMs: 10,
+        env: WINDOWS_ENV,
+      },
+    );
+    queueMicrotask(() => worker.emit('spawn'));
+    await waitForSpawnCount(2);
+    queueMicrotask(() => taskkill.emit('close', 0));
+
+    await expect(rejectsWithin(running, 'worker closed before its result')).rejects.toThrow(
+      /worker.*(?:exited|closed).*(?:without|before)|(?:without|before).*worker/i,
+    );
+  });
+
+  it('preserves bounded worker stderr with the taskkill status and diagnostics after an early worker exit', async () => {
+    const workerStderr = oversizedDiagnostic('WORKER_STDERR_HEAD', 'WORKER_STDERR_TAIL');
+    const taskkillStdout = oversizedDiagnostic('TASKKILL_STDOUT_HEAD', 'TASKKILL_STDOUT_TAIL');
+    const taskkillStderr = oversizedDiagnostic('TASKKILL_STDERR_HEAD', 'TASKKILL_STDERR_TAIL');
+    const worker = createChild(411, {
+      onSend: () =>
+        queueMicrotask(() => {
+          worker.stderr.emit('data', Buffer.from(workerStderr));
+          worker.emit('close', 0);
+        }),
+    });
+    const taskkill = createChild(412);
+    childProcess.spawn.mockImplementationOnce(() => worker).mockImplementationOnce(() => taskkill);
+
+    const running = runWorker(
+      'worker.mjs',
+      { scenario: 'early-exit-with-cleanup-failure' },
+      { cleanupTimeoutMs: 10, env: WINDOWS_ENV },
+    );
+    queueMicrotask(() => worker.emit('spawn'));
+    await waitForSpawnCount(2);
+    taskkill.stdout.emit('data', Buffer.from(taskkillStdout));
+    taskkill.stderr.emit('data', Buffer.from(taskkillStderr));
+    taskkill.emit('close', 128);
+
+    const failure = await rejectedError(running, 'early worker exit diagnostics');
+    const message = failure.message;
+    expect(message).toMatch(
+      /worker.*(?:exited|closed).*(?:before|without)|(?:before|without).*worker/i,
+    );
+    expect(message).toMatch(/taskkill.*(?:exit|status).*128/i);
+    expect(message).toContain('WORKER_STDERR_HEAD');
+    expect(message).toContain('TASKKILL_STDOUT_HEAD');
+    expect(message).toContain('TASKKILL_STDERR_HEAD');
+    expect(message).toMatch(/truncat/i);
+    expect(message).not.toContain('WORKER_STDERR_TAIL');
+    expect(message).not.toContain('TASKKILL_STDOUT_TAIL');
+    expect(message).not.toContain('TASKKILL_STDERR_TAIL');
+    expect(Buffer.byteLength(message)).toBeLessThanOrEqual(15 * 1024);
+  });
+
+  it('accepts a worker report when the worker closes after cleanup begins and before taskkill exits', async () => {
+    const worker = createChild(451, {
+      onSend: () =>
+        queueMicrotask(() =>
+          worker.emit('message', {
+            type: 'policy-benchmark:result',
+            report: { order: 'worker-first' },
+          }),
+        ),
+    });
+    const taskkill = createChild(452);
+    childProcess.spawn.mockImplementationOnce(() => worker).mockImplementationOnce(() => taskkill);
+
+    const running = runWorker(
+      'worker.mjs',
+      { scenario: 'worker-first' },
+      { cleanupTimeoutMs: 10, env: WINDOWS_ENV },
+    );
+    queueMicrotask(() => worker.emit('spawn'));
+    await waitForSpawnCount(2);
+    worker.emit('close', 0);
+    queueMicrotask(() => taskkill.emit('close', 0));
+
+    await expect(resolvesWithin(running, 'worker-first result')).resolves.toEqual({
+      order: 'worker-first',
+    });
+  });
+
+  it('accepts a worker report when taskkill exits before the worker closes', async () => {
+    const worker = createChild(461, {
+      onSend: () =>
+        queueMicrotask(() =>
+          worker.emit('message', {
+            type: 'policy-benchmark:result',
+            report: { order: 'taskkill-first' },
+          }),
+        ),
+    });
+    const taskkill = createChild(462);
+    childProcess.spawn.mockImplementationOnce(() => worker).mockImplementationOnce(() => taskkill);
+
+    const running = runWorker(
+      'worker.mjs',
+      { scenario: 'taskkill-first' },
+      { cleanupTimeoutMs: 10, env: WINDOWS_ENV },
+    );
+    queueMicrotask(() => worker.emit('spawn'));
+    await waitForSpawnCount(2);
+    taskkill.emit('close', 0);
+    queueMicrotask(() => worker.emit('close', 0));
+
+    await expect(resolvesWithin(running, 'taskkill-first result')).resolves.toEqual({
+      order: 'taskkill-first',
+    });
+  });
+
+  it('rejects a reported worker when taskkill closes but the worker remains live', async () => {
+    const worker = createChild(471, {
+      onSend: () =>
+        queueMicrotask(() =>
+          worker.emit('message', {
+            type: 'policy-benchmark:result',
+            report: { order: 'worker-never-closes' },
+          }),
+        ),
+    });
+    const taskkill = createChild(472);
+    childProcess.spawn.mockImplementationOnce(() => worker).mockImplementationOnce(() => taskkill);
+
+    const running = runWorker(
+      'worker.mjs',
+      { scenario: 'worker-never-closes' },
+      { cleanupTimeoutMs: 10, env: WINDOWS_ENV },
+    );
+    queueMicrotask(() => worker.emit('spawn'));
+    await waitForSpawnCount(2);
+    taskkill.emit('close', 0);
+
+    await expect(rejectsWithin(running, 'reported live worker')).rejects.toThrow(
+      /benchmark process cleanup timed out/i,
+    );
+  });
+
+  it('returns a nested command timeout to its worker without taskkilling the worker boundary', async () => {
+    const command = createChild(481);
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const failure = await rejectedError(
+      runProcess('C:\\benchmark\\git.exe', [], {
+        boundaryPid: process.pid,
+        cleanupTimeoutMs: 10,
+        env: WINDOWS_ENV,
+        input: '',
+        timeoutMs: 1,
+      }),
+      'nested command timeout',
+    );
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(childProcess.spawn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/taskkill\.exe$/i),
+      expect.any(Array),
+      expect.any(Object),
+    );
+    expect(failure.message).toMatch(/git\.exe.*timed out|timed out.*git\.exe/i);
+  });
+
+  it('returns a nested command output limit to its worker without taskkilling the worker boundary', async () => {
+    const command = createChild(491, {
+      onInput: () => command.stdout.emit('data', Buffer.from('too much output')),
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const failure = await rejectedError(
+      runProcess('C:\\benchmark\\git.exe', [], {
+        boundaryPid: process.pid,
+        cleanupTimeoutMs: 10,
+        env: WINDOWS_ENV,
+        input: '',
+        maxBytes: 1,
+      }),
+      'nested command output limit',
+    );
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(childProcess.spawn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/taskkill\.exe$/i),
+      expect.any(Array),
+      expect.any(Object),
+    );
+    expect(failure.message).toMatch(
+      /git\.exe.*output limit exceeded|output limit exceeded.*git\.exe/i,
+    );
+  });
+
+  it('accepts an already-exited command without invoking taskkill for its gone PID', async () => {
+    const process = createChild(501, {
+      onInput: () => queueMicrotask(() => process.emit('close', 0)),
+    });
+    childProcess.spawn.mockReturnValueOnce(process);
+
+    await expect(
+      runProcess('benchmark-command', [], { cleanupTimeoutMs: 10, env: WINDOWS_ENV, input: '' }),
+    ).resolves.toMatchObject({ code: 0, timedOut: false });
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('policy benchmark command timing diagnostics', () => {
+  const requireCreateCommandHistory = (): NonNullable<RuntimeModule['createCommandHistory']> => {
+    if (!createCommandHistory)
+      throw new Error('createCommandHistory is not exported by policy-benchmark-runtime.mjs');
+    return createCommandHistory;
+  };
+
+  it('summarises earlier commands oldest-first with their elapsed time and exit code', () => {
+    const now = vi
+      .fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(412)
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(22_873);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    const finishGit = history.start('git');
+    finishGit(0);
+    const finishPowershell = history.start('powershell.exe');
+    finishPowershell(2);
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: git 412 ms exit 0; powershell.exe 21873 ms exit 2',
+    );
+  });
+
+  it('records a timed-out command as "timed out" for the next command\'s summary', () => {
+    const now = vi
+      .fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(21_873)
+      .mockReturnValueOnce(21_873)
+      .mockReturnValueOnce(22_285);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    const finishPowershell = history.start('powershell.exe');
+    finishPowershell('timed out');
+    const finishGit = history.start('git');
+    finishGit(0);
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: powershell.exe 21873 ms timed out; git 412 ms exit 0',
+    );
+  });
+
+  it('returns an empty summary before any command has finished', () => {
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+    expect(history.summary()).toBe('');
+  });
+
+  it('keeps only the most recent `limit` entries', () => {
+    let tick = 0;
+    const now = () => {
+      tick += 100;
+      return tick;
+    };
+    const history = requireCreateCommandHistory()({ limit: 2, now });
+
+    history.start('first')(0);
+    history.start('second')(0);
+    history.start('third')(0);
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: second 100 ms exit 0; third 100 ms exit 0',
+    );
+  });
+
+  it('throws for a limit outside the 1..64 integer range', () => {
+    const factory = requireCreateCommandHistory();
+    expect(() => factory({ limit: 0 })).toThrow();
+    expect(() => factory({ limit: 65 })).toThrow();
+    expect(() => factory({ limit: 1.5 })).toThrow();
+  });
+
+  it('sanitises a command name to the allowed character set and cuts it to 64 characters', () => {
+    const rawName = `${'A'.repeat(60)}!!!!!${'B'.repeat(10)}`;
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+
+    history.start(`/benchmarks/${rawName}`)(0);
+
+    const expectedName = `${'A'.repeat(60)}${'?'.repeat(4)}`;
+    expect(expectedName).toHaveLength(64);
+    expect(history.summary()).toBe(`earlier commands in this worker: ${expectedName} 0 ms exit 0`);
+  });
+
+  it('names the deadline, the stdout/stderr byte counts, and earlier commands in a Windows boundary timeout — never the timed-out command itself, its arguments, its input, or an environment value', async () => {
+    vi.useFakeTimers();
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(500);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+    history.start('git.exe')(0);
+
+    const command = createChild(621, {
+      onInput: () => {
+        command.stdout.emit('data', Buffer.from('X'.repeat(37)));
+        command.stderr.emit('data', Buffer.from('Y'.repeat(5)));
+      },
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    let capturedError: Error | undefined;
+    const running = runProcess('powershell.exe', ['-Command', 'SENTINEL_ARG_VALUE'], {
+      boundaryPid: process.pid,
+      env: { ...WINDOWS_ENV, SENTINEL_ENV_VAR: 'SENTINEL_ENV_VALUE' },
+      history,
+      input: 'SENTINEL_INPUT_VALUE',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    }).catch((error: unknown) => {
+      capturedError = error as Error;
+      throw error;
+    });
+    const assertion = expect(running).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(benchmarkTimeouts('win32').childMs);
+    await assertion;
+
+    expect(capturedError).toBeInstanceOf(Error);
+    expect(capturedError?.message).toBe(
+      'benchmark command powershell.exe: timed out after 30000 ms (stdout 37 B, stderr 5 B); ' +
+        'earlier commands in this worker: git.exe 500 ms exit 0',
+    );
+    expect(capturedError?.message).not.toContain('SENTINEL_ARG_VALUE');
+    expect(capturedError?.message).not.toContain('SENTINEL_INPUT_VALUE');
+    expect(capturedError?.message).not.toContain('SENTINEL_ENV_VALUE');
+    expect(capturedError?.message).not.toContain('powershell.exe ');
+  });
+
+  it('still names the deadline and byte counts on a Windows boundary timeout without a history option', async () => {
+    vi.useFakeTimers();
+    const command = createChild(631, {
+      onInput: () => {
+        command.stdout.emit('data', Buffer.from('Z'.repeat(3)));
+      },
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    let capturedError: Error | undefined;
+    const running = runProcess('git.exe', ['status'], {
+      boundaryPid: process.pid,
+      env: WINDOWS_ENV,
+      input: '',
+      timeoutMs: benchmarkTimeouts('win32').childMs,
+    }).catch((error: unknown) => {
+      capturedError = error as Error;
+      throw error;
+    });
+    const assertion = expect(running).rejects.toThrow(/git\.exe.*timed out|timed out.*git\.exe/i);
+    await vi.advanceTimersByTimeAsync(benchmarkTimeouts('win32').childMs);
+    await assertion;
+
+    expect(capturedError?.message).toBe(
+      'benchmark command git.exe: timed out after 30000 ms (stdout 3 B, stderr 0 B)',
+    );
+  });
+});
+
+describe('policy benchmark worker topology', () => {
+  const requireRunHarnessWorkers = (): NonNullable<RuntimeModule['runHarnessWorkers']> => {
+    expect(runHarnessWorkers).toBeTypeOf('function');
+    return runHarnessWorkers as NonNullable<RuntimeModule['runHarnessWorkers']>;
+  };
+
+  it('runs the harness workers one after another on win32 and keeps adapter order in the settled results', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+
+    const settling = run(adapters, workers.run, { platform: 'win32' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude']);
+
+    workers.deferreds.get('claude')?.resolve('claude-report');
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+
+    workers.deferreds.get('codex')?.resolve('codex-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'fulfilled', value: 'claude-report' },
+      { status: 'fulfilled', value: 'codex-report' },
+    ]);
+    expect(workers.maxInFlight()).toBe(1);
+  });
+
+  it('keeps running the remaining harness on win32 when the first worker rejects, and reports the rejection in place', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+    const claudeFailure = new Error('claude worker failed');
+
+    const settling = run(adapters, workers.run, { platform: 'win32' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude']);
+
+    workers.deferreds.get('claude')?.reject(claudeFailure);
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+
+    workers.deferreds.get('codex')?.resolve('codex-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'rejected', reason: claudeFailure },
+      { status: 'fulfilled', value: 'codex-report' },
+    ]);
+    expect(workers.maxInFlight()).toBe(1);
+  });
+
+  it('starts every harness worker at once off Windows and keeps adapter order in the settled results', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+
+    const settling = run(adapters, workers.run, { platform: 'linux' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+    expect(workers.maxInFlight()).toBe(2);
+
+    workers.deferreds.get('codex')?.resolve('codex-report');
+    await flushMicrotasks();
+    workers.deferreds.get('claude')?.resolve('claude-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'fulfilled', value: 'claude-report' },
+      { status: 'fulfilled', value: 'codex-report' },
+    ]);
+  });
+
+  it('keeps the allSettled shape off Windows when one worker rejects', async () => {
+    const run = requireRunHarnessWorkers();
+    const adapters: HarnessAdapter[] = [{ harness: 'claude' }, { harness: 'codex' }];
+    const workers = createWorkerHarness();
+    const codexFailure = new Error('codex worker failed');
+
+    const settling = run(adapters, workers.run, { platform: 'linux' });
+
+    await flushMicrotasks();
+    expect(workers.started).toEqual(['claude', 'codex']);
+
+    workers.deferreds.get('codex')?.reject(codexFailure);
+    workers.deferreds.get('claude')?.resolve('claude-report');
+    const results = await settling;
+
+    expect(results).toEqual([
+      { status: 'fulfilled', value: 'claude-report' },
+      { status: 'rejected', reason: codexFailure },
+    ]);
+  });
+});
