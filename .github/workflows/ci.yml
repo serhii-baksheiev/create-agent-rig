@@ -129,11 +129,14 @@ jobs:
       # sustained needs at least three workers.
       #
       # 🔴 On the COMMAND LINE, not per project, and that is measured rather
-      # than preferred. `test:unit` runs `--project unit --project template`;
-      # vitest 4 refuses two projects that share `sequence.groupOrder` but
-      # resolve different `maxWorkers`, so capping the template project alone
-      # aborts the run with "no tests" and exits 1. The ruling allows this shape
-      # exactly when the per-project one "costs more than it buys".
+      # than preferred. `test:unit` runs `--project unit --project template
+      # --project benchmark`; vitest 4 refuses two projects that share
+      # `sequence.groupOrder` but resolve different `maxWorkers`, so capping the
+      # template project alone aborts the run with "no tests" and exits 1. The
+      # ruling allows this shape exactly when the per-project one "costs more
+      # than it buys". The `benchmark` project (RP-111) is the one per-project
+      # cap in this repo, and it is legal only because its `groupOrder` differs
+      # from the other two — the command-line cap still governs those.
       #
       # 🔴 --testTimeout is deliberately NOT touched. It stays 15000 on every
       # lane, and test/template/vitest-timeouts.test.ts keeps this figure equal

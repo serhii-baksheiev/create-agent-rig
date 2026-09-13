@@ -21,11 +21,15 @@ import { describe, expect, it } from 'vitest';
  *
  * 🔴 The cap is passed on the COMMAND LINE, not set per project, and that was
  * measured rather than chosen. `test:unit` runs `--project unit --project
- * template`; vitest 4 refuses two projects that share `sequence.groupOrder`
- * but resolve different `maxWorkers`, so capping the template project alone
- * aborts the whole run with "no tests" and exits 1 — the lane goes red having
- * executed nothing. The ruling permits this shape exactly when the per-project
- * one "costs more than it buys", and a lane that runs zero tests is that.
+ * template --project benchmark`; vitest 4 refuses two projects that share
+ * `sequence.groupOrder` but resolve different `maxWorkers`, so capping the
+ * template project alone aborts the whole run with "no tests" and exits 1 —
+ * the lane goes red having executed nothing. The ruling permits this shape
+ * exactly when the per-project one "costs more than it buys", and a lane that
+ * runs zero tests is that. The `benchmark` project (RP-111) carries the one
+ * per-project `maxWorkers`, legal only because its `sequence.groupOrder`
+ * differs from `unit` and `template`; see
+ * test/template/vitest-benchmark-project.test.ts.
  *
  * What this file pins is the SHAPE of the remedy: lane-specific, on the command
  * line, and not the timeout. It deliberately does NOT pin the cap's value — the
