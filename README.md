@@ -106,6 +106,23 @@ behaviour is pinned in `packages/cli/test/setup.test.ts` and
 `packages/cli/test/subsystems.test.ts`; the seam itself is ADR-RP-002 R6
 (`docs/decisions/memory-rig-boundary.md`).
 
+Both bins answer the same handshake, and the rig consumes Memory only through it
+(RP-19):
+
+```sh
+npx create-agent-rig@latest --version --json          # {"schemaVersion":1,"name":"create-agent-rig","version":"…","contractVersion":"1.0"}
+npx create-agent-rig@latest memory doctor --json      # handshake first, then Memory's doctor, answer passed through unchanged
+npx create-agent-rig@latest memory load --json           # same, for load; every argument after the verb goes to Memory verbatim
+```
+
+`memory` reads the manifest above, runs Memory's `--version --json`, and only
+then the verb: a foreign contract major exits 4 and the verb never runs; no
+manifest (or an executable that has moved) is `unsupported`/`absent`, exit 0;
+an executable that answers but not as the manifest promised — a broken
+`VERSION`, a malformed handshake — is `integration-failed`, exit 1, never
+"absent". Pinned in `packages/cli/test/memory.test.ts` and
+`packages/cli/test/cli-version.test.ts`.
+
 **A file you deleted stays deleted.** The rules invite you to delete the ones
 whose invariant your project does not have, so an upgrade that quietly restored
 them would be undoing your work. With a manifest that is direct — it names the

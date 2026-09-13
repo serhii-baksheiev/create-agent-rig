@@ -295,7 +295,11 @@ describe('the machine subsystem manifest (RP-147)', () => {
       expect(result).toEqual({ status: 'foreign-major', contractVersion: '2.0', requiredMajor: 1 });
     });
 
-    it('classifies an explicit integration-failed payload as invalid', async () => {
+    it('classifies an explicit integration-failed payload as manifest-stale — a broken VERSION is manifest-stale, never absent (RP-19)', async () => {
+      // The pinned external contract's own shape for a broken VERSION file
+      // (Memory side, RP-19 comment 16675): exit 1, `result: "integration-failed"`.
+      // The consumer must map that to a stale manifest, never to Memory being
+      // unregistered — the executable answered, so this is not absence.
       const run = scriptedRun({
         code: 1,
         stdout: `${JSON.stringify({ schemaVersion: 1, result: 'integration-failed', reason: 'invalid' })}\n`,
@@ -305,7 +309,7 @@ describe('the machine subsystem manifest (RP-147)', () => {
         entryFor(['/usr/bin/node', '/root/shared-memory/memory.mjs']),
         run,
       );
-      expect(result).toEqual({ status: 'integration-failed', reason: 'invalid' });
+      expect(result).toEqual({ status: 'integration-failed', reason: 'manifest-stale' });
     });
 
     it('classifies non-JSON stdout as an invalid payload', async () => {
@@ -392,6 +396,93 @@ describe('the machine subsystem manifest (RP-147)', () => {
         expect(serialised).not.toContain(memoryRoot);
         expect(serialised).not.toContain('memory.mjs');
       }
+    });
+  });
+
+  describe('handshake — the reason a classification can produce is exactly one of two (RP-19)', () => {
+    const entryFor = (invocation: [string, string]): Pick<MemoryEntry, 'invocation'> => ({
+      invocation,
+    });
+    const invocation: [string, string] = ['/usr/bin/node', '/root/shared-memory/memory.mjs'];
+
+    // Table-driven over every classification branch `handshake` has: the
+    // `integration-failed` reason it produces is always `manifest-stale` or
+    // `invalid-payload`, never the third member `HandshakeResult` still
+    // declares (`'invalid'`) — that member is unreachable from this function
+    // and RP-19 drops it from the type.
+    it.each<{ label: string; run: Runner; expected: HandshakeResult }>([
+      {
+        label: 'a non-zero exit code',
+        run: scriptedRun({
+          code: 1,
+          stdout: `${JSON.stringify({ schemaVersion: 1, name: 'memory', version: '1', contractVersion: '1.0' })}\n`,
+          stderr: '',
+        }),
+        expected: { status: 'integration-failed', reason: 'manifest-stale' },
+      },
+      {
+        label: 'an explicit integration-failed payload',
+        run: scriptedRun({
+          code: 1,
+          stdout: `${JSON.stringify({ schemaVersion: 1, result: 'integration-failed', reason: 'invalid' })}\n`,
+          stderr: '',
+        }),
+        expected: { status: 'integration-failed', reason: 'manifest-stale' },
+      },
+      {
+        label: 'non-JSON stdout',
+        run: scriptedRun({ code: 0, stdout: 'not json at all', stderr: '' }),
+        expected: { status: 'integration-failed', reason: 'invalid-payload' },
+      },
+      {
+        label: 'a non-object JSON payload',
+        run: scriptedRun({ code: 0, stdout: '"a bare string"\n', stderr: '' }),
+        expected: { status: 'integration-failed', reason: 'invalid-payload' },
+      },
+      {
+        label: 'a payload missing its required string fields',
+        run: scriptedRun({
+          code: 0,
+          stdout: `${JSON.stringify({ schemaVersion: 1, name: 'memory' })}\n`,
+          stderr: '',
+        }),
+        expected: { status: 'integration-failed', reason: 'invalid-payload' },
+      },
+      {
+        label: 'a payload naming a different subsystem',
+        run: scriptedRun({
+          code: 0,
+          stdout: `${JSON.stringify({ schemaVersion: 1, name: 'other', version: '1', contractVersion: '1.0' })}\n`,
+          stderr: '',
+        }),
+        expected: { status: 'integration-failed', reason: 'manifest-stale' },
+      },
+      {
+        label: 'a contractVersion with the wrong grammar',
+        run: scriptedRun({
+          code: 0,
+          stdout: `${JSON.stringify({ schemaVersion: 1, name: 'memory', version: '1', contractVersion: 'not-a-version' })}\n`,
+          stderr: '',
+        }),
+        expected: { status: 'integration-failed', reason: 'manifest-stale' },
+      },
+    ])('classifies $label as $expected.reason, never invalid', async ({ run, expected }) => {
+      const result = await handshake(entryFor(invocation), run);
+      expect(result).toEqual(expected);
+      if (result.status === 'integration-failed') {
+        expect(result.reason).not.toBe('invalid');
+      }
+    });
+
+    // The type-level half: `'invalid'` is erased at runtime, so no call
+    // through `handshake` can ever prove it gone from the type. A source grep
+    // is the only way to pin that the union itself no longer spells it — this
+    // is deliberately a text check on the module, not a behavioural one, and
+    // the comment says so rather than leaving that reasoning to be
+    // rediscovered by whoever reads this test next.
+    it('no longer spells the unreachable "invalid" reason in the HandshakeResult union', async () => {
+      const source = await readFile(new URL('../src/lib/subsystems.ts', import.meta.url), 'utf8');
+      expect(source).not.toContain("'invalid'");
     });
   });
 
