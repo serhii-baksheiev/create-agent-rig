@@ -567,23 +567,31 @@ section does not name is a difference nobody checked. And because `## Scope`
 puts the internal script fleet outside this contract, a row about that fleet
 records a fact, not a fault.
 
-- **The rig bin has no `--json` flag.** Reach: the test reads `index.ts` alone
-  and recognises one spelling — a `parseArgs` option named `json`; a flag added
-  by a hand-rolled argv scan, or declared in another module under
-  `packages/cli/src`, is invisible to it. Pinned in
-  `test/template/command-contract.test.ts` › "reports that the rig bin has no --json flag".
-- **The rig bin names `contractVersion` only as a consumer** — in
-  `packages/cli/src/lib/subsystems.ts`, where `setup` classifies Memory's
-  handshake (RP-147) — and nowhere else under `packages/cli/src`, so nothing it
-  prints in answer to its own `--version` is a handshake object; that half is
-  RP-19's. Pinned in
-  `test/template/command-contract.test.ts` › "reports that the rig bin answers --version with no contract handshake".
-- **The rig bin's only exit code outside 0 and 1 is `setup`'s 4** — the
-  contract-major refusal the consumer owns, carried as `exitCode: 4` in
-  `packages/cli/src/commands/setup.ts` and returned by `index.ts` through that
-  result; no other literal above 1 is returned, passed to `process.exit`, or
-  assigned to `process.exitCode` anywhere under `packages/cli/src`. Pinned in
-  `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0, 1 and setup's 4".
+- **The rig bin declares a `--json` flag and answers `--version --json` with
+  the handshake object** (RP-19): `{"schemaVersion":1,"name":"create-agent-rig",
+"version":<package version>,"contractVersion":"1.0"}`, one line, nothing else
+  on stdout; `--json` is read on `--version` only, the other rig commands still
+  speak prose. Reach: the test reads `index.ts` alone and recognises one
+  spelling — a `parseArgs` option named `json`; a flag added by a hand-rolled
+  argv scan, or declared in another module under `packages/cli/src`, is
+  invisible to it. Pinned in
+  `test/template/command-contract.test.ts` › "reports that the rig bin declares a --json flag and answers the version handshake (RP-19)".
+- **The rig bin answers the version handshake, and names `contractVersion` in
+  exactly three modules** — `packages/cli/src/lib/version.ts` (its own
+  `RIG_CONTRACT_VERSION` and `rigHandshake()`), `packages/cli/src/lib/subsystems.ts`
+  (the consumer classification `setup` and `memory` share, RP-147) and
+  `packages/cli/src/commands/memory.ts` (the foreign-major refusal payload).
+  A fourth namer, or a missing one, makes the row stale. Pinned in
+  `test/template/command-contract.test.ts` › "reports that the rig bin answers the version handshake in exactly three modules (RP-19)".
+- **The rig bin's exit codes outside 0 and 1 are `setup`'s 4, and `memory`'s 4
+  and 2** — the contract-major refusal the consumer owns, carried as
+  `exitCode: 4` in `packages/cli/src/commands/setup.ts` and in
+  `packages/cli/src/commands/memory.ts`, and the invalid-invocation 2 of
+  `memory` (no verb, or a verb outside `doctor`/`load`), each returned by
+  `index.ts` through the command's result; no other literal above 1 is
+  returned, passed to `process.exit`, or assigned to `process.exitCode`
+  anywhere under `packages/cli/src`. Pinned in
+  `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0, 1, setup's 4, and memory's 4 and 2 (RP-19)".
 - **No reader of `RIG_UNATTENDED` exists under `.claude/scripts/`,
   `.claude/hooks/` or `packages/cli/src/`.** Reach: those three trees and no
   others — the template copies under `templates/agent-os/` are not scanned, and
@@ -677,8 +685,8 @@ The version handshake:
 ```json
 {
   "schemaVersion": 1,
-  "name": "rig",
-  "version": "0.6.2",
+  "name": "create-agent-rig",
+  "version": "0.9.0",
   "contractVersion": "1.0"
 }
 ```

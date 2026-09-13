@@ -11,7 +11,8 @@ import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './li
 import { promptConfirm, promptTarget } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
 import { DEFAULT_TARGET, TARGET_NAMES } from './lib/targets.js';
-import { packageVersion } from './lib/version.js';
+import { packageVersion, rigHandshake } from './lib/version.js';
+import { runMemory } from './commands/memory.js';
 
 const USAGE = `Usage: create-agent-rig <dir> [options]
 
@@ -24,7 +25,8 @@ Options
                     required when not a terminal — default: ${DEFAULT_TARGET})
   --no-git          skip git init + the pristine-template baseline commit
   --no-color        plain output (NO_COLOR is respected too)
-  --version         print the version
+  --version         print the version (--version --json: the contract handshake,
+                    one JSON object with the name, version and contract version)
   -h, --help        this text
 
 Also: create-agent-rig init [--dry-run]
@@ -43,7 +45,14 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
   Record the Memory executable in this machine's subsystem manifest
   (~/.config/create-agent-rig/subsystems.json; %APPDATA% on Windows) from the
   one declared root. Performs the --version --json handshake first and refuses
-  a foreign contract major with exit 4 before writing anything.`;
+  a foreign contract major with exit 4 before writing anything.
+
+Also: create-agent-rig memory <doctor|load> [args…]
+  Run a Memory verb through the registered executable: the --version --json
+  handshake first (a foreign contract major exits 4 and the verb never runs),
+  then the verb and its arguments verbatim, Memory's answer passed through
+  unchanged. No manifest answers unsupported/absent (exit 0); an invalid
+  invocation exits 2.`;
 
 async function runSetup(rawArgs: string[]): Promise<number> {
   let values: {
@@ -348,12 +357,22 @@ async function main(): Promise<number> {
   if (process.argv[2] === 'upgrade') {
     return runUpgrade(process.argv.slice(3));
   }
+  if (process.argv[2] === 'memory') {
+    // The consumer path of the RP-19 handshake: manifest → `--version --json`
+    // → exit 4 on a foreign major → doctor/load passed through verbatim.
+    const [verb = '', ...args] = process.argv.slice(3);
+    const result = await runMemory({ verb, args });
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
 
   let positionals: string[];
   let values: {
     help?: boolean;
     target?: string;
     version?: boolean;
+    json?: boolean;
     'no-git'?: boolean;
     'no-color'?: boolean;
   };
@@ -364,6 +383,9 @@ async function main(): Promise<number> {
         help: { type: 'boolean', short: 'h' },
         target: { type: 'string' },
         version: { type: 'boolean' },
+        // `--json` is read on `--version` alone: the handshake object of
+        // docs/command-contract.md, one JSON line and nothing else on stdout.
+        json: { type: 'boolean' },
         'no-git': { type: 'boolean' },
         'no-color': { type: 'boolean' },
       },
@@ -375,6 +397,10 @@ async function main(): Promise<number> {
   }
 
   if (values.version) {
+    if (values.json) {
+      process.stdout.write(`${JSON.stringify(await rigHandshake())}\n`);
+      return 0;
+    }
     process.stdout.write(`${await packageVersion()}\n`);
     return 0;
   }

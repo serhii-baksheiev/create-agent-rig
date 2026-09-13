@@ -295,7 +295,11 @@ describe('the machine subsystem manifest (RP-147)', () => {
       expect(result).toEqual({ status: 'foreign-major', contractVersion: '2.0', requiredMajor: 1 });
     });
 
-    it('classifies an explicit integration-failed payload as invalid', async () => {
+    it('classifies an explicit integration-failed payload as manifest-stale — a broken VERSION is manifest-stale, never absent (RP-19)', async () => {
+      // The pinned external contract's own shape for a broken VERSION file
+      // (Memory side, RP-19 comment 16675): exit 1, `result: "integration-failed"`.
+      // The consumer must map that to a stale manifest, never to Memory being
+      // unregistered — the executable answered, so this is not absence.
       const run = scriptedRun({
         code: 1,
         stdout: `${JSON.stringify({ schemaVersion: 1, result: 'integration-failed', reason: 'invalid' })}\n`,
@@ -305,7 +309,7 @@ describe('the machine subsystem manifest (RP-147)', () => {
         entryFor(['/usr/bin/node', '/root/shared-memory/memory.mjs']),
         run,
       );
-      expect(result).toEqual({ status: 'integration-failed', reason: 'invalid' });
+      expect(result).toEqual({ status: 'integration-failed', reason: 'manifest-stale' });
     });
 
     it('classifies non-JSON stdout as an invalid payload', async () => {

@@ -181,8 +181,11 @@ export async function handshake(
   if (typeof payload !== 'object' || payload === null)
     return { status: 'integration-failed', reason: 'invalid-payload' };
   const record = payload as Record<string, unknown>;
+  // The executable answered, and answered a failure — a broken VERSION file is
+  // the Memory-side shape (RP-19). The manifest's promise about what is
+  // installed no longer holds, so this is `manifest-stale`, never absence.
   if (result.code !== 0 || record.result === 'integration-failed')
-    return { status: 'integration-failed', reason: 'invalid' };
+    return { status: 'integration-failed', reason: 'manifest-stale' };
   const { name, version, contractVersion } = record;
   if (typeof version !== 'string' || typeof contractVersion !== 'string')
     return { status: 'integration-failed', reason: 'invalid-payload' };
