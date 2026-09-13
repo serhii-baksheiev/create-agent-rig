@@ -175,15 +175,39 @@ const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
     // Diagnostic only: a bare Node start with this workspace's environment and
     // cwd, recorded in the history, so a timed-out first guard command can be
     // told apart from a slow Node start in the same environment.
-    await runProcess(process.execPath, ['-e', ''], {
-      cwd: scratch,
-      env,
-      input: '',
-      timeoutMs: CHILD_TIMEOUT_MS,
-      maxBytes: MAX_STDERR_BYTES,
-      boundaryPid: process.pid,
-      history,
-    });
+    const probe = (args, input = '') =>
+      runProcess(process.execPath, args, {
+        cwd: scratch,
+        env,
+        input,
+        timeoutMs: CHILD_TIMEOUT_MS,
+        maxBytes: MAX_STDERR_BYTES,
+        boundaryPid: process.pid,
+        history,
+      });
+    await probe(['-e', '']);
+    // Then the two things every guard does that the bare start does not: read
+    // a payload from stdin until EOF, the way readHookInput does, and load the
+    // guard's modules from the copied tree. Recorded in this order.
+    await probe(
+      ['-e', "require('node:fs').readFileSync(0, 'utf8')"],
+      JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: path.join(scratch, 'probe.txt'), content: 'x' },
+        cwd: scratch,
+      }),
+    );
+    const guardModules = [
+      '.claude/hooks/lib/hook-input.mjs',
+      '.claude/hooks/lib/edit-input.mjs',
+      '.claude/scripts/lib/secrets.mjs',
+    ].map((file) => JSON.stringify(pathToFileURL(path.join(scratch, file)).href));
+    await probe([
+      '--input-type=module',
+      '-e',
+      guardModules.map((href) => `await import(${href});`).join(' '),
+    ]);
     return { scratch, home, flag, env };
   };
 

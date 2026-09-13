@@ -606,7 +606,7 @@ describe('policy benchmark security boundaries', () => {
 
         expect(result.code).not.toBe(0);
         expect(result.err).toMatch(
-          /benchmark command .+: timed out after \d+ ms \(stdout \d+ B, stderr \d+ B\); earlier commands in this worker: .*git(\.exe)? \d+ ms exit 0; node(\.exe)? \d+ ms exit 0/,
+          /benchmark command .+: timed out after \d+ ms \(stdout \d+ B, stderr \d+ B\); earlier commands in this worker: .*git(\.exe)? \d+ ms exit 0; node(\.exe)? \d+ ms exit 0; node(\.exe)? \d+ ms exit 0; node(\.exe)? \d+ ms exit 0(\n|$|;)/,
         );
         expect(result.err).not.toContain(root);
       } finally {
