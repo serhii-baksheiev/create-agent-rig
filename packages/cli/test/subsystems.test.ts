@@ -430,6 +430,28 @@ describe('the machine subsystem manifest (RP-147)', () => {
       expect(entries).toEqual(['subsystems.json']);
     });
 
+    it('removes its temp file and rethrows when the rename is refused', async () => {
+      // `file` is itself a non-empty directory, so `rename(temp, file)` must
+      // fail on every platform (ENOTEMPTY/EISDIR on POSIX, EPERM/ENOTEMPTY on
+      // Windows) — the rename can never silently succeed into it.
+      const file = path.join(tmp, 'subsystems.json');
+      await mkdir(file, { recursive: true });
+      await writeFile(path.join(file, 'inner.txt'), 'keep me\n');
+      const manifest = manifestFor(path.join(tmp, 'memory-root'), [
+        '/usr/bin/node',
+        path.join(tmp, 'memory-root', 'shared-memory', 'memory.mjs'),
+      ]);
+
+      await expect(writeSubsystemsManifest(file, manifest)).rejects.toThrow();
+
+      // No `.subsystems.json.tmp-*` sibling left behind next to the directory
+      // the rename was refused into.
+      const parentEntries = await readdir(tmp);
+      expect(parentEntries).toEqual(['subsystems.json']);
+      const innerEntries = await readdir(file);
+      expect(innerEntries).toEqual(['inner.txt']);
+    });
+
     it('reads back what it wrote', async () => {
       const file = path.join(tmp, 'subsystems.json');
       const manifest = manifestFor(path.join(tmp, 'memory-root'), [
@@ -576,6 +598,43 @@ describe('the machine subsystem manifest (RP-147)', () => {
       });
       const afterBytes = await readFile(file, 'utf8');
       expect(afterBytes).toBe(beforeBytes);
+    });
+
+    it('maps a vanished executable to unsupported/absent and leaves the manifest untouched', async () => {
+      const memoryRoot = await memoryRootWithExecutable();
+      const file = path.join(tmp, 'subsystems.json');
+      const original: SubsystemsManifest = {
+        schemaVersion: SUBSYSTEMS_SCHEMA_VERSION,
+        entries: {
+          memory: {
+            memoryRoot,
+            invocation: ['/usr/bin/node', path.join(memoryRoot, 'shared-memory', 'memory.mjs')],
+            contractMajor: MEMORY_CONTRACT_MAJOR,
+            memoryRef: 'abc123',
+            installedVersion: '0.0.9',
+          },
+        },
+      };
+      await writeSubsystemsManifest(file, original);
+      const beforeBytes = await readFile(file, 'utf8');
+
+      // The recorded root's executable vanished after the manifest was
+      // written — the exact condition `upgrade` re-derives against.
+      await rm(path.join(memoryRoot, 'shared-memory', 'memory.mjs'));
+
+      const run = okRun('0.1.0');
+      const outcome = await refreshSubsystems({
+        file,
+        run,
+        nodeExecutable: '/usr/bin/node',
+        // memoryRoot (recorded in `original`) is a real mkdtemp path.
+        platform: HOST,
+      });
+
+      expect(outcome).toEqual({ status: 'unsupported', reason: 'absent' });
+      const afterBytes = await readFile(file, 'utf8');
+      expect(afterBytes).toBe(beforeBytes);
+      expect(run.calls).toHaveLength(0);
     });
   });
 });

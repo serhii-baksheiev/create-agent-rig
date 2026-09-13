@@ -236,6 +236,10 @@ describe('create-agent-rig setup (RP-147)', () => {
       expect(result.spawnError?.code).toBe('ENOENT');
     });
 
+    // Two real node children; the budget is the figure vitest.config.ts
+    // already gives subprocess-spawning tests under a parallel `pnpm test`
+    // (15 s), not the unit project's 5 s default — measured crossing that
+    // default on a loaded Windows host at 5.9–6.2 s (RP-147 gate round 2).
     it("reports the child's exit code and stdout", async () => {
       const exited = await execFileRunner(
         process.execPath,
@@ -252,7 +256,7 @@ describe('create-agent-rig setup (RP-147)', () => {
       expect(ok.spawnError).toBeUndefined();
       expect(ok.code).toBe(0);
       expect(ok.stdout).toBe('ok');
-    });
+    }, 15_000);
 
     it('reports a child that outlives the timeout as a spawn error, not as exit 0', async () => {
       // Bounded race: a defect that hangs forever must fail this test

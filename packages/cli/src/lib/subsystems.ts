@@ -294,9 +294,8 @@ export async function writeSubsystemsManifest(
     await writeFile(temp, serializeSubsystemsManifest(manifest));
     await rename(temp, file);
   } catch (error) {
-    // A rename a scanner or lock holder refused must not leave the temp file
-    // behind as if it were a second manifest; the original error is the one
-    // the caller sees.
+    // See packages/cli/test/subsystems.test.ts › "removes its temp file and
+    // rethrows when the rename is refused".
     await rm(temp, { force: true });
     throw error;
   }
