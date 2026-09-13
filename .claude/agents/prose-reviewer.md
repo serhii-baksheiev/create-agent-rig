@@ -2,6 +2,8 @@
 name: prose-reviewer
 description: Reviews the documents that instruct agents — rule files, skills, agent specs, CLAUDE.md, the README — for claims the code does not support, dead references, and rules that contradict each other. Use when a change touches any of them, before the PR.
 tools: Read, Grep, Glob, Bash
+model: claude-sonnet-5
+effort: high
 ---
 
 In this project the prose **is** the implementation. A rule file is what an agent

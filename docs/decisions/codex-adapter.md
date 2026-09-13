@@ -18,11 +18,13 @@ generated release. There is no downstream automatic drift check.
 
 Two hand-maintained rulebooks inevitably diverge. Derivation keeps the generated
 snapshots aligned while preserving native Codex formats. The adapter translates
-the fields for which Codex has native controls. Codex-only execution policy is
-declared once in `templates/agent-os/codex-agent-profiles.json`, outside the
-portable Claude frontmatter, and the projector refuses a missing or orphaned
-agent profile. It also refuses duplicate source-agent names across layers,
-since one profile name cannot route two definitions.
+the fields for which Codex has native controls. Subagent routing — each role's
+model and effort, for both harnesses — is declared once in the generator's
+`templates/agent-os/subagent-routing.json` (rationale:
+`docs/decisions/subagent-routing.md`). The Codex profiles are derived from that
+table, and the projector refuses a missing or orphaned agent profile. It also
+refuses duplicate source-agent names across layers, since one profile name
+cannot route two definitions.
 
 Frequent bounded work (`test-writer`, `prose-reviewer`) uses `gpt-5.6-terra`;
 correctness, security, and infrastructure gates use `gpt-5.6-sol`. Every named
@@ -42,9 +44,14 @@ not carried over. This is a known parity limit, not an implicit restriction.
 
 The main risks are generated-file drift, downstream edits to only one snapshot,
 unsupported Claude shapes, and a pinned model being unavailable in a user's
-workspace. Recovery is to update the central profile policy to an available
-model or use a separate supported escalation profile, not to maintain a
-downstream edit that the next upgrade erases. In the generator, the adapter fails loudly when
+workspace. In the generator, recovery is to update the central routing table to
+an available model or use a separate supported escalation profile — the Codex
+profiles are regenerated from it, while the Claude agent definitions are checked
+against it and are edited to match in the same change. A generated
+project has no copy of that table: there, recovery is editing the role's
+definitions on both harnesses in one reviewed change, and `upgrade` then reports
+those files as the project's own instead of replacing them
+(`docs/decisions/subagent-routing.md`). In the generator, the adapter fails loudly when
 it cannot derive a portable hook command and its drift check catches stale
 output. Generated projects rely on review for subsequent local parity. Rollback
 is deleting the derived Codex files from the generated project and reverting the

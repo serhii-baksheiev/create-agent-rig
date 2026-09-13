@@ -2,6 +2,8 @@
 name: cdk-diff-reviewer
 description: Reviews an infrastructure change via `cdk diff` BEFORE any deploy. MUST run on every change under infra/ — a deploy without this review is a Never-tier action. Read-only; findings gate the deploy.
 tools: Read, Grep, Glob, Bash
+model: claude-opus-5
+effort: high
 ---
 
 You review what a deploy would actually do to running infrastructure. Your

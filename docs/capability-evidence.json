@@ -1,0 +1,128 @@
+{
+  "minimumVersions": [
+    {
+      "harness": "claude",
+      "version": "2.1.251",
+      "why": "from this release an agent definition's model: outranks CLAUDE_CODE_SUBAGENT_MODEL, the unnamed default the shipped settings set; before it that default replaced every model pin",
+      "source": "Claude Code CHANGELOG 2.1.251: Changed `CLAUDE_CODE_SUBAGENT_MODEL` to set the default subagent model rather than override everything: an agent definition's `model:` and an explicit per-spawn model now take precedence over it",
+      "limit": "sufficiency for the effort: field and for the Agent tool name the guard matches is not established at this version; both were observed working on 2.1.269 and 2.1.270 only"
+    }
+  ],
+  "rows": [
+    {
+      "harness": "claude",
+      "surface": ".claude/agents/test-writer.md",
+      "harnessVersion": "2.1.270",
+      "os": "win32",
+      "observedAt": "2026-09-12T20:03:48.611Z",
+      "mechanism": "subagent-model-pin",
+      "observableSignal": "the test-writer subagent transcript records claude-sonnet-5 on every assistant message while the driver session ran claude-opus-5",
+      "status": "SUPPORTED",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 25cb2273-e621-4e79-af60-a2cd1cece949, subagents/agent-affba8c438662bcfa.jsonl"
+    },
+    {
+      "harness": "claude",
+      "surface": ".claude/agents/test-writer.md",
+      "harnessVersion": "2.1.270",
+      "os": "win32",
+      "observedAt": "2026-09-12T20:03:48.611Z",
+      "mechanism": "subagent-effort-pin",
+      "observableSignal": "the test-writer subagent transcript records effort high while the driver session ran at medium",
+      "status": "SUPPORTED",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 25cb2273-e621-4e79-af60-a2cd1cece949, subagents/agent-affba8c438662bcfa.jsonl"
+    },
+    {
+      "harness": "claude",
+      "surface": "environment: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:59:31.225Z",
+      "mechanism": "subagent-model-pin",
+      "observableSignal": "code-reviewer, whose definition pins claude-opus-5, ran claude-sonnet-5 (the CLAUDE_CODE_SUBAGENT_MODEL value) at its pinned effort high",
+      "status": "UNSUPPORTED",
+      "downgradeReason": "with CLAUDE_CODE_SUBAGENT_MODEL_FORCE set, Claude Code ignores the definition's model: and applies CLAUDE_CODE_SUBAGENT_MODEL to the subagent; the effort pin still held",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 7cd8eb02-6c00-4496-b3ac-019821480708, subagents/agent-a4e6992600ba8768c.jsonl"
+    },
+    {
+      "harness": "claude",
+      "surface": "environment: CLAUDE_CODE_EFFORT_LEVEL=low",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:57:47.943Z",
+      "mechanism": "subagent-effort-pin",
+      "observableSignal": "code-reviewer, whose definition pins effort high, ran at effort low on its pinned model claude-opus-5",
+      "status": "UNSUPPORTED",
+      "downgradeReason": "with CLAUDE_CODE_EFFORT_LEVEL set, its level replaced the definition's effort:; the model pin still held",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 0c0cf8c5-c620-4bc9-bb1c-6b0b6b2d0f1a, subagents/agent-a152f70ba2b750301.jsonl"
+    },
+    {
+      "harness": "claude",
+      "surface": "Agent tool call-site model, without guard-subagent-model",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:14:37.541Z",
+      "mechanism": "subagent-model-pin",
+      "observableSignal": "an agent whose definition pins claude-sonnet-5, dispatched with model haiku in a project without the guard, ran claude-haiku-4-5-20251001; its subagent meta records model haiku",
+      "status": "UNSUPPORTED",
+      "downgradeReason": "a per-dispatch model outranks the definition's model: unless something refuses the dispatch",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 92d12842-d783-4bf9-a254-908a91aac759, subagents/agent-a645007b73595c471.jsonl and .meta.json"
+    },
+    {
+      "harness": "claude",
+      "surface": "Agent tool input",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:14:30.388Z",
+      "mechanism": "per-dispatch-effort",
+      "observableSignal": "the PreToolUse payload of an Agent dispatch carries tool_input fields description, prompt, subagent_type, model and run_in_background, and no effort",
+      "status": "UNSUPPORTED",
+      "downgradeReason": "the Agent tool takes no effort, so a dispatch cannot set the effort a subagent runs at",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 92d12842-d783-4bf9-a254-908a91aac759, PreToolUse:Agent hook payload recorded by a probe hook"
+    },
+    {
+      "harness": "claude",
+      "surface": "SessionStart hook environment",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:14:23.476Z",
+      "mechanism": "claude-code-version-signal",
+      "observableSignal": "a SessionStart hook's environment carries AI_AGENT=claude-code_2-1-269_harness",
+      "status": "SUPPORTED",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 92d12842-d783-4bf9-a254-908a91aac759, SessionStart hook environment recorded by a probe hook"
+    },
+    {
+      "harness": "claude",
+      "surface": ".claude/settings.json",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:54:14.943Z",
+      "mechanism": "unnamed-subagent-model",
+      "observableSignal": "a general-purpose subagent transcript records claude-sonnet-5, the env.CLAUDE_CODE_SUBAGENT_MODEL default, while the driver session ran claude-opus-5",
+      "status": "SUPPORTED",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session fdcb7286-7c39-4a70-819e-2365a39f2fa5, subagents/agent-af7d4b1ad54fbacd3.jsonl"
+    },
+    {
+      "harness": "claude",
+      "surface": ".claude/settings.json",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:54:14.943Z",
+      "mechanism": "unnamed-subagent-effort",
+      "observableSignal": "a general-purpose subagent transcript records effort medium, the driver session's own effort",
+      "status": "UNSUPPORTED",
+      "downgradeReason": "no setting or environment variable pins the effort of a subagent without a definition, so it runs at the session's effort",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session fdcb7286-7c39-4a70-819e-2365a39f2fa5, subagents/agent-af7d4b1ad54fbacd3.jsonl"
+    },
+    {
+      "harness": "claude",
+      "surface": ".claude/settings.json",
+      "harnessVersion": "2.1.269",
+      "os": "win32",
+      "observedAt": "2026-09-12T19:56:29.213Z",
+      "mechanism": "call-site-model-guard",
+      "observableSignal": "an Agent dispatch of code-reviewer with model haiku is refused with the guard-subagent-model BLOCKED message, and no subagent starts",
+      "status": "SUPPORTED",
+      "evidencePointer": "RP-173 runtime evidence: Claude Code session 4c3af480-f908-4584-9b5f-c0b042ff0dff, PreToolUse:Agent hook refusal"
+    }
+  ]
+}

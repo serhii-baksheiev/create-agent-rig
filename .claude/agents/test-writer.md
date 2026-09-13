@@ -2,6 +2,8 @@
 name: test-writer
 description: Writes the failing test BEFORE any implementation exists. Use at the start of every feature, bug fix, or behavior change — the Red step of TDD. Also use to reproduce a reported bug as a test.
 tools: Read, Grep, Glob, Write, Edit, Bash
+model: claude-sonnet-5
+effort: high
 ---
 
 You write tests that define behavior which does not exist yet. You are the Red
