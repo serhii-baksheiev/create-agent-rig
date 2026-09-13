@@ -23,6 +23,23 @@ const firstPolicy = (policies) =>
   policies.find((policy) => policy.policyId === 'secret-write-refusal') ?? policies[0];
 const CHILD_TIMEOUT_MS = benchmarkTimeouts(process.platform).childMs;
 const MAX_STDERR_BYTES = 64 * 1024;
+const MAX_EXIT_TRACE_BYTES = 4096;
+
+// The exit-trace preload's marks, one line each, joined for a one-line note.
+// Bounded read: a trace is a handful of short lines, and a longer file is
+// cut, not followed. Absent means the traced process never ran the preload.
+const readExitTrace = async (file) => {
+  let text;
+  try {
+    text = (await readFile(file, 'utf8')).slice(0, MAX_EXIT_TRACE_BYTES);
+  } catch {
+    return '(missing)';
+  }
+  return text
+    .split('\n')
+    .filter((line) => line !== '')
+    .join('; ');
+};
 
 const resolved = (value) => {
   try {
@@ -208,6 +225,36 @@ const createRealGuardRunner = ({ surfaceRoot, workspaceRoot }) => {
       '-e',
       guardModules.map((href) => `await import(${href});`).join(' '),
     ]);
+    // Fourth and last probe: the real guard entry, with a refusing payload,
+    // under the exit-trace preload — so the one step the first three cannot
+    // see (what happens between the guard's answer and its exit) is written
+    // down by the guard process itself and read back here as a note. A probe
+    // that fails or times out is recorded, never thrown: a diagnostic does not
+    // decide the benchmark.
+    const traceFile = path.join(tmp, 'guard-exit-trace.log');
+    await runProcess(
+      process.execPath,
+      [
+        '--import',
+        pathToFileURL(path.join(scriptRoot, 'scripts', 'policy-benchmark-exit-trace.mjs')).href,
+        path.join(scratch, '.claude', 'hooks', 'guard-secret-file.mjs'),
+      ],
+      {
+        cwd: scratch,
+        env: { ...env, POLICY_BENCHMARK_EXIT_TRACE: traceFile },
+        input: JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Write',
+          tool_input: { file_path: path.join(scratch, '.env'), content: 'x' },
+          cwd: scratch,
+        }),
+        timeoutMs: CHILD_TIMEOUT_MS,
+        maxBytes: MAX_STDERR_BYTES,
+        boundaryPid: process.pid,
+        history,
+      },
+    ).catch(() => undefined);
+    history.note('guard-exit-trace', await readExitTrace(traceFile));
     return { scratch, home, flag, env };
   };
 

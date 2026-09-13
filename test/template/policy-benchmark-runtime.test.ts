@@ -9,8 +9,18 @@ type BenchmarkEnvironment = Record<string, string>;
 
 type CommandOutcome = number | 'timed out';
 
+type CommandPhases = {
+  stdin?: number;
+  stdout?: number;
+  stderr?: number;
+  exit?: number;
+  ended?: number;
+  close?: number;
+};
+
 type CommandHistory = {
-  start(file: string): (outcome: CommandOutcome) => void;
+  start(file: string): (outcome: CommandOutcome, phases?: CommandPhases) => void;
+  note(label: string, text: string): void;
   summary(): string;
 };
 
@@ -27,6 +37,7 @@ type RuntimeModule = {
       history?: CommandHistory;
       input?: string;
       maxBytes?: number;
+      now?: () => number;
       timeoutMs?: number;
     },
   ): Promise<{ code: number; stderr: Buffer; stdout: Buffer; timedOut: boolean }>;
@@ -103,7 +114,12 @@ const createChild = (
   child.stderr = Object.assign(new EventEmitter(), { destroy: () => undefined });
   child.stdin = Object.assign(new EventEmitter(), {
     destroy: () => undefined,
-    end: onInput ?? (() => undefined),
+    // Real stdin emits 'finish' once the input is flushed; the runtime's
+    // phase tracking (RP-111) listens for it, so the fake must emit it too.
+    end: (input?: string) => {
+      child.stdin.emit('finish');
+      onInput?.(input);
+    },
   });
   child.disconnect = () => {
     child.connected = false;
@@ -694,10 +710,118 @@ describe('policy benchmark command timing diagnostics', () => {
     expect(history.summary()).toBe(`earlier commands in this worker: ${expectedName} 0 ms exit 0`);
   });
 
-  it('names the deadline, the stdout/stderr byte counts, and earlier commands in a Windows boundary timeout — never the timed-out command itself, its arguments, its input, or an environment value', async () => {
-    vi.useFakeTimers();
+  it('renders a note between commands as "<label>: <text>", collapsing control characters in the text to a single space', () => {
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(412);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    history.start('git')(0);
+    history.note('guard-exit-trace', 'preload 41\nstderr-write 96');
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: git 412 ms exit 0; guard-exit-trace: preload 41 stderr-write 96',
+    );
+  });
+
+  it('counts a note against the command history limit and keeps it in insertion order among commands', () => {
+    const history = requireCreateCommandHistory()({ limit: 2, now: () => 0 });
+
+    history.start('first')(0);
+    history.note('second', 'note text');
+    history.start('third')(0);
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: second: note text; third 0 ms exit 0',
+    );
+  });
+
+  it("sanitises a note's label to the allowed character set and cuts it to 64 characters, like a command name", () => {
+    const rawLabel = `${'A'.repeat(60)}!!!!!${'B'.repeat(10)}`;
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+
+    history.note(rawLabel, 'text');
+
+    const expectedLabel = `${'A'.repeat(60)}${'?'.repeat(4)}`;
+    expect(expectedLabel).toHaveLength(64);
+    expect(history.summary()).toBe(`earlier commands in this worker: ${expectedLabel}: text`);
+  });
+
+  it("collapses every run of control characters (including CR, LF and TAB) in a note's text to a single space, trims, and cuts it to 512 characters", () => {
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+    const rawText = `\n\ta\r\nb\x00c${'D'.repeat(600)}`;
+
+    history.note('label', rawText);
+
+    const expectedText = `a b c${'D'.repeat(507)}`;
+    expect(expectedText).toHaveLength(512);
+    expect(history.summary()).toBe(`earlier commands in this worker: label: ${expectedText}`);
+  });
+
+  it("renders '(empty)' for a literal empty note text", () => {
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+
+    history.note('label', '');
+
+    expect(history.summary()).toBe('earlier commands in this worker: label: (empty)');
+  });
+
+  it("renders '(empty)' for a note whose text is only control characters, collapsing and trimming to nothing", () => {
+    const history = requireCreateCommandHistory()({ limit: 8, now: () => 0 });
+
+    history.note('label', '\x00\x00\n\t');
+
+    expect(history.summary()).toBe('earlier commands in this worker: label: (empty)');
+  });
+
+  it('renders a completed command\'s phases in a fixed six-key order, using "none" for an absent phase', () => {
     const now = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(500);
     const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    const finish = history.start('git');
+    finish(0, {
+      stdin: 3,
+      stdout: undefined,
+      stderr: 3,
+      exit: 25_600,
+      ended: undefined,
+      close: 25_663,
+    });
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: git 500 ms exit 0 ' +
+        '[stdin 3 ms, stdout none, stderr 3 ms, exit 25600 ms, ended none, close 25663 ms]',
+    );
+  });
+
+  it('renders "timed out" with its phases when finish is called with the timed-out outcome and a phases object', () => {
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(500);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    const finish = history.start('git');
+    finish('timed out', { stdin: 3 });
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: git 500 ms timed out ' +
+        '[stdin 3 ms, stdout none, stderr none, exit none, ended none, close none]',
+    );
+  });
+
+  it('rounds fractional phase values to the nearest millisecond', () => {
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(500);
+    const history = requireCreateCommandHistory()({ limit: 8, now });
+
+    const finish = history.start('git');
+    finish(0, { stdin: 3.4, stderr: 3.6 });
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: git 500 ms exit 0 ' +
+        '[stdin 3 ms, stdout none, stderr 4 ms, exit none, ended none, close none]',
+    );
+  });
+
+  it('names the deadline, the stdout/stderr byte counts, the six child-lifecycle phases, and earlier commands in a Windows boundary timeout — never the timed-out command itself, its arguments, its input, or an environment value', async () => {
+    vi.useFakeTimers();
+    const historyNow = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(500);
+    const history = requireCreateCommandHistory()({ limit: 8, now: historyNow });
     history.start('git.exe')(0);
 
     const command = createChild(621, {
@@ -708,12 +832,21 @@ describe('policy benchmark command timing diagnostics', () => {
     });
     childProcess.spawn.mockReturnValueOnce(command);
 
+    const phaseNow = vi
+      .fn()
+      .mockReturnValueOnce(0) // spawn baseline
+      .mockReturnValueOnce(3) // stdin 'finish'
+      .mockReturnValueOnce(3) // stdout first chunk
+      .mockReturnValueOnce(3) // stderr first chunk
+      .mockReturnValue(3);
+
     let capturedError: Error | undefined;
     const running = runProcess('powershell.exe', ['-Command', 'SENTINEL_ARG_VALUE'], {
       boundaryPid: process.pid,
       env: { ...WINDOWS_ENV, SENTINEL_ENV_VAR: 'SENTINEL_ENV_VALUE' },
       history,
       input: 'SENTINEL_INPUT_VALUE',
+      now: phaseNow,
       timeoutMs: benchmarkTimeouts('win32').childMs,
     }).catch((error: unknown) => {
       capturedError = error as Error;
@@ -725,7 +858,8 @@ describe('policy benchmark command timing diagnostics', () => {
 
     expect(capturedError).toBeInstanceOf(Error);
     expect(capturedError?.message).toBe(
-      'benchmark command powershell.exe: timed out after 30000 ms (stdout 37 B, stderr 5 B); ' +
+      'benchmark command powershell.exe: timed out after 30000 ms (stdout 37 B, stderr 5 B; ' +
+        'stdin 3 ms, stdout 3 ms, stderr 3 ms, exit none, ended none, close none); ' +
         'earlier commands in this worker: git.exe 500 ms exit 0',
     );
     expect(capturedError?.message).not.toContain('SENTINEL_ARG_VALUE');
@@ -734,7 +868,46 @@ describe('policy benchmark command timing diagnostics', () => {
     expect(capturedError?.message).not.toContain('powershell.exe ');
   });
 
-  it('still names the deadline and byte counts on a Windows boundary timeout without a history option', async () => {
+  it("passes child-lifecycle phases to the history on normal completion, so a completed command's summary entry carries the bracket", async () => {
+    const command = createChild(641, {
+      onInput: () => {
+        command.stderr.emit('data', Buffer.from('err'));
+        command.emit('exit', 2);
+        command.stdout.emit('end');
+        command.stderr.emit('end');
+        command.emit('close', 2);
+      },
+    });
+    childProcess.spawn.mockReturnValueOnce(command);
+
+    const historyNow = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(500);
+    const history = requireCreateCommandHistory()({ limit: 8, now: historyNow });
+
+    const phaseNow = vi
+      .fn()
+      .mockReturnValueOnce(0) // spawn baseline
+      .mockReturnValueOnce(1) // stdin 'finish'
+      .mockReturnValueOnce(2) // stderr first chunk
+      .mockReturnValueOnce(5) // exit event
+      .mockReturnValueOnce(6) // both streams ended
+      .mockReturnValueOnce(9) // close event
+      .mockReturnValue(9);
+
+    await runProcess('git', [], {
+      boundaryPid: process.pid,
+      env: WINDOWS_ENV,
+      history,
+      input: '',
+      now: phaseNow,
+    });
+
+    expect(history.summary()).toBe(
+      'earlier commands in this worker: git 500 ms exit 2 ' +
+        '[stdin 1 ms, stdout none, stderr 2 ms, exit 5 ms, ended 6 ms, close 9 ms]',
+    );
+  });
+
+  it('still names the deadline, byte counts, and phases on a Windows boundary timeout without a history option', async () => {
     vi.useFakeTimers();
     const command = createChild(631, {
       onInput: () => {
@@ -743,11 +916,19 @@ describe('policy benchmark command timing diagnostics', () => {
     });
     childProcess.spawn.mockReturnValueOnce(command);
 
+    const phaseNow = vi
+      .fn()
+      .mockReturnValueOnce(0) // spawn baseline
+      .mockReturnValueOnce(3) // stdin 'finish'
+      .mockReturnValueOnce(3) // stdout first chunk
+      .mockReturnValue(3);
+
     let capturedError: Error | undefined;
     const running = runProcess('git.exe', ['status'], {
       boundaryPid: process.pid,
       env: WINDOWS_ENV,
       input: '',
+      now: phaseNow,
       timeoutMs: benchmarkTimeouts('win32').childMs,
     }).catch((error: unknown) => {
       capturedError = error as Error;
@@ -758,7 +939,8 @@ describe('policy benchmark command timing diagnostics', () => {
     await assertion;
 
     expect(capturedError?.message).toBe(
-      'benchmark command git.exe: timed out after 30000 ms (stdout 3 B, stderr 0 B)',
+      'benchmark command git.exe: timed out after 30000 ms (stdout 3 B, stderr 0 B; ' +
+        'stdin 3 ms, stdout 3 ms, stderr none, exit none, ended none, close none)',
     );
   });
 });

@@ -48,6 +48,9 @@ type NativeProcessObservation = {
   pid: number;
   ppid: number;
   parentImage?: string;
+  // True when the guard ran under the worker's exit-trace probe (RP-111), which
+  // is a setup measurement, not a configured harness dispatch.
+  exitTrace?: boolean;
 };
 
 const git = async (cwd: string, ...args: string[]): Promise<string> => {
@@ -124,7 +127,12 @@ const parentImage = process.platform === 'win32'
   : undefined;
 appendFileSync(
   ${JSON.stringify(observationFile)},
-  JSON.stringify({ pid: process.pid, ppid: process.ppid, parentImage }) + '\\n',
+  JSON.stringify({
+    pid: process.pid,
+    ppid: process.ppid,
+    parentImage,
+    exitTrace: Boolean(process.env.POLICY_BENCHMARK_EXIT_TRACE),
+  }) + '\\n',
 );
 `;
   await writeFile(hook, `${observation}\n${original}`);
@@ -262,7 +270,12 @@ describe('policy benchmark runner', () => {
 
         const result = await run(root, head);
         expect(result.code, result.err).toBe(0);
-        const observations = await nativeObservations(observationFile);
+        const recorded = await nativeObservations(observationFile);
+        // The worker's fourth setup probe runs this same guard once per harness
+        // worker under the exit-trace preload; those runs are measurements of
+        // the guard's exit path, not dispatches through a configured command.
+        expect(recorded.filter((observation) => observation.exitTrace)).toHaveLength(2);
+        const observations = recorded.filter((observation) => !observation.exitTrace);
         expect(observations).toHaveLength(2);
         expect(new Set(observations.map((observation) => observation.pid)).size).toBe(2);
 

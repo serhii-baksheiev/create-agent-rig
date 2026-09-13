@@ -13,25 +13,76 @@ export const benchmarkTimeouts = (platform) => {
 // sanitised basename, the elapsed time and the outcome — never arguments,
 // input, environment, cwd or output text.
 const UNSAFE_NAME_CHARACTER = /[^A-Za-z0-9._-]/g;
+const MAX_NOTE_CHARACTERS = 512;
+const safeName = (value) =>
+  path.basename(String(value)).replace(UNSAFE_NAME_CHARACTER, '?').slice(0, 64);
+// One forward pass: every run of control characters (C0 and DEL) becomes one
+// space, so a note stays one line whatever the traced process wrote.
+const collapseControlCharacters = (text) => {
+  let out = '';
+  let inRun = false;
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    if (code < 0x20 || code === 0x7f) {
+      if (!inRun) out += ' ';
+      inRun = true;
+    } else {
+      out += character;
+      inRun = false;
+    }
+  }
+  return out;
+};
+
+// The child-lifecycle phases of one command, in milliseconds since its spawn,
+// always rendered in this order so two entries can be read against each other:
+// stdin flushed, first stdout byte, first stderr byte, the 'exit' event, both
+// stdio streams ended, the 'close' event. A phase that never happened is `none`.
+// This is the split the hosted Windows timeout could not show: a guard that
+// wrote its refusal and then did not exit (PR #202, head 315ad8f) reads as
+// `stderr N ms, exit none`, while a guard that exited and whose pipes stayed
+// open reads as `exit N ms, ended none`.
+const PHASE_KEYS = ['stdin', 'stdout', 'stderr', 'exit', 'ended', 'close'];
+export const describePhases = (phases = {}) =>
+  PHASE_KEYS.map((key) => {
+    const value = phases[key];
+    return Number.isFinite(value) ? `${key} ${Math.round(value)} ms` : `${key} none`;
+  }).join(', ');
+
 export const createCommandHistory = ({ limit, now = () => performance.now() } = {}) => {
   if (!Number.isInteger(limit) || limit < 1 || limit > 64)
     throw new Error('command history limit must be an integer from 1 to 64');
   const entries = [];
+  const push = (entry) => {
+    entries.push(entry);
+    if (entries.length > limit) entries.shift();
+  };
   return {
     start(file) {
-      const name = path.basename(String(file)).replace(UNSAFE_NAME_CHARACTER, '?').slice(0, 64);
+      const name = safeName(file);
       const startedAt = now();
-      return (outcome) => {
-        entries.push({ name, elapsedMs: Math.round(now() - startedAt), outcome });
-        if (entries.length > limit) entries.shift();
+      return (outcome, phases) => {
+        push({ kind: 'command', name, elapsedMs: Math.round(now() - startedAt), outcome, phases });
       };
+    },
+    // A free-form observation recorded in sequence with the commands — for the
+    // exit trace a probed guard writes about itself. Control characters
+    // collapse to one space and the text is cut, so a note can never carry a
+    // multi-line payload into the one-line timeout message.
+    note(label, text) {
+      const collapsed = collapseControlCharacters(String(text).slice(0, 4 * MAX_NOTE_CHARACTERS))
+        .trim()
+        .slice(0, MAX_NOTE_CHARACTERS);
+      push({ kind: 'note', name: safeName(label), text: collapsed === '' ? '(empty)' : collapsed });
     },
     summary() {
       if (entries.length === 0) return '';
-      const described = entries.map(
-        ({ name, elapsedMs, outcome }) =>
-          `${name} ${elapsedMs} ms ${outcome === 'timed out' ? 'timed out' : `exit ${outcome}`}`,
-      );
+      const described = entries.map((entry) => {
+        if (entry.kind === 'note') return `${entry.name}: ${entry.text}`;
+        const { name, elapsedMs, outcome, phases } = entry;
+        const result = outcome === 'timed out' ? 'timed out' : `exit ${outcome}`;
+        return `${name} ${elapsedMs} ms ${result}${phases ? ` [${describePhases(phases)}]` : ''}`;
+      });
       return `earlier commands in this worker: ${described.join('; ')}`;
     },
   };
@@ -173,17 +224,20 @@ export const runProcess = (
     maxBytes = 1024 * 1024,
     boundaryPid,
     history,
+    now = () => performance.now(),
   } = {},
 ) =>
   new Promise((resolve, reject) => {
     if (boundaryPid !== undefined && boundaryPid !== process.pid)
       return reject(new Error('invalid process boundary'));
     const finishCommand = history?.start(file);
+    // Lifecycle phases, ms since spawn — see describePhases. Recorded once each.
+    const phases = {};
     let recorded = false;
     const record = (outcome) => {
       if (recorded || finishCommand === undefined) return;
       recorded = true;
-      finishCommand(outcome);
+      finishCommand(outcome, phases);
     };
     const streamBytes = { stdout: 0, stderr: 0 };
     const child = spawn(file, args, {
@@ -193,6 +247,10 @@ export const runProcess = (
       detached: process.platform !== 'win32' && boundaryPid === undefined,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    const spawnedAt = now();
+    const mark = (phase) => {
+      if (phases[phase] === undefined) phases[phase] = now() - spawnedAt;
+    };
     const output = { stdout: [], stderr: [] };
     let size = 0;
     let timedOut = false;
@@ -213,7 +271,7 @@ export const runProcess = (
         const earlier = failure === undefined ? (history?.summary() ?? '') : '';
         const reason =
           failure?.message ??
-          `timed out after ${timeoutMs} ms (stdout ${streamBytes.stdout} B, stderr ${streamBytes.stderr} B)` +
+          `timed out after ${timeoutMs} ms (stdout ${streamBytes.stdout} B, stderr ${streamBytes.stderr} B; ${describePhases(phases)})` +
             (earlier ? `; ${earlier}` : '');
         if (timedOut) record('timed out');
         failure = new Error(`benchmark command ${path.basename(file)}: ${reason}`);
@@ -233,8 +291,10 @@ export const runProcess = (
       timedOut = true;
       void stop();
     }, timeoutMs);
-    for (const stream of ['stdout', 'stderr'])
+    let endedStreams = 0;
+    for (const stream of ['stdout', 'stderr']) {
       child[stream].on('data', (chunk) => {
+        mark(stream);
         size += chunk.length;
         streamBytes[stream] += chunk.length;
         if (size > maxBytes) {
@@ -242,10 +302,17 @@ export const runProcess = (
           void stop();
         } else output[stream].push(chunk);
       });
+      child[stream].once('end', () => {
+        endedStreams += 1;
+        if (endedStreams === 2) mark('ended');
+      });
+    }
     child.once('error', (error) => {
       failure = error;
     });
+    child.once('exit', () => mark('exit'));
     child.once('close', async (code) => {
+      mark('close');
       markClosed();
       clearTimeout(timer);
       record(timedOut ? 'timed out' : (code ?? 1));
@@ -266,6 +333,7 @@ export const runProcess = (
         void stop();
       }
     });
+    child.stdin.once('finish', () => mark('stdin'));
     child.stdin.end(input);
   });
 

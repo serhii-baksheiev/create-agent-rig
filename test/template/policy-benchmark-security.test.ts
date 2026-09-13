@@ -189,6 +189,7 @@ const createVerifierFixture = async (): Promise<string> => {
     'policy-benchmark-schema.mjs',
     'policy-benchmark-runtime.mjs',
     'policy-benchmark-snapshot.mjs',
+    'policy-benchmark-exit-trace.mjs',
   ])
     await cp(path.join(repoRoot, 'scripts', file), path.join(verifier, 'scripts', file));
   const controller = path.join(repoRoot, 'scripts', 'policy-benchmark-controller.mjs');
@@ -591,13 +592,20 @@ describe('policy benchmark security boundaries', () => {
   );
 
   it(
-    "names the deadline and earlier commands' timings when a real guard command times out inside a benchmark run",
+    "names the deadline, earlier commands' timings, and the fourth setup probe's exit-trace note when a real guard command times out inside a benchmark run",
     { timeout: BENCHMARK_TIMEOUT_MS },
     async () => {
       const root = await createBenchmarkFixture();
       try {
         const guard = path.join(root, '.claude', 'hooks', 'guard-secret-file.mjs');
-        await writeFile(guard, '// never exits on its own\nsetInterval(() => {}, 0x7fffffff);\n');
+        await writeFile(
+          guard,
+          [
+            "process.stderr.write('refused\\n');",
+            '// never exits on its own',
+            'setInterval(() => {}, 0x7fffffff);',
+          ].join('\n') + '\n',
+        );
         await git(root, 'add', '.claude/hooks/guard-secret-file.mjs');
         await git(root, 'commit', '--quiet', '-m', 'guard that never exits');
         const head = await git(root, 'rev-parse', 'HEAD');
@@ -605,8 +613,12 @@ describe('policy benchmark security boundaries', () => {
         const result = await runBenchmark(root, head);
 
         expect(result.code).not.toBe(0);
+        // The fourth setup probe (RP-111) runs the copied tree's real guard
+        // under the exit-trace preload with a refusing payload — the same
+        // guard that never exits, so it times out too, right after the three
+        // bare-node probes, and its trace note follows it.
         expect(result.err).toMatch(
-          /benchmark command .+: timed out after \d+ ms \(stdout \d+ B, stderr \d+ B\); earlier commands in this worker: .*git(\.exe)? \d+ ms exit 0; node(\.exe)? \d+ ms exit 0; node(\.exe)? \d+ ms exit 0; node(\.exe)? \d+ ms exit 0(\n|$|;)/,
+          /benchmark command .+: timed out after \d+ ms \(stdout \d+ B, stderr \d+ B(?:; stdin (?:\d+ ms|none), stdout none, stderr \d+ ms, exit none, ended none, close none)?\); earlier commands in this worker: .*git(\.exe)? \d+ ms exit 0 \[[^\]]+\]; node(\.exe)? \d+ ms exit 0 \[[^\]]+\]; node(\.exe)? \d+ ms exit 0 \[[^\]]+\]; node(\.exe)? \d+ ms exit 0 \[[^\]]+\]; node(\.exe)? \d+ ms timed out \[stdin (?:\d+ ms|none), stdout none, stderr \d+ ms, exit none, ended none, close none\]; guard-exit-trace: preload \d+; stderr-write \d+(\n|$|;)/,
         );
         expect(result.err).not.toContain(root);
       } finally {

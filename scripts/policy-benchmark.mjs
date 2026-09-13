@@ -18,6 +18,7 @@ const main = async () => {
       'scripts/policy-benchmark-schema.mjs',
       'scripts/policy-benchmark-runtime.mjs',
       'scripts/policy-benchmark-snapshot.mjs',
+      'scripts/policy-benchmark-exit-trace.mjs',
       '.claude/scripts/unattended-flag.mjs',
       '.claude/scripts/stop-flag.mjs',
       'pnpm-lock.yaml',
