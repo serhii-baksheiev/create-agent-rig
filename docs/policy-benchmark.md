@@ -94,16 +94,15 @@ and `test/template/policy-benchmark-security.test.ts` are **UNVERIFIABLE**:
 they skip through `guardProcessesMeasurable()` with that classification as the
 reason, are reported as skipped and never as passed, and are counted like every
 other platform skip in `test/template/platform-skips.test.ts`. The ten include
-the Codex PowerShell-wrapper dispatch (`test/template/policy-benchmark.test.ts`
-
-> "observes the native process boundary of each configured harness command"),
-> so on the hosted lane no guard runs through PowerShell at all; that execution
-> happens only in the native run below. Nothing else
-> changes on that lane — the deadlines, the assertions, the cleanup contract and
-> the rest of the suite run as before — and a self-hosted Windows runner
-> (`RUNNER_ENVIRONMENT=self-hosted`) runs all of them. See
-> `test/template/test-env-helpers.test.ts` > "guardProcessesMeasurable is false
-> exactly on a github-hosted Windows runner".
+the Codex PowerShell-wrapper dispatch — the native-boundary case,
+`test/template/policy-benchmark.test.ts` › "observes the native process boundary
+of each configured harness command" — so on the hosted lane no guard runs
+through PowerShell at all; that execution happens only in the native run below.
+Nothing else changes on that lane — the deadlines, the assertions, the cleanup
+contract and the rest of the suite run as before — and a self-hosted Windows
+runner (`RUNNER_ENVIRONMENT=self-hosted`) runs all of them. See
+`test/template/test-env-helpers.test.ts` › "guardProcessesMeasurable is false
+exactly on a github-hosted Windows runner".
 
 The benchmark's Windows acceptance is therefore a **native exact-head run**: the
 benchmark project executed on a Windows host at the release candidate's SHA,
