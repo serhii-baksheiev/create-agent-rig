@@ -84,20 +84,26 @@ on PR #202, head `af21c6d`, the guard's own exit trace read `preload 31`,
 same worker's bare Node start, stdin read and module import each took under
 80 ms, and the cost did not move under four, two or one concurrent guards.
 Native Windows 11 does not show it. Teardown is not where the time goes; the
-step before the guard's first write is, and it is not a code path this
-repository controls beyond loading the guard and reading stdin.
+step before the guard's first write is. The trace does not say which part of
+that step — the entry's module load, the stdin read, or the guard's own
+evaluation — carries the time.
 
 So on a runner where `RUNNER_ENVIRONMENT` is `github-hosted` and the platform
 is `win32`, the ten guard-spawning cases in `test/template/policy-benchmark.test.ts`
 and `test/template/policy-benchmark-security.test.ts` are **UNVERIFIABLE**:
 they skip through `guardProcessesMeasurable()` with that classification as the
 reason, are reported as skipped and never as passed, and are counted like every
-other platform skip in `test/template/platform-skips.test.ts`. Nothing else
-changes on that lane — the deadlines, the assertions, the cleanup contract and
-the rest of the suite run as before — and a self-hosted Windows runner
-(`RUNNER_ENVIRONMENT=self-hosted`) runs all of them. See
-`test/template/test-env-helpers.test.ts` > "guardProcessesMeasurable is false
-exactly on a github-hosted Windows runner".
+other platform skip in `test/template/platform-skips.test.ts`. The ten include
+the Codex PowerShell-wrapper dispatch (`test/template/policy-benchmark.test.ts`
+
+> "observes the native process boundary of each configured harness command"),
+> so on the hosted lane no guard runs through PowerShell at all; that execution
+> happens only in the native run below. Nothing else
+> changes on that lane — the deadlines, the assertions, the cleanup contract and
+> the rest of the suite run as before — and a self-hosted Windows runner
+> (`RUNNER_ENVIRONMENT=self-hosted`) runs all of them. See
+> `test/template/test-env-helpers.test.ts` > "guardProcessesMeasurable is false
+> exactly on a github-hosted Windows runner".
 
 The benchmark's Windows acceptance is therefore a **native exact-head run**: the
 benchmark project executed on a Windows host at the release candidate's SHA,
