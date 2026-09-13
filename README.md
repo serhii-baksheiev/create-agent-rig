@@ -310,6 +310,6 @@ that fails open must do provably bounded work, because fail-open turns every lin
 of its own work into a potential bypass.
 
 Development (from a clone — `PLAN.md` and `demo.sh` live in the repository, not
-in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop),
+in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop), `pnpm test:smoke` (the unit project only — the Windows pull-request lane),
 `pnpm template:check` (templates in place). The plan of record is `PLAN.md`;
 release notes and the release checklist ship in `CHANGELOG.md`.
