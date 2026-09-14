@@ -37,12 +37,12 @@ const MEMORY_VERBS = ['doctor', 'load'] as const;
 type MemoryVerb = (typeof MEMORY_VERBS)[number];
 /**
  * The outer deadline: the rig kills the Memory child after this many ms. It is
- * the consumer's bound, and it must never be the one that fires first — on
- * Windows a killed tree can outlive the kill by seconds, and a kill leaves no
- * JSON answer behind. So `load` always carries an INTERNAL deadline as well
- * (RP-183): Memory's own `--timeout-ms`, which it answers with a typed
- * `unverifiable`/`timeout` result. `doctor` accepts no such flag — its args are
- * never touched. Pinned in packages/cli/test/memory.test.ts, "RP-183".
+ * the consumer's bound, and it should not be the one that fires first — a kill
+ * leaves no JSON answer behind. So `load` always carries an INTERNAL deadline
+ * as well (RP-183): Memory's own `--timeout-ms`, which per the Memory owner
+ * (RP-183, Jira) it answers with a typed result instead of being killed.
+ * `doctor` accepts no such flag per the same source — its args are never
+ * touched. Pinned in packages/cli/test/memory.test.ts, "RP-183".
  */
 const VERB_TIMEOUT_MS = 60_000;
 /** Memory's default internal deadline when the caller names none. */
@@ -88,8 +88,7 @@ const deadlinesFor = (
   const internal = value !== undefined && TIMEOUT_VALUE.test(value) ? Number(value) : null;
   // A digit string too long for a safe integer — or for a double at all —
   // still lands on the ceiling: `Number` yields a huge float or Infinity, and
-  // `Math.min` with the ceiling holds either. No branch leaves the outer
-  // deadline below a well-formed internal one.
+  // `Math.min` with the ceiling holds either.
   const timeoutMs =
     internal !== null
       ? Math.min(Math.max(VERB_TIMEOUT_MS, internal + OUTER_MARGIN_MS), MAX_TIMER_MS)

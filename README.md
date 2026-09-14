@@ -112,7 +112,7 @@ Both bins answer the same handshake, and the rig consumes Memory only through it
 ```sh
 npx create-agent-rig@latest --version --json          # {"schemaVersion":1,"name":"create-agent-rig","version":"…","contractVersion":"1.0"}
 npx create-agent-rig@latest memory doctor --json      # handshake first, then Memory's doctor, answer passed through unchanged
-npx create-agent-rig@latest memory load --json --cwd .   # same, for load (`--cwd` is required by Memory); arguments pass to Memory verbatim, plus `--timeout-ms 45000` when you name none
+npx create-agent-rig@latest memory load --json --cwd .   # same, for load (`--cwd`: Memory's own contract, per its owner — RP-183); arguments pass to Memory verbatim, plus `--timeout-ms 45000` when you name none
 ```
 
 `memory` reads the manifest above, runs Memory's `--version --json`, and only
