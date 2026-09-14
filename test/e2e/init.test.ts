@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -248,5 +249,98 @@ describe('create-agent-rig init (inside a rig that came from `create`)', () => {
     ) as { kind: string };
     expect(manifest.kind).toBe('init');
     expect(advisoryLines(second.stdout)).toEqual([]);
+  });
+});
+
+// RP-182: a Rig file that already sits in the repo when `init` runs used to
+// fall out of the manifest entirely — no `files` entry (init never overwrote
+// it, correctly) and no evidence of any other kind — so a later `upgrade` had
+// nothing to reason from: it could neither vouch for the bytes as the user's
+// own nor recognise them as an obsolete released copy worth bringing forward.
+describe('create-agent-rig init over a pre-existing older Rig file (RP-182)', () => {
+  const WORKFLOW_REL = '.claude/rules/workflow.md';
+  // A real released copy of the file `init` installs at this path — 0.8.0,
+  // token-free (a plain rules document carries no __PROJECT_NAME__ etc.), so
+  // planting it verbatim is exactly what a repo pre-dating `init` looks like.
+  const RELEASED_SHA = '870f9a3ecae2881908ece8ec3e2ac13f84f505f5';
+  const RELEASED_PATH = 'templates/agent-os/universal/.claude/rules/workflow.md';
+
+  const sha256 = (content: string): string =>
+    createHash('sha256').update(content, 'utf8').digest('hex');
+
+  const runCliIn = async (
+    cwd: string,
+    args: string[],
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    try {
+      const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], { cwd });
+      return { code: 0, stdout, stderr };
+    } catch (error) {
+      const e = error as { code?: number; stdout?: string; stderr?: string };
+      return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
+  };
+
+  const releasedWorkflowMd = async (): Promise<string> => {
+    const { stdout } = await exec('git', ['show', `${RELEASED_SHA}:${RELEASED_PATH}`], {
+      cwd: repoRoot,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout;
+  };
+
+  it('classifies the kept file in the manifest, and upgrade --dry-run reports an actionable, non-"unchanged" verdict for it', async () => {
+    const older = await releasedWorkflowMd();
+    // Premise: token-free, so nothing about substitution can make this
+    // fixture wrong by accident.
+    expect(older).not.toContain('__PROJECT_NAME__');
+    expect(older.length).toBeGreaterThan(0);
+
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, WORKFLOW_REL), older);
+
+    const initResult = await runCliIn(repo, ['init']);
+    expect(initResult.code, initResult.stderr).toBe(0);
+    // init never overwrites a pre-existing path — still exactly what the
+    // fixture planted
+    expect(await readFile(path.join(repo, WORKFLOW_REL), 'utf8')).toBe(older);
+
+    const manifest = JSON.parse(
+      await readFile(path.join(repo, '.claude', '.rig-manifest.json'), 'utf8'),
+    ) as { files: Record<string, string>; kept?: Record<string, string> };
+    expect(manifest.kept?.[WORKFLOW_REL], JSON.stringify(manifest)).toBe(sha256(older));
+    expect(manifest.files[WORKFLOW_REL]).toBeUndefined();
+
+    const upgradeResult = await runCliIn(repo, ['upgrade', '--dry-run']);
+    expect(upgradeResult.code, upgradeResult.stderr).toBe(0);
+
+    // `unchanged` verdicts print no line at all in the plan body (they are
+    // only counted in the summary), so a printed line for this path is
+    // exactly "not unchanged" — the acceptance criterion, read off the report
+    // a human runs `upgrade --dry-run` to get.
+    const line = upgradeResult.stdout
+      .split('\n')
+      .find(
+        (l) => l.trim().startsWith(`~ ${WORKFLOW_REL}`) || l.trim().startsWith(`! ${WORKFLOW_REL}`),
+      );
+    expect(
+      line,
+      `no update/conflict line for ${WORKFLOW_REL}:\n${upgradeResult.stdout}`,
+    ).toBeTruthy();
+
+    // The honest disjunction: this hash is a real released version, so it
+    // should read as `update` — asserted, not merely hoped for — but the
+    // branch is still named explicitly so a change in the shipped history
+    // reports which side it moved to instead of failing silently on the
+    // wrong assertion.
+    const verdict = line!.trim().startsWith('~') ? 'update' : 'conflict';
+    // States which side of the honest disjunction this run took.
+    console.log(`RP-182 e2e: ${WORKFLOW_REL} upgrade --dry-run verdict was "${verdict}"`);
+    if (verdict === 'conflict') {
+      expect(line).toMatch(/kept by init/);
+    } else {
+      expect(verdict).toBe('update');
+    }
   });
 });

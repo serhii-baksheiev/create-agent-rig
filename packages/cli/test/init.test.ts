@@ -9,6 +9,8 @@ import {
   planInit,
   projectNameFor,
 } from '../src/commands/init.js';
+import { readManifest, sha256 } from '../src/lib/manifest.js';
+import type { RigManifest } from '../src/lib/manifest.js';
 
 let repo: string;
 
@@ -283,5 +285,70 @@ describe('initManifest — one list, used by the plan and the install alike', ()
     expect(rels).toContain('.claude/settings.json');
     expect(rels).toContain('.codex/hooks.json');
     expect(rels).not.toContain('.claude/rules/architecture.md');
+  });
+});
+
+/**
+ * `kept` is not on `RigManifest` yet — RP-182 (this ticket) adds it. This
+ * local extension lets the tests read it back without an `any` cast at every
+ * call site; the interface itself is touched only by the implementation.
+ */
+type ManifestWithKept = RigManifest & { kept?: Record<string, string> };
+
+// RP-182: a pre-existing Rig file `init` keeps is the defect this closes — it
+// used to fall out of the manifest entirely, so a later `upgrade` had no
+// evidence at all about it and could neither vouch for it nor recognise it as
+// an obsolete released copy.
+describe('initProject — every skipped path gets a manifest classification (RP-182)', () => {
+  it('records what it kept, with the sha256 of the bytes actually on disk — never in `files`', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM');
+
+    const result = await initProject(repo, {});
+    expect(result.skipped).toContain('.claude/rules/workflow.md');
+
+    const manifest = (await readManifest(repo)) as ManifestWithKept | null;
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBe(sha256('CUSTOM'));
+    // never claimed as Rig-written bytes
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeUndefined();
+    // and a path it actually wrote never shows up as "kept"
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    expect(manifest?.files['CLAUDE.md']).toBeTruthy();
+  });
+
+  it('re-running init refreshes the hash of a path it skips again, and keeps recording it in `kept`', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM V1');
+    await initProject(repo, {});
+
+    // lift init's CLAUDE.md refusal, the only thing standing between this and
+    // a second run over the same repo (mirrors the fixtures in upgrade.test.ts)
+    await rm(path.join(repo, 'CLAUDE.md'));
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM V2');
+    const second = await initProject(repo, {});
+    expect(second.skipped).toContain('.claude/rules/workflow.md');
+
+    const manifest = (await readManifest(repo)) as ManifestWithKept | null;
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBe(sha256('CUSTOM V2'));
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeUndefined();
+  });
+
+  it('never moves a path already recorded in `files` into `kept`, even when a later run skips it', async () => {
+    await initProject(repo, {});
+    const autonomyBefore = await readFile(
+      path.join(repo, '.claude', 'rules', 'autonomy.md'),
+      'utf8',
+    );
+
+    // lift init's CLAUDE.md refusal; leave every other installed file exactly
+    // as the first run wrote it, so the second run skips them all
+    await rm(path.join(repo, 'CLAUDE.md'));
+    const second = await initProject(repo, {});
+    expect(second.skipped).toContain('.claude/rules/autonomy.md');
+
+    const manifest = (await readManifest(repo)) as ManifestWithKept | null;
+    // it was written by the rig, twice over — it is not the user's file
+    expect(manifest?.kept?.['.claude/rules/autonomy.md']).toBeUndefined();
+    expect(manifest?.files['.claude/rules/autonomy.md']).toBe(sha256(autonomyBefore));
   });
 });

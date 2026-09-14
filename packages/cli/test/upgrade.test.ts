@@ -8,6 +8,7 @@ import { UpgradeError, applyUpgrade, planUpgrade } from '../src/commands/upgrade
 import type { UpgradePlan, UpgradeVerdict } from '../src/commands/upgrade.js';
 import type { HashHistory } from '../src/lib/history.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
+import type { RigManifest } from '../src/lib/manifest.js';
 import { isSafeSubstitutionValue } from '../src/lib/safe-path.js';
 import { substituteContent } from '../src/lib/substitute.js';
 import { agentOsUniversalDir } from '../src/templates.js';
@@ -28,6 +29,14 @@ const write = async (rel: string, content: string): Promise<void> => {
 
 const verdictFor = (plan: UpgradePlan, rel: string): UpgradeVerdict | undefined =>
   plan.actions.find((a) => a.rel === rel)?.verdict;
+
+/**
+ * `kept` is not on `RigManifest` yet — RP-182 (this ticket) adds it. This
+ * local extension lets the tests construct and read it back without an `any`
+ * cast at every call site; the interface itself is touched only by the
+ * implementation.
+ */
+type ManifestWithKept = RigManifest & { kept?: Record<string, string> };
 
 /** The rig as `init` leaves it: files installed, manifest written. */
 async function installRig(): Promise<void> {
@@ -781,5 +790,121 @@ describe('bootstrap — a rig installed before the manifest existed', () => {
     await rm(abs(MANIFEST_REL));
     const plan = await planUpgrade(repo, { history: emptyHistory });
     expect(verdictFor(plan, WORKFLOW)).toBe('unchanged');
+  });
+});
+
+// RP-182: a path `init` keeps rather than writes used to fall out of the
+// manifest entirely — no `files` entry, and (before this ticket) no `kept`
+// entry either — so an upgrade reaching it had no evidence at all: it could
+// neither vouch for the bytes nor recognise them as an obsolete released
+// copy, and a permanent, unexplained `conflict` was the only verdict it could
+// ever reach for that path.
+describe('planUpgrade — a path `kept` by init, not written (RP-182)', () => {
+  /** Removes `rel` from `files` and records it in `kept` at `hash` instead. */
+  const moveToKept = async (rel: string, hash: string): Promise<void> => {
+    const manifest = (await readManifest(repo)) as ManifestWithKept | null;
+    if (manifest === null) throw new Error('fixture: no manifest');
+    delete manifest.files[rel];
+    manifest.kept = { ...manifest.kept, [rel]: hash };
+    await writeManifest(repo, manifest as RigManifest);
+  };
+
+  it('stays a conflict for bytes no release ever shipped, and the reason says "kept by init" and "unchanged since"', async () => {
+    await installRig();
+    const content = 'MY OWN VERSION OF WORKFLOW\n';
+    await write(WORKFLOW, content);
+    await moveToKept(WORKFLOW, sha256(content));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    const action = plan.actions.find((a) => a.rel === WORKFLOW);
+    expect(action?.verdict).toBe('conflict');
+    expect(action?.reason).toMatch(/kept by init/);
+    expect(action?.reason).toMatch(/unchanged since/);
+  });
+
+  it('says "edited since" instead, once the disk sha no longer matches what init recorded', async () => {
+    await installRig();
+    const foundByInit = 'MY OWN VERSION OF WORKFLOW\n';
+    const editedAfterwards = 'MY OWN VERSION OF WORKFLOW, EDITED LATER\n';
+    await write(WORKFLOW, editedAfterwards);
+    await moveToKept(WORKFLOW, sha256(foundByInit));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    const action = plan.actions.find((a) => a.rel === WORKFLOW);
+    expect(action?.verdict).toBe('conflict');
+    expect(action?.reason).toMatch(/kept by init/);
+    expect(action?.reason).toMatch(/edited since/);
+    expect(action?.reason).not.toMatch(/unchanged since/);
+  });
+
+  it('becomes `update` once the kept bytes turn out to match a released version — the obsolete fork gets managed', async () => {
+    await installRig();
+    const obsolete = 'the 0.3.2 text, kept from before init ever ran\n';
+    await write(WORKFLOW, obsolete);
+    await moveToKept(WORKFLOW, sha256(obsolete));
+
+    const history: HashHistory = {
+      versions: ['0.3.2'],
+      files: { [WORKFLOW]: { since: '0.3.2', hashes: [sha256(obsolete)] } },
+    };
+    const plan = await planUpgrade(repo, { history });
+    expect(verdictFor(plan, WORKFLOW)).toBe('update');
+  });
+
+  it('keeps the `kept` provenance in the next manifest, unchanged, while the path stays a conflict', async () => {
+    await installRig();
+    const content = 'MY OWN VERSION OF WORKFLOW\n';
+    await write(WORKFLOW, content);
+    await moveToKept(WORKFLOW, sha256(content));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    const nextManifest = plan.manifest as ManifestWithKept;
+    expect(nextManifest.kept?.[WORKFLOW]).toBe(sha256(content));
+    expect(nextManifest.files[WORKFLOW]).toBeUndefined();
+
+    await applyUpgrade(repo, plan);
+    const onDisk = (await readManifest(repo)) as ManifestWithKept | null;
+    expect(onDisk?.kept?.[WORKFLOW]).toBe(sha256(content));
+    expect(onDisk?.files[WORKFLOW]).toBeUndefined();
+  });
+
+  it('moves the path out of `kept` and into `files` once it stops being a conflict (verdict: unchanged)', async () => {
+    await installRig();
+    // exactly what `init` already wrote — nothing for this fixture to edit
+    const installed = await read(WORKFLOW);
+    await moveToKept(WORKFLOW, sha256(installed));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, WORKFLOW)).toBe('unchanged');
+    const nextManifest = plan.manifest as ManifestWithKept;
+    expect(nextManifest.kept?.[WORKFLOW]).toBeUndefined();
+    expect(nextManifest.files[WORKFLOW]).toBe(sha256(installed));
+
+    await applyUpgrade(repo, plan);
+    const onDisk = (await readManifest(repo)) as ManifestWithKept | null;
+    expect(onDisk?.kept?.[WORKFLOW]).toBeUndefined();
+    expect(onDisk?.files[WORKFLOW]).toBe(sha256(installed));
+  });
+
+  it('moves the path out of `kept` and into `files` once a released match makes it an update', async () => {
+    await installRig();
+    const obsolete = 'the 0.3.2 text, kept from before init ever ran\n';
+    await write(WORKFLOW, obsolete);
+    await moveToKept(WORKFLOW, sha256(obsolete));
+
+    const history: HashHistory = {
+      versions: ['0.3.2'],
+      files: { [WORKFLOW]: { since: '0.3.2', hashes: [sha256(obsolete)] } },
+    };
+    const plan = await planUpgrade(repo, { history });
+    expect(verdictFor(plan, WORKFLOW)).toBe('update');
+    const nextManifest = plan.manifest as ManifestWithKept;
+    expect(nextManifest.kept?.[WORKFLOW]).toBeUndefined();
+    expect(nextManifest.files[WORKFLOW]).toBe(sha256(plan.contents.get(WORKFLOW) ?? ''));
+
+    await applyUpgrade(repo, plan);
+    expect(await read(WORKFLOW)).not.toBe(obsolete);
+    const onDisk = (await readManifest(repo)) as ManifestWithKept | null;
+    expect(onDisk?.kept?.[WORKFLOW]).toBeUndefined();
   });
 });
