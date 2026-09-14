@@ -2,7 +2,9 @@
 // that forwards to Memory only after its own handshake agrees. Order is the
 // contract, exactly as `setup.ts` pins it for the write path: verb validity,
 // then the manifest gate, then the handshake, then — and only on an ok
-// handshake — the verb itself, passed through unchanged.
+// handshake — the verb itself. The caller's arguments pass through as written;
+// the one addition is a default `--timeout-ms` on a `load` that names none
+// (the RP-183 block below).
 //
 // The manifest is never read for its storage tree here: every fixture below
 // names a `memoryRoot` no directory on disk backs, which is what proves this
@@ -307,7 +309,7 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
   });
 
   describe('an ok handshake passes doctor/load through unchanged', () => {
-    it('forwards the verb and its args verbatim as the second call, and returns the answer byte-for-byte', async () => {
+    it('forwards the verb and a caller-owned argument list verbatim as the second call, and returns the answer byte-for-byte', async () => {
       const invocation: [string, string] = [
         '/usr/bin/node',
         '/opt/claude-config/shared-memory/memory.mjs',
@@ -449,6 +451,22 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
         '90000',
       ]);
       expect(run.calls[1]?.timeoutMs ?? 0).toBeGreaterThanOrEqual(105_000);
+    });
+
+    it('caps the outer runner deadline at the largest delay a Node timer can hold, so an enormous --timeout-ms never turns the outer kill into a 1 ms kill', async () => {
+      // Node clamps a setTimeout delay above 2^31-1 to ONE millisecond
+      // (TimeoutOverflowWarning); an uncapped `N + 15_000` for a 25-day N
+      // would make the outer kill fire before Memory even starts — the exact
+      // inversion the internal deadline exists to prevent.
+      const run = scriptedRunsCapturingTimeout([
+        okHandshakeResult('0.1.0'),
+        { code: 0, stdout: '{}', stderr: '' },
+      ]);
+
+      await runLoad(['--json', '--cwd', '.', '--timeout-ms', '3000000000'], run);
+
+      expect(run.calls[1]?.args.slice(-2)).toEqual(['--timeout-ms', '3000000000']);
+      expect(run.calls[1]?.timeoutMs).toBe(2_147_483_647);
     });
 
     it('treats a --timeout-ms Rig cannot safely raise its own deadline for as caller-owned: non-representable values and the "=" spelling pass through verbatim, nothing is appended, and the outer deadline stays 60s', async () => {

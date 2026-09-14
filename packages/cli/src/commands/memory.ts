@@ -3,7 +3,11 @@
 // resolves the executable from the machine subsystem manifest `setup` wrote
 // (RP-147), performs `--version --json` first, refuses a foreign contract
 // major with exit 4 before doctor/load ever run, and otherwise hands the verb
-// and its arguments to Memory verbatim and returns Memory's answer unchanged.
+// and its arguments to Memory and returns Memory's answer unchanged. The one
+// thing it adds to the arguments: a `load` that names no `--timeout-ms` gets
+// Memory's default internal deadline appended (`deadlinesFor`, RP-183);
+// everything the caller wrote passes through verbatim, and `doctor` is never
+// touched.
 //
 // What it never does, by construction: import Memory code, read Memory's
 // storage tree, or reinterpret a doctor/load payload — the only Memory bytes
@@ -43,8 +47,19 @@ type MemoryVerb = (typeof MEMORY_VERBS)[number];
 const VERB_TIMEOUT_MS = 60_000;
 /** Memory's default internal deadline when the caller names none. */
 const DEFAULT_MEMORY_TIMEOUT_MS = 45_000;
-/** Headroom the outer deadline keeps above an explicit internal one. */
+/**
+ * Headroom the outer deadline keeps above an explicit internal one: Memory's
+ * Windows cleanup (`taskkill /t /f`) may return up to 10 000 ms after its own
+ * deadline fired, plus spawn overhead.
+ */
 const OUTER_MARGIN_MS = 15_000;
+/**
+ * The largest delay `execFile`'s timer can hold: Node clamps a larger
+ * `setTimeout` to ONE millisecond, which would make the outer kill fire first
+ * — the inversion this whole helper exists to prevent. A caller who asks for
+ * more than ~24.8 days gets this ceiling as the outer deadline.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
 const TIMEOUT_FLAG = '--timeout-ms';
 /** Memory's own grammar for the value: a positive integer, milliseconds. */
 const TIMEOUT_VALUE = /^[1-9][0-9]*$/;
@@ -72,7 +87,7 @@ const deadlinesFor = (
   const internal = value !== undefined && TIMEOUT_VALUE.test(value) ? Number(value) : null;
   const timeoutMs =
     internal !== null && Number.isSafeInteger(internal)
-      ? Math.max(VERB_TIMEOUT_MS, internal + OUTER_MARGIN_MS)
+      ? Math.min(Math.max(VERB_TIMEOUT_MS, internal + OUTER_MARGIN_MS), MAX_TIMER_MS)
       : VERB_TIMEOUT_MS;
   return { args: [...args], timeoutMs };
 };
