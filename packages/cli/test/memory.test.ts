@@ -351,12 +351,10 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
   describe('RP-183: a consumer-owned internal timeout for `load`', () => {
     // The handshake call ignores `timeoutMs`, so these fixtures only need to
     // capture it on the second (verb) call to tell the outer deadline apart
-    // from the injected `--timeout-ms` argument. Measured against the real
-    // Memory 0.1.0: `load --json --cwd <repo> --timeout-ms 45000` is accepted,
-    // `doctor --json --timeout-ms 45000` is `invalid-invocation` — so the
-    // injection applies to `load` only, never `doctor`.
+    // from the injected `--timeout-ms` argument. Every run below is scripted;
+    // nothing here invokes the real Memory.
     //
-    // Per the Memory owner: `--timeout-ms` is accepted by `load` only, as a
+    // Per the Memory owner (RP-183, Jira): `--timeout-ms` is accepted by `load` only, as a
     // strict `--timeout-ms <value>` pair (never the `--timeout-ms=<value>`
     // spelling), the value must match `^[1-9][0-9]*$` (0 is refused, not just
     // negative or non-numeric), and at most one pair is accepted. Windows
@@ -467,6 +465,20 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
 
       expect(run.calls[1]?.args.slice(-2)).toEqual(['--timeout-ms', '3000000000']);
       expect(run.calls[1]?.timeoutMs).toBe(2_147_483_647);
+    });
+
+    it('caps the outer runner deadline the same way for a well-formed value beyond a safe integer, or beyond a double', async () => {
+      for (const value of ['99999999999999999999', `1${'0'.repeat(400)}`]) {
+        const run = scriptedRunsCapturingTimeout([
+          okHandshakeResult('0.1.0'),
+          { code: 0, stdout: '{}', stderr: '' },
+        ]);
+
+        await runLoad(['--json', '--cwd', '.', '--timeout-ms', value], run);
+
+        expect(run.calls[1]?.args.slice(-2)).toEqual(['--timeout-ms', value]);
+        expect(run.calls[1]?.timeoutMs).toBe(2_147_483_647);
+      }
     });
 
     it('treats a --timeout-ms Rig cannot safely raise its own deadline for as caller-owned: non-representable values and the "=" spelling pass through verbatim, nothing is appended, and the outer deadline stays 60s', async () => {

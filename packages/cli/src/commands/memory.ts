@@ -48,9 +48,10 @@ const VERB_TIMEOUT_MS = 60_000;
 /** Memory's default internal deadline when the caller names none. */
 const DEFAULT_MEMORY_TIMEOUT_MS = 45_000;
 /**
- * Headroom the outer deadline keeps above an explicit internal one: Memory's
- * Windows cleanup (`taskkill /t /f`) may return up to 10 000 ms after its own
- * deadline fired, plus spawn overhead.
+ * Headroom the outer deadline keeps above an explicit internal one. Sized per
+ * the Memory owner (RP-183, Jira): Memory's Windows cleanup may return up to
+ * 10 s after its own deadline fired; the rest is spawn overhead. The rig does
+ * not measure that lag itself.
  */
 const OUTER_MARGIN_MS = 15_000;
 /**
@@ -85,8 +86,12 @@ const deadlinesFor = (
   }
   const value = args[at] === TIMEOUT_FLAG ? args[at + 1] : undefined;
   const internal = value !== undefined && TIMEOUT_VALUE.test(value) ? Number(value) : null;
+  // A digit string too long for a safe integer — or for a double at all —
+  // still lands on the ceiling: `Number` yields a huge float or Infinity, and
+  // `Math.min` with the ceiling holds either. No branch leaves the outer
+  // deadline below a well-formed internal one.
   const timeoutMs =
-    internal !== null && Number.isSafeInteger(internal)
+    internal !== null
       ? Math.min(Math.max(VERB_TIMEOUT_MS, internal + OUTER_MARGIN_MS), MAX_TIMER_MS)
       : VERB_TIMEOUT_MS;
   return { args: [...args], timeoutMs };
