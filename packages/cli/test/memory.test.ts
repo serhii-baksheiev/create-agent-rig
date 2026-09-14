@@ -323,9 +323,11 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
       };
       const run = scriptedRuns([okHandshakeResult('0.1.0'), passthrough]);
 
+      // The caller names its own `--timeout-ms`, so the one thing the rig adds
+      // to a `load` (RP-183, below) is absent and the args stay verbatim.
       const result = await runMemory({
         verb: 'load',
-        args: ['--json', '--budget', '4096'],
+        args: ['--json', '--budget', '4096', '--timeout-ms', '5000'],
         env: envFor(tmp),
         platform: HOST,
         run,
@@ -334,13 +336,164 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
       expect(run.calls).toHaveLength(2);
       expect(run.calls[1]).toEqual({
         file: invocation[0],
-        args: [invocation[1], 'load', '--json', '--budget', '4096'],
+        args: [invocation[1], 'load', '--json', '--budget', '4096', '--timeout-ms', '5000'],
       });
       expect(result).toEqual({
         exitCode: 3,
         stdout: 'not json output at all',
         stderr: 'human-readable stderr from Memory',
       });
+    });
+  });
+
+  describe('RP-183: a consumer-owned internal timeout for `load`', () => {
+    // The handshake call ignores `timeoutMs`, so these fixtures only need to
+    // capture it on the second (verb) call to tell the outer deadline apart
+    // from the injected `--timeout-ms` argument. Measured against the real
+    // Memory 0.1.0: `load --json --cwd <repo> --timeout-ms 45000` is accepted,
+    // `doctor --json --timeout-ms 45000` is `invalid-invocation` — so the
+    // injection applies to `load` only, never `doctor`.
+    //
+    // Per the Memory owner: `--timeout-ms` is accepted by `load` only, as a
+    // strict `--timeout-ms <value>` pair (never the `--timeout-ms=<value>`
+    // spelling), the value must match `^[1-9][0-9]*$` (0 is refused, not just
+    // negative or non-numeric), and at most one pair is accepted. Windows
+    // process-tree termination may lag the internal deadline by up to
+    // 10_000 ms, so the outer deadline must clear the internal one by at
+    // least 15_000 ms.
+    type CallWithOptions = { file: string; args: string[]; timeoutMs?: number };
+
+    function scriptedRunsCapturingTimeout(
+      results: RunResult[],
+    ): Runner & { calls: CallWithOptions[] } {
+      const calls: CallWithOptions[] = [];
+      const queue = [...results];
+      const run = (async (file: string, args: string[], options?: { timeoutMs?: number }) => {
+        calls.push({ file, args, timeoutMs: options?.timeoutMs });
+        const result = queue.shift();
+        if (!result)
+          throw new Error('scriptedRunsCapturingTimeout: exhausted the scripted responses');
+        return result;
+      }) as Runner & { calls: CallWithOptions[] };
+      run.calls = calls;
+      return run;
+    }
+
+    const invocation: [string, string] = [
+      '/usr/bin/node',
+      '/opt/claude-config/shared-memory/memory.mjs',
+    ];
+
+    async function runLoad(args: string[], run: Runner) {
+      const file = subsystemsManifestPath(envFor(tmp), HOST);
+      await writeSubsystemsManifest(file, manifestWith(invocation));
+      return runMemory({ verb: 'load', args, env: envFor(tmp), platform: HOST, run });
+    }
+
+    it('injects the 45s default --timeout-ms for load when the caller supplied none, and keeps the outer runner deadline at 60s', async () => {
+      const run = scriptedRunsCapturingTimeout([
+        okHandshakeResult('0.1.0'),
+        { code: 0, stdout: '{}', stderr: '' },
+      ]);
+
+      await runLoad(['--json', '--cwd', '.'], run);
+
+      expect(run.calls).toHaveLength(2);
+      expect(run.calls[1]?.args).toEqual([
+        invocation[1],
+        'load',
+        '--json',
+        '--cwd',
+        '.',
+        '--timeout-ms',
+        '45000',
+      ]);
+      expect(run.calls[1]?.timeoutMs).toBe(60_000);
+    });
+
+    it('preserves an explicit "--timeout-ms 20000" unchanged, appending nothing, with the outer deadline still 60s', async () => {
+      const run = scriptedRunsCapturingTimeout([
+        okHandshakeResult('0.1.0'),
+        { code: 0, stdout: '{}', stderr: '' },
+      ]);
+
+      await runLoad(['--json', '--cwd', '.', '--timeout-ms', '20000'], run);
+
+      expect(run.calls[1]?.args).toEqual([
+        invocation[1],
+        'load',
+        '--json',
+        '--cwd',
+        '.',
+        '--timeout-ms',
+        '20000',
+      ]);
+      expect(run.calls[1]?.timeoutMs).toBe(60_000);
+    });
+
+    it('raises the outer runner deadline so it stays ahead of an explicit --timeout-ms at or above 60s, by at least 15s', async () => {
+      const run = scriptedRunsCapturingTimeout([
+        okHandshakeResult('0.1.0'),
+        { code: 0, stdout: '{}', stderr: '' },
+      ]);
+
+      await runLoad(['--json', '--cwd', '.', '--timeout-ms', '90000'], run);
+
+      expect(run.calls[1]?.args).toEqual([
+        invocation[1],
+        'load',
+        '--json',
+        '--cwd',
+        '.',
+        '--timeout-ms',
+        '90000',
+      ]);
+      expect(run.calls[1]?.timeoutMs ?? 0).toBeGreaterThanOrEqual(105_000);
+    });
+
+    it('treats a --timeout-ms Rig cannot safely raise its own deadline for as caller-owned: non-representable values and the "=" spelling pass through verbatim, nothing is appended, and the outer deadline stays 60s', async () => {
+      const cases: { label: string; extraArgs: string[] }[] = [
+        { label: 'non-numeric value', extraArgs: ['--timeout-ms', 'abc'] },
+        { label: 'negative value', extraArgs: ['--timeout-ms', '-5'] },
+        { label: 'exponential-notation value', extraArgs: ['--timeout-ms', '1e3'] },
+        { label: 'zero, explicitly refused by Memory', extraArgs: ['--timeout-ms', '0'] },
+        {
+          label: 'the "--timeout-ms=<value>" spelling, which Rig never parses a value out of',
+          extraArgs: ['--timeout-ms=20000'],
+        },
+      ];
+      for (const { label, extraArgs } of cases) {
+        const run = scriptedRunsCapturingTimeout([
+          okHandshakeResult('0.1.0'),
+          { code: 0, stdout: '{}', stderr: '' },
+        ]);
+
+        await runLoad(['--json', '--cwd', '.', ...extraArgs], run);
+
+        expect(run.calls[1]?.args, label).toEqual([
+          invocation[1],
+          'load',
+          '--json',
+          '--cwd',
+          '.',
+          ...extraArgs,
+        ]);
+        expect(run.calls[1]?.timeoutMs, label).toBe(60_000);
+      }
+    });
+
+    it('never injects --timeout-ms for doctor, which Memory rejects with it present', async () => {
+      const file = subsystemsManifestPath(envFor(tmp), HOST);
+      await writeSubsystemsManifest(file, manifestWith(invocation));
+      const run = scriptedRunsCapturingTimeout([
+        okHandshakeResult('0.1.0'),
+        { code: 0, stdout: '{}', stderr: '' },
+      ]);
+
+      await runMemory({ verb: 'doctor', args: ['--json'], env: envFor(tmp), platform: HOST, run });
+
+      expect(run.calls[1]?.args).toEqual([invocation[1], 'doctor', '--json']);
+      expect(run.calls[1]?.timeoutMs).toBe(60_000);
     });
   });
 
@@ -520,5 +673,19 @@ describe('create-agent-rig memory <verb> (RP-19)', () => {
   it('is wired into the CLI with a usage line', async () => {
     const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
     expect(source).toContain(`process.argv[2] === 'memory'`);
+  });
+
+  describe('RP-183: README documents a valid `memory load` invocation', () => {
+    it('shows the required --cwd on every documented `memory load` example', async () => {
+      const readme = await readFile(new URL('../../../README.md', import.meta.url), 'utf8');
+
+      expect(readme).toContain('npx create-agent-rig@latest memory load --json --cwd .');
+
+      const loadLines = readme.split('\n').filter((line) => line.includes('memory load'));
+      expect(loadLines.length).toBeGreaterThan(0);
+      for (const line of loadLines) {
+        expect(line, `memory load example is missing --cwd: ${line}`).toContain('--cwd');
+      }
+    });
   });
 });

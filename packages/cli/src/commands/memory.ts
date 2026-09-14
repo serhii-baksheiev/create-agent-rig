@@ -31,8 +31,51 @@ import type { Runner } from '../lib/subsystems.js';
 
 const MEMORY_VERBS = ['doctor', 'load'] as const;
 type MemoryVerb = (typeof MEMORY_VERBS)[number];
-/** doctor/load do real work; the caller-supplied `--timeout-ms` is Memory's own bound. */
+/**
+ * The outer deadline: the rig kills the Memory child after this many ms. It is
+ * the consumer's bound, and it must never be the one that fires first — on
+ * Windows a killed tree can outlive the kill by seconds, and a kill leaves no
+ * JSON answer behind. So `load` always carries an INTERNAL deadline as well
+ * (RP-183): Memory's own `--timeout-ms`, which it answers with a typed
+ * `unverifiable`/`timeout` result. `doctor` accepts no such flag — its args are
+ * never touched. Pinned in packages/cli/test/memory.test.ts, "RP-183".
+ */
 const VERB_TIMEOUT_MS = 60_000;
+/** Memory's default internal deadline when the caller names none. */
+const DEFAULT_MEMORY_TIMEOUT_MS = 45_000;
+/** Headroom the outer deadline keeps above an explicit internal one. */
+const OUTER_MARGIN_MS = 15_000;
+const TIMEOUT_FLAG = '--timeout-ms';
+/** Memory's own grammar for the value: a positive integer, milliseconds. */
+const TIMEOUT_VALUE = /^[1-9][0-9]*$/;
+
+/**
+ * The verb's argument list and outer deadline. `load` with no `--timeout-ms`
+ * gets the default appended; a caller-owned flag — any spelling — passes
+ * through verbatim, and only a well-formed `--timeout-ms <value>` pair can
+ * raise the outer deadline above it. Memory owns the refusal of a malformed
+ * value, so the rig neither corrects nor drops one.
+ */
+const deadlinesFor = (
+  verb: MemoryVerb,
+  args: readonly string[],
+): { args: string[]; timeoutMs: number } => {
+  if (verb !== 'load') return { args: [...args], timeoutMs: VERB_TIMEOUT_MS };
+  const at = args.findIndex((arg) => arg === TIMEOUT_FLAG || arg.startsWith(`${TIMEOUT_FLAG}=`));
+  if (at === -1) {
+    return {
+      args: [...args, TIMEOUT_FLAG, String(DEFAULT_MEMORY_TIMEOUT_MS)],
+      timeoutMs: VERB_TIMEOUT_MS,
+    };
+  }
+  const value = args[at] === TIMEOUT_FLAG ? args[at + 1] : undefined;
+  const internal = value !== undefined && TIMEOUT_VALUE.test(value) ? Number(value) : null;
+  const timeoutMs =
+    internal !== null && Number.isSafeInteger(internal)
+      ? Math.max(VERB_TIMEOUT_MS, internal + OUTER_MARGIN_MS)
+      : VERB_TIMEOUT_MS;
+  return { args: [...args], timeoutMs };
+};
 
 export type MemoryOptions = {
   verb: string;
@@ -138,8 +181,9 @@ export async function runMemory(options: MemoryOptions): Promise<MemoryResult> {
     };
 
   const [command, script] = entry.invocation;
-  const answer = await run(command, [script, options.verb, ...options.args], {
-    timeoutMs: VERB_TIMEOUT_MS,
+  const deadlines = deadlinesFor(options.verb, options.args);
+  const answer = await run(command, [script, options.verb, ...deadlines.args], {
+    timeoutMs: deadlines.timeoutMs,
   });
   if (answer.spawnError)
     return {
