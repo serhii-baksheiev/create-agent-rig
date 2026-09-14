@@ -21,11 +21,15 @@ import { describe, expect, it } from 'vitest';
  *
  * 🔴 The cap is passed on the COMMAND LINE, not set per project, and that was
  * measured rather than chosen. `test:unit` runs `--project unit --project
- * template`; vitest 4 refuses two projects that share `sequence.groupOrder`
- * but resolve different `maxWorkers`, so capping the template project alone
- * aborts the whole run with "no tests" and exits 1 — the lane goes red having
- * executed nothing. The ruling permits this shape exactly when the per-project
- * one "costs more than it buys", and a lane that runs zero tests is that.
+ * template --project benchmark`; vitest 4 refuses two projects that share
+ * `sequence.groupOrder` but resolve different `maxWorkers`, so capping the
+ * template project alone aborts the whole run with "no tests" and exits 1 —
+ * the lane goes red having executed nothing. The ruling permits this shape
+ * exactly when the per-project one "costs more than it buys", and a lane that
+ * runs zero tests is that. The `benchmark` project (RP-111) carries the one
+ * per-project `maxWorkers`, legal only because its `sequence.groupOrder`
+ * differs from `unit` and `template`; see
+ * test/template/vitest-benchmark-project.test.ts.
  *
  * What this file pins is the SHAPE of the remedy: lane-specific, on the command
  * line, and not the timeout. It deliberately does NOT pin the cap's value — the
@@ -84,10 +88,10 @@ const workflowJobs = (body: string) => {
 const namedJob = (body: string, name: string) =>
   workflowJobs(body).find((job) => job.name === name)?.body;
 
-const windowsJob = (body: string) => namedJob(body, 'windows-unit');
+const windowsJob = (body: string) => namedJob(body, 'windows-smoke');
 
 const VERIFIED_WINDOWS_JOBS: Record<string, readonly string[]> = {
-  'ci.yml': ['windows-unit'],
+  'ci.yml': ['windows-smoke'],
   'e2e.yml': ['windows-e2e'],
 };
 
@@ -105,7 +109,7 @@ const capOffenders = (sources: { name: string; body: string }[]): string[] =>
 
 describe('the hosted Windows lanes cap test concurrency, and only there', () => {
   it.each([
-    ['ci.yml', 'windows-unit'],
+    ['ci.yml', 'windows-smoke'],
     ['e2e.yml', 'windows-e2e'],
   ])('passes --maxWorkers in the verified %s %s job', async (workflowName, jobName) => {
     const source = (await workflows()).find((workflow) => workflow.name === workflowName);
@@ -147,10 +151,10 @@ describe('the hosted Windows lanes cap test concurrency, and only there', () => 
           body: `env:
   VITEST_ARGS: --maxWorkers=1
 jobs:
-  windows-unit:
+  windows-smoke:
     runs-on: windows-latest
     steps:
-      - run: pnpm test:unit --maxWorkers=2
+      - run: pnpm test:smoke --maxWorkers=2
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -213,7 +217,7 @@ jobs:
     // suite, or when `always()` is moved onto the first one — leaving a test
     // named for bracketing that does not check it.
     const steps = job.split(/^ {6}- name:/m).slice(1);
-    const suiteAt = steps.findIndex((s) => /run:\s*pnpm test:unit/.test(s));
+    const suiteAt = steps.findIndex((s) => /run:\s*pnpm test:smoke/.test(s));
     const afterSuite = steps.slice(suiteAt + 1);
     expect(suiteAt, 'no step in the job runs the suite').toBeGreaterThanOrEqual(0);
     expect(

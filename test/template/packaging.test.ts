@@ -34,47 +34,44 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('ships 0.8.0 as one release in both package manifests', async () => {
+  it('ships 0.9.0 as one release in both package manifests', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
     const inner = JSON.parse(
       await readFile(path.join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
     ) as { version: string };
-    expect(root.version).toBe('0.8.0');
+    expect(root.version).toBe('0.9.0');
     expect(inner.version).toBe(root.version);
   });
 
-  it('puts the 0.8.0 stale-second-copy release first in the changelog', async () => {
+  it('puts the 0.9.0 Memory-boundary release first in the changelog, with the skeleton deprecation', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     const first = changelog.match(/^## (\d+\.\d+\.\d+)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(first?.[1]).toBe('0.8.0');
+    expect(first?.[1]).toBe('0.9.0');
     // The named subjects of THIS release, not words any release note would
-    // contain — so an entry copied forward from 0.7.1 fails here. All three
-    // fixes are one shape: a prose copy of a fact the code owns, gone stale.
-    expect(first?.[2]).toMatch(/RULEBOOK_PREFIXES/);
-    expect(first?.[2]).toMatch(/guard-secret-file/);
-    expect(first?.[2]).toMatch(/doctor-exemptions\.json/);
-    // the one fact the pointer cannot carry, which is why the note states it
-    expect(first?.[2]).toMatch(/board selector/);
-    // both harnesses' copies of the skill moved, and a note naming only the
-    // Claude one would leave a Codex reader believing their copy still drifts
-    expect(first?.[2]).toMatch(/\.agents\/skills\/loop\/SKILL\.md/);
-    // 🔴 This release inverts the call 0.3.2 records: it is numbered a MINOR
-    // while the delta is a fix, because the owner's milestone fixed the number
-    // before the delta was measured. A consumer on "I only take minors" is owed
-    // that sentence, so the note may not quietly drop it.
+    // contain — so an entry copied forward from 0.8.0 fails here.
+    expect(first?.[2]).toMatch(/setup --memory-root/);
+    expect(first?.[2]).toMatch(/memory <doctor\|load>/);
+    expect(first?.[2]).toMatch(/--version --json/);
+    expect(first?.[2]).toMatch(/exit 4/);
+    expect(first?.[2]).toMatch(/subagent-routing\.json/);
+    // 🔴 RP-91's pass condition: the application skeletons are deprecated in
+    // this release and their removal is scheduled for 0.10.0, stated so a
+    // consumer of `create <target>` reads it before it happens.
+    expect(first?.[2]).toMatch(/Deprecated: the application skeletons/);
+    expect(first?.[2]).toMatch(/aws-serverless/);
+    expect(first?.[2]).toMatch(/node-service/);
+    expect(first?.[2]).toMatch(/removal in 0\.10\.0/);
+    // the numbering call, by the file's own rule this time
     expect(first?.[2]).toMatch(/minor/i);
-    expect(first?.[2]).toMatch(/owner's call/);
-    // and the eleven dormant files a tarball diff shows, with the reason they
-    // change nothing for a scaffolded project
-    expect(first?.[2]).toMatch(/No command imports it/);
-    // 🔴 The 0.7.1 section must still be BELOW it, unedited in place: a release
+    // 🔴 The 0.8.0 section must still be BELOW it, unedited in place: a release
     // that rewrites the previous release's note is describing bytes that
     // already shipped.
-    expect(changelog).toMatch(/^## 0\.7\.1$/m);
+    expect(changelog).toMatch(/^## 0\.8\.0$/m);
+    expect(changelog.indexOf('## 0.9.0')).toBeLessThan(changelog.indexOf('## 0.8.0'));
     expect(changelog.indexOf('## 0.8.0')).toBeLessThan(changelog.indexOf('## 0.7.1'));
-    expect(changelog.indexOf('## 0.7.1')).toBeLessThan(changelog.indexOf('## 0.7.0'));
+    expect(changelog.slice(changelog.indexOf('## 0.8.0'))).toMatch(/RULEBOOK_PREFIXES/);
   });
 
   it('records 0.8.0 as the published `latest`, and every overtaken version as neither', async () => {
@@ -145,6 +142,16 @@ describe('the root manifest is publish-complete', () => {
     // current `latest` is what the status line calls live.
     expect(plan).toMatch(/done through `0\.8\.0`, the current `latest`/);
 
+    // 🔴 0.9.0 is PREPARED, not published — re-entered here the way the
+    // comment below asks, pointed at its own number. The positive says the
+    // branch is waiting on the owner; the enumerated negative forbids every
+    // voice this file has used to announce a release as shipped, because a
+    // negative covering only one of them read green on the others once.
+    expect(plan).toMatch(/`0\.9\.0` is prepared/);
+    expect(plan).not.toMatch(
+      /Status \(0\.9\.0 published|`?0\.9\.0`? is `latest`|through `0\.9\.0` are live|done through `0\.9\.0`, the current `latest`/,
+    );
+
     // 🔴 What is deliberately NOT here any more, so the next reader does not
     // restore it: while 0.8.0 was prepared, an ENUMERATED negative forbade
     // announcing it as shipped in any of this file's voices — `Status (0.8.0
@@ -162,13 +169,17 @@ describe('the root manifest is publish-complete', () => {
   // exist only once that version is on the registry. 0.7.1's row is written
   // here because 0.7.1 is published; a row for an unpublished version would be
   // a guess wearing the shape of a measurement.
-  it('records 0.7.1 in the ledger at the commit it was published from', async () => {
+  it('records 0.8.0 in the ledger at the commit it was published from', async () => {
     const ledger = JSON.parse(
       await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
     ) as Record<string, string | null>;
+    // `npm view create-agent-rig@0.8.0 gitHead`, read on 2026-09-14
+    expect(ledger['0.8.0']).toBe('870f9a3ecae2881908ece8ec3e2ac13f84f505f5');
+    // the previous rows are not disturbed by adding a new one
     expect(ledger['0.7.1']).toBe('52e879b6c103f6ba70493007b6a6466c57ea9824');
-    // the previous release's row is not disturbed by adding a new one
     expect(ledger['0.7.0']).toBe('6589db36e1daa63a99ec595191db1cccf7373196');
+    // and the just-prepared version has NO row: a commit cannot carry its own sha
+    expect(ledger['0.9.0']).toBeUndefined();
     // and every row is a full sha, never an abbreviation
     for (const [version, sha] of Object.entries(ledger)) {
       if (sha !== null) expect(sha, `${version} is not a full sha`).toMatch(/^[0-9a-f]{40}$/);

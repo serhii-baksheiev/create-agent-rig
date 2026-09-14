@@ -267,13 +267,16 @@ const READS_RIG_UNATTENDED = new RegExp(
 );
 
 describe('the proposed command contract document', () => {
-  it('exists, names itself, and declares that it is proposed and awaiting owner acceptance', async () => {
+  it('exists, names itself, and declares that it was accepted by the owner', async () => {
     const content = await loadContract();
     expect(content, 'the document needs a top-level heading naming the command contract').toMatch(
       /^#\s+.*command contract/im,
     );
+    // RP-17 was accepted (create-agent-rig PR #159) and RP-18 / RP-19 built
+    // against it, so the status line now records acceptance rather than a
+    // proposal awaiting it; the owner clause below still has to name who.
     expectTerms(content, [
-      ['no "Status:" line declares the document proposed', /^Status:.*\bproposed\b/im],
+      ['no "Status:" line declares the document accepted', /^Status:.*\baccepted\b/im],
       [
         'the status line does not say owner acceptance is required',
         /^Status:.*\bowner\b[\s\S]{0,200}\b(accept|acceptance|approval)\b/im,
@@ -1903,7 +1906,7 @@ describe('the conformance section stays true about this repository', () => {
     }
   });
 
-  it('reports that the rig bin has no --json flag', async () => {
+  it('reports that the rig bin declares a --json flag and answers the version handshake (RP-19)', async () => {
     const cli = await readFile(path.join(repoRoot, 'packages', 'cli', 'src', 'index.ts'), 'utf8');
     // Limit: this reads `index.ts` alone and recognises one spelling — a
     // `parseArgs` option named `json`. A `--json` flag added another way (a
@@ -1911,17 +1914,18 @@ describe('the conformance section stays true about this repository', () => {
     // in another module under packages/cli/src, is invisible to it.
     expect(
       cli,
-      'the rig bin now declares a json parseArgs option — the conformance row is stale',
-    ).not.toMatch(/\bjson:\s*\{\s*type:/);
+      'the rig bin still has no json parseArgs option — RP-19 wires --version --json',
+    ).toMatch(/\bjson:\s*\{\s*type:/);
     expect(
       normalizeProse(await conformance()),
-      'the conformance section must record that the rig bin has no --json flag',
-    ).toMatch(/rig bin[\s\S]{0,200}--json|--json[\s\S]{0,200}rig bin/i);
+      'the conformance section must record that the rig bin declares --json and answers the version handshake',
+    ).toMatch(/--json[\s\S]{0,200}handshake|handshake[\s\S]{0,200}--json/i);
   });
 
-  it('reports that the rig bin answers --version with no contract handshake', async () => {
-    // The row now claims the absence "anywhere under packages/cli/src", so the
-    // assertion walks the whole tree rather than reading index.ts alone.
+  it('reports that the rig bin answers the version handshake in exactly three modules (RP-19)', async () => {
+    // The row now claims the field is named in exactly the rig's own handshake
+    // module, the Memory consumer classifier, and the memory command — so the
+    // assertion still walks the whole tree rather than reading one file alone.
     const sources = await walkSources(path.join(repoRoot, 'packages', 'cli', 'src'), '.ts');
     expect(
       sources.length,
@@ -1931,17 +1935,27 @@ describe('the conformance section stays true about this repository', () => {
     for (const file of sources) {
       if (/\bcontractVersion\b/.test(await readFile(file, 'utf8'))) namers.push(asRepoPath(file));
     }
+    // RP-147 named the consumer side alone (`subsystems.ts`, classifying
+    // Memory's handshake for `setup`). RP-19 adds the rig's OWN handshake
+    // (`lib/version.ts`) and the `memory` command that re-runs the same
+    // classification before forwarding to Memory (`commands/memory.ts`) — a
+    // fourth namer, or fewer than these three, makes the row stale.
     expect(
-      namers,
-      `the rig bin now names contractVersion (${namers.join(', ')}) — the conformance row is stale`,
-    ).toEqual([]);
+      namers.slice().sort(),
+      `the rig bin names contractVersion in (${namers.join(', ')}) — the conformance row names exactly its own handshake, the Memory consumer classifier, and the memory command`,
+    ).toEqual([
+      'packages/cli/src/commands/memory.ts',
+      'packages/cli/src/lib/subsystems.ts',
+      'packages/cli/src/lib/version.ts',
+    ]);
+    const prose = normalizeProse(await conformance());
     expect(
-      normalizeProse(await conformance()),
-      'the conformance section must record that --version answers with no handshake object',
-    ).toMatch(/--version[\s\S]{0,80}\bhandshake\b/i);
+      prose,
+      'the conformance section must record that the rig bin answers the version handshake',
+    ).toMatch(/rig bin[\s\S]{0,200}handshake|handshake[\s\S]{0,200}rig bin/i);
   });
 
-  it("reports that the rig bin's only exit codes are 0 and 1", async () => {
+  it("reports that the rig bin's only exit codes are 0, 1, setup's 4, and memory's 4, 3 and 2 (RP-19)", async () => {
     const sources = await walkSources(path.join(repoRoot, 'packages', 'cli', 'src'), '.ts');
     expect(sources.length, 'found no rig bin sources to search for an exit code').toBeGreaterThan(
       0,
@@ -1956,7 +1970,12 @@ describe('the conformance section stays true about this repository', () => {
     //   - it is blind to a code that is not a literal at the match site — one
     //     thrown inside an error object, or held in a variable or a constant
     //     (`return EXIT_USAGE`).
-    const WIDER_EXIT = /(?:return|process\.exit\(|process\.exitCode\s*=)\s*([2-9]\d*)\b/g;
+    //   - RP-147 added a fourth spelling, `exitCode: <n>` in a result object,
+    //     which is how `setup` carries its contract-major refusal to `index.ts`
+    //     (`return result.exitCode`, not a literal). It is matched below so the
+    //     row names it; the same weakness applies to any other non-literal path.
+    const WIDER_EXIT =
+      /(?:return|process\.exit\(|process\.exitCode\s*=|\bexitCode:)\s*([2-9]\d*)\b/g;
     const wider: string[] = [];
     for (const file of sources) {
       const source = await readFile(file, 'utf8');
@@ -1964,14 +1983,34 @@ describe('the conformance section stays true about this repository', () => {
         wider.push(`${asRepoPath(file)}: ${hit[0]}`);
       }
     }
+    // RP-19 adds `memory`'s three exits above 1: 4 on a foreign contract major
+    // (the same meaning as setup's), 3 on an unmet prerequisite (no config
+    // root to resolve the subsystem manifest from), and 2 on an invalid
+    // invocation (an unknown or missing verb). Sorted rather than
+    // insertion-ordered: which literal a file happens to write first is an
+    // implementation choice this row does not pin, only the set of
+    // {file, literal} pairs that exist.
     expect(
-      wider,
-      `the rig bin now has an exit code outside {0, 1} (${wider.join(', ')}) — the conformance row is stale`,
-    ).toEqual([]);
+      [...new Set(wider)].sort(),
+      `the rig bin's exit codes outside {0, 1} are (${wider.join(', ')}) — the conformance row names setup's 4 and memory's 2, 3 and 4`,
+    ).toEqual([
+      'packages/cli/src/commands/memory.ts: exitCode: 2',
+      'packages/cli/src/commands/memory.ts: exitCode: 3',
+      'packages/cli/src/commands/memory.ts: exitCode: 4',
+      'packages/cli/src/commands/setup.ts: exitCode: 4',
+    ]);
+    const prose = normalizeProse(await conformance());
     expect(
-      normalizeProse(await conformance()),
-      'the conformance section must record that the only exit codes are 0 and 1',
-    ).toMatch(/exit codes are 0 and 1|exit code outside 0 and 1/i);
+      prose,
+      "the conformance section must record memory's invalid-invocation exit as 2",
+    ).toMatch(/memory[\s\S]{0,200}\b2\b|\b2\b[\s\S]{0,200}memory/i);
+    expect(
+      prose,
+      "the conformance section must record memory's unmet-prerequisite exit as 3",
+    ).toMatch(/memory[\s\S]{0,200}\b3\b|\b3\b[\s\S]{0,200}memory/i);
+    expect(prose, "the conformance section must record memory's foreign-major exit as 4").toMatch(
+      /memory[\s\S]{0,200}\b4\b|\b4\b[\s\S]{0,200}memory/i,
+    );
   });
 
   it("reports the doctor marks the contract's status set has no slot for", async () => {

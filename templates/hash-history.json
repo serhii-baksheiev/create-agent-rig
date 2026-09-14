@@ -10,7 +10,8 @@
     "0.6.1",
     "0.6.2",
     "0.7.0",
-    "0.7.1"
+    "0.7.1",
+    "0.8.0"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -27,7 +28,8 @@
         "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5",
         "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd",
         "18f4300de4c4c7ea380d726fb109fa224da950ef0a4cea5015ab1d408b823be5",
-        "0a1b6575f6df8139766c8e71ba7320e14d2a5a5ed8ab26b6b43f7a006153d37d"
+        "0a1b6575f6df8139766c8e71ba7320e14d2a5a5ed8ab26b6b43f7a006153d37d",
+        "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -229,7 +231,8 @@
         "ce2104ce697d3e5ed9210e85fe0daeb66b432a36868493f06fec54073a5fff31",
         "530f63a4b29a5cc67867fa7b23575db81d42609ae401bfc4089b05194c586c21",
         "a7359408d56e6bdbf268019ad9193d5fbf4a872385a65ba08564204e6a8f5b5f",
-        "619999500386b3d2867bbd4799f86a800fe7e168083c6e35fb2e629a2c926c5f"
+        "619999500386b3d2867bbd4799f86a800fe7e168083c6e35fb2e629a2c926c5f",
+        "532dc5cdffb1464fb68889628664b1e7e345272c806cf2ccb7a063c6a3a7f1bf"
       ]
     },
     ".claude/rules/aws-cdk.md": {
@@ -517,7 +520,8 @@
         "47922b182915cb92696f851174f2e88c4ae8c67dc119ef39a3a597ef1300fab5",
         "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd",
         "18f4300de4c4c7ea380d726fb109fa224da950ef0a4cea5015ab1d408b823be5",
-        "0a1b6575f6df8139766c8e71ba7320e14d2a5a5ed8ab26b6b43f7a006153d37d"
+        "0a1b6575f6df8139766c8e71ba7320e14d2a5a5ed8ab26b6b43f7a006153d37d",
+        "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {

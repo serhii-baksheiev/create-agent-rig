@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "1.0",
+  "schemas": ["version-handshake.schema.json", "doctor.schema.json", "load.schema.json"],
+  "memory": {
+    "contractDirectory": "shared-memory/contract",
+    "executable": "shared-memory/memory.mjs"
+  }
+}

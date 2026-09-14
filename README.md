@@ -85,6 +85,44 @@ enough for this one, and a replacement that would stop calling a hook the
 current wiring names — while that hook's file is still in `.claude/hooks/` — is
 handed over instead.
 
+### Registering Memory on this machine
+
+Memory is a separate subsystem with its own version; the rig never imports it
+and never searches for it. `setup` records where it is, once per machine:
+
+```sh
+npx create-agent-rig@latest setup --memory-root ~/claude-config             # the checkout that holds shared-memory/memory.mjs
+npx create-agent-rig@latest setup --memory-root ~/claude-config --dry-run   # handshake only, write nothing
+```
+
+It derives the invocation from that one root, runs Memory's `--version --json`
+first, and refuses a foreign contract major with exit 4 before writing anything.
+What it writes is one machine-scoped manifest —
+`~/.config/create-agent-rig/subsystems.json` (`%APPDATA%\create-agent-rig\` on
+Windows) — carrying the invocation, the required contract major, the pinned
+Memory ref (`--memory-ref`) and the version the handshake observed. `upgrade`
+re-runs the same derivation when the manifest exists; it never creates one. The
+behaviour is pinned in `packages/cli/test/setup.test.ts` and
+`packages/cli/test/subsystems.test.ts`; the seam itself is ADR-RP-002 R6
+(`docs/decisions/memory-rig-boundary.md`).
+
+Both bins answer the same handshake, and the rig consumes Memory only through it
+(RP-19):
+
+```sh
+npx create-agent-rig@latest --version --json          # {"schemaVersion":1,"name":"create-agent-rig","version":"…","contractVersion":"1.0"}
+npx create-agent-rig@latest memory doctor --json      # handshake first, then Memory's doctor, answer passed through unchanged
+npx create-agent-rig@latest memory load --json           # same, for load; every argument after the verb goes to Memory verbatim
+```
+
+`memory` reads the manifest above, runs Memory's `--version --json`, and only
+then the verb: a foreign contract major exits 4 and the verb never runs; no
+manifest (or an executable that has moved) is `unsupported`/`absent`, exit 0;
+an executable that answers but not as the manifest promised — a broken
+`VERSION`, a malformed handshake — is `integration-failed`, exit 1, never
+"absent". Pinned in `packages/cli/test/memory.test.ts` and
+`packages/cli/test/cli-version.test.ts`.
+
 **A file you deleted stays deleted.** The rules invite you to delete the ones
 whose invariant your project does not have, so an upgrade that quietly restored
 them would be undoing your work. With a manifest that is direct — it names the
@@ -93,6 +131,34 @@ Without one, the shipped table answers instead: a file that was in every release
 it covers was there to be removed. The single case nothing can tell apart is a
 file a **later** release added, which your rig never had — that one is installed,
 and `--dry-run` lists it before anything is written.
+
+### Conformance runner
+
+`contracts/conformance/v1/` holds the JSON schemas of the command contract's
+`--version --json`, `doctor --json` and `load --json` answers, and
+`scripts/memory-conformance.mjs` checks a Memory checkout against them:
+
+```sh
+pnpm build
+node scripts/memory-conformance.mjs --from <claude-config checkout> --json [--out report.json]
+```
+
+It is offline by construction — `--from` is mandatory, nothing is fetched, no
+credential is read — and it never imports Memory code or copies a Memory
+fixture into this repository (`test/template/memory-conformance.test.ts` ›
+"carries no fetch, clone or credential: the checkout is always the caller's"
+and › "the repository carries no Memory fixture"). The contract directory is
+this repository's own, not a rig payload: `create`, `init` and `upgrade` do
+not deliver it (`test/template/conformance-contract.test.ts` › "is not
+delivered to rigs: no template carries a conformance contract"). The report's
+rows, its `rigSha` / `memorySha` / `verifierDigest` fields and the `--out`
+file are pinned by the same test file's › "passes every row against a
+well-formed local fixture root and names both SHAs and the verifier digest"
+and › "derives verifierDigest from the runner, its validator and the contract
+files, in that order, and writes the same report to --out". The authoritative
+cross-repository run lives in the private `claude-config` repository, which
+checks this repository out at an explicit full SHA and runs the command above
+against its own tree; the CI here runs only the offline tests.
 
 ## What you get
 
@@ -272,6 +338,6 @@ that fails open must do provably bounded work, because fail-open turns every lin
 of its own work into a potential bypass.
 
 Development (from a clone — `PLAN.md` and `demo.sh` live in the repository, not
-in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop),
+in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop), `pnpm test:smoke` (the unit project only — the Windows pull-request lane),
 `pnpm template:check` (templates in place). The plan of record is `PLAN.md`;
 release notes and the release checklist ship in `CHANGELOG.md`.

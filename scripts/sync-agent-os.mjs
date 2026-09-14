@@ -83,6 +83,10 @@ const ELEVATED_PATHS = [
   // template source would send them to the file they were not reading.
   'templates/agent-os/universal/docs/decisions/',
   'docs/decisions/',
+  // The repository's own contract surfaces (RP-12 session messaging, RP-13
+  // conformance): a schema here decides what another repository's workflow
+  // accepts, so a change to one is reviewed like a public API change.
+  'contracts/',
   // Same categories, one layer down: a stack layer's gates and DoD config are
   // no less load-bearing for being target-specific.
   'templates/agent-os/stack/aws-cdk/.claude/agents/',
