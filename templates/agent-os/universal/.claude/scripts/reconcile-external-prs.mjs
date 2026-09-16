@@ -357,9 +357,10 @@ const STDERR_UNSUPPORTED = /Unknown JSON field/i;
 // ESC-led sequences (CSI, OSC and the single-character escapes); the
 // whitespace controls, which become a space where they sit next to whitespace
 // and a mark where they sit inside a run (so they cannot split a token into
-// pieces too short to match); and every other character a terminal would not print as itself — the remaining
-// C0/C1 controls except the line feed the next step splits on, the invisible
-// format characters (zero-width, bidi, byte-order mark) and U+E000, the mark
+// pieces too short to match); and every other character a terminal would not
+// print as itself — the remaining C0/C1 controls except the line feed the next
+// step splits on, the invisible format characters (zero-width, bidi,
+// byte-order mark), the line and paragraph separators, and U+E000, the mark
 // they are all replaced with.
 // eslint-disable-next-line no-control-regex -- the pattern exists to remove these very bytes
 const TERMINAL_SEQUENCES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
@@ -368,7 +369,7 @@ const WHITESPACE_CONTROLS = /[\t\v\f\r]/g;
 // eslint-disable-next-line no-control-regex -- likewise
 const WHITESPACE_CONTROLS_INSIDE_A_RUN = /(?<=\S)[\t\v\f\r]+(?=\S)/g;
 // eslint-disable-next-line no-control-regex -- likewise
-const HIDDEN_CHARACTERS = /[\x00-\x08\x0E-\x1F\x7F-\x9F\p{Cf}\uE000]/gu;
+const HIDDEN_CHARACTERS = /[\x00-\x08\x0E-\x1F\x7F-\x9F\p{Cf}\p{Zl}\p{Zp}\uE000]/gu;
 const MARK = '\uE000';
 // No leading word boundary: a keyword glued to the word before must still be
 // found, and over-redacting prose is the safe way to be wrong here.

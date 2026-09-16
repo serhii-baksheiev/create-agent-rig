@@ -386,10 +386,18 @@ describe('sanitizeDiagnostic — safe to print', () => {
 
   it('removes a carriage return and a tab inside the line', async () => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
-    const out = sanitizeDiagnostic('HTTP 404: x \rlane reconciliation: all clean \tdone');
+    const out = sanitizeDiagnostic('HTTP 404: x\rlane reconciliation: all clean\tdone');
     expect(out).not.toMatch(/[\r\t]/);
-    expect(out).toContain('all clean');
-    expect(out).toContain('lane reconciliation');
+    // Fail-closed by design: a whitespace control between two non-space
+    // characters joins them, and a joined run of 8 or more is masked whole —
+    // honest text included. A short joined run ('xlane') is printed joined.
+    expect(out).toBe('HTTP 404: xlane reconciliation: all [redacted]');
+  });
+
+  it('keeps words that a whitespace control separates next to ordinary whitespace', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const out = sanitizeDiagnostic('HTTP 404: x \rlane reconciliation: all clean \tdone');
+    expect(out).toBe('HTTP 404: x  lane reconciliation: all clean  done');
   });
 
   it.each([
@@ -415,6 +423,7 @@ describe('sanitizeDiagnostic — safe to print', () => {
     ['a zero-width space', '\u200b'],
     ['a bidi override', '\u202e'],
     ['a byte-order mark', '\ufeff'],
+    ['a line separator', '\u2028'],
   ])('redacts a token with %s inside it, instead of printing it reassembled', async (_, inside) => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
     const token = `${FAKE_GH_TOKEN.slice(0, 14)}${inside}${FAKE_GH_TOKEN.slice(14)}`;
