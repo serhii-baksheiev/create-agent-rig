@@ -400,10 +400,12 @@ export async function planUpgrade(
     } else {
       // A path `init` found and left alone carries its provenance in `kept`
       // (RP-182): the reason can then say what happened to the file since,
-      // instead of only that no release ever shipped these bytes.
+      // instead of only that no release ever shipped these bytes. It names no
+      // version — `manifest.version` is rewritten by every upgrade, so it is
+      // not the version of the init that kept the file.
       const kept = recorded === undefined ? manifest?.kept?.[file.rel] : undefined;
       const keptReason = (since: string): string =>
-        `kept by init ${manifest?.version ?? ''} (already here, not the rig's bytes), ${since} since — treated as yours`;
+        `kept by init (already here, not the rig's bytes), ${since} since — treated as yours`;
       actions.push({
         rel: file.rel,
         verdict: 'conflict',

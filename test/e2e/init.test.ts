@@ -254,9 +254,9 @@ describe('create-agent-rig init (inside a rig that came from `create`)', () => {
 
 // RP-182: a Rig file that already sits in the repo when `init` runs used to
 // fall out of the manifest entirely — no `files` entry (init never overwrote
-// it, correctly) and no evidence of any other kind — so a later `upgrade` had
-// nothing to reason from: it could neither vouch for the bytes as the user's
-// own nor recognise them as an obsolete released copy worth bringing forward.
+// it, correctly) and no record of any other kind. The manifest now classifies
+// it under `kept`; a later `upgrade` still recognises released bytes through
+// the hash history.
 describe('create-agent-rig init over a pre-existing older Rig file (RP-182)', () => {
   const WORKFLOW_REL = '.claude/rules/workflow.md';
   // A real released copy of the file `init` installs at this path — 0.8.0,

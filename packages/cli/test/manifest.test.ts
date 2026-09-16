@@ -178,16 +178,6 @@ describe('the install manifest — the evidence upgrade reads', () => {
   });
 });
 
-/**
- * `kept` is not on `RigManifest` yet — RP-182 (this ticket) adds it: an
- * install-relative path → the sha256 of the bytes `init` FOUND on disk and
- * left alone, kept separate from `files` so nothing claims those bytes as
- * Rig-written. This local extension lets the tests construct and read it
- * without an `any` cast at every call site; the interface itself is touched
- * only by the implementation, never by these tests.
- */
-type ManifestWithKept = RigManifest & { kept?: Record<string, string> };
-
 describe('kept — provenance for a file init found on disk and left alone (RP-182)', () => {
   it('accepts a manifest with no `kept` field at all, exactly as before', () => {
     // The compatibility fence: every manifest on disk today has no `kept`
@@ -197,7 +187,7 @@ describe('kept — provenance for a file init found on disk and left alone (RP-1
 
   it('parses `kept` when present, keyed the same way as `files`', () => {
     const withKept = { ...sample(), kept: { 'c.md': sha256('c') } };
-    const parsed = parseManifest(JSON.stringify(withKept)) as ManifestWithKept | null;
+    const parsed = parseManifest(JSON.stringify(withKept));
     expect(parsed?.kept).toEqual({ 'c.md': sha256('c') });
   });
 
@@ -210,7 +200,7 @@ describe('kept — provenance for a file init found on disk and left alone (RP-1
   });
 
   it('serialises `kept` with sorted paths, and round-trips through parseManifest', () => {
-    const withKept: ManifestWithKept = {
+    const withKept: RigManifest = {
       ...sample(),
       kept: { 'z.md': sha256('z'), 'a.md': sha256('a') },
     };
@@ -227,7 +217,7 @@ describe('kept — provenance for a file init found on disk and left alone (RP-1
 
     // Explicitly empty (`{}`), not merely absent — the same omission has to
     // hold once `init` starts setting the field on every manifest it writes.
-    const emptyKept: ManifestWithKept = { ...sample(), kept: {} };
+    const emptyKept: RigManifest = { ...sample(), kept: {} };
     const serialisedEmpty = serializeManifest(emptyKept);
     expect(serialisedEmpty).not.toContain('"kept"');
     expect(serialisedEmpty).toBe(noKeptField);
