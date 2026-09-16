@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
@@ -240,19 +240,41 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);
   const skipped = actions.filter(({ verdict }) => verdict === 'skipped').map(({ rel }) => rel);
 
-  if (!options.dryRun) await recordInstall(repoDir, written, contents);
+  if (!options.dryRun) await recordInstall(repoDir, written, skipped, contents);
 
   return { written, skipped, plannedCount };
+}
+
+/**
+ * The text of a regular file, or `null` for anything else at that path — a
+ * directory, a symlink, a file this process cannot read. `kept` records only
+ * bytes that are the file itself: hashing through a link would put the hash of
+ * something outside the repository into a committed manifest, and a read that
+ * throws here would abort the install after every other file was written.
+ */
+async function readRegularFile(abs: string): Promise<string | null> {
+  try {
+    if (!(await lstat(abs)).isFile()) return null;
+    return await readFile(abs, 'utf8');
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Record what was installed, so a later `upgrade` can tell a file it wrote
  * from a file the user owns.
  *
- * Only files actually **written** are recorded. A file `init` kept is
- * somebody else's — claiming it here would let the next upgrade replace a
- * user's own document with the rig's. Earlier entries are preserved: a re-run
- * writes nothing and must not therefore un-remember everything.
+ * Only files actually **written** are recorded in `files`. A file `init` kept
+ * is somebody else's — claiming it there would let the next upgrade replace a
+ * user's own document with the rig's. It is recorded in `kept` instead, with
+ * the sha256 of the bytes found on disk (RP-182): not a claim of ownership, a
+ * record that the rig saw the file and left it — so the next upgrade can say
+ * "kept by init, unchanged since" or "edited since" rather than only "not a
+ * version this rig ever released". A path already in `files` is never moved to
+ * `kept` by a later run that skips it: the rig wrote those bytes. Earlier
+ * entries are preserved: a re-run writes nothing and must not therefore
+ * un-remember everything.
  *
  * 🔴 **`kind`, `project` and `stacks` are preserved, not rewritten.** Reached
  * inside a rig `create` produced, this used to stamp `kind: 'init'`,
@@ -283,12 +305,21 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
 async function recordInstall(
   repoDir: string,
   written: readonly string[],
+  skipped: readonly string[],
   contents: Map<string, string>,
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
   const files = { ...(previous?.files ?? {}) };
   for (const rel of written) files[rel] = sha256(contents.get(rel) ?? '');
+  const kept = { ...(previous?.kept ?? {}) };
+  for (const rel of written) delete kept[rel];
+  for (const rel of skipped) {
+    if (files[rel] !== undefined) continue; // the rig wrote it once; still its bytes to vouch for
+    const found = await readRegularFile(path.join(repoDir, rel));
+    if (found === null) delete kept[rel];
+    else kept[rel] = sha256(found);
+  }
   const manifest: RigManifest = {
     version: await packageVersion(),
     kind: previous?.kind ?? 'init',
@@ -298,6 +329,7 @@ async function recordInstall(
     project: previous?.project ?? { name, scope: name, region: '' },
     stacks: previous?.stacks ?? [],
     files,
+    ...(Object.keys(kept).length > 0 ? { kept } : {}),
   };
   await writeManifest(repoDir, manifest);
 }

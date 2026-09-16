@@ -34,6 +34,15 @@ export interface RigManifest {
   stacks: string[];
   /** Install-relative path → sha256 of the bytes written there. */
   files: Record<string, string>;
+  /**
+   * Install-relative path → sha256 of the bytes `init` FOUND there and left
+   * alone (RP-182). Kept apart from `files` on purpose: these are not bytes the
+   * rig wrote, so nothing may vouch for them — but a later `upgrade` can now
+   * tell "a file that was already here when the rig arrived" from "a path
+   * nothing knows anything about". Absent when nothing was kept, so a clean
+   * install serialises exactly as before.
+   */
+  kept?: Record<string, string>;
 }
 
 export function sha256(data: string | Buffer): string {
@@ -109,20 +118,38 @@ export function parseManifest(raw: string): RigManifest | null {
   if (!Array.isArray(m.stacks) || m.stacks.some((s) => typeof s !== 'string')) return null;
   if (m.stacks.some((s) => !isSafeSubstitutionValue(s))) return null;
   if (!isStringRecord(m.files)) return null;
+  // Present in a shape this reader does not accept voids the manifest, exactly
+  // as `files` does; absent is every manifest written before the field existed.
+  if (m.kept !== undefined && !isStringRecord(m.kept)) return null;
   return {
     version: m.version,
     kind: m.kind,
     project: { name: project.name, scope: project.scope, region: project.region },
     stacks: [...m.stacks],
     files: { ...m.files },
+    ...(m.kept !== undefined ? { kept: { ...m.kept } } : {}),
   };
 }
 
-/** Stable bytes: sorted paths, so a re-run produces no diff of its own. */
+const sortedRecord = (record: Record<string, string>): Record<string, string> => {
+  const sorted: Record<string, string> = {};
+  for (const rel of Object.keys(record).sort()) sorted[rel] = record[rel]!;
+  return sorted;
+};
+
+/**
+ * Stable bytes: sorted paths, so a re-run produces no diff of its own. An
+ * empty `kept` is omitted, not written as `{}` — a manifest that kept nothing
+ * must serialise byte-identical to one written before the key existed.
+ */
 export function serializeManifest(manifest: RigManifest): string {
-  const files: Record<string, string> = {};
-  for (const rel of Object.keys(manifest.files).sort()) files[rel] = manifest.files[rel]!;
-  return `${JSON.stringify({ ...manifest, files }, null, 2)}\n`;
+  const { kept, ...rest } = manifest;
+  const body = {
+    ...rest,
+    files: sortedRecord(manifest.files),
+    ...(kept !== undefined && Object.keys(kept).length > 0 ? { kept: sortedRecord(kept) } : {}),
+  };
+  return `${JSON.stringify(body, null, 2)}\n`;
 }
 
 export async function readManifest(repoDir: string): Promise<RigManifest | null> {

@@ -177,3 +177,48 @@ describe('the install manifest — the evidence upgrade reads', () => {
     expect(await readManifest(repo)).toBeNull();
   });
 });
+
+describe('kept — provenance for a file init found on disk and left alone (RP-182)', () => {
+  it('accepts a manifest with no `kept` field at all, exactly as before', () => {
+    // The compatibility fence: every manifest on disk today has no `kept`
+    // key, and reading one must not change once this ships.
+    expect(parseManifest(JSON.stringify(sample()))).toEqual(sample());
+  });
+
+  it('parses `kept` when present, keyed the same way as `files`', () => {
+    const withKept = { ...sample(), kept: { 'c.md': sha256('c') } };
+    const parsed = parseManifest(JSON.stringify(withKept));
+    expect(parsed?.kept).toEqual({ 'c.md': sha256('c') });
+  });
+
+  it('voids a manifest whose `kept` is present but not a string record', () => {
+    const hostile = (kept: unknown) => parseManifest(JSON.stringify({ ...sample(), kept }));
+    expect(hostile('nope')).toBeNull();
+    expect(hostile(['c.md'])).toBeNull();
+    expect(hostile({ 'c.md': 1 })).toBeNull();
+    expect(hostile({ 'c.md': null })).toBeNull();
+  });
+
+  it('serialises `kept` with sorted paths, and round-trips through parseManifest', () => {
+    const withKept: RigManifest = {
+      ...sample(),
+      kept: { 'z.md': sha256('z'), 'a.md': sha256('a') },
+    };
+    const serialised = serializeManifest(withKept);
+    const keptBlock = /"kept":\s*\{([\s\S]*?)\}/.exec(serialised)?.[1] ?? '';
+    expect(keptBlock, serialised).toContain('"a.md"');
+    expect(keptBlock.indexOf('"a.md"')).toBeLessThan(keptBlock.indexOf('"z.md"'));
+    expect(parseManifest(serialised)).toEqual(withKept);
+  });
+
+  it('omits the `kept` key entirely when nothing was kept — a clean install serialises byte-identical to today', () => {
+    const noKeptField = serializeManifest(sample());
+    expect(noKeptField).not.toContain('"kept"');
+
+    // Explicitly empty (`{}`), not merely absent — the serialiser omits it too.
+    const emptyKept: RigManifest = { ...sample(), kept: {} };
+    const serialisedEmpty = serializeManifest(emptyKept);
+    expect(serialisedEmpty).not.toContain('"kept"');
+    expect(serialisedEmpty).toBe(noKeptField);
+  });
+});

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -9,6 +9,7 @@ import {
   planInit,
   projectNameFor,
 } from '../src/commands/init.js';
+import { readManifest, sha256 } from '../src/lib/manifest.js';
 
 let repo: string;
 
@@ -283,5 +284,115 @@ describe('initManifest — one list, used by the plan and the install alike', ()
     expect(rels).toContain('.claude/settings.json');
     expect(rels).toContain('.codex/hooks.json');
     expect(rels).not.toContain('.claude/rules/architecture.md');
+  });
+});
+
+// RP-182: a pre-existing file `init` keeps used to fall out of the manifest
+// entirely; it is now classified under `kept`.
+describe('initProject — every skipped path gets a manifest classification (RP-182)', () => {
+  it('records what it kept, with the sha256 of the bytes actually on disk — never in `files`', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM');
+
+    const result = await initProject(repo, {});
+    expect(result.skipped).toContain('.claude/rules/workflow.md');
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBe(sha256('CUSTOM'));
+    // never claimed as Rig-written bytes
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeUndefined();
+    // and a path it actually wrote never shows up as "kept"
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    expect(manifest?.files['CLAUDE.md']).toBeTruthy();
+  });
+
+  it('re-running init refreshes the hash of a path it skips again, and keeps recording it in `kept`', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM V1');
+    await initProject(repo, {});
+
+    // lift init's CLAUDE.md refusal, the only thing standing between this and
+    // a second run over the same repo (mirrors the fixtures in upgrade.test.ts)
+    await rm(path.join(repo, 'CLAUDE.md'));
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM V2');
+    const second = await initProject(repo, {});
+    expect(second.skipped).toContain('.claude/rules/workflow.md');
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBe(sha256('CUSTOM V2'));
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeUndefined();
+  });
+
+  it('never moves a path already recorded in `files` into `kept`, even when a later run skips it', async () => {
+    await initProject(repo, {});
+    const autonomyBefore = await readFile(
+      path.join(repo, '.claude', 'rules', 'autonomy.md'),
+      'utf8',
+    );
+
+    // lift init's CLAUDE.md refusal; leave every other installed file exactly
+    // as the first run wrote it, so the second run skips them all
+    await rm(path.join(repo, 'CLAUDE.md'));
+    const second = await initProject(repo, {});
+    expect(second.skipped).toContain('.claude/rules/autonomy.md');
+
+    const manifest = await readManifest(repo);
+    // it was written by the rig, twice over — it is not the user's file
+    expect(manifest?.kept?.['.claude/rules/autonomy.md']).toBeUndefined();
+    expect(manifest?.files['.claude/rules/autonomy.md']).toBe(sha256(autonomyBefore));
+  });
+
+  it('drops a path from `kept` once a later run writes it', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM');
+    await initProject(repo, {});
+
+    // the user deletes the kept file; the next run finds the path free and writes it
+    await rm(path.join(repo, 'CLAUDE.md'));
+    await rm(path.join(repo, '.claude', 'rules', 'workflow.md'));
+    const second = await initProject(repo, {});
+    expect(second.written).toContain('.claude/rules/workflow.md');
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeTruthy();
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
+  });
+
+  it('records nothing under `kept` for a symlink at a payload path, and does not hash its target', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      const target = path.join(outside, 'secret.txt');
+      await writeFile(target, 'OUTSIDE THE REPO');
+      await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+      try {
+        await symlink(target, path.join(repo, '.claude', 'rules', 'workflow.md'), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const result = await initProject(repo, {});
+      expect(result.skipped).toContain('.claude/rules/workflow.md');
+
+      const manifest = await readManifest(repo);
+      expect(manifest).not.toBeNull();
+      expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
+      expect(Object.values(manifest?.kept ?? {})).not.toContain(sha256('OUTSIDE THE REPO'));
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('completes, and records nothing under `kept`, when a payload path is occupied by a directory', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules', 'workflow.md'), { recursive: true });
+
+    const result = await initProject(repo, {});
+    expect(result.skipped).toContain('.claude/rules/workflow.md');
+
+    const manifest = await readManifest(repo);
+    expect(manifest).not.toBeNull();
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeUndefined();
   });
 });

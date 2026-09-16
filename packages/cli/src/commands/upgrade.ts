@@ -398,17 +398,35 @@ export async function planUpgrade(
       });
       if (recorded !== undefined) nextFiles[file.rel] = recorded;
     } else {
+      // A path `init` found and left alone carries its provenance in `kept`
+      // (RP-182): the reason can then say what happened to the file since,
+      // instead of only that no release ever shipped these bytes. It names no
+      // version — `manifest.version` is rewritten by every upgrade, so it is
+      // not the version of the init that kept the file.
+      const kept = recorded === undefined ? manifest?.kept?.[file.rel] : undefined;
+      const keptReason = (since: string): string =>
+        `kept by init (already here, not the rig's bytes), ${since} since — treated as yours`;
       actions.push({
         rel: file.rel,
         verdict: 'conflict',
         reason:
-          recorded === undefined
-            ? 'not a version this rig ever released — treated as yours'
-            : 'edited since it was installed',
+          kept !== undefined
+            ? keptReason(sha256(current) === kept ? 'unchanged' : 'edited')
+            : recorded === undefined
+              ? 'not a version this rig ever released — treated as yours'
+              : 'edited since it was installed',
         templatePath: file.source,
       });
-      // deliberately NOT recorded: the rig does not own these bytes
+      // deliberately NOT recorded in `files`: the rig does not own these bytes
     }
+  }
+
+  // `kept` travels forward untouched, minus every path the plan now vouches
+  // for in `files` — a kept file that turned out to be a released version, or
+  // is byte-identical to this release, has become the rig's to manage.
+  const nextKept: Record<string, string> = {};
+  for (const [rel, hash] of Object.entries(manifest?.kept ?? {})) {
+    if (nextFiles[rel] === undefined) nextKept[rel] = hash;
   }
 
   // With no manifest, "there is a rig here" has to be *recognised*, not
@@ -442,6 +460,7 @@ export async function planUpgrade(
       project,
       stacks: [...stacks],
       files: nextFiles,
+      ...(Object.keys(nextKept).length > 0 ? { kept: nextKept } : {}),
     },
   };
 }
