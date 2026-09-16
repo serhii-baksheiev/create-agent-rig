@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -356,6 +356,32 @@ describe('initProject — every skipped path gets a manifest classification (RP-
     const manifest = await readManifest(repo);
     expect(manifest?.files['.claude/rules/workflow.md']).toBeTruthy();
     expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
+  });
+
+  it('records nothing under `kept` for a symlink at a payload path, and does not hash its target', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      const target = path.join(outside, 'secret.txt');
+      await writeFile(target, 'OUTSIDE THE REPO');
+      await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+      try {
+        await symlink(target, path.join(repo, '.claude', 'rules', 'workflow.md'), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const result = await initProject(repo, {});
+      expect(result.skipped).toContain('.claude/rules/workflow.md');
+
+      const manifest = await readManifest(repo);
+      expect(manifest).not.toBeNull();
+      expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
+      expect(Object.values(manifest?.kept ?? {})).not.toContain(sha256('OUTSIDE THE REPO'));
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it('completes, and records nothing under `kept`, when a payload path is occupied by a directory', async () => {

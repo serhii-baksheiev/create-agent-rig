@@ -246,6 +246,22 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
 }
 
 /**
+ * The text of a regular file, or `null` for anything else at that path — a
+ * directory, a symlink, a file this process cannot read. `kept` records only
+ * bytes that are the file itself: hashing through a link would put the hash of
+ * something outside the repository into a committed manifest, and a read that
+ * throws here would abort the install after every other file was written.
+ */
+async function readRegularFile(abs: string): Promise<string | null> {
+  try {
+    if (!(await lstat(abs)).isFile()) return null;
+    return await readFile(abs, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Record what was installed, so a later `upgrade` can tell a file it wrote
  * from a file the user owns.
  *
@@ -286,22 +302,6 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * leaves is a `create` rig whose `CLAUDE.md` was deleted, and this function is
  * what makes that case safe.
  */
-/**
- * The text of a regular file, or `null` for anything else at that path — a
- * directory, a symlink, a file this process cannot read. `kept` records only
- * bytes that are the file itself: hashing through a link would put the hash of
- * something outside the repository into a committed manifest, and a read that
- * throws here would abort the install after every other file was written.
- */
-async function readRegularFile(abs: string): Promise<string | null> {
-  try {
-    if (!(await lstat(abs)).isFile()) return null;
-    return await readFile(abs, 'utf8');
-  } catch {
-    return null;
-  }
-}
-
 async function recordInstall(
   repoDir: string,
   written: readonly string[],
