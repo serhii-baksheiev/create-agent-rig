@@ -405,6 +405,28 @@ describe('sanitizeDiagnostic — safe to print', () => {
     },
   );
 
+  it.each([
+    ['a NUL', '\x00'],
+    ['an ANSI colour code', '\x1b[31m'],
+    ['a private-use character already in the text', '\uE000'],
+    ['an OSC title sequence', '\x1b]0;t\x07'],
+    ['a C1 control byte', '\x9b'],
+  ])('redacts a token with %s inside it, instead of printing it reassembled', async (_, inside) => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const token = `${FAKE_GH_TOKEN.slice(0, 14)}${inside}${FAKE_GH_TOKEN.slice(14)}`;
+    const out = sanitizeDiagnostic(`request failed for user ${token}`);
+    expect(out).not.toContain(FAKE_GH_TOKEN.slice(0, 8));
+    expect(out).not.toContain(FAKE_GH_TOKEN.slice(14));
+    expect(out).toContain('[redacted]');
+  });
+
+  it('redacts the whole token when a sequence splits it late, after a part long enough to match on its own', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const token = `${FAKE_GH_TOKEN.slice(0, 28)}\x00${FAKE_GH_TOKEN.slice(28)}`;
+    const out = sanitizeDiagnostic(`request failed for user ${token}`);
+    expect(out).toBe('request failed for user [redacted]');
+  });
+
   it('caps a diagnostic line at 200 characters', async () => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
     const out = sanitizeDiagnostic('x'.repeat(300));

@@ -378,11 +378,42 @@ const dropTrailingRun = (text) => {
   return text.slice(0, end);
 };
 
-// What a removed sequence becomes until redaction is done: a non-word
-// character, so a token that followed it still starts at a word boundary —
-// deleting it outright would glue the token to the word before and hide it
-// from every `\b`-anchored credential pattern.
+// A removed sequence is marked with this non-word character before redaction.
+// Neither way of removing it is safe alone: deleting it glues a following token
+// to the word before (hiding it from every `\b`-anchored pattern), while a mark
+// left in place splits a token it sat inside into halves too short to match.
+// So redaction reads the line both ways and masks the union of what either
+// reading found, on the text with the marks deleted. A U+E000 already in the
+// input is treated as a mark too.
 const REMOVED = '';
+const REDACTION_PATTERNS = [
+  AUTHORIZATION_VALUE,
+  ...SECRET_VALUE_PATTERNS.map(({ pattern }) => new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`)),
+];
+
+/** `[start, end)` of every redaction match in `text`. */
+const matchSpans = (text) => {
+  const spans = [];
+  for (const pattern of REDACTION_PATTERNS) {
+    for (const match of text.matchAll(pattern)) {
+      if (match[0].length > 0) spans.push([match.index, match.index + match[0].length]);
+    }
+  }
+  return spans;
+};
+
+/** `text` with every span (possibly overlapping) replaced by one `[redacted]`. */
+const maskSpans = (text, spans) => {
+  const ordered = [...spans].sort((a, b) => a[0] - b[0]);
+  let out = '';
+  let at = 0;
+  for (const [start, end] of ordered) {
+    if (end <= at) continue;
+    if (start >= at) out += `${text.slice(at, start)}[redacted]`;
+    at = end;
+  }
+  return out + text.slice(at);
+};
 
 /**
  * One printable line of a subprocess's stderr: no terminal sequences or control
@@ -393,13 +424,21 @@ const REMOVED = '';
 export const sanitizeDiagnostic = (text) => {
   const source = typeof text === 'string' ? text : String(text ?? '');
   const marked = source.replace(TERMINAL_SEQUENCES, REMOVED).replace(CONTROL_CHARACTERS, REMOVED);
-  const line = (marked.split('\n').find((candidate) => candidate.split(REMOVED).join('').trim() !== '') ?? '').trim();
-  let out = line.length > REDACTION_WINDOW ? dropTrailingRun(line.slice(0, REDACTION_WINDOW)) : line;
-  out = out.replace(AUTHORIZATION_VALUE, '[redacted]');
-  for (const { pattern } of SECRET_VALUE_PATTERNS) {
-    out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`), '[redacted]');
+  const line = marked.split('\n').find((candidate) => candidate.replaceAll(REMOVED, '').trim() !== '') ?? '';
+  const windowed = line.length > REDACTION_WINDOW ? dropTrailingRun(line.slice(0, REDACTION_WINDOW)) : line;
+  // `joinedAt[i]` is where position `i` of the marked text lands once the marks go.
+  const joinedAt = new Array(windowed.length + 1);
+  let joined = '';
+  for (let i = 0; i < windowed.length; i += 1) {
+    joinedAt[i] = joined.length;
+    if (windowed[i] !== REMOVED) joined += windowed[i];
   }
-  return out.split(REMOVED).join('').trim().slice(0, DIAGNOSTIC_CAP);
+  joinedAt[windowed.length] = joined.length;
+  const spans = [
+    ...matchSpans(joined),
+    ...matchSpans(windowed).map(([start, end]) => [joinedAt[start], joinedAt[end]]),
+  ];
+  return maskSpans(joined, spans).trim().slice(0, DIAGNOSTIC_CAP);
 };
 
 /**
