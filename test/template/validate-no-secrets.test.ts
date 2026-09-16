@@ -7,11 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
-import {
-  CHILD_TIMING_ENV,
-  CHILD_TIMING_IMPORT,
-  readChildElapsedMs,
-} from '../helpers/child-timing.js';
+import { runNodeTimed } from '../helpers/child-timing.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR-49(b), layer 2: the CI half of the "both layers, one shared module" ruling.
@@ -268,26 +264,13 @@ describe('validate-no-secrets — the default sweep over the tracked set', () =>
 
     // In-child measurement (RP-158): bound the VALIDATOR's own work, not the
     // parent's wall clock around spawning it. See child-timing.test.ts.
-    const timingDir = await mkdtemp(path.join(tmpdir(), 'validate-no-secrets-timing-'));
-    const timingFile = path.join(timingDir, 'elapsed.json');
-    const result = await new Promise<Run>((resolve) => {
-      execFile(
-        process.execPath,
-        ['--import', CHILD_TIMING_IMPORT, validator],
-        {
-          cwd: dir,
-          env: { ...withoutGitLocation(), [CHILD_TIMING_ENV]: timingFile },
-          maxBuffer: 16 * 1024 * 1024,
-        },
-        (error, stdout, stderr) => {
-          resolve({
-            code: error ? ((error as { code?: number }).code ?? 1) : 0,
-            out: stdout + stderr,
-          });
-        },
-      );
+    const run = await runNodeTimed(validator, {
+      cwd: dir,
+      env: withoutGitLocation(),
+      maxBuffer: 16 * 1024 * 1024,
     });
-    const elapsed = await readChildElapsedMs(timingFile);
+    const result = { code: run.code, out: run.stdout + run.stderr };
+    const elapsed = run.elapsedMs;
 
     expect(result.code, result.out).toBe(0);
     expect(elapsed, `took ${elapsed}ms on 5 MB of harmless text`).toBeLessThan(20_000);

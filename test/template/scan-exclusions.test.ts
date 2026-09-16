@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   IN_REPO_FIXTURE_PREFIXES,
@@ -34,8 +36,8 @@ describe('one exclusion list for every repository scan', () => {
       '**/node_modules/**',
       '**/.git/**',
       '.claude/worktrees/**',
-      '.codex-*/**',
-      '.prepare-*/**',
+      '**/.codex-*/**',
+      '**/.prepare-*/**',
     ]);
   });
 
@@ -49,7 +51,7 @@ describe('one exclusion list for every repository scan', () => {
     expect(IN_REPO_FIXTURE_PREFIXES).toEqual(entries.map((entry) => entry.prefix));
   });
 
-  it('skipsScan refuses a transient in-repository fixture at the root, and the same name anywhere else is scanned', () => {
+  it('skipsScan refuses a transient in-repository fixture at any depth, and nothing that merely starts like one', () => {
     const root = path.join(os.tmpdir(), 'rp158-root');
     expect(skipsScan(root, path.join(root, '.codex-symlink-add-destination-a1b2c3', 'alias'))).toBe(
       true,
@@ -57,8 +59,43 @@ describe('one exclusion list for every repository scan', () => {
     expect(skipsScan(root, path.join(root, '.prepare-test-x9', 'scripts', 'prepare.mjs'))).toBe(
       true,
     );
-    expect(skipsScan(root, path.join(root, 'test', '.codex-looks-alike', 'a.ts'))).toBe(false);
+    expect(
+      skipsScan(
+        root,
+        path.join(
+          root,
+          'templates',
+          'skeleton',
+          'node-service',
+          'packages',
+          'core',
+          'src',
+          '.codex-gitdir-q1',
+          'impure.ts',
+        ),
+      ),
+    ).toBe(true);
     expect(skipsScan(root, path.join(root, '.codex', 'config.toml'))).toBe(false);
+    expect(
+      skipsScan(
+        root,
+        path.join(root, 'templates', 'agent-os', 'universal', '.codex', 'hooks.json'),
+      ),
+    ).toBe(false);
+  });
+
+  it('no tracked path carries an in-repository fixture prefix, so the skip hides nothing real', async () => {
+    const { stdout } = await promisify(execFile)('git', ['ls-files', '-z'], {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const tracked = stdout.split('\0').filter(Boolean);
+    const hidden = tracked.filter((file) =>
+      file
+        .split('/')
+        .some((segment) => IN_REPO_FIXTURE_PREFIXES.some((prefix) => segment.startsWith(prefix))),
+    );
+    expect(hidden).toEqual([]);
   });
 
   it('skipsScan refuses a worktree path, a nested node_modules, and nothing else', () => {
@@ -119,7 +156,7 @@ describe('one exclusion list for every repository scan', () => {
     const derived = [
       ...SKIPPED_DIRECTORY_NAMES.map((name: string) => `**/${name}/**`),
       ...SKIPPED_REPOSITORY_PATHS.map((repoPath: string) => `${repoPath}/**`),
-      ...IN_REPO_FIXTURE_PREFIXES.map((prefix: string) => `${prefix}*/**`),
+      ...IN_REPO_FIXTURE_PREFIXES.map((prefix: string) => `**/${prefix}*/**`),
     ];
     expect([...SCAN_IGNORE_GLOBS].sort()).toEqual([...derived].sort());
   });

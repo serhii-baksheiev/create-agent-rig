@@ -11,7 +11,7 @@
  *     `.claude/worktrees/<name>/journal/2026-08.md:311` once per worktree
  *     present, and the root eslint saw two project roots and refused every
  *     TypeScript file;
- *   - a NAME PREFIX skipped as a top-level entry only — the transient fixture
+ *   - a NAME PREFIX skipped wherever it sits — the transient fixture
  *     directories a test creates inside the checkout (RP-158), each justified in
  *     test/helpers/in-repo-fixtures.json.
  *
@@ -36,8 +36,8 @@
  * under .claude/worktrees/, and still reports its siblings", › "the ESLint
  * ignore globs are the same facts, not a third spelling", › "takes the in-repository
  * fixture prefixes from in-repo-fixtures.json, in its order" and › "skipsScan refuses
- * a transient in-repository fixture at the root, and the same name anywhere else is
- * scanned".
+ * a transient in-repository fixture at any depth, and nothing that merely starts like
+ * one".
  */
 import { readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
@@ -49,7 +49,7 @@ export const SKIPPED_REPOSITORY_PATHS = Object.freeze(['.claude/worktrees']);
  * A third fact (RP-158): the name prefixes of the transient fixture directories
  * a test creates at the repository root, read from the file that justifies
  * each one — test/helpers/in-repo-fixtures.json — so the list has one spelling.
- * Skipped only as a top-level entry; `.codex/` itself does not match `.codex-`.
+ * Skipped at any depth; `.codex/` itself does not match `.codex-`.
  */
 export const IN_REPO_FIXTURE_PREFIXES = Object.freeze(
   JSON.parse(readFileSync(new URL('./in-repo-fixtures.json', import.meta.url), 'utf8')).map(
@@ -59,15 +59,15 @@ export const IN_REPO_FIXTURE_PREFIXES = Object.freeze(
 export const SCAN_IGNORE_GLOBS = Object.freeze([
   ...SKIPPED_DIRECTORY_NAMES.map((name) => `**/${name}/**`),
   ...SKIPPED_REPOSITORY_PATHS.map((rel) => `${rel}/**`),
-  ...IN_REPO_FIXTURE_PREFIXES.map((prefix) => `${prefix}*/**`),
+  ...IN_REPO_FIXTURE_PREFIXES.map((prefix) => `**/${prefix}*/**`),
 ]);
 
 const toPosix = (value) => value.split(path.sep).join('/');
 
 /**
  * Whether a repository scan skips `absolutePath` (a file or a directory) —
- * because one of its segments below `repoRoot` is a skipped name, its first
- * segment starts with an in-repository fixture prefix, or its
+ * because one of its segments below `repoRoot` is a skipped name or starts with an
+ * in-repository fixture prefix, or because its
  * repository-relative path is, or lies under, a skipped subtree.
  */
 export const skipsScan = (repoRoot, absolutePath) => {
@@ -75,7 +75,13 @@ export const skipsScan = (repoRoot, absolutePath) => {
   if (relative === '' || relative.startsWith('..')) return false;
   const segments = relative.split('/');
   if (segments.some((segment) => SKIPPED_DIRECTORY_NAMES.includes(segment))) return true;
-  if (IN_REPO_FIXTURE_PREFIXES.some((prefix) => segments[0].startsWith(prefix))) return true;
+  if (
+    segments.some((segment) =>
+      IN_REPO_FIXTURE_PREFIXES.some((prefix) => segment.startsWith(prefix)),
+    )
+  ) {
+    return true;
+  }
   return SKIPPED_REPOSITORY_PATHS.some((rel) => relative === rel || relative.startsWith(`${rel}/`));
 };
 

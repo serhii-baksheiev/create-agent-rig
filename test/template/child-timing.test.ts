@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import {
   CHILD_TIMING_ENV,
   CHILD_TIMING_IMPORT,
   readChildElapsedMs,
+  runNodeTimed,
 } from '../helpers/child-timing.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -81,5 +82,56 @@ describe('child-timing: a node child records its own elapsed time on exit', () =
     const elapsed = await readChildElapsedMs(file);
     expect(Number.isFinite(elapsed)).toBe(true);
     expect(elapsed).toBeGreaterThanOrEqual(BUSY_WAIT_MS - 50);
+  });
+});
+
+describe('runNodeTimed: one timed node child, its output, and no directory left behind', () => {
+  let root: string;
+  let script: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'run-node-timed-'));
+    script = path.join(root, 'child.mjs');
+    await writeFile(
+      script,
+      [
+        "let input = '';",
+        "process.stdin.on('data', (chunk) => (input += chunk));",
+        "process.stdin.on('end', () => {",
+        `  const start = Date.now(); while (Date.now() - start < ${BUSY_WAIT_MS}) {}`,
+        "  process.stdout.write(`${input}|${process.env.RUN_NODE_TIMED_PROBE ?? ''}`);",
+        "  process.stderr.write('to stderr');",
+        '  process.exit(3);',
+        '});',
+      ].join('\n'),
+    );
+  });
+
+  afterEach(async () => {
+    await removeFixture(root);
+  });
+
+  it('returns the exit code, both streams and the child-measured elapsed time, passing stdin and env through', async () => {
+    const timingRoot = path.join(root, 'timing');
+    await mkdir(timingRoot);
+    const run = await runNodeTimed(script, {
+      input: 'payload',
+      env: { ...process.env, RUN_NODE_TIMED_PROBE: 'probe' },
+      timingRoot,
+    });
+    expect(run.code).toBe(3);
+    expect(run.stdout).toBe('payload|probe');
+    expect(run.stderr).toBe('to stderr');
+    expect(run.elapsedMs).toBeGreaterThanOrEqual(BUSY_WAIT_MS - 50);
+    // the timing directory it created under timingRoot is gone again
+    expect(await readdir(timingRoot)).toEqual([]);
+  });
+
+  it('reports TIMEOUT for a child it had to kill, and still removes its directory', async () => {
+    const timingRoot = path.join(root, 'timing');
+    await mkdir(timingRoot);
+    const run = await runNodeTimed(script, { timeout: 50, timingRoot });
+    expect(run.code).toBe('TIMEOUT');
+    expect(await readdir(timingRoot)).toEqual([]);
   });
 });

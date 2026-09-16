@@ -81,5 +81,5 @@ id_ed25519
 
 # Transient fixtures a test creates inside the checkout (RP-158); each prefix is
 # justified in test/helpers/in-repo-fixtures.json and removed by its test.
-/.codex-*/
-/.prepare-*/
+.codex-*/
+.prepare-*/
