@@ -50,8 +50,10 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
 Also: create-agent-rig memory <doctor|load> [args…]
   Run a Memory verb through the registered executable: the --version --json
   handshake first (a foreign contract major exits 4 and the verb never runs),
-  then the verb and its arguments verbatim, Memory's answer passed through
-  unchanged. No manifest answers unsupported/absent (exit 0); an invalid
+  then the verb and its arguments, Memory's answer passed through unchanged.
+  Your arguments go to Memory as written; a load that names no --timeout-ms
+  gets --timeout-ms 45000 appended (Memory's own deadline, kept under the rig's
+  60 s bound). No manifest answers unsupported/absent (exit 0); an invalid
   invocation exits 2.`;
 
 async function runSetup(rawArgs: string[]): Promise<number> {
@@ -359,7 +361,8 @@ async function main(): Promise<number> {
   }
   if (process.argv[2] === 'memory') {
     // The consumer path of the RP-19 handshake: manifest → `--version --json`
-    // → exit 4 on a foreign major → doctor/load passed through verbatim.
+    // → exit 4 on a foreign major → doctor/load passed through (`load` gains a
+    // default `--timeout-ms` when the caller names none — commands/memory.ts).
     const [verb = '', ...args] = process.argv.slice(3);
     const result = await runMemory({ verb, args });
     process.stdout.write(result.stdout);
