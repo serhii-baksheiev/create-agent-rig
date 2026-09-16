@@ -348,23 +348,28 @@ const TERMINAL_SEQUENCES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1
 const CONTROL_CHARACTERS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 const AUTHORIZATION_VALUE = /\b(?:Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}|\bAuthorization:\s*[^\s]+(?:\s+[^\s]+)?/gi;
 const DIAGNOSTIC_CAP = 200;
+// Redaction runs on this much of the line, and the 200-character cut comes
+// after it: cutting first can shorten a token below what its pattern needs and
+// print the prefix. Any token reaching into the first 200 characters is still
+// far longer than every pattern's minimum at this bound.
+const REDACTION_WINDOW = 4096;
 
 /**
  * One printable line of a subprocess's stderr: no terminal sequences or control
- * characters, the first non-empty line only, at most 200 characters, and every
- * credential shape the shared vocabulary knows — plus HTTP authorization values —
- * replaced by `[redacted]`.
+ * characters, the first non-empty line only, every credential shape the shared
+ * vocabulary knows — plus HTTP authorization values — replaced by `[redacted]`,
+ * and then at most 200 characters.
  */
 export const sanitizeDiagnostic = (text) => {
   const source = typeof text === 'string' ? text : String(text ?? '');
   const stripped = source.replace(TERMINAL_SEQUENCES, '').replace(CONTROL_CHARACTERS, '');
   const line = stripped.split('\n').find((candidate) => candidate.trim() !== '') ?? '';
-  let out = line.trim().slice(0, DIAGNOSTIC_CAP);
+  let out = line.trim().slice(0, REDACTION_WINDOW);
   out = out.replace(AUTHORIZATION_VALUE, '[redacted]');
   for (const { pattern } of SECRET_VALUE_PATTERNS) {
     out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`), '[redacted]');
   }
-  return out;
+  return out.slice(0, DIAGNOSTIC_CAP);
 };
 
 /**

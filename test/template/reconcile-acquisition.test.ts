@@ -353,6 +353,15 @@ describe('sanitizeDiagnostic — safe to print', () => {
     expect(out).toContain('[redacted]');
   });
 
+  it('redacts a token that the 200-character cap would cut, instead of printing its prefix', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    // The token starts at index 190, so the cap leaves `ghp_` plus six of its
+    // characters — too short for the credential pattern to recognise.
+    const out = sanitizeDiagnostic(`${'y'.repeat(189)} ${FAKE_GH_TOKEN}`);
+    expect(out.length).toBeLessThanOrEqual(200);
+    expect(out).not.toContain(FAKE_GH_TOKEN.slice(0, 6));
+  });
+
   it('redacts a Bearer authorization value', async () => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
     const out = sanitizeDiagnostic(`Authorization: Bearer ${FAKE_GH_TOKEN}`);
