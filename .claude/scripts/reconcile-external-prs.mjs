@@ -220,9 +220,11 @@ const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice
 // projection asks only for fields every `gh` has, and the association — the
 // trust signal — is fetched afterwards through one GraphQL query. When that
 // second step fails for any reason the base list is returned WITHOUT the field
-// and `reconcile()` treats those PRs as untrusted; a missing signal never
-// becomes a trusted one. Pinned in the generator's
-// test/template/reconcile-acquisition.test.ts (absent in a generated rig).
+// and `reconcile()` treats those PRs as untrusted, and an answer is kept only
+// when it names the same pull request URL the base list did — see the
+// generator's test/template/reconcile-acquisition.test.ts (absent in a generated rig)
+// › "reconcile() treats a PR that lost authorAssociation to a failed enrichment as untrusted when it crosses an elevated path"
+// and › "drops an association whose answer names a different pull request URL — another host or repository never becomes trust".
 
 /** The base projection: fields every supported `gh` serves. */
 const BASE_FIELDS = ['number', 'title', 'body', 'headRefName', 'mergedAt', 'url', 'files', 'changedFiles'];
@@ -234,9 +236,13 @@ const MAX_PRS = 100;
 const execGh = (file, args) =>
   execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
-/** A base record the rest of this script can read: an object with a numeric PR number. */
+/** A base record the rest of this script can read: an object with a positive PR number. */
 const isPrRecord = (row) =>
-  row !== null && typeof row === 'object' && !Array.isArray(row) && Number.isInteger(row.number);
+  row !== null &&
+  typeof row === 'object' &&
+  !Array.isArray(row) &&
+  Number.isSafeInteger(row.number) &&
+  row.number > 0;
 
 /**
  * The merged PRs since `since`, plus the warnings the acquisition produced.
@@ -270,7 +276,7 @@ export const fetchMergedPrs = (since, { exec = execGh } = {}) => {
   const prs = [];
   for (const row of parsed.slice(0, MAX_PRS)) {
     if (!isPrRecord(row)) {
-      warnings.push('a merged-PR record without a numeric `number` was dropped from the sweep');
+      warnings.push('a merged-PR record without a positive numeric `number` was dropped from the sweep');
       continue;
     }
     // Copy the base fields only; whatever else `gh` returned does not travel.
@@ -288,8 +294,15 @@ export const fetchMergedPrs = (since, { exec = execGh } = {}) => {
     return { prs, warnings };
   }
   for (const pr of prs) {
-    const value = associations.get(pr.number);
-    if (value === undefined) continue;
+    const answer = associations.get(pr.number);
+    if (answer === undefined) continue;
+    // `gh api graphql` asks its own default host, not the remote's: an answer
+    // about another pull request must never lend its association to this one.
+    if (typeof pr.url !== 'string' || answer.url !== pr.url) {
+      warnings.push(`PR #${pr.number}: an author association for a different pull request URL was dropped`);
+      continue;
+    }
+    const value = answer.authorAssociation;
     if (typeof value === 'string' && ASSOCIATION_SHAPE.test(value)) pr.authorAssociation = value;
     else warnings.push(`PR #${pr.number}: an author association of an unexpected shape was dropped`);
   }
@@ -297,9 +310,9 @@ export const fetchMergedPrs = (since, { exec = execGh } = {}) => {
 };
 
 /**
- * `number → authorAssociation` for the listed PRs through one GraphQL query, or
- * `null` when the answer cannot be trusted: a failed call, unusable JSON, a
- * repository name of an unexpected shape. Never throws.
+ * `number → { url, authorAssociation }` for the listed PRs through one GraphQL
+ * query, or `null` when the answer cannot be trusted: a failed call, unusable
+ * JSON, a repository name of an unexpected shape. Never throws.
  */
 const fetchAuthorAssociations = (prs, exec) => {
   try {
@@ -309,7 +322,7 @@ const fetchAuthorAssociations = (prs, exec) => {
     if (parts.length !== 2 || !parts.every((part) => /^[A-Za-z0-9_.-]{1,100}$/.test(part))) return null;
     const [owner, name] = parts;
     const fields = prs
-      .map((pr) => `pr${pr.number}: pullRequest(number: ${pr.number}) { authorAssociation }`)
+      .map((pr) => `pr${pr.number}: pullRequest(number: ${pr.number}) { url authorAssociation }`)
       .join(' ');
     const query = `query { repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
     const answer = JSON.parse(exec('gh', ['api', 'graphql', '-f', `query=${query}`]));
@@ -317,8 +330,9 @@ const fetchAuthorAssociations = (prs, exec) => {
     if (repository === null || typeof repository !== 'object') return null;
     const out = new Map();
     for (const pr of prs) {
-      const value = repository[`pr${pr.number}`]?.authorAssociation;
-      if (value !== undefined) out.set(pr.number, value);
+      const node = repository[`pr${pr.number}`];
+      if (node === null || typeof node !== 'object' || node.authorAssociation === undefined) continue;
+      out.set(pr.number, { url: node.url, authorAssociation: node.authorAssociation });
     }
     return out;
   } catch {
@@ -341,18 +355,28 @@ const STDERR_UNREACHABLE =
   /dial tcp|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|HTTP 5\d\d|could not connect|connection refused/i;
 const STDERR_UNSUPPORTED = /Unknown JSON field/i;
 // ESC-led sequences (CSI, OSC and the single-character escapes), then every
-// remaining C0/C1 control character. Two passes, each linear.
+// remaining C0/C1 control character except the line feed the next step splits
+// on. Two passes, each linear.
 // eslint-disable-next-line no-control-regex -- the pattern exists to remove these very bytes
 const TERMINAL_SEQUENCES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 // eslint-disable-next-line no-control-regex -- likewise
-const CONTROL_CHARACTERS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
+const CONTROL_CHARACTERS = /[\x00-\x09\x0B-\x1F\x7F-\x9F]/g;
 const AUTHORIZATION_VALUE = /\b(?:Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}|\bAuthorization:\s*[^\s]+(?:\s+[^\s]+)?/gi;
 const DIAGNOSTIC_CAP = 200;
-// Redaction runs on this much of the line, and the 200-character cut comes
-// after it: cutting first can shorten a token below what its pattern needs and
-// print the prefix. Any token reaching into the first 200 characters is still
-// far longer than every pattern's minimum at this bound.
+// Redaction runs on at most this much of the line, and the 200-character cut
+// comes after it: cutting first can shorten a token below what its pattern
+// needs and print the prefix. When the window itself cuts the line, the last
+// whitespace-free run is dropped before redaction, so no token is ever
+// shortened by a cut — earlier redactions shorten the line and could otherwise
+// slide such a stub into the output.
 const REDACTION_WINDOW = 4096;
+
+/** `text` without its trailing whitespace-free run. One backward pass. */
+const dropTrailingRun = (text) => {
+  let end = text.length;
+  while (end > 0 && !/\s/.test(text[end - 1])) end -= 1;
+  return text.slice(0, end);
+};
 
 /**
  * One printable line of a subprocess's stderr: no terminal sequences or control
@@ -363,8 +387,8 @@ const REDACTION_WINDOW = 4096;
 export const sanitizeDiagnostic = (text) => {
   const source = typeof text === 'string' ? text : String(text ?? '');
   const stripped = source.replace(TERMINAL_SEQUENCES, '').replace(CONTROL_CHARACTERS, '');
-  const line = stripped.split('\n').find((candidate) => candidate.trim() !== '') ?? '';
-  let out = line.trim().slice(0, REDACTION_WINDOW);
+  const line = (stripped.split('\n').find((candidate) => candidate.trim() !== '') ?? '').trim();
+  let out = line.length > REDACTION_WINDOW ? dropTrailingRun(line.slice(0, REDACTION_WINDOW)) : line;
   out = out.replace(AUTHORIZATION_VALUE, '[redacted]');
   for (const { pattern } of SECRET_VALUE_PATTERNS) {
     out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`), '[redacted]');
@@ -375,7 +399,9 @@ export const sanitizeDiagnostic = (text) => {
 /**
  * The cause the evidence supports, and nothing more. `detail` is the sanitized
  * first stderr line — the actionable remainder for an `unknown` failure, and
- * the matched line for the evidenced ones — or `null` when there was none.
+ * the matched line for the evidenced ones — or `null` when there was none. An
+ * `unknown` failure with no stderr falls back to the error's own message; the
+ * other causes never do, because a parse error's message quotes `gh` output.
  */
 export const classifyAcquisitionFailure = (error) => {
   const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
@@ -387,6 +413,9 @@ export const classifyAcquisitionFailure = (error) => {
   if (STDERR_UNSUPPORTED.test(stderr)) return { cause: 'unsupported-projection', detail };
   if (STDERR_UNAUTHENTICATED.test(stderr)) return { cause: 'gh-unauthenticated', detail };
   if (STDERR_UNREACHABLE.test(stderr)) return { cause: 'api-unreachable', detail };
+  if (detail === null && typeof error?.message === 'string' && error.message.trim() !== '') {
+    return { cause: 'unknown', detail: sanitizeDiagnostic(error.message) };
+  }
   return { cause: 'unknown', detail };
 };
 

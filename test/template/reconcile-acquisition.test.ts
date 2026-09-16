@@ -28,11 +28,9 @@ import { describe, expect, it } from 'vitest';
 //
 // The `--input` offline CLI path is exercised directly (acceptance #4); the
 // live `gh api graphql` / `gh repo view` calls are exercised through an
-// injected `exec` fake rather than a real subprocess, per the item's own
-// guidance that a fake `gh` binary is hard to stub for this shape of call —
-// this is what lets the CLI's exact message text be pinned without a live
-// `gh`. Acceptance #6 (live enumeration against a real `gh`) is out of scope
-// for this file; it is not something a deterministic suite can pin.
+// injected `exec` fake rather than a real subprocess. Acceptance #6 (live
+// enumeration against a real `gh`) is out of scope for this file; it is not
+// something a deterministic suite can pin.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
@@ -47,15 +45,16 @@ const ELEVATED = ['infra/', 'packages/db/src/', 'services/api/src/handlers/auth.
 const FAKE_GH_TOKEN = ['ghp_', 'abcdefghijklmnopqrstuvwxyz123456'].join('');
 
 /** A merged PR, in the shape `gh pr list --json` returns. */
+const prUrl = (n: number) => `https://example.invalid/acme/widgets/pull/${n}`;
 const pr = (over: Record<string, unknown> = {}) => ({
   number: 1,
   title: 'feat: add a route',
   body: 'Some description.',
   headRefName: 'feat/12-add-a-route',
   mergedAt: '2026-07-20T10:00:00Z',
-  url: 'https://example.invalid/pr/1',
   files: ['services/api/src/usecases/create-note.ts'],
   ...over,
+  url: typeof over.url === 'string' ? over.url : prUrl(Number(over.number ?? 1)),
 });
 
 interface ExecCall {
@@ -124,7 +123,9 @@ describe('fetchMergedPrs — optional enrichment through a compatible REST/Graph
     const { exec, calls } = fakeGh({
       prList: JSON.stringify(base),
       repoView: JSON.stringify({ nameWithOwner: 'acme/widgets' }),
-      graphql: JSON.stringify({ data: { repository: { pr7: { authorAssociation: 'OWNER' } } } }),
+      graphql: JSON.stringify({
+        data: { repository: { pr7: { url: prUrl(7), authorAssociation: 'OWNER' } } },
+      }),
     });
     await fetchMergedPrs('2026-07-01', { exec });
 
@@ -147,8 +148,8 @@ describe('fetchMergedPrs — optional enrichment through a compatible REST/Graph
       graphql: JSON.stringify({
         data: {
           repository: {
-            pr7: { authorAssociation: 'OWNER' },
-            pr9: { authorAssociation: 'CONTRIBUTOR' },
+            pr7: { url: prUrl(7), authorAssociation: 'OWNER' },
+            pr9: { url: prUrl(9), authorAssociation: 'CONTRIBUTOR' },
           },
         },
       }),
@@ -192,6 +193,29 @@ describe('fetchMergedPrs — optional enrichment through a compatible REST/Graph
     expect(warnings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('drops an association whose answer names a different pull request URL — another host or repository never becomes trust', async () => {
+    const { fetchMergedPrs, reconcile } = await load('reconcile-external-prs.mjs');
+    const base = [
+      pr({ number: 7, headRefName: 'patch-1', body: 'fixes #40', files: ['infra/a.ts'] }),
+    ];
+    const { exec, calls } = fakeGh({
+      prList: JSON.stringify(base),
+      graphql: JSON.stringify({
+        data: {
+          repository: {
+            pr7: { url: 'https://github.com/acme/widgets/pull/7', authorAssociation: 'OWNER' },
+          },
+        },
+      }),
+    });
+    const { prs, warnings } = await fetchMergedPrs('2026-07-01', { exec });
+    const apiCall = calls.find((c) => c.args[0] === 'api');
+    expect(apiCall!.args.join(' ')).toMatch(/url/);
+    expect(prs[0].authorAssociation).toBeUndefined();
+    expect(warnings.join(' ')).toMatch(/#7/);
+    expect(reconcile({ prs, elevatedPaths: ELEVATED }).external[0].untrustedOrigin).toBe(true);
+  });
+
   it('reconcile() treats a PR that lost authorAssociation to a failed enrichment as untrusted when it crosses an elevated path', async () => {
     const { fetchMergedPrs, reconcile } = await load('reconcile-external-prs.mjs');
     const base = [
@@ -211,7 +235,9 @@ describe('fetchMergedPrs — validating and sanitizing fallback data', () => {
     const { exec } = fakeGh({
       prList: JSON.stringify(base),
       graphql: JSON.stringify({
-        data: { repository: { pr7: { authorAssociation: 'owner; DROP TABLE prs;' } } },
+        data: {
+          repository: { pr7: { url: prUrl(7), authorAssociation: 'owner; DROP TABLE prs;' } },
+        },
       }),
     });
     const { prs, warnings } = await fetchMergedPrs('2026-07-01', { exec });
@@ -227,6 +253,17 @@ describe('fetchMergedPrs — validating and sanitizing fallback data', () => {
     const { prs, warnings } = await fetchMergedPrs('2026-07-01', { exec });
     expect(prs.map((p: { number: number }) => p.number)).toEqual([1]);
     expect(warnings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('drops a base record whose PR number is not a positive safe integer, with a warning', async () => {
+    const { fetchMergedPrs } = await load('reconcile-external-prs.mjs');
+    const { exec, calls } = fakeGh({
+      prList: JSON.stringify([pr({ number: -3 }), pr({ number: 2 ** 60 })]),
+    });
+    const { prs, warnings } = await fetchMergedPrs('2026-07-01', { exec });
+    expect(prs).toHaveLength(0);
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(calls.some((c) => c.args[0] === 'api')).toBe(false);
   });
 
   it('drops a base record lacking a numeric PR number, with a warning', async () => {
@@ -304,6 +341,14 @@ describe('classifyAcquisitionFailure — an evidenced cause, never a guess', () 
     expect(classifyAcquisitionFailure(error).cause).toBe('unknown');
   });
 
+  it('falls back to the sanitized error message as detail for an unknown cause with no stderr', async () => {
+    const { classifyAcquisitionFailure } = await load('reconcile-external-prs.mjs');
+    const error = Object.assign(new Error('spawnSync gh EACCES'), { code: 'EACCES' });
+    const result = classifyAcquisitionFailure(error);
+    expect(result.cause).toBe('unknown');
+    expect(result.detail).toContain('EACCES');
+  });
+
   it('carries the sanitized first stderr line as detail for an unknown cause, with credentials redacted', async () => {
     const { classifyAcquisitionFailure } = await load('reconcile-external-prs.mjs');
     const error = Object.assign(new Error('boom'), {
@@ -339,6 +384,13 @@ describe('sanitizeDiagnostic — safe to print', () => {
     );
   });
 
+  it('removes a carriage return and a tab inside the line', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const out = sanitizeDiagnostic('HTTP 404: x\rlane reconciliation: all clean\tdone');
+    expect(out).not.toMatch(/[\r\t]/);
+    expect(out).toContain('all clean');
+  });
+
   it('caps a diagnostic line at 200 characters', async () => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
     const out = sanitizeDiagnostic('x'.repeat(300));
@@ -360,6 +412,16 @@ describe('sanitizeDiagnostic — safe to print', () => {
     const out = sanitizeDiagnostic(`${'y'.repeat(189)} ${FAKE_GH_TOKEN}`);
     expect(out.length).toBeLessThanOrEqual(200);
     expect(out).not.toContain(FAKE_GH_TOKEN.slice(0, 6));
+  });
+
+  it('does not print a token cut at the redaction window after earlier redactions shorten the line', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const long = ['ghp_', 'A'.repeat(2035)].join('');
+    const cut = ['ghp_', 'SECRETPART12', 'B'.repeat(40)].join('');
+    // two 2039-character tokens, then a third starting at offset 4084
+    const out = sanitizeDiagnostic(`${long} ${long} xyz ${cut}`);
+    expect(out).not.toContain('ghp_SECRET');
+    expect(out.length).toBeLessThanOrEqual(200);
   });
 
   it('redacts a Bearer authorization value', async () => {
