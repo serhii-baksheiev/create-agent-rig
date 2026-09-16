@@ -1,9 +1,10 @@
-import { mkdtemp, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
 import { installEnv, runNpx, runPackageManager } from './run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // Phase 8.3: the npm-publish path differs from the git path exactly where
 // scaffolders classically break — the packed file set and the file modes.
@@ -30,7 +31,7 @@ describe('npm pack → install → generate (the publish path)', () => {
   });
 
   afterAll(async () => {
-    await rm(work, { recursive: true, force: true });
+    await removeFixture(work);
   });
 
   it('the tarball carries the un-dotted gitignore (npm strips the dotted form)', () => {

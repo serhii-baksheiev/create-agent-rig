@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { safeReason } from '../../.claude/scripts/revalidate.mjs';
 // @ts-expect-error - see above
 import { DEFAULT_SCAN_LIMIT } from '../../.claude/scripts/lib/secrets.mjs';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -69,7 +70,7 @@ describe('revalidate: an adapter it cannot read is UNVERIFIABLE, not a crash', (
   });
 
   afterEach(async () => {
-    await rm(work, { recursive: true, force: true });
+    await removeFixture(work);
   });
 
   it('returns a structured verdict rather than a Node stack trace when credentials are missing', async () => {

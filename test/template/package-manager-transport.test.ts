@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { packageManagerInvocation, run, runPackageManager } from '../e2e/run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const literalArgs = ['space value', '&|<>^%!()', 'single "double"', ''];
 
@@ -21,7 +22,7 @@ describe('package-manager transport', () => {
   });
 
   afterEach(async () => {
-    await rm(work, { recursive: true, force: true });
+    await removeFixture(work);
   });
 
   it.each(['npm', 'pnpm', 'npx'] as const)(

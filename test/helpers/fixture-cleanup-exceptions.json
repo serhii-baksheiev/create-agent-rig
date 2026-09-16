@@ -1,0 +1,34 @@
+[
+  {
+    "file": "test/template/fixture-cleanup-audit.test.ts",
+    "reason": "The audit's own in-memory examples are rm(...) strings fed to the scanner, not removals."
+  },
+  {
+    "file": "test/template/remove-fixture.test.ts",
+    "reason": "A comment naming the call shape the helper replaces, not a removal."
+  },
+  {
+    "file": "templates/skeleton/node-service/packages/db/test/note-store.test.ts",
+    "reason": "A generated project's own test: it cannot import the generator's test/helpers, and its cleanup belongs to that project."
+  },
+  {
+    "file": "templates/skeleton/node-service/services/api/test/artifact.test.ts",
+    "reason": "A generated project's own test: it cannot import the generator's test/helpers, and its cleanup belongs to that project."
+  },
+  {
+    "file": "templates/skeleton/node-service/services/api/test/package-manager.test.ts",
+    "reason": "A generated project's own test: it cannot import the generator's test/helpers, and its cleanup belongs to that project."
+  },
+  {
+    "file": "templates/skeleton/node-service/services/api/test/server.test.ts",
+    "reason": "A generated project's own test: it cannot import the generator's test/helpers, and its cleanup belongs to that project."
+  },
+  {
+    "file": "templates/skeleton/node-service/services/api/test/spool-publisher.test.ts",
+    "reason": "A generated project's own test: it cannot import the generator's test/helpers, and its cleanup belongs to that project."
+  },
+  {
+    "file": "templates/skeleton/node-service/services/worker/test/spool.test.ts",
+    "reason": "A generated project's own test: it cannot import the generator's test/helpers, and its cleanup belongs to that project."
+  }
+]

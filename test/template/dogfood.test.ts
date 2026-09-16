@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { needsGit, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -391,7 +392,7 @@ describe('the secrets block the skeletons ship is live in this repository too', 
         { cwd: dir, env },
       ).catch(() => ({ stdout: '' }));
 
-      await rm(dir, { recursive: true, force: true });
+      await removeFixture(dir);
       expect(stdout.split('\t')[0], `${file} is not ignored by the skeleton`).toMatch(
         /^\.gitignore:\d+:/,
       );

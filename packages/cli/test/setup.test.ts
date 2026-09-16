@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileRunner, setupSubsystems } from '../src/commands/setup.js';
 import { subsystemsManifestPath } from '../src/lib/subsystems.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 /**
  * The injected process runner, same shape `subsystems.test.ts` pins:
@@ -82,8 +83,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(home, { recursive: true, force: true });
-  await rm(memoryRoot, { recursive: true, force: true });
+  await removeFixture(home);
+  await removeFixture(memoryRoot);
 });
 
 describe('create-agent-rig setup (RP-147)', () => {

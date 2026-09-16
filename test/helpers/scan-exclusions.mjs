@@ -1,7 +1,7 @@
 /**
  * The one list of what a repository-wide scan skips (RP-155).
  *
- * Two kinds of exclusion, and they are different facts:
+ * Three kinds of exclusion, and they are different facts:
  *   - a directory NAME skipped wherever it sits — `node_modules`, `.git`;
  *   - a repository-relative PATH skipped as a whole subtree — `.claude/worktrees`,
  *     where the `worktree-task` skill puts a session's sibling checkouts. A
@@ -10,11 +10,14 @@
  *     files as this one's: consistency.test.ts once flagged
  *     `.claude/worktrees/<name>/journal/2026-08.md:311` once per worktree
  *     present, and the root eslint saw two project roots and refused every
- *     TypeScript file.
+ *     TypeScript file;
+ *   - a NAME PREFIX skipped as a top-level entry only — the transient fixture
+ *     directories a test creates inside the checkout (RP-158), each justified in
+ *     test/helpers/in-repo-fixtures.json.
  *
  * Every scanner that can reach `.claude/` imports this module rather than
  * carrying a literal — `.claude/rules/invariants.md`, "one mechanism, one
- * implementation" — and `SCAN_IGNORE_GLOBS` is the same two facts in the
+ * implementation" — and `SCAN_IGNORE_GLOBS` is the same three facts in the
  * spelling ESLint's flat-config `ignores` takes, derived here so the root
  * eslint.config.mjs cannot drift from the walkers. Plain JavaScript on purpose:
  * eslint.config.mjs runs before any TypeScript build exists.
@@ -30,31 +33,49 @@
  * .git as skipped wherever they sit, and .claude/worktrees as a skipped
  * subtree", › "skipsScan refuses a worktree path, a nested node_modules, and
  * nothing else", › "filesBelow does not report a file inside a nested checkout
- * under .claude/worktrees/, and still reports its siblings" and › "the ESLint
- * ignore globs are the same facts, not a third spelling".
+ * under .claude/worktrees/, and still reports its siblings", › "the ESLint
+ * ignore globs are the same facts, not a third spelling", › "takes the in-repository
+ * fixture prefixes from in-repo-fixtures.json, in its order" and › "skipsScan refuses
+ * a transient in-repository fixture at the root, and the same name anywhere else is
+ * scanned".
  */
+import { readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 export const SKIPPED_DIRECTORY_NAMES = Object.freeze(['node_modules', '.git']);
 export const SKIPPED_REPOSITORY_PATHS = Object.freeze(['.claude/worktrees']);
+/**
+ * A third fact (RP-158): the name prefixes of the transient fixture directories
+ * a test creates at the repository root, read from the file that justifies
+ * each one — test/helpers/in-repo-fixtures.json — so the list has one spelling.
+ * Skipped only as a top-level entry; `.codex/` itself does not match `.codex-`.
+ */
+export const IN_REPO_FIXTURE_PREFIXES = Object.freeze(
+  JSON.parse(readFileSync(new URL('./in-repo-fixtures.json', import.meta.url), 'utf8')).map(
+    (entry) => entry.prefix,
+  ),
+);
 export const SCAN_IGNORE_GLOBS = Object.freeze([
   ...SKIPPED_DIRECTORY_NAMES.map((name) => `**/${name}/**`),
   ...SKIPPED_REPOSITORY_PATHS.map((rel) => `${rel}/**`),
+  ...IN_REPO_FIXTURE_PREFIXES.map((prefix) => `${prefix}*/**`),
 ]);
 
 const toPosix = (value) => value.split(path.sep).join('/');
 
 /**
  * Whether a repository scan skips `absolutePath` (a file or a directory) —
- * because one of its segments below `repoRoot` is a skipped name, or because
- * its repository-relative path is, or lies under, a skipped subtree.
+ * because one of its segments below `repoRoot` is a skipped name, its first
+ * segment starts with an in-repository fixture prefix, or its
+ * repository-relative path is, or lies under, a skipped subtree.
  */
 export const skipsScan = (repoRoot, absolutePath) => {
   const relative = toPosix(path.relative(repoRoot, absolutePath));
   if (relative === '' || relative.startsWith('..')) return false;
   const segments = relative.split('/');
   if (segments.some((segment) => SKIPPED_DIRECTORY_NAMES.includes(segment))) return true;
+  if (IN_REPO_FIXTURE_PREFIXES.some((prefix) => segments[0].startsWith(prefix))) return true;
   return SKIPPED_REPOSITORY_PATHS.some((rel) => relative === rel || relative.startsWith(`${rel}/`));
 };
 

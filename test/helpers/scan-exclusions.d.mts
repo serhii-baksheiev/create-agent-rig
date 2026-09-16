@@ -3,6 +3,7 @@
 // and the TypeScript tests import it statically through this declaration.
 export const SKIPPED_DIRECTORY_NAMES: readonly string[];
 export const SKIPPED_REPOSITORY_PATHS: readonly string[];
+export const IN_REPO_FIXTURE_PREFIXES: readonly string[];
 export const SCAN_IGNORE_GLOBS: readonly string[];
 export function skipsScan(repoRoot: string, absolutePath: string): boolean;
 export function filesBelow(

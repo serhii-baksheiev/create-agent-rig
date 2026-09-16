@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // This file matches the benchmark project's file glob (vitest.config.ts) even
 // though each case is a short, bounded real-process test — it is verified
@@ -50,7 +51,7 @@ describe('policy benchmark exit trace preload', () => {
   });
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    await removeFixture(root);
   });
 
   it(

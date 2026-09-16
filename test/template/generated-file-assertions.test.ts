@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 type GeneratedFilesModule = {
   filesContaining(root: string, needle: string): Promise<string[]>;
@@ -24,7 +25,7 @@ const withFixture = async <Result>(test: (root: string) => Promise<Result>): Pro
   try {
     return await test(root);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeFixture(root);
   }
 };
 

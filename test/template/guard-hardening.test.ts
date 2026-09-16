@@ -5,6 +5,12 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import {
+  CHILD_TIMING_ENV,
+  CHILD_TIMING_IMPORT,
+  readChildElapsedMs,
+} from '../helpers/child-timing.js';
+
 // Round 3 of the review, and the last one that adds rules.
 //
 // Rounds 1→2→3 each fixed the previous round by ADDING a construct, and each
@@ -186,8 +192,31 @@ describe('a dangerous command cannot be un-guarded by making the hook crash', ()
       // correctly allowed and is not a hostile shape.)
       ['deep braces as a decoy', `rm -rf / ${'{a,b}'.repeat(5_000)}`],
     ];
+    // In-child measurement (RP-158): bound the GUARD's own work, not the
+    // parent's wall clock around spawning it. See child-timing.test.ts.
+    async function runHookTimed(command: string): Promise<{ code: number | string; ms: number }> {
+      const timingDir = await mkdtemp(path.join(tmpdir(), 'guard-hardening-timing-'));
+      const timingFile = path.join(timingDir, 'elapsed.json');
+      const code = await new Promise<number | string>((resolve, reject) => {
+        const child = execFile(
+          process.execPath,
+          ['--import', CHILD_TIMING_IMPORT, hook],
+          { env: { ...process.env, [CHILD_TIMING_ENV]: timingFile }, timeout: 10_000 },
+          (error) => {
+            const killed = (error as { killed?: boolean } | null)?.killed;
+            resolve(killed ? 'TIMEOUT' : error ? ((error as { code?: number }).code ?? 1) : 0);
+          },
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.write(JSON.stringify({ tool_name: 'Bash', tool_input: { command } }));
+        child.stdin.end();
+      });
+      const ms = await readChildElapsedMs(timingFile);
+      return { code, ms };
+    }
+
     for (const [label, command] of shapes) {
-      const result = await runHook(command);
+      const result = await runHookTimed(command);
       expect(result.code, `${label} must not fail open`).toBe(2);
       expect(result.ms, `${label} took ${result.ms}ms`).toBeLessThan(3000);
     }

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,7 @@ import {
   needsNonRoot,
   skipUnless,
 } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR-107: a test that cannot run in this environment says so, by name, instead
 // of failing on a symptom (a missing .git, an EACCES root never sees). These
@@ -25,7 +26,7 @@ beforeAll(async () => {
   tmp = await mkdtemp(path.join(tmpdir(), 'test-env-helpers-'));
 });
 afterAll(async () => {
-  await rm(tmp, { recursive: true, force: true });
+  await removeFixture(tmp);
 });
 
 // A fake TestContext: only `skip` is exercised, so only `skip` is provided.

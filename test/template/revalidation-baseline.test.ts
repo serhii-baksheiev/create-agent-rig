@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * AR-138 compatibility evidence crosses runs, while RP-50 makes the durable
@@ -47,7 +48,7 @@ const scratch = async (prefix: string): Promise<string> => {
   return dir;
 };
 afterAll(async () => {
-  await Promise.all(created.map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(created.map((dir) => removeFixture(dir)));
 });
 
 /** A runs root with N earlier run directories, each holding the state given. */

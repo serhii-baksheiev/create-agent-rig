@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { guardProcessesMeasurable, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 type BenchmarkEnvironment = Record<string, string>;
 type SchemaModule = {
@@ -375,8 +376,8 @@ describe('policy benchmark security boundaries', () => {
         "sessionMessagingSchema = { $id: 'fixture' }",
       );
     } finally {
-      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-      await rm(destination, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      await removeFixture(root);
+      await removeFixture(destination);
     }
   });
 
@@ -407,8 +408,8 @@ describe('policy benchmark security boundaries', () => {
         }),
       ).rejects.toThrow(/symlink|symbolic link/i);
     } finally {
-      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-      await rm(destination, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      await removeFixture(root);
+      await removeFixture(destination);
     }
   });
 
@@ -439,8 +440,8 @@ describe('policy benchmark security boundaries', () => {
         false,
       );
     } finally {
-      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-      await rm(destination, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      await removeFixture(root);
+      await removeFixture(destination);
     }
   });
 
@@ -469,7 +470,7 @@ describe('policy benchmark security boundaries', () => {
         expect(await readFile(sentinel, 'utf8')).toBe('must survive malicious target metadata\n');
       } finally {
         await rm(sentinel, { force: true });
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        await removeFixture(root);
       }
     },
   );
@@ -528,7 +529,7 @@ describe('policy benchmark security boundaries', () => {
       } finally {
         await rm(synchronised, { force: true });
         await rm(release, { force: true });
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        await removeFixture(root);
       }
     },
   );
@@ -588,8 +589,8 @@ describe('policy benchmark security boundaries', () => {
       } finally {
         await rm(synchronised, { force: true });
         await rm(release, { force: true });
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-        await rm(verifier, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        await removeFixture(root);
+        await removeFixture(verifier);
       }
     },
   );
@@ -626,7 +627,7 @@ describe('policy benchmark security boundaries', () => {
         );
         expect(result.err).not.toContain(root);
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        await removeFixture(root);
       }
     },
   );
@@ -661,8 +662,8 @@ describe('policy benchmark security boundaries', () => {
         expect(result.code).not.toBe(0);
         expect(`${result.out}\n${result.err}`).toMatch(/verifier changed|hold|fingerprint/i);
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-        await rm(verifier, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        await removeFixture(root);
+        await removeFixture(verifier);
       }
     },
   );
@@ -713,7 +714,7 @@ describe('policy benchmark security boundaries', () => {
           false,
         );
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        await removeFixture(root);
       }
     },
   );
@@ -758,7 +759,7 @@ describe('policy benchmark security boundaries', () => {
           false,
         );
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        await removeFixture(root);
       }
     },
   );

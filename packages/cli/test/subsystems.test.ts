@@ -19,6 +19,7 @@ import type { HandshakeResult, MemoryEntry, SubsystemsManifest } from '../src/li
 // the assertion (readable) rather than at module load (which would blank out
 // every other test in this file).
 import * as subsystemsModule from '../src/lib/subsystems.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 /**
  * The injected process runner: `(file, args, { timeoutMs }) => Promise<{ code, stdout, stderr, spawnError? }>`.
@@ -79,7 +80,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
+  await removeFixture(tmp);
 });
 
 /** A memoryRoot with the one executable `deriveMemoryEntry` requires. */

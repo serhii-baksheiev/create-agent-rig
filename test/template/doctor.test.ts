@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * AR-5 — the harness audits itself: every hook the project OWNS has a test
@@ -246,7 +247,7 @@ describe('the CLI audits a rig on disk', () => {
 
   it('names an absent .husky/ instead of staying silent about it', async () => {
     const dir = await rig();
-    await rm(path.join(dir, '.husky'), { recursive: true, force: true });
+    await removeFixture(path.join(dir, '.husky'));
     const { stdout } = await run(['--root', dir]);
     expect(stdout).toMatch(/_Not present, so not audited: \.husky\._/);
     expect(stdout).not.toMatch(/\.husky\/pre-commit/);

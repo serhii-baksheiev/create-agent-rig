@@ -1,9 +1,10 @@
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { copyTree, mapConcurrent } from '../src/lib/copy-tree.js';
 import { modeBitsDeny, skipUnless } from '../../../test/helpers/env.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 let work: string;
 
@@ -12,7 +13,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(work, { recursive: true, force: true });
+  await removeFixture(work);
 });
 
 async function makeSrc(files: Record<string, string | Buffer>): Promise<string> {

@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { validateEvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * RP-173: one closed routing policy (`templates/agent-os/subagent-routing.json`)
@@ -557,7 +558,7 @@ async function withGeneratorCopy(run: (root: string) => Promise<void>): Promise<
     await cp(agentOs, path.join(root, 'templates', 'agent-os'), { recursive: true });
     await run(root);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeFixture(root);
   }
 }
 

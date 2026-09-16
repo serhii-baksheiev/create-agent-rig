@@ -1,9 +1,10 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CreateError, createProject } from '../src/commands/create.js';
 import { gitEnv } from '../src/lib/git-env.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 let work: string;
 
@@ -12,7 +13,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(work, { recursive: true, force: true });
+  await removeFixture(work);
 });
 
 // 60 s: each case copies a whole template tree; measured on windows-latest at

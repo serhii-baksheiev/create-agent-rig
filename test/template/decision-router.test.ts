@@ -5,7 +5,6 @@ import {
   mkdtemp,
   readFile,
   readdir,
-  rm,
   stat,
   symlink,
   writeFile,
@@ -14,6 +13,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR3-5: the decision router — the dispatcher that decides WHICH gate a change
 // deserves, in ascending order of cost (deterministic → fast-path → model), with
@@ -100,7 +100,7 @@ const temp = async (prefix: string): Promise<string> => {
   return dir;
 };
 afterAll(async () => {
-  await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(tempDirs.map((dir) => removeFixture(dir)));
 });
 
 /**

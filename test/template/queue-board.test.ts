@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // A queue config can name several boards and switch between them per checkout,
 // without editing the composed `queue.json`: the generator's own repo runs on
@@ -277,11 +278,7 @@ describe('boards in queue.json', () => {
       await expect(readFile(targetSelector, 'utf8')).rejects.toThrow();
     } finally {
       clearUnattended(targetEnv);
-      await Promise.all(
-        [caller, target, home].map((fixturePath) =>
-          rm(fixturePath, { recursive: true, force: true }),
-        ),
-      );
+      await Promise.all([caller, target, home].map((fixturePath) => removeFixture(fixturePath)));
     }
   });
 

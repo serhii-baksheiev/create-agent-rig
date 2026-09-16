@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { GIT_LOCATION_VARS as varsInTheCli } from '../../packages/cli/src/lib/git-env.js';
 import { stubCommand } from '../helpers/stub-command.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const execFileAsync = promisify(execFile);
@@ -92,7 +93,7 @@ const runPrepare = async (ci: string | undefined): Promise<string[]> => {
       throw error;
     }
   } finally {
-    await rm(fixture, { recursive: true, force: true });
+    await removeFixture(fixture);
   }
 };
 
@@ -189,7 +190,7 @@ describe('prepare.mjs — git config must not be written into another repository
           read,
         ).toEqual([]);
       } finally {
-        await rm(fixture, { recursive: true, force: true });
+        await removeFixture(fixture);
       }
     },
   );

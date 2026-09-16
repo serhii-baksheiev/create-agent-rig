@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { validateEvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
 import type { EvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // RP-120, narrowed to the Rig's own state: which parts of it two sessions on
 // one machine share, which of the shared part is protected, and the ruling that
@@ -77,7 +78,7 @@ describe('racing gate-round callers lose increments but never the counter file',
       expect(counter['fix/race']).toBeLessThanOrEqual(callers);
       expect(await readdir(dir)).toEqual(['gate-rounds.json']);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeFixture(dir);
     }
   });
 });
@@ -87,7 +88,7 @@ describe('two sessions in one directory share one unattended flag, and nothing r
   let home = '';
 
   afterEach(async () => {
-    if (home) await rm(home, { recursive: true, force: true });
+    if (home) await removeFixture(home);
     home = '';
   });
 

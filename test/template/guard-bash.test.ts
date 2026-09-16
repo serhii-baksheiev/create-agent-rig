@@ -5,6 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import {
+  CHILD_TIMING_ENV,
+  CHILD_TIMING_IMPORT,
+  readChildElapsedMs,
+} from '../helpers/child-timing.js';
+
 // The adversarial pass over guard-bash found 26 false negatives and 6 false
 // positives. Root cause of nearly all of them: the hook matched with REGEXES over
 // a string it had split on separators BEFORE it understood quoting. A commit
@@ -266,10 +272,27 @@ describe('guard-bash: what it allows because there is nothing to judge', () => {
 
   it('does not hang or crash on pathological input', async () => {
     const long = `git commit -m "${'a;b&&c '.repeat(2000)}"`;
-    const started = Date.now();
-    const result = await runHook(long);
+    // In-child measurement (RP-158): the assertion below bounds the GUARD's own
+    // work, not the parent's wall clock around spawning it — under contention
+    // the latter also counts scheduler queueing that has nothing to do with the
+    // guard. See child-timing.test.ts for the contract.
+    const timingDir = await mkdtemp(path.join(tmpdir(), 'guard-bash-timing-'));
+    const timingFile = path.join(timingDir, 'elapsed.json');
+    const result = await new Promise<{ code: number | string }>((resolve, reject) => {
+      const child = execFile(
+        process.execPath,
+        ['--import', CHILD_TIMING_IMPORT, hook],
+        { env: { ...process.env, [CHILD_TIMING_ENV]: timingFile } },
+        (error) => {
+          resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0 });
+        },
+      );
+      if (!child.stdin) return reject(new Error('no stdin'));
+      child.stdin.write(JSON.stringify({ tool_name: 'Bash', tool_input: { command: long } }));
+      child.stdin.end();
+    });
     expect(result.code).toBe(0);
-    expect(Date.now() - started).toBeLessThan(5000);
+    expect(await readChildElapsedMs(timingFile)).toBeLessThan(5000);
   });
 });
 

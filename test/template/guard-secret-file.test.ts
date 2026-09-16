@@ -1,11 +1,17 @@
 import { execFile } from 'node:child_process';
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY, GITHUB_PAT, PEM_HEADER } from './secrets-fixtures.js';
+import {
+  CHILD_TIMING_ENV,
+  CHILD_TIMING_IMPORT,
+  readChildElapsedMs,
+} from '../helpers/child-timing.js';
 import { needsGitRoot, skipUnless } from '../helpers/env.js';
 
 // AR-49(b), the PreToolUse half of the "both layers, one shared module" ruling.
@@ -376,13 +382,33 @@ describe('guard-secret-file: it fails open on anything it does not understand', 
   // Bounded work is the other half of failing open: any input that can make the
   // guard hang is a total bypass of every rule it enforces.
   it('returns promptly on a very large harmless write', async () => {
-    const started = Date.now();
-    const result = await allow(
-      write('notes.md', 'ordinary prose about tokens and passwords\n'.repeat(120_000)),
-      'five megabytes of harmless text',
+    // In-child measurement (RP-158): bound the GUARD's own work, not the
+    // parent's wall clock around spawning it. See child-timing.test.ts.
+    const timingDir = await mkdtemp(path.join(tmpdir(), 'guard-secret-file-timing-'));
+    const timingFile = path.join(timingDir, 'elapsed.json');
+    const payload = write(
+      'notes.md',
+      'ordinary prose about tokens and passwords\n'.repeat(120_000),
     );
-    expect(result.code).toBe(0);
-    expect(Date.now() - started).toBeLessThan(10_000);
+    const result = await new Promise<HookResult>((resolve, reject) => {
+      const child = execFile(
+        process.execPath,
+        ['--import', CHILD_TIMING_IMPORT, hook],
+        { env: { ...process.env, [CHILD_TIMING_ENV]: timingFile } },
+        (error, _stdout, stderr) => {
+          resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
+        },
+      );
+      if (!child.stdin) return reject(new Error('no stdin'));
+      child.stdin.on('error', () => {});
+      child.stdin.write(JSON.stringify(payload));
+      child.stdin.end();
+    });
+    expect(
+      result.code,
+      `should ALLOW: five megabytes of harmless text\nstderr: ${result.stderr}`,
+    ).toBe(0);
+    expect(await readChildElapsedMs(timingFile)).toBeLessThan(10_000);
   });
 });
 

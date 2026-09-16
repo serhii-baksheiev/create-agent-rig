@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { inspect } from 'node:util';
@@ -12,6 +12,7 @@ import {
   redactUrlCredentials,
   run,
 } from '../e2e/run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * RP-70: the `npx` install paths threw Node's bare `Command failed: <cmd>`, so a
@@ -248,7 +249,7 @@ describe('npmDebugLogs', () => {
   });
 
   afterEach(async () => {
-    await rm(cache, { recursive: true, force: true });
+    await removeFixture(cache);
   });
 
   // `npx` leaves two logs, and the outer `npm exec` one is written LAST while

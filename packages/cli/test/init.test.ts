@@ -10,6 +10,7 @@ import {
   projectNameFor,
 } from '../src/commands/init.js';
 import { readManifest, sha256 } from '../src/lib/manifest.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 let repo: string;
 
@@ -18,7 +19,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await removeFixture(repo);
 });
 
 describe('planInit — the dry-run plan (never writes)', () => {
@@ -380,7 +381,7 @@ describe('initProject — every skipped path gets a manifest classification (RP-
       expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
       expect(Object.values(manifest?.kept ?? {})).not.toContain(sha256('OUTSIDE THE REPO'));
     } finally {
-      await rm(outside, { recursive: true, force: true });
+      await removeFixture(outside);
     }
   });
 

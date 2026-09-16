@@ -1,15 +1,17 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  IN_REPO_FIXTURE_PREFIXES,
   SCAN_IGNORE_GLOBS,
   SKIPPED_DIRECTORY_NAMES,
   SKIPPED_REPOSITORY_PATHS,
   filesBelow,
   skipsScan,
 } from '../helpers/scan-exclusions.mjs';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const templateTests = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +30,35 @@ describe('one exclusion list for every repository scan', () => {
   it('names node_modules and .git as skipped wherever they sit, and .claude/worktrees as a skipped subtree', () => {
     expect(SKIPPED_DIRECTORY_NAMES).toEqual(['node_modules', '.git']);
     expect(SKIPPED_REPOSITORY_PATHS).toEqual(['.claude/worktrees']);
-    expect(SCAN_IGNORE_GLOBS).toEqual(['**/node_modules/**', '**/.git/**', '.claude/worktrees/**']);
+    expect(SCAN_IGNORE_GLOBS).toEqual([
+      '**/node_modules/**',
+      '**/.git/**',
+      '.claude/worktrees/**',
+      '.codex-*/**',
+      '.prepare-*/**',
+    ]);
+  });
+
+  // RP-158: a test that must create its fixture inside the checkout names the
+  // prefix in test/helpers/in-repo-fixtures.json; every scan and the root lint
+  // then skip that transient directory, and only at the repository root.
+  it('takes the in-repository fixture prefixes from in-repo-fixtures.json, in its order', async () => {
+    const entries = JSON.parse(
+      await readFile(path.join(repoRoot, 'test', 'helpers', 'in-repo-fixtures.json'), 'utf8'),
+    ) as Array<{ prefix: string }>;
+    expect(IN_REPO_FIXTURE_PREFIXES).toEqual(entries.map((entry) => entry.prefix));
+  });
+
+  it('skipsScan refuses a transient in-repository fixture at the root, and the same name anywhere else is scanned', () => {
+    const root = path.join(os.tmpdir(), 'rp158-root');
+    expect(skipsScan(root, path.join(root, '.codex-symlink-add-destination-a1b2c3', 'alias'))).toBe(
+      true,
+    );
+    expect(skipsScan(root, path.join(root, '.prepare-test-x9', 'scripts', 'prepare.mjs'))).toBe(
+      true,
+    );
+    expect(skipsScan(root, path.join(root, 'test', '.codex-looks-alike', 'a.ts'))).toBe(false);
+    expect(skipsScan(root, path.join(root, '.codex', 'config.toml'))).toBe(false);
   });
 
   it('skipsScan refuses a worktree path, a nested node_modules, and nothing else', () => {
@@ -81,7 +111,7 @@ describe('one exclusion list for every repository scan', () => {
       expect(relative).toContain('.claude/rules/keep.md');
       expect(relative.filter((p: string) => p.startsWith('.claude/worktrees'))).toEqual([]);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -89,6 +119,7 @@ describe('one exclusion list for every repository scan', () => {
     const derived = [
       ...SKIPPED_DIRECTORY_NAMES.map((name: string) => `**/${name}/**`),
       ...SKIPPED_REPOSITORY_PATHS.map((repoPath: string) => `${repoPath}/**`),
+      ...IN_REPO_FIXTURE_PREFIXES.map((prefix: string) => `${prefix}*/**`),
     ];
     expect([...SCAN_IGNORE_GLOBS].sort()).toEqual([...derived].sort());
   });

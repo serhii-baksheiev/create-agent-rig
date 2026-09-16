@@ -1,0 +1,12 @@
+[
+  {
+    "file": "test/template/codex.test.ts",
+    "prefix": ".codex-",
+    "reason": "The Codex apply_patch guard under test judges destinations relative to this repository, so its symlink, move and budget fixtures have to exist inside the checkout; each test removes its fixture in a finally block."
+  },
+  {
+    "file": "test/template/git-env.test.ts",
+    "prefix": ".prepare-",
+    "reason": "The prepare entrypoint fixture sits below this repository so Node resolves the root TypeScript toolchain without copying or installing dependencies; each test removes its fixture in a finally block."
+  }
+]

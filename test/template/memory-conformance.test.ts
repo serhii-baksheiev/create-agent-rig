@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * RP-13: `scripts/memory-conformance.mjs` is the Rig-side, offline half of the
@@ -214,8 +215,8 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         expect(row(report, 'rig-setup')?.status).toBe('pass');
         expect(await readdir(caller.dir)).toEqual([]);
       } finally {
-        await rm(root, { recursive: true, force: true });
-        await rm(caller.dir, { recursive: true, force: true });
+        await removeFixture(root);
+        await removeFixture(caller.dir);
       }
     },
     FULL_RUN_BUDGET_MS,
@@ -260,7 +261,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         expect(handshake?.detail).toContain('v'.repeat(32));
         expect(handshake?.detail).not.toContain('v'.repeat(33));
       } finally {
-        await rm(root, { recursive: true, force: true });
+        await removeFixture(root);
       }
     },
     FULL_RUN_BUDGET_MS,
@@ -288,7 +289,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         expect(report.verifierDigest).toBe(hash.digest('hex'));
         expect(JSON.parse(await readFile(out, 'utf8'))).toEqual(report);
       } finally {
-        await rm(root, { recursive: true, force: true });
+        await removeFixture(root);
       }
     },
     FULL_RUN_BUDGET_MS,
@@ -308,7 +309,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         expect(row(report, 'rig-setup')?.detail).toContain('exit 4');
         expect(row(report, 'rig-memory-doctor')?.status).toBe('skip');
       } finally {
-        await rm(root, { recursive: true, force: true });
+        await removeFixture(root);
       }
     },
     FULL_RUN_BUDGET_MS,
@@ -348,7 +349,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         expect(row(report, 'memory-handshake')?.status).toBe('pass');
         expect(row(report, 'rig-foreign-major')?.status).toBe('pass');
       } finally {
-        await rm(root, { recursive: true, force: true });
+        await removeFixture(root);
       }
     },
     FULL_RUN_BUDGET_MS,
@@ -369,7 +370,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         expect(result.code).toBe(0);
         expect(parseReport(result.stdout).memorySha).toBeNull();
       } finally {
-        await rm(outer, { recursive: true, force: true });
+        await removeFixture(outer);
       }
     },
     FULL_RUN_BUDGET_MS,
@@ -390,7 +391,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         expect(result.code).toBe(3);
         expect(result.stderr).toContain('memory-conformance:');
       } finally {
-        await rm(root, { recursive: true, force: true });
+        await removeFixture(root);
       }
     },
     FULL_RUN_BUDGET_MS,

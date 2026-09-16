@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // RP-56 — preflight is the point before a run can select, claim, or journal.
 // It may read exactly one adapter listing to prove that the configured queue is
@@ -146,7 +147,7 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(result.verdict).toBe('STOP');
       expect(result.unchecked.join('\n')).not.toMatch(/queue.*reachable|reachable.*queue/i);
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await removeFixture(p.root);
     }
   });
 
@@ -194,9 +195,7 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(rendered.out).toContain('\\u009b');
       expect(hasUnsafeTerminalControl(rendered.out)).toBe(false);
     } finally {
-      await stages.run('terminal-fixture-teardown', () =>
-        rm(p.root, { recursive: true, force: true }),
-      );
+      await stages.run('terminal-fixture-teardown', () => removeFixture(p.root));
     }
   });
 
@@ -217,7 +216,7 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(existsSync(p.journalPath)).toBe(false);
       expect(existsSync(p.runPath)).toBe(false);
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await removeFixture(p.root);
     }
   });
 
@@ -236,7 +235,7 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(result.checks.queue?.detail).toMatch(/queue\.json.*could not be read.*ENOENT/i);
       expect(result.verdict).toBe('STOP');
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await removeFixture(p.root);
     }
   });
 
@@ -253,7 +252,7 @@ describe('preflight — the configured queue must be readable before an unattend
       );
       expect(result.verdict).toBe('STOP');
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await removeFixture(p.root);
     }
   });
 
@@ -293,7 +292,7 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(rendered.out).toMatch(/queue\.json.*not valid JSON|not valid JSON.*queue\.json/i);
       expect(rendered.out).not.toContain(parserExcerptCanary);
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await removeFixture(p.root);
     }
   });
 
@@ -310,7 +309,7 @@ describe('preflight — the configured queue must be readable before an unattend
       );
       expect(result.verdict).toBe('STOP');
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await removeFixture(p.root);
     }
   });
 
@@ -345,7 +344,7 @@ describe('preflight — the configured queue must be readable before an unattend
       expect(await readFile(runFile, 'utf8')).toBe('{"existing":"run state"}\n');
       expect(existsSync(claimPath)).toBe(false);
     } finally {
-      await rm(p.root, { recursive: true, force: true });
+      await removeFixture(p.root);
     }
   });
 });

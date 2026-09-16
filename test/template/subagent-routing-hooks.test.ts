@@ -1,10 +1,11 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { fifosAvailable, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * RP-173: the two Claude-only routing hooks, spawned exactly as Claude Code
@@ -89,7 +90,7 @@ describe('guard-subagent-model hook (a call-site model never overrides a pinned 
   });
 
   afterAll(async () => {
-    await rm(root, { recursive: true, force: true });
+    await removeFixture(root);
   });
 
   const guard = (payload: unknown, timeout?: number) =>

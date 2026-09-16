@@ -10,12 +10,13 @@
 // `npm pack` reads it. This file builds its own sandbox rather than sharing
 // cli-report.test.ts's, so it never depends on suite ordering.
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -64,7 +65,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rm(sandbox, { recursive: true, force: true });
+  await removeFixture(sandbox);
 });
 
 beforeEach(async () => {
@@ -72,7 +73,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await removeFixture(repo);
 });
 
 describe("--version --json answers the rig's own handshake (RP-19)", () => {
@@ -129,7 +130,7 @@ describe('create-agent-rig memory <verb> is wired into the CLI (RP-19)', () => {
         `${JSON.stringify({ schemaVersion: 1, result: 'unsupported', reason: 'absent' })}\n`,
       );
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await removeFixture(home);
     }
   });
 });

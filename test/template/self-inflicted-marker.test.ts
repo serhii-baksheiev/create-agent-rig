@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * AR-140 — the adapter preserves the marker its own write produced as
@@ -34,7 +35,7 @@ const scratch = async (prefix: string): Promise<string> => {
   return dir;
 };
 afterAll(async () => {
-  await Promise.all(created.map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(created.map((dir) => removeFixture(dir)));
 });
 
 const captureStderr = async <T>(body: () => Promise<T>): Promise<{ result: T; stderr: string }> => {

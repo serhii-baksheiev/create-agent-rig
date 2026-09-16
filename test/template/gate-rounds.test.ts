@@ -1,12 +1,13 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR-69, the half that needs no verdict schema: a cap on gate rounds.
 //
@@ -400,7 +401,7 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       expect(existsSync(countsFile(validConfig))).toBe(false);
     } finally {
       await stages.run('fixture-teardown', async () => {
-        for (const root of roots) await rm(root, { recursive: true, force: true });
+        for (const root of roots) await removeFixture(root);
       });
     }
   });
