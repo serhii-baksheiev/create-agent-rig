@@ -65,7 +65,13 @@ it does not. Each conflict names the file, why it was kept, and the path to the
 new version so you can diff it yourself.
 
 How it knows: `create` and `init` write `.claude/.rig-manifest.json` — the rig
-version plus a hash per installed file. **Commit it**; without it in the
+version plus a hash per installed file. A file `init` found already in place and
+left alone is recorded separately, under `kept`, with the hash of the bytes it
+found, and never as the rig's (`packages/cli/test/init.test.ts` › "records what
+it kept, with the sha256 of the bytes actually on disk — never in `files`"). An
+`upgrade` conflict on such a file says it was kept by init and whether it was
+edited since (`packages/cli/test/upgrade.test.ts` › "says "edited since"
+instead, once the disk sha no longer matches what init recorded"). **Commit it**; without it in the
 repository the command is blind on CI and on a colleague's machine. Rigs
 installed before 0.4.0 have no manifest, so the package also carries the hashes
 of every release whose published commit is on record (0.2.0 onward — 0.1.0's

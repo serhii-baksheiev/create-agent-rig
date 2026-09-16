@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
@@ -286,6 +286,22 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * leaves is a `create` rig whose `CLAUDE.md` was deleted, and this function is
  * what makes that case safe.
  */
+/**
+ * The text of a regular file, or `null` for anything else at that path — a
+ * directory, a symlink, a file this process cannot read. `kept` records only
+ * bytes that are the file itself: hashing through a link would put the hash of
+ * something outside the repository into a committed manifest, and a read that
+ * throws here would abort the install after every other file was written.
+ */
+async function readRegularFile(abs: string): Promise<string | null> {
+  try {
+    if (!(await lstat(abs)).isFile()) return null;
+    return await readFile(abs, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 async function recordInstall(
   repoDir: string,
   written: readonly string[],
@@ -297,9 +313,12 @@ async function recordInstall(
   const files = { ...(previous?.files ?? {}) };
   for (const rel of written) files[rel] = sha256(contents.get(rel) ?? '');
   const kept = { ...(previous?.kept ?? {}) };
+  for (const rel of written) delete kept[rel];
   for (const rel of skipped) {
     if (files[rel] !== undefined) continue; // the rig wrote it once; still its bytes to vouch for
-    kept[rel] = sha256(await readFile(path.join(repoDir, rel), 'utf8'));
+    const found = await readRegularFile(path.join(repoDir, rel));
+    if (found === null) delete kept[rel];
+    else kept[rel] = sha256(found);
   }
   const manifest: RigManifest = {
     version: await packageVersion(),

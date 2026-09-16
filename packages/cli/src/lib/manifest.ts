@@ -119,7 +119,7 @@ export function parseManifest(raw: string): RigManifest | null {
   if (m.stacks.some((s) => !isSafeSubstitutionValue(s))) return null;
   if (!isStringRecord(m.files)) return null;
   // Present in a shape this reader does not accept voids the manifest, exactly
-  // as `files` does; absent is the every-manifest-before-0.9.1 case and is fine.
+  // as `files` does; absent is every manifest written before the field existed.
   if (m.kept !== undefined && !isStringRecord(m.kept)) return null;
   return {
     version: m.version,

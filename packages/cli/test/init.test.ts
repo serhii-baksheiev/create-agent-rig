@@ -287,10 +287,8 @@ describe('initManifest — one list, used by the plan and the install alike', ()
   });
 });
 
-// RP-182: a pre-existing Rig file `init` keeps is the defect this closes — it
-// used to fall out of the manifest entirely, so a later `upgrade` had no
-// evidence at all about it and could neither vouch for it nor recognise it as
-// an obsolete released copy.
+// RP-182: a pre-existing file `init` keeps used to fall out of the manifest
+// entirely; it is now classified under `kept`.
 describe('initProject — every skipped path gets a manifest classification (RP-182)', () => {
   it('records what it kept, with the sha256 of the bytes actually on disk — never in `files`', async () => {
     await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
@@ -342,5 +340,33 @@ describe('initProject — every skipped path gets a manifest classification (RP-
     // it was written by the rig, twice over — it is not the user's file
     expect(manifest?.kept?.['.claude/rules/autonomy.md']).toBeUndefined();
     expect(manifest?.files['.claude/rules/autonomy.md']).toBe(sha256(autonomyBefore));
+  });
+
+  it('drops a path from `kept` once a later run writes it', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM');
+    await initProject(repo, {});
+
+    // the user deletes the kept file; the next run finds the path free and writes it
+    await rm(path.join(repo, 'CLAUDE.md'));
+    await rm(path.join(repo, '.claude', 'rules', 'workflow.md'));
+    const second = await initProject(repo, {});
+    expect(second.written).toContain('.claude/rules/workflow.md');
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeTruthy();
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
+  });
+
+  it('completes, and records nothing under `kept`, when a payload path is occupied by a directory', async () => {
+    await mkdir(path.join(repo, '.claude', 'rules', 'workflow.md'), { recursive: true });
+
+    const result = await initProject(repo, {});
+    expect(result.skipped).toContain('.claude/rules/workflow.md');
+
+    const manifest = await readManifest(repo);
+    expect(manifest).not.toBeNull();
+    expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
+    expect(manifest?.files['.claude/rules/workflow.md']).toBeUndefined();
   });
 });

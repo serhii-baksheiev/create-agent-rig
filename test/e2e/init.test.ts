@@ -289,7 +289,7 @@ describe('create-agent-rig init over a pre-existing older Rig file (RP-182)', ()
     return stdout;
   };
 
-  it('classifies the kept file in the manifest, and upgrade --dry-run reports an actionable, non-"unchanged" verdict for it', async () => {
+  it('classifies the kept file in the manifest, and upgrade --dry-run reports it as an update', async () => {
     const older = await releasedWorkflowMd();
     // Premise: token-free, so nothing about substitution can make this
     // fixture wrong by accident.
@@ -315,32 +315,14 @@ describe('create-agent-rig init over a pre-existing older Rig file (RP-182)', ()
     const upgradeResult = await runCliIn(repo, ['upgrade', '--dry-run']);
     expect(upgradeResult.code, upgradeResult.stderr).toBe(0);
 
-    // `unchanged` verdicts print no line at all in the plan body (they are
-    // only counted in the summary), so a printed line for this path is
-    // exactly "not unchanged" — the acceptance criterion, read off the report
-    // a human runs `upgrade --dry-run` to get.
-    const line = upgradeResult.stdout
-      .split('\n')
-      .find(
-        (l) => l.trim().startsWith(`~ ${WORKFLOW_REL}`) || l.trim().startsWith(`! ${WORKFLOW_REL}`),
-      );
+    // The planted bytes are a released version (their hash is in the shipped
+    // hash history), so the report brings the file forward: a `~` line, the
+    // update marker, for this path.
+    const lines = upgradeResult.stdout.split('\n').map((l) => l.trim());
     expect(
-      line,
-      `no update/conflict line for ${WORKFLOW_REL}:\n${upgradeResult.stdout}`,
-    ).toBeTruthy();
-
-    // The honest disjunction: this hash is a real released version, so it
-    // should read as `update` — asserted, not merely hoped for — but the
-    // branch is still named explicitly so a change in the shipped history
-    // reports which side it moved to instead of failing silently on the
-    // wrong assertion.
-    const verdict = line!.trim().startsWith('~') ? 'update' : 'conflict';
-    // States which side of the honest disjunction this run took.
-    console.log(`RP-182 e2e: ${WORKFLOW_REL} upgrade --dry-run verdict was "${verdict}"`);
-    if (verdict === 'conflict') {
-      expect(line).toMatch(/kept by init/);
-    } else {
-      expect(verdict).toBe('update');
-    }
+      lines.some((l) => l.startsWith(`~ ${WORKFLOW_REL}`)),
+      `no update line for ${WORKFLOW_REL}:\n${upgradeResult.stdout}`,
+    ).toBe(true);
+    expect(lines.some((l) => l.startsWith(`! ${WORKFLOW_REL}`))).toBe(false);
   });
 });

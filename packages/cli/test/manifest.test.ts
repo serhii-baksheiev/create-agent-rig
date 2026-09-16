@@ -215,8 +215,7 @@ describe('kept — provenance for a file init found on disk and left alone (RP-1
     const noKeptField = serializeManifest(sample());
     expect(noKeptField).not.toContain('"kept"');
 
-    // Explicitly empty (`{}`), not merely absent — the same omission has to
-    // hold once `init` starts setting the field on every manifest it writes.
+    // Explicitly empty (`{}`), not merely absent — the serialiser omits it too.
     const emptyKept: RigManifest = { ...sample(), kept: {} };
     const serialisedEmpty = serializeManifest(emptyKept);
     expect(serialisedEmpty).not.toContain('"kept"');
