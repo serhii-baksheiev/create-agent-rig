@@ -26,6 +26,9 @@ import { dirname, join } from 'node:path';
 // so this sweep sees exactly what the gate sweep sees — including the paths a
 // stack layer contributes for its own shape.
 import { elevatedPathsIn, laneOf, readDeclaredPaths } from './detect-missed-gate.mjs';
+// The one credential vocabulary (`guard-secret-file`, the commit sweep and this
+// diagnostic all read it): a second list of token shapes here would drift.
+import { SECRET_VALUE_PATTERNS } from './lib/secrets.mjs';
 
 /**
  * The audit trail for work that already happened: a record born **closed**.
@@ -210,37 +213,263 @@ const parseArgs = (argv) => {
 
 const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
 
-/** Same rule as the gate sweep: "could not look" must never render as "clean". */
-const fetchMergedPrs = (since) => {
-  try {
-    return JSON.parse(
-      execFileSync(
-        'gh',
-        [
-          'pr',
-          'list',
-          '--state',
-          'merged',
-          '--limit',
-          '100',
-          '--search',
-          `merged:>=${since}`,
-          '--json',
-          'number,title,body,headRefName,mergedAt,url,files,changedFiles,authorAssociation',
-        ],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      ),
-    );
-  } catch (error) {
-    process.stderr.write(
-      'lane reconciliation: could not list merged PRs — the `gh` CLI is missing, ' +
-        'unauthenticated, or the API is unreachable. No lane was reconciled; do not ' +
-        'record an empty `external lane` block from this run. Use --input <file> to ' +
-        'work offline.\n' +
-        `  ${String(error?.stderr ?? error?.message ?? error).trim().split('\n')[0]}\n`,
-    );
-    process.exit(1);
+// --- Acquisition (RP-99) --------------------------------------------------------
+//
+// Two calls, not one. `gh pr list --json` does not know `authorAssociation` on
+// every supported `gh` (2.71.2 answers `Unknown JSON field`), so the BASE
+// projection asks only for fields every `gh` has, and the association — the
+// trust signal — is fetched afterwards through one GraphQL query. When that
+// second step fails for any reason the base list is returned WITHOUT the field
+// and `reconcile()` treats those PRs as untrusted, and an answer is kept only
+// when it names the same pull request URL the base list did — see the
+// generator's test/template/reconcile-acquisition.test.ts (absent in a generated rig)
+// › "reconcile() treats a PR that lost authorAssociation to a failed enrichment as untrusted when it crosses an elevated path"
+// and › "drops an association whose answer names a different pull request URL — another host or repository never becomes trust".
+
+/** The base projection: fields every supported `gh` serves. */
+const BASE_FIELDS = ['number', 'title', 'body', 'headRefName', 'mergedAt', 'url', 'files', 'changedFiles'];
+/** What GitHub returns for `authorAssociation`: an upper-case enum word. */
+const ASSOCIATION_SHAPE = /^[A-Z_]{1,32}$/;
+const MAX_PRS = 100;
+
+/** The default runner: one `gh` child, stdout as text, a thrown error otherwise. */
+const execGh = (file, args) =>
+  execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+/** A base record the rest of this script can read: an object with a positive PR number. */
+const isPrRecord = (row) =>
+  row !== null &&
+  typeof row === 'object' &&
+  !Array.isArray(row) &&
+  Number.isSafeInteger(row.number) &&
+  row.number > 0;
+
+/**
+ * The merged PRs since `since`, plus the warnings the acquisition produced.
+ *
+ * Throws only from the BASE list — the caller classifies that with
+ * `classifyAcquisitionFailure`. A parsed base list that is not an array is
+ * thrown with `notAnArray: true` (JSON.parse succeeded, so a SyntaxError would
+ * misdescribe it). Enrichment never throws: it degrades to a warning.
+ */
+export const fetchMergedPrs = (since, { exec = execGh } = {}) => {
+  const raw = exec('gh', [
+    'pr',
+    'list',
+    '--state',
+    'merged',
+    '--limit',
+    String(MAX_PRS),
+    '--search',
+    `merged:>=${since}`,
+    '--json',
+    BASE_FIELDS.join(','),
+  ]);
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw Object.assign(new Error('gh pr list answered with something other than a JSON array'), {
+      notAnArray: true,
+    });
   }
+
+  const warnings = [];
+  const prs = [];
+  for (const row of parsed.slice(0, MAX_PRS)) {
+    if (!isPrRecord(row)) {
+      warnings.push('a merged-PR record without a positive numeric `number` was dropped from the sweep');
+      continue;
+    }
+    // Copy the base fields only; whatever else `gh` returned does not travel.
+    const record = {};
+    for (const field of BASE_FIELDS) if (row[field] !== undefined) record[field] = row[field];
+    prs.push(record);
+  }
+  if (prs.length === 0) return { prs, warnings };
+
+  const associations = fetchAuthorAssociations(prs, exec);
+  if (associations === null) {
+    warnings.push(
+      'author association unavailable for this window — every external merge below is treated as untrusted origin',
+    );
+    return { prs, warnings };
+  }
+  for (const pr of prs) {
+    const answer = associations.get(pr.number);
+    if (answer === undefined) continue;
+    // `gh api graphql` asks its own default host, not the remote's: an answer
+    // about another pull request must never lend its association to this one.
+    if (typeof pr.url !== 'string' || answer.url !== pr.url) {
+      warnings.push(`PR #${pr.number}: an author association whose pull request URL does not match the listed one was dropped`);
+      continue;
+    }
+    const value = answer.authorAssociation;
+    if (typeof value === 'string' && ASSOCIATION_SHAPE.test(value)) pr.authorAssociation = value;
+    else warnings.push(`PR #${pr.number}: an author association of an unexpected shape was dropped`);
+  }
+  return { prs, warnings };
+};
+
+/**
+ * `number → { url, authorAssociation }` for the listed PRs through one GraphQL
+ * query, or `null` when the answer cannot be trusted: a failed call, unusable
+ * JSON, a repository name of an unexpected shape. Never throws.
+ */
+const fetchAuthorAssociations = (prs, exec) => {
+  try {
+    const repo = JSON.parse(exec('gh', ['repo', 'view', '--json', 'nameWithOwner']));
+    const nameWithOwner = typeof repo?.nameWithOwner === 'string' ? repo.nameWithOwner : '';
+    const parts = nameWithOwner.split('/');
+    if (parts.length !== 2 || !parts.every((part) => /^[A-Za-z0-9_.-]{1,100}$/.test(part))) return null;
+    const [owner, name] = parts;
+    const fields = prs
+      .map((pr) => `pr${pr.number}: pullRequest(number: ${pr.number}) { url authorAssociation }`)
+      .join(' ');
+    const query = `query { repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
+    const answer = JSON.parse(exec('gh', ['api', 'graphql', '-f', `query=${query}`]));
+    const repository = answer?.data?.repository;
+    if (repository === null || typeof repository !== 'object') return null;
+    const out = new Map();
+    for (const pr of prs) {
+      const node = repository[`pr${pr.number}`];
+      if (node === null || typeof node !== 'object' || node.authorAssociation === undefined) continue;
+      out.set(pr.number, { url: node.url, authorAssociation: node.authorAssociation });
+    }
+    return out;
+  } catch {
+    return null;
+  }
+};
+
+// --- Failure diagnostics (RP-99) -----------------------------------------------
+
+const CAUSES = Object.freeze({
+  'gh-missing': 'the `gh` CLI could not be started (not installed, or not on PATH)',
+  'gh-unauthenticated': 'the `gh` CLI is not authenticated for this host — run `gh auth login`',
+  'api-unreachable': 'the GitHub API could not be reached',
+  'unsupported-projection': 'this `gh` version does not serve a field the sweep asked for',
+  'malformed-response': '`gh` answered, but not with the JSON array the sweep expects',
+  unknown: 'the cause is unknown',
+});
+const STDERR_UNAUTHENTICATED = /gh auth login|not logged in|HTTP 401|authentication required/i;
+const STDERR_UNREACHABLE =
+  /dial tcp|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|HTTP 5\d\d|could not connect|connection refused/i;
+const STDERR_UNSUPPORTED = /Unknown JSON field/i;
+// ESC-led sequences (CSI, OSC and the single-character escapes); the
+// whitespace controls, which become a space where they sit next to whitespace
+// and a mark where they sit inside a run (so they cannot split a token into
+// pieces too short to match); and every other character a terminal would not
+// print as itself — the remaining C0/C1 controls except the line feed the next
+// step splits on, the invisible format characters (zero-width, bidi,
+// byte-order mark), the line and paragraph separators, and U+E000, the mark
+// they are all replaced with.
+// eslint-disable-next-line no-control-regex -- the pattern exists to remove these very bytes
+const TERMINAL_SEQUENCES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+// eslint-disable-next-line no-control-regex -- likewise
+const WHITESPACE_CONTROLS = /[\t\v\f\r]/g;
+// eslint-disable-next-line no-control-regex -- likewise
+const WHITESPACE_CONTROLS_INSIDE_A_RUN = /(?<=\S)[\t\v\f\r]+(?=\S)/g;
+// eslint-disable-next-line no-control-regex -- likewise
+const HIDDEN_CHARACTERS = /[\x00-\x08\x0E-\x1F\x7F-\x9F\p{Cf}\p{Zl}\p{Zp}\uE000]/gu;
+const MARK = '\uE000';
+// No leading word boundary: a keyword glued to the word before must still be
+// found, and over-redacting prose is the safe way to be wrong here.
+const AUTHORIZATION_VALUE = /(?:Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}|Authorization:\s*[^\s]+(?:\s+[^\s]+)?/gi;
+const DIAGNOSTIC_CAP = 200;
+// Redaction runs on at most this much of the line, and the 200-character cut
+// comes after it: cutting first can shorten a token below what its pattern
+// needs and print the prefix. When the window itself cuts the line, the last
+// whitespace-free run is dropped before redaction, so no token is ever
+// shortened by a cut.
+const REDACTION_WINDOW = 4096;
+// A whitespace-free run that had a hidden character removed from it is masked
+// whole once what is left is at least this long — the shortest value the
+// vocabulary redacts, an authorization value. A removed character can glue a
+// token to the word before it or split it into pieces too short to match, and
+// neither can be told apart from honest text, so such a run is not trusted to
+// the patterns at all.
+const MARKED_RUN_MIN = 8;
+// A masked run that ended in one of these keywords takes the next run with it:
+// the value that followed the keyword can no longer be recognised on its own.
+const AUTHORIZATION_KEYWORD_END = /(?:bearer|basic|token|authorization:)$/i;
+
+/** `text` without its trailing whitespace-free run. One backward pass. */
+const dropTrailingRun = (text) => {
+  let end = text.length;
+  while (end > 0 && !/\s/.test(text[end - 1])) end -= 1;
+  return text.slice(0, end);
+};
+
+const redactPatterns = (text) => {
+  let out = text.replace(AUTHORIZATION_VALUE, '[redacted]');
+  for (const { pattern } of SECRET_VALUE_PATTERNS) {
+    out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`), '[redacted]');
+  }
+  return out;
+};
+
+/**
+ * One printable line of a subprocess's stderr: no terminal sequences, control
+ * or invisible format characters, the first non-empty line only, every run a
+ * hidden character was removed from masked when it is long enough to be a
+ * credential, the credential shapes the shared vocabulary knows — plus HTTP
+ * authorization values — replaced by `[redacted]`, and then at most 200
+ * characters.
+ */
+export const sanitizeDiagnostic = (text) => {
+  const source = typeof text === 'string' ? text : String(text ?? '');
+  const marked = source
+    .replace(TERMINAL_SEQUENCES, MARK)
+    .replace(HIDDEN_CHARACTERS, MARK)
+    .replace(WHITESPACE_CONTROLS_INSIDE_A_RUN, MARK)
+    .replace(WHITESPACE_CONTROLS, ' ');
+  const line = marked.split('\n').find((candidate) => candidate.replaceAll(MARK, '').trim() !== '') ?? '';
+  const windowed = line.length > REDACTION_WINDOW ? dropTrailingRun(line.slice(0, REDACTION_WINDOW)) : line;
+  let maskNext = false;
+  const masked = windowed
+    .split(/(\s+)/)
+    .map((run) => {
+      if (run.trim() === '') return run;
+      const visible = run.replaceAll(MARK, '');
+      const hidden = run.includes(MARK) && visible.length >= MARKED_RUN_MIN;
+      const mask = hidden || maskNext;
+      maskNext = mask && AUTHORIZATION_KEYWORD_END.test(visible);
+      return mask ? '[redacted]' : visible;
+    })
+    .join('');
+  return redactPatterns(masked).trim().slice(0, DIAGNOSTIC_CAP);
+};
+
+/**
+ * The cause the evidence supports, and nothing more. `detail` is the sanitized
+ * first non-empty stderr line, whatever the cause, or `null` when there was none. An
+ * `unknown` failure with no stderr falls back to the error's own message; the
+ * other causes never do, because a parse error's message quotes `gh` output.
+ */
+export const classifyAcquisitionFailure = (error) => {
+  const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
+  const detail = stderr.trim() === '' ? null : sanitizeDiagnostic(stderr);
+  if (error?.code === 'ENOENT') return { cause: 'gh-missing', detail };
+  if (error instanceof SyntaxError || error?.notAnArray === true) {
+    return { cause: 'malformed-response', detail };
+  }
+  if (STDERR_UNSUPPORTED.test(stderr)) return { cause: 'unsupported-projection', detail };
+  if (STDERR_UNAUTHENTICATED.test(stderr)) return { cause: 'gh-unauthenticated', detail };
+  if (STDERR_UNREACHABLE.test(stderr)) return { cause: 'api-unreachable', detail };
+  if (detail === null && typeof error?.message === 'string' && error.message.trim() !== '') {
+    return { cause: 'unknown', detail: sanitizeDiagnostic(error.message) };
+  }
+  return { cause: 'unknown', detail };
+};
+
+/** The message the CLI prints for a failed acquisition: one cause, named. */
+export const acquisitionFailureMessage = ({ cause, detail }) => {
+  const named = CAUSES[cause] ?? CAUSES.unknown;
+  return (
+    `lane reconciliation: could not list merged PRs — ${named}. ` +
+    'No lane was reconciled; do not record an empty `external lane` block from this run. ' +
+    'Use --input <file> to work offline.' +
+    (detail ? `\n  ${detail}` : '')
+  );
 };
 
 /**
@@ -267,9 +496,19 @@ const invokedDirectly = () => {
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const prs = args.input
-    ? readInput(args.input, 'lane reconciliation')
-    : fetchMergedPrs(args.since ?? daysAgo(7));
+  let prs;
+  let warnings = [];
+  if (args.input) {
+    prs = readInput(args.input, 'lane reconciliation');
+  } else {
+    try {
+      ({ prs, warnings } = fetchMergedPrs(args.since ?? daysAgo(7)));
+    } catch (error) {
+      process.stderr.write(`${acquisitionFailureMessage(classifyAcquisitionFailure(error))}\n`);
+      process.exit(1);
+    }
+  }
+  for (const warning of warnings) process.stderr.write(`lane reconciliation: ${warning}\n`);
   // Lane sorting still works without a declaration; only the elevated marks go
   // missing, and they render as "no elevated path crossed" rather than lying.
   const elevatedPaths = readDeclaredPaths(projectRoot) ?? [];
