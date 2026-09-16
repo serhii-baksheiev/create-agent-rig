@@ -299,7 +299,7 @@ export const fetchMergedPrs = (since, { exec = execGh } = {}) => {
     // `gh api graphql` asks its own default host, not the remote's: an answer
     // about another pull request must never lend its association to this one.
     if (typeof pr.url !== 'string' || answer.url !== pr.url) {
-      warnings.push(`PR #${pr.number}: an author association for a different pull request URL was dropped`);
+      warnings.push(`PR #${pr.number}: an author association whose pull request URL does not match the listed one was dropped`);
       continue;
     }
     const value = answer.authorAssociation;
@@ -378,6 +378,12 @@ const dropTrailingRun = (text) => {
   return text.slice(0, end);
 };
 
+// What a removed sequence becomes until redaction is done: a non-word
+// character, so a token that followed it still starts at a word boundary —
+// deleting it outright would glue the token to the word before and hide it
+// from every `\b`-anchored credential pattern.
+const REMOVED = '';
+
 /**
  * One printable line of a subprocess's stderr: no terminal sequences or control
  * characters, the first non-empty line only, every credential shape the shared
@@ -386,20 +392,19 @@ const dropTrailingRun = (text) => {
  */
 export const sanitizeDiagnostic = (text) => {
   const source = typeof text === 'string' ? text : String(text ?? '');
-  const stripped = source.replace(TERMINAL_SEQUENCES, '').replace(CONTROL_CHARACTERS, '');
-  const line = (stripped.split('\n').find((candidate) => candidate.trim() !== '') ?? '').trim();
+  const marked = source.replace(TERMINAL_SEQUENCES, REMOVED).replace(CONTROL_CHARACTERS, REMOVED);
+  const line = (marked.split('\n').find((candidate) => candidate.split(REMOVED).join('').trim() !== '') ?? '').trim();
   let out = line.length > REDACTION_WINDOW ? dropTrailingRun(line.slice(0, REDACTION_WINDOW)) : line;
   out = out.replace(AUTHORIZATION_VALUE, '[redacted]');
   for (const { pattern } of SECRET_VALUE_PATTERNS) {
     out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`), '[redacted]');
   }
-  return out.slice(0, DIAGNOSTIC_CAP);
+  return out.split(REMOVED).join('').trim().slice(0, DIAGNOSTIC_CAP);
 };
 
 /**
  * The cause the evidence supports, and nothing more. `detail` is the sanitized
- * first stderr line — the actionable remainder for an `unknown` failure, and
- * the matched line for the evidenced ones — or `null` when there was none. An
+ * first non-empty stderr line, whatever the cause, or `null` when there was none. An
  * `unknown` failure with no stderr falls back to the error's own message; the
  * other causes never do, because a parse error's message quotes `gh` output.
  */

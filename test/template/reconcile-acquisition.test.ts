@@ -391,6 +391,20 @@ describe('sanitizeDiagnostic — safe to print', () => {
     expect(out).toContain('all clean');
   });
 
+  it.each([
+    ['a tab', '\t'],
+    ['an ANSI reset', '\x1b[0m'],
+    ['a NUL', '\x00'],
+  ])(
+    'redacts a token that follows %s directly, instead of gluing it to the word before',
+    async (_, separator) => {
+      const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+      const out = sanitizeDiagnostic(`request failed for user${separator}${FAKE_GH_TOKEN}`);
+      expect(out).not.toContain(FAKE_GH_TOKEN.slice(0, 8));
+      expect(out).toContain('[redacted]');
+    },
+  );
+
   it('caps a diagnostic line at 200 characters', async () => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
     const out = sanitizeDiagnostic('x'.repeat(300));
