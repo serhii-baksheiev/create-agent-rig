@@ -354,22 +354,42 @@ const STDERR_UNAUTHENTICATED = /gh auth login|not logged in|HTTP 401|authenticat
 const STDERR_UNREACHABLE =
   /dial tcp|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|HTTP 5\d\d|could not connect|connection refused/i;
 const STDERR_UNSUPPORTED = /Unknown JSON field/i;
-// ESC-led sequences (CSI, OSC and the single-character escapes), then every
-// remaining C0/C1 control character except the line feed the next step splits
-// on. Two passes, each linear.
+// ESC-led sequences (CSI, OSC and the single-character escapes); the
+// whitespace controls, which become a space where they sit next to whitespace
+// and a mark where they sit inside a run (so they cannot split a token into
+// pieces too short to match); and every other character a terminal would not print as itself — the remaining
+// C0/C1 controls except the line feed the next step splits on, the invisible
+// format characters (zero-width, bidi, byte-order mark) and U+E000, the mark
+// they are all replaced with.
 // eslint-disable-next-line no-control-regex -- the pattern exists to remove these very bytes
 const TERMINAL_SEQUENCES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 // eslint-disable-next-line no-control-regex -- likewise
-const CONTROL_CHARACTERS = /[\x00-\x09\x0B-\x1F\x7F-\x9F]/g;
-const AUTHORIZATION_VALUE = /\b(?:Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}|\bAuthorization:\s*[^\s]+(?:\s+[^\s]+)?/gi;
+const WHITESPACE_CONTROLS = /[\t\v\f\r]/g;
+// eslint-disable-next-line no-control-regex -- likewise
+const WHITESPACE_CONTROLS_INSIDE_A_RUN = /(?<=\S)[\t\v\f\r]+(?=\S)/g;
+// eslint-disable-next-line no-control-regex -- likewise
+const HIDDEN_CHARACTERS = /[\x00-\x08\x0E-\x1F\x7F-\x9F\p{Cf}\uE000]/gu;
+const MARK = '\uE000';
+// No leading word boundary: a keyword glued to the word before must still be
+// found, and over-redacting prose is the safe way to be wrong here.
+const AUTHORIZATION_VALUE = /(?:Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}|Authorization:\s*[^\s]+(?:\s+[^\s]+)?/gi;
 const DIAGNOSTIC_CAP = 200;
 // Redaction runs on at most this much of the line, and the 200-character cut
 // comes after it: cutting first can shorten a token below what its pattern
 // needs and print the prefix. When the window itself cuts the line, the last
 // whitespace-free run is dropped before redaction, so no token is ever
-// shortened by a cut — earlier redactions shorten the line and could otherwise
-// slide such a stub into the output.
+// shortened by a cut.
 const REDACTION_WINDOW = 4096;
+// A whitespace-free run that had a hidden character removed from it is masked
+// whole once what is left is at least this long — the shortest value the
+// vocabulary redacts, an authorization value. A removed character can glue a
+// token to the word before it or split it into pieces too short to match, and
+// neither can be told apart from honest text, so such a run is not trusted to
+// the patterns at all.
+const MARKED_RUN_MIN = 8;
+// A masked run that ended in one of these keywords takes the next run with it:
+// the value that followed the keyword can no longer be recognised on its own.
+const AUTHORIZATION_KEYWORD_END = /(?:bearer|basic|token|authorization:)$/i;
 
 /** `text` without its trailing whitespace-free run. One backward pass. */
 const dropTrailingRun = (text) => {
@@ -378,67 +398,44 @@ const dropTrailingRun = (text) => {
   return text.slice(0, end);
 };
 
-// A removed sequence is marked with this non-word character before redaction.
-// Neither way of removing it is safe alone: deleting it glues a following token
-// to the word before (hiding it from every `\b`-anchored pattern), while a mark
-// left in place splits a token it sat inside into halves too short to match.
-// So redaction reads the line both ways and masks the union of what either
-// reading found, on the text with the marks deleted. A U+E000 already in the
-// input is treated as a mark too.
-const REMOVED = '';
-const REDACTION_PATTERNS = [
-  AUTHORIZATION_VALUE,
-  ...SECRET_VALUE_PATTERNS.map(({ pattern }) => new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`)),
-];
-
-/** `[start, end)` of every redaction match in `text`. */
-const matchSpans = (text) => {
-  const spans = [];
-  for (const pattern of REDACTION_PATTERNS) {
-    for (const match of text.matchAll(pattern)) {
-      if (match[0].length > 0) spans.push([match.index, match.index + match[0].length]);
-    }
+const redactPatterns = (text) => {
+  let out = text.replace(AUTHORIZATION_VALUE, '[redacted]');
+  for (const { pattern } of SECRET_VALUE_PATTERNS) {
+    out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`), '[redacted]');
   }
-  return spans;
-};
-
-/** `text` with every span (possibly overlapping) replaced by one `[redacted]`. */
-const maskSpans = (text, spans) => {
-  const ordered = [...spans].sort((a, b) => a[0] - b[0]);
-  let out = '';
-  let at = 0;
-  for (const [start, end] of ordered) {
-    if (end <= at) continue;
-    if (start >= at) out += `${text.slice(at, start)}[redacted]`;
-    at = end;
-  }
-  return out + text.slice(at);
+  return out;
 };
 
 /**
- * One printable line of a subprocess's stderr: no terminal sequences or control
- * characters, the first non-empty line only, every credential shape the shared
- * vocabulary knows — plus HTTP authorization values — replaced by `[redacted]`,
- * and then at most 200 characters.
+ * One printable line of a subprocess's stderr: no terminal sequences, control
+ * or invisible format characters, the first non-empty line only, every run a
+ * hidden character was removed from masked when it is long enough to be a
+ * credential, the credential shapes the shared vocabulary knows — plus HTTP
+ * authorization values — replaced by `[redacted]`, and then at most 200
+ * characters.
  */
 export const sanitizeDiagnostic = (text) => {
   const source = typeof text === 'string' ? text : String(text ?? '');
-  const marked = source.replace(TERMINAL_SEQUENCES, REMOVED).replace(CONTROL_CHARACTERS, REMOVED);
-  const line = marked.split('\n').find((candidate) => candidate.replaceAll(REMOVED, '').trim() !== '') ?? '';
+  const marked = source
+    .replace(TERMINAL_SEQUENCES, MARK)
+    .replace(HIDDEN_CHARACTERS, MARK)
+    .replace(WHITESPACE_CONTROLS_INSIDE_A_RUN, MARK)
+    .replace(WHITESPACE_CONTROLS, ' ');
+  const line = marked.split('\n').find((candidate) => candidate.replaceAll(MARK, '').trim() !== '') ?? '';
   const windowed = line.length > REDACTION_WINDOW ? dropTrailingRun(line.slice(0, REDACTION_WINDOW)) : line;
-  // `joinedAt[i]` is where position `i` of the marked text lands once the marks go.
-  const joinedAt = new Array(windowed.length + 1);
-  let joined = '';
-  for (let i = 0; i < windowed.length; i += 1) {
-    joinedAt[i] = joined.length;
-    if (windowed[i] !== REMOVED) joined += windowed[i];
-  }
-  joinedAt[windowed.length] = joined.length;
-  const spans = [
-    ...matchSpans(joined),
-    ...matchSpans(windowed).map(([start, end]) => [joinedAt[start], joinedAt[end]]),
-  ];
-  return maskSpans(joined, spans).trim().slice(0, DIAGNOSTIC_CAP);
+  let maskNext = false;
+  const masked = windowed
+    .split(/(\s+)/)
+    .map((run) => {
+      if (run.trim() === '') return run;
+      const visible = run.replaceAll(MARK, '');
+      const hidden = run.includes(MARK) && visible.length >= MARKED_RUN_MIN;
+      const mask = hidden || maskNext;
+      maskNext = mask && AUTHORIZATION_KEYWORD_END.test(visible);
+      return mask ? '[redacted]' : visible;
+    })
+    .join('');
+  return redactPatterns(masked).trim().slice(0, DIAGNOSTIC_CAP);
 };
 
 /**

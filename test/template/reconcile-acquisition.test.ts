@@ -386,9 +386,10 @@ describe('sanitizeDiagnostic — safe to print', () => {
 
   it('removes a carriage return and a tab inside the line', async () => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
-    const out = sanitizeDiagnostic('HTTP 404: x\rlane reconciliation: all clean\tdone');
+    const out = sanitizeDiagnostic('HTTP 404: x \rlane reconciliation: all clean \tdone');
     expect(out).not.toMatch(/[\r\t]/);
     expect(out).toContain('all clean');
+    expect(out).toContain('lane reconciliation');
   });
 
   it.each([
@@ -411,6 +412,9 @@ describe('sanitizeDiagnostic — safe to print', () => {
     ['a private-use character already in the text', '\uE000'],
     ['an OSC title sequence', '\x1b]0;t\x07'],
     ['a C1 control byte', '\x9b'],
+    ['a zero-width space', '\u200b'],
+    ['a bidi override', '\u202e'],
+    ['a byte-order mark', '\ufeff'],
   ])('redacts a token with %s inside it, instead of printing it reassembled', async (_, inside) => {
     const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
     const token = `${FAKE_GH_TOKEN.slice(0, 14)}${inside}${FAKE_GH_TOKEN.slice(14)}`;
@@ -425,6 +429,45 @@ describe('sanitizeDiagnostic — safe to print', () => {
     const token = `${FAKE_GH_TOKEN.slice(0, 28)}\x00${FAKE_GH_TOKEN.slice(28)}`;
     const out = sanitizeDiagnostic(`request failed for user ${token}`);
     expect(out).toBe('request failed for user [redacted]');
+  });
+
+  it.each([
+    ['a tab before and a NUL inside', 'user\t', '\x00', 14, '[redacted]'],
+    ['a space before and a tab inside', 'user ', '\t', 14, 'user [redacted]'],
+    ['an ANSI reset before and a colour code inside', 'x\x1b[0m', '\x1b[1m', 14, '[redacted]'],
+    ['a NUL before and a NUL late inside', 'user\x00', '\x00', 28, '[redacted]'],
+  ])('redacts a token with %s', async (_, before, inside, at, expected) => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const token = `${FAKE_GH_TOKEN.slice(0, at)}${inside}${FAKE_GH_TOKEN.slice(at)}`;
+    const out = sanitizeDiagnostic(`${before}${token}`);
+    expect(out).not.toContain(FAKE_GH_TOKEN.slice(at));
+    expect(out).toBe(expected);
+  });
+
+  it('redacts a cloud access key glued after a tab and split by a NUL', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const key = ['AKIA', '1234567', '\x00', '890ABCDEF'].join('');
+    const out = sanitizeDiagnostic(`id\t${key}`);
+    expect(out).not.toContain('890ABCDEF');
+    expect(out).not.toContain('AKIA1234567');
+  });
+
+  it('redacts an authorization value whose keyword is glued to the word before', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const out = sanitizeDiagnostic('request failed for user\x00Bearer abcdefghijklmnop');
+    expect(out).not.toContain('abcdefghijklmnop');
+  });
+
+  it('redacts the value behind a glued Authorization header and its scheme', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    const out = sanitizeDiagnostic('sent\x00Authorization: Bearer abcdefghijklmnop to the API');
+    expect(out).not.toContain('abcdefghijklmnop');
+    expect(out).toContain('to the API');
+  });
+
+  it('keeps a short word that only a colour code wrapped', async () => {
+    const { sanitizeDiagnostic } = await load('reconcile-external-prs.mjs');
+    expect(sanitizeDiagnostic('\x1b[1mfailed\x1b[0m: HTTP 404')).toBe('failed: HTTP 404');
   });
 
   it('caps a diagnostic line at 200 characters', async () => {
