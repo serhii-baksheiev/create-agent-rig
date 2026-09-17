@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
 import { installEnv, runPackageManager } from './run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const exec = promisify(execFile);
 const sha256 = (content: string): string =>
@@ -94,12 +95,12 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
         break;
       }
     }
-    await rm(probe, { recursive: true, force: true });
+    await removeFixture(probe);
     expect(recognisable, 'no installed file matches any released version').toBeTruthy();
   }, 300_000);
 
   afterAll(async () => {
-    await rm(work, { recursive: true, force: true });
+    await removeFixture(work);
   });
 
   /**
@@ -118,7 +119,7 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
       await body(repo, before);
     } finally {
       await writeFile(templateFile(recognisable), before);
-      await rm(repo, { recursive: true, force: true });
+      await removeFixture(repo);
     }
   };
 
@@ -187,6 +188,6 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
     expect(run.stderr).not.toMatch(/at .*upgrade\.js/);
     await expect(readFile(path.join(empty, '.claude', 'rules', 'workflow.md'))).rejects.toThrow();
     expect(await readFile(path.join(empty, 'CLAUDE.md'), 'utf8')).toBe('# some other project\n');
-    await rm(empty, { recursive: true, force: true });
+    await removeFixture(empty);
   });
 });

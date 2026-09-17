@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { needsGitRoot, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * AR-51 — "the rulebook is editable by the run it governs".
@@ -110,8 +111,8 @@ beforeEach(async () => {
   root = await realpath(await mkdtemp(path.join(tmpdir(), 'ar51-root-')));
 });
 afterEach(async () => {
-  await rm(home, { recursive: true, force: true });
-  await rm(root, { recursive: true, force: true });
+  await removeFixture(home);
+  await removeFixture(root);
 });
 
 describe('guard-rulebook: its stated limits hold, each one measured', () => {

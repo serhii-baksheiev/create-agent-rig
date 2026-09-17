@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { runNodeTimed } from '../helpers/child-timing.js';
+
 // Round 3 of the review, and the last one that adds rules.
 //
 // Rounds 1→2→3 each fixed the previous round by ADDING a construct, and each
@@ -186,8 +188,18 @@ describe('a dangerous command cannot be un-guarded by making the hook crash', ()
       // correctly allowed and is not a hostile shape.)
       ['deep braces as a decoy', `rm -rf / ${'{a,b}'.repeat(5_000)}`],
     ];
+    // In-child measurement (RP-158): bound the GUARD's own work, not the
+    // parent's wall clock around spawning it. See child-timing.test.ts.
+    async function runHookTimed(command: string): Promise<{ code: number | string; ms: number }> {
+      const run = await runNodeTimed(hook, {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        timeout: 10_000,
+      });
+      return { code: run.code, ms: run.elapsedMs };
+    }
+
     for (const [label, command] of shapes) {
-      const result = await runHook(command);
+      const result = await runHookTimed(command);
       expect(result.code, `${label} must not fail open`).toBe(2);
       expect(result.ms, `${label} took ${result.ms}ms`).toBeLessThan(3000);
     }

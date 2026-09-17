@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runPackageManager } from './run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -25,7 +26,7 @@ describe('generated node-service project passes its own checks', () => {
   });
 
   afterAll(async () => {
-    await rm(work, { recursive: true, force: true });
+    await removeFixture(work);
   });
 
   it('has the same layers, minus the cloud', async () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import {
   writeManifest,
 } from '../src/lib/manifest.js';
 import type { RigManifest } from '../src/lib/manifest.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 let repo: string;
 
@@ -19,7 +20,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await removeFixture(repo);
 });
 
 const sample = (): RigManifest => ({

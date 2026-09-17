@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { installEnv, runNpx } from './run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * The part of RP-70's helper that actually spawns a child. The pure assertions
@@ -19,7 +20,7 @@ describe('runNpx', () => {
   });
 
   afterEach(async () => {
-    await rm(work, { recursive: true, force: true });
+    await removeFixture(work);
   });
 
   // Every suite here points npm at its own cache; without it these two would

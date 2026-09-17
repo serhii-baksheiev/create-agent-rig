@@ -18,6 +18,7 @@ import { initProject } from '../src/commands/init.js';
 import { planUpgrade } from '../src/commands/upgrade.js';
 import type { UpgradePlan } from '../src/commands/upgrade.js';
 import { MANIFEST_REL, readManifest } from '../src/lib/manifest.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 // What this file is about: the CLI's *report* on its own work — the plan
 // header, the flags it accepts, and the summary line. None of that is
@@ -117,7 +118,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rm(sandbox, { recursive: true, force: true });
+  await removeFixture(sandbox);
 });
 
 beforeEach(async () => {
@@ -128,7 +129,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await removeFixture(repo);
 });
 
 describe('the upgrade plan header states what it knows, not what it infers', () => {

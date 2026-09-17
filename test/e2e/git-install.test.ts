@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { installEnv, runNpx } from './run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -15,7 +16,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(work, { recursive: true, force: true });
+  await removeFixture(work);
 });
 
 describe('git install (the `npx github:…` personal-stage distribution path)', () => {

@@ -11,6 +11,7 @@ import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/ma
 import { isSafeSubstitutionValue } from '../src/lib/safe-path.js';
 import { substituteContent } from '../src/lib/substitute.js';
 import { agentOsUniversalDir } from '../src/templates.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 let repo: string;
 
@@ -50,7 +51,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await removeFixture(repo);
 });
 
 describe('init writes the manifest that makes an upgrade possible', () => {

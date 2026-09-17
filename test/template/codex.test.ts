@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -14,6 +14,7 @@ import {
   posixShellAvailable,
   skipUnless,
 } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
 // `git init` under pre-commit re-initialises THIS repository rather than the
@@ -293,8 +294,8 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       expect(result.code, result.stderr).toBe(2);
       expect(result.stderr).toMatch(/rulebook|unattended/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
-      await rm(home, { recursive: true, force: true });
+      await removeFixture(scratch);
+      await removeFixture(home);
     }
   });
 
@@ -436,8 +437,8 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         expect(result.code, seen).toBe(2);
         expect(result.stderr, seen).toMatch(/rulebook|unattended/i);
       } finally {
-        await rm(scratch, { recursive: true, force: true });
-        await rm(home, { recursive: true, force: true });
+        await removeFixture(scratch);
+        await removeFixture(home);
       }
     },
   );
@@ -794,7 +795,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/core/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -829,7 +830,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/core/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -858,8 +859,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).not.toContain(contentMarker);
       expect(result.stderr).not.toContain(outside);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
+      await removeFixture(scratch);
+      await removeFixture(outside);
     }
   });
 
@@ -885,8 +886,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/destination.*(?:outside|unsafe)|unsafe.*destination/i);
       expect(result.stderr).not.toContain(outside);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
+      await removeFixture(scratch);
+      await removeFixture(outside);
     }
   });
 
@@ -914,8 +915,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/destination.*(?:outside|unsafe)|unsafe.*destination/i);
       expect(result.stderr).not.toContain(outside);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
+      await removeFixture(scratch);
+      await removeFixture(outside);
     }
   });
 
@@ -946,7 +947,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         expect(result.stderr, destination).toMatch(/destination.*outside|unsafe.*destination/i);
       }
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -987,7 +988,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         expect(result.code).toBe(2);
         expect(result.stderr).toMatch(/outside|repository|repo root|refus|inspect/i);
       } finally {
-        await rm(scratch, { recursive: true, force: true });
+        await removeFixture(scratch);
       }
     },
   );
@@ -1010,7 +1011,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).not.toContain('unique-private-marker');
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1036,8 +1037,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/resolves outside|outside.*repository/i);
       expect(result.stderr).not.toContain('unique-symlink-marker');
     } finally {
-      await rm(inside, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
+      await removeFixture(inside);
+      await removeFixture(outside);
     }
   });
 
@@ -1065,8 +1066,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/resolves outside|unsafe.*source/i);
       expect(result.stderr).not.toContain('unique-final-symlink-marker');
     } finally {
-      await rm(inside, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
+      await removeFixture(inside);
+      await removeFixture(outside);
     }
   });
 
@@ -1106,7 +1107,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/core/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1170,8 +1171,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/pure module/i);
       expect(result.code).toBe(2);
     } finally {
-      await rm(nested, { recursive: true, force: true });
-      await rm(foreign, { recursive: true, force: true });
+      await removeFixture(nested);
+      await removeFixture(foreign);
     }
   });
 
@@ -1212,7 +1213,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/core/i);
     } finally {
-      await rm(nested, { recursive: true, force: true });
+      await removeFixture(nested);
     }
   });
 
@@ -1235,7 +1236,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/not a regular file|cannot safely inspect/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1277,7 +1278,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/not a regular file|cannot safely inspect/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1302,7 +1303,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/cannot safely inspect|unsafe.*source/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1324,7 +1325,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/large|size|limit|inspect/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1474,7 +1475,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/aggregate|total.*(?:move|inspection)|move.*budget/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1507,7 +1508,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/aggregate.*move|move.*aggregate/i);
       expect(result.stderr).not.toMatch(/not a regular file|cannot safely inspect moved file/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1533,7 +1534,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/context does not match/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1559,7 +1560,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/hunk.*(?:ceiling|limit)|(?:ceiling|limit).*hunk/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1588,7 +1589,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/total.*hunk|hunk.*(?:total|budget)/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1612,7 +1613,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/output.*(?:budget|limit)|(?:budget|limit).*output/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1638,7 +1639,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/aggregate.*output|output.*aggregate/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1671,7 +1672,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.stderr).toMatch(/aggregate.*output|output.*aggregate/i);
       expect(result.stderr).not.toMatch(/not a regular file|cannot safely inspect moved file/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1697,7 +1698,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/splice.*(?:budget|limit)|(?:budget|limit).*splice/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1726,7 +1727,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/comparison.*(?:budget|limit)|(?:budget|limit).*comparison/i);
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 
@@ -1798,7 +1799,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         ['const duplicate = true;', 'const anchor = true;', 'export {};', ''].join('\n'),
       );
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      await removeFixture(scratch);
     }
   });
 });

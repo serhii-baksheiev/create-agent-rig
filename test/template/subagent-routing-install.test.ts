@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import { readManifest, sha256, writeManifest } from '../../packages/cli/src/lib/
 import { TARGETS } from '../../packages/cli/src/lib/targets.js';
 import type { Target } from '../../packages/cli/src/lib/targets.js';
 import { templatesRoot } from '../../packages/cli/src/templates.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * RP-173 acceptance: `create` (every target), `init`, and `upgrade` from a rig
@@ -121,7 +122,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await removeFixture(repo);
 });
 
 describe('create installs Claude agents pinned to the routing policy', () => {

@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { skipUnless, symlinksAvailable } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -346,7 +347,7 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
 describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () => {
   // The hook runs from a project dir: copy it + a checks config into a tmp
   // git repo, exactly as it would live in a generated project.
-  const { mkdtemp, mkdir: mkdirP, copyFile, writeFile: writeF, rm: rmP } = fsp;
+  const { mkdtemp, mkdir: mkdirP, copyFile, writeFile: writeF } = fsp;
   let projectDir: string;
 
   async function setUpProject(options: {
@@ -440,7 +441,7 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
   const stop = (active = false) => ({ hook_event_name: 'Stop', stop_hook_active: active });
 
   afterEach(async () => {
-    if (projectDir) await rmP(projectDir, { recursive: true, force: true });
+    if (projectDir) await removeFixture(projectDir);
   });
 
   // AR-119: observed twice in one session reviewing another branch in a
@@ -474,7 +475,7 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
         const result = await runStopHook(stop(), {}, elsewhere);
         expect(result.code, result.stderr).toBe(0);
       } finally {
-        await rmP(elsewhere, { recursive: true, force: true });
+        await removeFixture(elsewhere);
       }
     });
 
@@ -487,7 +488,7 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
         const result = await runStopHook(stop(), {}, elsewhere);
         expect(result.code, result.stderr).toBe(0);
       } finally {
-        await rmP(elsewhere, { recursive: true, force: true });
+        await removeFixture(elsewhere);
       }
     });
 
@@ -547,7 +548,7 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
       const result = await runStopHook(stop(), { GIT_DIR: path.join(elsewhere, '.git') });
       expect(result.code).toBe(0);
     } finally {
-      await fsp.rm(elsewhere, { recursive: true, force: true });
+      await removeFixture(elsewhere);
     }
   });
 
@@ -567,7 +568,7 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
       const result = await runStopHook(stop(), { GIT_OBJECT_DIRECTORY: objects });
       expect(result.code, result.stderr).toBe(0);
     } finally {
-      await fsp.rm(objects, { recursive: true, force: true });
+      await removeFixture(objects);
     }
   });
 
@@ -1253,7 +1254,7 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
         child.stdin.end();
       });
     } finally {
-      await fsp.rm(planted, { force: true, recursive: true });
+      await removeFixture(planted);
     }
   }
 
@@ -1338,7 +1339,7 @@ describe('inject-rules main guard (invocation paths that must not silence it)', 
   let root: string | undefined;
 
   afterEach(async () => {
-    if (root) await fsp.rm(root, { recursive: true, force: true });
+    if (root) await removeFixture(root);
     root = undefined;
   });
 

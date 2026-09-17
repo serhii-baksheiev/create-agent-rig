@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { copyFile, link, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const executableFixture = async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'stub-command-materialize-'));
@@ -15,7 +16,7 @@ const executableFixture = async () => {
     source,
     destination,
     contents,
-    cleanup: () => rm(dir, { recursive: true, force: true }),
+    cleanup: () => removeFixture(dir),
   };
 };
 

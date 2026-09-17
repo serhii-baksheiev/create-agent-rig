@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { fifosAvailable, modeBitsDeny, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * AR-51 — the unattended signal is a FILE, not an env variable.
@@ -122,7 +123,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   process.env.HOME = originalHome;
-  await rm(home, { recursive: true, force: true });
+  await removeFixture(home);
 });
 
 describe('unattendedFlags: the same two-home rule as the kill switch', () => {
@@ -164,7 +165,7 @@ describe('unattendedFlags: the same two-home rule as the kill switch', () => {
       );
       expect(names[1], `spellings: ${spellings.join(' vs ')}`).toBe(names[0]);
     } finally {
-      await rm(checkout, { recursive: true, force: true });
+      await removeFixture(checkout);
     }
   });
 });
@@ -455,7 +456,7 @@ describe('the CLI the loop skill calls', () => {
       expect(result.code, result.stderr).not.toBe(0);
       expect(result.stderr).toMatch(/remove|remain|failed/i);
     } finally {
-      await rm(candidate, { recursive: true, force: true });
+      await removeFixture(candidate);
     }
   });
 
@@ -495,7 +496,7 @@ describe('the CLI the loop skill calls', () => {
       expect(existsSync(selected)).toBe(false);
       expect(existsSync(flagPath())).toBe(true);
     } finally {
-      await rm(selectedHome, { recursive: true, force: true });
+      await removeFixture(selectedHome);
     }
   });
 

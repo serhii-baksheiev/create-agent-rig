@@ -10,7 +10,7 @@
 // names a `memoryRoot` no directory on disk backs, which is what proves this
 // command never touches Memory's storage — it only ever spawns the recorded
 // executable (`## Storage-tree ownership`, docs/command-contract.md).
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -22,6 +22,7 @@ import {
   writeSubsystemsManifest,
 } from '../src/lib/subsystems.js';
 import type { SubsystemsManifest } from '../src/lib/subsystems.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 /**
  * The injected process runner, same shape subsystems.ts pins:
@@ -154,7 +155,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
+  await removeFixture(tmp);
 });
 
 describe('create-agent-rig memory <verb> (RP-19)', () => {

@@ -1,9 +1,10 @@
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { TestProject } from 'vitest/node';
 import { runPackageManager } from './run.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -51,6 +52,6 @@ export default async function setup(project: TestProject): Promise<() => Promise
   );
 
   return async () => {
-    await rm(work, { recursive: true, force: true });
+    await removeFixture(work);
   };
 }

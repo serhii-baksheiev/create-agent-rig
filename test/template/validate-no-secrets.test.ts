@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
+import { runNodeTimed } from '../helpers/child-timing.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR-49(b), layer 2: the CI half of the "both layers, one shared module" ruling.
 //
@@ -112,7 +114,7 @@ const { withoutGitLocation } = (await import(
 const temporaryDirs: string[] = [];
 
 afterAll(async () => {
-  for (const dir of temporaryDirs) await rm(dir, { recursive: true, force: true });
+  for (const dir of temporaryDirs) await removeFixture(dir);
 });
 
 /**
@@ -260,9 +262,15 @@ describe('validate-no-secrets — the default sweep over the tracked set', () =>
     await put(dir, 'data/blob.txt', filler);
     await git(dir, ['add', '--', 'data/blob.txt']);
 
-    const started = Date.now();
-    const result = await run(dir);
-    const elapsed = Date.now() - started;
+    // In-child measurement (RP-158): bound the VALIDATOR's own work, not the
+    // parent's wall clock around spawning it. See child-timing.test.ts.
+    const run = await runNodeTimed(validator, {
+      cwd: dir,
+      env: withoutGitLocation(),
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const result = { code: run.code, out: run.stdout + run.stderr };
+    const elapsed = run.elapsedMs;
 
     expect(result.code, result.out).toBe(0);
     expect(elapsed, `took ${elapsed}ms on 5 MB of harmless text`).toBeLessThan(20_000);

@@ -87,3 +87,63 @@ describe('the one case that starts Windows PowerShell', () => {
     expect(trailingFigures, 'numeric trailing-argument budgets').toHaveLength(0);
   });
 });
+
+// RP-158. test/template/package-manager-transport.test.ts has one
+// `it.each(['npm', 'pnpm', 'npx'] as const)` case that starts a real
+// package-manager CLI child process ('runs the installed %s CLI directly and
+// returns its version'). Measured on the hosted windows-e2e runner, same
+// code, across separate runs: 4670 ms (run 35200784928), 7023 ms (run
+// 35193542091), and in run 35202028836 "Error: Test timed out in 15000ms." at
+// 16525 ms, followed by "EBUSY: resource busy or locked, rmdir
+// '...\\caf-package-manager-...'" from afterEach because the still-running
+// pnpm child held its cwd. The npm and npx siblings of the same it.each took
+// 123 ms / 152 ms — the case cannot shrink: one package-manager CLI start is
+// the whole of it. So that one parametrised case carries its own vitest
+// per-case timeout, and the file-wide figure above stays where it is.
+const PACKAGE_MANAGER_START_CASE_NAME =
+  'runs the installed %s CLI directly and returns its version';
+const PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION =
+  /^const PACKAGE_MANAGER_START_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+
+async function readPackageManagerTransportTestSource(): Promise<string> {
+  return readFile(
+    path.join(repoRoot, 'test', 'template', 'package-manager-transport.test.ts'),
+    'utf8',
+  );
+}
+
+describe('the package-manager CLI start cases', () => {
+  it("carries its own budget, declared once by name and passed as that parametrised case's options", async () => {
+    const source = await readPackageManagerTransportTestSource();
+
+    expect(source).toMatch(PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION);
+
+    const caseWithOptions = new RegExp(
+      `it\\.each\\([^)]*\\)\\(\\s*'${escapeRegExp(PACKAGE_MANAGER_START_CASE_NAME)}'\\s*,\\s*\\{ timeout: PACKAGE_MANAGER_START_CASE_TIMEOUT_MS \\}`,
+    );
+    expect(source).toMatch(caseWithOptions);
+  });
+
+  it('is bounded above so a genuine hang still fails within a minute, and sits above the lane budget it replaces', async () => {
+    const source = await readPackageManagerTransportTestSource();
+    const declared = source.match(PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION);
+    expect(declared).not.toBeNull();
+
+    const budget = Number((declared?.[1] ?? '').replaceAll('_', ''));
+    expect(Number.isInteger(budget)).toBe(true);
+    expect(templateProject?.test.testTimeout).toBeDefined();
+    expect(budget).toBeGreaterThan(templateProject?.test.testTimeout ?? Number.POSITIVE_INFINITY);
+    expect(budget).toBeLessThanOrEqual(60_000);
+  });
+
+  it('is the only budget of its own in that file — the figure moves for the CLI-start cases, not for the file', async () => {
+    // Both spellings vitest accepts, read outside comments: a `timeout:` key in
+    // an options object however it is spaced or combined, and the numeric
+    // trailing argument `}, 20_000)` that queue.test.ts uses.
+    const code = (await readPackageManagerTransportTestSource()).replace(/\/\/[^\n]*/g, '');
+    const optionKeys = code.match(/\btimeout\s*:/g) ?? [];
+    const trailingFigures = code.match(/\}\s*,\s*\d[\d_]*\s*\);/g) ?? [];
+    expect(optionKeys, 'timeout keys in options objects').toHaveLength(1);
+    expect(trailingFigures, 'numeric trailing-argument budgets').toHaveLength(0);
+  });
+});

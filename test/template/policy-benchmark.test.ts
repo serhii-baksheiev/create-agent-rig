@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { guardProcessesMeasurable, skipUnless } from '../helpers/env.js';
 import { BENCHMARK_CORPUS } from '../../packages/cli/src/policy/benchmark/corpus.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -227,7 +228,7 @@ describe('policy benchmark runner', () => {
         expect(report.passed).toBe(true);
         expect(report.deferredIntegration).toEqual(['RP-13', 'RP-14-memory']);
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );
@@ -256,7 +257,7 @@ describe('policy benchmark runner', () => {
           ).toBe(true);
         }
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );
@@ -302,10 +303,7 @@ describe('policy benchmark runner', () => {
           ).toBe(true);
         }
       } finally {
-        await Promise.all([
-          rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
-          rm(observationFile, { force: true }),
-        ]);
+        await Promise.all([removeFixture(root), rm(observationFile, { force: true })]);
       }
     },
   );
@@ -337,7 +335,7 @@ describe('policy benchmark runner', () => {
             ?.scenarios.find((scenario) => scenario.id === 'real-wiring'),
         ).toMatchObject({ passed: false, classification: 'unsupported' });
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );
@@ -382,7 +380,7 @@ describe('policy benchmark runner', () => {
           }),
         ]);
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );
@@ -426,7 +424,7 @@ describe('policy benchmark runner', () => {
           expect.objectContaining({ passed: false, classification: 'unsupported' }),
         ]);
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );
@@ -493,7 +491,7 @@ describe('policy benchmark runner', () => {
           expect.objectContaining({ passed: false }),
         ]);
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );
@@ -516,7 +514,7 @@ describe('policy benchmark runner', () => {
           'adapter-process',
         );
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );
@@ -535,7 +533,7 @@ describe('policy benchmark runner', () => {
         expect(result.code).not.toBe(0);
         expect(`${result.out}\n${result.err}`).toMatch(/dirty|tracked|evidence/i);
       } finally {
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        await removeFixture(root);
       }
     },
   );

@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
  * RP-50 — replacement semantics for the existing SELECT / BEFORE_PR /
@@ -1476,7 +1477,7 @@ describe('an incomplete sibling-run search cannot authorize a first baseline', (
           /(incomplete|truncated|limit|cap|budget)/i,
         );
       } finally {
-        await rm(p.root, { recursive: true, force: true });
+        await removeFixture(p.root);
       }
     },
     30_000,
@@ -1819,7 +1820,7 @@ describe('run-state uncertainty preserves the revalidation brake', () => {
           expect((await lstat(statePath)).isSymbolicLink()).toBe(true);
         }
       } finally {
-        await rm(runDir, { recursive: true, force: true });
+        await removeFixture(runDir);
       }
     },
   );
