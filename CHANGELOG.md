@@ -68,11 +68,15 @@ generator's own repository, ahead of 0.10.0.
   retained guard, skills/agents delivery, hook wiring, and the 0.9 external
   subsystem contract — where every row points at an executable test or an
   exact release-evidence citation.
-- **`test/template/guard-acceptance.test.ts`** invokes every retained
-  `PreToolUse` guard through the real `.claude/settings.json` /
+- **`test/template/guard-acceptance.test.ts`** invokes six of the seven
+  retained `PreToolUse` guards through the real `.claude/settings.json` /
   `.codex/hooks.json` wiring strings, with one allowed and one denied fixture
   per guard per harness — the thing the benchmark measured a parallel path
-  for instead of the wiring a generated project actually runs.
+  for instead of the wiring a generated project actually runs. (The seventh,
+  `guard-subagent-model`, is Claude-only and already has its own fixtures in
+  `subagent-routing-hooks.test.ts`; a bidirectional check keeps this file's
+  fixture list, the wiring, and `docs/compatibility.md`'s guard table from
+  drifting apart.)
 - **Meta-tests that pinned shape instead of behaviour were removed or cut
   down to the assertion that survives review as real**, each with its own
   reason recorded in the pull request: a citation count nothing rereads

@@ -3,8 +3,8 @@ name: CI
 # The pull-request path. Hosted-first by ruling (docs/runners.md): every job
 # here runs on a GitHub-hosted image and nothing here can be pointed at a
 # machine of our own — a laptop that is off must never block a PR. The full
-# Windows suite, the e2e installs and the benchmark run in e2e.yml, on master,
-# nightly and by dispatch, where the runner_mode switch lives.
+# Windows suite and the e2e installs run in e2e.yml, on master, nightly and by
+# dispatch, where the runner_mode switch lives.
 on:
   push:
     branches: [master]

@@ -21,13 +21,22 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * Codex's POSIX command resolves its own root with `git rev-parse
  * --show-toplevel` before ever naming the hook file.
  *
- * One allowed and one denied fixture per guard per harness — six guards,
- * twenty-four executions. `guard-subagent-model` and `gate-stop-dod` are
- * covered by their own dedicated suites (`subagent-routing.test.ts`,
- * `hooks.test.ts` › "gate-stop-dod hook") and are not duplicated here; the
- * first is wired for Claude Code only (`docs/compatibility.md` has that row),
- * and the second's fixture (a real `git status` plus `dod-checks.json`) does
- * not gain anything from being re-invoked through the wiring string.
+ * One allowed and one denied fixture per guard per harness — six of the seven
+ * `PreToolUse`-wired guards, twenty-four executions. `guard-subagent-model`
+ * (wired `PreToolUse` too, matcher `Agent`, Claude Code only) has its own
+ * fixtures in `subagent-routing-hooks.test.ts` instead — the same
+ * "own dedicated suite" pattern this file already uses for `guard-bash` and
+ * `guard-rulebook`'s richer behaviour, not a gap. `gate-stop-dod` (`Stop`) and
+ * `warn-subagent-routing` (`SessionStart`) are not `PreToolUse` at all and are
+ * out of this file's scope entirely.
+ *
+ * The correspondence describe block at the end of this file is what keeps
+ * that exception list from becoming a place to hide a real gap: it enumerates
+ * every `PreToolUse` hook actually wired in `settings.json`/`hooks.json` and
+ * requires each one to have either a fixture here or a listed, reasoned
+ * exception, in both directions — a newly wired guard with neither, and a
+ * fixture or exception naming something that turns out not to be wired, both
+ * fail it. It also requires a `docs/compatibility.md` row for each.
  *
  * ⚠ Executed on POSIX only. Codex's `commandWindows` (base64 PowerShell) is
  * asserted present and non-empty here, not executed — this suite runs under
@@ -62,6 +71,20 @@ function commandFor(wiring: HookWiring, event: string, hookFile: string): HookEn
     if (found) return found;
   }
   throw new Error(`no ${event} hook wires ${hookFile}`);
+}
+
+const HOOK_FILE = /([\w-]+\.mjs)/;
+
+/** Every distinct `<name>.mjs` a wiring declares under `event`, across every matcher group. */
+function wiredHookFiles(wiring: HookWiring, event: string): Set<string> {
+  const names = new Set<string>();
+  for (const group of wiring.hooks[event] ?? []) {
+    for (const hook of group.hooks) {
+      const match = HOOK_FILE.exec(hook.command);
+      if (match) names.add(match[1]!);
+    }
+  }
+  return names;
 }
 
 interface Exit {
@@ -178,7 +201,7 @@ describe('every retained PreToolUse guard, run through the shipped wiring, on bo
         const allow = await runWired(entry.command, fixture.allowed, env, repoRoot);
         expect(allow.code, allow.stderr).toBe(0);
         const deny = await runWired(entry.command, fixture.denied, env, repoRoot);
-        expect(deny.code, deny.stderr).not.toBe(0);
+        expect(deny.code, deny.stderr).toBe(2);
       });
 
       it('Codex wiring: allows the allowed fixture and blocks the denied one, and declares a Windows command too', async (ctx) => {
@@ -192,7 +215,7 @@ describe('every retained PreToolUse guard, run through the shipped wiring, on bo
         const allow = await runWired(entry.command, fixture.allowed, env, repoRoot);
         expect(allow.code, allow.stderr).toBe(0);
         const deny = await runWired(entry.command, fixture.denied, env, repoRoot);
-        expect(deny.code, deny.stderr).not.toBe(0);
+        expect(deny.code, deny.stderr).toBe(2);
       });
     });
   }
@@ -202,11 +225,11 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
   // Unlike the fixtures above, this guard's decision depends on a flag file
   // under HOME rather than on the payload alone (`autonomy.md`, "Never" —
   // edit the rulebook from an unattended run outside the item's allow-list).
-  // README.md is not part of the rulebook (`autonomy.md` names it exactly:
-  // hooks, settings, rules, skills, agents, the queue adapter, `.codex/`, the
-  // integrity manifest, `.claude/doctor-exemptions.json`, `AGENTS.md` and
-  // `CLAUDE.md`), so it is the allowed fixture even while unattended; a rule
-  // file is the denied one.
+  // README.md is not one of `RULEBOOK_PREFIXES`
+  // (`.claude/scripts/unattended-flag.mjs` — the one spelling of that list;
+  // `autonomy.md` deliberately does not restate it, so this comment does not
+  // either), so it is the allowed fixture even while unattended; a path under
+  // `.claude/rules/` is one of those prefixes and is the denied fixture.
   const allowed = write('README.md', '# create-agent-rig\n');
   const denied = write('.claude/rules/architecture.md', '# tampered\n');
 
@@ -241,7 +264,7 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
     const allow = await runWired(entry.command, allowed, env, repoRoot);
     expect(allow.code, allow.stderr).toBe(0);
     const deny = await runWired(entry.command, denied, env, repoRoot);
-    expect(deny.code, deny.stderr).not.toBe(0);
+    expect(deny.code, deny.stderr).toBe(2);
   });
 
   it('Codex wiring: allows README.md and blocks a rule file while unattended, and declares a Windows command too', async (ctx) => {
@@ -254,6 +277,90 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
     const allow = await runWired(entry.command, allowed, env, repoRoot);
     expect(allow.code, allow.stderr).toBe(0);
     const deny = await runWired(entry.command, denied, env, repoRoot);
-    expect(deny.code, deny.stderr).not.toBe(0);
+    expect(deny.code, deny.stderr).toBe(2);
+  });
+});
+
+/**
+ * The one place this file's `FIXTURES` (plus the `guard-rulebook` describe
+ * block above) are checked against the wiring itself, rather than assumed to
+ * track it. Every `PreToolUse` hook wired in EITHER `settings.json` or
+ * `hooks.json` must have a fixture here or a reasoned entry below — never
+ * neither — and every `docs/compatibility.md` guard-table row must name a
+ * hook file that still exists. Both directions are exercised: an
+ * `it.each`-style pass over the real snapshot (a wired guard with nothing to
+ * cover it fails "has a fixture or a documented exception"), and a pass over
+ * what this file and the doc claim (a name that is not actually wired, or
+ * not an existing hook file, fails the reverse checks).
+ */
+const ACCEPTANCE_EXCEPTIONS: Record<string, string> = {
+  'guard-subagent-model.mjs':
+    'Claude-only (matcher Agent; Codex has no Agent tool). Its allow/deny fixtures are in ' +
+    'subagent-routing-hooks.test.ts, invoked against the hook file directly — the pattern this ' +
+    "file already uses for guard-bash/guard-rulebook's richer behaviour, not a gap.",
+};
+
+describe("the PreToolUse wiring, this file's fixtures, and docs/compatibility.md name the same guards", () => {
+  const fixturedHooks = new Set([...FIXTURES.map((f) => f.hookFile), 'guard-rulebook.mjs']);
+
+  it('every PreToolUse hook wired in settings.json has a fixture here or a documented exception', () => {
+    const wired = wiredHookFiles(claudeSettings, 'PreToolUse');
+    const uncovered = [...wired].filter(
+      (name) => !fixturedHooks.has(name) && !(name in ACCEPTANCE_EXCEPTIONS),
+    );
+    expect(uncovered, 'wired but neither fixtured nor excepted').toEqual([]);
+  });
+
+  it('every PreToolUse hook wired in hooks.json has a fixture here or a documented exception', () => {
+    const wired = wiredHookFiles(codexHooks, 'PreToolUse');
+    const uncovered = [...wired].filter(
+      (name) => !fixturedHooks.has(name) && !(name in ACCEPTANCE_EXCEPTIONS),
+    );
+    expect(uncovered, 'wired but neither fixtured nor excepted').toEqual([]);
+  });
+
+  it('no fixture or exception names a guard that is not actually wired PreToolUse, on either harness', () => {
+    const wired = new Set([
+      ...wiredHookFiles(claudeSettings, 'PreToolUse'),
+      ...wiredHookFiles(codexHooks, 'PreToolUse'),
+    ]);
+    const stale = [...fixturedHooks, ...Object.keys(ACCEPTANCE_EXCEPTIONS)].filter(
+      (name) => !wired.has(name),
+    );
+    expect(stale, 'fixtured or excepted but not wired PreToolUse anywhere').toEqual([]);
+  });
+
+  it('docs/compatibility.md carries a guard-table row for every fixtured or excepted hook', async () => {
+    const doc = await readFile(path.join(repoRoot, 'docs', 'compatibility.md'), 'utf8');
+    const start = doc.indexOf('## Retained security guards');
+    const end = doc.indexOf('\n## ', start + 1);
+    expect(
+      start,
+      'docs/compatibility.md has no "## Retained security guards" section',
+    ).toBeGreaterThanOrEqual(0);
+    const section = doc.slice(start, end === -1 ? undefined : end);
+    const missing = [...fixturedHooks, ...Object.keys(ACCEPTANCE_EXCEPTIONS)]
+      .map((name) => name.replace(/\.mjs$/, ''))
+      .filter((name) => !section.includes(`\`${name}\``));
+    expect(missing, 'no compatibility.md row for these guards').toEqual([]);
+  });
+
+  it('every guard-table row in docs/compatibility.md names a hook file that still exists', async () => {
+    const doc = await readFile(path.join(repoRoot, 'docs', 'compatibility.md'), 'utf8');
+    const start = doc.indexOf('## Retained security guards');
+    const end = doc.indexOf('\n## ', start + 1);
+    const section = doc.slice(start, end === -1 ? undefined : end);
+    const rowNames = [...section.matchAll(/^\| `([a-z-]+)`/gm)].map((m) => m[1]!);
+    expect(rowNames.length, 'no guard rows found in the table').toBeGreaterThan(0);
+    const hooksDir = path.join(universal, '.claude', 'hooks');
+    const missingFiles: string[] = [];
+    for (const name of rowNames) {
+      try {
+        await readFile(path.join(hooksDir, `${name}.mjs`));
+      } catch {
+        missingFiles.push(name);
+      }
+    }
+    expect(missingFiles, 'compatibility.md names a guard with no hook file on disk').toEqual([]);
   });
 });
