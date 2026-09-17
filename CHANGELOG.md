@@ -14,6 +14,53 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## 0.9.1
+
+**A patch, numbered by the owner.** Every entry corrects existing behaviour;
+two of them (RP-182, RP-59) do it by recording or reporting something new.
+Nothing is added to what `create`, `init` or `upgrade` install beyond the
+corrected files, the contract version stays `1.0`, and the application
+skeletons remain deprecated and scheduled for removal in 0.10.0 exactly as
+0.9.0 announced.
+
+### Fixed
+
+- **`init` records the files it kept.** When `init` finds a payload path
+  already present and leaves it alone, the manifest now records that file's
+  hash under `kept`, so a later `upgrade` can say whether the file is
+  unchanged or edited since `init` found it instead of reporting it with no
+  history (RP-182). A manifest with nothing kept is written exactly as
+  before.
+- **`memory load` passes Memory a deadline of its own.** A `load` that names
+  no `--timeout-ms` gets `--timeout-ms 45000` appended, below the rig's 60 s
+  kill. A well-formed `--timeout-ms <value>` pair raises that kill to the
+  value plus 15 s when that is above 60 s, capped at Node's timer limit of
+  2 147 483 647 ms; any other spelling passes through unchanged. `doctor`'s
+  arguments are untouched. The README example adds `--cwd .`, which the Memory
+  owner names as part of Memory's own contract (RP-183).
+- **`reconcile-external-prs.mjs` works on a `gh` that does not serve
+  `authorAssociation`** from `gh pr list`: the association is fetched
+  separately and kept only when it answers for the same pull request, and a
+  failed lookup leaves those pull requests untrusted rather than failing the
+  sweep. A failure now names the one cause the evidence shows, with terminal
+  control sequences and credential shapes removed from the detail (RP-99).
+- **The queue reports a Blocks link the ticket body says was removed but the
+  tracker still carries** — a body line of the form
+  `The Blocks link A -> B is removed` — as a `link-contradicted-by-body`
+  hygiene finding (RP-59).
+- **A Jira triage proposal with a long `change` is filed, not refused by the
+  tracker.** Jira rejects a summary over 255 characters; the summary is now
+  cut to fit and the full text stays in the description (RP-121).
+
+### Generator CI (not a rig-facing change)
+
+Test-fixture cleanup goes through one bounded-retry helper, and an audit holds
+every other recursive removal and every in-repository fixture to a written
+reason. The four child-process time bounds are measured inside the child, and
+the package-manager CLI-start cases carry their own measured budget. The e2e
+installs run in a vitest group of their own, so they no longer compete with
+the template tests on the Windows full-suite runner (RP-158).
+
 ## 0.9.0
 
 **The harness ↔ Memory boundary is executable, and the rig is a consumer of

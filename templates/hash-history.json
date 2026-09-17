@@ -11,7 +11,8 @@
     "0.6.2",
     "0.7.0",
     "0.7.1",
-    "0.8.0"
+    "0.8.0",
+    "0.9.0"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -29,7 +30,8 @@
         "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd",
         "18f4300de4c4c7ea380d726fb109fa224da950ef0a4cea5015ab1d408b823be5",
         "0a1b6575f6df8139766c8e71ba7320e14d2a5a5ed8ab26b6b43f7a006153d37d",
-        "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546"
+        "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546",
+        "b47bdf0d7a2f6c5b2034b8f6d683ad2b3c83bd65d15baf7de9b58cc4689d0ab1"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -83,7 +85,8 @@
       "hashes": [
         "2286fbc01c0342b9bac9909890876c079615db5b398e3499a0f2fddb1a334098",
         "4c6241da56060b44e77f9b5f7a8cde7d2923bd605b8b9bae70d00329784c35be",
-        "03f87fbc976d8d65287b032ae3612511fc8f7e57772470b2282b660343fc32db"
+        "03f87fbc976d8d65287b032ae3612511fc8f7e57772470b2282b660343fc32db",
+        "5ec51bc08c9a934bfcbb2077fc7edce48c0e0cc3ed117d7dfc8a2895f2d9c01b"
       ]
     },
     ".claude/agents/code-reviewer.md": {
@@ -93,7 +96,8 @@
         "be3d2992d1f278dde46b555df1840b02f91403db1ec2fd4d489fb5efa940f019",
         "ec403373ef6bc0575d61c6ca11f82792817b272221fad8317ef6c45388b52628",
         "f125cfbce848cdaa91fd81e961808b4dbde452287959ec2cf10b905ee3ede789",
-        "8ede9297480c889ec6d6caf8d076e7d69111fb472933dcf5a48b9a8425fe50c2"
+        "8ede9297480c889ec6d6caf8d076e7d69111fb472933dcf5a48b9a8425fe50c2",
+        "f12cb04871578eca3c9c36a1c2d60f5ae15a0e9094ecfc7c704c341756de4e3e"
       ]
     },
     ".claude/agents/prose-reviewer.md": {
@@ -102,7 +106,8 @@
         "8d5762849afd328fdc1aabf053ad207f2e306e013665e3ff934b06cbb1bbda38",
         "0e4307cd9cf8ef723d79e98b1af46a34c6912a6aa925e2179d939cb83c8f2a44",
         "7e8eaa2b4af9d65e1d10bf50c32c1d138fb2f8b9ba6e6d0880cade0524324d9d",
-        "ed1c05d3938c0b4f277f1bf4af8641460def830569049ff0697c9bda14518b78"
+        "ed1c05d3938c0b4f277f1bf4af8641460def830569049ff0697c9bda14518b78",
+        "7aed3bfc955efc94bbeda3f866d25e2b253c88facaa2beed73939182a9f845b2"
       ]
     },
     ".claude/agents/security-scanner.md": {
@@ -110,13 +115,15 @@
       "hashes": [
         "43e5d59315483e369ad19f3070175f146e88deabd3a12dc09339ac4fac0f2aee",
         "e01467a38a0183be46ba45b05d44f663fbf4b139ceaecb91b5d096f3286a3fcd",
-        "844e215af7d80bd85f62ca937c79bea59c8d8cd7c97353937ce62f7747eb9df7"
+        "844e215af7d80bd85f62ca937c79bea59c8d8cd7c97353937ce62f7747eb9df7",
+        "7c0bc189521955f2d126bac0ff97ab4fa252b05067692a5a3bb6cda232ddfaa3"
       ]
     },
     ".claude/agents/test-writer.md": {
       "since": "0.2.0",
       "hashes": [
-        "333feef12383dea51791ae4923c44ba542438de793f0792fb51d96aa15b8b1b8"
+        "333feef12383dea51791ae4923c44ba542438de793f0792fb51d96aa15b8b1b8",
+        "fce976938fdd1154641e405a557b67161daa34cf84de9ad35fa14287d13b7f9c"
       ]
     },
     ".claude/hooks/block-no-verify.mjs": {
@@ -180,6 +187,12 @@
         "5bf2896ec5e5f94fab20b52cd22418a4392778b40744602a087e320eeca3f688"
       ]
     },
+    ".claude/hooks/guard-subagent-model.mjs": {
+      "since": "0.9.0",
+      "hashes": [
+        "345cbd5f43171adb01cd46ad485fb61299f7135c00ff4217765993551aca3b38"
+      ]
+    },
     ".claude/hooks/guard-web-boundary.mjs": {
       "since": "0.2.0",
       "hashes": [
@@ -202,7 +215,8 @@
       "hashes": [
         "4f836bc3ff75a868ffe035b179ac9e7dc1ad7715d520677ff9f6aa5bfdb200eb",
         "0c191d326a7bb0bbfc110e2210f44b4aa39276e8db3779aaa4545cffd4e11863",
-        "572c671f8f2cad190fe2f144071954ac4d3b1357cab80a19bad584dd3b3768c8"
+        "572c671f8f2cad190fe2f144071954ac4d3b1357cab80a19bad584dd3b3768c8",
+        "6695698d2b38c79a12292601048dd0082a0cd18bf9e69c047d47679c2e6ecf67"
       ]
     },
     ".claude/hooks/lib/hook-input.mjs": {
@@ -210,6 +224,12 @@
       "hashes": [
         "c40320d90e9585a52026e074e399b6883a0dfed704115b28e8da4dea284cf85f",
         "3be3d4af4a25536d2a2bac0441a1370be7efafb5f8aa737b195bdce77db0091b"
+      ]
+    },
+    ".claude/hooks/warn-subagent-routing.mjs": {
+      "since": "0.9.0",
+      "hashes": [
+        "b95165243ebb60264c78b82ce01407669457fe33c0bf86ff2a5c117963c6bc6d"
       ]
     },
     ".claude/queue.json": {
@@ -267,7 +287,8 @@
       "hashes": [
         "dbe8025e10583e03fee5056e88aa6b73e4399453711d9156d82528a02d6e0402",
         "9e60d0300e856a9b3f81ab748bf2c0a9de27233ad0aa58a8c7141413fa0f3cae",
-        "c8e9849a8fccd4e1e60b1ddc82937eb15aceb7f7c2afbd151b05e1bc966bfd2a"
+        "c8e9849a8fccd4e1e60b1ddc82937eb15aceb7f7c2afbd151b05e1bc966bfd2a",
+        "aa34a1eab572964b328ffa0044e96acb3e1c31491df0183460f06e5e6bba3b76"
       ]
     },
     ".claude/scripts/decision-router.mjs": {
@@ -352,7 +373,8 @@
         "ceb6d35fa028f9c5e5e2d5965c627095d5ba80c37191a584627b4bc645b6be15",
         "efa193dc543237d82dcb371fa1df6483ccd43c1db88d0e218f5d89769564974c",
         "bed44df40412a7edac96914de21edc796df604ddc275ff1a02764dfcc4d4ede7",
-        "b3893c365de37ef6d9d04ab933296b9fcf09a0886197d7e12313fa63eacdbd89"
+        "b3893c365de37ef6d9d04ab933296b9fcf09a0886197d7e12313fa63eacdbd89",
+        "37eeb4bdb50d7f6b1427bd02ec9815f39ad9142f35691ffadd8c0b626c6cdb00"
       ]
     },
     ".claude/scripts/queue/as-of.mjs": {
@@ -381,7 +403,8 @@
     ".claude/scripts/queue/gate-rounds.mjs": {
       "since": "0.5.0",
       "hashes": [
-        "7577674d5477cfc388594e4c301601e329d60741dfa0b2844be2cc94a3ab6283"
+        "7577674d5477cfc388594e4c301601e329d60741dfa0b2844be2cc94a3ab6283",
+        "deeb7a10772f906c7630bb3c295be1b61d7ebf0541b2a34debcb40c80e6d8f0e"
       ]
     },
     ".claude/scripts/queue/github-issues.mjs": {
@@ -401,7 +424,8 @@
         "7db3c17b781e6876b4822afd09e6affa97e46607b63d443975d987daf1f14464",
         "9edd70b5960f367958e8e7500150b4edd285c99869cca803e40e0537d2d347b0",
         "4cf917ac06708e1068dfe9f8bbebc9376c4748526bd669b9bea32929ba996d0a",
-        "b4a0789be7ad4b401de872edb06665bca349048178b4dd6c5db848ca44f7c977"
+        "b4a0789be7ad4b401de872edb06665bca349048178b4dd6c5db848ca44f7c977",
+        "19a04cdbdfd936213cea3a9a00a583a060a4a8d0356d6a6922ae1c2f593f16f1"
       ]
     },
     ".claude/scripts/queue/jira.mjs": {
@@ -481,7 +505,8 @@
       "hashes": [
         "060b001927d8b471f1c1a8c8851fbb4266d3b2edd674cccbd6c16c44b57b91dd",
         "7721ee19fd1bcf6902be3d359def40742d79b88f5d83e7e3ca22ba45ca3211aa",
-        "250292c9959916240bfc0fdf5987a864f6d54799de3d932dc6b85b776e62eaa9"
+        "250292c9959916240bfc0fdf5987a864f6d54799de3d932dc6b85b776e62eaa9",
+        "ad58b25f9ce30a1549b5047daa1e5b43c30352306aeceebacd638db86087e01f"
       ]
     },
     ".claude/scripts/verdict.mjs": {
@@ -498,7 +523,8 @@
         "55a6938b4d9967291a26e93301e34e5ffdef74a88f8c773a4d11b5d87d864fff",
         "713718fbb2cda132f05665b29b8f1108a6305729b5e7c789d2053d117c13e08e",
         "e588ab05bee707a099c80c9ea399008be31488e616f3db3c0598f66f3d1b3a52",
-        "a180578d6e6de6a21900ff2f8a8ade2242170d16d2dd95574e5004435d870b9b"
+        "a180578d6e6de6a21900ff2f8a8ade2242170d16d2dd95574e5004435d870b9b",
+        "44695f83e445c7da3257556a3decc70e79ef46d19da394d4d5dd4c9268c0b429"
       ]
     },
     ".claude/skills/check-premises/SKILL.md": {
@@ -521,7 +547,8 @@
         "57f6add0504db45e7577474f97705fe474310e4cd3310cdb348a2c64eabe88cd",
         "18f4300de4c4c7ea380d726fb109fa224da950ef0a4cea5015ab1d408b823be5",
         "0a1b6575f6df8139766c8e71ba7320e14d2a5a5ed8ab26b6b43f7a006153d37d",
-        "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546"
+        "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546",
+        "b47bdf0d7a2f6c5b2034b8f6d683ad2b3c83bd65d15baf7de9b58cc4689d0ab1"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -577,14 +604,16 @@
       "since": "0.5.0",
       "hashes": [
         "902dbace9532ec8e7a3c0cfd6ea0934227f087e345c0619923ec03512b26ba3e",
-        "55778d7fb9f778a33213590cc0a2dcf8e01026a1a93eed1c0f811ba4f1070721"
+        "55778d7fb9f778a33213590cc0a2dcf8e01026a1a93eed1c0f811ba4f1070721",
+        "5fbbb1431833692d56cd0d15249f1d024e53bb0ab63349842910a9fc90547f6a"
       ]
     },
     ".codex/agents/code-reviewer.toml": {
       "since": "0.5.0",
       "hashes": [
         "e0e3475404c95402f33d77ebb14001e289d26bb429205a0a73bdcef99b4a62c7",
-        "9ec92775791907f068d85ba58489236bd2bee69a8d769554ac530e8eadd5e374"
+        "9ec92775791907f068d85ba58489236bd2bee69a8d769554ac530e8eadd5e374",
+        "180c182cc909cc0b6c06cfa286f528f22b77189eee49cac067fdaaf2920f8bae"
       ]
     },
     ".codex/agents/prose-reviewer.toml": {
@@ -592,20 +621,29 @@
       "hashes": [
         "80b4631502d95c619ad060ce02cc8702b12574758ba7df8337ed63efa15d764d",
         "cfd516f72acdfd197c59ac3cbdd39d7b175976dbd3d9eef52825dfdc4f1e5b60",
-        "8687eacf0ad707a4f887e0714e82fca23fd005fa9ec8824faedfe99ca46333e1"
+        "8687eacf0ad707a4f887e0714e82fca23fd005fa9ec8824faedfe99ca46333e1",
+        "7c37e4dbd94980bee16396d0d46d97c5079e295d3eed4b3ed8f98d701e57b10d"
       ]
     },
     ".codex/agents/security-scanner.toml": {
       "since": "0.5.0",
       "hashes": [
         "9ee408789f237a0b55aac6a2472682a08f8696e1d1ff4918ea72766ac8535499",
-        "bc9aacca1ca3ed4ceac485f7cd1c6ff5a5405ac7be83419d6145499cc560ee91"
+        "bc9aacca1ca3ed4ceac485f7cd1c6ff5a5405ac7be83419d6145499cc560ee91",
+        "b529f02056948ff0ca179c96d9d47962c9c8064feccb68d3c970e7b1a2513fc9"
       ]
     },
     ".codex/agents/test-writer.toml": {
       "since": "0.5.0",
       "hashes": [
-        "bb89d93f57d70885d98cfbe428caa524e9c00e1ce30da235ed3318c1ba3c9606"
+        "bb89d93f57d70885d98cfbe428caa524e9c00e1ce30da235ed3318c1ba3c9606",
+        "ec9e61b2c16c97ed26d5bdda2b0f715a41b80c0af549d0f2bbb96d6ca4c4d8d7"
+      ]
+    },
+    ".codex/config.toml": {
+      "since": "0.9.0",
+      "hashes": [
+        "c41e34ef5c3bb606852269adeaf5678ce172dc7a7937514ac879152bbddea7f2"
       ]
     },
     ".codex/hooks.json": {
@@ -659,7 +697,8 @@
       "since": "0.5.0",
       "hashes": [
         "30e55d866d9a2c7359e594181070c63b1974d9df36e000caf419229284303a2e",
-        "ebf0ef61407944373c862d37e6a80d4965ece72304b931428c6b3fcc5d9527c4"
+        "ebf0ef61407944373c862d37e6a80d4965ece72304b931428c6b3fcc5d9527c4",
+        "46b68f9130d16a96278e03d0ddb14d99b678c5a239e4667aa79733e632e67505"
       ]
     },
     "docs/decisions/content-blind-revalidation.md": {
@@ -703,6 +742,12 @@
       "since": "0.5.0",
       "hashes": [
         "dc0c9f5988fc983eb5100a085e274691b1e88a3b54ab2797e00972c4d69d61c4"
+      ]
+    },
+    "docs/decisions/subagent-routing.md": {
+      "since": "0.9.0",
+      "hashes": [
+        "97bb882dd066a65a740780a836199ecef8887392c1ece02a92670ecf153988d3"
       ]
     },
     "docs/decisions/two-empty-endings.md": {
