@@ -1,18 +1,16 @@
 import { configDefaults, defineConfig } from 'vitest/config';
 
-// The policy benchmark spawns the real guards as child processes and measures
-// them under a 30 s deadline. On the hosted Windows runners those guards cost
-// 20–28 s each while the rest of the suite ran beside them, and serializing
-// the benchmark's own two workers changed nothing (PR #202, heads 0ea2349 and
-// 94a6609). So the benchmark files run in a project of their own, after every
-// other project and one file at a time — pinned by
-// test/template/vitest-benchmark-project.test.ts.
+// The e2e installs get a sequence group of their own, after unit/template: a
+// template test that spawns git and the CLI timed out on the hosted Windows
+// runner while the npm installs of test/e2e/git-install.test.ts ran beside it
+// (RP-158) — pinned by test/template/vitest-e2e-group.test.ts.
 //
-// The e2e installs get a group of their own too, between the two: a template
-// test that spawns git and the CLI timed out on the hosted Windows runner while
-// the npm installs of test/e2e/git-install.test.ts ran beside it (RP-158) —
-// pinned by test/template/vitest-e2e-group.test.ts.
-const BENCHMARK_FILES = 'test/template/policy-benchmark*.test.ts';
+// RP-178 removed the policy benchmark project that used to run last here (the
+// benchmark spawned the real guards as child processes under a per-guard
+// deadline; the guards it measured, and the "policy" library surface it
+// exercised, were never called from a shipped entry point — see
+// docs/compatibility.md). Guard behaviour is now covered directly, in the
+// template project, by test/template/guard-acceptance.test.ts.
 
 export default defineConfig({
   test: {
@@ -29,7 +27,7 @@ export default defineConfig({
         test: {
           name: 'template',
           include: ['test/template/**/*.test.ts'],
-          exclude: [...configDefaults.exclude, BENCHMARK_FILES],
+          exclude: [...configDefaults.exclude],
           setupFiles: ['test/setup-env.ts'],
           // The figure ci.yml passes as --testTimeout (test/template/vitest-timeouts.test.ts
           // pins the two equal). Tests here spawn stub `gh` subprocesses, and under a
@@ -37,18 +35,6 @@ export default defineConfig({
           // its own) some crossed vitest's 5 s default while passing alone — the
           // measurements are on AR-143.
           testTimeout: 15_000,
-        },
-      },
-      {
-        test: {
-          name: 'benchmark',
-          include: [BENCHMARK_FILES],
-          setupFiles: ['test/setup-env.ts'],
-          // The template project's figure; the benchmark cases set their own
-          // per-test budgets on top of it.
-          testTimeout: 15_000,
-          maxWorkers: 1,
-          sequence: { groupOrder: 2 },
         },
       },
       {

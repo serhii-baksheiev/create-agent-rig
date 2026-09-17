@@ -90,9 +90,10 @@ describe('test/helpers/env', () => {
 
   // RP-111 (PR #202 comments, 2026-09-13, head af21c6d): a guard child process
   // measured ~24.5 s of pre-main-logic cost on hosted windows-latest, invariant
-  // under concurrency and an idle runner, and absent on native Windows 11. Every
-  // guard-spawning benchmark case is UNVERIFIABLE there and SKIPS with that
-  // classification; the Windows acceptance is a native exact-head run.
+  // under concurrency and an idle runner, and absent on native Windows 11. A
+  // timing- or deadline-sensitive guard-spawning assertion (e.g.
+  // `guard-acceptance.test.ts`) is UNVERIFIABLE there and skips with that
+  // classification rather than failing.
   it('guardProcessesMeasurable is false exactly on a github-hosted Windows runner', () => {
     expect(guardProcessesMeasurable({ RUNNER_ENVIRONMENT: 'github-hosted' }, 'win32').ok).toBe(
       false,

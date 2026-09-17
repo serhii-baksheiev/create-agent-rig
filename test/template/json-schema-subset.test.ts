@@ -8,9 +8,10 @@ import { describe, expect, it } from 'vitest';
  * { ok, errors }` for exactly: `type` (object/string/integer/number/boolean/
  * array), `properties`, `required`, `additionalProperties: false`, `enum`,
  * `const`, `items`, `pattern`, `minLength`. A schema keyword outside that subset is refused by
- * throwing, so nobody silently relies on `$ref`/`oneOf`/etc — this repo's own
- * `contracts/session-messaging/v1/schema.ts` uses ajv for that reason, and
- * this validator is deliberately narrower and dependency-free.
+ * throwing, so nobody silently relies on `$ref`/`oneOf`/etc, which a full
+ * JSON-Schema engine such as ajv would need — this validator is deliberately
+ * narrower and dependency-free, matching the zero-runtime-dependency rule
+ * `memory-conformance.mjs` (its one caller) ships under.
  *
  * Loaded through a file URL, the way `secrets-lib.test.ts` and
  * `subagent-routing.test.ts` load plain `.mjs` modules with no type

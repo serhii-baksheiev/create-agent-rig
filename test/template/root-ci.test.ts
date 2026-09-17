@@ -113,9 +113,9 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
   it('runs a Windows smoke lane — the unit project only — on the hosted image', async () => {
     // Hosted-first ruling (2026-09-13): the pull-request path checks the
     // product's own unit project on Windows and nothing that depends on a
-    // self-hosted machine. The template and benchmark projects — the ones that
-    // spawn git and the guards, and the ones the hosted image times out on —
-    // run in the expensive workflow's Windows job instead.
+    // self-hosted machine. The template project — the one that spawns git and
+    // the guards, and the one the hosted image times out on — runs in the
+    // expensive workflow's Windows job instead.
     const yaml = await workflow('ci.yml');
     const windowsJobs = [
       ...yaml.matchAll(/^ {2}[\w-]+:\n([\s\S]*?)(?=^ {2}[\w-]+:\n|(?![\s\S]))/gm),
