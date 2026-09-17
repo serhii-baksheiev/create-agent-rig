@@ -566,15 +566,10 @@ function runGuardInput(
   });
 }
 
-describe('Codex apply_patch cannot bypass architecture guards', () => {
-  // 🔴 The remedy an operator is shown, pinned across all three guards. It used
-  // to be chosen by `/shape/i.test(reason)` in six copies — correct only by
-  // coincidence of wording — and nothing asserted either string, so reverting
-  // the whole mechanism left 203 tests green. It now travels as a `remedy` field
-  // on the refusal that earns it, and these are the assertions that keep it
-  // honest: a shape refusal must not send the agent to split the patch, and a
-  // size refusal must.
-  const GUARDS = ['guard-secret-file.mjs', 'guard-secret-file.mjs', 'guard-secret-file.mjs'];
+describe('Codex apply_patch shape validation keeps its refusal remedy', () => {
+  // The remaining write guard owns this refusal. A shape refusal must not send
+  // the agent to split the patch, while a size refusal must.
+  const GUARDS = ['guard-secret-file.mjs'];
 
   it.each(GUARDS)('%s tells an unreadable shape to resend, not to split', async (guard) => {
     const result = await runGuardInput(guard, {

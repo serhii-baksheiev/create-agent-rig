@@ -3,8 +3,9 @@ import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
 import { mapConcurrent } from '../lib/copy-tree.js';
-import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
+import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
+import { resolveWritableInside } from '../lib/safe-path.js';
 import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { agentOsUniversalDir } from '../templates.js';
@@ -210,17 +211,31 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   const files = (await initManifest()).map((f) => f.rel);
   const previous = await readManifest(repoDir);
 
+  // Resolve the whole write set before the first edit. A lexical child can
+  // still escape through a symlink at the leaf or in any existing parent, and
+  // discovering that after another payload file was written would leave a
+  // partial install. The manifest is a write too, even on an otherwise-empty
+  // re-run, so it belongs in the same preflight.
+  const destinations = new Map<string, string>();
+  for (const rel of [...files, MANIFEST_REL]) {
+    const dest = await resolveWritableInside(repoDir, rel);
+    if (dest === null) {
+      throw new InitError(`Refusing to write "${rel}" through a symlink or outside ${repoDir}.`);
+    }
+    destinations.set(rel, dest);
+  }
+
   // Refuse to clobber an existing CLAUDE.md — init edits someone's working
   // repository (brief §4, non-negotiable).
   for (const map of MAPS) {
-    if (files.includes(map) && (await exists(path.join(repoDir, map)))) {
-      // A create rig whose CLAUDE.md was deleted is the legacy route into init.
-      // Its generated AGENTS.md must not newly close that route, but only the
-      // manifest can distinguish that file from a user's own Codex guidance.
+    const dest = destinations.get(map);
+    if (dest !== undefined && (await exists(dest))) {
+      // A map this rig wrote and that still matches its manifest is safe to
+      // skip on an idempotent re-run. An unrecorded or edited map remains the
+      // user's guidance and is still refused.
       if (
-        map === 'AGENTS.md' &&
         previous?.files[map] !== undefined &&
-        sha256(await readFile(path.join(repoDir, map))) === previous.files[map]
+        sha256(await readFile(dest)) === previous.files[map]
       ) {
         continue;
       }
@@ -234,14 +249,18 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   const contents = await initFileContents(repoDir, options.project);
   const plannedCount = files.length;
   const actions = await mapConcurrent(files, 16, async (rel) => {
-    const dest = path.join(repoDir, rel);
+    const dest = destinations.get(rel)!;
     if (await exists(dest)) {
       // never overwrite a file init did not write (a user's own copy)
       return { rel, verdict: 'skipped' as const };
     }
     if (options.dryRun) return { rel, verdict: 'planned' as const };
     await mkdir(path.dirname(dest), { recursive: true });
-    await writeFile(dest, contents.get(rel) ?? '');
+    const checked = await resolveWritableInside(repoDir, rel);
+    if (checked === null) {
+      throw new InitError(`Refusing to write "${rel}" through a symlink or outside ${repoDir}.`);
+    }
+    await writeFile(checked, contents.get(rel) ?? '');
     return { rel, verdict: 'written' as const };
   });
   const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);

@@ -1,3 +1,4 @@
+import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -71,4 +72,43 @@ export function resolveInside(root: string, rel: string): string | null {
   const dest = path.resolve(base, ...segments);
   if (dest === base) return null;
   return dest.startsWith(base + path.sep) ? dest : null;
+}
+
+/**
+ * Resolve a prospective write through the repository's real path and refuse
+ * every symlink in the relative path that already exists.
+ *
+ * Lexical containment is not enough for a writer: `root/.claude` can be a
+ * link to another directory, and a link at the final path can be dangling
+ * until `writeFile` creates its target. Missing components are allowed because
+ * callers create them, then call this function again immediately before the
+ * write. The second check makes the newly-created chain evidence too.
+ */
+export async function resolveWritableInside(root: string, rel: string): Promise<string | null> {
+  let base: string;
+  try {
+    base = await realpath(root);
+    if (!(await lstat(base)).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+
+  const dest = resolveInside(base, rel);
+  if (dest === null) return null;
+
+  let cursor = base;
+  for (const segment of rel.split('/')) {
+    cursor = path.join(cursor, segment);
+    try {
+      const stat = await lstat(cursor);
+      if (stat.isSymbolicLink()) return null;
+      const resolved = await realpath(cursor);
+      if (resolved !== base && !resolved.startsWith(base + path.sep)) return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return dest;
+      return null;
+    }
+  }
+
+  return dest;
 }

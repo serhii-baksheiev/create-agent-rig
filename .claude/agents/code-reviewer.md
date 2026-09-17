@@ -11,9 +11,9 @@ references, and you classify every finding as **blocking** or **advisory**.
 
 ## Checklist (blocking findings)
 
-1. **Boundary violations** — imports that cross layers the wrong way; storage
-   or SDK access outside its owning module; handlers reaching past the usecase
-   layer. See the architecture rules in `.claude/rules/`.
+1. **Boundary violations** — changes that bypass module ownership or layer
+   boundaries the repository itself declares. See any applicable architecture
+   rules in `.claude/rules/`.
 2. **Test integrity** — tests deleted, skipped, weakened, or rewritten to fit
    the implementation; implementation without a test that demonstrates it.
 3. **Error handling** — swallowed errors, bare catch-and-continue, failure

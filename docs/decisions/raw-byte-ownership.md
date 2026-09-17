@@ -32,7 +32,8 @@ without loss; the raw-byte candidate is always checked independently.
 
 ## Evidence
 
-`packages/cli/test/init.test.ts` records invalid UTF-8 as a kept file and pins
-its exact-byte hash. `packages/cli/test/create.test.ts` carries the same
-ownership through create and proves upgrade classifies matching raw bytes as
-an update rather than a conflict.
+`packages/cli/test/init.test.ts` › "records a kept file by its exact raw bytes,
+even when those bytes are not valid UTF-8" pins the manifest hash.
+`packages/cli/test/create.test.ts` › "carries exact raw-byte ownership from
+create through upgrade" proves upgrade classifies matching raw bytes as an
+update rather than a conflict.

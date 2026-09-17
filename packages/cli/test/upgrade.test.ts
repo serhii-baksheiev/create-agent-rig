@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -517,6 +517,90 @@ describe('bootstrap — a rig installed before the manifest existed', () => {
     await rm(abs(MANIFEST_REL));
     const plan = await planUpgrade(repo, { history: emptyHistory });
     expect(verdictFor(plan, WORKFLOW)).toBe('unchanged');
+  });
+
+  it('preserves a valid trailing-hyphen create identity when bootstrapping a manifest-less legacy rig', async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-legacy-'));
+    const legacyRepo = path.join(parent, 'legacy-app-');
+    try {
+      await mkdir(legacyRepo);
+      // A pre-0.10 `create` accepted this identity and substituted it into
+      // payload files. Its manifest can be absent in real upgrades, so the
+      // bootstrap path must derive the same identity from the directory.
+      await initProject(legacyRepo, {
+        project: { name: 'legacy-app-', scope: 'legacy-app-', region: '' },
+      });
+      await writeFile(
+        path.join(legacyRepo, '.claude', 'rules', 'architecture.md'),
+        '# retired create-only marker\n',
+      );
+      await rm(path.join(legacyRepo, MANIFEST_REL));
+
+      const plan = await planUpgrade(legacyRepo, { history: emptyHistory });
+
+      expect(plan.bootstrapped).toBe(true);
+      expect(plan.manifest.project).toEqual({
+        name: 'legacy-app-',
+        scope: 'legacy-app-',
+        region: '',
+      });
+      expect(verdictFor(plan, STOP_FLAG)).toBe('unchanged');
+      expect(plan.actions.some((action) => action.verdict === 'conflict')).toBe(false);
+    } finally {
+      await removeFixture(parent);
+    }
+  });
+});
+
+describe('applyUpgrade — symlink confinement', () => {
+  const oldWorkflow = '# obsolete workflow bytes\n';
+
+  const updateWorkflowPlan = async (): Promise<UpgradePlan> => {
+    await installRig();
+    await pretendInstalled(WORKFLOW, oldWorkflow);
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, WORKFLOW)).toBe('update');
+    return plan;
+  };
+
+  it('refuses a final target symlink and never overwrites its outside bytes', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-outside-'));
+    try {
+      const target = path.join(outside, 'workflow.md');
+      await writeFile(target, 'OUTSIDE BYTES\n');
+      const plan = await updateWorkflowPlan();
+      await rm(abs(WORKFLOW));
+      try {
+        await symlink(target, abs(WORKFLOW), 'file');
+      } catch {
+        context.skip();
+        return;
+      }
+
+      await expect(applyUpgrade(repo, plan)).rejects.toThrow(UpgradeError);
+      expect(await readFile(target, 'utf8')).toBe('OUTSIDE BYTES\n');
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('refuses a symlinked parent component and never creates the outside payload', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-outside-'));
+    try {
+      const plan = await updateWorkflowPlan();
+      await removeFixture(path.join(repo, '.claude', 'rules'));
+      try {
+        await symlink(outside, path.join(repo, '.claude', 'rules'), 'dir');
+      } catch {
+        context.skip();
+        return;
+      }
+
+      await expect(applyUpgrade(repo, plan)).rejects.toThrow(UpgradeError);
+      await expect(readFile(path.join(outside, 'workflow.md'), 'utf8')).rejects.toThrow();
+    } finally {
+      await removeFixture(outside);
+    }
   });
 });
 

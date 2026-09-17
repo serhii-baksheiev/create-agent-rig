@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { isSafeSubstitutionValue } from './safe-path.js';
+import { isSafeSubstitutionValue, resolveWritableInside } from './safe-path.js';
 
 /**
  * The install manifest: what this rig installed, at which version, and the
@@ -161,7 +161,14 @@ export async function readManifest(repoDir: string): Promise<RigManifest | null>
 }
 
 export async function writeManifest(repoDir: string, manifest: RigManifest): Promise<void> {
-  const dest = path.join(repoDir, ...MANIFEST_REL.split('/'));
+  const dest = await resolveWritableInside(repoDir, MANIFEST_REL);
+  if (dest === null) {
+    throw new Error(`Refusing to write "${MANIFEST_REL}" through a symlink or outside ${repoDir}.`);
+  }
   await mkdir(path.dirname(dest), { recursive: true });
-  await writeFile(dest, serializeManifest(manifest));
+  const checked = await resolveWritableInside(repoDir, MANIFEST_REL);
+  if (checked === null) {
+    throw new Error(`Refusing to write "${MANIFEST_REL}" through a symlink or outside ${repoDir}.`);
+  }
+  await writeFile(checked, serializeManifest(manifest));
 }

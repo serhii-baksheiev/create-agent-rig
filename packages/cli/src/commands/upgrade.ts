@@ -4,9 +4,9 @@ import { initInstallSet, projectNameFor } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
-import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
+import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
-import { isSafeSubstitutionValue, resolveInside } from '../lib/safe-path.js';
+import { isSafeSubstitutionValue, resolveInside, resolveWritableInside } from '../lib/safe-path.js';
 import { detokenizeContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { packageVersion } from '../lib/version.js';
@@ -80,6 +80,19 @@ const SETTINGS = '.claude/settings.json';
 const CODEX_HOOKS = '.codex/hooks.json';
 const WIRING_PATHS = new Set([SETTINGS, CODEX_HOOKS]);
 
+// Files only the pre-0.10 `create` shape installed. They remain recognition
+// evidence for upgrades even though none of them is shipped by the new single
+// payload. Keeping their names here does not restore a stack or architecture
+// promise; it preserves the identity those old bytes were substituted with.
+const LEGACY_CREATE_MARKERS = [
+  '.claude/rules/architecture.md',
+  '.claude/hooks/guard-core-purity.mjs',
+  '.claude/hooks/guard-web-boundary.mjs',
+  '.claude/rules/node-ts.md',
+  '.claude/rules/aws-cdk.md',
+  '.claude/agents/cdk-diff-reviewer.md',
+];
+
 async function exists(p: string): Promise<boolean> {
   try {
     await access(p);
@@ -104,6 +117,14 @@ function onDisk(repoDir: string, rel: string): string {
   return dest;
 }
 
+async function writableOnDisk(repoDir: string, rel: string): Promise<string> {
+  const dest = await resolveWritableInside(repoDir, rel);
+  if (dest === null) {
+    throw new UpgradeError(`Refusing to touch "${rel}" through a symlink or outside ${repoDir}.`);
+  }
+  return dest;
+}
+
 /**
  * The file's bytes, or `null` when it is genuinely **absent**.
  *
@@ -114,7 +135,7 @@ function onDisk(repoDir: string, rel: string): string {
  */
 async function readIfPresent(repoDir: string, rel: string): Promise<Buffer | null> {
   try {
-    return await readFile(onDisk(repoDir, rel));
+    return await readFile(await writableOnDisk(repoDir, rel));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
@@ -124,15 +145,18 @@ async function readIfPresent(repoDir: string, rel: string): Promise<Buffer | nul
 /**
  * What a rig with no manifest looks like it is, from the files it has.
  *
- * Since RP-177 there is exactly one payload, so nothing on disk can prove a
- * manifest-less rig is anything other than `init`-shaped: the architecture
- * group and the per-target stack overlays that used to distinguish `create`
- * from `init` are retired outright, not merely excluded from this flavour.
- * `kind` and `stacks` therefore no longer carry any behavioural weight for a
- * bootstrapped rig — they are cosmetic history for one written by an OLDER
- * release, which is exactly what a manifest (not this heuristic) records.
+ * RP-177 ships only one payload, but a pre-0.10 rig may still carry files that
+ * only `create` installed. Those retired paths are compatibility evidence: the
+ * new release never installs them, yet their presence preserves the raw
+ * directory identity old `create` substituted (including a trailing `-`).
+ * A readable manifest remains the stronger source and bypasses this heuristic.
  */
-function detectInstall(): { kind: 'create' | 'init'; stacks: string[]; region: string } {
+async function detectInstall(
+  repoDir: string,
+): Promise<{ kind: 'create' | 'init'; stacks: string[]; region: string }> {
+  for (const rel of LEGACY_CREATE_MARKERS) {
+    if (await exists(onDisk(repoDir, rel))) return { kind: 'create', stacks: [], region: '' };
+  }
   return { kind: 'init', stacks: [], region: '' };
 }
 
@@ -202,11 +226,14 @@ export async function planUpgrade(
   options: UpgradeOptions = {},
 ): Promise<UpgradePlan> {
   const manifest = await readManifest(repoDir);
-  // With no manifest there is nothing left on disk that can tell `create` and
-  // `init` apart (see `detectInstall`), so this answers a question the
-  // manifest has already answered whenever there is one.
-  const detected = manifest === null ? detectInstall() : { region: manifest.project.region };
-  const kind = manifest?.kind ?? 'init';
+  // Old create-only files are no longer shipped, but while they remain in a
+  // pre-0.10 rig they still distinguish its substitution identity. A readable
+  // manifest remains authoritative whenever one exists.
+  const detected =
+    manifest === null
+      ? await detectInstall(repoDir)
+      : { kind: manifest.kind, stacks: manifest.stacks, region: manifest.project.region };
+  const kind = manifest?.kind ?? detected.kind;
   // With no manifest to read, guess the name the rig's own files were written
   // with — and each command wrote them differently, so the guess branches the
   // same way:
@@ -460,6 +487,20 @@ export async function applyUpgrade(
   const written: string[] = [];
   if (options.dryRun === true) return { written };
 
+  // Preflight the complete write set, including the manifest, before changing
+  // any file. Then re-check each destination after mkdir and immediately before
+  // writeFile, so both pre-existing and newly-visible symlink components are
+  // refused.
+  const destinations = new Map<string, string>();
+  for (const rel of [
+    ...plan.actions
+      .filter(({ verdict }) => verdict === 'update' || verdict === 'new')
+      .map(({ rel }) => rel),
+    MANIFEST_REL,
+  ]) {
+    destinations.set(rel, await writableOnDisk(repoDir, rel));
+  }
+
   for (const action of plan.actions) {
     if (action.verdict !== 'update' && action.verdict !== 'new') continue;
     const content = plan.contents.get(action.rel);
@@ -468,9 +509,9 @@ export async function applyUpgrade(
     if (content === undefined) {
       throw new UpgradeError(`Internal: no content planned for "${action.rel}" — nothing written.`);
     }
-    const dest = onDisk(repoDir, action.rel);
+    const dest = destinations.get(action.rel)!;
     await mkdir(path.dirname(dest), { recursive: true });
-    await writeFile(dest, content);
+    await writeFile(await writableOnDisk(repoDir, action.rel), content);
     written.push(action.rel);
   }
   await writeManifest(repoDir, plan.manifest);

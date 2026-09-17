@@ -315,9 +315,8 @@ installs the rig into a scratch directory, with its pristine baseline commit
 
 ## Requirements
 
-- Node ≥ 20 (pnpm recommended for the generated workspace). The CLI itself
-  carries zero runtime dependencies — the `npx github:…`, tarball, and
-  published-package paths all work.
+- Node ≥ 20. The CLI carries zero runtime dependencies — the
+  `npx github:…`, tarball, and published-package paths all work.
 
 ## How it stays honest
 

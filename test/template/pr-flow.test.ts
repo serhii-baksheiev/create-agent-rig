@@ -46,11 +46,12 @@ describe('workflow.md — PR flow (process layer)', () => {
     expect(workflow).not.toMatch(/gh pr checks/);
   });
 
-  it('states the fan-out shape (code review always; security + infra by touched paths)', async () => {
+  it('states the fan-out floor and leaves extra surface reviews to repository rules', async () => {
     workflow = await readFile(path.join(universal, 'workflow.md'), 'utf8');
     expect(workflow).toMatch(/code-reviewer/);
     expect(workflow).toMatch(/security/i);
-    expect(workflow).toMatch(/infra/i);
+    expect(workflow).toMatch(/additional review[\s\S]*repository rule/i);
+    expect(workflow).not.toMatch(/stack\/\*/i);
   });
 
   it('states the post-merge tail: verify the deployed surface, update the plan', async () => {

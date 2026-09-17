@@ -31,8 +31,8 @@ step of TDD, and only the Red step.
 
 ## Judgment lines
 
-- Test behavior through public entry points (usecases, handlers), not private
-  internals.
+- Test behavior through public entry points and documented interfaces, not
+  private internals.
 - One behavior per test; shared setup in fixtures, not copy-paste.
 - If the requested behavior contradicts an existing test, stop and surface the
   conflict instead of overwriting the old test.

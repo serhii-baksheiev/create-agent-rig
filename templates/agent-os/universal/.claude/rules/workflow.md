@@ -99,8 +99,8 @@ travels one path to merge, in this order:
      `docs/decisions/`, `CLAUDE.md`, the README. In this layer the prose *is*
      the implementation, and it fails the same way code does: silently, in the
      direction of false confidence;
-   - an infrastructure review when it touches infrastructure (the stack layer
-     names the reviewing agent for the target).
+   - any additional review a repository rule explicitly names for the touched
+     surface.
 
    The `pr-ship` skill drives this fan-out and returns a SHIP / HOLD verdict
    with named blockers; blocking findings are resolved, not argued with.
@@ -118,8 +118,9 @@ travels one path to merge, in this order:
 3. **Merge — on an explicit, non-lazy criterion.** Do not trust a watcher
    command that can exit before the checks have even registered. Confirm that
    the **required** check completed successfully **for this commit** — a list
-   that is merely "not failing yet" is not a pass. The concrete command is
-   stack-specific and lives in `stack/*`; the criterion here does not name one.
+   that is merely "not failing yet" is not a pass. The concrete command is the
+   repository's documented check command when it names one; otherwise query
+   the hosting service's check runs by the exact head SHA.
 
 **Post-merge tail:** verify the deployed surface is healthy (the target's
 post-deploy verdict — `autonomy.md`), then update `PLAN.md` (close the task,
