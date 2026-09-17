@@ -42,12 +42,16 @@ jobs:
   # The Windows smoke lane: the product's own `unit` project (packages/cli —
   # create, init, upgrade, setup, memory) on the hosted image, so a Windows
   # path or spawn regression in the CLI is caught on every PR. The `template`
-  # and `benchmark` projects — the ones that spawn git and the guards, and the
-  # ones the hosted image times out on (RP-62, RP-111, RP-176) — run whole in
-  # e2e.yml's windows-e2e job on master, nightly and by dispatch (AR-93: no
-  # file is excluded by name anywhere; a capability genuinely absent on Windows
-  # skips through a helper that names the reason, counted in
-  # test/template/platform-skips.test.ts).
+  # project — the one that spawns git and the guards, and the one the hosted
+  # image times out on (RP-111, RP-176) — runs whole in e2e.yml's windows-e2e
+  # job on master, nightly and by dispatch (AR-93: no file is excluded by name
+  # anywhere; a capability genuinely absent on Windows skips through a helper
+  # that names the reason, per test/template/platform-skips.test.ts). RP-110/
+  # RP-62's spawn-baseline diagnostic ran here and was removed under RP-178: it
+  # measured bare `node` startup, which stayed flat across a red run and a
+  # green rerun of the same head while the run's own wall time differed by
+  # roughly half — a diagnostic that reads "healthy" on the run it exists to
+  # diagnose. No replacement baseline was required.
   windows-smoke:
     runs-on: windows-latest
     steps:
@@ -60,25 +64,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # RP-62: this lane reported contention identically to a real failure —
-      # the victim moved between two runs of ONE commit, always a timeout and
-      # never an AssertionError, while neighbouring heads were green. Telling
-      # the two apart meant querying other heads by hand. This step is the
-      # diagnosis the next occurrence carries with it: a spawn baseline in the
-      # log, so a slow runner is visible without that manual comparison.
-      # It is `continue-on-error` because a diagnostic must never decide the
-      # lane: under `bash -eo pipefail` a hiccup in `date` or `node` would
-      # otherwise redden this job before a single test ran — the very shape
-      # this item exists to remove.
-      - name: Record the spawn baseline (RP-62 diagnostics)
-        shell: bash
-        continue-on-error: true
-        run: |
-          for i in 1 2 3 4 5; do
-            start=$(date +%s%N)
-            node -e '0'
-            echo "  bare node spawn #$i: $(( ($(date +%s%N) - start) / 1000000 )) ms"
-          done
       # `--maxWorkers` caps how many test files run at once, and it is passed
       # only in hosted Windows jobs — the reduction is lane-specific, which is
       # what the ruling on RP-62 required (it asked for lane-specific,
@@ -92,19 +77,3 @@ jobs:
       # outright, because the same cases finish far inside the budget on Linux.
       - name: Run the unit project on Windows
         run: pnpm test:smoke --testTimeout=15000 --maxWorkers=2
-      # The pair is the point: a baseline taken only at t0 characterises the
-      # runner before the load, and the timeouts happen under it. Two readings
-      # bracket the suite, so a run that slowed DURING the suite says so in its
-      # own log — which is what "diagnose the next occurrence without querying
-      # neighbouring heads" needs. `always()` so it is recorded on a red run,
-      # which is the run that needs it.
-      - name: Record the spawn baseline again, after the suite (RP-62)
-        if: always()
-        shell: bash
-        continue-on-error: true
-        run: |
-          for i in 1 2 3; do
-            start=$(date +%s%N)
-            node -e '0'
-            echo "  bare node spawn after the suite #$i: $(( ($(date +%s%N) - start) / 1000000 )) ms"
-          done
