@@ -1,4 +1,4 @@
-import { readFile, readdir, rmdir, unlink } from 'node:fs/promises';
+import { lstat, readFile, readdir, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
@@ -84,6 +84,60 @@ async function readIfPresent(repoDir: string, rel: string): Promise<string | nul
   }
 }
 
+/** Why a path that resolves lexically inside the repo is still refused. */
+export const NOT_A_REGULAR_FILE_REASON = 'not a regular file inside the repository (symlink)';
+
+/**
+ * `'ok'`, `'absent'`, or `'unsafe'` — decided with `lstat`, one path segment at
+ * a time from the repository root down, so a symlink is caught wherever it
+ * sits and never followed to answer the question.
+ *
+ * `resolveInside` is purely lexical: it refuses `..` and an absolute path, but
+ * a manifest path that lands inside the repo lexically can still leave it at
+ * runtime if an ANCESTOR directory is a symlink out — `.claude/rules` pointing
+ * outside the repo makes `.claude/rules/workflow.md` resolve outside it too,
+ * even though the string never left. Reading such a path hashes bytes this
+ * command has no evidence for; removing it deletes something outside the repo
+ * entirely. So every segment down to the file itself is checked with `lstat`,
+ * which — unlike `stat` or a plain `readFile`/`unlink` — never follows the
+ * final symlink component, and the file itself must be a regular file too: a
+ * symlink sitting exactly at the manifest path is exactly as unsafe to read
+ * through and to report as owned.
+ *
+ * `'absent'` covers a missing ancestor as well as a missing file — both mean
+ * "nothing here to remove", which is what the existing `absent` verdict
+ * already says.
+ */
+async function regularFileStatus(
+  repoDir: string,
+  rel: string,
+): Promise<'ok' | 'absent' | 'unsafe'> {
+  // Lexical containment first, unchanged from before this check existed: a
+  // manifest path with `..` or an absolute segment refuses the whole run,
+  // exactly as it did when this was `onDisk`'s job alone. Only a path that
+  // passes this can even reach the lstat walk below.
+  onDisk(repoDir, rel);
+  const segments = rel.split('/');
+  let current = repoDir;
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+      throw error;
+    }
+    const isLast = index === segments.length - 1;
+    if (isLast) return info.isFile() ? 'ok' : 'unsafe';
+    if (!info.isDirectory()) return 'unsafe';
+  }
+  // Unreachable: `segments` always has at least one element (`''.split('/')`
+  // is `['']`), and every branch inside the loop returns. Here only to
+  // satisfy the compiler, the same way `applyUpgrade`'s "Internal:" throw does.
+  throw new UninstallError(`Internal: could not classify "${rel}" — no path segment to check.`);
+}
+
 const normalizeToLF = (content: string): string => content.replace(/\r\n/g, '\n');
 const normalizeToCRLF = (content: string): string => normalizeToLF(content).replace(/\n/g, '\r\n');
 
@@ -123,11 +177,18 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
   const actions: UninstallAction[] = [];
   for (const rel of Object.keys(manifest.files).sort()) {
     const recorded = manifest.files[rel]!;
-    const current = await readIfPresent(repoDir, rel);
-    if (current === null) {
+    const status = await regularFileStatus(repoDir, rel);
+    if (status === 'absent') {
       actions.push({ rel, verdict: 'absent' });
       continue;
     }
+    if (status === 'unsafe') {
+      actions.push({ rel, verdict: 'preserved', reason: NOT_A_REGULAR_FILE_REASON });
+      continue;
+    }
+    // status === 'ok': every ancestor is a real directory and the path itself
+    // is a regular file — safe to read and to hash.
+    const current = await readFile(onDisk(repoDir, rel), 'utf8');
 
     if (WIRING_PATHS.has(rel)) {
       if (sha256(current) === recorded) {
@@ -208,6 +269,16 @@ export async function applyUninstall(
   const removed: string[] = [];
   for (const rel of toRemove) {
     try {
+      // Re-checked here, not trusted from the plan: the plan can be stale by
+      // the time this runs, and a symlink swapped in after planning is
+      // exactly the case the plan-time check cannot see.
+      const status = await regularFileStatus(repoDir, rel);
+      if (status !== 'ok') {
+        throw new Error(
+          `refusing to remove "${rel}": it is no longer a plain file inside the repository ` +
+            '(a symlink appeared since planning)',
+        );
+      }
       await removeFile(onDisk(repoDir, rel));
     } catch (error) {
       return {
@@ -233,6 +304,10 @@ export async function applyUninstall(
       error: (error as Error).message,
     };
   }
+  // The manifest is often the last file left in `.claude/` — its own removal
+  // is what can finally empty that directory, so the same cleanup runs again
+  // for it.
+  await removeEmptyParents(repoDir, MANIFEST_REL);
 
   return { removed, manifestRemoved: true };
 }
