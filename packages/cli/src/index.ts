@@ -7,6 +7,8 @@ import { InitError, initFileContents, initProject, planInit } from './commands/i
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
+import { UninstallError, applyUninstall, planUninstall } from './commands/uninstall.js';
+import type { UninstallAction, UninstallPlan, UninstallVerdict } from './commands/uninstall.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest, sha256 } from './lib/manifest.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
@@ -46,6 +48,17 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
   (~/.config/create-agent-rig/subsystems.json; %APPDATA% on Windows) from the
   one declared root. Performs the --version --json handshake first and refuses
   a foreign contract major with exit 4 before writing anything.
+
+Also: create-agent-rig uninstall [dir] [--dry-run] [--json]
+  Remove what a rig installed from [dir] (default: the current directory) —
+  only files whose bytes on disk still match what the manifest recorded.
+  Everything else (edited, foreign, deleted already, or kept by init) is left
+  in place and reported. The manifest itself is removed last, only once every
+  file it names has been removed; a failed run keeps it, so a re-run picks up
+  where it stopped. --json prints one JSON object and nothing else on stdout
+  (see docs/command-contract.md); without it, uninstall reports in prose like
+  init and upgrade. Idempotent: a repeat run finds no manifest and does
+  nothing, exit 0.
 
 Also: create-agent-rig memory <doctor|load> [args…]
   Run a Memory verb through the registered executable: the --version --json
@@ -361,6 +374,170 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   return 0;
 }
 
+const UNINSTALL_MARK: Record<UninstallVerdict, string> = {
+  remove: '-',
+  absent: '·',
+  preserved: '!',
+};
+
+interface UninstallPayload {
+  schemaVersion: 1;
+  command: 'uninstall';
+  dryRun: boolean;
+  removed: string[];
+  absent: string[];
+  preserved: Array<{ path: string; reason: string }>;
+  manifestRemoved: boolean;
+  completed?: string[];
+  remaining?: string[];
+  error?: string;
+}
+
+function uninstallPayload(
+  dryRun: boolean,
+  actions: readonly UninstallAction[],
+  applied?: {
+    manifestRemoved: boolean;
+    completed?: string[];
+    remaining?: string[];
+    error?: string;
+  },
+): UninstallPayload {
+  const of = (verdict: UninstallVerdict) =>
+    actions.filter((a) => a.verdict === verdict).map((a) => a.rel);
+  const payload: UninstallPayload = {
+    schemaVersion: 1,
+    command: 'uninstall',
+    dryRun,
+    removed: of('remove'),
+    absent: of('absent'),
+    preserved: actions
+      .filter((a) => a.verdict === 'preserved')
+      .map((a) => ({ path: a.rel, reason: a.reason ?? '' })),
+    manifestRemoved: applied?.manifestRemoved ?? false,
+  };
+  if (applied?.completed !== undefined) payload.completed = applied.completed;
+  if (applied?.remaining !== undefined) payload.remaining = applied.remaining;
+  if (applied?.error !== undefined) payload.error = applied.error;
+  return payload;
+}
+
+function renderUninstallPlan(repoDir: string, plan: UninstallPlan): string {
+  const of = (verdict: UninstallVerdict) => plan.actions.filter((a) => a.verdict === verdict);
+  const lines: string[] = [`agent-rig uninstall — ${repoDir}`, ''];
+  for (const verdict of ['remove', 'preserved', 'absent'] as const) {
+    for (const action of of(verdict)) {
+      lines.push(
+        `  ${UNINSTALL_MARK[verdict]} ${action.rel}` +
+          (action.reason ? `  — ${action.reason}` : ''),
+      );
+    }
+  }
+  lines.push(
+    '',
+    `  ${of('remove').length} to remove, ${of('preserved').length} preserved, ` +
+      `${of('absent').length} already gone`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+async function runUninstall(rawArgs: string[]): Promise<number> {
+  let positionals: string[];
+  let values: { 'dry-run'?: boolean; json?: boolean; 'no-color'?: boolean };
+  try {
+    ({ positionals, values } = parseArgs({
+      args: rawArgs,
+      options: {
+        'dry-run': { type: 'boolean' },
+        json: { type: 'boolean' },
+        'no-color': { type: 'boolean' },
+      },
+      allowPositionals: true,
+    }));
+  } catch (error) {
+    process.stderr.write(`${(error as Error).message}\n\n${USAGE}\n`);
+    return 1;
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(`${USAGE}\n`);
+    return 1;
+  }
+  const repoDir = path.resolve(process.cwd(), positionals[0] ?? '.');
+  const dryRun = values['dry-run'] === true;
+  const json = values.json === true;
+
+  let plan: UninstallPlan;
+  try {
+    plan = await planUninstall(repoDir);
+  } catch (error) {
+    if (error instanceof UninstallError) {
+      if (json) {
+        process.stdout.write(
+          `${JSON.stringify(uninstallPayload(dryRun, [], { manifestRemoved: false, error: error.message }))}\n`,
+        );
+      } else {
+        process.stderr.write(`${error.message}\n`);
+      }
+      return 1;
+    }
+    throw error;
+  }
+
+  if (plan.noManifest) {
+    if (json) {
+      process.stdout.write(`${JSON.stringify(uninstallPayload(dryRun, []))}\n`);
+    } else {
+      process.stdout.write(`No rig manifest found in ${repoDir} — nothing to uninstall.\n`);
+    }
+    return 0;
+  }
+
+  if (dryRun) {
+    if (json) {
+      process.stdout.write(`${JSON.stringify(uninstallPayload(true, plan.actions))}\n`);
+    } else {
+      process.stdout.write(renderUninstallPlan(repoDir, plan));
+      process.stdout.write('\nDry run — nothing removed.\n');
+    }
+    return 0;
+  }
+
+  const result = await applyUninstall(repoDir, plan);
+  if (!json) process.stdout.write(renderUninstallPlan(repoDir, plan));
+
+  if (result.error !== undefined) {
+    if (json) {
+      process.stdout.write(
+        `${JSON.stringify(
+          uninstallPayload(false, plan.actions, {
+            manifestRemoved: false,
+            completed: result.completed,
+            remaining: result.remaining,
+            error: result.error,
+          }),
+        )}\n`,
+      );
+    } else {
+      process.stderr.write(
+        `\nStopped after a failure: ${result.error}\n` +
+          `  completed: ${(result.completed ?? []).join(', ') || '(none)'}\n` +
+          `  remaining: ${(result.remaining ?? []).join(', ') || '(none)'}\n` +
+          `The manifest was kept — re-run to continue.\n`,
+      );
+    }
+    return 1;
+  }
+
+  if (json) {
+    process.stdout.write(
+      `${JSON.stringify(uninstallPayload(false, plan.actions, { manifestRemoved: result.manifestRemoved }))}\n`,
+    );
+  } else {
+    process.stdout.write(`\nRemoved ${result.removed.length} files and the manifest.\n`);
+  }
+  return 0;
+}
+
 async function main(): Promise<number> {
   if (process.argv[2] === 'init') {
     return runInit(process.argv.slice(3));
@@ -370,6 +547,9 @@ async function main(): Promise<number> {
   }
   if (process.argv[2] === 'upgrade') {
     return runUpgrade(process.argv.slice(3));
+  }
+  if (process.argv[2] === 'uninstall') {
+    return runUninstall(process.argv.slice(3));
   }
   if (process.argv[2] === 'memory') {
     // The consumer path of the RP-19 handshake: manifest → `--version --json`
@@ -449,7 +629,8 @@ main()
     if (
       error instanceof CreateError ||
       error instanceof InitError ||
-      error instanceof UpgradeError
+      error instanceof UpgradeError ||
+      error instanceof UninstallError
     ) {
       process.stderr.write(`${error.message}\n`);
     } else {

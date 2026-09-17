@@ -99,6 +99,22 @@ generator's own repository, ahead of 0.10.0.
   No replacement baseline was added, per the ticket's own accepted
   resolution.
 
+### Added
+
+- **`uninstall [dir] [--dry-run] [--json]`** removes what a rig installed,
+  file by file, against the evidence `.claude/.rig-manifest.json` carries and
+  nothing else: a path is removed only when its bytes on disk still match the
+  recorded hash exactly; an edited, already-deleted, foreign, or `init`-kept
+  file is reported and left in place, and so is modified hook wiring
+  (`.claude/settings.json`, `.codex/hooks.json`), which names the hooks still
+  referenced. The manifest is deleted last, only once every file it names has
+  been removed, so an interrupted run keeps it and a re-run picks up where it
+  stopped; a repeat run with nothing left to do is a no-op, exit 0. `.rig/` is
+  never touched. `--json` prints one JSON object and nothing else on stdout,
+  documented next to the other command contracts in
+  `docs/command-contract.md` ("## uninstall (RP-181)"). Removing plugin/MCP
+  registrations this rig owns is deferred to RP-179/RP-22 (RP-181).
+
 ## 0.9.1
 
 **A patch, numbered by the owner.** Every entry corrects existing behaviour;

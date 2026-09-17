@@ -170,6 +170,23 @@ const collectPathLikeStrings = (value: unknown, keyPath: string, out: string[]):
     // `fix` key is still reported, because only the direct string value is
     // exempt.
     const isDoctorRecord = hasKey(value, 'id') && hasKey(value, 'status');
+    // `uninstall`'s own payload rule (docs/command-contract.md, "## uninstall
+    // (RP-181)") is a second, narrower carve-out: it says its paths are
+    // ordinary repository-relative rule-file paths, already fully visible in
+    // every prose report `upgrade` prints, not the credential-adjacent
+    // concern `## Payload rules specific to the shim` guards. Recognised the
+    // same way a doctor record is — structurally, by the field that makes it
+    // one (`command: "uninstall"`), never by the mere presence of a `removed`
+    // or `preserved` key on some other, unrelated object.
+    const isUninstallPayload = fieldOf(value, 'command') === 'uninstall';
+    const UNINSTALL_PATH_FIELDS = new Set([
+      'removed',
+      'absent',
+      'preserved',
+      'completed',
+      'remaining',
+      'error',
+    ]);
     for (const [key, child] of Object.entries(value)) {
       const childPath = keyPath === '' ? key : `${keyPath}.${key}`;
       // KEYS are inspected too. A payload can name a path as readily in a key
@@ -178,6 +195,7 @@ const collectPathLikeStrings = (value: unknown, keyPath: string, out: string[]):
       // carve-out is for a `fix` HINT, which is a value.
       if (PATH_LIKE.test(key)) out.push(`${childPath} (key) = ${JSON.stringify(key)}`);
       if (key === 'fix' && typeof child === 'string' && isDoctorRecord) continue;
+      if (isUninstallPayload && UNINSTALL_PATH_FIELDS.has(key)) continue;
       collectPathLikeStrings(child, childPath, out);
     }
   }
@@ -1519,6 +1537,34 @@ describe('the JSON fixtures in the document', () => {
       reported({ result: 'ok', detail: 'not on the search path', version: '0.6.2' }),
       'ordinary prose and a version string must survive the walk, or every fixture assertion is a false red',
     ).toEqual([]);
+  });
+
+  it("exempts uninstall's own path fields only on its own payload, never by field name alone", () => {
+    const reported = (value: unknown): string[] => {
+      const out: string[] = [];
+      collectPathLikeStrings(value, '', out);
+      return out;
+    };
+    expect(
+      reported({
+        schemaVersion: 1,
+        command: 'uninstall',
+        dryRun: false,
+        removed: ['.claude/hooks/block-no-verify.mjs'],
+        absent: [],
+        preserved: [{ path: '.claude/rules/workflow.md', reason: 'modified' }],
+        manifestRemoved: true,
+      }),
+      'a payload naming itself command: "uninstall" may carry its own paths',
+    ).toEqual([]);
+    expect(
+      reported({ removed: ['.claude/hooks/block-no-verify.mjs'] }),
+      'the exemption is structural — a bare `removed` array with no command field is not exempt',
+    ).not.toEqual([]);
+    expect(
+      reported({ command: 'uninstall', note: '.claude/rules/workflow.md' }),
+      "the exemption names uninstall's own fields — a stray path elsewhere on the same payload still reports",
+    ).not.toEqual([]);
   });
 
   it('discriminates the two exit-3 occasions with result values from the closed set', async () => {
