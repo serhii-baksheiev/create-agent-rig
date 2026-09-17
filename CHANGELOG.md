@@ -40,6 +40,9 @@ retired layer (an aws-cdk or node-ts rule, an architecture hook) gets a new
 verdict, `retired`: never written, never deleted, dropped from the manifest,
 and reported as no longer shipped — it is yours now. `upgrade`'s `--dry-run`
 output and its summary line both show a `retired` count when there is one.
+The full pre-0.10 migration path is pinned in `test/e2e/upgrade.test.ts` ›
+"retires the deleted stack overlay, and preserves the application and the
+process layer".
 
 **This repository's own node-ts conventions move out of the shipped
 package**, into `scripts/dogfood/` — a repo-local overlay `sync-agent-os.mjs`

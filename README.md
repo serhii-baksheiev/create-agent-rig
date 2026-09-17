@@ -17,7 +17,10 @@ npx create-agent-rig my-app   # mkdir + git init + the rig, into a new directory
 
 There is exactly one payload — no `--target`, no application skeleton to
 choose between. `--no-git` skips the initial baseline commit; `--no-color`
-(and `NO_COLOR`) plainens the output.
+(and `NO_COLOR`) plainens the output. Pinned in
+`packages/cli/test/create.test.ts` › "makes the directory and installs the one
+payload into it" and `test/e2e/generate.test.ts` › "rejects retired --target
+without creating the requested directory".
 
 Already have a repo? Install the same payload into it directly:
 
@@ -27,7 +30,9 @@ npx create-agent-rig init --dry-run  # print the plan, write nothing
 ```
 
 `create <dir>` is a thin convenience wrapper over exactly this: make the
-directory, run `init` inside it, then commit the pristine baseline.
+directory, run `init` inside it, then commit the pristine baseline. Pinned in
+`packages/cli/test/create.test.ts` › "initialises git with a pristine-template
+baseline commit".
 
 `init` drops in the autonomy tiers, stop rules, workflow, and the enforcement
 hooks — **wired** for both harnesses, in `.claude/settings.json` and
@@ -37,6 +42,10 @@ application shape it does not know your repository has. It refuses to clobber
 either existing map; if the repo already has a Claude or Codex hook config, it
 keeps it and prints the entries to merge, because a hook nothing calls is not
 enforcement.
+
+Pinned in `test/e2e/init.test.ts` › "leaves a rig whose hooks are wired and
+whose scripts parse", › "tells the operator when it could not wire the hooks
+itself", and › "tells the operator when it kept existing Codex hook wiring".
 
 Two things it deliberately leaves to you, and says so in the installed
 maps: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
@@ -146,7 +155,11 @@ generated before 0.10 may have paths from a per-target overlay this version no
 longer composes (0.10 retired application scaffolding entirely — see
 `CHANGELOG.md`). Such a path is never written and never deleted: it drops out
 of the manifest's `files`, the report says it is no longer shipped, and it is
-now yours to keep, edit, or remove on your own schedule.
+now yours to keep, edit, or remove on your own schedule. Pinned in
+`packages/cli/test/upgrade.test.ts` › "retires a stack-overlay path this release
+no longer ships — never written, never deleted" and
+`test/e2e/upgrade.test.ts` › "retires the deleted stack overlay, and preserves
+the application and the process layer".
 
 ### Conformance runner
 

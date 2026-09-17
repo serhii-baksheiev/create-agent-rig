@@ -56,6 +56,8 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
 5. **Never edit a synced file directly** — edit `templates/agent-os/universal`,
    `scripts/dogfood/` (this repo's own node-ts overlay, RP-177), or this
    addendum, and run the sync script; the drift test fails otherwise. The synced
+   correspondence is pinned in `test/template/dogfood.test.ts` › "CLAUDE.md and
+   .claude/ are in sync with templates/agent-os". The synced
    set is `CLAUDE.md`, everything under `.claude/`, the Codex projection
    (`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and
    **`docs/decisions/`**. The last two payload paths sit outside either harness's
