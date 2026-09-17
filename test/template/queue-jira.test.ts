@@ -948,7 +948,8 @@ describe('hardening beyond the endpoint (AR-54)', () => {
     });
 
     it('bounds the POSTed summary so a 2186-character change still files, keeping the full text in the body', async () => {
-      // The length of the `change` in the original incident (journal/2026-09.md).
+      // The length of the `change` in the original incident, as the RP-121 ticket
+      // body states it (moved from AIC-71, from the AIC journal).
       const bigChange = 'x'.repeat(2186);
 
       globalThis.fetch = ((input: unknown, init: { method?: string; body?: string } = {}) => {
@@ -1018,8 +1019,7 @@ describe('hardening beyond the endpoint (AR-54)', () => {
       const { triageItemFor } = await load('jira.mjs');
       const change = 'y'.repeat(246);
       const item = triageItemFor(proposalWith(change)) as { title: string };
-      expect(item.title.length).toBeLessThanOrEqual(255);
-      expect(item.title).not.toBe(`proposal: ${change}`);
+      expect(item.title).toBe(`proposal: ${'y'.repeat(245)}`);
     });
 
     it('keeps the full change in the body and a stable fingerprint regardless of the title bound', async () => {
