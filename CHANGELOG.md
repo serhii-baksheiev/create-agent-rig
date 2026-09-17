@@ -16,10 +16,12 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## 0.9.1
 
-**Fixes only, so a patch** by the rule at the top of this file. Nothing is
-added to what `create`, `init` or `upgrade` install beyond the corrected files,
-the contract version stays `1.0`, and the application skeletons remain
-deprecated and scheduled for removal in 0.10.0 exactly as 0.9.0 announced.
+**A patch, numbered by the owner.** Every entry corrects existing behaviour;
+two of them (RP-182, RP-59) do it by recording or reporting something new.
+Nothing is added to what `create`, `init` or `upgrade` install beyond the
+corrected files, the contract version stays `1.0`, and the application
+skeletons remain deprecated and scheduled for removal in 0.10.0 exactly as
+0.9.0 announced.
 
 ### Fixed
 
@@ -27,13 +29,15 @@ deprecated and scheduled for removal in 0.10.0 exactly as 0.9.0 announced.
   already present and leaves it alone, the manifest now records that file's
   hash under `kept`, so a later `upgrade` can say whether the file is
   unchanged or edited since `init` found it instead of reporting it with no
-  history (RP-182). An older CLI ignores the field; a manifest with nothing
-  kept is written exactly as before.
-- **`memory load` has an internal deadline.** A `load` that names no
-  `--timeout-ms` now gets `--timeout-ms 45000`, the rig's own process deadline
-  stays at least 15 s above whatever value is passed, and `doctor`'s
-  arguments are untouched. The README example gains the `--cwd .` Memory
-  requires (RP-183).
+  history (RP-182). A manifest with nothing kept is written exactly as
+  before.
+- **`memory load` passes Memory a deadline of its own.** A `load` that names
+  no `--timeout-ms` gets `--timeout-ms 45000` appended, below the rig's 60 s
+  kill. A well-formed `--timeout-ms <value>` pair raises that kill to the
+  value plus 15 s when that is above 60 s, capped at Node's timer limit of
+  2 147 483 647 ms; any other spelling passes through unchanged. `doctor`'s
+  arguments are untouched. The README example adds `--cwd .`, which the Memory
+  owner names as part of Memory's own contract (RP-183).
 - **`reconcile-external-prs.mjs` works on a `gh` that does not serve
   `authorAssociation`** from `gh pr list`: the association is fetched
   separately and kept only when it answers for the same pull request, and a

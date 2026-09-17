@@ -172,8 +172,8 @@ describe('the root manifest is publish-complete', () => {
   });
 
   // 🔴 The ledger records where a version was published FROM, so a row may
-  // exist only once that version is on the registry. 0.8.0's row is written
-  // here because 0.8.0 is published; a row for an unpublished version would be
+  // exist only once that version is on the registry. 0.9.0's row is written
+  // here because 0.9.0 is published; a row for an unpublished version would be
   // a guess wearing the shape of a measurement.
   it('records 0.9.0 in the ledger at the commit it was published from', async () => {
     const ledger = JSON.parse(
