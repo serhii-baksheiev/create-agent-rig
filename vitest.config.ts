@@ -7,6 +7,11 @@ import { configDefaults, defineConfig } from 'vitest/config';
 // 94a6609). So the benchmark files run in a project of their own, after every
 // other project and one file at a time — pinned by
 // test/template/vitest-benchmark-project.test.ts.
+//
+// The e2e installs get a group of their own too, between the two: a template
+// test that spawns git and the CLI timed out on the hosted Windows runner while
+// the npm installs of test/e2e/git-install.test.ts ran beside it (RP-158) —
+// pinned by test/template/vitest-e2e-group.test.ts.
 const BENCHMARK_FILES = 'test/template/policy-benchmark*.test.ts';
 
 export default defineConfig({
@@ -42,7 +47,7 @@ export default defineConfig({
           // per-test budgets on top of it.
           testTimeout: 15_000,
           maxWorkers: 1,
-          sequence: { groupOrder: 1 },
+          sequence: { groupOrder: 2 },
         },
       },
       {
@@ -55,6 +60,7 @@ export default defineConfig({
           globalSetup: ['test/e2e/pack-once.ts'],
           testTimeout: 300_000,
           hookTimeout: 300_000,
+          sequence: { groupOrder: 1 },
         },
       },
     ],
