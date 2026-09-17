@@ -61,33 +61,6 @@ export const needsGit = (repoRoot: string): { ok: boolean; reason: string } => (
   reason: `no git repository at ${repoRoot} (git ls-files / check-ignore / check-attr need one)`,
 });
 
-/**
- * Can this host measure a guard child process at all? On GitHub's hosted
- * `windows-latest` image a guard process — `node .claude/hooks/<guard>.mjs`
- * fed a payload — intermittently costs ~24.5 s BEFORE its main logic runs
- * (PR #202, head af21c6d: preload at 31–42 ms, first stderr write at
- * 24 601 ms, exit within 10 ms of it), invariant under 4, 2 or 1 concurrent
- * guards and an idle runner. Native Windows 11 does not show it. So a test
- * that spawns a guard as a child process and checks its behaviour against a
- * short deadline — `test/template/guard-acceptance.test.ts` among them — is
- * UNVERIFIABLE on a github-hosted Windows runner and skips with this reason,
- * never a pass. A self-hosted Windows runner (`RUNNER_ENVIRONMENT=self-hosted`)
- * and every other platform run them. Pinned in test-env-helpers.test.ts ›
- * "guardProcessesMeasurable is false exactly on a github-hosted Windows
- * runner".
- */
-export const guardProcessesMeasurable = (
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-): { ok: boolean; reason: string } => ({
-  ok: !(platform === 'win32' && env.RUNNER_ENVIRONMENT === 'github-hosted'),
-  reason:
-    'UNVERIFIABLE on hosted windows-latest (RUNNER_ENVIRONMENT=github-hosted): a guard child ' +
-    'process intermittently costs ~24.5 s before its main logic runs on that image, which ' +
-    'native Windows 11 does not show (PR #202, head af21c6d exit trace), so timing- or ' +
-    'deadline-sensitive guard-spawning assertions are skipped here, not counted',
-});
-
 export const needsNonRoot = (): { ok: boolean; reason: string } => ({
   ok: !isRoot(),
   reason:
