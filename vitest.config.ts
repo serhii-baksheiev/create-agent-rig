@@ -5,12 +5,15 @@ import { configDefaults, defineConfig } from 'vitest/config';
 // runner while the npm installs of test/e2e/git-install.test.ts ran beside it
 // (RP-158) — pinned by test/template/vitest-e2e-group.test.ts.
 //
-// RP-178 removed the policy benchmark project that used to run last here (the
-// benchmark spawned the real guards as child processes under a per-guard
-// deadline; the guards it measured, and the "policy" library surface it
-// exercised, were never called from a shipped entry point — see
-// docs/compatibility.md). Guard behaviour is now covered directly, in the
-// template project, by test/template/guard-acceptance.test.ts.
+// RP-178 removed the policy benchmark project that used to run last here: it
+// spawned the real, shipped guards as child processes under a per-guard
+// deadline, through its own benchmark runner rather than through the wiring a
+// generated project actually uses — a parallel invocation path. The "policy"
+// library surface (`packages/cli/src/policy/`) it also exercised was the
+// unreachable part: nothing in the CLI ever called it (see
+// docs/compatibility.md for the consumer graph). Guard behaviour is now
+// covered directly, through the real wiring, in the template project, by
+// test/template/guard-acceptance.test.ts.
 
 export default defineConfig({
   test: {
