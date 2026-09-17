@@ -78,10 +78,16 @@ on RP-53, scheduled 2026-10-27. RP-175 is not 0.10.0 work. There is no 0.9.2.
   profiles and receipts that setup defines, so receipts stabilise first.
 - `RP-177`, `RP-178`, `RP-181` → In Progress with take-up comments.
 
-⚠ Jira links, not labels, define blockers. `relates to` is not a block. After
-any graph edit, re-read the link from both issues — a `POST /rest/api/3/issueLink`
-treats `inwardIssue` as the **blocking** side, which is the opposite of what the
-field name suggests.
+⚠ Jira links, not labels, define blockers. `relates to` is not a block. **Do not
+trust any remembered rule about which of `inwardIssue`/`outwardIssue` is the
+blocking side of a `POST /rest/api/3/issueLink`** — this project has been wrong
+about it before, and that belief once produced 45 `Blocks` links stored in the
+reverse of the roadmap prose (`journal/2026-08.md`, AR-150, closed
+`PREMISE FALSE`). The only reliable procedure is: create the link, then GET both
+issues and read the rendered direction from each side; if it is reversed, delete
+the link and create it the other way. The `RP-22 blocks RP-21` edit made this
+session was verified that way — `RP-22` reads `blocks -> RP-21` and `RP-21` reads
+`is blocked by <- RP-22`.
 
 ---
 
@@ -96,7 +102,8 @@ field name suggests.
   and symlinked paths; `absent` for already-deleted; empty-parent cleanup that
   stops at `.rig`; dry-run and `--json`; a partial failure reports
   completed/remaining; docs in `README.md`, `docs/command-contract.md`,
-  `CHANGELOG.md`; 24 unit + 7 e2e cases.
+  `CHANGELOG.md`; 21 unit + 7 e2e cases (counted at `e98199e`, and reported the
+  same way by that head's CI log).
 - **Checks performed:** on `e98199e`, in `~/rig-181`, independently re-run by
   the lead — `pnpm lint`, `pnpm typecheck`, full `pnpm test`: **130 files, 4363
   tests passed, 4 skipped, exit 0**. No CI run on the PR head was read.
@@ -118,8 +125,9 @@ field name suggests.
 - **Checks performed:** at `a04a8ef`, independently re-run by the lead in
   `~/rig-178` — lint, typecheck, full `pnpm test`: **118 files, 3421 tests
   passed, 4 skipped, exit 0**.
-  🔴 The two newer commits (`6aba6fe`, `601970d`) passed `pre-commit`
-  (`test:unit`) only. The **full** suite has not been run on `601970d`.
+  On `601970d` the lead ran no suite locally, but GitHub Actions did: the `E2E`
+  workflow's `e2e` job (`pnpm test`) succeeded on that head — run `35266383377`,
+  **117 files, 3414 tests passed, 4 skipped**.
 - **Gate round 1 verdicts:** `code-reviewer` HOLD (5 blockers),
   `prose-reviewer` HOLD (2 blockers), `security-scanner` SHIP (3 advisories).
 - **Uncommitted round-2 work exists** in `~/rig-178` (2 files) — see §6.
@@ -212,11 +220,13 @@ uncommitted tree in `~/rig-181` is a partial application of it (§6).
    adding a suite that skips wholesale on Windows.
 4. **Compatibility-matrix vocabulary.** `supported / degraded / unsupported`
    must mean one thing per row and each must carry an executable test pointer or
-   an exact release-evidence pointer. Today the lead sentence claims every one of
-   the nine guard rows has an allow/deny fixture through both wirings, while
-   `gate-stop-dod` (Stop) and `warn-subagent-routing` (SessionStart) are not
-   `PreToolUse` at all and `guard-subagent-model` is covered elsewhere; the doc
-   also says "the six guards above" where Claude wires seven.
+   an exact release-evidence pointer. The overstatement found in gate round 1 (one
+   sentence claiming an allow/deny fixture through both wirings for all nine guard
+   rows, and a "six guards" count where Claude wires seven) was **already rewritten
+   by `6aba6fe`** and is not present at `601970d`; neither phrase occurs in that
+   tree. What remains open is the rebase consequence: after RP-177 lands, re-read
+   every row and confirm each status word still means one thing and each pointer
+   still resolves.
 5. **The correspondence lost a direction** (partially addressed in `6aba6fe`,
    unverified): the deleted `policy-declaration.test.ts` asserted over the real
    shipped snapshots that every wired guard is declared; a hand-written fixture
@@ -360,7 +370,8 @@ node .claude/scripts/decision-router.mjs --base origin/master --head origin/<bra
 MSYS_NO_PATHCONV=1 node --env-file=C:/Users/SerhiiBaksheiev/.config/create-agent-rig/jira.env \
   <helper>.mjs GET /rest/api/3/issue/RP-92?fields=summary,status,issuelinks
 # transitions: 11 To Do, 21 In Progress, 31 In Review, 41 Done
-# a link POST treats inwardIssue as the BLOCKING side — verify from both issues after any edit
+# after creating a Blocks link, GET both issues and read the direction each one renders;
+# do not rely on a remembered inwardIssue/outwardIssue rule — see the warning in section 2
 
 # Named-check merge criterion (never "some checks passed"):
 SHA=$(gh pr view <n> --json headRefOid -q .headRefOid)
