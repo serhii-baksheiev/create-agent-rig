@@ -5,12 +5,16 @@ import config from '../../vitest.config.js';
 // --maxWorkers=2`) dispatch 35099543331 on head 09b1bee failed
 // test/template/queue.test.ts › "reads the state beside an explicit --config
 // and never the checkout it is standing in" at its 20 s budget while
-// test/e2e/git-install.test.ts (npm installs) ran beside it for the whole
-// file: the neighbouring worktree tests in the same describe stretched to
-// 14.8 s and 9.7 s against ~2.4 s and ~0.9 s in the green dispatches
-// 35101224699 and 35102865119 on the same head. So the e2e installs get their
-// own sequence group, after unit and template and before the benchmark
-// (which the benchmark pin already requires to run last).
+// test/e2e/git-install.test.ts (npm installs) ran beside it for all but its
+// last seconds, and a neighbour in the same describe, "answers the MAIN
+// checkout root when asked from a linked worktree", took 14.8 s against 2.5 s
+// and 2.1 s in the green dispatches 35101224699 and 35102865119 on the same
+// head. The same red run also slowed a test in another file after every e2e
+// file had finished, so the runner was slow on its own too: this grouping
+// removes the suite's own install load from beside the template tests, and
+// nothing more. The e2e installs get their own sequence group, after unit and
+// template and before the benchmark (which the benchmark pin already requires
+// to run last).
 
 interface ProjectConfig {
   name?: string;
@@ -88,7 +92,7 @@ describe('the e2e installs run in their own sequence group, after unit/template 
     expect(e2e?.test.globalSetup).toEqual(['test/e2e/pack-once.ts']);
   });
 
-  it('still covers every test file with exactly these four projects', () => {
+  it('keeps exactly the four projects unit, template, benchmark and e2e', () => {
     const names = projects.map((p) => p.test.name).sort();
     expect(names).toEqual(['benchmark', 'e2e', 'template', 'unit']);
   });
