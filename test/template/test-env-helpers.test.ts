@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TestContext } from 'vitest';
 import {
-  guardProcessesMeasurable,
   hasGitRepo,
   isRoot,
   modeBitsDeny,
@@ -86,50 +85,5 @@ describe('test/helpers/env', () => {
     const { ok, reason } = modeBitsDeny();
     expect(ok).toBe(!isRoot() && process.platform !== 'win32');
     expect(reason).toMatch(process.platform === 'win32' ? /Windows/ : /root/);
-  });
-
-  // RP-111 (PR #202 comments, 2026-09-13, head af21c6d): a guard child process
-  // measured ~24.5 s of pre-main-logic cost on hosted windows-latest, invariant
-  // under concurrency and an idle runner, and absent on native Windows 11. Every
-  // guard-spawning benchmark case is UNVERIFIABLE there and SKIPS with that
-  // classification; the Windows acceptance is a native exact-head run.
-  it('guardProcessesMeasurable is false exactly on a github-hosted Windows runner', () => {
-    expect(guardProcessesMeasurable({ RUNNER_ENVIRONMENT: 'github-hosted' }, 'win32').ok).toBe(
-      false,
-    );
-    expect(guardProcessesMeasurable({}, 'win32').ok).toBe(true);
-    expect(guardProcessesMeasurable({ RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32').ok).toBe(true);
-    expect(guardProcessesMeasurable({ RUNNER_ENVIRONMENT: 'github-hosted' }, 'linux').ok).toBe(
-      true,
-    );
-    expect(guardProcessesMeasurable({ RUNNER_ENVIRONMENT: 'github-hosted' }, 'darwin').ok).toBe(
-      true,
-    );
-  });
-
-  it('guardProcessesMeasurable names the hosted-Windows evidence and says the case skips, not passes', () => {
-    const { ok, reason } = guardProcessesMeasurable(
-      { RUNNER_ENVIRONMENT: 'github-hosted' },
-      'win32',
-    );
-    expect(ok).toBe(false);
-    expect(reason).toContain('UNVERIFIABLE');
-    expect(reason).toContain('hosted windows-latest');
-    expect(reason).toContain('native');
-    expect(reason).toContain('PR #202');
-    expect(reason).toContain('af21c6d');
-    expect(reason).toMatch(/skip/i);
-    expect(reason).not.toMatch(/\bpass(?:ed|es)?\b/i);
-  });
-
-  it('skipUnless reports guardProcessesMeasurable reason to ctx.skip on a github-hosted Windows runner', () => {
-    const { ctx, skip } = fakeContext();
-    const { ok, reason } = guardProcessesMeasurable(
-      { RUNNER_ENVIRONMENT: 'github-hosted' },
-      'win32',
-    );
-    skipUnless(ctx, ok, reason);
-    expect(skip).toHaveBeenCalledTimes(1);
-    expect(skip).toHaveBeenCalledWith(reason);
   });
 });

@@ -223,9 +223,9 @@ evidence. The decision must replay to the same outcome from the same explicit
 `recordId` list **with retrieval disabled**. No semantic match is not evidence
 of absence.
 
-This is the same rule the policy layer already applies to capability states:
-"could not check" is never "checked and fine"
-(`packages/cli/src/policy/core/decision-record.ts`, the never-silent-pass rule).
+This is the same rule the (now-removed, RP-178) policy layer applied to
+capability states: "could not check" is never "checked and fine" — a decision
+that could not be evaluated is never read as one that passed.
 
 ## Projections and embeddings
 

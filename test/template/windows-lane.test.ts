@@ -21,20 +21,24 @@ import { describe, expect, it } from 'vitest';
  *
  * 🔴 The cap is passed on the COMMAND LINE, not set per project, and that was
  * measured rather than chosen. `test:unit` runs `--project unit --project
- * template --project benchmark`; vitest 4 refuses two projects that share
- * `sequence.groupOrder` but resolve different `maxWorkers`, so capping the
- * template project alone aborts the whole run with "no tests" and exits 1 —
- * the lane goes red having executed nothing. The ruling permits this shape
- * exactly when the per-project one "costs more than it buys", and a lane that
- * runs zero tests is that. The `benchmark` project (RP-111) carries the one
- * per-project `maxWorkers`, legal only because its `sequence.groupOrder`
- * differs from `unit` and `template`; see
- * test/template/vitest-benchmark-project.test.ts.
+ * template`; vitest 4 refuses two projects that share `sequence.groupOrder`
+ * but resolve different `maxWorkers`, so capping the template project alone
+ * aborts the whole run with "no tests" and exits 1 — the lane goes red having
+ * executed nothing. The ruling permits this shape exactly when the
+ * per-project one "costs more than it buys", and a lane that runs zero tests
+ * is that.
  *
  * What this file pins is the SHAPE of the remedy: lane-specific, on the command
  * line, and not the timeout. It deliberately does NOT pin the cap's value — the
  * ruling asks for the smallest stable figure, which is a measurement on the
  * hosted runner and will move.
+ *
+ * RP-178 removed the RP-62/RP-110 spawn-baseline diagnostic this file used to
+ * pin below: it measured bare `node` startup, which stayed flat across a red
+ * run and its green rerun of the same head while the run's own wall time
+ * differed by roughly half — a diagnostic that reads "healthy" on the run it
+ * exists to diagnose. No replacement baseline was required
+ * (`docs/compatibility.md` has the full resolution).
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -197,38 +201,5 @@ jobs:
     const ci = (await workflows()).find((w) => w.name === 'ci.yml')!;
     const job = windowsJob(executable(ci.body));
     expect(job, 'the Windows lane no longer passes --testTimeout').toMatch(/--testTimeout=\d+/);
-  });
-
-  it('brackets the suite with a spawn baseline, so a slowdown DURING it is visible', async () => {
-    const ci = (await workflows()).find((w) => w.name === 'ci.yml')!;
-    const job = windowsJob(executable(ci.body))!;
-    // One reading at t0 characterises the runner before the load; the timeouts
-    // happen under it. Two readings bracket the suite, which is what tells a
-    // contended run from a slow one without querying neighbouring heads.
-    const readings = [...job.matchAll(/node -e/g)];
-    expect(
-      readings.length,
-      'the Windows lane does not bracket the suite with spawn timings',
-    ).toBeGreaterThanOrEqual(2);
-
-    // 🔴 Position, not just presence, and per step rather than job-wide.
-    // `code-reviewer` measured that a job-wide count plus a job-wide
-    // /if: always()/ stays GREEN when the second baseline is moved BEFORE the
-    // suite, or when `always()` is moved onto the first one — leaving a test
-    // named for bracketing that does not check it.
-    const steps = job.split(/^ {6}- name:/m).slice(1);
-    const suiteAt = steps.findIndex((s) => /run:\s*pnpm test:smoke/.test(s));
-    const afterSuite = steps.slice(suiteAt + 1);
-    expect(suiteAt, 'no step in the job runs the suite').toBeGreaterThanOrEqual(0);
-    expect(
-      steps.slice(0, suiteAt).some((s) => /node -e/.test(s)),
-      'nothing measures spawn latency before the suite',
-    ).toBe(true);
-    const post = afterSuite.find((s) => /node -e/.test(s));
-    expect(post, 'nothing measures spawn latency after the suite').toBeDefined();
-    // It must survive a red suite, or it is absent exactly when it is needed.
-    expect(post, 'the post-suite baseline does not run on a failed suite').toMatch(
-      /if:\s*always\(\)/,
-    );
   });
 });

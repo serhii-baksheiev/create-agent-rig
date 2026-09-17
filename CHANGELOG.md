@@ -14,6 +14,50 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## Unreleased
+
+**Generator-only (RP-178): nothing a newly scaffolded project receives changes.**
+No file under `templates/` moved. This entry records what changed inside the
+generator's own repository, ahead of 0.10.0.
+
+- **The speculative policy-declaration library and its benchmark are gone.**
+  `packages/cli/src/policy/` (a declaration schema, registry, decision-record
+  format and per-harness adapters, RP-36/RP-76) and
+  `scripts/policy-benchmark*.mjs` (the child-process benchmark that measured
+  it) shipped nothing a CLI command, an installed hook, or the sync scripts
+  ever called — its own module header said so. Removed as dead code, along
+  with `contracts/session-messaging/` (its sole remaining consumer) and the
+  vitest `benchmark` project. `docs/compatibility.md` has the full consumer
+  graph and closes RP-157, RP-160 and RP-161 by deletion rather than by fix,
+  since all three findings were against this unreachable surface.
+- **`docs/compatibility.md`** replaces the removed framework's claim to be a
+  compatibility check: a Claude Code × Codex × capability matrix — every
+  retained guard, skills/agents delivery, hook wiring, and the 0.9 external
+  subsystem contract — where every row points at an executable test or an
+  exact release-evidence citation.
+- **`test/template/guard-acceptance.test.ts`** invokes six of the seven
+  retained `PreToolUse` guards through the real `.claude/settings.json` /
+  `.codex/hooks.json` wiring strings, with one allowed and one denied fixture
+  per guard per harness — the thing the benchmark measured a parallel path
+  for instead of the wiring a generated project actually runs. (The seventh,
+  `guard-subagent-model`, is Claude-only and already has its own fixtures in
+  `subagent-routing-hooks.test.ts`; a bidirectional check keeps this file's
+  fixture list, the wiring, and `docs/compatibility.md`'s guard table from
+  drifting apart.)
+- **Meta-tests that pinned shape instead of behaviour were removed or cut
+  down to the assertion that survives review as real**, each with its own
+  reason recorded in the pull request: a citation count nothing rereads
+  (RP-82, `generator-neutrality.test.ts`), an exact skip-site count that
+  named the deleted benchmark files, and the project-count/ordering
+  assertions that named the deleted `benchmark` vitest project.
+- **RP-110: the CI spawn-baseline diagnostic is removed** from the
+  `windows-smoke` job. It measured bare `node` startup and read "healthy" on
+  the run it was built to diagnose (a red run and its green rerun differed by
+  roughly a fifth on the baseline and by roughly half on the wall clock the
+  suite actually ran under) — a diagnostic that argues against the correct
+  conclusion is worse than none. No replacement baseline was added, per the
+  ticket's own accepted resolution.
+
 ## 0.9.1
 
 **A patch, numbered by the owner.** Every entry corrects existing behaviour;
