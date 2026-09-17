@@ -31,4 +31,19 @@ describe('universal rulebook neutrality after the stack layers are retired', () 
     expect(reviewer).not.toMatch(/\bSDK\b/i);
     expect(reviewer).not.toMatch(/owning module/i);
   });
+
+  it('does not make an application-specific pure core a universal Definition-of-Done requirement', async () => {
+    const workflow = await readFile(path.join(universal, 'rules', 'workflow.md'), 'utf8');
+    const definitionOfDone = workflow.slice(workflow.indexOf('## Definition of Done'));
+
+    expect(definitionOfDone).not.toMatch(/core still pure/i);
+    expect(definitionOfDone).not.toMatch(/cross-layer imports/i);
+  });
+
+  it('does not require a post-deploy runtime check when the universal install declares no deployable target', async () => {
+    const workflow = await readFile(path.join(universal, 'rules', 'workflow.md'), 'utf8');
+
+    expect(workflow).not.toMatch(/verify the deployed surface is healthy/i);
+    expect(workflow).not.toMatch(/target's post-deploy verdict/i);
+  });
 });

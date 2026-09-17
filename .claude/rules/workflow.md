@@ -122,10 +122,10 @@ travels one path to merge, in this order:
    repository's documented check command when it names one; otherwise query
    the hosting service's check runs by the exact head SHA.
 
-**Post-merge tail:** verify the deployed surface is healthy (the target's
-post-deploy verdict — `autonomy.md`), then update `PLAN.md` (close the task,
-record any follow-up in a queue). Merge is not the finish line; a healthy
-runtime and an honest plan are.
+**Post-merge tail:** update `PLAN.md` (close the task, record any follow-up in
+a queue). When the repository's own documentation declares a runtime or other
+operational surface, run the health check it documents. Merge is not the finish
+line; the queue and every declared operational check must reflect reality.
 
 ## PR policy
 
@@ -142,7 +142,7 @@ A change is done when **all** of these hold:
 - [ ] A test written first demonstrates the new behavior (and failed before the change)
 - [ ] The full test suite is green — nothing skipped, nothing weakened
 - [ ] Lint and typecheck are clean
-- [ ] Layer boundaries respected (no new cross-layer imports; core still pure)
+- [ ] Repository-specific invariants and declared boundaries remain satisfied
 - [ ] No secrets, credentials, or personal data in code, config, or fixtures
 - [ ] Docs touched by the change (README, rules) are updated
 - [ ] The autonomy tier of the change was checked and honored (`autonomy.md`)
