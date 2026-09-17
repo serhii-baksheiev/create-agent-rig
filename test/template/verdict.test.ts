@@ -135,11 +135,15 @@ describe('one vocabulary, and each gate gets the part of it that it can mean', (
   });
 
   // 🔴 The gates whose NAMES the stack-neutral layer may carry — which is not
-  // the same set as the gates a target runs. `post-deploy-verify` lives in the
-  // aws-cdk stack and is listed; `cdk-diff-reviewer` is not, because its name
-  // contains a provider term and `composition.test.ts` refuses one anywhere
-  // under `universal/`. That gate reaches the schema as an unknown gate,
-  // covered by the documented limit below.
+  // the same set as the gates any one project runs. `post-deploy-verify` is a
+  // convention every project may implement for its own target (`autonomy.md`,
+  // "Post-deploy verification"; the `loop` skill's example calls it by this
+  // name) — no default skill ships one since RP-177 retired the aws-cdk stack
+  // that used to. A gate whose own name carried a provider term (the retired
+  // `cdk-diff-reviewer`) could never have been listed here either way —
+  // `composition.test.ts` refuses one anywhere under `universal/` — and would
+  // reach the schema as an unknown gate, covered by the documented limit
+  // below.
   it('gives each gate only the words that gate can mean', async () => {
     const { GATE_VOCABULARY, VERDICT_WORDS } = await load();
     const expected: Record<string, string[]> = {

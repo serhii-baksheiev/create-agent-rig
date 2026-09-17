@@ -1,6 +1,11 @@
 // Dogfooding (PLAN.md phase 5): this repo runs under the agent-os it ships.
-// Composes CLAUDE.md + .claude/ from templates/agent-os (universal + node-ts,
-// this repo's stack) plus the hand-maintained repo addendum.
+// Composes CLAUDE.md + .claude/ from templates/agent-os/universal — the one
+// payload the package ships (RP-177 retired the per-target stack overlays) —
+// plus this repo's own node-ts conventions, which live OUTSIDE templates/
+// and outside the npm `files` list precisely because they are this repo's
+// own and not a payload any generated rig receives (`scripts/dogfood/`,
+// itself an elevated path via the `scripts/` entry below), plus the
+// hand-maintained repo addendum.
 //
 //   node scripts/sync-agent-os.mjs           # write the composed files
 //   node scripts/sync-agent-os.mjs --check   # exit 1 if anything drifted
@@ -11,7 +16,7 @@ import { syncCodexAdapters } from './sync-codex-adapter.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
-const stacks = ['node-ts'].map((s) => path.join(repoRoot, 'templates', 'agent-os', 'stack', s));
+const overlays = [path.join(repoRoot, 'scripts', 'dogfood', 'node-ts')];
 const check = process.argv.includes('--check');
 
 // Claude files are the authoring surface; refresh (or verify) their native
@@ -47,7 +52,6 @@ const ELEVATED_PATHS = [
   'templates/agent-os/universal/.claude/hooks/', // the enforcement layer
   'templates/agent-os/universal/.claude/scripts/', // and the sweeps that watch it
   'templates/agent-os/universal/.claude/settings.json', // the hook wiring
-  'templates/agent-os/init/', // the map and overrides every `init`ed repo gets
   // The gates themselves. An agent spec or a driver skill decides what gets
   // blocked and what gets waved through, so a merge that quietly re-scopes one
   // disarms the review layer as surely as unwiring a hook does.
@@ -87,21 +91,13 @@ const ELEVATED_PATHS = [
   // conformance): a schema here decides what another repository's workflow
   // accepts, so a change to one is reviewed like a public API change.
   'contracts/',
-  // Same categories, one layer down: a stack layer's gates and DoD config are
-  // no less load-bearing for being target-specific.
-  'templates/agent-os/stack/aws-cdk/.claude/agents/',
-  'templates/agent-os/stack/aws-cdk/.claude/skills/',
-  'templates/agent-os/stack/node-ts/.claude/hooks/',
-  // The stack rulebooks. `aws-cdk.md` is the sharp one: it carries its OWN
-  // `elevated-paths` block declaring `infra/`, and it is the only declaration of
-  // `infra/` a generated AWS project has. Delete that block and every later
-  // merge under `infra/` matches no declared path, so the sweep reports clean —
-  // not because nothing is declared (that case it shouts about, as
-  // `no-elevated-paths-declared`) but because the one line that covered
-  // infrastructure is gone. A file that is a declaration source has to be
-  // covered by a declaration itself.
-  'templates/agent-os/stack/aws-cdk/.claude/rules/',
-  'templates/agent-os/stack/node-ts/.claude/rules/',
+  // This repo's own node-ts conventions (RP-177): not a template payload any
+  // generated rig receives — outside `templates/` and outside the npm `files`
+  // list on purpose — but load-bearing here exactly as the universal sources
+  // above are, and `scripts/` already covers it; declared explicitly anyway,
+  // on the same ground as every other entry in this block: a declaration a
+  // reader has to infer from a prefix is a declaration nobody checks.
+  'scripts/dogfood/',
   // The composed copy of the rulebook — what actually RUNS in this checkout.
   // Until AR-51 only the template sources above were declared, on the ground
   // that the drift test catches an edit to the synced copy. It does, at commit
@@ -140,7 +136,7 @@ function compose() {
   };
 
   addTree(universal);
-  for (const stack of stacks) addTree(stack);
+  for (const overlay of overlays) addTree(overlay);
 
   const addendum = readFileSync(path.join(repoRoot, '.claude', 'CLAUDE.addendum.md'), 'utf8');
   const repositoryMap =

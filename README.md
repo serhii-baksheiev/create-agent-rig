@@ -1,7 +1,9 @@
 # create-agent-rig
 
-Scaffold a project that ships with an **agent operating system** — rules,
-gates, and hooks that hold the architecture mechanically, not by prose.
+Configure an **agent operating system** for Claude Code and Codex — rules,
+gates, and hooks that hold the process mechanically, not by prose. It is a
+harness configurator, not an application generator: it never scaffolds
+application code.
 
 The same Agent OS is native to both **Claude Code and Codex**. Claude-facing
 files remain the authoring surface; the generator derives Codex's `AGENTS.md`,
@@ -10,30 +12,31 @@ and `.codex/hooks.json`. `node scripts/sync-codex-adapter.mjs --check` refuses
 drift between the two projections.
 
 ```sh
-npx create-agent-rig my-app                        # choose a target interactively
-npx create-agent-rig my-app --target node-service  # or name it up front
+npx create-agent-rig my-app   # mkdir + git init + the rig, into a new directory
 ```
 
-Two coherent targets — `aws-serverless` (the default) and `node-service`. On a
-terminal the CLI prompts; in CI it wants `--target` explicitly. `--no-git`
-skips the initial baseline commit; `--no-color` (and `NO_COLOR`) plainens the
-output.
+There is exactly one payload — no `--target`, no application skeleton to
+choose between. `--no-git` skips the initial baseline commit; `--no-color`
+(and `NO_COLOR`) plainens the output.
 
-Already have a repo? Install just the **process layer** into it — no
-architecture assumptions, no skeleton:
+Already have a repo? Install the same payload into it directly:
 
 ```sh
 npx create-agent-rig init            # rules, gates, stop rules into the current repo
 npx create-agent-rig init --dry-run  # print the plan, write nothing
 ```
 
+`create <dir>` is a thin convenience wrapper over exactly this: make the
+directory, run `init` inside it, then commit the pristine baseline.
+
 `init` drops in the autonomy tiers, stop rules, workflow, and the enforcement
 hooks — **wired** for both harnesses, in `.claude/settings.json` and
 `.codex/hooks.json`, each naming exactly the hooks it installed — plus matching
-`CLAUDE.md` and `AGENTS.md` maps that describe that rig rather than the generated
-monorepo. It refuses to clobber either existing map; if the repo already has a
-Claude or Codex hook config, it keeps it and prints the entries to merge,
-because a hook nothing calls is not enforcement.
+`CLAUDE.md` and `AGENTS.md` maps that describe the rig itself, never an
+application shape it does not know your repository has. It refuses to clobber
+either existing map; if the repo already has a Claude or Codex hook config, it
+keeps it and prints the entries to merge, because a hook nothing calls is not
+enforcement.
 
 Two things it deliberately leaves to you, and says so in the installed
 maps: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
@@ -138,6 +141,13 @@ it covers was there to be removed. The single case nothing can tell apart is a
 file a **later** release added, which your rig never had — that one is installed,
 and `--dry-run` lists it before anything is written.
 
+**A file this release no longer ships is `retired`, not deleted.** A rig
+generated before 0.10 may have paths from a per-target overlay this version no
+longer composes (0.10 retired application scaffolding entirely — see
+`CHANGELOG.md`). Such a path is never written and never deleted: it drops out
+of the manifest's `files`, the report says it is no longer shipped, and it is
+now yours to keep, edit, or remove on your own schedule.
+
 ### Conformance runner
 
 `contracts/conformance/v1/` holds the JSON schemas of the command contract's
@@ -175,10 +185,6 @@ never inflated). The hook implementations live once in `.claude/hooks/` and are
 wired by both `.claude/settings.json` and `.codex/hooks.json` — except the two
 marked Claude Code, which only `.claude/settings.json` wires:
 
-- **`guard-core-purity`** — refuses any edit that puts I/O, clock, randomness,
-  environment access, or a non-allowlisted import into the pure domain core;
-- **`guard-web-boundary`** — refuses `db`/service imports from the frontend;
-  the web talks to the backend over HTTP only;
 - **`guard-rulebook`** — in an unattended run (a flag file the `loop` skill
   writes at claim time), refuses an edit to the rulebook — hooks, wiring,
   `queue.json` and its board selector, the queue adapters, the router, the gate sweep, the rules,
@@ -201,7 +207,8 @@ marked Claude Code, which only `.claude/settings.json` wires:
   and `rm` on a catastrophic target. It **parses** the command rather than
   pattern-matching it, so a commit message mentioning a forbidden flag is prose,
   not a bypass — and the file states exactly what it does **not** inspect
-  (`cdk deploy`, `find -delete`, a bare `git push`, and more);
+  (an infrastructure CLI driving a production deploy directly, `find -delete`,
+  a bare `git push`, and more);
 - **`gate-stop-dod`** — refuses to end the session while a Definition-of-Done
   check is red; it fails open (a missing or corrupt config never makes the
   session unquittable) and never blocks twice in a row;
@@ -243,15 +250,15 @@ never labels**, and **the agent never files its own work items**.
 Around all of it: **autonomy tiers** (what an agent does alone / after review /
 never), **stop rules** (three strikes, flaky ≠ retry, session staleness),
 **subagent gates** (`test-writer`, `code-reviewer`, `security-scanner`,
-`prose-reviewer`, and `cdk-diff-reviewer` on the AWS target), **skills** (`pr-ship` pre-merge gate;
+`prose-reviewer`), **skills** (`pr-ship` pre-merge gate;
 `loop` queue driver; `worktree-task` for concurrent sessions; `new-invariant`, a
-generator for the invariant→hook→test pattern; `post-deploy-verify` and
-`ro-debug` on the AWS target), and matching one-page `CLAUDE.md` / `AGENTS.md`
+generator for the invariant→hook→test pattern; `check-premises` for verifying
+a queue item's own claims), and matching one-page `CLAUDE.md` / `AGENTS.md`
 maps a fresh session orients by.
 
 **Each gate reads with a pinned model and effort**, so a SHIP does not change
-meaning with whatever model the session was started on. `code-reviewer`,
-`security-scanner` and `cdk-diff-reviewer` pin `claude-opus-5`; `test-writer` and
+meaning with whatever model the session was started on. `code-reviewer` and
+`security-scanner` pin `claude-opus-5`; `test-writer` and
 `prose-reviewer` pin `claude-sonnet-5`; all pin `high` effort — and their Codex
 profiles pin `gpt-5.6-sol` / `gpt-5.6-terra` from the same role table. A subagent
 with no definition defaults to `claude-sonnet-5` through
@@ -269,30 +276,15 @@ spend the slot on one it does. An inherited rule nobody chose is worse than an
 empty rule file: the empty one is visibly incomplete, the inherited one is
 invisibly wrong.
 
-The skeleton around it is real and runnable — pure core shared by server _and_
-browser (one schema validates on both sides of the wire), a mandatory usecase
-layer (`payload → handler → usecase → model`), a queue with DLQ discipline,
-tests at every layer.
-
-## Targets
-
-| Target           | One line                                                                                                                                                                                          |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aws-serverless` | DynamoDB single-table, SQS + DLQ + CloudWatch alarm, three Lambdas (POST/GET `/notes` behind an HTTP API, plus an SQS worker), static web on S3 + CloudFront, CDK with least-privilege IAM grants |
-| `node-service`   | `node:http` server that also serves the built web bundle, atomic JSON-file store behind the same model boundary, spool-directory queue + DLQ, worker process                                      |
-
-Coherent alternatives, not a parameterized abstraction. Flexibility is
-**subtraction**: the generated project is yours — delete what you don't need.
-
 ## What it deliberately does not do
 
-No authentication. No design system or UI kit. No state manager. No i18n,
-analytics, or error tracking. No third cloud. No component-testing apparatus.
-
-Each of these is application surface, not an architecture proof — and every
-addition is permanent maintenance in every target. The frontend is plain on
-purpose: scaffolding gets replaced without friction; a finished-looking UI
-gets fought. If you need one of these, add it — the project is yours.
+No application skeleton, no target to choose, no scaffolded code of any kind.
+No authentication, design system, state manager, i18n, analytics, error
+tracking, or cloud promise — none of that is a rig's business either. A rig
+that configures agent harnesses makes no promise about your application's
+architecture; if your project has a boundary worth enforcing mechanically
+(a pure core, a storage seam, a service boundary), the `new-invariant` skill
+walks you through writing that hook yourself, in your own repository.
 
 ## The 2-minute demo
 
@@ -300,18 +292,12 @@ gets fought. If you need one of these, add it — the project is yours.
 ./demo.sh   # from a clone of this repo
 ```
 
-generates the `node-service` target → the generated project's own gates pass →
-**an attempted core-purity violation is refused live by the hook** → the
-service runs, a smoke request travels every layer, the worker drains the queue,
-the DLQ stays empty:
+installs the rig into a scratch directory, with its pristine baseline commit
+→ **an attempted pre-commit bypass is refused live by a hook**:
 
 ```
-== 3/4 an agent tries to put I/O and clock access into the pure core… ==
-BLOCKED — packages/core is a pure module and this change breaks its purity:
-  - imports "node:fs/promises" — the core may import only its own modules and: zod
-  - reads the clock — take a timestamp as an argument
-Move the impure part behind the usecase layer or into an adapter.
-…and the guard-core-purity hook REFUSED the edit at the tool layer (exit 2). ✔
+== 2/2 an agent tries to bypass pre-commit… ==
+…and the block-no-verify hook REFUSED the edit at the tool layer (exit 2). ✔
 ```
 
 ## Requirements
@@ -322,16 +308,14 @@ Move the impure part behind the usecase layer or into an adapter.
 
 ## How it stays honest
 
-Every template is a real project, installed with a frozen lockfile and run in
-place on every push. Every e2e run generates a project cold and runs the
-generated project's own checks (install → lint → typecheck → test, plus
-`cdk synth` on the AWS target); the pack-path and git-path installs are both
-under test, because that is exactly where scaffolders break. A grep-test keeps
-the universal rules free of any provider mention; the hook-blocking behavior
-itself is under test; and a weekly lockfile-free run resolves each template's
-dependencies fresh to catch upstream breakage early. This repo dogfoods its own
-rulebook — the Claude and Codex projections are composed from the templates,
-and drift fails the suite.
+The template is real, tracked content, and every e2e run generates a fresh
+repository from it and exercises the installed rig cold; the pack-path and
+git-path installs are both under test, because that is exactly where
+scaffolders break. A grep-test keeps the universal rules free of any cloud
+provider or infrastructure vendor mention; the hook-blocking behavior itself
+is under test. This repo dogfoods its own rulebook — the Claude and Codex
+projections are composed from the same templates a generated rig receives,
+plus this repository's own node-ts conventions, and drift fails the suite.
 
 **And the enforcement layer is adversarially reviewed, not just tested.** The
 Bash guard went through four review rounds with ten reviewers, who executed it
@@ -344,6 +328,7 @@ that fails open must do provably bounded work, because fail-open turns every lin
 of its own work into a potential bypass.
 
 Development (from a clone — `PLAN.md` and `demo.sh` live in the repository, not
-in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop), `pnpm test:smoke` (the unit project only — the Windows pull-request lane),
-`pnpm template:check` (templates in place). The plan of record is `PLAN.md`;
-release notes and the release checklist ship in `CHANGELOG.md`.
+in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop),
+`pnpm test:smoke` (the unit project only — the Windows pull-request lane). The
+plan of record is `PLAN.md`; release notes and the release checklist ship in
+`CHANGELOG.md`.

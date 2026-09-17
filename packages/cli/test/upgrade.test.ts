@@ -1,14 +1,12 @@
-import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createProject } from '../src/commands/create.js';
 import { initProject, projectNameFor } from '../src/commands/init.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from '../src/commands/upgrade.js';
 import type { HashHistory } from '../src/lib/history.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
-import { isSafeSubstitutionValue } from '../src/lib/safe-path.js';
 import { substituteContent } from '../src/lib/substitute.js';
 import { agentOsUniversalDir } from '../src/templates.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -223,375 +221,119 @@ describe('planUpgrade — what it would do, before it does anything', () => {
   });
 });
 
-// `create` installs the whole agent-os layer plus its stack overlays, and it is
-// the arm that writes into a full monorepo — the expensive one to be wrong in.
-describe('a rig that came from `create`, not from `init`', () => {
-  let project: string;
+// RP-177 retired the create/init distinction entirely: there is exactly one
+// payload, and `create` is a thin wrapper that installs it the same way
+// `init` does. What used to be "a rig that came from `create`" is now
+// indistinguishable from one `init` produced directly — both write
+// `kind: 'init'`, both compose no stack overlays. What survives from that
+// era is a rig an OLDER release actually generated, which is a fixture
+// planted by hand below rather than something `createProject` can still
+// produce (there is no lever left in this codebase to produce a `kind:
+// 'create'` manifest, or a manifest naming stacks, on purpose — that is the
+// point of the change, not a gap in its test coverage).
+describe('a legacy rig from before RP-177 (kind: "create", stack overlays)', () => {
+  const STACK_RULE = '.claude/rules/node-ts.md';
 
-  const generate = async (): Promise<void> => {
-    project = path.join(repo, 'my-app');
-    await createProject('my-app', { cwd: repo, target: 'node-service', git: false });
-  };
-  const readIn = (rel: string): Promise<string> =>
-    readFile(path.join(project, ...rel.split('/')), 'utf8');
-
-  it('records the stack overlays it composed, and refreshes them', async () => {
-    await generate();
-    const manifest = await readManifest(project);
-    expect(manifest?.kind).toBe('create');
-    expect(manifest?.stacks).toEqual(['node-ts']);
-    // a stack-layer file the `init` set does not contain at all
-    expect(manifest?.files['.claude/rules/node-ts.md']).toBeTruthy();
-
-    // the release changed a stack rule the user never touched
-    const stackRule = '.claude/rules/node-ts.md';
-    manifest!.files[stackRule] = sha256('# the old node-ts rules\n');
-    await writeFile(path.join(project, ...stackRule.split('/')), '# the old node-ts rules\n');
-    await writeManifest(project, manifest!);
-
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    expect(plan.kind).toBe('create');
-    expect(verdictFor(plan, stackRule)).toBe('update');
-    await applyUpgrade(project, plan);
-    expect(await readIn(stackRule)).toContain('TypeScript');
-  });
-
-  it('is recognised as create-shaped with no manifest, and keeps its own map', async () => {
-    await generate();
-    await rm(path.join(project, ...MANIFEST_REL.split('/')));
-    const claudeMd = await readIn('CLAUDE.md');
-
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    expect(plan.kind).toBe('create');
-    // the generated map is current, so it is never swapped for init's variant
-    expect(verdictFor(plan, 'CLAUDE.md')).toBe('unchanged');
-    await applyUpgrade(project, plan);
-    expect(await readIn('CLAUDE.md')).toBe(claudeMd);
-    expect(await readIn('.claude/rules/architecture.md')).toContain('core');
-  });
-
-  it('leaves the project code alone — the skeleton is not the rig', async () => {
-    await generate();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    expect(plan.actions.some((a) => a.rel.startsWith('packages/'))).toBe(false);
-    expect(plan.actions.some((a) => a.rel.startsWith('services/'))).toBe(false);
-  });
-});
-
-// A `create` rig's directory name is only a legal project name until someone
-// renames the directory or clones it under another name. The manifest an
-// upgrade bootstraps from that basename is then written and immediately voided:
-// its own reader refuses the value, so every later run falls back to matching
-// against released versions — the release's whole point, lost silently. This is
-// the third population the plan header has to be true for: the file is on disk
-// and unreadable, which is why that line says "no READABLE manifest".
-describe('a `create` rig upgraded from a directory name that is not a project name', () => {
-  let project: string;
-
-  /** Generated as `my-app`, then renamed — and the manifest gone, as 0.3.x left it. */
-  const generateThenRenameAndForget = async (): Promise<void> => {
-    await createProject('my-app', { cwd: repo, target: 'node-service', git: false });
-    project = path.join(repo, 'My App');
-    await rename(path.join(repo, 'my-app'), project);
-    await rm(path.join(project, ...MANIFEST_REL.split('/')));
-  };
-
-  const readIn = (rel: string): Promise<string> =>
-    readFile(path.join(project, ...rel.split('/')), 'utf8');
-
-  it('writes a manifest its own reader can read back', async () => {
-    await generateThenRenameAndForget();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    await applyUpgrade(project, plan);
-
-    const manifest = await readManifest(project);
-    expect(manifest).not.toBeNull();
-    // the literal value, not `projectNameFor(project)` — asserting against the
-    // function under test would hold just as well if it were broken.
-    expect(manifest?.project.name).toBe('my-app');
-    expect(manifest?.project.scope).toBe('my-app');
-  });
-
-  it('substitutes the slugged name, so the installed files are not all conflicts', async () => {
-    await generateThenRenameAndForget();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    // stop-flag.mjs carries __PROJECT_NAME__: substituting the raw basename
-    // makes the kill switch differ from the bytes on disk for no reason, and
-    // an unslugged value there is what reaches the hook's string literal.
-    expect(verdictFor(plan, STOP_FLAG)).toBe('unchanged');
-
-    await applyUpgrade(project, plan);
-    expect(await readIn(STOP_FLAG)).toContain('my-app-loop-STOP');
-  });
-});
-
-// The other half of the same rule, and the one slugging everything gives up:
-// `create`'s name pattern accepts a **trailing** dash or dot (`my-app-`), the
-// manifest reader accepts it too, and the generated files are substituted with
-// it — but `projectNameFor` strips it. Bootstrapping from the slug then names a
-// project this rig never was: every file carrying `__PROJECT_NAME__` stops
-// matching what is on disk, so the rig's own generated bytes come back as the
-// user's edits. Slug only where the raw name is unreadable.
-describe('a `create` rig whose own name is legal for the manifest but is not its slug', () => {
-  let project: string;
-
-  /** The name `create` accepted and wrote everywhere — and the slug drops the tail. */
-  const NAME = 'my-app-';
-
-  /** Generated as `my-app-`, and the manifest gone, as 0.3.x left it. */
-  const generateThenForget = async (): Promise<void> => {
-    project = path.join(repo, NAME);
-    await createProject(NAME, { cwd: repo, target: 'node-service', git: false });
-    await rm(path.join(project, ...MANIFEST_REL.split('/')));
-  };
-
-  const readIn = (rel: string): Promise<string> =>
-    readFile(path.join(project, ...rel.split('/')), 'utf8');
-
-  it('bootstraps the name the rig was generated with, not a slug of it', async () => {
-    await generateThenForget();
-    // the premise: nothing forces a slug here — this value is already safe to
-    // substitute, and it is not what `projectNameFor` would emit.
-    expect(isSafeSubstitutionValue(NAME)).toBe(true);
-    expect(projectNameFor(project)).not.toBe(NAME);
-
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    await applyUpgrade(project, plan);
-
-    const manifest = await readManifest(project);
-    // still round-trips: the reader that refused `My App` accepts this one
-    expect(manifest).not.toBeNull();
-    expect(manifest?.project.name).toBe(NAME);
-    expect(manifest?.project.scope).toBe(NAME);
-  });
-
-  it('leaves the kill switch it generated alone instead of calling it an edit', async () => {
-    await generateThenForget();
-    // what `create` wrote: the raw name, trailing dash and all
-    expect(await readIn(STOP_FLAG)).toContain(`${NAME}-loop-STOP`);
-
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    expect(verdictFor(plan, STOP_FLAG)).toBe('unchanged');
-
-    await applyUpgrade(project, plan);
-    expect(await readIn(STOP_FLAG)).toContain(`${NAME}-loop-STOP`);
-  });
-
-  it('reports no conflict at all in a rig nobody has edited', async () => {
-    await generateThenForget();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    const conflicts = plan.actions.filter((a) => a.verdict === 'conflict').map((a) => a.rel);
-    expect(conflicts).toEqual([]);
-  });
-});
-
-// The third case, and the one that decides the rule rather than restating it:
-// `init` never keeps the raw directory name. It derives the name it substitutes
-// into the files *and* the name it records in the manifest from
-// `projectNameFor`, so for a directory the manifest reader happens to accept
-// (`my-repo.`) the raw name and the installed bytes disagree. Bootstrapping the
-// raw name there names a rig `init` never wrote, and every file carrying
-// `__PROJECT_NAME__` comes back as the user's edit.
-//
-// Read next to the two blocks above, the three are one rule: `init` always
-// follows the slug; `create` keeps its raw name whenever the reader accepts it.
-describe('an `init` rig whose directory name is legal for the manifest but is not its slug', () => {
-  let project: string;
-
-  /** The directory name — safe to substitute, and not what `init` substituted. */
-  const NAME = 'my-repo.';
-  /** The name `init` actually wrote into the files and the manifest. */
-  const SLUG = 'my-repo';
-
-  const readIn = (rel: string): Promise<string> =>
-    readFile(path.join(project, ...rel.split('/')), 'utf8');
-
-  /** Installed by `init` into `my-repo.`, and the manifest gone, as 0.3.x left it. */
-  const initThenForget = async (): Promise<void> => {
-    project = path.join(repo, NAME);
-    await mkdir(project, { recursive: true });
-    await initProject(project, {});
-
-    // The premise, asserted so a broken fixture fails as a fixture: nothing
-    // forces a slug on this directory name, and `init` slugged it anyway —
-    // both in the bytes it wrote and in the manifest it recorded.
-    expect(isSafeSubstitutionValue(NAME)).toBe(true);
-    expect(projectNameFor(project)).toBe(SLUG);
-    expect(await readIn(STOP_FLAG)).toContain(`${SLUG}-loop-STOP`);
-    expect(await readIn(STOP_FLAG)).not.toContain(`${NAME}-loop-STOP`);
-    expect((await readManifest(project))?.project.name).toBe(SLUG);
-
-    await rm(path.join(project, ...MANIFEST_REL.split('/')));
-  };
-
-  it('bootstraps the name `init` substituted, not the directory it sits in', async () => {
-    await initThenForget();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    await applyUpgrade(project, plan);
-
-    const manifest = await readManifest(project);
-    // still round-trips: the reader accepts this value either way, so reading
-    // it back is not what distinguishes the two names — which one is on disk is
-    expect(manifest).not.toBeNull();
-    expect(manifest?.project.name).toBe(SLUG);
-    expect(manifest?.project.scope).toBe(SLUG);
-  });
-
-  it('leaves the kill switch `init` generated alone instead of calling it an edit', async () => {
-    await initThenForget();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    expect(verdictFor(plan, STOP_FLAG)).toBe('unchanged');
-
-    await applyUpgrade(project, plan);
-    expect(await readIn(STOP_FLAG)).toContain(`${SLUG}-loop-STOP`);
-  });
-
-  it('reports no conflict at all in a rig nobody has edited', async () => {
-    await initThenForget();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    const conflicts = plan.actions.filter((a) => a.verdict === 'conflict').map((a) => a.rel);
-    expect(conflicts).toEqual([]);
-  });
-});
-
-// `init` is allowed to run inside a generated project — someone refreshing the
-// process layer by hand does exactly that. What it must not do is rewrite the
-// manifest's *identity*: a create rig demoted to `kind: "init"` with no stacks
-// still upgrades, silently, from the smaller install set — the overlays leave
-// the plan without ever being reported as deleted or conflicting.
-describe('`init` inside a rig that came from `create`, reached by a deleted CLAUDE.md', () => {
-  let project: string;
-
-  const AWS_RULE = '.claude/rules/aws-cdk.md';
-  const NODE_RULE = '.claude/rules/node-ts.md';
-
-  /** A generated project, then the process layer re-installed over it. */
-  const generateThenInit = async (): Promise<void> => {
-    project = path.join(repo, 'my-app');
-    await createProject('my-app', { cwd: repo, target: 'aws-serverless', git: false });
-    // The way in is a deleted CLAUDE.md, which is what lifts `init`'s refusal —
-    // and it is the case `recordInstall`'s own docstring names as the gap it
-    // exists to make safe. `--force` used to be the other way in and is now
-    // refused outright, but what these tests pin is unchanged by that: whatever
-    // route reaches `recordInstall`, it must not re-describe how the rig was
-    // installed.
-    await rm(path.join(project, 'CLAUDE.md'));
-    await initProject(project, {});
-  };
-
-  it('leaves the manifest still saying the rig came from `create`', async () => {
-    await generateThenInit();
-    expect((await readManifest(project))?.kind).toBe('create');
-  });
-
-  it('keeps the stack overlays the project was composed from', async () => {
-    await generateThenInit();
-    expect((await readManifest(project))?.stacks).toEqual(['node-ts', 'aws-cdk']);
-  });
-
-  it('keeps the substitution values the generated files were written with', async () => {
-    await generateThenInit();
-    // region is what `init` has no way to know and every overlay file is
-    // substituted with — blanking it makes the whole rig a conflict.
-    expect((await readManifest(project))?.project).toEqual({
-      name: 'my-app',
-      scope: 'my-app',
-      region: 'eu-central-1',
-    });
-  });
-
-  it('still records the process files it wrote', async () => {
-    await generateThenInit();
-    const manifest = await readManifest(project);
-    expect(manifest?.files['CLAUDE.md']).toBe(
-      sha256(await readFile(path.join(project, 'CLAUDE.md'), 'utf8')),
+  /** A manifest shaped like a pre-0.10 `create --target node-service` rig. */
+  const plantLegacyManifest = async (files: Record<string, string>): Promise<void> => {
+    await write(
+      MANIFEST_REL,
+      `${JSON.stringify(
+        {
+          version: '0.9.1',
+          kind: 'create',
+          project: { name: 'legacy-app', scope: 'legacy-app', region: '' },
+          stacks: ['node-ts'],
+          files,
+        },
+        null,
+        2,
+      )}\n`,
     );
-    // and it did not forget what `create` installed
-    expect(manifest?.files[AWS_RULE]).toBeTruthy();
-  });
-
-  it('leaves the next upgrade still refreshing the stack overlays', async () => {
-    await generateThenInit();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    const planned = plan.actions.map((a) => a.rel);
-    expect(planned).toContain(AWS_RULE);
-    expect(planned).toContain(NODE_RULE);
-  });
-});
-
-// The recorded hash proves the rig wrote these bytes. It does not prove the
-// install set this run computed is the same one that wrote them — `kind` does,
-// and `kind` is a field in a committed file that any earlier version, any merge
-// or any hand-edit can have demoted. A `create` rig whose manifest says `init`
-// therefore reaches the recorded-hash arm with the *narrowed* wiring in hand:
-// replacing settings.json there deletes the entries for two hooks that are
-// still sitting on disk, which is the exact harm `init-settings.ts` names —
-// "the hooks sit on disk, the rules claim they are enforced, and nothing ever
-// calls them". A replacement that would unwire an installed hook is not an
-// upgrade, whatever the manifest says.
-describe('a rig running wiring wider than the flavour its manifest claims', () => {
-  let project: string;
-
-  const GUARD = '.claude/hooks/guard-core-purity.mjs';
-
-  const readIn = (rel: string): Promise<string> =>
-    readFile(path.join(project, ...rel.split('/')), 'utf8');
-
-  /** A generated project whose manifest has been demoted to `kind: "init"`. */
-  const generateThenDemoteTheKind = async (): Promise<void> => {
-    project = path.join(repo, 'my-app');
-    await createProject('my-app', { cwd: repo, target: 'aws-serverless', git: false });
-
-    // The premise, asserted so a broken fixture fails as a fixture: `create`
-    // wired the architecture hooks, installed them, and the manifest vouches
-    // for exactly the bytes on disk. Only `kind` changes below.
-    const manifest = await readManifest(project);
-    if (manifest === null) throw new Error('fixture: no manifest');
-    expect(await readIn(SETTINGS)).toContain('guard-core-purity.mjs');
-    expect(manifest.files[SETTINGS]).toBe(sha256(await readIn(SETTINGS)));
-    expect(manifest.kind).toBe('create');
-
-    manifest.kind = 'init';
-    await writeManifest(project, manifest);
   };
 
-  it('hands the wiring over rather than replacing it with the narrower flavour', async () => {
-    await generateThenDemoteTheKind();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    expect(verdictFor(plan, SETTINGS)).toBe('wiring');
-    expect(plan.wiring).not.toBeNull();
+  it('retires a stack-overlay path this release no longer ships — never written, never deleted', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+
+    // A file the CURRENT install set does not contain at all — exactly what a
+    // pre-0.10 stack overlay looks like today: nothing to update it against,
+    // nothing to delete it as.
+    const stackRuleContent = '# the old node-ts rules, from a release this one is not\n';
+    await write(STACK_RULE, stackRuleContent);
+    await plantLegacyManifest({ ...manifest.files, [STACK_RULE]: sha256(stackRuleContent) });
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.kind).toBe('create');
+    expect(verdictFor(plan, STACK_RULE)).toBe('retired');
+    const action = plan.actions.find((a) => a.rel === STACK_RULE);
+    expect(action?.reason).toMatch(/no longer shipped/i);
+
+    await applyUpgrade(repo, plan);
+    // untouched — neither written (no template exists to write) nor deleted
+    expect(await read(STACK_RULE)).toBe(stackRuleContent);
+
+    const next = await readManifest(repo);
+    // the rig drops its claim: the path is gone from `files`
+    expect(next?.files[STACK_RULE]).toBeUndefined();
+    // and `stacks` is written empty — there are no overlays left to record
+    expect(next?.stacks).toEqual([]);
   });
 
-  it('leaves a hook still on disk wired after the upgrade', async () => {
-    await generateThenDemoteTheKind();
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    await applyUpgrade(project, plan);
+  it('never reports `retired` for a manifest-less (bootstrapped) rig — there is no `files` list to diff', async () => {
+    await installRig();
+    await write(STACK_RULE, '# a file with no manifest behind it\n');
+    await rm(abs(MANIFEST_REL));
 
-    // The verdict above is the mechanism; this is the harm. Read the file:
-    // the hook is on disk, so settings.json must still call it.
-    await expect(readIn(GUARD)).resolves.toBeTruthy();
-    expect(await readIn(SETTINGS)).toContain('guard-core-purity.mjs');
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.bootstrapped).toBe(true);
+    expect(plan.actions.some((a) => a.verdict === 'retired')).toBe(false);
+    // it is simply not part of this release's install set, so it is not
+    // planned at all — not retired, not a conflict, not anything
+    expect(plan.actions.some((a) => a.rel === STACK_RULE)).toBe(false);
+
+    await applyUpgrade(repo, plan);
+    await expect(read(STACK_RULE)).resolves.toBeTruthy(); // still exactly what it was
   });
 
-  it('replaces the wiring once every hook it would stop calling is gone', async () => {
-    // The other side of the guard, and the whole of what its filesystem probe
-    // buys: a hook the user deleted is not being silenced by this write, so
-    // there is nothing to hand over and the replacement is ordinary again.
-    // Without the probe this case would hand over a wiring block listing hooks
-    // that no longer exist.
-    //
-    // BOTH architecture hooks go: the narrower flavour drops the pair, and one
-    // surviving on disk is enough to keep the hand-over — which is the guard
-    // working, and is why this fixture deletes them together.
-    await generateThenDemoteTheKind();
-    await rm(path.join(project, ...GUARD.split('/')));
-    await rm(path.join(project, '.claude', 'hooks', 'guard-web-boundary.mjs'));
+  it('preserves `kind` from the old manifest rather than re-describing how the rig was installed', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await plantLegacyManifest(manifest.files);
 
-    const plan = await planUpgrade(project, { history: emptyHistory });
-    expect(verdictFor(plan, SETTINGS)).toBe('update');
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.kind).toBe('create');
+    await applyUpgrade(repo, plan);
+    expect((await readManifest(repo))?.kind).toBe('create');
+  });
 
-    await applyUpgrade(project, plan);
-    expect(await readIn(SETTINGS)).not.toContain('guard-core-purity.mjs');
+  it('leaves the project code alone — an application file is never in any install set', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await write('packages/core/src/note.ts', '// legacy application code\n');
+    await plantLegacyManifest(manifest.files);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.actions.some((a) => a.rel.startsWith('packages/'))).toBe(false);
+
+    await applyUpgrade(repo, plan);
+    expect(await read('packages/core/src/note.ts')).toBe('// legacy application code\n');
+  });
+
+  it('still replaces a still-shipped process file the release changed and the user did not touch', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await plantLegacyManifest(manifest.files);
+    await pretendInstalled(WORKFLOW, '# the 0.9.1 text\n');
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, WORKFLOW)).toBe('update');
+    await applyUpgrade(repo, plan);
+    expect(await read(WORKFLOW)).toContain('TDD');
   });
 });
 
@@ -620,25 +362,17 @@ describe('a manifest is evidence, not an instruction to write anywhere', () => {
     await expect(readFile(path.join(path.dirname(repo), 'pwned'), 'utf8')).rejects.toThrow();
   });
 
-  it('reads no template directory a stack name points at', async () => {
+  // RP-177 removed the lookup this test used to pin altogether: `stacks`
+  // never resolves to a directory any more (there is exactly one payload, and
+  // `initInstallSet` does not take a stack list), so a hostile or unknown
+  // entry has nothing left to steer. What's left worth proving is only that
+  // `planUpgrade` still reads such a manifest without crashing, and writes
+  // the field back empty. A path-traversal entry is covered separately, above
+  // — `isSafeSubstitutionValue` voids the whole manifest for one, which is a
+  // different (and already-tested) outcome than "an unknown but safely-shaped
+  // stack name".
+  it('reads an old manifest naming a stack this version does not ship, without crashing on it', async () => {
     await installRig();
-    await write('.claude/rules/architecture.md', '# create-shaped\n');
-    await plant({
-      version: '0.3.2',
-      kind: 'create',
-      project: { name: 'host', scope: 'host', region: '' },
-      stacks: ['../../../../../../etc'],
-      files: {},
-    });
-    // rejected outright as a manifest; and even named as a plain unknown
-    // stack it resolves to no layer, so nothing outside `templates/` is read
-    const plan = await planUpgrade(repo, { history: emptyHistory });
-    expect(plan.actions.some((a) => a.rel.includes('passwd'))).toBe(false);
-  });
-
-  it('drops a stack this version does not ship, instead of crashing on it', async () => {
-    await installRig();
-    await write('.claude/rules/architecture.md', '# create-shaped\n');
     await plant({
       version: '0.3.2',
       kind: 'create',
@@ -649,6 +383,7 @@ describe('a manifest is evidence, not an instruction to write anywhere', () => {
     const plan = await planUpgrade(repo, { history: emptyHistory });
     expect(plan.kind).toBe('create');
     expect(plan.actions.length).toBeGreaterThan(0);
+    expect(plan.manifest.stacks).toEqual([]);
   });
 });
 

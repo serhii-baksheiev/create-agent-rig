@@ -1,12 +1,10 @@
 import { execFile } from 'node:child_process';
-import { copyFile, mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { needsGit, skipUnless } from '../helpers/env.js';
-import { removeFixture } from '../helpers/remove-fixture.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -182,15 +180,12 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
   // looking nowhere. The only thing that makes that merge visible is the
   // declaring file itself sitting under a declared elevated path.
   //
-  // The sharp case is templates/agent-os/stack/aws-cdk/.claude/rules/aws-cdk.md:
-  // its block declares `infra/` for every generated AWS project.
-  it('declares both stack rulebooks, one of which declares elevated paths itself', async () => {
-    const declared = await loadDeclaredPaths();
-
-    expect(declared).toContain('templates/agent-os/stack/aws-cdk/.claude/rules/');
-    expect(declared).toContain('templates/agent-os/stack/node-ts/.claude/rules/');
-  });
-
+  // Before RP-177 the sharp case was
+  // templates/agent-os/stack/aws-cdk/.claude/rules/aws-cdk.md: its block
+  // declared `infra/` for every generated AWS project. That stack is retired
+  // along with the example; the general property the next test proves —
+  // every self-declaring file sits under a declared path — still holds and is
+  // what would catch the next one.
   it('declares every file that declares elevated paths of its own', async (ctx) => {
     skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const declared = await loadDeclaredPaths();
@@ -344,78 +339,12 @@ describe('the secrets block the skeletons ship is live in this repository too', 
     },
   );
 
-  // A neighbour that predates the block: adding patterns must not change what
-  // the existing entries mean.
-  it('leaves the pre-existing next-env.d.ts entry doing its job', async (ctx) => {
-    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
-    await expect(ignored('next-env.d.ts')).resolves.toBe(true);
-    await expect(matchedRule('next-env.d.ts')).resolves.toBe('.gitignore:next-env.d.ts');
-  });
-
   // `invariants.md`: "One mechanism, one implementation. If two files enforce
   // the same invariant, they will disagree — and the one nobody is looking at is
-  // the one that is wrong." A gitignore has no include directive, so the three
-  // copies are forced; this test is the only thing tying them together. Extract
-  // the patterns, never restate them — a restated list is a fourth copy.
-  const secretsPatterns = async (...parts: string[]): Promise<string[]> => {
-    const lines = (await readFile(path.join(repoRoot, ...parts), 'utf8')).split('\n');
-    const header = lines.findIndex((line) => /^#.*\bsecrets\b/i.test(line));
-    expect(header, `no secrets block in ${path.join(...parts)}`).toBeGreaterThanOrEqual(0);
-    const patterns: string[] = [];
-    for (const line of lines.slice(header + 1)) {
-      if (line.trim() === '') break; // the block ends at the first blank line
-      if (line.startsWith('#')) continue; // its prose is per-file, its patterns are not
-      patterns.push(line);
-    }
-    return patterns;
-  };
-
-  // `cdk deploy --outputs-file cdk-outputs.json` writes it on every deploy, and
-  // an artifact that is untracked-but-committable is one `git add -A` away from
-  // being in the history — this one names buckets, distributions and endpoints.
-  // The workflow runs the deploy from `infra/`, so the pattern has to reach a
-  // nested path, not just the root.
-  it.each(['cdk-outputs.json', 'infra/cdk-outputs.json'])(
-    'the aws-serverless skeleton never lets %s be committed',
-    async (file) => {
-      const skeleton = path.join(repoRoot, 'templates', 'skeleton', 'aws-serverless');
-      const dir = await mkdtemp(path.join(tmpdir(), 'rig-skeleton-ignore-'));
-      const env = withoutGitLocation();
-      await exec('git', ['init', '-q', dir], { env });
-      await copyFile(path.join(skeleton, 'gitignore'), path.join(dir, '.gitignore'));
-
-      const { stdout } = await exec(
-        'git',
-        // an empty global excludesfile: the skeleton's own ignore has to be the
-        // one doing the work, not whatever this machine happens to exclude
-        ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-v', '--', file],
-        { cwd: dir, env },
-      ).catch(() => ({ stdout: '' }));
-
-      await removeFixture(dir);
-      expect(stdout.split('\t')[0], `${file} is not ignored by the skeleton`).toMatch(
-        /^\.gitignore:\d+:/,
-      );
-    },
-  );
-
-  it('states the same secrets patterns in the root ignore and in both skeletons', async () => {
-    const root = await secretsPatterns('.gitignore');
-    // non-vacuity: three empty lists are also "identical"
-    expect(root.length, 'the root block must carry patterns, not just its comment').toBeGreaterThan(
-      0,
-    );
-    for (const target of ['node-service', 'aws-serverless']) {
-      await expect(
-        secretsPatterns('templates', 'skeleton', target, 'gitignore'),
-        `${target} has drifted from the root .gitignore`,
-      ).resolves.toEqual(root);
-    }
-  });
-
-  // AR-49(a). The same invariant one layer up, and the one the three-way test
-  // above cannot reach: the three ignore blocks agree with EACH OTHER, and all
-  // three disagree with `decision-router.mjs`. The router's `isSecretFile`
+  // the one that is wrong." A gitignore has no include directive, so
+  // AR-49(a) checks it against the one place that states the same set another
+  // way: the ignore block must agree with `decision-router.mjs`. The router's
+  // `isSecretFile`
   // (`:408`) is this repository's written-down answer to "which files ARE
   // credentials"; the ignore block is the mechanism that keeps such a file out
   // of the history. Two statements of one definition, and — `invariants.md`,

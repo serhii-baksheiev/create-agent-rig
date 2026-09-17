@@ -6,8 +6,12 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universalDir = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 
-// PLAN.md §4 split criterion: a rule is universal iff it can be applied without
-// knowing where the project is hosted. §8 item 4 makes this a mechanical check.
+// PLAN.md §4's split criterion, narrowed by RP-177: there is exactly one
+// payload now (the per-target skeletons and stack overlays this file used to
+// check for composition-neutrality across are retired), so what survives is
+// the one invariant that is still true of it — it names no cloud provider,
+// no infrastructure vendor, no cloud SDK. A rig that configures agent
+// harnesses has no business promising anything about AWS, GCP or Kubernetes.
 const PROVIDER_TERMS = [
   'aws',
   'amazon',
@@ -39,14 +43,9 @@ async function walk(dir: string): Promise<string[]> {
   return files.flat();
 }
 
-// The init override layer travels to the same arbitrary repos, so it is held
-// to the same neutrality bar as universal.
-describe.each([
-  ['agent-os/universal', universalDir],
-  ['agent-os/init', path.join(repoRoot, 'templates', 'agent-os', 'init')],
-])('%s is stack-neutral', (_name, dir) => {
+describe('agent-os/universal is stack-neutral', () => {
   it('mentions no provider, no infrastructure vendor, no cloud SDK', async () => {
-    const files = await walk(dir);
+    const files = await walk(universalDir);
     expect(files.length).toBeGreaterThan(0);
     const offences: string[] = [];
     for (const file of files) {
@@ -55,91 +54,10 @@ describe.each([
         // match whole-ish words to avoid false positives inside other words
         const re = new RegExp(`(^|[^a-z0-9])${term}([^a-z0-9]|$)`, 'i');
         if (re.test(content)) {
-          offences.push(`${path.relative(dir, file)}: "${term}"`);
+          offences.push(`${path.relative(universalDir, file)}: "${term}"`);
         }
       }
     }
     expect(offences).toEqual([]);
-  });
-});
-
-describe('agent-os/stack layers exist for composition', () => {
-  it('ships node-ts and aws-cdk stack rules', async () => {
-    for (const stack of ['node-ts', 'aws-cdk']) {
-      const rules = await readdir(
-        path.join(repoRoot, 'templates', 'agent-os', 'stack', stack, '.claude', 'rules'),
-      );
-      expect(rules.length).toBeGreaterThan(0);
-    }
-  });
-});
-
-// hooks-and-reach brief §3: the third axis. Process rules travel to existing
-// repos (init); architecture rules assume the generated shape and stay home.
-// The manifest must classify EVERY universal file exactly once — an
-// unclassified file is a silent drift, a doubly-classified one is a conflict.
-describe('the process/architecture manifest (universal/layers.json)', () => {
-  it('classifies every universal file exactly once', async () => {
-    const { listTree } = await import('../../packages/cli/src/lib/copy-tree.js');
-    const manifest = JSON.parse(
-      await readFile(path.join(universalDir, 'layers.json'), 'utf8'),
-    ) as Record<string, string[]>;
-    const classified = Object.values(manifest).flat();
-    const actual = (await listTree(universalDir)).filter((f) => f !== 'layers.json');
-
-    expect(classified.sort()).toEqual(actual.sort());
-    expect(new Set(classified).size).toBe(classified.length); // no double claims
-    // the split itself: process must not reference generated-shape structures
-    expect(manifest['process']).toContain('.claude/rules/workflow.md');
-    expect(manifest['process']).toContain('.claude/rules/autonomy.md');
-    expect(manifest['architecture']).toContain('.claude/rules/architecture.md');
-    expect(manifest['architecture']).toContain('.claude/hooks/guard-core-purity.mjs');
-  });
-});
-
-// Phase 9: layers must claim disjoint paths — an overlap would be silently
-// resolved by copy order, which is exactly the failure mode we refuse.
-describe('layer ownership per target', () => {
-  const layersOf = (target: string, stacks: string[]) => [
-    { name: `skeleton/${target}`, dir: path.join(repoRoot, 'templates', 'skeleton', target) },
-    { name: 'universal', dir: universalDir },
-    ...stacks.map((s) => ({
-      name: `stack/${s}`,
-      dir: path.join(repoRoot, 'templates', 'agent-os', 'stack', s),
-    })),
-  ];
-
-  const MATRIX = [
-    { target: 'aws-serverless', stacks: ['node-ts', 'aws-cdk'] },
-    { target: 'node-service', stacks: ['node-ts'] },
-  ];
-
-  it('no two layers claim the same generated path, in any target', async () => {
-    const { listTree } = await import('../../packages/cli/src/lib/copy-tree.js');
-    const { detectCollisions, ALLOWED_OVERWRITES } =
-      await import('../../packages/cli/src/lib/composition.js');
-    for (const { target, stacks } of MATRIX) {
-      const layers = [];
-      for (const layer of layersOf(target, stacks)) {
-        layers.push({ name: layer.name, files: await listTree(layer.dir) });
-      }
-      expect(detectCollisions(layers, ALLOWED_OVERWRITES), target).toEqual([]);
-    }
-  });
-
-  it('the expected owners hold their signature paths', async () => {
-    const { listTree } = await import('../../packages/cli/src/lib/copy-tree.js');
-    const skeleton = await listTree(path.join(repoRoot, 'templates', 'skeleton', 'node-service'));
-    const universal = await listTree(universalDir);
-    const nodeTs = await listTree(path.join(repoRoot, 'templates', 'agent-os', 'stack', 'node-ts'));
-
-    expect(skeleton).toContain('package.json');
-    expect(skeleton).toContain('README.md');
-    expect(universal).toContain('CLAUDE.md');
-    expect(universal).toContain('.claude/settings.json');
-    expect(nodeTs).toContain('.claude/rules/node-ts.md');
-    // the seam: the skeleton never ships agent-os files, and vice versa
-    expect(skeleton.some((f) => f.startsWith('.claude/'))).toBe(false);
-    expect(universal.some((f) => f.endsWith('package.json'))).toBe(false);
   });
 });

@@ -39,32 +39,6 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test:unit --testTimeout=15000
 
-  # PLAN.md §8 item 1 — mandatory: the template is a valid project and is
-  # exercised in place, so it cannot rot silently.
-  template-aws-serverless:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm --dir templates/skeleton/aws-serverless install --frozen-lockfile
-      - run: pnpm --dir templates/skeleton/aws-serverless run check
-
-  template-node-service:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm --dir templates/skeleton/node-service install --frozen-lockfile
-      - run: pnpm --dir templates/skeleton/node-service run check
-
   # The Windows smoke lane: the product's own `unit` project (packages/cli —
   # create, init, upgrade, setup, memory) on the hosted image, so a Windows
   # path or spawn regression in the CLI is caught on every PR. The `template`

@@ -307,6 +307,20 @@ describe('initProject — every skipped path gets a manifest classification (RP-
     expect(manifest?.files['CLAUDE.md']).toBeTruthy();
   });
 
+  it('records a kept file by its exact raw bytes, even when those bytes are not valid UTF-8', async () => {
+    const rel = '.claude/rules/workflow.md';
+    const raw = Buffer.from([0xc3, 0x28, 0x0a]);
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, ...rel.split('/')), raw);
+
+    await initProject(repo, {});
+
+    const manifest = await readManifest(repo);
+    expect(sha256(raw)).not.toBe(sha256(raw.toString('utf8')));
+    expect(manifest?.kept?.[rel]).toBe(sha256(raw));
+    expect(manifest?.files[rel]).toBeUndefined();
+  });
+
   it('re-running init refreshes the hash of a path it skips again, and keeps recording it in `kept`', async () => {
     await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
     await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM V1');

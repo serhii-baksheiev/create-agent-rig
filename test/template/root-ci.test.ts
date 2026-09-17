@@ -104,14 +104,11 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
     );
   });
 
-  it.each(['template-aws-serverless', 'template-node-service'])(
-    'caches pnpm dependencies in %s',
-    async (name) => {
-      expect(job(await workflow('ci.yml'), name)).toMatch(
-        /uses:\s*actions\/setup-node@v4[\s\S]*?with:\n(?: {10}.+\n)* {10}cache:\s*pnpm\s*$/m,
-      );
-    },
-  );
+  it('caches pnpm dependencies in the ci job', async () => {
+    expect(job(await workflow('ci.yml'), 'ci')).toMatch(
+      /uses:\s*actions\/setup-node@v4[\s\S]*?with:\n(?: {10}.+\n)* {10}cache:\s*pnpm\s*$/m,
+    );
+  });
 
   it('runs a Windows smoke lane — the unit project only — on the hosted image', async () => {
     // Hosted-first ruling (2026-09-13): the pull-request path checks the
@@ -259,21 +256,12 @@ describe('the expensive workflow exercises a cold Windows package-manager path',
     expect(runCommands(windows)).toContain('pnpm install --frozen-lockfile');
   });
 
-  it('runs the bounded full root suite before the cold node-service test', async () => {
+  it('runs the bounded full root suite after installing root dependencies', async () => {
     const commands = runCommands(await windowsE2e());
     const rootInstall = commands.indexOf('pnpm install --frozen-lockfile');
     const rootTest = commands.findIndex((command) =>
       /^pnpm test\b(?!:).*--maxWorkers(?:=|\s+)\d+\b/.test(command),
     );
-    const nodeServiceInstall = commands.indexOf(
-      'pnpm --dir templates/skeleton/node-service install --frozen-lockfile',
-    );
-    const noDist = commands.findIndex(
-      (command) =>
-        /Test-Path\s+templates\/skeleton\/node-service\/dist/i.test(command) &&
-        /throw\b/i.test(command),
-    );
-    const test = commands.indexOf('pnpm --dir templates/skeleton/node-service test');
 
     expect(
       rootInstall,
@@ -281,17 +269,6 @@ describe('the expensive workflow exercises a cold Windows package-manager path',
     ).toBeGreaterThanOrEqual(0);
     expect(rootTest, 'the Windows job does not run the bounded full root suite').toBeGreaterThan(
       rootInstall,
-    );
-    expect(
-      nodeServiceInstall,
-      'the Windows job does not install node-service dependencies',
-    ).toBeGreaterThan(rootTest);
-    expect(
-      noDist,
-      'the Windows job does not assert that node-service dist is absent',
-    ).toBeGreaterThan(nodeServiceInstall);
-    expect(test, 'the Windows job does not run the bare node-service test command').toBeGreaterThan(
-      noDist,
     );
   });
 

@@ -4,15 +4,11 @@ import { initInstallSet, projectNameFor } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
-import { agentOsInstallSet, agentOsLayerDirs } from '../lib/install-set.js';
-import type { InstalledFile } from '../lib/install-set.js';
-import { listTree } from '../lib/copy-tree.js';
 import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
 import { isSafeSubstitutionValue, resolveInside } from '../lib/safe-path.js';
-import { detokenizeContent, substituteFileName } from '../lib/substitute.js';
+import { detokenizeContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
-import { TARGETS } from '../lib/targets.js';
 import { packageVersion } from '../lib/version.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
@@ -30,7 +26,15 @@ export type UpgradeVerdict =
   /** The manifest says we installed it; the user removed it. Stays removed. */
   | 'deleted'
   /** Hook wiring that is not replaceable: the released file is handed over. */
-  | 'wiring';
+  | 'wiring'
+  /**
+   * The manifest says we installed it; this release's single payload no
+   * longer ships it at all (RP-177 retired the per-target stack overlays and
+   * the architecture-only group). Never written, never deleted — the rig
+   * drops its claim and the path becomes the project's own, whatever state it
+   * is in on disk.
+   */
+  | 'retired';
 
 export interface UpgradeAction {
   rel: string;
@@ -76,13 +80,6 @@ const SETTINGS = '.claude/settings.json';
 const CODEX_HOOKS = '.codex/hooks.json';
 const WIRING_PATHS = new Set([SETTINGS, CODEX_HOOKS]);
 
-/** The universal layer's architecture group — installed by `create`, never by `init`. */
-const ARCHITECTURE_ONLY = [
-  '.claude/rules/architecture.md',
-  '.claude/hooks/guard-core-purity.mjs',
-  '.claude/hooks/guard-web-boundary.mjs',
-];
-
 async function exists(p: string): Promise<boolean> {
   try {
     await access(p);
@@ -115,78 +112,28 @@ function onDisk(repoDir: string, rel: string): string {
  * because "I could not read your file" must never become "so I wrote mine over
  * it": every caller of this treats `null` as grounds to install.
  */
-async function readIfPresent(repoDir: string, rel: string): Promise<string | null> {
+async function readIfPresent(repoDir: string, rel: string): Promise<Buffer | null> {
   try {
-    return await readFile(onDisk(repoDir, rel), 'utf8');
+    return await readFile(onDisk(repoDir, rel));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
 }
 
-/** Every stack overlay any target composes — the candidates a rig can carry. */
-function knownStacks(): string[] {
-  return [...new Set(Object.values(TARGETS).flatMap((t) => t.stacks))];
-}
-
 /**
  * What a rig with no manifest looks like it is, from the files it has.
  *
- * Two signals, because one file is too thin a thread to hang a project's map
- * on: the architecture rules and hooks, which `create` installs and `init`
- * deliberately does not, **and** any stack-overlay file at all — `init`
- * composes no overlays, so one of those is proof on its own. The region comes
- * from the target whose stack set matches; it is the only value substitution
- * needs that the directory name cannot give.
- *
- * 🔴 Limit: a `create` rig that deleted every architecture file *and* every
- * stack file reads as an `init` rig. It is then offered the `init` flavour of
- * `CLAUDE.md` — a map of a different project shape. Nothing but a manifest
- * distinguishes those two rigs, which is why 0.4.0 writes one.
+ * Since RP-177 there is exactly one payload, so nothing on disk can prove a
+ * manifest-less rig is anything other than `init`-shaped: the architecture
+ * group and the per-target stack overlays that used to distinguish `create`
+ * from `init` are retired outright, not merely excluded from this flavour.
+ * `kind` and `stacks` therefore no longer carry any behavioural weight for a
+ * bootstrapped rig — they are cosmetic history for one written by an OLDER
+ * release, which is exactly what a manifest (not this heuristic) records.
  */
-async function detectInstall(
-  repoDir: string,
-): Promise<{ kind: 'create' | 'init'; stacks: string[]; region: string }> {
-  const ctx: SubstitutionContext = { projectName: '', projectScope: '', region: '' };
-  const stacks: string[] = [];
-  for (const stack of knownStacks()) {
-    const [layer] = agentOsLayerDirs([stack]).slice(1);
-    if (layer === undefined) continue;
-    const rels = await listTree(layer.dir, {
-      transformName: (name) => substituteFileName(name, ctx),
-    });
-    for (const rel of rels) {
-      if (await exists(onDisk(repoDir, rel))) {
-        stacks.push(stack);
-        break;
-      }
-    }
-  }
-  let architectural = stacks.length > 0;
-  for (const rel of ARCHITECTURE_ONLY) {
-    if (architectural) break;
-    architectural = await exists(onDisk(repoDir, rel));
-  }
-  if (!architectural) return { kind: 'init', stacks: [], region: '' };
-
-  const target = Object.values(TARGETS).find(
-    (t) => t.stacks.length === stacks.length && t.stacks.every((s) => stacks.includes(s)),
-  );
-  return { kind: 'create', stacks, region: target?.defaultRegion ?? '' };
-}
-
-async function installSetFor(
-  repoDir: string,
-  kind: 'create' | 'init',
-  project: RigProject,
-  stacks: readonly string[],
-): Promise<InstalledFile[]> {
-  if (kind === 'init') return initInstallSet(repoDir, project);
-  return agentOsInstallSet(stacks, {
-    projectName: project.name,
-    projectScope: project.scope,
-    region: project.region,
-  });
+function detectInstall(): { kind: 'create' | 'init'; stacks: string[]; region: string } {
+  return { kind: 'init', stacks: [], region: '' };
 }
 
 /**
@@ -199,12 +146,19 @@ async function installSetFor(
 function isReleasedVersion(
   history: HashHistory,
   rel: string,
-  content: string,
+  content: Buffer,
   ctx: SubstitutionContext,
 ): boolean {
   const known = history.files[rel];
   if (known === undefined || known.hashes.length === 0) return false;
-  const candidates = new Set([sha256(content), sha256(detokenizeContent(content, ctx))]);
+  const candidates = new Set([sha256(content)]);
+  const decoded = content.toString('utf8');
+  // Detokenization is a text operation. Invalid UTF-8 must not be rewritten
+  // through replacement characters and then mistaken for released bytes.
+  // The raw-byte candidate above remains authoritative either way.
+  if (Buffer.from(decoded, 'utf8').equals(content)) {
+    candidates.add(sha256(detokenizeContent(decoded, ctx)));
+  }
   return known.hashes.some((hash) => candidates.has(hash));
 }
 
@@ -248,13 +202,11 @@ export async function planUpgrade(
   options: UpgradeOptions = {},
 ): Promise<UpgradePlan> {
   const manifest = await readManifest(repoDir);
-  // Detection is a whole-tree probe, and it answers a question the manifest
-  // has already answered when there is one.
-  const detected =
-    manifest === null
-      ? await detectInstall(repoDir)
-      : { kind: manifest.kind, stacks: manifest.stacks, region: manifest.project.region };
-  const kind = manifest?.kind ?? detected.kind;
+  // With no manifest there is nothing left on disk that can tell `create` and
+  // `init` apart (see `detectInstall`), so this answers a question the
+  // manifest has already answered whenever there is one.
+  const detected = manifest === null ? detectInstall() : { region: manifest.project.region };
+  const kind = manifest?.kind ?? 'init';
   // With no manifest to read, guess the name the rig's own files were written
   // with — and each command wrote them differently, so the guess branches the
   // same way:
@@ -292,13 +244,13 @@ export async function planUpgrade(
     scope: bootstrapName,
     region: detected.region,
   };
-  // Only overlays this version actually ships. An unknown name is not input
-  // being dropped — there is no layer behind it to install from — and reading
-  // a directory a manifest names would be reading a directory a manifest names.
-  const shipped = new Set(knownStacks());
-  const stacks = (manifest?.stacks ?? detected.stacks).filter((stack) => shipped.has(stack));
   const history = options.history ?? (await loadHashHistory());
-  const files = await installSetFor(repoDir, kind, project, stacks);
+  // The single payload, always — RP-177 retired the per-target stack overlays
+  // that used to make this depend on `kind`/`stacks`. A path an OLDER
+  // manifest still names but this install set no longer contains is reported
+  // below as `retired`, never resolved through a stack directory that may not
+  // even exist any more.
+  const files = await initInstallSet(repoDir, project);
 
   const ctx: SubstitutionContext = {
     projectName: project.name,
@@ -312,11 +264,11 @@ export async function planUpgrade(
   const wiringByPath = new Map<string, string>();
 
   for (const file of files) {
-    const current = await readIfPresent(repoDir, file.rel);
+    const currentBytes = await readIfPresent(repoDir, file.rel);
     const recorded = manifest?.files[file.rel];
     contents.set(file.rel, file.content);
 
-    if (current === null) {
+    if (currentBytes === null) {
       // Evidence, not a command. The manifest is the direct evidence; without
       // one, a path that shipped in *every* release the table covers was there
       // to be removed, so its absence is a decision. A path added later is
@@ -341,6 +293,10 @@ export async function planUpgrade(
       continue;
     }
 
+    const current = currentBytes.toString('utf8');
+    const currentHash = sha256(currentBytes);
+    const releasedBytes = Buffer.from(file.content, 'utf8');
+
     // The two limits that keep wiring files' new replaceability from
     // disarming the rig, both measured rather than reasoned about.
     //
@@ -360,11 +316,11 @@ export async function planUpgrade(
     const wouldUnwireAnInstalledHook =
       isWiring && (await unwiresAnInstalledHook(repoDir, current, file.content));
     const vouched = isWiring
-      ? recorded !== undefined && sha256(current) === recorded
-      : (recorded !== undefined && sha256(current) === recorded) ||
-        isReleasedVersion(history, file.rel, current, ctx);
+      ? recorded !== undefined && currentHash === recorded
+      : (recorded !== undefined && currentHash === recorded) ||
+        isReleasedVersion(history, file.rel, currentBytes, ctx);
 
-    if (current === file.content) {
+    if (currentBytes.equals(releasedBytes)) {
       actions.push({ rel: file.rel, verdict: 'unchanged' });
       nextFiles[file.rel] = sha256(file.content);
     } else if (vouched && !wouldUnwireAnInstalledHook) {
@@ -411,7 +367,7 @@ export async function planUpgrade(
         verdict: 'conflict',
         reason:
           kept !== undefined
-            ? keptReason(sha256(current) === kept ? 'unchanged' : 'edited')
+            ? keptReason(currentHash === kept ? 'unchanged' : 'edited')
             : recorded === undefined
               ? 'not a version this rig ever released — treated as yours'
               : 'edited since it was installed',
@@ -419,6 +375,30 @@ export async function planUpgrade(
       });
       // deliberately NOT recorded in `files`: the rig does not own these bytes
     }
+  }
+
+  // A path an OLDER manifest still names but this release's single payload no
+  // longer contains at all (RP-177: the per-target stack overlays and the
+  // architecture-only group are retired outright, not merely excluded from
+  // one flavour). It is never written and never deleted — there is no
+  // template behind it to write, and deleting a file this run does not even
+  // read would be exactly the "resolve a stack name into a directory" step
+  // this release removes. It simply drops out of `nextFiles`: the rig no
+  // longer vouches for it, whatever state it is in on disk.
+  //
+  // Bootstrapped rigs (`manifest === null`) never reach this loop at all —
+  // there is no `manifest.files` to diff the current install set against, so
+  // "no longer shipped" has no `files` list to be true of. A claim with
+  // nothing behind it is not a smaller retired list; it is not a claim.
+  const currentRels = new Set(files.map((f) => f.rel));
+  for (const rel of Object.keys(manifest?.files ?? {})) {
+    if (currentRels.has(rel)) continue;
+    actions.push({
+      rel,
+      verdict: 'retired',
+      reason: 'no longer shipped by this release — the rig no longer manages it; it is now yours',
+    });
+    // deliberately NOT recorded in `nextFiles`: the rig drops its claim
   }
 
   // `kept` travels forward untouched, minus every path the plan now vouches
@@ -458,7 +438,10 @@ export async function planUpgrade(
       version: await packageVersion(),
       kind,
       project,
-      stacks: [...stacks],
+      // Always empty: the single payload has no overlays to record any more.
+      // An older manifest's `stacks` is read (never crashes on an unknown
+      // entry — RP-177) but never carried forward.
+      stacks: [],
       files: nextFiles,
       ...(Object.keys(nextKept).length > 0 ? { kept: nextKept } : {}),
     },

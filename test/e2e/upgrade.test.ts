@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 
 import { installEnv, runPackageManager } from './run.js';
@@ -12,6 +13,7 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 const exec = promisify(execFile);
 const sha256 = (content: string): string =>
   createHash('sha256').update(content, 'utf8').digest('hex');
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // U-0: the upgrade path, walked the way a user walks it — the published
 // tarball, a rig installed from it, and then a *release that changed files*.
@@ -189,5 +191,144 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
     await expect(readFile(path.join(empty, '.claude', 'rules', 'workflow.md'))).rejects.toThrow();
     expect(await readFile(path.join(empty, 'CLAUDE.md'), 'utf8')).toBe('# some other project\n');
     await removeFixture(empty);
+  });
+});
+
+// RP-177 acceptance: "upgrade of a pre-0.10 generated repository preserves
+// application and retired-layer files" — walked against a REAL pre-0.10 rig
+// rather than a hand-typed manifest, by rebuilding what release 0.9.1's
+// `create --target node-service` would have written from that release's own
+// templates (`git show`, not a fixture file this repo would otherwise have
+// to keep in sync by hand). CI checks this repo out with `fetch-depth: 0`
+// specifically so this history is reachable.
+describe('upgrade of a pre-0.10 rig, built from the last release that shipped one (RP-177)', () => {
+  // The commit that shipped release 0.9.1 — the last line before RP-177
+  // deleted the skeletons and the stack overlays it composed.
+  const LEGACY_SHA = 'f5a771b';
+  const cliBin = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+
+  let repo: string;
+  let stackRule: string;
+  let workflow: string;
+  let appPackageJson: string;
+  let appNote: string;
+
+  const runCli = async (
+    args: string[],
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    try {
+      const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], { cwd: repo });
+      return { code: 0, stdout, stderr };
+    } catch (error) {
+      const e = error as { code?: number; stdout?: string; stderr?: string };
+      return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
+  };
+
+  const gitShow = async (rel: string): Promise<string> => {
+    const { stdout } = await exec('git', ['show', `${LEGACY_SHA}:${rel}`], {
+      cwd: repoRoot,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout;
+  };
+
+  const plant = async (rel: string, content: string): Promise<void> => {
+    const dest = path.join(repo, ...rel.split('/'));
+    await mkdir(path.dirname(dest), { recursive: true });
+    await writeFile(dest, content);
+  };
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(tmpdir(), 'caf-pre010-'));
+
+    appPackageJson = (await gitShow('templates/skeleton/node-service/package.json')).replaceAll(
+      '@app/',
+      '@legacy-app/',
+    );
+    appNote = await gitShow('templates/skeleton/node-service/packages/core/src/note.ts');
+    // The retired layer: a stack overlay 0.9.1 composed and RP-177 deleted —
+    // never shipped again by any later release.
+    stackRule = await gitShow('templates/agent-os/stack/node-ts/.claude/rules/node-ts.md');
+    // A still-shipped process file, unchanged between 0.9.1 and today —
+    // proof this is not merely "the diff was empty everywhere".
+    workflow = await gitShow('templates/agent-os/universal/.claude/rules/workflow.md');
+
+    await plant('package.json', appPackageJson);
+    await plant('packages/core/src/note.ts', appNote);
+    await plant('.claude/rules/node-ts.md', stackRule);
+    await plant('.claude/rules/workflow.md', workflow);
+
+    // Exactly the manifest 0.9.1's `create --target node-service` wrote: kind
+    // 'create', the node-ts stack, and a hash per agent-os file it installed
+    // (never the skeleton — `recordInstall`'s docstring is explicit that the
+    // skeleton is never recorded).
+    await plant(
+      '.claude/.rig-manifest.json',
+      `${JSON.stringify(
+        {
+          version: '0.9.1',
+          kind: 'create',
+          project: { name: 'legacy-app', scope: 'legacy-app', region: '' },
+          stacks: ['node-ts'],
+          files: {
+            '.claude/rules/node-ts.md': sha256(stackRule),
+            '.claude/rules/workflow.md': sha256(workflow),
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  }, 60_000);
+
+  afterAll(async () => {
+    await removeFixture(repo);
+  });
+
+  it('retires the deleted stack overlay, and preserves the application and the process layer', async () => {
+    const dry = await runCli(['upgrade', '--dry-run']);
+    expect(dry.code, dry.stderr).toBe(0);
+    // reported, with its own mark — never as `deleted` (nothing was removed)
+    // and never as `conflict` (nobody edited it)
+    const retiredLine = dry.stdout
+      .split('\n')
+      .find((line) => line.includes('.claude/rules/node-ts.md'));
+    expect(retiredLine, dry.stdout).toMatch(/^\s*x /);
+    expect(retiredLine).toMatch(/no longer shipped/i);
+
+    const run = await runCli(['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+
+    // never written, never deleted — byte-identical to what 0.9.1 installed
+    expect(await readFile(path.join(repo, '.claude', 'rules', 'node-ts.md'), 'utf8')).toBe(
+      stackRule,
+    );
+    // the application code the skeleton generated — never in any install set,
+    // in 0.9.1 or today — is untouched
+    expect(await readFile(path.join(repo, 'package.json'), 'utf8')).toBe(appPackageJson);
+    expect(await readFile(path.join(repo, 'packages', 'core', 'src', 'note.ts'), 'utf8')).toBe(
+      appNote,
+    );
+    // the still-shipped process file was brought forward to what this release
+    // ships — here, unchanged since 0.9.1, so recognisably still current
+    const current = await readFile(
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'rules', 'workflow.md'),
+      'utf8',
+    );
+    expect(await readFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'utf8')).toBe(
+      current,
+    );
+
+    const manifest = JSON.parse(
+      await readFile(path.join(repo, '.claude', '.rig-manifest.json'), 'utf8'),
+    ) as { kind: string; stacks: string[]; files: Record<string, string> };
+    // `kind` is preserved rather than re-described; `stacks` is written empty —
+    // the single payload has no overlays left to record
+    expect(manifest.kind).toBe('create');
+    expect(manifest.stacks).toEqual([]);
+    // the rig no longer vouches for the retired path
+    expect(manifest.files['.claude/rules/node-ts.md']).toBeUndefined();
+    expect(manifest.files['.claude/rules/workflow.md']).toBeTruthy();
   });
 });

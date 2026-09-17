@@ -6,12 +6,6 @@ cdk.out/
 *.tgz
 .DS_Store
 var/
-# Next build artifacts of in-place template runs. The templates' own gitignore
-# files are stored un-dotted (npm strips the dotted form), so they do NOT act
-# as git ignores here — the root file is the only live ignore for the subtree.
-.next/
-next-env.d.ts
-templates/skeleton/*/apps/web/out/
 .claude/worktrees/
 # per-checkout queue state: the tier the last close recorded. The queue CONFIG
 # is composed and tracked; this is runtime state and must never be committed.
@@ -26,15 +20,8 @@ templates/skeleton/*/apps/web/out/
 # evidence directory, this one is per-run and stays out of the repository.
 .claude/runs/
 
-# secrets — never commit these. The generated projects already had this block
-# (templates/skeleton/*/gitignore); this repository did not, and it runs the
-# loop against a Jira adapter that reads JIRA_API_TOKEN from the environment.
-#
-# 🔴 This block exists in THREE files, which is the shape `invariants.md` warns
-# about — gitignore has no import, so the duplication is forced rather than
-# chosen, and the copy nobody looks at is the one that will be wrong. What ties
-# them together is a test: `dogfood.test.ts` extracts the patterns from all
-# three and fails when they diverge, comparing them in ORDER.
+# secrets — never commit these. This repository runs the loop against a Jira
+# adapter that reads JIRA_API_TOKEN from the environment.
 #
 # Order is load-bearing in TWO places, and neither is obvious from reading:
 #   - `!.env.example` must stay BELOW `.env.*`, or the negation stops
@@ -43,11 +30,6 @@ templates/skeleton/*/apps/web/out/
 #     patterns match `.env`, and `check-ignore -v` reports the LAST one — below,
 #     `.env` starts reporting `*.env` as its rule. A test pins that, but it
 #     fails as "wrong rule name" in a file the editor was not editing.
-#
-# Per the note at the top of this file, these patterns reach
-# `templates/skeleton/**` too — a project that ever needs to track a file named
-# `.npmrc` (registry, `node-linker`, `engine-strict`) or a fixture named `*.key`
-# would find it untrackable with no error.
 *.env
 .env
 .env.*

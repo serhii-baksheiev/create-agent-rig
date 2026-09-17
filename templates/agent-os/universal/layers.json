@@ -79,17 +79,5 @@
     "docs/decisions/spacing-rations-mechanisms.md",
     "docs/decisions/stop-conditions-in-a-file.md",
     "docs/decisions/two-empty-endings.md"
-  ],
-  "architecture": [
-    ".claude/rules/architecture.md",
-    ".claude/hooks/guard-core-purity.mjs",
-    ".claude/hooks/guard-web-boundary.mjs"
-  ],
-  "meta": [
-    ".claude/settings.json",
-    ".codex/config.toml",
-    ".codex/hooks.json",
-    "CLAUDE.md",
-    "AGENTS.md"
   ]
 }

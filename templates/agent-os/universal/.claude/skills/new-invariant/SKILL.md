@@ -94,9 +94,9 @@ is a booby trap: someone will hit it, not understand it, and route around it.
 - [ ] The rule is written down, with the hook named next to it
 - [ ] The hook guards **one** invariant, and its scope is as narrow as the rule
 
-## A candidate that is already sitting there
+## Choosing a candidate
 
-The stack rules say service code logs through the shared structured logger, never
-`console.log` — and nothing enforces it. That is the invariant the shipped example
-encodes, so if the rule matters in your project, promoting the example into a real
-hook is a copy, a rename and a wiring line.
+Start from a rule that already matters in this project and has been violated or
+missed in review. Do not invent a sample architecture rule just to exercise this
+skill: the hook must protect a real local invariant, and its test must demonstrate
+the exact violation it blocks.

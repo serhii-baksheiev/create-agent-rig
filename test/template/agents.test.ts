@@ -7,54 +7,6 @@ import { readGateSpec, verdictExamplesIn, verdictWordsFor } from './verdict-spec
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-// agent-os v2 brief §2b Tier A: the infra rules gate deploys on a CDK diff
-// review — that agent must exist, in the stack layer, mechanically read-only.
-describe('cdk-diff-reviewer agent (stack/aws-cdk)', () => {
-  const agentPath = path.join(
-    repoRoot,
-    'templates',
-    'agent-os',
-    'stack',
-    'aws-cdk',
-    '.claude',
-    'agents',
-    'cdk-diff-reviewer.md',
-  );
-
-  it('exists with constrained frontmatter (no write tools)', async () => {
-    const content = await readFile(agentPath, 'utf8');
-    expect(content).toMatch(/^---\nname: cdk-diff-reviewer\n/);
-    const frontmatter = /^---\n([\s\S]*?)\n---/.exec(content)![1]!;
-    const tools = /^tools:(.*)$/m.exec(frontmatter)?.[1] ?? '';
-    expect(tools.trim().length).toBeGreaterThan(0);
-    expect(tools).not.toMatch(/Write|Edit/);
-  });
-
-  it('reviews by named rule: blockers first, IAM and data-loss in scope', async () => {
-    const content = await readFile(agentPath, 'utf8');
-    expect(content).toMatch(/BLOCKER/i);
-    expect(content).toMatch(/IAM/);
-    expect(content).toMatch(/RemovalPolicy|removal policy/i);
-  });
-
-  it('the aws-cdk rules actually reference the agent (rule ⇄ implementation)', async () => {
-    const rules = await readFile(
-      path.join(
-        repoRoot,
-        'templates',
-        'agent-os',
-        'stack',
-        'aws-cdk',
-        '.claude',
-        'rules',
-        'aws-cdk.md',
-      ),
-      'utf8',
-    );
-    expect(rules).toContain('cdk-diff-reviewer');
-  });
-});
-
 // The change under review claims to implement a queue item. Nothing in the
 // checklist made "it implements something else" a finding — so a change that
 // silently re-aimed its own task passed review on the strength of being
@@ -238,10 +190,11 @@ describe('prose-reviewer agent (universal) — the rulebook is code here', () =>
 // pattern-matches by eye. Each of these agents ends its report with exactly one
 // fenced ```json block of the shape `lib/verdict.mjs` defines, so `pr-ship` can
 // check "one verdict per run" and "a stop names a blocker" instead of reading
-// for them. The three gate SKILLS make the same promise — their half of this is
-// in `skills.test.ts`.
+// for them. The gate SKILLS make the same promise — their half of this is
+// in `skills.test.ts`. RP-177 retired the fourth reviewer this used to cover
+// (`cdk-diff-reviewer`, stack-scoped) along with the aws-cdk stack.
 describe('every reviewing agent ends with one machine-readable verdict', () => {
-  const REVIEWERS = ['code-reviewer', 'prose-reviewer', 'security-scanner', 'cdk-diff-reviewer'];
+  const REVIEWERS = ['code-reviewer', 'prose-reviewer', 'security-scanner'];
 
   it.each(REVIEWERS)('%s asks for exactly one fenced json block', async (gate) => {
     const content = await readGateSpec(gate);

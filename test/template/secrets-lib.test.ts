@@ -984,9 +984,10 @@ describe('the candidate walk is bounded, and the bound is a stated blind spot', 
 
 describe('a vendor documentation example is not a leak', () => {
   // 🔴 The cloud key pattern fired on the issuer's own published example key,
-  // which this repository's aws-cdk target makes likely to appear in a README or
-  // a decision record. Refusing that at commit time, with --no-verify
-  // hook-blocked, leaves an author nothing but to route around the guard.
+  // which shows up in vendor documentation and, before RP-177 retired it, in
+  // this repository's own aws-cdk target's README and decision records.
+  // Refusing that at commit time, with --no-verify hook-blocked, leaves an
+  // author nothing but to route around the guard.
   it('leaves the published example access key alone', async () => {
     expect(await scan(`AWS_ACCESS_KEY_ID=${['AKIAIOSFODNN', '7EXAMPLE'].join('')}`)).toEqual([]);
   });

@@ -143,8 +143,10 @@ describe('the install manifest — the evidence upgrade reads', () => {
   it('still accepts every value `create` and `init` actually write', () => {
     const legitimate = (patch: Partial<RigManifest>) =>
       parseManifest(JSON.stringify({ ...sample(), ...patch }));
-    // `create` validates the name against /^[a-z0-9][a-z0-9._-]*$/ and reuses
-    // it as the npm scope; `init` slugs a directory name down to [a-z0-9._-].
+    // `create` validates the name against /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/
+    // and reuses it as `scope` (RP-177: no npm scope to validate any more, but
+    // `scope` remains a manifest field an OLD, pre-0.10 manifest may carry a
+    // different value for); `init` slugs a directory name down to [a-z0-9._-].
     for (const name of ['my-app', 'app2', 'a.b_c-d', 'create-agent-rig']) {
       expect(legitimate({ project: { name, scope: name, region: '' } })).not.toBeNull();
     }

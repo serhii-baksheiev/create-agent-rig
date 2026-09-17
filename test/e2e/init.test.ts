@@ -149,14 +149,14 @@ describe('create-agent-rig init (into an existing repo)', () => {
 });
 
 // Running `init` inside a rig `create` produced is legitimate — someone
-// refreshing the process layer by hand does exactly that — but `init` is not
-// the command that maintains that rig: it installs the process layer only and
-// keeps every file it did not write, so the stack overlays and the
-// architecture rules are untouched by design. A run that reports nothing but
-// "Installed N files" reads as a full refresh, and the operator walks away
-// believing their rig is current when only part of it is. `upgrade` is the
-// command that brings the whole install set forward.
-describe('create-agent-rig init (inside a rig that came from `create`)', () => {
+// refreshing the process layer by hand does exactly that. Since RP-177,
+// `create` IS `init` run against a fresh directory, so a rig it produces
+// today has `kind: 'init'` from the start and nothing distinguishes it from
+// one `init` installed directly. The advisory this block covers is about a
+// LEGACY rig — one a pre-0.10 `create` left with `kind: 'create'` in its
+// manifest — which still exists in the wild and still deserves the "only
+// fills gaps, use `upgrade`" warning `init` gives it.
+describe('create-agent-rig init (inside a legacy rig `create` produced pre-0.10)', () => {
   const runCliIn = async (
     cwd: string,
     args: string[],
@@ -174,18 +174,32 @@ describe('create-agent-rig init (inside a rig that came from `create`)', () => {
   const advisoryLines = (stdout: string): string[] =>
     stdout.split('\n').filter((line) => /created by create-agent-rig/i.test(line));
 
-  /** A generated project, as `create` leaves it. */
-  const generate = async (): Promise<string> => {
-    const result = await runCliIn(repo, ['my-app', '--target', 'node-service', '--no-git']);
-    expect(result.code, result.stderr).toBe(0);
-    return path.join(repo, 'my-app');
+  /**
+   * A repo shaped like a pre-0.10 `create` rig: a manifest recording
+   * `kind: 'create'` and the stack overlays of that release, but no CLAUDE.md
+   * — the way in `init`'s own refusal requires, since `--force` no longer is.
+   */
+  const plantLegacyCreateRig = async (): Promise<void> => {
+    await mkdir(path.join(repo, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(repo, '.claude', '.rig-manifest.json'),
+      JSON.stringify({
+        version: '0.9.1',
+        kind: 'create',
+        project: { name: 'my-app', scope: 'my-app', region: 'eu-central-1' },
+        stacks: ['node-ts'],
+        files: {},
+      }),
+    );
   };
 
   // `--force` used to be the way into a created rig. It is refused now, and
   // this is the only level that can see both halves of that: the message a
   // human reads, and the exit code a script branches on.
   it('refuses `--force` with the command that does refresh a rig, and exits non-zero', async () => {
-    const project = await generate();
+    const project = path.join(repo, 'my-app');
+    const generated = await runCliIn(repo, ['my-app', '--no-git']);
+    expect(generated.code, generated.stderr).toBe(0);
     const claudeMd = await readFile(path.join(project, 'CLAUDE.md'), 'utf8');
 
     const forced = await runCliIn(project, ['init', '--force']);
@@ -198,17 +212,15 @@ describe('create-agent-rig init (inside a rig that came from `create`)', () => {
     expect(await readFile(path.join(project, 'CLAUDE.md'), 'utf8')).toBe(claudeMd);
   });
 
-  it('points the operator at `upgrade` when it re-installs over a created rig', async () => {
-    const project = await generate();
-    // The way in is a deleted CLAUDE.md: that is what lifts `init`'s refusal now
-    // that `--force` is refused outright.
-    await rm(path.join(project, 'CLAUDE.md'));
-    const forced = await runCliIn(project, ['init']);
+  it('points the operator at `upgrade` when it re-installs over a legacy create rig', async () => {
+    await plantLegacyCreateRig();
+    const forced = await runCliIn(repo, ['init']);
     expect(forced.code, forced.stderr).toBe(0);
 
-    // the fixture really is a create rig that init has just run inside
+    // recordInstall preserves `kind` rather than re-describing how the rig
+    // was installed — still `create`, even after `init` ran inside it
     const manifest = JSON.parse(
-      await readFile(path.join(project, '.claude', '.rig-manifest.json'), 'utf8'),
+      await readFile(path.join(repo, '.claude', '.rig-manifest.json'), 'utf8'),
     ) as { kind: string };
     expect(manifest.kind).toBe('create');
     expect(forced.stdout).toMatch(/Installed \d+ files/);

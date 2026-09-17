@@ -1,15 +1,12 @@
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 type GeneratedFilesModule = {
   filesContaining(root: string, needle: string): Promise<string[]>;
 };
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const filesContaining = async (root: string, needle: string): Promise<string[]> => {
   const generatedFiles = (await import(
@@ -81,16 +78,5 @@ describe('generated-file assertions', () => {
         },
       );
     });
-  });
-
-  it('keeps generated-project checks off Unix test and grep helpers', async () => {
-    for (const file of [
-      'test/e2e/generated-project.test.ts',
-      'test/e2e/generated-node-service.test.ts',
-    ]) {
-      const source = await readFile(path.join(repoRoot, file), 'utf8');
-
-      expect(source).not.toMatch(/\bexec\(\s*['"](?:test|grep)['"]/);
-    }
   });
 });

@@ -42,136 +42,10 @@ function runHookFull(
 
 const runHook = runHookFull;
 
-const write = (filePath: string, content: string) => ({
-  hook_event_name: 'PreToolUse',
-  tool_name: 'Write',
-  tool_input: { file_path: filePath, content },
-});
-
-const edit = (filePath: string, newString: string) => ({
-  hook_event_name: 'PreToolUse',
-  tool_name: 'Edit',
-  tool_input: { file_path: filePath, old_string: 'x', new_string: newString },
-});
-
 const bash = (command: string) => ({
   hook_event_name: 'PreToolUse',
   tool_name: 'Bash',
   tool_input: { command },
-});
-
-describe('guard-core-purity hook (the genuinely blocking gate)', () => {
-  const core = 'packages/core/src/note.ts';
-
-  it('blocks I/O imports in core', async () => {
-    const result = await runHook(
-      'guard-core-purity.mjs',
-      write(core, "import { readFile } from 'node:fs/promises';"),
-    );
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/core/i);
-  });
-
-  it('blocks non-allowlisted package imports in core', async () => {
-    const result = await runHook(
-      'guard-core-purity.mjs',
-      write(core, "import { DynamoDBClient } from '@aws-sdk/client-dynamodb';"),
-    );
-    expect(result.code).toBe(2);
-  });
-
-  it('blocks environment access in core', async () => {
-    const result = await runHook(
-      'guard-core-purity.mjs',
-      write(core, 'const stage = process.env.STAGE;'),
-    );
-    expect(result.code).toBe(2);
-  });
-
-  it('blocks clock and randomness in core', async () => {
-    for (const line of ['const t = Date.now();', 'const d = new Date();', 'Math.random();']) {
-      const result = await runHook('guard-core-purity.mjs', write(core, line));
-      expect(result.code, line).toBe(2);
-    }
-  });
-
-  it('blocks violations introduced via Edit as well', async () => {
-    const result = await runHook('guard-core-purity.mjs', edit(core, "const fs = require('fs');"));
-    expect(result.code).toBe(2);
-  });
-
-  it('allows pure core code (relative imports, allowlisted schema lib, type-only imports)', async () => {
-    const content = [
-      "import { z } from 'zod';",
-      "import { slugify } from './slug.js';",
-      "import type { Logger } from '@app/shared';",
-      'export const NoteSchema = z.object({ title: z.string() });',
-    ].join('\n');
-    const result = await runHook('guard-core-purity.mjs', write(core, content));
-    expect(result.code).toBe(0);
-  });
-
-  it('does not police files outside core', async () => {
-    const result = await runHook(
-      'guard-core-purity.mjs',
-      write('packages/db/src/client.ts', "import { readFile } from 'node:fs';"),
-    );
-    expect(result.code).toBe(0);
-  });
-});
-
-describe('guard-web-boundary hook (web imports core/shared only)', () => {
-  const web = 'apps/web/src/app/page.tsx';
-
-  it('blocks db imports from the web app — under any scope', async () => {
-    for (const spec of ['@app/db', '@my-cool-app/db']) {
-      const result = await runHook(
-        'guard-web-boundary.mjs',
-        write(web, `import { NoteModel } from '${spec}';`),
-      );
-      expect(result.code, spec).toBe(2);
-      expect(result.stderr).toMatch(/web/i);
-    }
-  });
-
-  it('blocks service imports from the web app', async () => {
-    for (const spec of ['@app/api', '@app/worker']) {
-      const result = await runHook(
-        'guard-web-boundary.mjs',
-        write(web, `import { something } from '${spec}';`),
-      );
-      expect(result.code, spec).toBe(2);
-    }
-  });
-
-  it('blocks relative reaches into db and services', async () => {
-    for (const spec of ['../../../packages/db/src/index.js', '../../../services/api/src/main.js']) {
-      const result = await runHook(
-        'guard-web-boundary.mjs',
-        edit(web, `import { x } from '${spec}';`),
-      );
-      expect(result.code, spec).toBe(2);
-    }
-  });
-
-  it('allows core, shared, react and next imports', async () => {
-    const content = [
-      "import { NewNoteSchema } from '@app/core';",
-      "import type { Logger } from '@app/shared';",
-      "import { useState } from 'react';",
-      "import Link from 'next/link';",
-      "import { validateNewNote } from '../lib/validate.js';",
-    ].join('\n');
-    expect((await runHook('guard-web-boundary.mjs', write(web, content))).code).toBe(0);
-  });
-
-  it('does not police files outside apps/web', async () => {
-    const result = await runHook(
-      'guard-web-boundary.mjs',
-      write('services/api/src/main.ts', "import { NoteModel } from '@app/db';"),
-    );
-    expect(result.code).toBe(0);
-  });
 });
 
 describe('block-no-verify hook', () => {
@@ -1868,8 +1742,7 @@ describe('hook wiring (settings.json)', () => {
       hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     };
     const commands = settings.hooks.PreToolUse.flatMap((h) => h.hooks.map((x) => x.command));
-    expect(commands.some((c) => c.includes('guard-core-purity.mjs'))).toBe(true);
-    expect(commands.some((c) => c.includes('guard-web-boundary.mjs'))).toBe(true);
+    expect(commands.some((c) => c.includes('guard-secret-file.mjs'))).toBe(true);
     expect(commands.some((c) => c.includes('block-no-verify.mjs'))).toBe(true);
     expect(commands.some((c) => c.includes('guard-bash.mjs'))).toBe(true);
   });

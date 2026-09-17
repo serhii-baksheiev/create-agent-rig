@@ -4065,8 +4065,8 @@ describe('composition', () => {
 // another checkout. Committing it would put a merge conflict on the critical
 // path of every task and let a stale tier arrive by `git pull`.
 //
-// `.claude/worktrees/` is the precedent in both places — the root `.gitignore`
-// here, and each skeleton's un-dotted `gitignore` for generated projects.
+// `.claude/worktrees/` is the precedent: it already sits in the root
+// `.gitignore` here.
 describe("the queue's own state is per-checkout, so it is never committed", () => {
   const ignored = (file: string): Promise<boolean> =>
     new Promise((resolve) => {
@@ -4087,23 +4087,17 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
     await expect(ignored('.claude/queue.json')).resolves.toBe(false);
   });
 
-  // The agent-os layer ships no `.gitignore` of its own, so a generated project's
-  // entry can only come from its skeleton — the same file that already carries
-  // `.claude/worktrees/`, stored un-dotted because `npm publish` strips the
-  // dotted form.
-  it.each(['node-service', 'aws-serverless'])(
-    'a generated %s project ignores the state file too',
-    async (target) => {
-      const content = await read(repoRoot, 'templates', 'skeleton', target, 'gitignore');
-      expect(content).toContain('.claude/queue.state.json');
-    },
-  );
+  // The agent-os layer ships no `.gitignore` of its own — RP-177 retired the
+  // per-target skeletons that used to carry one, so a generated repository has
+  // none until the project adds it. What travels with the single payload
+  // instead is the pasted-block advisory below, which is the second place —
+  // and, since RP-177, the only OTHER place — this invariant is expressed.
 });
 
-// The third place the same invariant is expressed, and the only one with no
-// file behind it: `init` installs into a repository it did not create, so it
-// cannot edit that repository's `.gitignore` — it hands the reader a block to
-// paste. A pasted block that ignores nothing is the worst of both outcomes: the
+// The second place the same invariant is expressed, and the one with no file
+// behind it: `create`/`init` install into a repository without writing a
+// `.gitignore` of their own, so they hand the reader a block to paste. A
+// pasted block that ignores nothing is the worst of both outcomes: the
 // document reads as finished and the next `git add -A` stages the state file.
 //
 // 🔴 Assert it BEHAVIOURALLY, and extract the block rather than restating it.
@@ -4114,7 +4108,7 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
 describe('the ignore block the init doc tells a reader to paste', () => {
   /** The block, dedented exactly as pasting it out of the fence would give it. */
   const pastedBlock = async (): Promise<string> => {
-    const doc = await read(repoRoot, 'templates', 'agent-os', 'init', 'CLAUDE.md');
+    const doc = await read(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md');
     const fenced = [...doc.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
       .map((match) => match[1] ?? '')
       .filter((body) => body.includes('.claude/queue.state.json'));

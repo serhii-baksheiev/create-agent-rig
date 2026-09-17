@@ -36,15 +36,10 @@ const CLAUDE_ONLY_HOOKS = new Set(['guard-subagent-model.mjs', 'warn-subagent-ro
 
 const slash = (value) => value.replaceAll('\\', '/');
 
+// RP-177 retired the `init` override layer and the per-stack overlays — there
+// is exactly one payload now, and this is its one source directory.
 function layerDirs() {
-  const dirs = [path.join(agentOsRoot, 'universal'), path.join(agentOsRoot, 'init')];
-  const stackRoot = path.join(agentOsRoot, 'stack');
-  if (existsSync(stackRoot)) {
-    for (const entry of readdirSync(stackRoot, { withFileTypes: true })) {
-      if (entry.isDirectory()) dirs.push(path.join(stackRoot, entry.name));
-    }
-  }
-  return dirs;
+  return [path.join(agentOsRoot, 'universal')];
 }
 
 function walk(dir) {

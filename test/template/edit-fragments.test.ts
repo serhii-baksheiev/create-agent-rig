@@ -2,12 +2,13 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
 
 /**
  * AR-51 — `editFragments` is the one normaliser every edit guard reads through,
  * and it knew Write, Edit and apply_patch only. A MultiEdit or a NotebookEdit
  * returned `[]`, which every consumer reads as "nothing to inspect" — so a
- * `Date.now()` reached the core through MultiEdit while the purity guard said
+ * credential could reach a tracked file through MultiEdit while a guard said
  * it had looked.
  */
 
@@ -79,11 +80,11 @@ describe('editFragments: MultiEdit and NotebookEdit are edit surfaces too', () =
 });
 
 describe('the existing guards see a MultiEdit', () => {
-  it('guard-core-purity blocks a clock call reaching the core through MultiEdit', async () => {
+  it('guard-secret-file blocks a credential reaching a tracked file through MultiEdit', async () => {
     const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
       const child = execFile(
         process.execPath,
-        [path.join(hooksDir, 'guard-core-purity.mjs')],
+        [path.join(hooksDir, 'guard-secret-file.mjs')],
         { env: { ...process.env } },
         (error, _stdout, stderr) => {
           resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
@@ -92,8 +93,8 @@ describe('the existing guards see a MultiEdit', () => {
       if (!child.stdin) return reject(new Error('no stdin'));
       child.stdin.write(
         JSON.stringify(
-          multiEdit(path.join(repoRoot, 'packages/core/src/x.ts'), [
-            { old_string: 'a', new_string: 'const t = Date.now();' },
+          multiEdit(path.join(repoRoot, 'notes.md'), [
+            { old_string: 'a', new_string: `AWS_KEY=${CLOUD_ACCESS_KEY}` },
           ]),
         ),
       );

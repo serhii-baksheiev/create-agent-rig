@@ -1643,7 +1643,7 @@ describe('the gate skill and the rules point at the router', () => {
     // The map is the document a session reads first, and it was the one artifact
     // still stating the pre-router rule — two answers to one question, with the
     // wrong one in the more prominent place.
-    for (const layer of ['universal', 'init']) {
+    for (const layer of ['universal']) {
       const text = await readFile(
         path.join(repoRoot, 'templates', 'agent-os', layer, 'CLAUDE.md'),
         'utf8',

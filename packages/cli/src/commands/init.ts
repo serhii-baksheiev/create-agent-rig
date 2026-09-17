@@ -7,7 +7,7 @@ import { readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
 import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
-import { agentOsInitDir, agentOsUniversalDir } from '../templates.js';
+import { agentOsUniversalDir } from '../templates.js';
 import { packageVersion } from '../lib/version.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
@@ -27,12 +27,21 @@ export interface InitOptions {
    * unknown-option parse error that names nothing.
    */
   force?: boolean;
+  /**
+   * An already-validated project identity, supplied by `create` (RP-177).
+   * Without it, the project name is derived by slugging the directory name
+   * (`projectNameFor`) — correct for `init` adopting an arbitrary existing
+   * repo, but lossy for `create`, whose caller already validated a name that
+   * may not survive slugging unchanged (a trailing `-` or `.`, stripped by
+   * `projectNameFor`, used to make a freshly created rig fail to match its own
+   * installed files on the very next `upgrade`). When given, this is used
+   * as-is instead of being re-derived.
+   */
+  project?: RigProject;
 }
 
 interface Manifest {
   process: string[];
-  architecture: string[];
-  meta: string[];
 }
 
 /** One installed path, and the template file behind it (`null` = generated here). */
@@ -57,6 +66,14 @@ export interface InitResult {
 const SETTINGS = '.claude/settings.json';
 const CODEX_HOOKS = '.codex/hooks.json';
 const MAPS = ['CLAUDE.md', 'AGENTS.md'] as const;
+/**
+ * Plain, static files this install always ships alongside the process layer,
+ * beside the two generated wiring files and the two maps above — neither
+ * architecture-specific (RP-177 retired that group entirely) nor subject to
+ * the maps' overwrite refusal, so they are appended here rather than folded
+ * into either list.
+ */
+const STATIC_EXTRAS = ['.codex/config.toml'] as const;
 
 async function loadManifest(): Promise<Manifest> {
   const raw = await readFile(path.join(agentOsUniversalDir(), 'layers.json'), 'utf8');
@@ -87,35 +104,25 @@ export function projectNameFor(repoDir: string): string {
 }
 
 /**
- * `init` installs only the PROCESS layer (hooks-and-reach brief §3/§4): rules
- * that assume nothing about the codebase shape. Architecture rules reference
- * `packages/core` and friends — installing them into an arbitrary repo would
- * describe a structure that does not exist, which is worse than no rule.
+ * `init` installs the PROCESS layer (hooks-and-reach brief §3/§4): rules that
+ * assume nothing about the codebase shape. Since RP-177 it is the ONLY
+ * flavour `create-agent-rig` ships — the architecture group (rules describing
+ * `packages/core` and friends) was retired outright, not merely excluded here,
+ * so there is no wider install for `create` to fall back to and no override
+ * layer left to shadow a universal file.
  *
- * It also installs two things the process manifest does not name, because both
- * are meaningless in the generated shape and load-bearing here:
- *
- * - `CLAUDE.md` — the map, taken from the init override layer, which describes
- *   the rig this command installs rather than the generated monorepo;
- * - `.claude/settings.json` — the wiring, derived from the shipped settings so
- *   it names exactly the hooks that travelled.
+ * `.claude/settings.json` and `.codex/hooks.json` are generated rather than
+ * copied: derived from the shipped settings so they name exactly the hooks
+ * that travelled.
  */
 export async function initManifest(): Promise<InitFile[]> {
   const manifest = await loadManifest();
   const universal = agentOsUniversalDir();
-  const override = agentOsInitDir();
 
-  const files = await mapConcurrent<string, InitFile>(
-    [...manifest.process, ...MAPS],
-    16,
-    async (rel) => {
-      const overridden = path.join(override, rel);
-      return {
-        rel,
-        source: (await exists(overridden)) ? overridden : path.join(universal, rel),
-      };
-    },
-  );
+  const files: InitFile[] = [...manifest.process, ...STATIC_EXTRAS, ...MAPS].map((rel) => ({
+    rel,
+    source: path.join(universal, rel),
+  }));
   files.push({ rel: SETTINGS, source: null });
   files.push({ rel: CODEX_HOOKS, source: null });
   return files;
@@ -213,7 +220,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       if (
         map === 'AGENTS.md' &&
         previous?.files[map] !== undefined &&
-        sha256(await readFile(path.join(repoDir, map), 'utf8')) === previous.files[map]
+        sha256(await readFile(path.join(repoDir, map))) === previous.files[map]
       ) {
         continue;
       }
@@ -224,7 +231,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     }
   }
 
-  const contents = await initFileContents(repoDir);
+  const contents = await initFileContents(repoDir, options.project);
   const plannedCount = files.length;
   const actions = await mapConcurrent(files, 16, async (rel) => {
     const dest = path.join(repoDir, rel);
@@ -240,7 +247,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);
   const skipped = actions.filter(({ verdict }) => verdict === 'skipped').map(({ rel }) => rel);
 
-  if (!options.dryRun) await recordInstall(repoDir, written, skipped, contents);
+  if (!options.dryRun) await recordInstall(repoDir, written, skipped, contents, options.project);
 
   return { written, skipped, plannedCount };
 }
@@ -252,10 +259,10 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
  * something outside the repository into a committed manifest, and a read that
  * throws here would abort the install after every other file was written.
  */
-async function readRegularFile(abs: string): Promise<string | null> {
+async function readRegularFile(abs: string): Promise<Buffer | null> {
   try {
     if (!(await lstat(abs)).isFile()) return null;
-    return await readFile(abs, 'utf8');
+    return await readFile(abs);
   } catch {
     return null;
   }
@@ -307,6 +314,7 @@ async function recordInstall(
   written: readonly string[],
   skipped: readonly string[],
   contents: Map<string, string>,
+  project?: RigProject,
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
@@ -323,10 +331,11 @@ async function recordInstall(
   const manifest: RigManifest = {
     version: await packageVersion(),
     kind: previous?.kind ?? 'init',
-    // No manifest: fall back to the directory name, which is all this module
-    // reads. See the limit above — `upgrade` can do better from the files
+    // No manifest: prefer the caller's already-validated identity (`create`,
+    // RP-177) and only fall back to slugging the directory name when there is
+    // none. See the limit above — `upgrade` can do better from the files
     // themselves, and `init` deliberately does not reach for it.
-    project: previous?.project ?? { name, scope: name, region: '' },
+    project: previous?.project ?? project ?? { name, scope: name, region: '' },
     stacks: previous?.stacks ?? [],
     files,
     ...(Object.keys(kept).length > 0 ? { kept } : {}),

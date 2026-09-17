@@ -7,16 +7,17 @@ The map above describes the projects this tool **generates**. This repo is the
 generator itself, dogfooding the same rulebook. Its own map:
 
 ```
-packages/cli/       the generator (TS, tested): copy-tree, substitute, targets,
-                    and policy/ — the typed policy declaration, registry and
+packages/cli/       the generator (TS, tested): copy-tree, substitute, and
+                    policy/ — the typed policy declaration, registry and
                     decision-record schema with one adapter per harness
-templates/agent-os/ layer 1 — universal rules, stack/<name> overlays, and
-                    init/ (overrides `init` applies when the rig goes into an
-                    existing repo whose shape we know nothing about)
-templates/skeleton/ layer 2 — one runnable project per target
-test/e2e/           generate → install → run the generated project's checks
-test/template/      hook blocking, composition neutrality, dogfood drift
-scripts/            prepare (build+hooks), sync-agent-os (composes this file)
+templates/agent-os/ the one payload the package ships: universal rules only
+                    (RP-177 retired the per-target stack overlays and the
+                    init-only override layer — there is one flavour, and
+                    `create` installs it the same way `init` does)
+test/e2e/           generate → install → run the generated repo's checks
+test/template/      hook blocking, stack neutrality, dogfood drift
+scripts/            prepare (build+hooks), sync-agent-os (composes this file),
+                    dogfood/ (this repo's own node-ts overlay — RP-177)
 ```
 
 ## Commands
@@ -27,7 +28,6 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
   file; `--staged` is what pre-commit runs FIRST, before lint/typecheck/test, and
   `--self-test` proves the scanner still detects each shape it claims
 - `pnpm lint` / `pnpm typecheck` / `pnpm format`
-- `pnpm template:check` — the template's own in-place check (lint/type/test/synth)
 - `node scripts/sync-agent-os.mjs` — compose the Claude rulebook and regenerate
   its derived Codex projection (`AGENTS.md`, `.agents/`, `.codex/`) from the
   templates; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
@@ -42,15 +42,20 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
    one back. Ideas travel in; files do not. (`NOTES.md`, "the drift that runs the
    other way".)
 1. **PLAN.md §2 decisions are locked.** Do not re-litigate them without new data.
-2. **Templates are real projects.** No template engine; generation is tree copy +
-   token substitution only. The root toolchain never reaches into `templates/`
-   (they carry their own configs and are exercised in place).
+2. **The template is real, generator-neutral content.** No template engine;
+   generation is tree copy + token substitution only. `templates/` is
+   excluded from the root lint/typecheck (`eslint.config.mjs`'s `ignores`) —
+   its `.mjs` hooks and scripts are plain JS the root toolchain does not
+   compile — and it is validated by content instead: `test/template/`
+   asserts what the tree says, `test/e2e/` generates from it and spawns the
+   built CLI against the result.
 3. **Zero options at the personal stage; the CLI keeps zero runtime deps** —
    that is what keeps `npx github:…` and the tarball path working.
 4. **Provenance:** `agent-os/` content is authored fresh — never copied from a
    private work repository (PLAN.md §9).
-5. **Never edit a synced file directly** — edit `templates/agent-os/` (or this
-   addendum) and run the sync script; the drift test fails otherwise. The synced
+5. **Never edit a synced file directly** — edit `templates/agent-os/universal`,
+   `scripts/dogfood/` (this repo's own node-ts overlay, RP-177), or this
+   addendum, and run the sync script; the drift test fails otherwise. The synced
    set is `CLAUDE.md`, everything under `.claude/`, the Codex projection
    (`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and
    **`docs/decisions/`**. The last two payload paths sit outside either harness's
@@ -67,23 +72,18 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file)
 
 ## Foot-guns
 
-- The template's `@app/` scope is _valid on purpose_ — the template must run
-  as-is. Don't "fix" it to a token.
-- Tokens (`__PROJECT_NAME__`, `__PROJECT_SCOPE__`, `__REGION__`) may only appear
-  where they don't break the template's own runnability.
-- **`templates/agent-os/` never uses `__PROJECT_SCOPE__` or `@app/`** — those two
-  substitute to the same text as `__PROJECT_NAME__`, so `upgrade` cannot reverse
-  them, and a file it cannot reverse is a permanent conflict on every rig that
-  installed it. `__PROJECT_NAME__` and `__REGION__` are fine there. A template
-  test pins this; the reversal and its limits live in `lib/substitute.ts`.
-- `pnpm-lock.yaml` inside templates is intentional (reproducible installs) —
-  don't ignore it, and let substitution rewrite it.
-- esbuild's postinstall stays **unapproved** in the template workspace
-  (`allowBuilds: esbuild: false`) — approving it breaks pnpm's bin shim.
+- **`__PROJECT_SCOPE__` and `@app/` are dormant, not dead code to prune on
+  sight.** RP-177 removed the last template that used either (the skeletons):
+  `templates/agent-os/universal` has never used them and does not need to.
+  The substitution and its reversal stay in `lib/substitute.ts` — `scope`
+  remains a field of the manifest and the CLI's project identity, and
+  `upgrade` must keep reading an OLD manifest that carries a scope different
+  from its name — so removing the machinery is a separate, deliberate change,
+  not a side effect of a template no longer exercising it.
 - **Templates must live inside the published package.** `npm pack --dry-run`
   is the check, and the pack-path e2e (`test/e2e/pack-install.test.ts`) is the
-  gate — per target. The git path cannot catch pack-path regressions: the two
-  file sets differ exactly where scaffolders break (dotfiles, modes, `files`).
+  gate. The git path cannot catch pack-path regressions: the two file sets
+  differ exactly where scaffolders break (dotfiles, modes, `files`).
 - Only the repo root publishes. `packages/cli` is locked by `private: true`
   **and** a failing `prepublishOnly` — npm 10 ignores `private` on
   `publish --dry-run`, so the script is the real lock.

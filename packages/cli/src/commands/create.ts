@@ -1,25 +1,15 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { copyTree, listTree, mapConcurrent } from '../lib/copy-tree.js';
-import { ALLOWED_OVERWRITES, detectCollisions } from '../lib/composition.js';
-import { agentOsLayerDirs } from '../lib/install-set.js';
-import { sha256, writeManifest } from '../lib/manifest.js';
-import { substituteContent, substituteFileName } from '../lib/substitute.js';
-import type { SubstitutionContext } from '../lib/substitute.js';
 import { gitEnv } from '../lib/git-env.js';
-import { DEFAULT_TARGET, TARGETS, TARGET_NAMES } from '../lib/targets.js';
-import { skeletonDir } from '../templates.js';
-import { packageVersion } from '../lib/version.js';
+import { initProject } from './init.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class CreateError extends Error {}
 
 export interface CreateOptions {
   cwd: string;
-  /** Target name from the registry; defaults to {@link DEFAULT_TARGET}. */
-  target?: string;
   /**
    * Initialise git with a baseline commit (default true) so the first change —
    * human or agent — diffs against a pristine template. Never fatal: a missing
@@ -33,113 +23,53 @@ export interface CreateResult {
   projectName: string;
 }
 
-/** Valid npm package name (unscoped part) — also used as the npm scope. */
-const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+/**
+ * A safe, predictable project name — also what ends up in a filename (the
+ * kill switch, `~/.claude/<name>-loop-STOP`) and inside a single-quoted string
+ * literal in a generated script (`stop-flag.mjs`), so it is validated
+ * up front rather than silently slugged. There is no npm scope to validate
+ * for any more (RP-177 retired the application skeleton this pattern used to
+ * double as): the shape survives only because it is still the right shape for
+ * a directory/kill-switch name, not because anything downstream reads it as a
+ * package identifier.
+ *
+ * No trailing `-` or `.`: `projectNameFor` (the name `init` would derive from
+ * this same directory with no identity supplied) strips both, and a name this
+ * pattern accepted but that function would rewrite is exactly the mismatch
+ * that once made a freshly created rig fail to match its own installed files
+ * on the very next `upgrade`.
+ */
+const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 
+/**
+ * `create <dir>` — a thin convenience wrapper (RP-177): make the directory,
+ * run the same install `init` runs inside it, then commit the pristine
+ * baseline. There is only one payload flavour; this command's entire value is
+ * not having to `mkdir`, `cd` and run `init` by hand.
+ */
 export async function createProject(dirArg: string, options: CreateOptions): Promise<CreateResult> {
   const projectDir = path.resolve(options.cwd, dirArg);
   const projectName = path.basename(projectDir);
 
   if (!NAME_PATTERN.test(projectName)) {
     throw new CreateError(
-      `Invalid project name "${projectName}": use lowercase letters, digits, ".", "_" and "-" ` +
-        '(it becomes the npm package name and scope).',
+      `Invalid project name "${projectName}": use lowercase letters, digits, ".", "_" and "-", ` +
+        'starting and ending with a letter or digit.',
     );
   }
 
   await ensureEmptyOrAbsent(projectDir);
-
-  const targetName = options.target ?? DEFAULT_TARGET;
-  const target = TARGETS[targetName];
-  if (!target) {
-    throw new CreateError(
-      `Unknown target "${targetName}". Known targets: ${TARGET_NAMES.join(', ')}.`,
-    );
-  }
-
-  const ctx: SubstitutionContext = {
-    projectName,
-    projectScope: projectName,
-    region: target.defaultRegion ?? '',
-  };
-
-  const transforms = {
-    transformContent: (content: string) => substituteContent(content, ctx),
-    transformName: (name: string) => substituteFileName(name, ctx),
-  };
-
-  // Layer 2 (the skeleton) + layer 1 (agent-os: universal + stack overlays).
-  const agentOsLayers = agentOsLayerDirs(target.stacks);
-  const layers = [
-    { name: `skeleton/${target.skeletonDir}`, dir: skeletonDir(target.skeletonDir) },
-    ...agentOsLayers,
-  ];
-
-  // Composition safety: layers must claim disjoint paths. Checked before any
-  // copy — a collision is a template bug and must never be resolved by order.
-  const claimed = [];
-  for (const layer of layers) {
-    claimed.push({ name: layer.name, files: await listTree(layer.dir, transforms) });
-  }
-  const collisions = detectCollisions(claimed, ALLOWED_OVERWRITES);
-  if (collisions.length > 0) {
-    const detail = collisions
-      .map((c) => `  ${c.path} — claimed by ${c.layers.join(' and ')}`)
-      .join('\n');
-    throw new CreateError(`Template layers collide (fix the templates, not the order):\n${detail}`);
-  }
-
   await mkdir(projectDir, { recursive: true });
-  for (const layer of layers) {
-    await copyTree(layer.dir, projectDir, transforms);
-  }
 
-  await recordInstall(projectDir, agentOsLayers, transforms, ctx, targetName);
+  await initProject(projectDir, {
+    project: { name: projectName, scope: projectName, region: '' },
+  });
 
   if (options.git !== false) {
     await initGitBaseline(projectDir);
   }
 
   return { projectDir, projectName };
-}
-
-/**
- * Record the agent-os layer in `.claude/.rig-manifest.json`, so a later
- * `upgrade` can tell a file the rig wrote from a file the project's own people
- * changed.
- *
- * The skeleton is **not** recorded, and that is the boundary of the whole
- * upgrade story: once generated, the code belongs to the project. The hashes
- * are read back off the disk rather than recomputed, so the manifest states
- * what is actually there and cannot drift from what was copied. The manifest
- * lands before the baseline commit — it is part of the pristine template, and
- * it belongs in the project's git history.
- */
-async function recordInstall(
-  projectDir: string,
-  agentOsLayers: readonly { dir: string }[],
-  transforms: { transformName: (name: string) => string },
-  ctx: SubstitutionContext,
-  target: string,
-): Promise<void> {
-  const files: Record<string, string> = {};
-  for (const layer of agentOsLayers) {
-    const paths = await listTree(layer.dir, transforms);
-    const hashes = await mapConcurrent(paths, 16, async (rel) => ({
-      rel,
-      hash: sha256(await readFile(path.join(projectDir, ...rel.split('/')), 'utf8')),
-    }));
-    for (const { rel, hash } of hashes) {
-      files[rel] = hash;
-    }
-  }
-  await writeManifest(projectDir, {
-    version: await packageVersion(),
-    kind: 'create',
-    project: { name: ctx.projectName, scope: ctx.projectScope, region: ctx.region },
-    stacks: [...(TARGETS[target]?.stacks ?? [])],
-    files,
-  });
 }
 
 const run = promisify(execFile);

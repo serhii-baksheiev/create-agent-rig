@@ -1,19 +1,15 @@
 {
   "name": "create-agent-rig",
   "version": "0.9.1",
-  "description": "Scaffold a new project with an agent operating system (rules, gates, hooks) and a runnable code skeleton",
+  "description": "Configure an agent operating system (rules, gates, hooks) for Claude Code and Codex in a new or existing repository — no application scaffolding",
   "keywords": [
-    "create",
-    "scaffold",
-    "generator",
-    "starter",
-    "template",
     "agent",
     "claude-code",
     "codex",
     "agent-os",
-    "aws-serverless",
-    "node-service"
+    "rules",
+    "hooks",
+    "governance"
   ],
   "license": "MIT",
   "repository": {
@@ -38,16 +34,14 @@
   "packageManager": "pnpm@11.16.0",
   "scripts": {
     "prepare": "node scripts/prepare.mjs",
-    "build": "tsc -p packages/cli/tsconfig.build.json",
+    "build": "node scripts/prepare.mjs --build-only",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc -p packages/cli/tsconfig.json && tsc -p tsconfig.json",
     "test": "pnpm build && vitest run",
     "test:unit": "vitest run --project unit --project template --project benchmark",
     "test:smoke": "vitest run --project unit",
-    "test:e2e": "pnpm build && vitest run --project e2e",
-    "template:install": "pnpm --dir templates/skeleton/aws-serverless install",
-    "template:check": "pnpm --dir templates/skeleton/aws-serverless run check"
+    "test:e2e": "pnpm build && vitest run --project e2e"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -143,10 +143,6 @@ const RP_173_ROUTING: RoutingPolicy = {
       claude: { model: 'claude-opus-5', effort: 'high' },
       codex: { model: 'gpt-5.6-sol', effort: 'high' },
     },
-    'cdk-diff-reviewer': {
-      claude: { model: 'claude-opus-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
-    },
   },
 };
 
@@ -415,14 +411,10 @@ interface AgentTemplate extends ClaudeAgent {
   layer: string;
 }
 
-/** Every Claude agent template in every agent-os layer the sync script composes. */
+/** Every Claude agent template in the one agent-os layer the sync script composes. */
 async function claudeAgentTemplates(): Promise<AgentTemplate[]> {
-  const stackRoot = path.join(agentOs, 'stack');
-  const stacks = (await readdir(stackRoot, { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(stackRoot, entry.name));
   const agents: AgentTemplate[] = [];
-  for (const layer of [universal, path.join(agentOs, 'init'), ...stacks]) {
+  for (const layer of [universal]) {
     const dir = path.join(layer, '.claude', 'agents');
     if (!existsSync(dir)) continue;
     for (const file of (await readdir(dir)).filter((name) => name.endsWith('.md')).sort()) {

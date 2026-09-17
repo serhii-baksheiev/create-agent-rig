@@ -39,32 +39,32 @@ async function runCli(args: string[], cwd: string): Promise<RunResult> {
   }
 }
 
+// RP-177: `create <dir>` scaffolds a Git repository plus the harness payload —
+// no application code, no `--target`.
 describe('create-agent-rig <dir>', () => {
   it('generates a project with substituted tokens', async () => {
-    const result = await runCli(['my-app', '--target', 'aws-serverless'], work);
+    const result = await runCli(['my-app'], work);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('my-app');
 
     const projectDir = path.join(work, 'my-app');
-    const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
-    expect(pkg.name).toBe('@my-app/root');
-    const readme = await readFile(path.join(projectDir, 'README.md'), 'utf8');
-    expect(readme).toContain('# my-app');
-    expect(readme).not.toContain('__PROJECT_NAME__');
-    expect(readme).not.toContain('__REGION__');
+    const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).toContain('my-app');
+    expect(claudeMd).not.toContain('__PROJECT_NAME__');
+    // no application scaffolding of any kind
+    await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).rejects.toThrow();
   });
 
   it('ends on the governance summary, counted from the generated tree', async () => {
-    const result = await runCli(['gov-app', '--target', 'aws-serverless'], work);
+    const result = await runCli(['gov-app'], work);
     expect(result.code).toBe(0);
 
     const claudeDir = path.join(work, 'gov-app', '.claude');
     const rules = (await readdir(path.join(claudeDir, 'rules'))).length;
     const agents = (await readdir(path.join(claudeDir, 'agents'))).length;
-    // `.mjs` only: the stack layer also drops dod-checks.json here, and a config
-    // file counted as an enforced hook would inflate the one number this tool
-    // exists to make credible.
+    // `.mjs` only: a config file counted as an enforced hook would inflate the
+    // one number this tool exists to make credible.
     const hooks = (await readdir(path.join(claudeDir, 'hooks'))).filter((f) =>
       f.endsWith('.mjs'),
     ).length;
@@ -75,18 +75,22 @@ describe('create-agent-rig <dir>', () => {
     expect(result.stdout).toMatch(new RegExp(`Agents\\s+${agents}\\b`));
     expect(result.stdout).toMatch(new RegExp(`Hooks\\s+${hooks}\\b`));
     expect(result.stdout).toMatch(new RegExp(`Skills\\s+${skills}\\b`));
-    expect(result.stdout).toContain('cdk-diff-reviewer');
-    expect(result.stdout).toContain('pnpm check');
+    // A thin rig has no package.json, so package-manager commands would be
+    // false instructions. The only useful next step is to open it in either
+    // harness the rig configures.
+    expect(result.stdout).toContain('codex');
+    expect(result.stdout).toContain('claude');
+    expect(result.stdout).not.toContain('pnpm install');
+    expect(result.stdout).not.toContain('pnpm check');
     // calm and exact: no emoji fireworks, no exclamations, no ANSI in a pipe
     expect(result.stdout).not.toMatch(/🎉|!\s*$/m);
-    // eslint-disable-next-line no-control-regex
-    expect(result.stdout).not.toMatch(/\[/);
+    expect(result.stdout).not.toMatch(/\[/);
   });
 
   it('refuses a non-empty target directory with a clear message', async () => {
     await mkdir(path.join(work, 'busy'));
     await writeFile(path.join(work, 'busy', 'keep.txt'), 'x');
-    const result = await runCli(['busy', '--target', 'node-service'], work);
+    const result = await runCli(['busy'], work);
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(/not empty/i);
     expect(result.stderr).not.toMatch(/at .*create\.js/); // no stack trace for user errors
@@ -98,19 +102,31 @@ describe('create-agent-rig <dir>', () => {
     expect(result.stderr).toMatch(/usage/i);
   });
 
+  it('rejects retired --target without creating the requested directory', async () => {
+    const dir = 'retired-target';
+    const result = await runCli([dir, '--target', 'node-service'], work);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/unknown option.*target/i);
+    expect(result.stderr).toMatch(/usage/i);
+    expect(await readdir(work)).not.toContain(dir);
+  });
+
   it('prints its version', async () => {
     const result = await runCli(['--version'], work);
     expect(result.code).toBe(0);
     expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  // CLI polish brief §5 — the provably breakable one: a prompt here would
-  // hang CI. Non-interactive + no --target must fail fast, naming the flag.
-  it('non-TTY without --target: errors naming the flag, never prompts', async () => {
+  // There is nothing left to prompt for (RP-177 retired `--target` along with
+  // the skeletons it selected), so a non-interactive run behaves exactly like
+  // an interactive one — this is the regression test for that claim.
+  it('a non-TTY run needs no flag at all', async () => {
     const result = await runCli(['no-tty-app'], work);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('--target');
-    await expect(readFile(path.join(work, 'no-tty-app', 'package.json'))).rejects.toThrow();
+    expect(result.code, result.stderr).toBe(0);
+    await expect(
+      readFile(path.join(work, 'no-tty-app', 'CLAUDE.md'), 'utf8'),
+    ).resolves.toBeTruthy();
   });
 });
 
@@ -122,21 +138,21 @@ describe('npm pack tarball (distribution path)', () => {
     // The tarball must carry the compiled CLI and the templates, nothing heavy.
     const paths = inject('packedPaths');
     expect(paths).toContain('packages/cli/dist/index.js');
-    expect(paths.some((p) => p.startsWith('templates/skeleton/aws-serverless/'))).toBe(true);
+    expect(paths.some((p) => p.startsWith('templates/agent-os/universal/'))).toBe(true);
+    expect(paths.some((p) => p.startsWith('templates/skeleton/'))).toBe(false);
     expect(paths.some((p) => p.includes('node_modules'))).toBe(false);
-    expect(paths.some((p) => p.includes('cdk.out'))).toBe(false);
 
     const appDir = path.join(work, 'from-tarball');
     await mkdir(appDir);
     await runPackageManager(
       'npx',
-      ['--yes', `--package=${tarball}`, 'create-agent-rig', 'tar-app', '--target', 'node-service'],
+      ['--yes', `--package=${tarball}`, 'create-agent-rig', 'tar-app'],
       {
         cwd: appDir,
         env: installEnv(path.join(work, 'npx-cache')),
       },
     );
-    const pkg = JSON.parse(await readFile(path.join(appDir, 'tar-app', 'package.json'), 'utf8'));
-    expect(pkg.name).toBe('@tar-app/root');
+    const claudeMd = await readFile(path.join(appDir, 'tar-app', 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).toContain('tar-app');
   });
 });
