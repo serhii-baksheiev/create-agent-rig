@@ -43,4 +43,11 @@ describe('RP-177 repository contract after removing application scaffolding', ()
     expect(new Set(guardPaths).size).toBe(guardPaths.length);
     expect(JSON.stringify(adapter)).not.toMatch(/architecture-guards/i);
   });
+
+  it('does not describe retired scope and app substitutions as dormant machinery', async () => {
+    const rulebook = await read('CLAUDE.md');
+
+    expect(rulebook).not.toMatch(/__PROJECT_SCOPE__.*@app\/.*dormant/i);
+    expect(rulebook).not.toMatch(/substitution and its reversal stay/i);
+  });
 });

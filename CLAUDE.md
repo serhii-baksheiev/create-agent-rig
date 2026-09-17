@@ -295,14 +295,11 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
 
 ## Foot-guns
 
-- **`__PROJECT_SCOPE__` and `@app/` are dormant, not dead code to prune on
-  sight.** RP-177 removed the last template that used either (the skeletons):
-  `templates/agent-os/universal` has never used them and does not need to.
-  The substitution and its reversal stay in `lib/substitute.ts` — `scope`
-  remains a field of the manifest and the CLI's project identity, and
-  `upgrade` must keep reading an OLD manifest that carries a scope different
-  from its name — so removing the machinery is a separate, deliberate change,
-  not a side effect of a template no longer exercising it.
+- **`__PROJECT_NAME__` is the only substitution token.** Do not restore
+  `__PROJECT_SCOPE__`, `__REGION__`, `@app/`, or filename substitution. Old
+  manifests still carry `scope` and `region` for schema compatibility, but the
+  universal payload never renders them and upgrade never rewrites application
+  files left behind by a pre-0.10 rig.
 - **Templates must live inside the published package.** `npm pack --dry-run`
   is the check, and the pack-path e2e (`test/e2e/pack-install.test.ts`) is the
   gate. The git path cannot catch pack-path regressions: the two file sets

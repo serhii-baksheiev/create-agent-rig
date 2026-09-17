@@ -145,8 +145,6 @@ export async function initFileContents(
   const projectName = project?.name ?? projectNameFor(repoDir);
   const ctx: SubstitutionContext = {
     projectName,
-    projectScope: project?.scope ?? projectName,
-    region: project?.region ?? '',
   };
 
   const files = await initManifest();

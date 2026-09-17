@@ -7,8 +7,6 @@ import type { HashHistory } from '../lib/history.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { RigManifest, RigProject } from '../lib/manifest.js';
 import { isSafeSubstitutionValue, resolveInside, resolveWritableInside } from '../lib/safe-path.js';
-import { detokenizeContent } from '../lib/substitute.js';
-import type { SubstitutionContext } from '../lib/substitute.js';
 import { packageVersion } from '../lib/version.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
@@ -171,7 +169,7 @@ function isReleasedVersion(
   history: HashHistory,
   rel: string,
   content: Buffer,
-  ctx: SubstitutionContext,
+  projectName: string,
 ): boolean {
   const known = history.files[rel];
   if (known === undefined || known.hashes.length === 0) return false;
@@ -181,7 +179,9 @@ function isReleasedVersion(
   // through replacement characters and then mistaken for released bytes.
   // The raw-byte candidate above remains authoritative either way.
   if (Buffer.from(decoded, 'utf8').equals(content)) {
-    candidates.add(sha256(detokenizeContent(decoded, ctx)));
+    const detokenized =
+      projectName === '' ? decoded : decoded.replaceAll(projectName, '__PROJECT_NAME__');
+    candidates.add(sha256(detokenized));
   }
   return known.hashes.some((hash) => candidates.has(hash));
 }
@@ -279,11 +279,6 @@ export async function planUpgrade(
   // even exist any more.
   const files = await initInstallSet(repoDir, project);
 
-  const ctx: SubstitutionContext = {
-    projectName: project.name,
-    projectScope: project.scope,
-    region: project.region,
-  };
   const actions: UpgradeAction[] = [];
   const contents = new Map<string, string>();
   const nextFiles: Record<string, string> = {};
@@ -345,7 +340,7 @@ export async function planUpgrade(
     const vouched = isWiring
       ? recorded !== undefined && currentHash === recorded
       : (recorded !== undefined && currentHash === recorded) ||
-        isReleasedVersion(history, file.rel, currentBytes, ctx);
+        isReleasedVersion(history, file.rel, currentBytes, project.name);
 
     if (currentBytes.equals(releasedBytes)) {
       actions.push({ rel: file.rel, verdict: 'unchanged' });

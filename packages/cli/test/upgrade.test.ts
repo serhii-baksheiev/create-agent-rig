@@ -429,10 +429,7 @@ describe('bootstrap — a rig installed before the manifest existed', () => {
     const olderTemplate = releasedTemplate.replace('const paths', 'const olderPaths');
     expect(olderTemplate).not.toBe(releasedTemplate);
     const name = projectNameFor(repo);
-    await write(
-      STOP_FLAG,
-      substituteContent(olderTemplate, { projectName: name, projectScope: name, region: '' }),
-    );
+    await write(STOP_FLAG, substituteContent(olderTemplate, { projectName: name }));
     await rm(abs(MANIFEST_REL));
 
     const plan = await planUpgrade(repo, { history: historyFor(STOP_FLAG, olderTemplate) });

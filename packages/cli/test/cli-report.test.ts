@@ -195,6 +195,8 @@ describe('the upgrade plan header states what it knows, not what it infers', () 
   it.each([
     'retired.md\n  - forged destructive action',
     `retired.md${String.fromCharCode(27)}[2Jforged destructive action`,
+    `retired.md\u202Eforged destructive action`,
+    `retired.md\u2066forged destructive action\u2069`,
   ])('does not let a manifest file key forge the upgrade plan: %j', async (forgedRel) => {
     await installRig();
     const manifest = await readManifest(repo);
