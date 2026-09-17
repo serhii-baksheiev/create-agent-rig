@@ -1,4 +1,15 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  rmdir,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -7,6 +18,7 @@ import { UninstallError, applyUninstall, planUninstall } from '../src/commands/u
 import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
+import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 
 let repo: string;
 
@@ -211,6 +223,131 @@ describe('applyUninstall — the happy path', () => {
     expect(result.removed).toEqual([]);
     expect(result.manifestRemoved).toBe(false);
   });
+
+  it('leaves no empty .claude directory once every managed file and the manifest are gone', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    await applyUninstall(repo, plan);
+
+    // git ignores empty directories, so this has to be checked with fs, not
+    // with `git status` — the manifest is the LAST file removed from
+    // `.claude`, so its own removal is what can finally empty the directory.
+    await expect(stat(abs('.claude'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+// Creating a symlink needs a privilege on Windows an ordinary CI account
+// lacks, so the fixture itself would fail there for a reason that has nothing
+// to do with the code under test. The skip carries that reason into the
+// report and is counted in platform-skips.test.ts.
+const onlyWhereSymlinksExist = (name: string, body: () => Promise<void>): void =>
+  it(name, async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await body();
+  });
+
+describe('planUninstall / applyUninstall — a symlink never gets read or removed through', () => {
+  onlyWhereSymlinksExist(
+    'preserves a file whose ancestor directory is a symlink out of the repository, and never touches the external target',
+    async () => {
+      await installRig();
+      const originalContent = await read(WORKFLOW);
+
+      // An external tree with byte-identical content at the same shape — a
+      // naive hash-of-followed-bytes would say "remove" here.
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        await mkdir(path.join(outside, 'rules'), { recursive: true });
+        await writeFile(path.join(outside, 'rules', 'workflow.md'), originalContent);
+
+        // Replace the real `.claude/rules` directory with a symlink to it —
+        // WORKFLOW's ancestor, not WORKFLOW itself. `.claude/rules` is flat
+        // (a handful of `.md` files, no subdirectories), so each entry is
+        // unlinked by name rather than reaching for a recursive removal —
+        // fixture-cleanup-audit.test.ts holds every recursive-removal call
+        // site in this suite to a written exception, and this one is not it.
+        const rulesDir = abs('.claude/rules');
+        for (const entry of await readdir(rulesDir)) {
+          await rm(path.join(rulesDir, entry));
+        }
+        await rmdir(rulesDir);
+        await symlink(path.join(outside, 'rules'), rulesDir, 'dir');
+
+        const plan = await planUninstall(repo);
+        const action = actionFor(plan, WORKFLOW);
+        expect(action?.verdict).toBe('preserved');
+        expect(action?.reason).toMatch(/symlink/i);
+
+        await applyUninstall(repo, plan);
+
+        expect(await readFile(path.join(outside, 'rules', 'workflow.md'), 'utf8')).toBe(
+          originalContent,
+        );
+        expect((await lstat(abs('.claude/rules'))).isSymbolicLink()).toBe(true);
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  onlyWhereSymlinksExist(
+    'preserves a managed path that is itself a symlink, and never touches the link or its target',
+    async () => {
+      await installRig();
+      const originalContent = await read(WORKFLOW);
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const target = path.join(outside, 'external-workflow.md');
+        await writeFile(target, originalContent);
+
+        await rm(abs(WORKFLOW));
+        await symlink(target, abs(WORKFLOW));
+
+        const plan = await planUninstall(repo);
+        const action = actionFor(plan, WORKFLOW);
+        expect(action?.verdict).toBe('preserved');
+        expect(action?.reason).toMatch(/symlink/i);
+
+        await applyUninstall(repo, plan);
+
+        expect((await lstat(abs(WORKFLOW))).isSymbolicLink()).toBe(true);
+        expect(await readFile(target, 'utf8')).toBe(originalContent);
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  onlyWhereSymlinksExist(
+    'refuses to remove a path that became a symlink between planning and applying, as a failed run',
+    async () => {
+      await installRig();
+      const plan = await planUninstall(repo);
+      expect(actionFor(plan, WORKFLOW)?.verdict).toBe('remove');
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const target = path.join(outside, 'external-workflow.md');
+        await writeFile(target, 'attacker content');
+        await rm(abs(WORKFLOW));
+        await symlink(target, abs(WORKFLOW));
+
+        // the stale plan still says "remove" — the guard has to be re-checked
+        // at apply time, not trusted from the plan
+        const result = await applyUninstall(repo, plan);
+        expect(result.manifestRemoved).toBe(false);
+        expect(result.error).toBeTruthy();
+        expect(result.remaining).toContain(WORKFLOW);
+        expect(result.completed).not.toContain(WORKFLOW);
+
+        expect((await lstat(abs(WORKFLOW))).isSymbolicLink()).toBe(true);
+        expect(await readFile(target, 'utf8')).toBe('attacker content');
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
 });
 
 describe('applyUninstall — an interrupted run', () => {

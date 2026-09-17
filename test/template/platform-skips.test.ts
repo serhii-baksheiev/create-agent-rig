@@ -31,8 +31,11 @@ const EXPECTED_SITES: Record<(typeof PLATFORM_SKIP_HELPERS)[number], number> = {
   modeBitsDeny: 10,
   // queue.test.ts: the 0o077 read of state.json — root sees mode bits, Windows has none
   modeBitsExist: 1,
-  // hooks.test.ts: the two symlink-fixture cases share one wrapper
-  symlinksAvailable: 1,
+  // hooks.test.ts: the two symlink-fixture cases share one wrapper;
+  // uninstall.test.ts: three symlink-fixture cases (ancestor-dir escape,
+  // the managed path itself a symlink, and the plan-to-apply TOCTOU re-check)
+  // share their own wrapper
+  symlinksAvailable: 2,
   // codex.test.ts: the FIFO move-source fixture; unattended-flag: nonblocking flag read;
   // subagent-routing-hooks.test.ts: a FIFO at the agent path the guard must not wait on
   fifosAvailable: 3,
