@@ -166,6 +166,35 @@ cross-repository run lives in the private `claude-config` repository, which
 checks this repository out at an explicit full SHA and runs the command above
 against its own tree; the CI here runs only the offline tests.
 
+## Uninstalling a rig
+
+Remove what a rig installed, file by file, keeping everything you did not
+write yourselves:
+
+```sh
+npx create-agent-rig@latest uninstall --dry-run  # print the plan, remove nothing
+npx create-agent-rig@latest uninstall            # remove what the rig owns and you never touched
+npx create-agent-rig@latest uninstall --json     # one JSON object, for a script
+```
+
+It removes only a path whose bytes on disk still match the hash
+`.claude/.rig-manifest.json` recorded — nothing else moves. A file you edited,
+already deleted, or that `init` found already in place and left alone (`kept`)
+is reported and never touched, exactly the way `upgrade` reports a conflict.
+`.claude/settings.json` and `.codex/hooks.json` follow the same rule `upgrade`
+applies to them: removed only when the manifest proves the rig wrote those
+exact bytes, reported with the hooks still wired otherwise. The manifest
+itself is deleted last, only once every file it names has been removed; a run
+interrupted partway keeps the manifest and reports what finished and what a
+re-run still owes, so uninstall is safe to run again. It never touches
+`.rig/` — that directory is evidence (claims, run state), not something this
+command has ownership evidence for. Full semantics, the JSON shape and worked
+examples are in `docs/command-contract.md` ("## uninstall (RP-181)").
+
+Registering plugin and MCP entries this rig owns is not part of this command
+yet — it lands once RP-179/RP-22 define what an owned registration is; today
+`uninstall` only ever touches files the manifest names.
+
 ## What you get
 
 **A system of boundaries, each held by tooling.** An agent (or a human using
