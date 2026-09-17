@@ -681,6 +681,23 @@ export const escalate = async (ticket, diagnosis, { env = process.env } = {}) =>
 };
 
 /**
+ * Jira refuses a summary longer than this, and creates nothing: `400
+ * {"errors":{"summary":"Summary can't exceed 255 characters."}}` (RP-121). The
+ * summary is therefore a prefix; the full `change` stays in the description,
+ * where the fingerprint lives too, so the dedupe does not depend on the cut.
+ * The cut never leaves half of a surrogate pair behind. Pinned in
+ * `test/template/queue-jira.test.ts` › "bounds the POSTed summary so a
+ * 2186-character change still files, keeping the full text in the body".
+ */
+const MAX_SUMMARY_LENGTH = 255;
+
+const boundedSummary = (text) => {
+  if (text.length <= MAX_SUMMARY_LENGTH) return text;
+  const cut = text.slice(0, MAX_SUMMARY_LENGTH);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+};
+
+/**
  * 🔴 INVARIANT 2: the agent never creates its own work. A proposal is labelled
  * `triage`, which `buildJql` excludes explicitly, and it never receives a ready
  * marker — so the only route from proposal to work runs through a human.
@@ -689,7 +706,7 @@ export const triageItemFor = (proposal) => {
   validateProposal(proposal);
   const fingerprint = fingerprintOf(proposal);
   return {
-    title: `proposal: ${proposal.change}`,
+    title: boundedSummary(`proposal: ${proposal.change}`),
     body: [
       `- finding — ${proposal.finding}`,
       `- part to change — ${proposal.part}`,

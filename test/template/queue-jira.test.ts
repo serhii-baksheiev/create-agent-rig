@@ -916,6 +916,134 @@ describe('hardening beyond the endpoint (AR-54)', () => {
       ).toHaveLength(0);
     });
   });
+
+  // RP-121: Jira rejects a summary over 255 characters. Measured against a live
+  // board (journal/2026-09.md, "0.9.1 loop opened on the published 0.9.0…",
+  // the 0.9.1 loop's first checkpoint, 2026-09-14): `proposeTriage`'s unbounded
+  // `title: proposal: ${change}` answered
+  //   400 {"errors":{"summary":"Summary can't exceed 255 characters."}}
+  // and created nothing. Chosen shape (acceptance option 2): the POSTed summary
+  // is derived from a bounded prefix of `change`; the full `change` text stays
+  // in the description body, which already carries it via
+  // `- proposed change — ${change}`.
+  describe('RP-121: the triage summary never exceeds Jira’s 255-character limit', () => {
+    // Recorded verbatim, so a reader can compare it against a fresh probe rather
+    // than trust this comment forever.
+    const JIRA_SUMMARY_TOO_LONG_BODY = {
+      errors: { summary: "Summary can't exceed 255 characters." },
+    };
+
+    interface Proposal {
+      finding: string;
+      part: string;
+      change: string;
+      proof: string;
+    }
+
+    const proposalWith = (change: string): Proposal => ({
+      finding: 'a proposal whose change text is very long',
+      part: 'templates/agent-os/universal/.claude/scripts/queue/jira.mjs — triageItemFor',
+      change,
+      proof: 'proposeTriage resolves ok against a scripted 255-char-limited tracker',
+    });
+
+    it('bounds the POSTed summary so a 2186-character change still files, keeping the full text in the body', async () => {
+      // The length of the `change` in the original incident, as the RP-121 ticket
+      // body states it (moved from AIC-71, from the AIC journal).
+      const bigChange = 'x'.repeat(2186);
+
+      globalThis.fetch = ((input: unknown, init: { method?: string; body?: string } = {}) => {
+        const body = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+        calls.push({
+          url: String(input),
+          method: String(init.method ?? 'GET'),
+          body,
+          signal: null,
+        });
+        const route = new URL(String(input)).pathname;
+        if (route === '/rest/api/3/search/jql') {
+          return Promise.resolve(reply({ status: 200, json: { issues: [] } }));
+        }
+        if (route === '/rest/api/3/issue' && init.method === 'POST') {
+          const fields = (body?.fields ?? {}) as { summary?: string };
+          const summary = String(fields.summary ?? '');
+          return Promise.resolve(
+            summary.length > 255
+              ? reply({ status: 400, statusText: 'Bad Request', json: JIRA_SUMMARY_TOO_LONG_BODY })
+              : reply({ status: 201, json: { key: 'RP-900' } }),
+          );
+        }
+        return Promise.resolve(reply({ status: 200, json: {} }));
+      }) as unknown as typeof globalThis.fetch;
+
+      const { proposeTriage } = await load('jira.mjs');
+      const result = (await proposeTriage(proposalWith(bigChange), {
+        project: 'RP',
+        existing: [],
+        env: CREDENTIALS,
+      })) as { ok: boolean; id?: string };
+
+      expect(result.ok).toBe(true);
+      expect(result.id).toBe('RP-900');
+
+      const createCalls = calls.filter(
+        (call) => call.method === 'POST' && new URL(call.url).pathname === '/rest/api/3/issue',
+      );
+      expect(createCalls, 'exactly one issue-create POST was expected').toHaveLength(1);
+
+      const posted = createCalls[0]!.body as {
+        fields: {
+          summary: string;
+          description: { content: Array<{ content: Array<{ text: string }> }> };
+        };
+      };
+      expect(posted.fields.summary.length).toBeLessThanOrEqual(255);
+      expect(posted.fields.summary.startsWith('proposal: ')).toBe(true);
+      const summaryPrefix = posted.fields.summary.slice('proposal: '.length);
+      expect(bigChange.startsWith(summaryPrefix)).toBe(true);
+
+      const descriptionText = posted.fields.description.content[0]?.content[0]?.text ?? '';
+      expect(descriptionText).toContain(bigChange);
+    });
+
+    it('keeps the title unchanged when the unbounded form already fits within 255', async () => {
+      const { triageItemFor } = await load('jira.mjs');
+      // 'proposal: '.length (10) + 245 === 255
+      const change = 'y'.repeat(245);
+      const item = triageItemFor(proposalWith(change)) as { title: string };
+      expect(item.title).toBe(`proposal: ${change}`);
+      expect(item.title.length).toBe(255);
+    });
+
+    it('shortens the title when one more character would exceed 255', async () => {
+      const { triageItemFor } = await load('jira.mjs');
+      const change = 'y'.repeat(246);
+      const item = triageItemFor(proposalWith(change)) as { title: string };
+      expect(item.title).toBe(`proposal: ${'y'.repeat(245)}`);
+    });
+
+    it('keeps the full change in the body and a stable fingerprint regardless of the title bound', async () => {
+      const { triageItemFor } = await load('jira.mjs');
+      const change = 'z'.repeat(2186);
+      const proposal = proposalWith(change);
+      const first = triageItemFor(proposal) as { body: string; fingerprint: string };
+      const second = triageItemFor(proposal) as { body: string; fingerprint: string };
+      expect(first.body).toContain(change);
+      expect(first.fingerprint.length).toBeGreaterThan(0);
+      expect(first.fingerprint).toBe(second.fingerprint);
+    });
+
+    it('never splits a UTF-16 surrogate pair when bounding an emoji-heavy change', async () => {
+      const { triageItemFor } = await load('jira.mjs');
+      // 300 emoji is 600 UTF-16 code units — well past the 255-char bound.
+      const change = '😀'.repeat(300);
+      const item = triageItemFor(proposalWith(change)) as { title: string };
+      const loneSurrogate =
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+      expect(item.title.length).toBeLessThanOrEqual(255);
+      expect(item.title).not.toMatch(loneSurrogate);
+    });
+  });
 });
 
 describe('credentials and the operations that write', () => {
