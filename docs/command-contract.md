@@ -703,6 +703,70 @@ never asked.
   and no revision behind it; the conclusion rests on `load.sh:14-15` and
   `load.ps1:5-6` instead.
 
+## uninstall (RP-181)
+
+`uninstall [dir] [--dry-run] [--json]` removes what a rig installed from `dir`
+(default: the current directory) — file by file, against the evidence the
+manifest carries and nothing else. It is not a member of the foundation verb
+set above, and it does not use that set's five-code exit table: like `create`,
+`init` and `upgrade`, it exits 0 on success (including "nothing to do") and 1
+on a refusal or a partial failure. `## Conformance today`'s row on `create`,
+`init`, `setup` and `upgrade` speaking prose predates this command and is
+unchanged by it — `uninstall` speaks prose too, and additionally answers
+`--json` the way `--version --json` does: one JSON object, nothing else on
+stdout, `schemaVersion` at the top level, additive evolution.
+
+`### Payload rules specific to the shim`'s "no file paths" rule is, as its own
+heading says, specific to the shim — the concern behind it is a payload
+travelling somewhere a path could point at a credential. `uninstall`'s own
+payload rule is different and looser: its paths are ordinary
+repository-relative rule-file paths, already fully visible in the plain-prose
+plan `upgrade` prints today, so `removed`, `absent`, `preserved`, `completed`,
+`remaining` and `error` may all name one. Recognised structurally, the way a
+doctor record is, by the field that makes a payload this shape:
+`command: "uninstall"` — never by a bare `removed` or `preserved` key alone.
+Pinned in `test/template/command-contract.test.ts` › "exempts uninstall's own
+path fields only on its own payload, never by field name alone".
+
+Per manifest path, in order: absent on disk is `absent`; bytes matching the
+recorded hash exactly is `remove`; bytes matching only after normalising line
+endings (CRLF/LF, checked both directions against the one recorded hash — this
+command holds no other record of the original bytes) is `preserved` with
+reason `line-endings-only`; any other mismatch is `preserved` with reason
+`modified`. A path under `manifest.kept` is always `preserved`, reason
+`user-owned (kept by init)`. `.claude/settings.json` and `.codex/hooks.json`
+use whole-file ownership only — no line-ending leniency, no `kept` check — so a
+hash match is `remove` and anything else is `preserved` with reason
+`wiring-modified — remove the rig's hook entries by hand`, naming the hook
+files the current wiring still references. A manifest path that resolves
+outside `dir` refuses the whole run before anything is touched, the same
+containment `upgrade` applies on write.
+
+No manifest on disk is success with nothing to do (`removed`, `absent` and
+`preserved` all empty, `manifestRemoved: false`), which is also what makes a
+repeat run idempotent — the first run's removals leave no manifest for the
+second to find. A manifest that exists but will not parse is refused outright:
+nothing is removed, exit 1.
+
+The manifest is deleted last, only once every `remove` action has succeeded.
+On the first failure the run stops where it is, keeps the manifest, and the
+payload carries `completed` (what finished), `remaining` (what a re-run still
+owes, including the path that failed) and `error`. `--dry-run` performs none of
+it and reports the same `removed`/`absent`/`preserved` lists with
+`manifestRemoved: false`.
+
+Removing a manifest-owned file also removes any parent directory that becomes
+empty as a result, walking up from that file and never past `dir` itself — with
+one named exception: `.rig/` is never removed, empty or not, because it holds
+evidence (claims, run state) this command has no ownership evidence for and
+therefore never inspects. The one manifest-owned path this repository's own
+`init` writes under `.rig/` (`.rig/revalidation.json`) is removed like any
+other file when its hash matches; the directory itself is not.
+
+Implementation: `packages/cli/src/commands/uninstall.ts` (`planUninstall`,
+`applyUninstall`), wired in `packages/cli/src/index.ts`. Pinned in
+`packages/cli/test/uninstall.test.ts` and `test/e2e/uninstall.test.ts`.
+
 ## Fixtures
 
 Examples, one per shape the contract names. They are illustrative payloads, not
@@ -795,5 +859,46 @@ the degradation list is what those counters oblige:
   "counters": { "eligible": 7, "injected": 4, "budgetSkipped": 3, "invalid": 0 },
   "budget": { "limitBytes": 8192, "usedBytes": 7681 },
   "degradation": ["budget-skipped"]
+}
+```
+
+`uninstall --json`, one file preserved for each of the three reasons this
+command reports, and two removed:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "absent": [],
+  "preserved": [
+    { "path": ".claude/rules/invariants.md", "reason": "modified" },
+    { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
+    { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
+  ],
+  "manifestRemoved": true
+}
+```
+
+The same run had it failed partway through, on the second file — exit 1, the
+manifest kept:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "absent": [],
+  "preserved": [
+    { "path": ".claude/rules/invariants.md", "reason": "modified" },
+    { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
+    { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
+  ],
+  "manifestRemoved": false,
+  "completed": [".claude/hooks/block-no-verify.mjs"],
+  "remaining": [".claude/settings.json"],
+  "error": "EPERM: operation not permitted, unlink '.claude/settings.json'"
 }
 ```
