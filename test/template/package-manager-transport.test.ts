@@ -6,6 +6,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { packageManagerInvocation, run, runPackageManager } from '../e2e/run.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
+// RP-158: each case of the `it.each` below is one package-manager CLI start,
+// and nothing else. On the hosted windows-latest full-suite job the pnpm start
+// took 4 670 ms and 7 023 ms, then 16 525 ms in a run where the whole host
+// stalled, which timed out at the template project's 15 000 ms. npm and npx
+// took 123 ms and 152 ms in that run. So these cases carry their own budget
+// and the file-wide figure stays where it is. Pinned in vitest-timeouts.test.ts
+// › "carries its own budget, declared once by name and passed as that
+// parametrised case's options".
+const PACKAGE_MANAGER_START_CASE_TIMEOUT_MS = 60_000;
+
 const literalArgs = ['space value', '&|<>^%!()', 'single "double"', ''];
 
 const windowsNodeExecutable = (work: string): string =>
@@ -27,6 +37,7 @@ describe('package-manager transport', () => {
 
   it.each(['npm', 'pnpm', 'npx'] as const)(
     'runs the installed %s CLI directly and returns its version',
+    { timeout: PACKAGE_MANAGER_START_CASE_TIMEOUT_MS },
     async (manager) => {
       const { stdout } = await runPackageManager(manager, ['--version'], { cwd: work });
 
