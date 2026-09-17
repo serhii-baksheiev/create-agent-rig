@@ -1,7 +1,7 @@
 name: E2E
 
-# The expensive suite: the full test run on Linux and Windows, the e2e installs
-# and the benchmark. Hosted-first by ruling (docs/runners.md): both jobs run on
+# The expensive suite: the full test run on Linux and Windows and the e2e
+# installs. Hosted-first by ruling (docs/runners.md): both jobs run on
 # GitHub-hosted images unless the dispatch input `runner_mode` or the
 # repository variable `RUNNER_MODE` says `self-hosted` — the same jobs and the
 # same commands either way, only `runs-on` differs, and every job prints which
@@ -62,7 +62,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
-  # The whole suite on Windows — unit, template, benchmark and e2e, no file
+  # The whole suite on Windows — unit, template and e2e, no file
   # excluded by name (AR-93) — plus the cold template artifact check. Not on
   # pull requests: the PR path checks the unit project in ci.yml's
   # windows-smoke job; this job is the Windows evidence for master, the

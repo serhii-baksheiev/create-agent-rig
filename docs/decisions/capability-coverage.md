@@ -1,7 +1,15 @@
 # Capability coverage: probe once, maintain passively, never raise on traffic
 
+⚠ **RP-178 removed the code this record documents.** `packages/cli/src/policy/`
+(RP-36/RP-76's declaration, registry, decision-record, probe, coverage and
+evidence-matrix modules) shipped nothing a CLI command or installed hook ever
+called at runtime — `docs/compatibility.md` has the verified consumer graph —
+and was deleted as dead surface in the 0.10.0 reduction. This record is kept as
+the rationale for a design this repository tried and retired, not as a
+description of current code.
+
 Extracted rationale for `packages/cli/src/policy/core/{probe,coverage,evidence-matrix}.ts` (RP-36).
-The rules themselves are in those files' headers; this record is why they are
+The rules themselves were in those files' headers; this record is why they were
 those rules and not the obvious alternatives.
 
 ## The question

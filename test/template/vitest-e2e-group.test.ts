@@ -13,8 +13,12 @@ import config from '../../vitest.config.js';
 // file had finished, so the runner was slow on its own too: this grouping
 // removes the suite's own install load from beside the template tests, and
 // nothing more. The e2e installs get their own sequence group, after unit and
-// template and before the benchmark (which the benchmark pin already requires
-// to run last).
+// template.
+//
+// RP-178 removed the policy benchmark project this file used to order itself
+// against (the benchmark ran last; see vitest.config.ts and
+// docs/compatibility.md) — the ordering claim below is against unit and
+// template only now.
 
 interface ProjectConfig {
   name?: string;
@@ -48,7 +52,7 @@ function findProject(name: string): Project | undefined {
   return projects.find((p) => p.test.name === name);
 }
 
-describe('the e2e installs run in their own sequence group, after unit/template and before benchmark', () => {
+describe('the e2e installs run in their own sequence group, after unit/template', () => {
   it('gives the e2e project a groupOrder greater than unit and template', () => {
     const e2e = findProject('e2e');
     expect(e2e, "a vitest project named 'e2e' should exist").toBeDefined();
@@ -70,21 +74,6 @@ describe('the e2e installs run in their own sequence group, after unit/template 
     expect(e2eOrder ?? Number.NEGATIVE_INFINITY).toBeGreaterThan(templateOrder);
   });
 
-  it('runs the e2e project before the benchmark project, which already runs last', () => {
-    const e2e = findProject('e2e');
-    const benchmark = findProject('benchmark');
-    expect(e2e, "a vitest project named 'e2e' should exist").toBeDefined();
-    expect(benchmark, "a vitest project named 'benchmark' should exist").toBeDefined();
-
-    const e2eOrder = e2e?.test.sequence?.groupOrder ?? 0;
-    const benchmarkOrder = benchmark?.test.sequence?.groupOrder;
-    expect(benchmarkOrder, 'benchmark project should declare test.sequence.groupOrder').toEqual(
-      expect.any(Number),
-    );
-
-    expect(benchmarkOrder ?? Number.NEGATIVE_INFINITY).toBeGreaterThan(e2eOrder);
-  });
-
   it('keeps the e2e project on its existing install glob and global setup', () => {
     const e2e = findProject('e2e');
     expect(e2e, "a vitest project named 'e2e' should exist").toBeDefined();
@@ -92,8 +81,8 @@ describe('the e2e installs run in their own sequence group, after unit/template 
     expect(e2e?.test.globalSetup).toEqual(['test/e2e/pack-once.ts']);
   });
 
-  it('keeps exactly the four projects unit, template, benchmark and e2e', () => {
+  it('keeps exactly the three projects unit, template and e2e', () => {
     const names = projects.map((p) => p.test.name).sort();
-    expect(names).toEqual(['benchmark', 'e2e', 'template', 'unit']);
+    expect(names).toEqual(['e2e', 'template', 'unit']);
   });
 });
