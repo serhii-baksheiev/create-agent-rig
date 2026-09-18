@@ -77,7 +77,7 @@ Evidence on exact current head `58ceb4e`:
 
 The previous SHIP verdict is stale because it names `826f75a`, not `58ceb4e`.
 PR #230 therefore remains draft/HOLD even though current-head checks are green.
-The surviving local gate state now records **4 rounds against a cap of 3** for
+The surviving local gate state now records **5 rounds against a cap of 3** for
 this branch, and `gate-round` refuses another round. Do not edit or bypass that
 counter, do not reuse the old SHIP, and do not merge.
 
@@ -147,7 +147,7 @@ repository artifact or release acceptance criterion.
 
 The active owner-only blocker is authorization for another RP-177 gate cycle on
 exact head `58ceb4e`, including explicit reset/disposition of the local counter
-that records 4 rounds against a cap of 3. Other owner-only actions remain npm
+that records 5 rounds against a cap of 3. Other owner-only actions remain npm
 publication, force-pushing published/shared history, external irreversible
 deletion, secrets/credentials, paid operations or third-party terms, owner-only
 settings, and a material change to the accepted 0.10.0 boundary.
