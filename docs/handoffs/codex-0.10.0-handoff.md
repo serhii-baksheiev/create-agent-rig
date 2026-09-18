@@ -77,15 +77,16 @@ Evidence on exact current head `58ceb4e`:
 
 The previous SHIP verdict is stale because it names `826f75a`, not `58ceb4e`.
 PR #230 therefore remains draft/HOLD even though current-head checks are green.
-The branch gate counter is **3/3**. Do not call `gate-round` again, do not reuse
-the old SHIP, and do not merge.
+The surviving local gate state now records **4 rounds against a cap of 3** for
+this branch, and `gate-round` refuses another round. Do not edit or bypass that
+counter, do not reuse the old SHIP, and do not merge.
 
 **NEXT ACTION:** the owner must explicitly authorize a new independent RP-177
-gate cycle for exact head `58ceb4e9f37bac3be1eb7cc8450170fc38714325`.
-After authorization, re-read PR #230/Jira/master, count the reset round as
-directed, run exact-head code/security/prose reviews and coverage, update the PR
-body, mark it ready only on SHIP, and merge only if the named exact-head checks
-remain green.
+gate cycle for exact head `58ceb4e9f37bac3be1eb7cc8450170fc38714325`
+**and direct the reset/disposition of the recorded over-cap counter**. After
+authorization, re-read PR #230/Jira/master, follow that counter direction, run
+exact-head code/security/prose reviews and coverage, update the PR body, mark it
+ready only on SHIP, and merge only if the named exact-head checks remain green.
 
 ### PR #227 — RP-178 compatibility matrix
 
@@ -145,7 +146,8 @@ repository artifact or release acceptance criterion.
 ## 5. Owner-only conditions
 
 The active owner-only blocker is authorization for another RP-177 gate cycle on
-exact head `58ceb4e`. Other owner-only actions remain npm publication,
-force-pushing published/shared history, external irreversible deletion,
-secrets/credentials, paid operations or third-party terms, owner-only settings,
-and a material change to the accepted 0.10.0 boundary.
+exact head `58ceb4e`, including explicit reset/disposition of the local counter
+that records 4 rounds against a cap of 3. Other owner-only actions remain npm
+publication, force-pushing published/shared history, external irreversible
+deletion, secrets/credentials, paid operations or third-party terms, owner-only
+settings, and a material change to the accepted 0.10.0 boundary.
