@@ -30,9 +30,11 @@ npx create-agent-rig init --dry-run  # print the plan, write nothing
 ```
 
 `create <dir>` is a thin convenience wrapper over exactly this: make the
-directory, run `init` inside it, then commit the pristine baseline. Pinned in
-`packages/cli/test/create.test.ts` › "initialises git with a pristine-template
-baseline commit".
+directory, initialize Git, run `init` inside it, then commit the pristine
+baseline. The ordering is pinned in `packages/cli/test/create-order.test.ts` ›
+"initialises Git before handing the directory to init"; the baseline is pinned
+in `packages/cli/test/create.test.ts` › "initialises git with a
+pristine-template baseline commit".
 
 `init` drops in the autonomy tiers, stop rules, workflow, and the enforcement
 hooks — **wired** for both harnesses, in `.claude/settings.json` and

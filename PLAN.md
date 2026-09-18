@@ -12,9 +12,9 @@
 
 `create-agent-rig` configures Claude Code and Codex repositories. It installs
 and upgrades a portable harness payload, preserves user changes through a
-manifest with raw-byte ownership hashes, reports conflicts, and composes
-supported plugins, MCP servers, skills and executable subsystems through their
-official installers.
+manifest with raw-byte ownership hashes, and reports conflicts. Native-plugin
+and MCP composition through supported official installers belongs to the
+remaining 0.10.0 work (RP-179 and RP-22), not the current implementation.
 
 It is not an application generator. A fresh `create <dir>` does only three
 things: creates the directory, initializes Git, and runs the same universal

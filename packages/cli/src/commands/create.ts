@@ -43,9 +43,9 @@ const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 
 /**
  * `create <dir>` — a thin convenience wrapper (RP-177): make the directory,
- * run the same install `init` runs inside it, then commit the pristine
- * baseline. There is only one payload flavour; this command's entire value is
- * not having to `mkdir`, `cd` and run `init` by hand.
+ * initialize Git, run the same install `init` runs inside it, then commit the
+ * pristine baseline. There is only one payload flavour; this command's entire
+ * value is not having to `mkdir`, `git init`, `cd` and run `init` by hand.
  */
 export async function createProject(dirArg: string, options: CreateOptions): Promise<CreateResult> {
   const projectDir = path.resolve(options.cwd, dirArg);
