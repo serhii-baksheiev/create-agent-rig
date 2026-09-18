@@ -61,12 +61,16 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
   await ensureEmptyOrAbsent(projectDir);
   await mkdir(projectDir, { recursive: true });
 
+  if (options.git !== false) {
+    await initGitRepository(projectDir);
+  }
+
   await initProject(projectDir, {
     project: { name: projectName, scope: projectName, region: '' },
   });
 
   if (options.git !== false) {
-    await initGitBaseline(projectDir);
+    await commitGitBaseline(projectDir);
   }
 
   return { projectDir, projectName };
@@ -74,15 +78,27 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
 
 const run = promisify(execFile);
 
-async function initGitBaseline(projectDir: string): Promise<void> {
+const gitInvocation = (projectDir: string) => ({
+  quiet: ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false'],
+  where: { cwd: projectDir, env: gitEnv() },
+});
+
+async function initGitRepository(projectDir: string): Promise<void> {
+  const { quiet, where } = gitInvocation(projectDir);
+  try {
+    await run('git', [...quiet, 'init', '--quiet'], where);
+  } catch {
+    // git missing or unusable — generation never fails on this.
+  }
+}
+
+async function commitGitBaseline(projectDir: string): Promise<void> {
   // Disable git's background maintenance for these one-shot commands: a commit
   // can otherwise fork an auto-gc / maintenance process that keeps writing to
   // .git/objects/pack after we return — a non-deterministic tail that races any
   // caller cleaning up the directory, and pointless work on a one-commit repo.
-  const quiet = ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false'];
-  const where = { cwd: projectDir, env: gitEnv() };
+  const { quiet, where } = gitInvocation(projectDir);
   try {
-    await run('git', [...quiet, 'init', '--quiet'], where);
     await run('git', [...quiet, 'add', '-A'], where);
     // Explicit identity: the baseline must commit even where git has no
     // global user configured (fresh machines, CI). --no-verify here shields

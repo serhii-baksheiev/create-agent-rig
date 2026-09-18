@@ -49,9 +49,6 @@ package**, into `scripts/dogfood/` — a repo-local overlay `sync-agent-os.mjs`
 composes into this repository's own rulebook, same as before, just no longer
 a template any generated rig receives.
 
-No other user-facing contract changes: the manifest schema, `--version
---json`, `setup`, and `memory` are unchanged.
-
 ## 0.9.1
 
 **A patch, numbered by the owner.** Every entry corrects existing behaviour;
