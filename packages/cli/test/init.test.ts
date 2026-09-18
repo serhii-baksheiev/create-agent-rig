@@ -307,6 +307,20 @@ describe('initProject — every skipped path gets a manifest classification (RP-
     expect(manifest?.files['CLAUDE.md']).toBeTruthy();
   });
 
+  it('records a kept file by its exact raw bytes, even when those bytes are not valid UTF-8', async () => {
+    const rel = '.claude/rules/workflow.md';
+    const raw = Buffer.from([0xc3, 0x28, 0x0a]);
+    await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(repo, ...rel.split('/')), raw);
+
+    await initProject(repo, {});
+
+    const manifest = await readManifest(repo);
+    expect(sha256(raw)).not.toBe(sha256(raw.toString('utf8')));
+    expect(manifest?.kept?.[rel]).toBe(sha256(raw));
+    expect(manifest?.files[rel]).toBeUndefined();
+  });
+
   it('re-running init refreshes the hash of a path it skips again, and keeps recording it in `kept`', async () => {
     await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
     await writeFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'CUSTOM V1');
@@ -359,7 +373,7 @@ describe('initProject — every skipped path gets a manifest classification (RP-
     expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
   });
 
-  it('records nothing under `kept` for a symlink at a payload path, and does not hash its target', async (context) => {
+  it('refuses a symlink at a payload path and does not hash or change its target', async (context) => {
     const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
     try {
       const target = path.join(outside, 'secret.txt');
@@ -373,13 +387,9 @@ describe('initProject — every skipped path gets a manifest classification (RP-
         return;
       }
 
-      const result = await initProject(repo, {});
-      expect(result.skipped).toContain('.claude/rules/workflow.md');
-
-      const manifest = await readManifest(repo);
-      expect(manifest).not.toBeNull();
-      expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
-      expect(Object.values(manifest?.kept ?? {})).not.toContain(sha256('OUTSIDE THE REPO'));
+      await expect(initProject(repo, {})).rejects.toThrow(InitError);
+      expect(await readFile(target, 'utf8')).toBe('OUTSIDE THE REPO');
+      expect(await readManifest(repo)).toBeNull();
     } finally {
       await removeFixture(outside);
     }
@@ -395,5 +405,62 @@ describe('initProject — every skipped path gets a manifest classification (RP-
     expect(manifest).not.toBeNull();
     expect(manifest?.kept?.['.claude/rules/workflow.md']).toBeUndefined();
     expect(manifest?.files['.claude/rules/workflow.md']).toBeUndefined();
+  });
+});
+
+// A payload path is not merely a name: a symlink at the leaf or in a parent
+// component can make that name resolve outside the repository. `init` is an
+// adoption command and must refuse before any such destination can be opened.
+describe('initProject — symlink confinement', () => {
+  it('refuses a final payload symlink without creating its dangling target outside the repo', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      const danglingTarget = path.join(outside, 'must-not-exist.md');
+      await mkdir(path.join(repo, '.claude', 'rules'), { recursive: true });
+      try {
+        await symlink(danglingTarget, path.join(repo, '.claude', 'rules', 'workflow.md'), 'file');
+      } catch {
+        // Windows hosts without the symlink privilege cannot exercise this;
+        // Linux CI and WSL must run it.
+        context.skip();
+        return;
+      }
+
+      await expect(initProject(repo, {})).rejects.toThrow(InitError);
+      await expect(readFile(danglingTarget, 'utf8')).rejects.toThrow();
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('refuses a symlinked parent component without writing the payload outside the repo', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      await mkdir(path.join(repo, '.claude'), { recursive: true });
+      try {
+        await symlink(outside, path.join(repo, '.claude', 'rules'), 'dir');
+      } catch {
+        // Windows hosts without the symlink privilege cannot exercise this;
+        // Linux CI and WSL must run it.
+        context.skip();
+        return;
+      }
+
+      await expect(initProject(repo, {})).rejects.toThrow(InitError);
+      await expect(readFile(path.join(outside, 'workflow.md'), 'utf8')).rejects.toThrow();
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+});
+
+describe('initProject — a rig it already owns', () => {
+  it('is idempotent: a second init skips an unchanged rig-owned CLAUDE.md', async () => {
+    await initProject(repo, {});
+
+    const second = await initProject(repo, {});
+
+    expect(second.skipped).toContain('CLAUDE.md');
+    expect(second.skipped).toContain('AGENTS.md');
   });
 });

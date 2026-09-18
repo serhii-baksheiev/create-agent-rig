@@ -217,17 +217,16 @@ describe('the committed ledger against this repository', () => {
   });
 });
 
-// The recognition step reverses substitution, and it can only reverse tokens
-// that survive the round trip. This pins the limit the reversal documents:
-// `__PROJECT_SCOPE__` and `@app/` substitute to the same text as
-// `__PROJECT_NAME__`, so a layer using them could never be recognised again.
+// The universal payload supports only `__PROJECT_NAME__`. This pins the source
+// tree as well as the renderer: an old app token must not silently ship as
+// literal text merely because the substitution code no longer recognises it.
 //
 // It walks the tree itself rather than asking git: the file that introduces the
 // violation is, by definition, the one being written right now — and `git grep`
 // does not see an untracked file. It also cannot pass by failing, which is how
 // a grep-based guard goes quietly green forever.
-describe('the agent-os layer stays reversible', () => {
-  const IRREVERSIBLE = ['__PROJECT_SCOPE__', '@app/'];
+describe('the agent-os layer uses only the supported token', () => {
+  const UNSUPPORTED = ['__PROJECT_SCOPE__', '__REGION__', '@app/'];
 
   const walk = async (dir: string): Promise<string[]> => {
     const found: string[] = [];
@@ -247,7 +246,7 @@ describe('the agent-os layer stays reversible', () => {
     const offenders: string[] = [];
     for (const file of files) {
       const content = await readFile(file, 'utf8');
-      if (IRREVERSIBLE.some((token) => content.includes(token))) {
+      if (UNSUPPORTED.some((token) => content.includes(token))) {
         offenders.push(path.relative(repoRoot, file));
       }
     }
@@ -256,6 +255,6 @@ describe('the agent-os layer stays reversible', () => {
 
   it('would catch a violation — the matcher itself, not just its result', () => {
     const sample = 'import { thing } from "@app/core";';
-    expect(IRREVERSIBLE.some((token) => sample.includes(token))).toBe(true);
+    expect(UNSUPPORTED.some((token) => sample.includes(token))).toBe(true);
   });
 });

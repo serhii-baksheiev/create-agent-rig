@@ -57,9 +57,10 @@ const agentOsDir = path.join(repoRoot, 'templates', 'agent-os');
  *   they are clean today. The `/\.mdx?$/` test below is what excludes them, and
  *   this bullet is why.
  *
- * `templates/agent-os/init/*.md` was on this list and is NOT an exclusion any
- * more: it is markdown, and it is the `CLAUDE.md` an `init`-installed rig
- * receives, so it is scanned.
+ * RP-177 retired the `init` override layer and the per-stack overlays this
+ * scan used to widen across (`templates/agent-os/init/`,
+ * `templates/agent-os/stack/*`) — there is exactly one payload now,
+ * `templates/agent-os/universal`, and this file's scope narrowed with it.
  */
 
 /**
@@ -94,11 +95,10 @@ const walk = (dir: string): string[] => {
  * Two shapes, because a rig is instructed by two:
  *
  * 1. the rules, skills and agent specs of every layer, in both harness trees;
- * 2. the **top-level instruction markdown of each layer** — `CLAUDE.md`,
- *    `AGENTS.md`, `PLAN.md`, `journal/README.md`, and the `init` layer's own
- *    `CLAUDE.md`/`AGENTS.md`. The first of those is the document a generated
- *    rig reads before any other, so a scan that skipped it would open every
- *    file except the one a downstream reviewer opens first.
+ * 2. the **top-level instruction markdown of the layer** — `CLAUDE.md`,
+ *    `AGENTS.md`, `PLAN.md`, `journal/README.md`. It is the document a
+ *    generated rig reads before any other, so a scan that skipped it would
+ *    open every file except the one a downstream reviewer opens first.
  */
 const neutralSurface = (): string[] =>
   walk(agentOsDir)
@@ -106,11 +106,9 @@ const neutralSurface = (): string[] =>
     .filter(
       (rel) =>
         (/\/(\.claude|\.agents)\/(rules|skills|agents)\//.test(rel) ||
-          // a layer's own instruction markdown, at the layer root or one
+          // the layer's own instruction markdown, at the layer root or one
           // directory under it, but never inside a harness tree or docs/
-          /^templates\/agent-os\/(universal|init|stack\/[^/]+)\/([^/]+\/)?[^/]+\.mdx?$/.test(
-            rel,
-          )) &&
+          /^templates\/agent-os\/universal\/([^/]+\/)?[^/]+\.mdx?$/.test(rel)) &&
         !/\/(docs|\.codex)\//.test(rel) &&
         /\.mdx?$/.test(rel),
     )
@@ -123,9 +121,7 @@ describe('the generator-neutral surface names no ticket of this repository', () 
     // both harnesses, or the projection quietly stopped being covered
     expect(files.some((f) => f.includes('/.claude/'))).toBe(true);
     expect(files.some((f) => f.includes('/.agents/'))).toBe(true);
-    // and the stack overlays, not only the universal layer
-    expect(files.some((f) => f.includes('/stack/'))).toBe(true);
-    // and each layer's own top-level instruction markdown — named one by one,
+    // and the layer's own top-level instruction markdown — named one by one,
     // because "the surface is non-empty" would still hold if the widening that
     // brought these in were reverted, and that is exactly how a guard goes back
     // to opening every file except the one read first.
@@ -134,8 +130,6 @@ describe('the generator-neutral surface names no ticket of this repository', () 
       'templates/agent-os/universal/AGENTS.md',
       'templates/agent-os/universal/PLAN.md',
       'templates/agent-os/universal/journal/README.md',
-      'templates/agent-os/init/CLAUDE.md',
-      'templates/agent-os/init/AGENTS.md',
     ]) {
       expect(files, `${rel} is instruction a rig receives`).toContain(rel);
     }

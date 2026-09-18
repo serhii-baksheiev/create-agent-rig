@@ -43,7 +43,7 @@ export async function collectGovernance(projectDir: string): Promise<GovernanceS
     // directory, and counting a config file as an enforced hook would make the
     // screen overstate the one thing this tool actually sells.
     hooks: (await names(path.join(claude, 'hooks'), /\.mjs$/, /\.mjs$/)).map(
-      // guard-core-purity → "core purity": the mechanism, not the filename
+      // guard-secret-file → "secret file": the mechanism, not the filename
       (hook) => HOOK_LABELS[hook] ?? hook.replace(/^(guard|block)-/, '').replaceAll('-', ' '),
     ),
     skills: await names(path.join(claude, 'skills'), /$^/),
@@ -52,7 +52,6 @@ export async function collectGovernance(projectDir: string): Promise<GovernanceS
 
 export function renderSummary(
   projectName: string,
-  target: string,
   dirArg: string,
   summary: GovernanceSummary,
   p: Palette,
@@ -63,7 +62,7 @@ export function renderSummary(
   };
 
   return [
-    `Created  ${p.accent(projectName)}  ${p.dim('·')}  ${target}`,
+    `Created  ${p.accent(projectName)}`,
     '',
     row('Rules', summary.rules.length, '.claude/rules/'),
     row('Agents', summary.agents.length, summary.agents.join(', ')),
@@ -72,8 +71,8 @@ export function renderSummary(
     '',
     'Next',
     p.dim(`  cd ${dirArg}`),
-    p.dim('  pnpm install'),
-    p.dim('  pnpm check'),
+    p.dim('  codex'),
+    p.dim('  claude'),
     '',
   ].join('\n');
 }

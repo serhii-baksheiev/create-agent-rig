@@ -14,6 +14,41 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## Unreleased
+
+**Breaking: the application skeletons are removed, exactly as 0.9.0
+announced.** `create <dir>` no longer takes `--target` and no longer
+scaffolds `aws-serverless` or `node-service` — there is one payload, the same
+one `init` installs, and `create` is now a thin wrapper: `mkdir` → `git init`
+→ that install → the pristine baseline commit. The product is a package
+manager for repository-scoped Claude Code and Codex configuration, never an
+application generator (owner ruling, 2026-09-13). The universal layer's
+create-only "architecture group" (`.claude/rules/architecture.md`,
+`guard-core-purity`, `guard-web-boundary`, and the monorepo-shaped
+`CLAUDE.md`/`AGENTS.md` map) is retired along with it — it was an
+application-shape promise a harness configurator has no business making.
+`templates/agent-os/stack/*` (the node-ts and aws-cdk overlays) and
+`templates/agent-os/init/*` (the override layer `init` used to shadow
+`universal` with) are deleted; the init flavour's map and process-only scope
+_is_ the universal layer now.
+
+Migration for a repository this tool already generated: nothing breaks.
+`upgrade` still recognises your rig, still refreshes the files it installed
+and you did not touch, and still leaves your application code alone — it was
+never part of any install set, before or after this release. A path from a
+retired layer (an aws-cdk or node-ts rule, an architecture hook) gets a new
+verdict, `retired`: never written, never deleted, dropped from the manifest,
+and reported as no longer shipped — it is yours now. `upgrade`'s `--dry-run`
+output and its summary line both show a `retired` count when there is one.
+The full pre-0.10 migration path is pinned in `test/e2e/upgrade.test.ts` ›
+"retires the deleted stack overlay, and preserves the application and the
+process layer".
+
+**This repository's own node-ts conventions move out of the shipped
+package**, into `scripts/dogfood/` — a repo-local overlay `sync-agent-os.mjs`
+composes into this repository's own rulebook, same as before, just no longer
+a template any generated rig receives.
+
 ## 0.9.1
 
 **A patch, numbered by the owner.** Every entry corrects existing behaviour;

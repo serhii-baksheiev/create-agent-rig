@@ -201,14 +201,15 @@ Two rules that follow from it:
 | the check | `.claude/hooks/block-no-verify.mjs` |
 | the test | the hook's blocking behaviour, under test |
 
-**Every one of them is an example, not a truth.** Take the rule a generated
-project ships as `guard-core-purity` — "the domain core is pure". It is a good
-rule for the shape that project was generated in; it is not a law of software.
-Where a project has no pure core — a thin CRUD service, a CLI, a data pipeline —
-the right move is to **delete the hook, the rule and its test**, and spend the
-slot on the invariant that project actually has. An inherited rule nobody chose
-is worse than an empty rule file: the empty one is visibly incomplete, the
-inherited one is invisibly wrong.
+**Every one of them is an example, not a truth.** Take a rule like
+`guard-core-purity` — "the domain core is pure". It is a good rule for a
+project shaped with a pure domain core; it is not a law of software, and this
+rig ships none of its own — a rig that configures agent harnesses makes no
+promise about application architecture. Where a project has no pure core — a
+thin CRUD service, a CLI, a data pipeline — the right move is not to borrow one
+anyway: write the invariant the project actually has, with its own hook and
+its own test. An inherited rule nobody chose is worse than an empty rule file:
+the empty one is visibly incomplete, the inherited one is invisibly wrong.
 
 The invariants worth your slots are the ones you can finish this sentence about:
 *"the last time this went wrong, it cost us ___."* If you cannot finish it, you

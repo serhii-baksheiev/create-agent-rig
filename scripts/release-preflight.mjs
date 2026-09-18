@@ -113,9 +113,10 @@ const JUNK_SUFFIXES = ['.tgz'];
  *
  * The credential half is `isCredentialPath`'s answer, which already lowercases
  * every segment and normalises `\` to `/` — so `.ENV`, `.Env.local` and
- * `templates\skeleton\.env` are caught here without this file knowing why. It
+ * `templates\agent-os\.env` are caught here without this file knowing why. It
  * also already exempts the documented placeholder forms (`.env.example`,
- * `.env.sample`, `.env.template`), which a real skeleton is supposed to ship.
+ * `.env.sample`, `.env.template`), which any tracked project is entitled to
+ * ship as ordinary documentation of the variables it needs.
  */
 export const suspiciousTarballEntries = (paths) => {
   const offenders = [];

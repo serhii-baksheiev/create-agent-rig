@@ -2,11 +2,18 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-// AR-65: the seven gate specs make the same promise — end with exactly one
+// AR-65: the gate specs make the same promise — end with exactly one
 // fenced ```json block of the shape `lib/verdict.mjs` defines. The promise is
-// asserted in two different suites (agents.test.ts for the four agents,
-// skills.test.ts for the three skills), so the MECHANICS of reading a spec and
+// asserted in two different suites (agents.test.ts for the agents,
+// skills.test.ts for the skills), so the MECHANICS of reading a spec and
 // of asking the module which words a gate may return live here once.
+//
+// RP-177 retired `cdk-diff-reviewer` along with the aws-cdk stack it lived
+// in — every gate this file still maps to a spec is in the universal,
+// stack-neutral layer. `post-deploy-verify` is a convention a project's own
+// target-specific tooling may implement (`autonomy.md`, "Post-deploy
+// verification"); no default skill ships one, so there is no template spec
+// path to map it to here any more either.
 //
 // 🔴 The vocabulary is imported, never re-listed. A second copy of "what
 // `check-premises` may return" would drift from the module the moment either
@@ -25,14 +32,6 @@ export const GATE_SPEC_PATHS: Readonly<Record<string, string>> = {
   'code-reviewer': path.join(agentOs, 'universal', '.claude', 'agents', 'code-reviewer.md'),
   'prose-reviewer': path.join(agentOs, 'universal', '.claude', 'agents', 'prose-reviewer.md'),
   'security-scanner': path.join(agentOs, 'universal', '.claude', 'agents', 'security-scanner.md'),
-  'cdk-diff-reviewer': path.join(
-    agentOs,
-    'stack',
-    'aws-cdk',
-    '.claude',
-    'agents',
-    'cdk-diff-reviewer.md',
-  ),
   'pr-ship': path.join(agentOs, 'universal', '.claude', 'skills', 'pr-ship', 'SKILL.md'),
   'check-premises': path.join(
     agentOs,
@@ -40,15 +39,6 @@ export const GATE_SPEC_PATHS: Readonly<Record<string, string>> = {
     '.claude',
     'skills',
     'check-premises',
-    'SKILL.md',
-  ),
-  'post-deploy-verify': path.join(
-    agentOs,
-    'stack',
-    'aws-cdk',
-    '.claude',
-    'skills',
-    'post-deploy-verify',
     'SKILL.md',
   ),
 };
@@ -81,12 +71,13 @@ export function verdictExamplesIn(content: string, label: string): Record<string
  * The words `lib/verdict.mjs` lets this gate return.
  *
  * 🔴 A gate the universal vocabulary does not name falls back to the shared
- * list, because that is exactly what the module does with it. The module ships
- * in the stack-neutral layer, so a gate belonging to one stack
- * (`cdk-diff-reviewer`) cannot be named there — `composition.test.ts` refuses a
- * provider term in `universal/` — and it reaches the schema as an unknown gate.
- * Asserting the shared list for it keeps this test honest about what the
- * mechanism checks, rather than pinning a per-gate rule nothing enforces.
+ * list, because that is exactly what the module does with it. Before RP-177
+ * this covered a gate belonging to a stack layer (`cdk-diff-reviewer`), which
+ * the module — shipped in the stack-neutral universal layer — could not name;
+ * that stack is retired, but a future gate outside the universal vocabulary
+ * would land here the same way. Asserting the shared list for it keeps this
+ * test honest about what the mechanism checks, rather than pinning a per-gate
+ * rule nothing enforces.
  */
 export async function verdictWordsFor(gate: string): Promise<readonly string[]> {
   const modulePath = path.join(agentOs, 'universal', '.claude', 'scripts', 'lib', 'verdict.mjs');

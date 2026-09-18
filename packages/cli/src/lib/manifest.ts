@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { isSafeSubstitutionValue } from './safe-path.js';
+import { isSafeSegment, isSafeSubstitutionValue, resolveWritableInside } from './safe-path.js';
 
 /**
  * The install manifest: what this rig installed, at which version, and the
@@ -55,6 +55,34 @@ function isStringRecord(value: unknown): value is Record<string, string> {
     value !== null &&
     !Array.isArray(value) &&
     Object.values(value).every((v) => typeof v === 'string')
+  );
+}
+
+function hasControlCharacter(value: string): boolean {
+  const formatCharacter = /\p{Cf}/u;
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return (
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x2028 ||
+      code === 0x2029 ||
+      formatCharacter.test(character)
+    );
+  });
+}
+
+/**
+ * Manifest keys are both relative paths and user-visible plan text. A path can
+ * be lexically harmless to the filesystem while a newline or ANSI escape in
+ * it forges the plan a maintainer reviews before approving an upgrade.
+ */
+function isSafeManifestPath(value: string): boolean {
+  return (
+    value !== '' &&
+    !path.isAbsolute(value) &&
+    !hasControlCharacter(value) &&
+    value.split('/').every(isSafeSegment)
   );
 }
 
@@ -117,10 +145,17 @@ export function parseManifest(raw: string): RigManifest | null {
   if (project.region !== '' && !isSafeSubstitutionValue(project.region)) return null;
   if (!Array.isArray(m.stacks) || m.stacks.some((s) => typeof s !== 'string')) return null;
   if (m.stacks.some((s) => !isSafeSubstitutionValue(s))) return null;
-  if (!isStringRecord(m.files)) return null;
+  if (!isStringRecord(m.files) || Object.keys(m.files).some((rel) => !isSafeManifestPath(rel))) {
+    return null;
+  }
   // Present in a shape this reader does not accept voids the manifest, exactly
   // as `files` does; absent is every manifest written before the field existed.
-  if (m.kept !== undefined && !isStringRecord(m.kept)) return null;
+  if (
+    m.kept !== undefined &&
+    (!isStringRecord(m.kept) || Object.keys(m.kept).some((rel) => !isSafeManifestPath(rel)))
+  ) {
+    return null;
+  }
   return {
     version: m.version,
     kind: m.kind,
@@ -161,7 +196,14 @@ export async function readManifest(repoDir: string): Promise<RigManifest | null>
 }
 
 export async function writeManifest(repoDir: string, manifest: RigManifest): Promise<void> {
-  const dest = path.join(repoDir, ...MANIFEST_REL.split('/'));
+  const dest = await resolveWritableInside(repoDir, MANIFEST_REL);
+  if (dest === null) {
+    throw new Error(`Refusing to write "${MANIFEST_REL}" through a symlink or outside ${repoDir}.`);
+  }
   await mkdir(path.dirname(dest), { recursive: true });
-  await writeFile(dest, serializeManifest(manifest));
+  const checked = await resolveWritableInside(repoDir, MANIFEST_REL);
+  if (checked === null) {
+    throw new Error(`Refusing to write "${MANIFEST_REL}" through a symlink or outside ${repoDir}.`);
+  }
+  await writeFile(checked, serializeManifest(manifest));
 }

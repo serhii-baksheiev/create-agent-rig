@@ -15,6 +15,7 @@ import {
   skipUnless,
 } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
+import { CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
 
 // 🔴 A `git` spawned from a test inherits the same GIT_DIR a hook exports, so
 // `git init` under pre-commit re-initialises THIS repository rather than the
@@ -57,14 +58,11 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     ).resolves.toBeTruthy();
   });
 
-  it.each(['universal', 'init'])(
-    '%s exposes the same repository map as AGENTS.md',
-    async (layer) => {
-      const dir = path.join(agentOs, layer);
-      await expect(text(dir, 'AGENTS.md')).resolves.toBe(await text(dir, 'CLAUDE.md'));
-      await expect(text(dir, 'AGENTS.md')).resolves.toMatch(/Claude Code and Codex/);
-    },
-  );
+  it.each(['universal'])('%s exposes the same repository map as AGENTS.md', async (layer) => {
+    const dir = path.join(agentOs, layer);
+    await expect(text(dir, 'AGENTS.md')).resolves.toBe(await text(dir, 'CLAUDE.md'));
+    await expect(text(dir, 'AGENTS.md')).resolves.toMatch(/Claude Code and Codex/);
+  });
 
   it('publishes every shared skill through the Codex repository skill location', async () => {
     const claudeSkills = await readdir(path.join(universal, '.claude', 'skills'));
@@ -102,14 +100,12 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       ['universal/prose-reviewer', ['gpt-5.6-terra', 'high']],
       ['universal/code-reviewer', ['gpt-5.6-sol', 'high']],
       ['universal/security-scanner', ['gpt-5.6-sol', 'high']],
-      ['stack/aws-cdk/cdk-diff-reviewer', ['gpt-5.6-sol', 'high']],
     ]);
 
     for (const [profile, [model, effort]] of expected) {
       const [layer, ...parts] = profile.split('/');
       const name = parts.pop()!;
-      const dir =
-        layer === 'stack' ? path.join(agentOs, layer, ...parts) : path.join(agentOs, layer!);
+      const dir = path.join(agentOs, layer!);
       const source = await text(dir, '.codex', 'agents', `${name}.toml`);
       expect(source).toContain(`model = "${model}"`);
       expect(source).toContain(`model_reasoning_effort = "${effort}"`);
@@ -193,7 +189,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     expect(config.hooks.Stop).toHaveLength(1);
     expect(config.hooks.SessionStart).toHaveLength(1);
     expect(editGroup).toBeDefined();
-    expect(editGroup?.hooks.some((hook) => hook.command.includes('guard-core-purity.mjs'))).toBe(
+    expect(editGroup?.hooks.some((hook) => hook.command.includes('guard-secret-file.mjs'))).toBe(
       true,
     );
     for (const groups of Object.values(config.hooks)) {
@@ -570,15 +566,10 @@ function runGuardInput(
   });
 }
 
-describe('Codex apply_patch cannot bypass architecture guards', () => {
-  // 🔴 The remedy an operator is shown, pinned across all three guards. It used
-  // to be chosen by `/shape/i.test(reason)` in six copies — correct only by
-  // coincidence of wording — and nothing asserted either string, so reverting
-  // the whole mechanism left 203 tests green. It now travels as a `remedy` field
-  // on the refusal that earns it, and these are the assertions that keep it
-  // honest: a shape refusal must not send the agent to split the patch, and a
-  // size refusal must.
-  const GUARDS = ['guard-core-purity.mjs', 'guard-web-boundary.mjs', 'guard-secret-file.mjs'];
+describe('Codex apply_patch shape validation keeps its refusal remedy', () => {
+  // The remaining write guard owns this refusal. A shape refusal must not send
+  // the agent to split the patch, while a size refusal must.
+  const GUARDS = ['guard-secret-file.mjs'];
 
   it.each(GUARDS)('%s tells an unreadable shape to resend, not to split', async (guard) => {
     const result = await runGuardInput(guard, {
@@ -648,7 +639,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
   ])(
     'refuses, rather than failing open, when apply_patch command is supplied as %s',
     async (_label, command) => {
-      const result = await runGuardInput('guard-core-purity.mjs', {
+      const result = await runGuardInput('guard-secret-file.mjs', {
         hook_event_name: 'PreToolUse',
         tool_name: 'apply_patch',
         tool_input: { command },
@@ -708,48 +699,32 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     },
   );
 
-  it('blocks impurity added to core', async (ctx) => {
+  it('blocks a credential added through an Update section', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const result = await runGuard(
-      'guard-core-purity.mjs',
+      'guard-secret-file.mjs',
       [
         '*** Begin Patch',
-        '*** Update File: packages/core/src/note.ts',
+        '*** Update File: notes.md',
         '@@',
-        "+import { readFile } from 'node:fs/promises';",
+        `+AWS_KEY=${CLOUD_ACCESS_KEY}`,
         '*** End Patch',
       ].join('\n'),
     );
     expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/core/i);
-  });
-
-  it('blocks a backend import added to the web app', async (ctx) => {
-    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
-    const result = await runGuard(
-      'guard-web-boundary.mjs',
-      [
-        '*** Begin Patch',
-        '*** Update File: apps/web/src/app/page.tsx',
-        '@@',
-        "+import { db } from '@app/db';",
-        '*** End Patch',
-      ].join('\n'),
-    );
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/web/i);
+    expect(result.stderr).toMatch(/credential/i);
   });
 
   it.each([
     {
-      guard: 'guard-core-purity.mjs',
+      guard: 'guard-secret-file.mjs',
       destination: 'packages/core/./src/note.ts',
-      addition: "+import { readFile } from 'node:fs/promises';",
+      addition: `+AWS_KEY=${CLOUD_ACCESS_KEY}`,
     },
     {
-      guard: 'guard-web-boundary.mjs',
-      destination: 'apps/./web/src/app/page.tsx',
-      addition: "+import { db } from '@app/db';",
+      guard: 'guard-secret-file.mjs',
+      destination: 'apps/./web/src/notes.md',
+      addition: `+AWS_KEY=${CLOUD_ACCESS_KEY}`,
     },
   ])('canonicalizes and protects the dotted destination $destination', async (example) => {
     const result = await runGuard(
@@ -770,30 +745,25 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-symlink-add-destination-'));
     const alias = path.join(scratch, 'alias');
-    const core = path.join(
-      repoRoot,
-      'templates',
-      'skeleton',
-      'node-service',
-      'packages',
-      'core',
-      'src',
-    );
+    // Any real, existing in-repository directory — what matters is that the
+    // guard resolves the ADD destination through the symlink and still scans
+    // what lands there, not what the target directory happens to be.
+    const target = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'rules');
 
     try {
-      await symlink(core, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
-          `*** Add File: ${path.relative(repoRoot, path.join(alias, 'impure.ts'))}`,
-          "+import { readFile } from 'node:fs/promises';",
+          `*** Add File: ${path.relative(repoRoot, path.join(alias, 'notes.md'))}`,
+          `+AWS_KEY=${CLOUD_ACCESS_KEY}`,
           '*** End Patch',
         ].join('\n'),
       );
 
       expect(result.code).toBe(2);
-      expect(result.stderr).toMatch(/core/i);
+      expect(result.stderr).toMatch(/credential/i);
     } finally {
       await removeFixture(scratch);
     }
@@ -804,31 +774,25 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-symlink-move-destination-'));
     const source = path.join(scratch, 'impure.ts');
     const alias = path.join(scratch, 'alias');
-    const core = path.join(
-      repoRoot,
-      'templates',
-      'skeleton',
-      'node-service',
-      'packages',
-      'core',
-      'src',
-    );
-    await writeFile(source, "import { readFile } from 'node:fs/promises';\n");
+    // Any real, existing in-repository directory — see the Add-destination
+    // test above for why the target's identity does not matter here.
+    const target = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'rules');
+    await writeFile(source, `AWS_KEY=${CLOUD_ACCESS_KEY}\n`);
 
     try {
-      await symlink(core, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
-          `*** Move to: ${path.relative(repoRoot, path.join(alias, 'impure.ts'))}`,
+          `*** Move to: ${path.relative(repoRoot, path.join(alias, 'notes.md'))}`,
           '*** End Patch',
         ].join('\n'),
       );
 
       expect(result.code).toBe(2);
-      expect(result.stderr).toMatch(/core/i);
+      expect(result.stderr).toMatch(/credential/i);
     } finally {
       await removeFixture(scratch);
     }
@@ -845,7 +809,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       await symlink(outside, alias, process.platform === 'win32' ? 'junction' : 'dir');
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -873,7 +837,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       await symlink(missingTarget, destination, 'file');
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Add File: ${path.relative(repoRoot, destination)}`,
@@ -902,7 +866,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       await symlink(missingTarget, alias, process.platform === 'win32' ? 'junction' : 'dir');
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -934,7 +898,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         '\\\\server\\share\\outside.ts',
       ]) {
         const result = await runGuard(
-          'guard-core-purity.mjs',
+          'guard-secret-file.mjs',
           [
             '*** Begin Patch',
             `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -954,7 +918,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
   it('does not inspect removed patch lines as newly introduced code', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const result = await runGuard(
-      'guard-core-purity.mjs',
+      'guard-secret-file.mjs',
       [
         '*** Begin Patch',
         '*** Update File: packages/core/src/note.ts',
@@ -977,7 +941,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
       try {
         const result = await runGuard(
-          'guard-core-purity.mjs',
+          'guard-secret-file.mjs',
           [
             '*** Begin Patch',
             `*** Update File: ${sourcePath}`,
@@ -1000,7 +964,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-web-boundary.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${source}`,
@@ -1024,7 +988,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
       const result = await runGuard(
-        'guard-web-boundary.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, path.join(link, 'private.ts'))}`,
@@ -1053,7 +1017,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       await symlink(target, link, 'file');
       const result = await runGuard(
-        'guard-web-boundary.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, link)}`,
@@ -1074,7 +1038,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
   it('diagnoses a missing move source but leaves the guard fail-open', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     const result = await runGuard(
-      'guard-core-purity.mjs',
+      'guard-secret-file.mjs',
       [
         '*** Begin Patch',
         '*** Update File: definitely-missing/move-source.ts',
@@ -1088,24 +1052,24 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     expect(result.stderr).not.toMatch(/BLOCKED/i);
   });
 
-  it('blocks a move-only patch that carries existing impurity into core', async (ctx) => {
+  it('blocks a move-only patch that carries an existing credential into a tracked path', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
-    const scratch = await mkdtemp(path.join(repoRoot, '.codex-impure-move-'));
-    const source = path.join(scratch, 'impure.ts');
-    await writeFile(source, "import { readFile } from 'node:fs/promises';\n");
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-secret-move-'));
+    const source = path.join(scratch, 'secret.txt');
+    await writeFile(source, `AWS_KEY=${CLOUD_ACCESS_KEY}\n`);
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
-          '*** Move to: packages/core/src/impure.ts',
+          '*** Move to: notes.md',
           '*** End Patch',
         ].join('\n'),
       );
       expect(result.code).toBe(2);
-      expect(result.stderr).toMatch(/core/i);
+      expect(result.stderr).toMatch(/credential/i);
     } finally {
       await removeFixture(scratch);
     }
@@ -1126,34 +1090,20 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     // resolves the wrong root successfully.
     const foreign = await mkdtemp(path.join(tmpdir(), 'foreign-repo-'));
     await exec('git', ['init', '-q', foreign], { env: withoutGitLocation() });
-    const nested = await mkdtemp(
-      path.join(
-        repoRoot,
-        'templates',
-        'skeleton',
-        'node-service',
-        'packages',
-        'core',
-        'src',
-        '.codex-gitdir-',
-      ),
-    );
-    await writeFile(
-      path.join(nested, 'impure.ts'),
-      "import { readFile } from 'node:fs/promises';\n",
-    );
+    const nested = await mkdtemp(path.join(repoRoot, '.codex-gitdir-'));
+    await writeFile(path.join(nested, 'secret.txt'), `AWS_KEY=${CLOUD_ACCESS_KEY}\n`);
 
     try {
       const result = await runGuardInput(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         {
           hook_event_name: 'PreToolUse',
           tool_name: 'apply_patch',
           tool_input: {
             command: [
               '*** Begin Patch',
-              '*** Update File: impure.ts',
-              '*** Move to: moved.ts',
+              '*** Update File: secret.txt',
+              '*** Move to: moved.txt',
               '*** End Patch',
             ].join('\n'),
           },
@@ -1167,8 +1117,8 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       // the root resolves to `foreign`, the destination lands outside it, and the
       // guard refuses for that instead. Measured: deleting `withoutGitLocation()`
       // from both copies left all 61 tests in this file green. Asserting the
-      // purity message is what makes the test fail for the defect it names.
-      expect(result.stderr).toMatch(/pure module/i);
+      // credential message is what makes the test fail for the defect it names.
+      expect(result.stderr).toMatch(/credential/i);
       expect(result.code).toBe(2);
     } finally {
       await removeFixture(nested);
@@ -1178,32 +1128,18 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
   it('resolves a relative move source from the hook payload cwd', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
-    const nested = await mkdtemp(
-      path.join(
-        repoRoot,
-        'templates',
-        'skeleton',
-        'node-service',
-        'packages',
-        'core',
-        'src',
-        '.codex-nested-cwd-',
-      ),
-    );
-    await writeFile(
-      path.join(nested, 'impure.ts'),
-      "import { readFile } from 'node:fs/promises';\n",
-    );
+    const nested = await mkdtemp(path.join(repoRoot, '.codex-nested-cwd-'));
+    await writeFile(path.join(nested, 'secret.txt'), `AWS_KEY=${CLOUD_ACCESS_KEY}\n`);
 
     try {
-      const result = await runGuardInput('guard-core-purity.mjs', {
+      const result = await runGuardInput('guard-secret-file.mjs', {
         hook_event_name: 'PreToolUse',
         tool_name: 'apply_patch',
         tool_input: {
           command: [
             '*** Begin Patch',
-            '*** Update File: impure.ts',
-            '*** Move to: moved.ts',
+            '*** Update File: secret.txt',
+            '*** Move to: moved.txt',
             '*** End Patch',
           ].join('\n'),
         },
@@ -1211,7 +1147,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
       });
 
       expect(result.code).toBe(2);
-      expect(result.stderr).toMatch(/core/i);
+      expect(result.stderr).toMatch(/credential/i);
     } finally {
       await removeFixture(nested);
     }
@@ -1224,7 +1160,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1258,7 +1194,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         throw error;
       }
       const result = await runGuardInput(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         {
           hook_event_name: 'PreToolUse',
           tool_name: 'apply_patch',
@@ -1291,7 +1227,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       await symlink(target, source, 'file');
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1314,7 +1250,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1331,7 +1267,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
   it('refuses an oversized apply_patch command before parsing its contents', async () => {
     const result = await runGuard(
-      'guard-core-purity.mjs',
+      'guard-secret-file.mjs',
       [
         '*** Begin Patch',
         '*** Update File: packages/core/src/large-patch.ts',
@@ -1468,7 +1404,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         );
       }
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         ['*** Begin Patch', ...sections, '*** End Patch'].join('\n'),
       );
 
@@ -1491,7 +1427,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, fullBudget)}`,
@@ -1520,7 +1456,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1546,7 +1482,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1573,7 +1509,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       const additions = Array.from({ length: 6_000 }, () => '+const safe = true;');
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1601,7 +1537,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1632,7 +1568,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
         );
       }
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         ['*** Begin Patch', ...sections, '*** End Patch'].join('\n'),
       );
 
@@ -1655,7 +1591,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, first)}`,
@@ -1685,7 +1621,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     try {
       const hunks = Array.from({ length: 1_001 }, () => ['@@', '+const safe = true;']).flat();
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1712,7 +1648,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
     try {
       const result = await runGuard(
-        'guard-core-purity.mjs',
+        'guard-secret-file.mjs',
         [
           '*** Begin Patch',
           `*** Update File: ${path.relative(repoRoot, source)}`,
@@ -1751,7 +1687,7 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
     }
 
     const guards = await Promise.all(
-      ['guard-core-purity.mjs', 'guard-web-boundary.mjs'].map((guard) => text(hooksDir, guard)),
+      ['guard-secret-file.mjs', 'guard-secret-file.mjs'].map((guard) => text(hooksDir, guard)),
     );
     expect(source).toMatch(/inspectionRefusal:\s*reason/);
     for (const guard of guards) expect(guard).toMatch(/inspectionRefusal/);
@@ -1806,16 +1742,6 @@ describe('Codex apply_patch cannot bypass architecture guards', () => {
 
 describe('Codex oversized apply_patch inspection refusals', () => {
   it.each([
-    {
-      guard: 'guard-core-purity.mjs',
-      falseDiagnosis:
-        /packages\/core is a pure module|breaks its purity|usecase layer|into an adapter/i,
-    },
-    {
-      guard: 'guard-web-boundary.mjs',
-      falseDiagnosis:
-        /apps\/web imports the domain|crosses the web boundary|talks to services|storage stays behind/i,
-    },
     {
       guard: 'guard-secret-file.mjs',
       falseDiagnosis:

@@ -74,8 +74,6 @@ const PROVIDER_TOKENS = [
  * go red rather than slide in beside them.
  */
 const UNDECLARED_HOOKS = [
-  'guard-core-purity', // candidate: core-purity policy (file-edit)
-  'guard-web-boundary', // candidate: web-boundary policy (file-edit)
   'guard-bash', // candidate: never-tier shell policy + kill switch (shell-command)
   // candidate: subagent-routing policy — needs a subagent-dispatch operation the
   // vocabulary lacks, and it is Claude-only (Codex has no dispatch hook surface)
@@ -215,9 +213,9 @@ const snapshotWith = (
       {
         matcher: fileEditMatcher,
         hooks: [
-          ...['guard-core-purity', 'guard-web-boundary', 'guard-secret-file', 'guard-rulebook'].map(
-            (n) => ({ command: `node "$X/.claude/hooks/${n}.mjs"` }),
-          ),
+          ...['guard-secret-file', 'guard-rulebook'].map((n) => ({
+            command: `node "$X/.claude/hooks/${n}.mjs"`,
+          })),
           ...extraCommands.map((command) => ({ command })),
         ],
       },

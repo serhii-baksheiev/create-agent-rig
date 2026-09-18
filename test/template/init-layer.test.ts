@@ -1,13 +1,7 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { initFileContents, initManifest } from '../../packages/cli/src/commands/init.js';
-import { listTree } from '../../packages/cli/src/lib/copy-tree.js';
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const universalDir = path.join(repoRoot, 'templates', 'agent-os', 'universal');
-const initDir = path.join(repoRoot, 'templates', 'agent-os', 'init');
 
 /**
  * References init installs on purpose without the file behind them. Each needs
@@ -16,7 +10,9 @@ const initDir = path.join(repoRoot, 'templates', 'agent-os', 'init');
  */
 const DOCUMENTED_ABSENT: Record<string, string> = {
   '.claude/hooks/dod-checks.json':
-    'the stack layer supplies the DoD checks; init cannot know this repo’s commands',
+    'no layer ships one — RP-177 retired the stack overlay that used to; the ' +
+    'install cannot know this repo’s commands, and CLAUDE.md says so as one of ' +
+    'the four things left for the project to finish',
   '.claude/queue.state.json':
     'runtime state, written by the first close and gitignored — shipping one would ' +
     'commit a tier from whoever built the template',
@@ -154,20 +150,5 @@ describe('the init layer installs a rig with no dangling references', () => {
       const buffer = await readFile(source);
       expect(buffer.subarray(0, 8192).includes(0), rel).toBe(false);
     }
-  });
-});
-
-describe('templates/agent-os/init is an override layer, not a second copy', () => {
-  it('overrides only files the universal layer also has', async () => {
-    const overrides = await listTree(initDir);
-    expect(overrides.length).toBeGreaterThan(0);
-    for (const rel of overrides) {
-      await expect(stat(path.join(universalDir, rel)), rel).resolves.toBeDefined();
-    }
-  });
-
-  it('is reached by init and by nothing else — `create` composes universal + stack only', async () => {
-    const sources = (await initManifest()).map((f) => f.source);
-    expect(sources.some((s) => s !== null && s.startsWith(initDir))).toBe(true);
   });
 });

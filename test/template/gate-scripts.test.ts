@@ -138,10 +138,12 @@ describe('elevatedPathsIn — which files make a change elevated', () => {
   // declared elevated path in prose alone and the sweep reported them clean.
   it('sees a rulebook wherever it sits, not only at the repository root', async () => {
     const { elevatedPathsIn } = await load('detect-missed-gate.mjs');
-    const declared = ['templates/agent-os/init/', 'templates/agent-os/universal/.claude/'];
+    const declared = [
+      'templates/agent-os/universal/CLAUDE.md',
+      'templates/agent-os/universal/.claude/',
+    ];
     const rulebook = [
-      'templates/agent-os/init/CLAUDE.md',
-      'templates/agent-os/init/AGENTS.md',
+      'templates/agent-os/universal/CLAUDE.md',
       'templates/agent-os/universal/.claude/rules/autonomy.md',
       'templates/agent-os/universal/.claude/agents/code-reviewer.md',
       'templates/agent-os/universal/.claude/skills/loop/SKILL.md',

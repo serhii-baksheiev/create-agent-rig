@@ -29,23 +29,11 @@ describe('git install (the `npx github:…` personal-stage distribution path)', 
     // runNpx, not a bare exec: this install step is the one that failed on CI
     // with no reason attached (RP-70). For this failure both streams are
     // empty, so the diagnosis is the exit code plus npm's own debug logs.
-    await runNpx(
-      [
-        '--yes',
-        `--package=git+file://${repoRoot}`,
-        'create-agent-rig',
-        'git-app',
-        '--target',
-        'aws-serverless',
-      ],
-      {
-        cwd: appDir,
-        env: installEnv(path.join(work, 'npx-cache')),
-      },
-    );
-    const pkg = JSON.parse(await readFile(path.join(appDir, 'git-app', 'package.json'), 'utf8'));
-    expect(pkg.name).toBe('@git-app/root');
-    const readme = await readFile(path.join(appDir, 'git-app', 'README.md'), 'utf8');
-    expect(readme).toContain('# git-app');
+    await runNpx(['--yes', `--package=git+file://${repoRoot}`, 'create-agent-rig', 'git-app'], {
+      cwd: appDir,
+      env: installEnv(path.join(work, 'npx-cache')),
+    });
+    const claudeMd = await readFile(path.join(appDir, 'git-app', 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).toContain('git-app');
   });
 });

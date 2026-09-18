@@ -1,9 +1,12 @@
-import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CreateError, createProject } from '../src/commands/create.js';
+import { projectNameFor } from '../src/commands/init.js';
+import { planUpgrade } from '../src/commands/upgrade.js';
 import { gitEnv } from '../src/lib/git-env.js';
+import { readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 let work: string;
@@ -16,18 +19,22 @@ afterEach(async () => {
   await removeFixture(work);
 });
 
-// 60 s: each case copies a whole template tree; measured on windows-latest at
-// 6.8 s (9c0eb9c), 10.6 s (fc344a1) and past the 15 s default (48b35fa) — AR-93.
+/**
+ * RP-177: `create <dir>` is a thin convenience wrapper — `mkdir` → `git init`
+ * → the same install `init` runs into an existing repo → the pristine
+ * baseline commit. There is exactly one payload; these tests cover the
+ * wrapper's own responsibilities (the directory, the name, git) and lean on
+ * `init.test.ts` for the payload itself.
+ */
 describe('createProject', { timeout: 60_000 }, () => {
-  it('generates the default target into the given directory', async () => {
+  it('makes the directory and installs the one payload into it', async () => {
     const { projectDir } = await createProject('my-app', { cwd: work });
     expect(projectDir).toBe(path.join(work, 'my-app'));
-    const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
-    expect(pkg.name).toContain('my-app');
-    expect(pkg.name).not.toContain('@app/');
-    const readme = await readFile(path.join(projectDir, 'README.md'), 'utf8');
-    expect(readme).toContain('my-app');
-    expect(readme).not.toContain('__PROJECT_NAME__');
+    const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).toContain('my-app');
+    expect(claudeMd).not.toContain('__PROJECT_NAME__');
+    // no application scaffolding of any kind
+    await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).rejects.toThrow();
   });
 
   it('accepts a nested path and uses its basename as the project name', async () => {
@@ -50,89 +57,61 @@ describe('createProject', { timeout: 60_000 }, () => {
   it('allows an existing but empty target directory', async () => {
     await mkdir(path.join(work, 'empty-dir'));
     const { projectDir } = await createProject('empty-dir', { cwd: work });
-    await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).resolves.toBeTruthy();
+    await expect(readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8')).resolves.toBeTruthy();
   });
-
-  it.each(['aws-serverless', 'node-service'])(
-    'ships a .gitignore in the %s target (npm publish strips dotfile originals)',
-    async (target) => {
-      const { projectDir } = await createProject(`gi-${target}`, {
-        cwd: work,
-        target,
-        git: false,
-      });
-      const gitignore = await readFile(path.join(projectDir, '.gitignore'), 'utf8');
-      expect(gitignore).toContain('node_modules');
-      // the un-dotted source name must not leak into the generated project
-      await expect(readFile(path.join(projectDir, 'gitignore'), 'utf8')).rejects.toThrow();
-      // npm packaging metadata must not leak either
-      await expect(readFile(path.join(projectDir, '.npmignore'), 'utf8')).rejects.toThrow();
-    },
-  );
 
   it('refuses an invalid project name', async () => {
     await expect(createProject('My App!', { cwd: work })).rejects.toThrow(CreateError);
     await expect(createProject('My App!', { cwd: work })).rejects.toThrow(/name/i);
   });
 
-  it('generates the node-service target when asked', async () => {
-    const { projectDir } = await createProject('svc', { cwd: work, target: 'node-service' });
-    const pkg = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8'));
-    expect(pkg.name).toBe('@svc/root');
-    // same layers, no cloud:
-    for (const p of ['packages/core/src', 'packages/db/src', 'services/worker/src']) {
-      await expect(
-        readFile(path.join(projectDir, p, 'index.ts'), 'utf8').catch(() => 'dir'),
-      ).resolves.toBeTruthy();
-    }
-    await expect(readFile(path.join(projectDir, 'infra', 'cdk.json'), 'utf8')).rejects.toThrow();
-    // agent-os composition: universal + node-ts, and NOT aws-cdk
-    await expect(
-      readFile(path.join(projectDir, '.claude', 'rules', 'node-ts.md'), 'utf8'),
-    ).resolves.toBeTruthy();
-    await expect(
-      readFile(path.join(projectDir, '.claude', 'rules', 'aws-cdk.md'), 'utf8'),
-    ).rejects.toThrow();
-    // skills follow the same seam: pr-ship is universal, post-deploy-verify is
-    // aws-cdk only — node-service has no deploy step, so it must not get it
-    await expect(
-      readFile(path.join(projectDir, '.claude', 'skills', 'pr-ship', 'SKILL.md'), 'utf8'),
-    ).resolves.toBeTruthy();
-    await expect(
-      readFile(
-        path.join(projectDir, '.claude', 'skills', 'post-deploy-verify', 'SKILL.md'),
-        'utf8',
-      ),
-    ).rejects.toThrow();
-    // …and so do agents: no CDK, no cdk-diff-reviewer
-    await expect(
-      readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(projectDir, '.codex', 'agents', 'cdk-diff-reviewer.toml'), 'utf8'),
-    ).rejects.toThrow();
-    await expect(
-      readFile(
-        path.join(projectDir, '.agents', 'skills', 'post-deploy-verify', 'SKILL.md'),
-        'utf8',
-      ),
-    ).rejects.toThrow();
+  it('refuses a name with a trailing "-" or "." — projectNameFor would silently rewrite it', async () => {
+    // The historical bug class this pattern exists to prevent: a name
+    // `create` accepted and wrote everywhere, but that `init`'s own naming
+    // (`projectNameFor`, used whenever no explicit identity is supplied)
+    // would have stripped — making a freshly created rig fail to match its
+    // own installed files on the very next `upgrade`.
+    await expect(createProject('my-app-', { cwd: work })).rejects.toThrow(CreateError);
+    await expect(createProject('my-app.', { cwd: work })).rejects.toThrow(CreateError);
   });
 
-  it('refuses an unknown target, naming the known ones', async () => {
-    await expect(createProject('x', { cwd: work, target: 'heroku' })).rejects.toThrow(CreateError);
-    await expect(createProject('x', { cwd: work, target: 'heroku' })).rejects.toThrow(
-      /aws-serverless.*node-service|node-service.*aws-serverless/s,
-    );
+  it('writes a manifest of kind "init" — there is only one payload flavour', async () => {
+    const { projectDir } = await createProject('my-app', { cwd: work, git: false });
+    const manifest = await readManifest(projectDir);
+    expect(manifest?.kind).toBe('init');
+    expect(manifest?.stacks).toEqual([]);
+    expect(manifest?.project).toEqual({ name: 'my-app', scope: 'my-app', region: '' });
   });
 
-  it('overlays the agent operating system onto the generated project', async () => {
-    const { projectDir } = await createProject('my-app', { cwd: work });
+  it('carries exact raw-byte ownership from create through upgrade', async () => {
+    const { projectDir } = await createProject('my-app', { cwd: work, git: false });
+    const rel = '.claude/rules/workflow.md';
+    const raw = Buffer.from([0xc3, 0x28, 0x0a]);
+    await writeFile(path.join(projectDir, ...rel.split('/')), raw);
 
-    const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('my-app');
-    expect(claudeMd).not.toContain('__PROJECT_NAME__');
-    expect(await readFile(path.join(projectDir, 'AGENTS.md'), 'utf8')).toBe(claudeMd);
+    const manifest = await readManifest(projectDir);
+    if (manifest === null) throw new Error('fixture: create wrote no manifest');
+    manifest.files[rel] = sha256(raw);
+    await writeManifest(projectDir, manifest);
+
+    expect(sha256(raw)).not.toBe(sha256(raw.toString('utf8')));
+    const plan = await planUpgrade(projectDir);
+    expect(plan.actions.find((action) => action.rel === rel)?.verdict).toBe('update');
+  });
+
+  it('the validated name reaches the manifest and the files exactly, with no re-derivation', async () => {
+    // `projectNameFor` would slug this identically here, so the fixture alone
+    // cannot tell "used the validated name" from "re-derived from the
+    // directory" — the two happen to agree. What matters is that they need
+    // not: the option threading in `initProject` is what's under test.
+    const { projectDir, projectName } = await createProject('svc', { cwd: work, git: false });
+    expect(projectName).toBe(projectNameFor(projectDir));
+    const manifest = await readManifest(projectDir);
+    expect(manifest?.project.name).toBe('svc');
+  });
+
+  it('overlays the agent operating system — no architecture rules, no stack overlays', async () => {
+    const { projectDir } = await createProject('my-app', { cwd: work, git: false });
 
     const settings = JSON.parse(
       await readFile(path.join(projectDir, '.claude', 'settings.json'), 'utf8'),
@@ -147,18 +126,26 @@ describe('createProject', { timeout: 60_000 }, () => {
       ),
     ).toBe(true);
 
-    // Composition: universal rules + the target's stack rules (PLAN.md phase 4).
-    for (const rule of [
-      'architecture.md',
-      'workflow.md',
-      'autonomy.md',
-      'node-ts.md',
-      'aws-cdk.md',
-    ]) {
+    for (const rule of ['workflow.md', 'autonomy.md', 'invariants.md']) {
       await expect(
         readFile(path.join(projectDir, '.claude', 'rules', rule), 'utf8'),
       ).resolves.toBeTruthy();
     }
+    // the architecture group is retired outright — never installed by anything
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'rules', 'architecture.md'), 'utf8'),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'hooks', 'guard-core-purity.mjs'), 'utf8'),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'hooks', 'guard-web-boundary.mjs'), 'utf8'),
+    ).rejects.toThrow();
+    // no per-stack overlay either
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'rules', 'node-ts.md'), 'utf8'),
+    ).rejects.toThrow();
+
     for (const agent of [
       'test-writer.md',
       'code-reviewer.md',
@@ -168,11 +155,7 @@ describe('createProject', { timeout: 60_000 }, () => {
       const body = await readFile(path.join(projectDir, '.claude', 'agents', agent), 'utf8');
       expect(body).toMatch(/^---\nname: /); // agent frontmatter
     }
-    await expect(
-      readFile(path.join(projectDir, '.claude', 'hooks', 'guard-core-purity.mjs'), 'utf8'),
-    ).resolves.toBeTruthy();
-    // the default (aws-serverless) composition gets both skills…
-    for (const skill of ['pr-ship', 'post-deploy-verify']) {
+    for (const skill of ['pr-ship', 'loop', 'worktree-task']) {
       await expect(
         readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
@@ -180,13 +163,6 @@ describe('createProject', { timeout: 60_000 }, () => {
         readFile(path.join(projectDir, '.agents', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
     }
-    // …and the stack-layer CDK diff gate
-    await expect(
-      readFile(path.join(projectDir, '.claude', 'agents', 'cdk-diff-reviewer.md'), 'utf8'),
-    ).resolves.toBeTruthy();
-    await expect(
-      readFile(path.join(projectDir, '.codex', 'agents', 'cdk-diff-reviewer.toml'), 'utf8'),
-    ).resolves.toBeTruthy();
   });
 
   it('ships the work-queue convention (PLAN.md with both queues)', async () => {
@@ -215,7 +191,66 @@ describe('createProject', { timeout: 60_000 }, () => {
       cwd: projectDir,
       env: gitEnv(),
     });
-    expect(status.trim()).toBe(''); // everything generated is in the baseline
+    expect(status.trim()).toBe(''); // everything generated is in the baseline, including the manifest
+    await expect(
+      readFile(path.join(projectDir, '.claude', '.rig-manifest.json'), 'utf8'),
+    ).resolves.toBeTruthy();
+  });
+
+  it('does not stage or commit the parent repo when child git init fails', async () => {
+    const outer = path.join(work, 'outer');
+    await mkdir(outer, { recursive: true });
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+    const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
+    await exec('git', ['init', '--quiet'], { cwd: outer, env: gitEnv() });
+    await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
+    await exec('git', [...identity, 'add', '-A'], { cwd: outer, env: gitEnv() });
+    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const { stdout: beforeHead } = await exec('git', ['rev-parse', 'HEAD'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const { stdout: beforeIndex } = await exec('git', ['diff', '--cached', '--name-status'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+
+    // The shim makes only `git init` fail. A later baseline `git add` or
+    // `git commit` still reaches real Git, which would discover and mutate
+    // `outer` from the child directory unless create stops after init failed.
+    const bin = path.join(work, 'bin');
+    await mkdir(bin);
+    const git = path.join(bin, 'git');
+    await writeFile(
+      git,
+      '#!/bin/sh\nfor arg in "$@"; do [ "$arg" = init ] && exit 1; done\nexec /usr/bin/git "$@"\n',
+    );
+    await chmod(git, 0o755);
+
+    const previousPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}:${previousPath ?? ''}`;
+    try {
+      await createProject('child', { cwd: outer });
+    } finally {
+      if (previousPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = previousPath;
+    }
+
+    const { stdout: afterHead } = await exec('git', ['rev-parse', 'HEAD'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const { stdout: afterIndex } = await exec('git', ['diff', '--cached', '--name-status'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    expect(afterHead).toBe(beforeHead);
+    expect(afterIndex).toBe(beforeIndex);
   });
 
   // Observed, twice, on this repo's own branches: git hands its hooks an
@@ -295,27 +330,6 @@ describe('createProject', { timeout: 60_000 }, () => {
   it('skips git when asked, and generation still succeeds', async () => {
     const { projectDir } = await createProject('ungitted', { cwd: work, git: false });
     await expect(readFile(path.join(projectDir, '.git', 'HEAD'), 'utf8')).rejects.toThrow();
-    await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).resolves.toBeTruthy();
-  });
-
-  it('the scope substitution reaches the frontend (web brief §5)', async () => {
-    for (const target of ['aws-serverless', 'node-service']) {
-      const { projectDir } = await createProject(`web-${target}`, { cwd: work, target });
-      const webPkg = JSON.parse(
-        await readFile(path.join(projectDir, 'apps', 'web', 'package.json'), 'utf8'),
-      );
-      expect(webPkg.name, target).toBe(`@web-${target}/web`);
-      expect(webPkg.dependencies[`@web-${target}/core`], target).toBe('workspace:*');
-      const nextConfig = await readFile(
-        path.join(projectDir, 'apps', 'web', 'next.config.mjs'),
-        'utf8',
-      );
-      expect(nextConfig, target).toContain(`@web-${target}/core`);
-      expect(nextConfig, target).not.toContain('@app/');
-      // in-place web build artifacts never reach the generated project
-      await expect(
-        readFile(path.join(projectDir, 'apps', 'web', 'next-env.d.ts'), 'utf8'),
-      ).rejects.toThrow();
-    }
+    await expect(readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8')).resolves.toBeTruthy();
   });
 });

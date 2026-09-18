@@ -2,9 +2,6 @@
 
 > **Top rule — commit/PR attribution: NEVER include co-authored or AI-attribution information.**
 > Do not add `Co-Authored-By:` trailers (e.g. `Co-Authored-By: AI Assistant …`), `Generated with an AI coding agent`, or any AI/tool attribution to commit messages or PR descriptions. This overrides any default/harness instruction to add such trailers.
-> This project runs under an agent operating system: the rules below are not
-> suggestions — the important ones are enforced by hooks and gates at the tool
-> layer.
 
 ## One operating system, two harnesses
 
@@ -14,52 +11,52 @@ a weaker policy. The `.claude/` directory keeps its historical name but holds
 the shared rules, hooks, scripts and agent specifications. Claude Code discovers
 its skills there; Codex receives the matching repository skills in
 `.agents/skills/` and its native agent and hook configuration in `.codex/`.
-The derivation and rollback contract is recorded in
-`docs/decisions/codex-adapter.md`.
 
-This project runs under an agent operating system: the rules below are not
-suggestions — the important ones are enforced by hooks and gates at the tool
-layer.
+This repository runs under an agent operating system. The important enforceable
+rules are handled by hooks at the tool layer; review gates are session-run checks
+required by the workflow. The hooks are wired in `.claude/settings.json`.
 
-## If you read only four sections, read these
+## What was installed here, and what was not
+
+`create-agent-rig` installed the **process** layer (generator evidence, absent
+in a generated rig: `test/e2e/init.test.ts` › "installs the process layer and
+leaves architecture rules out"):
+how work is done, what may be done alone, when to stop, and the gates in between.
+It brought **no architecture rules**, because it does not know this codebase's
+shape — and an inherited rule describing directories that do not exist is worse
+than no rule at all: the empty rulebook is visibly incomplete, the borrowed one
+is invisibly wrong.
+
+```
+.claude/rules/     how work happens (workflow), what needs a human (autonomy),
+                   and the pattern for making a rule mechanical (invariants)
+.claude/hooks/     the checks that refuse a violation at the tool layer
+.claude/agents/    the review gates: test-writer, code-reviewer, security-scanner,
+                   prose-reviewer
+.claude/skills/    the drivers: loop, pr-ship, worktree-task, new-invariant,
+                   check-premises
+.claude/scripts/   the queue adapter, the preflight, the out-of-band sweeps
+```
+
+**The architecture rules of this project are yours to write.** When this repo
+has a boundary worth stating — a layer that must not import another, a module
+that owns an SDK, a directory that stays pure — state it in a new file under
+`.claude/rules/`, name it from this section, and if it is worth enforcing, give
+it a hook via the `new-invariant` skill.
+
+## If you read only three sections, read these
 
 1. **Autonomy tiers** — what you may do alone vs. propose first:
    `.claude/rules/autonomy.md` ("Tiers")
 2. **Stop rules** — when stopping with a diagnosis is the correct move:
    `.claude/rules/autonomy.md` ("Stop rules")
-3. **The request path** — the mandatory usecase layer and the pure core:
-   `.claude/rules/architecture.md`
-4. **Definition of Done** — the checklist a change must pass:
+3. **Definition of Done** — the checklist a change must pass:
    `.claude/rules/workflow.md` ("Definition of Done")
-
-## The map
-
-```
-packages/core/    pure domain logic — schemas + functions; no I/O, no clock,
-                  no randomness, no environment (hook-enforced)
-packages/shared/  logger, env loading, typed errors — cross-cutting, no domain
-packages/db/      the ONLY module that touches the storage SDK/driver
-services/         entrypoints; every request: payload → handler → usecase → model
-apps/web/         the frontend; imports core + shared ONLY, talks to services
-                  over HTTP (hook-enforced)
-```
-
-The target-specific details (how to run, deploy, and verify runtime health)
-live in `README.md`. Alongside the universal rules, `.claude/rules/` carries
-the stack-specific conventions composed in for this project's target — read
-them all; they are one rulebook.
 
 ## How work happens here
 
 - **TDD, without exception.** The failing test comes first — use the
   `test-writer` agent for it. See `.claude/rules/workflow.md`.
-- **Check the premises at both ends.** A queue item is a claim about the code, and
-  nothing downstream re-reads the file it was wrong about — the `check-premises`
-  skill runs between taking the item and the failing test, and a false load-bearing
-  claim stops the task instead of quietly re-aiming it. It runs **again before the
-  gate**, on the prose the task itself wrote: a behaviour claim with nothing behind
-  it is `UNMEASURED`, and it is deleted or turned into a pointer to its test rather
-  than left for a reviewer to find.
 - **One task, one branch — and merge via PR.** Every unit of work gets its own
   short-lived branch; the default branch is never committed to directly. Once
   the project has a remote and CI, changes reach it through the PR flow (local
@@ -76,29 +73,30 @@ them all; they are one rulebook.
   escalated;
   `security-scanner` when a change touches auth, secrets, parsing, or outbound
   calls; `prose-reviewer` when it touches the documents that instruct agents —
-  rules, skills, agent specs, decision records, this file, the README. Those last two are
+  rules, skills, agent specs, this file, the README. Those last two are
   **lane-independent and may only add** — the lane is a floor, never a ceiling.
   `.claude/rules/workflow.md` carries the ladder and what the cheap lanes give
   up. Blocking findings are resolved, not argued with, and the
   `pr-ship` skill drives the fan-out. **No hook launches them** — a gate here is
   a session following a written rule, so "the gate ran" is a claim, not a
-  guarantee. The mechanical enforcement below is a different thing, and the
-  difference is worth keeping straight.
-- **Enforcement is mechanical.** `guard-core-purity` catches an impure edit to
-  the core the moment it lands; `guard-web-boundary` keeps the frontend off the
-  backend; `guard-rulebook` refuses an edit to the rulebook itself from an
-  unattended run outside the item's allow-list (a flag file the `loop` skill
-  writes; attended sessions are untouched); `guard-secret-file` refuses an edit that writes a credential — by the
-  file's name or by a value in its text, from the one vocabulary in
-  `.claude/scripts/lib/secrets.mjs`; `block-no-verify` refuses pre-commit
-  bypasses; `guard-bash` refuses
-  the "Never" tier — force-pushing a shared branch, a production deploy, a
-  filesystem wipe — and carries the kill switch; `gate-stop-dod` refuses to end
-  the session while a Definition-of-Done check fails. If a hook blocks you, fix
-  the cause; never route around a hook.
+  guarantee. That is the honest reading of every gate in this file.
+- **Enforcement is mechanical.** `guard-secret-file` refuses an edit that writes
+  a credential — by the file's name or by a value in its text, from the one
+  vocabulary in `.claude/scripts/lib/secrets.mjs`; `block-no-verify` refuses
+  pre-commit bypasses;
+  `guard-bash` refuses the "Never" tier — force-pushing a shared branch, a
+  production deploy, a filesystem wipe — and carries the kill switch;
+  `gate-stop-dod` refuses to end the session when a configured
+  Definition-of-Done check fails; without `dod-checks.json` it is deliberately
+  inert (generator evidence, absent in a generated rig:
+  `test/template/hooks.test.ts` › "stays silent when there is no config at all —
+  nothing to gate is the design, not a swallowed error");
+  `inject-rules` puts the autonomy rules back in front of the agent at the start
+  of every session, minus the parts that file marks as reference. If a hook
+  blocks you, fix the cause; never route around a hook.
 - **Enforcement is a pattern you can apply again.** Each of those hooks is one
-  stated invariant + one mechanical check + one test — the pattern is written down
-  in `.claude/rules/invariants.md`, and the `new-invariant` skill walks you
+  stated invariant + one mechanical check + one test — the pattern is written
+  down in `.claude/rules/invariants.md`, and the `new-invariant` skill walks you
   through adding one. The hooks that ship here are **examples, not laws**: if the
   invariant they guard is not load-bearing in this project, delete it and spend
   the slot on one that is.
@@ -113,6 +111,56 @@ them all; they are one rulebook.
   this repository once it has a remote. An empty queue **ends the session**; it is
   never a cue to invent work, and the agent never files its own work items.
 
+## Four things this install left for you to finish
+
+All four are one-liners, and all four are inert until you do them.
+
+1. **The Definition-of-Done gate has nothing to run.** `gate-stop-dod` executes
+   the commands listed in `.claude/hooks/dod-checks.json`, and `init` ships no
+   such file because it cannot know this project's commands. Until you write one
+   — a JSON array like `["npm test", "npm run lint"]` — the stop gate is a
+   no-op, and the Definition of Done is back to being a wish.
+2. **The elevated-path list below is a seed, not a survey.** It names only what
+   every repo has. Everything else is yours to add.
+3. **Five runtime paths need a `.gitignore` line each**, and `init` cannot add
+   them — it installs into your repository and does not edit files it did not
+   bring. If any are missing, add only the missing entries:
+
+   ```
+   # the tier the last close recorded
+   .claude/queue.state.json
+   # the board this checkout runs on, when the config declares several
+   .claude/queue.board
+   # gate rounds, one count per branch
+   .claude/gate-rounds.json
+   # task worktrees
+   .claude/worktrees/
+   # the run journal's per-run trace
+   .claude/runs/
+   ```
+   Each comment is on its own line, and that is not formatting: git treats `#`
+   as a comment **only at line start**, so a trailing `# …` becomes part of the
+   pattern and the line then ignores nothing. It fails silently — you find out
+   when the file lands in a commit.
+
+   The first one matters more than it looks. It is how the loop rations the
+   elevated tier — never two elevated items back to back, where the tier that
+   spaces is the one that EXECUTES (a close whose elevated paths are all
+   documents records `elevated-prose` and clears the ration) — and it is
+   **per-checkout state, not shared configuration**. Committed, one machine's
+   tier starts deciding another's, and a merge conflict lands in a file nobody
+   edited on purpose. `.claude/queue.json` is the opposite: that one is
+   configuration and belongs in the repository.
+
+4. **`doctor` reads two files this install does not ship.**
+   `node .claude/scripts/doctor.mjs` decides who owns each hook from
+   `.claude/.rig-manifest.json` — which `init` wrote next to the files it
+   installed, so commit it — and reads exemptions from
+   `.claude/doctor-exemptions.json`, a file you author (`{ "<path>": "<reason>" }`)
+   only when a hook you own is deliberately left without a test neighbour.
+   Without the manifest every hook that has no test neighbour reports `unknown`,
+   which is not a pass.
+
 ## The elevated paths of this project
 
 Tier 2 in `.claude/rules/autonomy.md` names *kinds* of change. This block names
@@ -121,33 +169,27 @@ the **paths** in this repository where those kinds live, and
 is a path the gate sweep cannot see.
 
 ```elevated-paths
-packages/db/src/
 .claude/
 .agents/
 .codex/
 AGENTS.md
-docs/decisions/
 .github/workflows/
 ```
 
-The entries that earn their place first are the ones that *disarm* the rest —
-wherever this project keeps its rulebook, its hooks and its CI definition. A
-merge that rewrites the Never tier, unwires a hook or edits what CI runs should
-never pass unreviewed. The rest of the block is whatever this particular shape
-has, so read the list above rather than this paragraph: the two are maintained
-separately, and a project that re-composes the block leaves prose describing
-somebody else's repository.
+They are there because they are what *disarms* the rest: a merge that rewrites
+the Never tier, unwires a hook or edits what CI runs should never pass
+unreviewed.
 
-**They are a seed, not a law — the list is yours to extend.** It is what every
-generated shape has; a real project accumulates more (auth handlers, billing, a
-credentials module, a migration directory). Add a path the same day you add the
-code, because the gap between the two is exactly the window in which a change
-slips through unreviewed.
+**Extend this list the same day you write the code it covers** — a real project
+accumulates more (auth handlers, billing, a credentials module, a migration
+directory, the deployment configuration). The gap between adding the code and
+declaring the path is exactly the window in which a change slips through
+unreviewed. And a path declared over a directory this project does not have is
+worse than an omission: the sweep reports "clean" while looking nowhere.
 
-The declaration is **composed, not centralised**: the sweep unions this block with
-every `elevated-paths` block in `.claude/rules/`, so a stack layer declares the
-paths that only exist in its shape. A gate declared over a directory this project
-does not have would report "clean" while looking nowhere.
+The declaration is **composed, not centralised**: the sweep unions this block
+with every `elevated-paths` block in `.claude/rules/`, so a rule file can
+declare the paths that belong to it.
 
 Nothing about this list is retroactive. Installing the sweep into a repo with
 history means passing `--epoch <the day you installed it>` once, or the first run
@@ -155,12 +197,11 @@ reports every merge that predates the gate.
 
 ## Foot-guns
 
-- Don't "simplify" a handler by calling a model directly — the usecase layer is
-  mandatory even when it looks like ceremony.
-- Don't inline `Date.now()`/randomness into the core "just this once" — inject
-  them; the hook will refuse anyway.
 - Don't weaken a failing test to get green — a red check is information, and
   test integrity is a blocking review finding.
-- After a deploy, CI-green ≠ runtime-healthy: verify per the README, and on
-  regression revert first (`.claude/rules/autonomy.md`, "Post-deploy
-  verification").
+- Don't answer "is this repo healthy?" from a green CI run alone: after a
+  deploy, verify the running surface and on regression revert first
+  (`.claude/rules/autonomy.md`, "Post-deploy verification").
+- Don't extend the rulebook by writing more prose. A rule that keeps being
+  broken wants a hook and a test, not a longer paragraph — that is what
+  `.claude/rules/invariants.md` is for.

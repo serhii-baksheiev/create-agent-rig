@@ -5,8 +5,12 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'rules');
-const stack = (name: string) =>
-  path.join(repoRoot, 'templates', 'agent-os', 'stack', name, '.claude', 'rules');
+// RP-177: the concrete, node-ts-specific merge criterion is no longer a
+// template any generated rig receives — it is this repository's own dogfood
+// overlay (`scripts/dogfood/`), composed into THIS repo's `.claude/rules/`
+// by `scripts/sync-agent-os.mjs` and nowhere else.
+const dogfoodOverlay = (name: string) =>
+  path.join(repoRoot, 'scripts', 'dogfood', name, '.claude', 'rules');
 
 // PR-flow addendum: the autonomy tiers already say a human-review change opens
 // a PR — so workflow.md must carry how a PR is driven to merge, stated
@@ -42,11 +46,12 @@ describe('workflow.md — PR flow (process layer)', () => {
     expect(workflow).not.toMatch(/gh pr checks/);
   });
 
-  it('states the fan-out shape (code review always; security + infra by touched paths)', async () => {
+  it('states the fan-out floor and leaves extra surface reviews to repository rules', async () => {
     workflow = await readFile(path.join(universal, 'workflow.md'), 'utf8');
     expect(workflow).toMatch(/code-reviewer/);
     expect(workflow).toMatch(/security/i);
-    expect(workflow).toMatch(/infra/i);
+    expect(workflow).toMatch(/additional review[\s\S]*repository rule/i);
+    expect(workflow).not.toMatch(/stack\/\*/i);
   });
 
   it('states the post-merge tail: verify the deployed surface, update the plan', async () => {
@@ -67,9 +72,9 @@ describe('workflow.md — PR flow (process layer)', () => {
   });
 });
 
-describe('the concrete merge command lives in stack/*, not universal', () => {
+describe("the concrete merge command lives in this repo's dogfood overlay, not universal", () => {
   it('node-ts states how to confirm the check for the head SHA', async () => {
-    const nodeTs = await readFile(path.join(stack('node-ts'), 'node-ts.md'), 'utf8');
+    const nodeTs = await readFile(path.join(dogfoodOverlay('node-ts'), 'node-ts.md'), 'utf8');
     expect(nodeTs).toMatch(/gh\b/);
     expect(nodeTs).toMatch(/SHA|head/i);
   });
@@ -78,7 +83,7 @@ describe('the concrete merge command lives in stack/*, not universal', () => {
   // state beside "pending" and "concluded" — the rule must say what to do with
   // it, and the answer is retrigger, never "merge on the last head's green".
   const mergeCriterionSection = async (): Promise<string> => {
-    const nodeTs = await readFile(path.join(stack('node-ts'), 'node-ts.md'), 'utf8');
+    const nodeTs = await readFile(path.join(dogfoodOverlay('node-ts'), 'node-ts.md'), 'utf8');
     const start = nodeTs.indexOf('## Confirming the merge criterion');
     expect(start, 'the merge-criterion section exists').toBeGreaterThanOrEqual(0);
     const rest = nodeTs.slice(start + 3);

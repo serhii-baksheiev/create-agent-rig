@@ -98,7 +98,7 @@ describe('every shell-executing tool traverses the same Never-tier guards', () =
   it.each(SETTINGS)('%s leaves the edit-tool guards on their own matcher', async (rel) => {
     const settings = await readSettings(rel);
     const editGroup = (settings.hooks.PreToolUse ?? []).find((group) =>
-      group.hooks.some((h) => h.command.includes('guard-core-purity.mjs')),
+      group.hooks.some((h) => h.command.includes('guard-secret-file.mjs')),
     );
     expect(editGroup?.matcher).toBe('Write|Edit|MultiEdit|NotebookEdit|apply_patch');
   });

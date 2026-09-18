@@ -244,20 +244,19 @@ async function collectSourceFiles(absDir: string): Promise<string[]> {
   return perExtension.flat();
 }
 
-const isSkeletonTestFile = (rel: string): boolean => rel.split('/').includes('test');
-
 async function scanTree(): Promise<{
   removalSites: CallSite[];
   mkdtempSites: MkdtempSite[];
   scannedFiles: string[];
 }> {
-  const skeleton = path.join(repoRoot, 'templates', 'skeleton');
+  // RP-177 retired templates/skeleton — the fourth root this used to scan for
+  // a generated project's own test files. There is no application code left
+  // to generate, so there is nothing left there to audit.
   const roots = [
     path.join(repoRoot, 'packages', 'cli', 'test'),
     path.join(repoRoot, 'test', 'e2e'),
     path.join(repoRoot, 'test', 'template'),
     path.join(repoRoot, 'test', 'helpers'),
-    skeleton,
   ];
   const removalSites: CallSite[] = [];
   const mkdtempSites: MkdtempSite[] = [];
@@ -266,11 +265,6 @@ async function scanTree(): Promise<{
     for (const absFile of await collectSourceFiles(root)) {
       const rel = path.relative(repoRoot, absFile).split(path.sep).join('/');
       if (rel === HELPER_EXEMPT_FILE) continue;
-      if (
-        root === skeleton &&
-        !isSkeletonTestFile(path.relative(skeleton, absFile).split(path.sep).join('/'))
-      )
-        continue;
       scannedFiles.push(rel);
       const source = await readFile(absFile, 'utf8');
       removalSites.push(...findCallSitesInSource(rel, source));
@@ -298,9 +292,6 @@ describe('fixture-cleanup-audit: recursive removal call sites correspond to fixt
     expect(scannedFiles).toContain('packages/cli/test/create.test.ts');
     expect(scannedFiles).toContain('test/e2e/init.test.ts');
     expect(scannedFiles).toContain('test/template/codex.test.ts');
-    expect(scannedFiles).toContain(
-      'templates/skeleton/node-service/services/api/test/server.test.ts',
-    );
   });
 
   it('names every direct recursive removal site, or documents it as an exception', () => {

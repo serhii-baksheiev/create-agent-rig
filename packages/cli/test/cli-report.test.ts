@@ -191,6 +191,25 @@ describe('the upgrade plan header states what it knows, not what it infers', () 
     const line = lineMatching(run.stdout, /manifest/i);
     expect(line).toMatch(/matching files against released versions/);
   });
+
+  it.each([
+    'retired.md\n  - forged destructive action',
+    `retired.md${String.fromCharCode(27)}[2Jforged destructive action`,
+    `retired.md\u202Eforged destructive action`,
+    `retired.md\u2066forged destructive action\u2069`,
+  ])('does not let a manifest file key forge the upgrade plan: %j', async (forgedRel) => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    expect(manifest, 'fixture: init did not write a readable manifest').not.toBeNull();
+    const files = { ...manifest!.files, [forgedRel]: '0'.repeat(64) };
+    await writeFile(abs(MANIFEST_REL), `${JSON.stringify({ ...manifest!, files }, null, 2)}\n`);
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout, 'an unsafe manifest key reached the terminal verbatim').not.toContain(
+      forgedRel,
+    );
+  });
 });
 
 describe('--no-color is accepted wherever the help advertises it', () => {
@@ -225,6 +244,19 @@ describe('--no-color is accepted wherever the help advertises it', () => {
       expect(run.stderr).toContain('Usage: create-agent-rig');
     },
   );
+});
+
+describe('re-running init over a rig it owns', () => {
+  it('does not call unchanged manifest-owned hook wiring unwired', async () => {
+    await installRig();
+
+    const run = await runCli(repo, ['init']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toContain('Installed 0 files');
+    expect(run.stdout).not.toMatch(/hooks are NOT wired/i);
+    expect(run.stdout).not.toMatch(/nothing enforces the rules/i);
+  });
 });
 
 describe('the plan summary accounts for every file it planned', () => {

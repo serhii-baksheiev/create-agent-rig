@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
@@ -6,23 +8,21 @@ import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import { makePalette } from './lib/colors.js';
-import { readManifest } from './lib/manifest.js';
+import { readManifest, sha256 } from './lib/manifest.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
-import { promptConfirm, promptTarget } from './lib/prompts.js';
+import { promptConfirm } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
-import { DEFAULT_TARGET, TARGET_NAMES } from './lib/targets.js';
 import { packageVersion, rigHandshake } from './lib/version.js';
 import { runMemory } from './commands/memory.js';
 
 const USAGE = `Usage: create-agent-rig <dir> [options]
 
-Scaffolds a new project into <dir>: a Claude Code + Codex agent operating system
-plus a runnable code skeleton. Refuses to write into a non-empty directory.
+Scaffolds a new directory into <dir>: \`mkdir\` + \`git init\` + the same install
+\`init\` runs into an existing repo — a Claude Code + Codex agent operating
+system, no application scaffolding. Refuses to write into a non-empty
+directory.
 
 Options
-  --target <name>   ${TARGET_NAMES.join(' | ')}
-                    (interactive selection when omitted on a terminal;
-                    required when not a terminal — default: ${DEFAULT_TARGET})
   --no-git          skip git init + the pristine-template baseline commit
   --no-color        plain output (NO_COLOR is respected too)
   --version         print the version (--version --json: the contract handshake,
@@ -179,6 +179,15 @@ async function runInit(rawArgs: string[]): Promise<number> {
   const generated = await initFileContents(cwd);
   for (const wiringPath of ['.claude/settings.json', '.codex/hooks.json']) {
     if (!result.skipped.includes(wiringPath)) continue;
+    const installedHash = existing?.files[wiringPath];
+    if (installedHash !== undefined) {
+      try {
+        if (sha256(await readFile(path.join(cwd, wiringPath))) === installedHash) continue;
+      } catch {
+        // The write preflight already classified this path. If it changes
+        // before reporting, fall through to the conservative warning.
+      }
+    }
     const wiring = generated.get(wiringPath) ?? '';
     process.stdout.write(
       `\n!  ${wiringPath} already exists — it was kept, so the rig's hooks are NOT wired there.\n` +
@@ -197,6 +206,7 @@ const MARK: Record<UpgradeVerdict, string> = {
   deleted: '-',
   wiring: '!',
   unchanged: '·',
+  retired: 'x',
 };
 
 function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
@@ -210,7 +220,7 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     '',
   ];
 
-  for (const verdict of ['update', 'new', 'deleted', 'conflict', 'wiring'] as const) {
+  for (const verdict of ['update', 'new', 'deleted', 'retired', 'conflict', 'wiring'] as const) {
     for (const action of of(verdict)) {
       lines.push(
         `  ${MARK[verdict]} ${action.rel}` + (action.reason ? `  — ${action.reason}` : ''),
@@ -222,13 +232,14 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     }
   }
 
-  // Every one of `UpgradeVerdict`'s six members is accounted for here.
-  // `wiring` and `deleted` each print their own line and were in none of the
-  // buckets, so a reader counted lines and was told a smaller number.
-  // (`unchanged` is counted and prints nothing — the sum is over actions, not
-  // over printed lines.) The two appear only when they occurred, so a plan
-  // without them renders exactly as it always has. Pinned by, in cli-report.test.ts,
-  // "renders a plan with no wiring action exactly as it does today".
+  // Every one of `UpgradeVerdict`'s seven members is accounted for here.
+  // `wiring`, `deleted` and `retired` each print their own line and were in
+  // none of the buckets, so a reader counted lines and was told a smaller
+  // number. (`unchanged` is counted and prints nothing — the sum is over
+  // actions, not over printed lines.) The three appear only when they
+  // occurred, so a plan without them renders exactly as it always has. Pinned
+  // by, in cli-report.test.ts, "renders a plan with no wiring action exactly
+  // as it does today".
   // `deleted` before `wiring`, the relative order the plan prints them in.
   // ⚠ Only their order relative to EACH OTHER matches: the plan prints
   // `deleted` before `conflict` and the summary prints it after, so this is not
@@ -236,6 +247,7 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   // "lists the two occasional buckets in the order the plan prints them".
   const occasional = [
     ['deleted', (n: number) => `${n} you removed (left removed)`],
+    ['retired', (n: number) => `${n} no longer shipped (now yours)`],
     ['wiring', (n: number) => `${n} wiring handed over`],
   ] as const;
   const extra = occasional
@@ -300,9 +312,9 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   }
 
   // The plan above is the review step, so it has to be answered before
-  // anything is written. On a terminal that is a question; off one it is the
-  // same refusal `create` makes without --target — never guess for a run that
-  // cannot be asked, least of all when the answer rewrites its repository.
+  // anything is written. On a terminal that is a question; off one it is a
+  // refusal — never guess for a run that cannot be asked, least of all when
+  // the answer rewrites its repository.
   const isInteractive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
   if (values.yes !== true) {
     if (!isInteractive) {
@@ -373,7 +385,6 @@ async function main(): Promise<number> {
   let positionals: string[];
   let values: {
     help?: boolean;
-    target?: string;
     version?: boolean;
     json?: boolean;
     'no-git'?: boolean;
@@ -384,7 +395,6 @@ async function main(): Promise<number> {
       args: process.argv.slice(2),
       options: {
         help: { type: 'boolean', short: 'h' },
-        target: { type: 'string' },
         version: { type: 'boolean' },
         // `--json` is read on `--version` alone: the handshake object of
         // docs/command-contract.md, one JSON line and nothing else on stdout.
@@ -418,28 +428,8 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Non-TTY correctness (polish brief §5): never prompt into a pipe — a
-  // prompt would hang CI. Non-interactive runs must state the target.
-  const isInteractive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
-  let target = values.target;
-  if (!target) {
-    if (!isInteractive) {
-      process.stderr.write(
-        `Missing --target in a non-interactive run. ` +
-          `Pass --target <${TARGET_NAMES.join('|')}>.\n`,
-      );
-      return 1;
-    }
-    target = await promptTarget(TARGET_NAMES, DEFAULT_TARGET, {
-      input: process.stdin,
-      output: process.stderr,
-      isInteractive,
-    });
-  }
-
   const { projectDir, projectName } = await createProject(dirArg, {
     cwd: process.cwd(),
-    target,
     git: values['no-git'] !== true,
   });
 
@@ -447,7 +437,7 @@ async function main(): Promise<number> {
     Boolean(process.stdout.isTTY) && !process.env.NO_COLOR && values['no-color'] !== true,
   );
   const summary = await collectGovernance(projectDir);
-  process.stdout.write('\n' + renderSummary(projectName, target, dirArg, summary, palette));
+  process.stdout.write('\n' + renderSummary(projectName, dirArg, summary, palette));
   return 0;
 }
 

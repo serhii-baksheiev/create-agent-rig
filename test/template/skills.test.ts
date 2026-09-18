@@ -20,47 +20,6 @@ function frontmatterOf(content: string): Record<string, string> {
   return fields;
 }
 
-// agent-os v2 brief §1–§3: ship the two skills without which a stated rule has
-// no implementation, with frontmatter as *enforcement*, not documentation.
-describe('post-deploy-verify skill (stack/aws-cdk)', () => {
-  it('exists in the aws-cdk stack layer and produces the autonomy verdict', async () => {
-    const content = await readFile(
-      skillPath('stack', 'aws-cdk', '.claude', 'skills', 'post-deploy-verify'),
-      'utf8',
-    );
-    expect(content).toMatch(/HEALTHY/);
-    expect(content).toMatch(/REGRESSION/);
-    expect(content).toMatch(/revert/i);
-  });
-
-  it('is mechanically constrained: forked context, read-only tool set', async () => {
-    const content = await readFile(
-      skillPath('stack', 'aws-cdk', '.claude', 'skills', 'post-deploy-verify'),
-      'utf8',
-    );
-    const fm = frontmatterOf(content);
-    expect(fm['name']).toBe('post-deploy-verify');
-    expect(fm['context']).toBe('fork');
-    expect(fm['allowed-tools']).toBeTruthy();
-    expect(fm['allowed-tools']).not.toMatch(/Write|Edit/);
-  });
-
-  it('is scoped to what the skeleton provisions, and calls a vacuous result "no signal"', async () => {
-    const content = await readFile(
-      skillPath('stack', 'aws-cdk', '.claude', 'skills', 'post-deploy-verify'),
-      'utf8',
-    );
-    // the deploy job's conclusion is the primary, always-available signal
-    expect(content).toMatch(/deploy job.*primary|primary.*signal/i);
-    // freshness cross-check kept; DLQ depth kept
-    expect(content).toMatch(/UPDATE_COMPLETE/);
-    expect(content).toMatch(/DLQ/);
-    // the honesty rule: empty metric = no invocations = "no signal", not a pass
-    expect(content).toMatch(/no signal/i);
-    expect(content).toMatch(/no invocations/i);
-  });
-});
-
 describe('loop skill (universal) — the driver the autonomy tiers were waiting for', () => {
   it('exists, selects from the queue, and REFUSES to invent work', async () => {
     const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
@@ -431,7 +390,7 @@ describe('pr-ship skill (universal)', () => {
 // halves assert the same promise: one fenced json block, of the shape
 // `lib/verdict.mjs` defines, naming the gate that wrote it.
 describe('every gate skill ends with one machine-readable verdict', () => {
-  const GATE_SKILLS = ['pr-ship', 'check-premises', 'post-deploy-verify'];
+  const GATE_SKILLS = ['pr-ship', 'check-premises'];
 
   it.each(GATE_SKILLS)('%s asks for exactly one fenced json block', async (gate) => {
     const content = await readGateSpec(gate);

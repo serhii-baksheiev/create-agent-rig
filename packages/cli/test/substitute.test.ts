@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { substituteContent, substituteFileName } from '../src/lib/substitute.js';
+import * as substitutions from '../src/lib/substitute.js';
+import { substituteContent } from '../src/lib/substitute.js';
 
 const ctx = {
   projectName: 'my-app',
-  projectScope: 'my-app',
-  region: 'eu-central-1',
 };
 
 describe('substituteContent', () => {
@@ -14,31 +13,28 @@ describe('substituteContent', () => {
     );
   });
 
-  it('replaces __PROJECT_SCOPE__ and __REGION__', () => {
-    expect(substituteContent('scope=__PROJECT_SCOPE__ region=__REGION__', ctx)).toBe(
-      'scope=my-app region=eu-central-1',
-    );
+  it('supports only __PROJECT_NAME__', () => {
+    expect(
+      substituteContent(
+        'name=__PROJECT_NAME__ scope=__PROJECT_SCOPE__ region=__REGION__ @app/core',
+        ctx,
+      ),
+    ).toBe('name=my-app scope=__PROJECT_SCOPE__ region=__REGION__ @app/core');
   });
 
-  it('rewrites the @app/ placeholder scope to the project scope', () => {
-    expect(substituteContent('import { x } from "@app/core";', ctx)).toBe(
-      'import { x } from "@my-app/core";',
-    );
-    expect(substituteContent('"name": "@app/db"', ctx)).toBe('"name": "@my-app/db"');
+  it('leaves opaque non-token text untouched for byte-level ownership checks', () => {
+    const opaqueText = '\u0000\u00ff\u2066not a path\u2069';
+
+    expect(substituteContent(opaqueText, ctx)).toBe(opaqueText);
+  });
+
+  it('does not expose obsolete filename substitution or reverse-tokenization', () => {
+    expect(substitutions).not.toHaveProperty('substituteFileName');
+    expect(substitutions).not.toHaveProperty('detokenizeContent');
   });
 
   it('leaves unrelated content untouched', () => {
     const content = 'const app = "app"; // @application/other';
     expect(substituteContent(content, ctx)).toBe(content);
-  });
-});
-
-describe('substituteFileName', () => {
-  it('replaces tokens in file names', () => {
-    expect(substituteFileName('__PROJECT_NAME__.config.ts', ctx)).toBe('my-app.config.ts');
-  });
-
-  it('leaves plain names untouched', () => {
-    expect(substituteFileName('package.json', ctx)).toBe('package.json');
   });
 });

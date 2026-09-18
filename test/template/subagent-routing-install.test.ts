@@ -6,18 +6,23 @@ import { initFileContents, initProject } from '../../packages/cli/src/commands/i
 import { applyUpgrade, planUpgrade } from '../../packages/cli/src/commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from '../../packages/cli/src/commands/upgrade.js';
 import type { HashHistory } from '../../packages/cli/src/lib/history.js';
-import { agentOsInstallSet } from '../../packages/cli/src/lib/install-set.js';
 import { readManifest, sha256, writeManifest } from '../../packages/cli/src/lib/manifest.js';
-import { TARGETS } from '../../packages/cli/src/lib/targets.js';
-import type { Target } from '../../packages/cli/src/lib/targets.js';
 import { templatesRoot } from '../../packages/cli/src/templates.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
- * RP-173 acceptance: `create` (every target), `init`, and `upgrade` from a rig
- * installed before the pins all end with Claude agents pinned to the routing
- * policy — and an upgrade replaces an untouched agent while leaving an edited
- * one alone. Expected values are read from the policy, never restated.
+ * RP-173 acceptance, updated for RP-177: `init` (the one payload `create` also
+ * installs — RP-177 made it a thin wrapper over this same code path) and
+ * `upgrade` from a rig installed before the pins both end with Claude agents
+ * pinned to the routing policy — and an upgrade replaces an untouched agent
+ * while leaving an edited one alone. Expected values are read from the
+ * policy, never restated.
+ *
+ * Before RP-177 this also exercised `create` directly, once per target — its
+ * own describe block, using `agentOsInstallSet`/`TARGETS`. `create` has no
+ * install path of its own any more (see `commands/create.ts`), so that
+ * coverage is now exactly the `init` block below, exercised through the
+ * command every generated rig actually uses.
  *
  * It lives beside the other template tests, not under packages/cli/test,
  * because the decision record that ships with the rig cites it by name.
@@ -105,58 +110,12 @@ function expectPinned(policy: RoutingPolicy, agents: Array<{ rel: string; conten
   }
 }
 
-const ctxFor = (target: Target) => ({
-  projectName: 'routing-probe',
-  projectScope: 'routing-probe',
-  region: target.defaultRegion ?? '',
-});
-
-const installSetOf = async (target: Target) =>
-  (await agentOsInstallSet(target.stacks, ctxFor(target))).map((file) => ({
-    rel: file.rel.replaceAll('\\', '/'),
-    content: file.content,
-  }));
-
 beforeEach(async () => {
   repo = await mkdtemp(path.join(tmpdir(), 'caf-subagent-routing-'));
 });
 
 afterEach(async () => {
   await removeFixture(repo);
-});
-
-describe('create installs Claude agents pinned to the routing policy', () => {
-  it.each(Object.entries(TARGETS))(
-    'pins every Claude agent the %s target installs to its routing role',
-    async (_name, target) => {
-      const files = await installSetOf(target);
-      expectPinned(
-        await routingPolicy(),
-        files.filter((file) => isAgentFile(file.rel)),
-      );
-    },
-  );
-
-  it('installs the CDK diff reviewer with every target that composes the aws-cdk stack', async () => {
-    const cdkTargets = Object.values(TARGETS).filter((target) => target.stacks.includes('aws-cdk'));
-    expect(cdkTargets.length).toBeGreaterThan(0);
-    for (const target of cdkTargets) {
-      const rels = (await installSetOf(target)).map((file) => file.rel);
-      expect(rels).toContain('.claude/agents/cdk-diff-reviewer.md');
-    }
-  });
-
-  it.each(Object.entries(TARGETS))(
-    'gives unnamed Claude subagents the policy default in the settings the %s target installs',
-    async (_name, target) => {
-      const settings = (await installSetOf(target)).find((file) => file.rel === SETTINGS);
-      expect(settings, `${SETTINGS} is installed`).toBeDefined();
-      const parsed = JSON.parse(settings?.content ?? '{}') as { env?: Record<string, string> };
-      expect(parsed.env?.CLAUDE_CODE_SUBAGENT_MODEL).toBe(
-        (await routingPolicy()).unnamed.claude.model,
-      );
-    },
-  );
 });
 
 describe('init installs Claude agents pinned to the routing policy', () => {

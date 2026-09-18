@@ -210,8 +210,7 @@ const PAYLOAD = [
   'templates/agent-os/universal/.claude/rules/autonomy.md',
   'templates/agent-os/universal/.claude/hooks/guard-bash.mjs',
   'templates/agent-os/universal/.agents/skills/loop/SKILL.md',
-  'templates/skeleton/node-service/package.json',
-  'templates/skeleton/node-service/.github/workflows/ci.yml',
+  'templates/agent-os/universal/.claude/scripts/queue/plan-md.mjs',
 ];
 
 describe('release preflight — what must never reach a published tarball', () => {
@@ -221,19 +220,22 @@ describe('release preflight — what must never reach a published tarball', () =
     expect(suspiciousTarballEntries([...PAYLOAD, 'a/b/.env'])).toEqual(['a/b/.env']);
   });
 
-  // `templates/skeleton/*` are real runnable projects, and a `.env.example` is
-  // the ordinary way such a project documents the variables it needs — it is
-  // meant to be published. Flagging it would block the release with a message
-  // that is true ("would be published") and wrong. Whether such a file has a
-  // real credential pasted into it is another tool's job: this script reads
-  // names, `scripts/validate-no-secrets.mjs` reads content over every tracked
-  // file, and the split is what keeps each of them checkable.
+  // RP-177 retired `templates/skeleton/*` — the real runnable projects that
+  // used to make a `.env.example` an ordinary, meant-to-be-published file at
+  // any depth under `templates/`. The invariant this pins does not depend on
+  // that layer existing: a `.env.example` anywhere is a naming convention this
+  // script must not flag, whatever tree it sits in. Flagging it would block
+  // the release with a message that is true ("would be published") and wrong.
+  // Whether such a file has a real credential pasted into it is another
+  // tool's job: this script reads names, `scripts/validate-no-secrets.mjs`
+  // reads content over every tracked file, and the split is what keeps each
+  // of them checkable.
   it('leaves the conventional no-secrets example files alone', () => {
     expect(
       suspiciousTarballEntries([
         ...PAYLOAD,
-        'templates/skeleton/node-service/.env.example',
-        'templates/skeleton/aws-serverless/.env.sample',
+        'templates/agent-os/universal/.env.example',
+        'apps/web/.env.sample',
         '.env.template',
       ]),
     ).toEqual([]);
@@ -267,8 +269,11 @@ describe('release preflight — what must never reach a published tarball', () =
       'node_modules/left-pad/index.js',
     ]);
     expect(
-      suspiciousTarballEntries([...PAYLOAD, 'templates/skeleton/node-service/node_modules/x.js']),
-    ).toEqual(['templates/skeleton/node-service/node_modules/x.js']);
+      suspiciousTarballEntries([
+        ...PAYLOAD,
+        'templates/agent-os/universal/nested/node_modules/x.js',
+      ]),
+    ).toEqual(['templates/agent-os/universal/nested/node_modules/x.js']);
     expect(suspiciousTarballEntries([...PAYLOAD, '.git/config'])).toEqual(['.git/config']);
     expect(suspiciousTarballEntries([...PAYLOAD, 'templates/.git/HEAD'])).toEqual([
       'templates/.git/HEAD',
@@ -414,7 +419,9 @@ describe('release preflight — the credential vocabulary is the shared one, not
   // first assertion guards the fixture: if a list member stops being a
   // credential, this reports the fixture, not the preflight.
   const sharedCredentialNames = [
-    ...[...CREDENTIAL_BASENAMES].map((name: string) => `templates/skeleton/node-service/${name}`),
+    ...[...CREDENTIAL_BASENAMES].map(
+      (name: string) => `templates/agent-os/universal/nested/${name}`,
+    ),
     ...[...CREDENTIAL_EXTENSIONS].map((ext: string) => `packages/cli/dist/server.${ext}`),
     ...[...CREDENTIAL_SEGMENTS].map((segment: string) => `templates/${segment}/anything.json`),
   ];
@@ -446,12 +453,12 @@ describe('release preflight — the credential vocabulary is the shared one, not
     expect(
       suspiciousTarballEntries([
         ...PAYLOAD,
-        'templates/skeleton/node-service/.env.example',
-        'templates/skeleton/aws-serverless/.env.sample',
+        'templates/agent-os/universal/nested/.env.example',
+        'templates/agent-os/universal/other/.env.sample',
         '.env.template',
         // The lowercasing must not widen the carve-out either: shouted or not,
         // an example file is still an example file.
-        'templates/skeleton/node-service/.ENV.EXAMPLE',
+        'templates/agent-os/universal/nested/.ENV.EXAMPLE',
       ]),
     ).toEqual([]);
   });
@@ -462,12 +469,12 @@ describe('release preflight — the credential vocabulary is the shared one, not
   // literally named `secrets.mjs` all ship in this tarball on purpose — and so
   // does a dotted BASENAME, which the payload above happens not to carry: every
   // dot in it leads a directory, so a filter reading "the basename starts with a
-  // dot" would pass that list and still strip half of every skeleton.
+  // dot" would pass that list and still strip most of the payload.
   it('leaves the real payload alone once the shared vocabulary is the one deciding', () => {
     const shipped = [
       ...PAYLOAD,
       'templates/agent-os/universal/.claude/scripts/lib/secrets.mjs',
-      'templates/skeleton/node-service/.gitignore',
+      'templates/agent-os/universal/nested/.gitignore',
       'templates/agent-os/universal/.codex/config.toml',
     ];
     expect(suspiciousTarballEntries(shipped)).toEqual([]);

@@ -63,7 +63,7 @@ jobs:
       - run: pnpm test
 
   # The whole suite on Windows — unit, template, benchmark and e2e, no file
-  # excluded by name (AR-93) — plus the cold template artifact check. Not on
+  # excluded by name (AR-93). Not on
   # pull requests: the PR path checks the unit project in ci.yml's
   # windows-smoke job; this job is the Windows evidence for master, the
   # nightly and a release dispatch on an exact SHA.
@@ -92,11 +92,3 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test --maxWorkers=2
-      - run: pnpm --dir templates/skeleton/node-service install --frozen-lockfile
-      - name: Require a cold template artifact
-        shell: pwsh
-        run: |
-          if (Test-Path templates/skeleton/node-service/dist) {
-            throw 'Cold template validation requires an absent dist directory'
-          }
-      - run: pnpm --dir templates/skeleton/node-service test
