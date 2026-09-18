@@ -52,7 +52,7 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
 3. **Zero options at the personal stage; the CLI keeps zero runtime deps** —
    that is what keeps `npx github:…` and the tarball path working.
 4. **Provenance:** `agent-os/` content is authored fresh — never copied from a
-   private work repository (PLAN.md §9).
+   private work repository (PLAN.md §2).
 5. **Never edit a synced file directly** — edit `templates/agent-os/universal`,
    `scripts/dogfood/` (this repo's own node-ts overlay, RP-177), or this
    addendum, and run the sync script; the drift test fails otherwise. The synced

@@ -61,15 +61,13 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
   await ensureEmptyOrAbsent(projectDir);
   await mkdir(projectDir, { recursive: true });
 
-  if (options.git !== false) {
-    await initGitRepository(projectDir);
-  }
+  const gitReady = options.git !== false && (await initGitRepository(projectDir));
 
   await initProject(projectDir, {
     project: { name: projectName, scope: projectName, region: '' },
   });
 
-  if (options.git !== false) {
+  if (gitReady) {
     await commitGitBaseline(projectDir);
   }
 
@@ -83,12 +81,14 @@ const gitInvocation = (projectDir: string) => ({
   where: { cwd: projectDir, env: gitEnv() },
 });
 
-async function initGitRepository(projectDir: string): Promise<void> {
+async function initGitRepository(projectDir: string): Promise<boolean> {
   const { quiet, where } = gitInvocation(projectDir);
   try {
     await run('git', [...quiet, 'init', '--quiet'], where);
+    return true;
   } catch {
     // git missing or unusable — generation never fails on this.
+    return false;
   }
 }
 
@@ -98,8 +98,12 @@ async function commitGitBaseline(projectDir: string): Promise<void> {
   // .git/objects/pack after we return — a non-deterministic tail that races any
   // caller cleaning up the directory, and pointless work on a one-commit repo.
   const { quiet, where } = gitInvocation(projectDir);
+  // Pin both repository locations even though cwd is already the child. If a
+  // later refactor calls this without a successful `git init`, Git must fail
+  // here rather than discover and mutate a parent repository.
+  const repository = [`--git-dir=${path.join(projectDir, '.git')}`, `--work-tree=${projectDir}`];
   try {
-    await run('git', [...quiet, 'add', '-A'], where);
+    await run('git', [...quiet, ...repository, 'add', '-A'], where);
     // Explicit identity: the baseline must commit even where git has no
     // global user configured (fresh machines, CI). --no-verify here shields
     // the baseline from the USER'S global hooks only — the generated
@@ -108,6 +112,7 @@ async function commitGitBaseline(projectDir: string): Promise<void> {
       'git',
       [
         ...quiet,
+        ...repository,
         '-c',
         'user.name=create-agent-rig',
         '-c',

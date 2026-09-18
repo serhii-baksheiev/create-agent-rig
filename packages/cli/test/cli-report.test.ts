@@ -246,6 +246,19 @@ describe('--no-color is accepted wherever the help advertises it', () => {
   );
 });
 
+describe('re-running init over a rig it owns', () => {
+  it('does not call unchanged manifest-owned hook wiring unwired', async () => {
+    await installRig();
+
+    const run = await runCli(repo, ['init']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toContain('Installed 0 files');
+    expect(run.stdout).not.toMatch(/hooks are NOT wired/i);
+    expect(run.stdout).not.toMatch(/nothing enforces the rules/i);
+  });
+});
+
 describe('the plan summary accounts for every file it planned', () => {
   it('counts the hook wiring it handed over — it printed a line for it', async () => {
     await installRig();

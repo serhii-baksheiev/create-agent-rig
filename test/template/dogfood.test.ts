@@ -144,10 +144,9 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     expect(universalPart).not.toContain('__PROJECT_NAME__');
   });
 
-  // The seeded elevated paths belong to the generated skeleton
-  // (packages/db/src/), which does not exist here. Left as-is it would declare a
-  // gate over nothing — dogfooding that describes another repo is worse than no
-  // dogfooding, because the sweep would report "clean" while looking nowhere.
+  // The generated configuration's elevated-path block belongs to a generated
+  // repository. This dogfood block must instead name paths that exist here;
+  // otherwise the sweep can report "clean" while looking nowhere.
   it('declares elevated paths that actually exist in THIS repo', async () => {
     // Imported through a URL: the hook/script tree ships as plain .mjs with no
     // declarations, and a fabricated .d.ts for a template file would rot.

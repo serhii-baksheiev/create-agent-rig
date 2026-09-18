@@ -28,12 +28,10 @@ const substitute = (content) => content.replaceAll('__PROJECT_NAME__', 'create-a
 /**
  * This repo's own elevated-tier paths — the ones `detect-missed-gate.mjs` sweeps.
  *
- * The template seeds the block with the generated skeleton's paths
- * (`packages/db/src/`, `.claude/`, `.github/workflows/`), and the first of those
- * does not exist here. Left in place it would declare a gate over nothing, and
- * the sweep would report "clean" while looking nowhere.
- * So dogfooding replaces the block rather than appending a second one: one list,
- * one home, and every entry a real directory in this tree.
+ * The generated configuration owns an elevated-path block for a generated
+ * repository; this repository has its own paths. Dogfooding replaces the block
+ * rather than appending a second one: one list, one home, and every entry a real
+ * directory in this tree.
  */
 const ELEVATED_PATHS = [
   '.github/workflows/', // what runs on every push, and what deploys

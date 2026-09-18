@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -195,6 +195,62 @@ describe('createProject', { timeout: 60_000 }, () => {
     await expect(
       readFile(path.join(projectDir, '.claude', '.rig-manifest.json'), 'utf8'),
     ).resolves.toBeTruthy();
+  });
+
+  it('does not stage or commit the parent repo when child git init fails', async () => {
+    const outer = path.join(work, 'outer');
+    await mkdir(outer, { recursive: true });
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+    const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
+    await exec('git', ['init', '--quiet'], { cwd: outer, env: gitEnv() });
+    await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
+    await exec('git', [...identity, 'add', '-A'], { cwd: outer, env: gitEnv() });
+    await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const { stdout: beforeHead } = await exec('git', ['rev-parse', 'HEAD'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const { stdout: beforeIndex } = await exec('git', ['diff', '--cached', '--name-status'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+
+    // The shim makes only `git init` fail. A later baseline `git add` or
+    // `git commit` still reaches real Git, which would discover and mutate
+    // `outer` from the child directory unless create stops after init failed.
+    const bin = path.join(work, 'bin');
+    await mkdir(bin);
+    const git = path.join(bin, 'git');
+    await writeFile(
+      git,
+      '#!/bin/sh\nfor arg in "$@"; do [ "$arg" = init ] && exit 1; done\nexec /usr/bin/git "$@"\n',
+    );
+    await chmod(git, 0o755);
+
+    const previousPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}:${previousPath ?? ''}`;
+    try {
+      await createProject('child', { cwd: outer });
+    } finally {
+      if (previousPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = previousPath;
+    }
+
+    const { stdout: afterHead } = await exec('git', ['rev-parse', 'HEAD'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    const { stdout: afterIndex } = await exec('git', ['diff', '--cached', '--name-status'], {
+      cwd: outer,
+      env: gitEnv(),
+    });
+    expect(afterHead).toBe(beforeHead);
+    expect(afterIndex).toBe(beforeIndex);
   });
 
   // Observed, twice, on this repo's own branches: git hands its hooks an

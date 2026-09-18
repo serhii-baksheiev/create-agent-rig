@@ -1,9 +1,9 @@
 # create-agent-rig
 
 Configure an **agent operating system** for Claude Code and Codex — rules,
-gates, and hooks that hold the process mechanically, not by prose. It is a
-harness configurator, not an application generator: it never scaffolds
-application code.
+review gates, and hooks; the wired hooks enforce the configured process
+mechanically rather than by prose. It is a harness configurator, not an
+application generator: it never scaffolds application code.
 
 The same Agent OS is native to both **Claude Code and Codex**. Claude-facing
 files remain the authoring surface; the generator derives Codex's `AGENTS.md`,

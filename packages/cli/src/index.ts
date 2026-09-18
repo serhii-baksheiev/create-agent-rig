@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
@@ -6,7 +8,7 @@ import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import { makePalette } from './lib/colors.js';
-import { readManifest } from './lib/manifest.js';
+import { readManifest, sha256 } from './lib/manifest.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
 import { promptConfirm } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
@@ -177,6 +179,15 @@ async function runInit(rawArgs: string[]): Promise<number> {
   const generated = await initFileContents(cwd);
   for (const wiringPath of ['.claude/settings.json', '.codex/hooks.json']) {
     if (!result.skipped.includes(wiringPath)) continue;
+    const installedHash = existing?.files[wiringPath];
+    if (installedHash !== undefined) {
+      try {
+        if (sha256(await readFile(path.join(cwd, wiringPath))) === installedHash) continue;
+      } catch {
+        // The write preflight already classified this path. If it changes
+        // before reporting, fall through to the conservative warning.
+      }
+    }
     const wiring = generated.get(wiringPath) ?? '';
     process.stdout.write(
       `\n!  ${wiringPath} already exists — it was kept, so the rig's hooks are NOT wired there.\n` +

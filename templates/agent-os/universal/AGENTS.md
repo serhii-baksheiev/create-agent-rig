@@ -12,18 +12,20 @@ the shared rules, hooks, scripts and agent specifications. Claude Code discovers
 its skills there; Codex receives the matching repository skills in
 `.agents/skills/` and its native agent and hook configuration in `.codex/`.
 
-This repository runs under an agent operating system. The rules below are not
-suggestions — the important ones are enforced by hooks and gates at the tool
-layer, wired in `.claude/settings.json`.
+This repository runs under an agent operating system. The important enforceable
+rules are handled by hooks at the tool layer; review gates are session-run checks
+required by the workflow. The hooks are wired in `.claude/settings.json`.
 
 ## What was installed here, and what was not
 
-`create-agent-rig` installed the **process** layer: how work is done, what
-may be done alone, when to stop, and the gates in between. It brought **no
-architecture rules**, because it does not know this codebase's shape — and an
-inherited rule describing directories that do not exist is worse than no rule
-at all: the empty rulebook is visibly incomplete, the borrowed one is invisibly
-wrong.
+`create-agent-rig` installed the **process** layer (generator evidence, absent
+in a generated rig: `test/e2e/init.test.ts` › "installs the process layer and
+leaves architecture rules out"):
+how work is done, what may be done alone, when to stop, and the gates in between.
+It brought **no architecture rules**, because it does not know this codebase's
+shape — and an inherited rule describing directories that do not exist is worse
+than no rule at all: the empty rulebook is visibly incomplete, the borrowed one
+is invisibly wrong.
 
 ```
 .claude/rules/     how work happens (workflow), what needs a human (autonomy),
@@ -84,10 +86,14 @@ it a hook via the `new-invariant` skill.
   pre-commit bypasses;
   `guard-bash` refuses the "Never" tier — force-pushing a shared branch, a
   production deploy, a filesystem wipe — and carries the kill switch;
-  `gate-stop-dod` refuses to end the session while a Definition-of-Done check
-  fails; `inject-rules` puts the autonomy rules back in front of the agent at
-  the start of every session, minus the parts that file marks as reference. If a hook blocks you, fix the cause; never route
-  around a hook.
+  `gate-stop-dod` refuses to end the session when a configured
+  Definition-of-Done check fails; without `dod-checks.json` it is deliberately
+  inert (generator evidence, absent in a generated rig:
+  `test/template/hooks.test.ts` › "stays silent when there is no config at all —
+  nothing to gate is the design, not a swallowed error");
+  `inject-rules` puts the autonomy rules back in front of the agent at the start
+  of every session, minus the parts that file marks as reference. If a hook
+  blocks you, fix the cause; never route around a hook.
 - **Enforcement is a pattern you can apply again.** Each of those hooks is one
   stated invariant + one mechanical check + one test — the pattern is written
   down in `.claude/rules/invariants.md`, and the `new-invariant` skill walks you
