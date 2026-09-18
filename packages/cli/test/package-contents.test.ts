@@ -1,13 +1,11 @@
-import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { runPackageManager } from '../../../test/e2e/run.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
-const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 // `npm pack` runs `prepare`, whose build output is also explicitly included by
@@ -32,10 +30,14 @@ describe('the package publish path', () => {
 
       // This is the publish preparation itself, not a simulated file list:
       // npm invokes `prepare` before it reports the contents of the tarball.
-      const { stdout } = await exec('npm', ['pack', '--json', '--pack-destination', packDir], {
-        cwd: repoRoot,
-        maxBuffer: 64 * 1024 * 1024,
-      });
+      const { stdout } = await runPackageManager(
+        'npm',
+        ['pack', '--json', '--pack-destination', packDir],
+        {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024 * 1024,
+        },
+      );
       const [packed] = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
       if (!packed) throw new Error('fixture: npm pack produced no package');
 
