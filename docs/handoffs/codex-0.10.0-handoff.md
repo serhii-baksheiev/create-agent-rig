@@ -1,7 +1,9 @@
 # Handoff — release 0.10.0 loop, for continuation in Codex
 
 **Updated:** 2026-09-18.
-**Authoritative base:** `origin/master` = `4382bd3` (`docs(handoff): 0.10.0 loop state for continuation in Codex (#228)`).
+**Authoritative base:** `origin/master` =
+`14333a79a6744b90fea4bf27ec52204b17c96b83` (`docs: refresh 0.10.0 release
+handoff (#229)`).
 
 This is the cold-start record for the 0.10.0 release loop. Prefer repository
 heads, current PR checks, and accepted owner rulings over older notes. Jira
@@ -34,72 +36,103 @@ scope.
 
 ### RP-177 — remove application scaffolding / thin `create`
 
+- PR: **#230**, draft/HOLD.
 - Branch: `feat/rp-177-remove-app-skeletons`.
-- Published head: `7d336da9b8bb162be2cc95a9176d8b0e337f78a0`.
-- The final post-review commit is `7d336da` (`fix: remove retired substitution surfaces`).
-- The complete suite on that head passed: **124 files, 4,220 tests passed, 4
-  skipped**.
-- The round-3 findings were fixed: manifest keys reject Unicode format controls;
-  obsolete scope/region/`@app`/filename substitution surfaces were removed;
-  supported substitution is only `__PROJECT_NAME__`; and the generated rulebook
-  was synchronised.
-- Jira comment **18602** records the branch head, evidence, and escalation.
+- Current published head:
+  `58ceb4e9f37bac3be1eb7cc8450170fc38714325` (`test: use portable npm
+transport`).
+- Jira: In Progress. Its latest comments record the PR, the Windows diagnosis,
+  current-head evidence, and the exhausted gate.
 
-No RP-177 pull request may be opened yet. `pr-ship` consumed its three permitted
-rounds: the third round was HOLD, its findings were subsequently fixed in
-`7d336da`, and a fourth self-service review round is prohibited. The required
-next action is an **owner-authorized gate reset or an owner-arranged independent
-review** of `7d336da`; only a SHIP outcome from that authorized path permits
-opening and merging the RP-177 PR. Do not bypass the cap, manufacture a new
-evidence framework, or treat the existing test result as a substitute for the
-missing authorized review.
+The owner authorized one reset of the previously exhausted RP-177 review gate.
+That reset used all three configured rounds. On exact head
+`826f75a08f047f175295293637f6c185a67b5ed6`, independent code, security, and
+prose reviewers all returned SHIP and fan-out coverage was complete. Local
+evidence on that head was lint/typecheck/sync green, 125 full-suite files with
+4,223 passed and 4 skipped, and 119 pre-commit files with 4,190 passed and 4
+skipped.
+
+PR #230 then ran its first exact-head GitHub-hosted checks. Linux `ci` and `e2e`
+passed, but `windows-smoke` failed deterministically in
+`packages/cli/test/package-contents.test.ts`: direct `execFile("npm", …)`
+returned `ENOENT`. The runner's before/after bare-Node spawn probes were healthy,
+so this was a test-harness portability defect, not host saturation and not a
+flaky check. It was not rerun blindly.
+
+The existing Windows failure supplied Red evidence. A test-writer confirmed
+that no duplicate test was needed: the repository already has independently
+covered Windows argv transport in
+`test/template/package-manager-transport.test.ts`. Current head `58ceb4e`
+changes only the package-content test to reuse `runPackageManager('npm', …)`.
+
+Evidence on exact current head `58ceb4e`:
+
+- lint and typecheck pass;
+- package-content plus package-manager transport: 2 files, 13 passed;
+- Windows transport probe resolves real npm (`11.16.0`);
+- pre-commit: 119 files, 4,190 passed, 4 skipped;
+- full `pnpm test`: 125 files, 4,223 passed, 4 skipped;
+- GitHub-hosted `ci`, `e2e`, and `windows-smoke`: pass;
+- GitGuardian: pass; `windows-e2e`: intentionally skipped by the workflow.
+
+The previous SHIP verdict is stale because it names `826f75a`, not `58ceb4e`.
+PR #230 therefore remains draft/HOLD even though current-head checks are green.
+The branch gate counter is **3/3**. Do not call `gate-round` again, do not reuse
+the old SHIP, and do not merge.
+
+**NEXT ACTION:** the owner must explicitly authorize a new independent RP-177
+gate cycle for exact head `58ceb4e9f37bac3be1eb7cc8450170fc38714325`.
+After authorization, re-read PR #230/Jira/master, count the reset round as
+directed, run exact-head code/security/prose reviews and coverage, update the PR
+body, mark it ready only on SHIP, and merge only if the named exact-head checks
+remain green.
 
 ### PR #227 — RP-178 compatibility matrix
 
 - Draft, open: `feat/rp-178-compatibility-matrix` at
   `601970d13d169ddeab65924e56a80842ccf13fc2`.
-- Its currently displayed CI/E2E checks are green, but they predate RP-177 and
-  do not make it mergeable for 0.10.0.
-- After RP-177 merges, rebase onto the new `origin/master`, remove references
-  and acceptance for `guard-core-purity` and `guard-web-boundary` if RP-177
-  removed them, and rerun the relevant suite and review gates.
-- The matrix must use one status vocabulary and point every status at executable
-  test evidence or exact release evidence. Windows wiring alone is not Windows
-  support; do not claim it without measured Windows acceptance evidence.
-- Do not restore policy benchmark or evidence-shell machinery under a different
-  name.
+- Its displayed checks predate RP-177 and become stale after RP-177 merges.
+- After RP-177, rebase onto the new `origin/master`; remove references and
+  acceptance for deleted `guard-core-purity`, `guard-web-boundary`, skeleton,
+  stack, and application capabilities.
+- Use one `supported`/`degraded`/`unsupported` vocabulary. Every matrix row must
+  point to an executable test or exact release evidence. Wiring alone is not
+  Windows acceptance. Remove session-messaging and dead policy-coverage
+  pointers; do not rebuild an evidence framework under another name.
+- RP-82, RP-110, RP-157, RP-160, and RP-161 are handled by removal evidence and
+  the remaining consumer graph inside RP-178, not prerequisite PRs.
 
 ### PR #226 — RP-181 ownership-bounded uninstall
 
 - Draft, open: `feat/rp-181-uninstall` at
   `e98199e2061ce7e2ae4eec39afb1797ca894aa70`.
-- Its currently displayed CI/E2E checks are green, but it must wait for RP-177
-  and be rebased onto the resulting `origin/master` before further gate work.
-- Before it can merge, enforce realpath/lstat confinement for target and parent
-  components, including adversarial symlink cases; hash source bytes rather than
-  decoded UTF-8; and make `removed` mean files actually deleted. Dry-run must
-  expose a separate plan and partial failure must list only completed removals.
-- Keep plugin/MCP cleanup with the agreed owners of RP-179/RP-22. Preserve user
-  changes and upgrade compatibility; do not turn uninstall into a broad cleanup.
+- It waits for RP-177 and RP-178, then must be rebased onto `origin/master`.
+- Required blockers remain realpath/lstat confinement for targets and every
+  parent, no symlink traversal in empty-parent cleanup, raw-byte hashing,
+  truthful `removed`/dry-run/partial-failure reporting, manifest retention on
+  incomplete removal, explicit destructive consent, hostile-manifest and
+  control/format-character rejection, and matching README/CHANGELOG/command
+  contracts.
+- Plugin/MCP cleanup remains owned by RP-179/RP-22.
 
 ## 3. Merge and verification discipline
 
-1. Resolve the RP-177 owner-only review/gate-reset blocker, then review, open,
-   and merge RP-177 only when the authorized gate returns SHIP and the exact-head
-   checks are green.
-2. Re-read both remaining PRs immediately after that merge. Rebase RP-178 first,
-   resolve drift, verify and gate it; then perform the same process for RP-181.
-3. After every merge, fetch `origin/master`, inspect all remaining PRs for drift,
-   mergeability, reviews, and check status before selecting the next unblocked
-   `rel-0.10.0` item.
+1. Resolve the RP-177 owner-only gate-reset blocker above. Do not merge #230 on
+   green CI alone.
+2. After RP-177 merges, fetch and verify post-merge master, close RP-177 only
+   after `BEFORE_CLOSE`, then immediately re-read/rebase/gate RP-178.
+3. After RP-178, rebase/gate RP-181. After every merge, fetch `origin/master`
+   and recheck every remaining PR for drift, mergeability, reviews, and checks.
+4. Continue with the next unblocked mandatory 0.10.0 item; do not invent or
+   duplicate work.
 
-Do not merge on stale green CI, skip a red check, blind-rerun a flaky test, or
-depend on a local self-hosted runner for normal PR validation. GitHub-hosted
-runners are the normal CI path; local runner configuration is fallback only.
+GitHub-hosted runners are the normal CI path. Local self-hosted configuration is
+fallback only. Never bypass red checks or blind-rerun failures; distinguish code,
+CI, and host defects from their logs and exact evidence.
 
 ## 4. Environment note
 
-The user-level Codex configuration was checked separately:
+The user-level Codex configuration was verified without modification:
 
 ```toml
 [features.context_management]
@@ -107,16 +140,12 @@ experimental_mode = true
 ```
 
 It is present in `~/.codex/config.toml`. This is local configuration, not a
-repository artifact and not a release acceptance criterion.
+repository artifact or release acceptance criterion.
 
 ## 5. Owner-only conditions
 
-The active owner-only blocker is the RP-177 gate-round cap described above.
-Other owner-only actions remain npm publication, force-pushing published/shared
-history, external irreversible deletion, secrets/credentials, paid operations or
-third-party terms, owner-only settings, and a material change to the accepted
-0.10.0 boundary.
-
-When the RP-177 gate authorization arrives, start by confirming the branch SHA,
-working tree, Jira state, and current PR state again. If any source disagrees,
-code/current checks and accepted owner rulings control the decision.
+The active owner-only blocker is authorization for another RP-177 gate cycle on
+exact head `58ceb4e`. Other owner-only actions remain npm publication,
+force-pushing published/shared history, external irreversible deletion,
+secrets/credentials, paid operations or third-party terms, owner-only settings,
+and a material change to the accepted 0.10.0 boundary.
