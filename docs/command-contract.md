@@ -703,9 +703,9 @@ never asked.
 
 ## uninstall (RP-181)
 
-`uninstall [dir] [--dry-run] [--yes] [--json]` removes what a rig installed
-from `dir` (default: the current directory) — file by file, against the
-evidence the manifest carries and nothing else. It is not a member of the
+`uninstall [dir] [--dry-run] [--yes] [--detach] [--json]` removes what a rig
+installed from `dir` (default: the current directory) — file by file, against
+the evidence the manifest carries and nothing else. It is not a member of the
 foundation verb set above, and it does not use that set's five-code exit
 table: like `create`, `init` and `upgrade`, it exits 0 on success (including
 "nothing to do") and 1 on a refusal or a partial failure. `## Conformance
@@ -797,6 +797,41 @@ a hash match is `remove` and anything else is `preserved` with reason
 `wiring-modified — remove the rig's hook entries by hand`, naming the hook
 files the current wiring still references.
 
+`remove` is the plan's answer, not a guarantee: a `remove`-verdict path whose
+bytes no longer match the plan's recorded hash when `applyUninstall` actually
+reaches it — the confirmation prompt is exactly the window an edit can happen
+in — is skipped, never deleted, and reported in `--json`'s `preserved` array
+with reason `CHANGED_SINCE_PLANNING_REASON` ("changed since planning — its
+bytes no longer match what was planned to be removed"); the run keeps going
+with the rest. This is a different response from a SYMLINK appearing in the
+same window (`regularFileStatus`'s own re-check, immediately before the same
+call): that aborts the whole run, because it is the one shape suspicious
+enough that continuing is the wrong default, while an ordinary content edit
+is not.
+
+Every ancestor check above — `regularFileStatus`'s per-segment walk and its
+equivalent for the parent-cleanup below — is written to hold for a Windows
+directory JUNCTION exactly as it does for a POSIX symlink: an intermediate
+segment is refused unless it is BOTH a real directory and not a symlink
+(`info.isSymbolicLink() || !info.isDirectory()`), and the final segment
+unless it is a plain file and not a symlink (`!info.isSymbolicLink() &&
+info.isFile()`) — never `isDirectory()`/`isFile()` checked alone. Node/libuv
+report a junction through `Stats.isSymbolicLink()` on Windows the same way a
+real symlink is reported (the same behaviour this repository's own
+ancestor-escape fixtures already rely on elsewhere — e.g.
+`test/template/content-blind-revalidation.test.ts`'s
+`process.platform === 'win32' ? 'junction' : 'dir'` pattern, and the reason
+`fs.symlink(target, path, 'junction')` is the documented way to create a
+directory link on Windows without administrator privilege), so the explicit
+`isSymbolicLink()` clause is redundant with `isDirectory()` under that
+classification; it is written anyway so the guarantee does not depend on it —
+a hypothetical junction reporting `isDirectory(): true` would still be
+refused. Exercised by `packages/cli/test/uninstall.test.ts`'s junction tests,
+gated by `onlyOnWindows` and run only in the `windows-e2e` CI lane: this
+repository's own development environment cannot create a junction to verify
+this directly, which is exactly why the check is not written to depend on any
+one classification of it.
+
 No manifest on disk is success with nothing to do (`planned`, `removed`,
 `absent` and `preserved` all empty, `manifestRemoved: false`), which is also
 part of what makes a repeat run idempotent. A manifest that exists but will
@@ -811,7 +846,9 @@ script, and a script blocking on a TTY question is a hang, not a safeguard, so
 without `--yes` it gets the same refusal, reported in its own payload
 (`manifestRemoved: false`, `error` naming `--yes`) instead of a stderr
 sentence. `--dry-run` needs no consent at all — it performs no removal
-regardless of `--yes`.
+regardless of `--yes`. `--detach` asks the identical way — it changes what
+happens to the manifest once cleanup finishes, not whether removing anything
+still needs a yes.
 
 `--json` keeps that one-object promise even for an error this command did not
 compose itself — a permission or filesystem failure (`EACCES`, `ENOTDIR`) hit
@@ -833,22 +870,63 @@ do"; on `--dry-run` the two necessarily differ (`planned` non-empty, `removed`
 empty).
 
 The manifest is deleted last, and only once every `remove` action succeeded
-**and nothing in the plan is `preserved`.** A `preserved` action means the rig
-still owns bytes it did not remove — an edit, a CRLF checkout, wiring left in
-place, a hook a preserved wiring file still calls, a path outside the current
-install set — and deleting the manifest anyway would discard the only
-evidence naming what it still owns, blinding a later `upgrade`. This holds
-even when every removal that WAS planned succeeded: nothing was removed at
-all (e.g. every file preserved by a CRLF checkout) keeps the manifest exactly
-as a partial failure does. On an actual failure the run stops where it is,
-keeps the manifest, and the payload carries `completed` (what finished),
-`remaining` (what a re-run still owes, including the path that failed) and
-`error`. `remaining` names the manifest itself too, appended last, whenever
-nothing in the plan is `preserved` — a clean re-run of what is left really
-would go on to delete it, so a re-run genuinely still owes it; when something
-else IS preserved, the manifest is never deleted regardless of this run's
-outcome, and `remaining` does not name it, since it is not something a re-run
-would actually do.
+**and — outside `--detach` — nothing in the plan is `preserved`, nor turned
+out changed since planning.** A `preserved` action means the rig still owns
+bytes it did not remove — an edit, a CRLF checkout, wiring left in place, a
+hook a preserved wiring file still calls, a path outside the current install
+set, a file caught changed at apply time — and deleting the manifest anyway
+would discard the only evidence naming what it still owns, blinding a later
+`upgrade`. This holds even when every removal that WAS planned succeeded:
+nothing was removed at all (e.g. every file preserved by a CRLF checkout)
+keeps the manifest exactly as a partial failure does. On an actual failure
+the run stops where it is, keeps the manifest, and the payload carries
+`completed` (what finished), `remaining` (what a re-run still owes, including
+the path that failed) and `error`. `remaining` names the manifest itself too,
+appended last, whenever a clean re-run really would go on to delete it — that
+is, whenever nothing in the plan is `preserved` (or `--detach` was given,
+which always intends to); when something else IS preserved and this is not a
+detach, the manifest is never deleted regardless of this run's outcome, and
+`remaining` does not name it, since it is not something a re-run would
+actually do.
+
+### The manifest's own digest, and `--detach`
+
+The manifest's raw bytes are hashed at plan time and carried as
+`plan.manifestHash`. `applyUninstall` re-verifies it against that recorded
+value at two checkpoints, using the identical symlink-safe read every other
+manifest access gets:
+
+1. **Before the first removal.** A plan built from bytes that no longer exist
+   authorises nothing — on a mismatch here, NOTHING is removed at all, not
+   even a file a fresh plan would still agree to remove, and the payload
+   carries `error` naming the manifest, `completed: []`, `manifestRemoved:
+false`.
+2. **Immediately before the manifest's own deletion.** This is the window
+   every per-file removal before it could have used. On a mismatch here the
+   manifest is kept — never deleted — and the result is an honest partial one:
+   `completed` names every file that really was removed, `remaining` names
+   only the manifest, `error` names the mismatch.
+
+`--json`'s payload states the run's end state in one word, `outcome`, present
+on every completed run (absent exactly when `error` is set):
+
+| `outcome`     | when                                                                                                                                                  | manifest                                    |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `uninstalled` | nothing in the plan was `preserved`, and nothing was caught changed since planning (also reported for `noManifest`: nothing installed, nothing to do) | removed                                     |
+| `partial`     | something was `preserved`, or caught changed since planning, and `--detach` was not given                                                             | kept                                        |
+| `detached`    | `--detach` was given                                                                                                                                  | removed, regardless of what was `preserved` |
+
+**`--detach`** performs the identical safe cleanup — every check on this page
+applies exactly the same, including the two manifest-digest checkpoints — and
+then removes the manifest anyway, even when something in the plan is
+`preserved` or was caught changed at apply time. It never deletes a path this
+command would not otherwise have deleted on its own: `--detach` changes only
+whether the manifest survives a run that left something behind, never the
+per-path safety decisions above. There is no `--force` in this command, now
+or planned: nothing safety refuses to remove becomes removable by a flag.
+Every preserved (and changed-since-planning) path is still reported in
+`preserved`, which under `--detach` doubles as the handover list — what the
+rig is leaving for the user to own from here.
 
 Removing a manifest-owned file also removes any parent directory that becomes
 empty as a result, walking up from that file and never past `dir` itself — with
@@ -864,19 +942,34 @@ segment of a multi-component path transparently and only leaves the FINAL one
 unfollowed, so a single `lstat` on the whole path would silently walk through
 an ancestor swapped for a symlink after the file's own removal to reach
 whatever it points at. The manifest's own removal gets the identical
-per-segment re-check, immediately before the `unlink` call, for the same
-reason every other removal is re-checked rather than trusted from the plan.
+per-segment re-check — folded into the two digest checkpoints above, which
+both read the manifest through `regularFileStatus` before comparing bytes —
+for the same reason every other removal is re-checked rather than trusted
+from the plan.
 
-⚠ **That re-check narrows the window a symlink swap can exploit; it does not
-close it to zero.** Every check-then-act sequence over a filesystem — this
-one, `regularFileStatus`'s own recheck before each file removal, `upgrade`'s
-equivalent — has an unavoidable instant between the check succeeding and the
-act (`unlink`, `readFile`) that follows it, in which a concurrent process with
-write access to the same tree could still swap a symlink in. Nothing in this
-command (or in `upgrade`) closes that instant; the per-segment walk closes a
-different, larger hole — a single `lstat` on a multi-segment path being
-resolved through an INTERMEDIATE symlink the OS itself is willing to follow —
-which is the gap that was actually open here before this check existed.
+⚠ **Every re-check above narrows the window an attacker can exploit; none of
+them close it to zero.** Every check-then-act sequence over a filesystem —
+`regularFileStatus`'s recheck before each file removal, the per-file hash
+recheck immediately after it, the manifest-digest checkpoints, `upgrade`'s
+own equivalents — has an unavoidable instant between the check succeeding and
+the act (`unlink`, `readFile`) that immediately follows it, in which a
+concurrent process with write access to the same tree could still swap
+something in. Nothing in this command (or in `upgrade`) closes that instant;
+each check instead closes a SPECIFIC, larger hole that would otherwise be
+open the whole time between planning and applying, not the residual instant
+around its own act:
+
+- the per-segment ancestor walk closes a single `lstat` on a multi-segment
+  path being resolved through an INTERMEDIATE symlink the OS itself is
+  willing to follow;
+- the per-file hash recheck closes the whole confirmation-prompt window for a
+  plain content edit, which `regularFileStatus`'s type-only recheck cannot see
+  at all;
+- the two manifest-digest checkpoints close that same window for the
+  manifest's own bytes, at the two points — before anything starts, and
+  immediately before its own deletion — where trusting a stale value would
+  otherwise authorise or discard evidence for a plan that no longer describes
+  reality.
 
 Implementation: `packages/cli/src/commands/uninstall.ts` (`planUninstall`,
 `applyUninstall`), wired in `packages/cli/src/index.ts`. A successful removal
@@ -998,7 +1091,8 @@ still names bytes the rig did not remove, so deleting it would blind a later
     { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
     { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
   ],
-  "manifestRemoved": false
+  "manifestRemoved": false,
+  "outcome": "partial"
 }
 ```
 
@@ -1014,13 +1108,15 @@ preserved, so this time the manifest is removed too:
   "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
   "absent": [],
   "preserved": [],
-  "manifestRemoved": true
+  "manifestRemoved": true,
+  "outcome": "uninstalled"
 }
 ```
 
 The first run had it failed partway through instead, on the second file —
-exit 1, the manifest kept, and `removed` now the SUBSET that actually finished
-before the error, not the full `planned` list:
+exit 1, the manifest kept, `removed` now the SUBSET that actually finished
+before the error rather than the full `planned` list, and no `outcome` at
+all: a hard failure is its own signal, not one of the three end states:
 
 ```json
 {
@@ -1039,5 +1135,23 @@ before the error, not the full `planned` list:
   "completed": [".claude/hooks/block-no-verify.mjs"],
   "remaining": [".claude/settings.json"],
   "error": "EPERM: operation not permitted, unlink '.claude/settings.json'"
+}
+```
+
+`uninstall --yes --detach --json` over the same preserved file as the first
+fixture: the manifest is removed anyway, `outcome` says so, and the preserved
+path is the handover list — the one thing left for the user to own:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "absent": [],
+  "preserved": [{ "path": ".claude/rules/invariants.md", "reason": "modified" }],
+  "manifestRemoved": true,
+  "outcome": "detached"
 }
 ```

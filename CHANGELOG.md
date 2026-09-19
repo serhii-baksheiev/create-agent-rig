@@ -97,6 +97,30 @@ a template any generated rig receives.
   successful removal names its own next step (`git add -A` and a commit) —
   `uninstall` never touches git history itself. Removing plugin/MCP
   registrations this rig owns is deferred to RP-179/RP-22 (RP-181).
+- **`uninstall` re-verifies bytes twice more, and gains `--detach`.** A plan
+  can go stale in the window a confirmation prompt sits in: each `remove`
+  action now carries the plan's own recorded hash, re-read and compared
+  immediately before that one file's removal — a mismatch skips that file
+  (reported `preserved`, reason "changed since planning"), never aborts the
+  run, and never deletes it. The manifest's own bytes are checked the same
+  way at two points: once before the first removal (a mismatch refuses the
+  whole apply, nothing removed) and once immediately before the manifest's
+  own deletion (a mismatch keeps the manifest and reports an honest partial
+  result — what finished, and that the manifest is what a re-run still owes).
+  `--json`'s payload now names which of three outcomes a completed run
+  reached — `uninstalled`, `partial`, `detached` — and folds any
+  changed-since-planning path into `preserved` rather than a separate,
+  easy-to-miss list. **`--detach`** performs the identical safe cleanup and
+  then removes the manifest anyway, leaving every preserved (or
+  changed-since-planning) path for the user and printing the complete
+  handover list — it never forces away a conflicting or modified file, and
+  there is no `--force`. Windows directory junctions get the same ancestor
+  protection symlinks do (`regularFileStatus` refuses on `isSymbolicLink()`
+  OR a non-directory/non-file result, never `isDirectory()` alone), exercised
+  by a Windows-only test in the `windows-e2e` lane
+  (`packages/cli/test/uninstall.test.ts`, gated by `onlyOnWindows`) since this
+  repository's own development environment cannot build a junction to verify
+  it directly.
 
 ### Generator (not a rig-facing change)
 
