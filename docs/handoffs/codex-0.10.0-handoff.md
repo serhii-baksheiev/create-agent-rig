@@ -1,7 +1,8 @@
-# Handoff — release 0.10.0 loop, for continuation in Codex
+# Handoff — release 0.10.0 loop
 
-**Updated:** 2026-09-18.
-**Authoritative base:** `origin/master` = `4382bd3` (`docs(handoff): 0.10.0 loop state for continuation in Codex (#228)`).
+**Updated:** 2026-09-20.
+**Authoritative base:** `origin/master` = `c88837c` (`Merge pull request #227 from
+serhii-baksheiev/feat/rp-178-compatibility-matrix`).
 
 This is the cold-start record for the 0.10.0 release loop. Prefer repository
 heads, current PR checks, and accepted owner rulings over older notes. Jira
@@ -18,86 +19,59 @@ plugins, MCP, skills, or official package managers.
 
 Keep: thin `create`, manifest-aware `upgrade`, raw-byte ownership, conflict
 reporting, deleted-stays-deleted behaviour, portable project wiring, security
-guards, `doctor`, safe uninstall, and supported external-solution installation
-and receipts.
+guards, `doctor`, safe `uninstall`, and supported external-solution
+installation and receipts.
 
 Do not add: app skeletons, policy benchmark/evidence frameworks under a new
 name, session messaging, a workflow runtime, a provider marketplace/SDK, or a
 Memory release gate. Custom Memory providers remain optional external opt-ins.
 
-`RP-92` is the release gate; `RP-88` is In Progress. The remaining blocker
-order is RP-177, RP-178, RP-181, then RP-179/RP-180, RP-22, RP-21, and RP-24
-on the exact candidate SHA. Do not recreate duplicate work items or widen this
-scope.
+`RP-92` is the release gate; `RP-88` is In Progress.
 
-## 2. Current stop point
+## 2. Where the critical path stands
 
-### RP-177 — remove application scaffolding / thin `create`
+| item                                                        | state                                                                                                                                                                                                                               |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RP-177 — remove application scaffolding                     | **Done**, merged `ed6f11f` (#230). Its one regression (a file-system exec-bit assertion that could never pass on Windows, red on every master `E2E` run since) is fixed in #231, merged `2504e49`.                                  |
+| RP-178 — compatibility matrix replaces the policy benchmark | **Done**, merged `c88837c` (#227, head `b3b6198`). Gate cycle 2: rounds 1 and 2 HOLD, round 3 SHIP from code-reviewer, security-scanner and prose-reviewer.                                                                         |
+| RP-181 — ownership-bounded `uninstall`                      | **In review.** PR #226, head `5aa844f`, rebased onto `c88837c`. Cycle 2 round 1: prose SHIP, code-reviewer HOLD (the manifest itself is read and unlinked without the symlink check the documents promise unconditionally).         |
+| RP-179 — native plugins and generated fallback              | **In review.** PR #232, head `090066e`, on `c88837c`. Exact-head `ci`, `e2e`, `windows-smoke` green; gate not started.                                                                                                              |
+| RP-180 — workflow governance as an experimental opt-in      | Not started. It splits `templates/agent-os/universal/layers.json`'s single `process` array into core + workflow and records the choice in the manifest, so it collides with RP-181's manifest work — sequence it after #226 merges. |
+| RP-22 → RP-21 → RP-24                                       | Not started, in that order (RP-22 blocks RP-21; RP-24 is the clean-machine acceptance that consumes both).                                                                                                                          |
 
-- Branch: `feat/rp-177-remove-app-skeletons`.
-- Published head: `7d336da9b8bb162be2cc95a9176d8b0e337f78a0`.
-- The final post-review commit is `7d336da` (`fix: remove retired substitution surfaces`).
-- The complete suite on that head passed: **124 files, 4,220 tests passed, 4
-  skipped**.
-- The round-3 findings were fixed: manifest keys reject Unicode format controls;
-  obsolete scope/region/`@app`/filename substitution surfaces were removed;
-  supported substitution is only `__PROJECT_NAME__`; and the generated rulebook
-  was synchronised.
-- Jira comment **18602** records the branch head, evidence, and escalation.
+## 3. How this loop works here
 
-No RP-177 pull request may be opened yet. `pr-ship` consumed its three permitted
-rounds: the third round was HOLD, its findings were subsequently fixed in
-`7d336da`, and a fourth self-service review round is prohibited. The required
-next action is an **owner-authorized gate reset or an owner-arranged independent
-review** of `7d336da`; only a SHIP outcome from that authorized path permits
-opening and merging the RP-177 PR. Do not bypass the cap, manufacture a new
-evidence framework, or treat the existing test result as a substitute for the
-missing authorized review.
+- **Work happens in full WSL clones**, never in a linked worktree: `~/rig`
+  (master), `~/rig-178`, `~/rig-179`, `~/rig-181`. The Windows checkout cannot
+  reach green on `pnpm test:unit`, so every commit is made in a clone where the
+  pre-commit hook runs unmodified.
+- **Every PR takes the full gate**: `gate-round`, `revalidate --point BEFORE_PR`,
+  `decision-router`, the reviewer fan-out, `verdict.mjs check` on each report,
+  the fan-out and verdict records, then `verdict.mjs coverage` on the head. Three
+  rounds per branch; a fourth is an escalation, not a re-review.
+- **A material rebase starts a new gate cycle** on the new exact head (owner
+  authorization, 2026-09-20). Old findings are carried into the new cycle's
+  checklist and re-checked there — never dropped. The normalization is stated in
+  the PR body.
+- **Windows evidence:** `windows-e2e` is skipped on pull requests by design. Run
+  `gh workflow run e2e.yml --ref <branch>` for a branch, or read the post-merge
+  master `E2E` run. Never merge on an older head's green.
+- **Merge criterion:** the required checks by name (`ci`, `e2e`,
+  `windows-smoke`) green **for the exact head**, then a merge commit through the
+  API on that SHA.
 
-### PR #227 — RP-178 compatibility matrix
+## 4. Owner-only conditions
 
-- Draft, open: `feat/rp-178-compatibility-matrix` at
-  `601970d13d169ddeab65924e56a80842ccf13fc2`.
-- Its currently displayed CI/E2E checks are green, but they predate RP-177 and
-  do not make it mergeable for 0.10.0.
-- After RP-177 merges, rebase onto the new `origin/master`, remove references
-  and acceptance for `guard-core-purity` and `guard-web-boundary` if RP-177
-  removed them, and rerun the relevant suite and review gates.
-- The matrix must use one status vocabulary and point every status at executable
-  test evidence or exact release evidence. Windows wiring alone is not Windows
-  support; do not claim it without measured Windows acceptance evidence.
-- Do not restore policy benchmark or evidence-shell machinery under a different
-  name.
+`npm publish`; force-pushing published or shared history beyond the two
+branches this loop was granted (`feat/rp-178-compatibility-matrix`,
+`feat/rp-181-uninstall`); external irreversible deletion; secrets and
+credentials; paid operations or third-party terms; owner-only settings; and a
+material change to the accepted 0.10.0 boundary.
 
-### PR #226 — RP-181 ownership-bounded uninstall
+Everything else — implementation, decomposition, rebases, CI changes, Jira,
+review, labels and merge — is delegated to the loop (owner, 2026-09-20).
 
-- Draft, open: `feat/rp-181-uninstall` at
-  `e98199e2061ce7e2ae4eec39afb1797ca894aa70`.
-- Its currently displayed CI/E2E checks are green, but it must wait for RP-177
-  and be rebased onto the resulting `origin/master` before further gate work.
-- Before it can merge, enforce realpath/lstat confinement for target and parent
-  components, including adversarial symlink cases; hash source bytes rather than
-  decoded UTF-8; and make `removed` mean files actually deleted. Dry-run must
-  expose a separate plan and partial failure must list only completed removals.
-- Keep plugin/MCP cleanup with the agreed owners of RP-179/RP-22. Preserve user
-  changes and upgrade compatibility; do not turn uninstall into a broad cleanup.
-
-## 3. Merge and verification discipline
-
-1. Resolve the RP-177 owner-only review/gate-reset blocker, then review, open,
-   and merge RP-177 only when the authorized gate returns SHIP and the exact-head
-   checks are green.
-2. Re-read both remaining PRs immediately after that merge. Rebase RP-178 first,
-   resolve drift, verify and gate it; then perform the same process for RP-181.
-3. After every merge, fetch `origin/master`, inspect all remaining PRs for drift,
-   mergeability, reviews, and check status before selecting the next unblocked
-   `rel-0.10.0` item.
-
-Do not merge on stale green CI, skip a red check, blind-rerun a flaky test, or
-depend on a local self-hosted runner for normal PR validation. GitHub-hosted
-runners are the normal CI path; local runner configuration is fallback only.
-
-## 4. Environment note
+## 5. Environment note
 
 The user-level Codex configuration was checked separately:
 
@@ -108,15 +82,3 @@ experimental_mode = true
 
 It is present in `~/.codex/config.toml`. This is local configuration, not a
 repository artifact and not a release acceptance criterion.
-
-## 5. Owner-only conditions
-
-The active owner-only blocker is the RP-177 gate-round cap described above.
-Other owner-only actions remain npm publication, force-pushing published/shared
-history, external irreversible deletion, secrets/credentials, paid operations or
-third-party terms, owner-only settings, and a material change to the accepted
-0.10.0 boundary.
-
-When the RP-177 gate authorization arrives, start by confirming the branch SHA,
-working tree, Jira state, and current PR state again. If any source disagrees,
-code/current checks and accepted owner rulings control the decision.
