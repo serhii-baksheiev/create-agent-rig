@@ -733,30 +733,69 @@ the file on disk is read and hashed as bytes, so a binary file is compared
 correctly and a CRLF/LF classification (below) is only ever attempted on
 bytes that round-trip through UTF-8 without loss.
 
-Per manifest path, in order: outside `dir` (`..`, an absolute path, or
-anything else that fails the same containment `upgrade` applies on write), or
-anywhere under `.git`, refuses the WHOLE run before anything is touched —
-never a per-path `preserved`, because a manifest is committed and therefore
-untrusted input, and a manifest pairing a `.git` path with its true on-disk
-hash would otherwise make a confirmed run delete the repository's own git
-state. A path whose top-level segment is not one this release actually
-installs (derived from the same install set `init`/`upgrade` use, never a
-hand-written list) is `preserved`, reason `not a path this release installs`.
-Absent on disk is `absent`. **Any ancestor directory down to the file itself
-that is a symlink — or any other non-regular entry — is `preserved`, reason
-`not a regular file inside the repository (symlink)`; this branch is checked
-before any read, so a symlinked ancestor is never followed to reach the file
-and is left untouched either way.** Only once all of the above pass: bytes
-matching the recorded hash exactly is `remove`; bytes matching only after
-normalising line endings (CRLF/LF, checked both directions against the one
-recorded hash — this command holds no other record of the original bytes) is
-`preserved` with reason `line-endings-only`; any other mismatch is `preserved`
-with reason `modified`. A path under `manifest.kept` is always `preserved`,
-reason `user-owned (kept by init)`. `.claude/settings.json` and
-`.codex/hooks.json` use whole-file ownership only — no line-ending leniency,
-no `kept` check — so a hash match is `remove` and anything else is `preserved`
-with reason `wiring-modified — remove the rig's hook entries by hand`, naming
-the hook files the current wiring still references.
+Before any per-path decision, the manifest as a whole is checked and can
+refuse the WHOLE run before anything is touched — never a per-path
+`preserved`, because a manifest is committed and therefore untrusted input:
+
+- any path (in `files` or `kept`) outside `dir` — `..`, an absolute path, or
+  anything else that fails the same containment `upgrade` applies on write;
+- any path with a segment that NORMALISES to `.git` — case folded, a Windows
+  alternate-data-stream suffix (`name::$DATA`) stripped, then trailing dots
+  and spaces stripped, the two characters Windows itself silently drops when
+  it resolves a segment on disk — at ANY depth, not only as the first
+  segment, so `.GIT/hooks/pre-commit`, `.git./x`, `.git /x`,
+  `.git::$DATA/x` and `.claude/worktrees/w/.git/x` are refused exactly as
+  `.git/x` is. A manifest pairing such a path with its true on-disk hash
+  would otherwise make a confirmed run delete the repository's own git
+  state;
+- the same path listed under both `files` and `kept` — nothing this tool
+  ever writes produces that overlap (`planUpgrade` drops a `kept` path the
+  moment a release vouches for it as one of `files`), so a manifest that has
+  it is corrupt or hand-edited, and resolving the ambiguity silently (by
+  picking a winner) is exactly how a path ends up removed on one line of the
+  plan while the same plan reports it `preserved` on another.
+
+The manifest itself is read this same untrusting way before any of that: not
+through a plain lexical path, but through the identical per-segment
+`regularFileStatus` check every manifest-owned path gets below, so a
+symlinked `.claude` can neither make this command trust a manifest that
+actually lives outside the repository nor make it silently report
+`noManifest` for one that is only reachable through the link — either case
+refuses with an error naming the ancestor.
+
+Per manifest path, in order: a path that is not one of the EXACT paths this
+release actually installs (derived from the same install set `init`/`upgrade`
+use, never a hand-written list, and never merely a top-level directory such
+paths sit under) is `preserved`, reason `not a path this release installs` —
+drawing the boundary at a top-level segment rather than the exact path would
+let a manifest pair almost anything under an owned directory (`.claude/`,
+`.rig/`, `docs/`, `journal/`) with its true hash and have it removed, and it
+is also what makes a path spelled with a Windows alternate-data-stream suffix
+(`name::$DATA`) fall to this branch: the suffixed string is simply a
+different, unowned path, with no need for this command to know anything
+about ADS semantics. Absent on disk is `absent`. **Any ancestor directory
+down to the file itself that is a symlink — or any other non-regular entry —
+is `preserved`, reason `not a regular file inside the repository (symlink)`;
+this branch is checked before any read, so a symlinked ancestor is never
+followed to reach the file and is left untouched either way.** A hook file
+(`.claude/hooks/*.mjs`) that a wiring file this run is preserving as
+`wiring-modified` still references is `preserved`, reason `still referenced
+by <wiring path>, which was preserved as edited — removing this file would
+leave it pointing at nothing` — computed as a pass over the wiring files
+before the main per-path decision, because a wiring path sorts AFTER the hook
+files it references and a single alphabetical pass would otherwise decide a
+hook's own verdict before its wiring file's preserved status was known. Only
+once all of the above pass: bytes matching the recorded hash exactly is
+`remove`; bytes matching only after normalising line endings (CRLF/LF,
+checked both directions against the one recorded hash — this command holds no
+other record of the original bytes) is `preserved` with reason
+`line-endings-only`; any other mismatch is `preserved` with reason
+`modified`. A path under `manifest.kept` is always `preserved`, reason
+`user-owned (kept by init)`. `.claude/settings.json` and `.codex/hooks.json`
+use whole-file ownership only — no line-ending leniency, no `kept` check — so
+a hash match is `remove` and anything else is `preserved` with reason
+`wiring-modified — remove the rig's hook entries by hand`, naming the hook
+files the current wiring still references.
 
 No manifest on disk is success with nothing to do (`planned`, `removed`,
 `absent` and `preserved` all empty, `manifestRemoved: false`), which is also
@@ -774,6 +813,16 @@ without `--yes` it gets the same refusal, reported in its own payload
 sentence. `--dry-run` needs no consent at all — it performs no removal
 regardless of `--yes`.
 
+`--json` keeps that one-object promise even for an error this command did not
+compose itself — a permission or filesystem failure (`EACCES`, `ENOTDIR`) hit
+while planning, not only its own refusals (a bad manifest, `.git`, a consent
+refusal). Such a failure is reported the same way: `manifestRemoved: false`
+and `error` carrying the underlying message, exit 1, never a stack trace with
+no payload at all. Without `--json`, an error of this second kind is still
+the unexpected-error diagnostic every other command here uses (a full trace),
+because that is the more useful answer for a human reading the terminal
+directly.
+
 `removed` is always what was **actually** deleted from disk — empty on a
 `--dry-run`, a consent refusal, or a plan that itself failed to compute, and
 on a partial failure the SUBSET that finished, never every `remove`-verdict
@@ -786,14 +835,20 @@ empty).
 The manifest is deleted last, and only once every `remove` action succeeded
 **and nothing in the plan is `preserved`.** A `preserved` action means the rig
 still owns bytes it did not remove — an edit, a CRLF checkout, wiring left in
-place, a path outside the current install set — and deleting the manifest
-anyway would discard the only evidence naming what it still owns, blinding a
-later `upgrade`. This holds even when every removal that WAS planned
-succeeded: nothing was removed at all (e.g. every file preserved by a CRLF
-checkout) keeps the manifest exactly as a partial failure does. On an actual
-failure the run stops where it is, keeps the manifest, and the payload
-carries `completed` (what finished), `remaining` (what a re-run still owes,
-including the path that failed) and `error`.
+place, a hook a preserved wiring file still calls, a path outside the current
+install set — and deleting the manifest anyway would discard the only
+evidence naming what it still owns, blinding a later `upgrade`. This holds
+even when every removal that WAS planned succeeded: nothing was removed at
+all (e.g. every file preserved by a CRLF checkout) keeps the manifest exactly
+as a partial failure does. On an actual failure the run stops where it is,
+keeps the manifest, and the payload carries `completed` (what finished),
+`remaining` (what a re-run still owes, including the path that failed) and
+`error`. `remaining` names the manifest itself too, appended last, whenever
+nothing in the plan is `preserved` — a clean re-run of what is left really
+would go on to delete it, so a re-run genuinely still owes it; when something
+else IS preserved, the manifest is never deleted regardless of this run's
+outcome, and `remaining` does not name it, since it is not something a re-run
+would actually do.
 
 Removing a manifest-owned file also removes any parent directory that becomes
 empty as a result, walking up from that file and never past `dir` itself — with
@@ -808,10 +863,25 @@ joined path handed to a single `lstat` — the OS resolves every intermediate
 segment of a multi-component path transparently and only leaves the FINAL one
 unfollowed, so a single `lstat` on the whole path would silently walk through
 an ancestor swapped for a symlink after the file's own removal to reach
-whatever it points at.
+whatever it points at. The manifest's own removal gets the identical
+per-segment re-check, immediately before the `unlink` call, for the same
+reason every other removal is re-checked rather than trusted from the plan.
+
+⚠ **That re-check narrows the window a symlink swap can exploit; it does not
+close it to zero.** Every check-then-act sequence over a filesystem — this
+one, `regularFileStatus`'s own recheck before each file removal, `upgrade`'s
+equivalent — has an unavoidable instant between the check succeeding and the
+act (`unlink`, `readFile`) that follows it, in which a concurrent process with
+write access to the same tree could still swap a symlink in. Nothing in this
+command (or in `upgrade`) closes that instant; the per-segment walk closes a
+different, larger hole — a single `lstat` on a multi-segment path being
+resolved through an INTERMEDIATE symlink the OS itself is willing to follow —
+which is the gap that was actually open here before this check existed.
 
 Implementation: `packages/cli/src/commands/uninstall.ts` (`planUninstall`,
-`applyUninstall`), wired in `packages/cli/src/index.ts`. Pinned in
+`applyUninstall`), wired in `packages/cli/src/index.ts`. A successful removal
+prints a reminder that the change is unstaged (`git add -A`, then commit) —
+`uninstall` itself never touches git history. Pinned in
 `packages/cli/test/uninstall.test.ts` and `test/e2e/uninstall.test.ts`.
 
 ## Fixtures

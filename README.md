@@ -207,15 +207,28 @@ It removes only a path whose bytes on disk still match the hash
 `.claude/.rig-manifest.json` recorded, is a plain file (never a symlink,
 directory, or other non-regular entry — checked one path segment at a time
 from the repository root, so a symlinked ANCESTOR is caught wherever it sits,
-never only the file itself), and sits under a top-level path this release
-actually installs; anything under `.git` is refused outright, for the whole
-run, no matter what hash a manifest pairs it with. A file you edited, already
+never only the file itself), and is itself one of the EXACT paths this
+release installs — not merely a path that happens to sit under an owned
+directory such as `.claude/` or `.rig/`, which would let a manifest pair
+almost anything under one with its true hash and have it removed. Anything
+under `.git` is refused outright, for the whole run — any spelling that
+resolves to the same `.git` (a different case, a Windows alternate-data-stream
+suffix, a trailing dot or space, a nested `.git` several directories down) —
+no matter what hash a manifest pairs it with. A file you edited, already
 deleted, that `init` found already in place and left alone (`kept`), or that
 simply is not a path this rig owns is reported and never touched, exactly the
-way `upgrade` reports a conflict. `.claude/settings.json` and
-`.codex/hooks.json` follow the same rule `upgrade` applies to them: removed
-only when the manifest proves the rig wrote those exact bytes, reported with
-the hooks still wired otherwise.
+way `upgrade` reports a conflict; a manifest naming the same path under both
+`files` and `kept` is refused outright rather than left to resolve the
+ambiguity on its own. `.claude/settings.json` and `.codex/hooks.json` follow
+the same rule `upgrade` applies to them: removed only when the manifest proves
+the rig wrote those exact bytes, reported with the hooks still wired
+otherwise — and a hook file a preserved (edited) wiring file still calls is
+itself preserved too, naming which wiring file holds it, so `uninstall` never
+leaves a settings file the run deliberately kept pointing at a hook that is no
+longer there. The manifest itself is read and, at the end, removed through the
+same symlink-safe check every other file gets — never a plain lexical path —
+so a symlinked `.claude` cannot make this command trust a manifest it did not
+really find, or delete one through a link that appeared after planning.
 
 Removing files is destructive, so it asks first — `--yes` on the command
 line, or a yes/no prompt on a terminal; a non-interactive run without `--yes`
@@ -230,11 +243,17 @@ outside this release's install set), the manifest stays too: it is the rig's
 only record of what it still owns, and deleting it would leave the rig
 installed with no evidence naming what belongs to it, blinding a later
 `upgrade`. A run interrupted partway also keeps the manifest and reports what
-finished and what a re-run still owes, so `uninstall` is safe to run again
-either way. It never removes `.rig/` itself — that directory is evidence
-(claims, run state), not something this command has ownership evidence for.
-Full semantics, the JSON shape and worked examples are in
-`docs/command-contract.md` ("## uninstall (RP-181)").
+finished and what a re-run still owes — including the manifest itself,
+whenever a clean re-run really would go on to delete it — so `uninstall` is
+safe to run again either way. It never removes `.rig/` itself — that
+directory is evidence (claims, run state), not something this command has
+ownership evidence for; a FILE under it that is one of the exact paths this
+release installs is still removed like any other manifest-owned file. A
+successful removal is a working-tree change, not a commit — `uninstall`
+never touches git history itself — so it says as much and points at
+`git add -A` and a commit as the next step. Full semantics, the JSON shape
+and worked examples are in `docs/command-contract.md` ("## uninstall
+(RP-181)").
 
 Registering plugin and MCP entries this rig owns is not part of this command
 yet — it lands once RP-179/RP-22 define what an owned registration is; today
