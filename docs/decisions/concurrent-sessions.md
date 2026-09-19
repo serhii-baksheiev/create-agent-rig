@@ -45,9 +45,8 @@ RP-36 defined, since no registry of rows exists yet to append to — and
 validated there through `validateEvidenceRow` (`test/helpers/evidence-row.ts`;
 RP-178 carried this shape check forward as a test-only helper once the
 `packages/cli/src/policy` library it originated in was removed as dead code).
-The table above is a second
-copy of that fact, so the two
-are held in correspondence in both directions by
+The table above is a second copy of that fact, so the two are held in
+correspondence in both directions by
 `test/template/concurrent-sessions.test.ts` › "the decision record tables
 exactly the surfaces above with the same statuses": a surface named here that
 no row carries goes red, and so does a row this table does not name. The

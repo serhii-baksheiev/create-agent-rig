@@ -85,8 +85,9 @@ const ELEVATED_PATHS = [
   // template source would send them to the file they were not reading.
   'templates/agent-os/universal/docs/decisions/',
   'docs/decisions/',
-  // The repository's own contract surfaces (RP-13 conformance): a schema here decides what another repository's workflow
-  // accepts, so a change to one is reviewed like a public API change.
+  // The repository's own contract surfaces (RP-13 conformance): a schema
+  // here decides what another repository's workflow accepts, so a change to
+  // one is reviewed like a public API change.
   'contracts/',
   // This repo's own node-ts conventions (RP-177): not a template payload any
   // generated rig receives — outside `templates/` and outside the npm `files`

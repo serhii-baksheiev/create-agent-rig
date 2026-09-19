@@ -21,8 +21,10 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * Codex's POSIX command resolves its own root with `git rev-parse
  * --show-toplevel` before ever naming the hook file.
  *
- * One allowed and one denied fixture per guard per harness, and the denied
- * fixture must exit exactly 2 — the code both harnesses read as "blocked".
+ * One allowed and one denied fixture per guard for each harness that wires
+ * it, in the payload shape that harness sends, and the denied fixture must
+ * exit exactly 2 — the code both harnesses read as "blocked" — and name the
+ * refusal it expects.
  * A guard that exists in the wiring but has no fixture here must be a listed,
  * reasoned exception; the correspondence block at the end of this file derives
  * the wired set from the two wiring files, so a newly wired guard with neither
@@ -203,7 +205,7 @@ const FIXTURES: Fixture[] = [
       allowed: agent({ subagent_type: 'code-reviewer' }),
       denied: agent({ subagent_type: 'code-reviewer', model: 'haiku' }),
     },
-    reason: /without .?model/i,
+    reason: /pins its model in/,
   },
 ];
 
@@ -265,7 +267,7 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
   // Codex edits through apply_patch, so its fixtures are patches to the same two paths.
   const codexAllowed = applyPatch(`*** Update File: ${allowedPath}`, '# create-agent-rig');
   const codexDenied = applyPatch(`*** Update File: ${deniedPath}`, '# tampered');
-  const reason = /rulebook|unattended/i;
+  const reason = /outside its item's allow-list/;
 
   it('picks one path outside the rulebook and one inside it, by the module that decides', async () => {
     const { isRulebookPath } = (await import(
