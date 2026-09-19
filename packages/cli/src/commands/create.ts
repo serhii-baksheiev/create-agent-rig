@@ -16,6 +16,8 @@ export interface CreateOptions {
    * git skips silently.
    */
   git?: boolean;
+  /** Opt into the experimental workflow layer (RP-180) — see `initProject`. */
+  withWorkflow?: boolean;
 }
 
 export interface CreateResult {
@@ -65,6 +67,7 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
 
   await initProject(projectDir, {
     project: { name: projectName, scope: projectName, region: '' },
+    withWorkflow: options.withWorkflow,
   });
 
   if (gitReady) {

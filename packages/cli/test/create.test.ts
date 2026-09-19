@@ -155,7 +155,8 @@ describe('createProject', { timeout: 60_000 }, () => {
       const body = await readFile(path.join(projectDir, '.claude', 'agents', agent), 'utf8');
       expect(body).toMatch(/^---\nname: /); // agent frontmatter
     }
-    for (const skill of ['pr-ship', 'loop', 'worktree-task']) {
+    // core skills, installed by default
+    for (const skill of ['worktree-task', 'check-premises', 'new-invariant']) {
       await expect(
         readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
@@ -163,6 +164,29 @@ describe('createProject', { timeout: 60_000 }, () => {
         readFile(path.join(projectDir, '.agents', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
     }
+    // the opt-in workflow layer (RP-180) is NOT part of the default install —
+    // see "the workflow layer is opt-in" below for the dedicated coverage
+    for (const skill of ['pr-ship', 'loop']) {
+      await expect(
+        readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md')),
+      ).rejects.toThrow();
+    }
+  });
+
+  it('with `withWorkflow: true`, installs the opt-in workflow layer and records it in the manifest', async () => {
+    const { projectDir } = await createProject('with-workflow', {
+      cwd: work,
+      git: false,
+      withWorkflow: true,
+    });
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'skills', 'loop', 'SKILL.md'), 'utf8'),
+    ).resolves.toBeTruthy();
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'queue.json'), 'utf8'),
+    ).resolves.toContain('adapter');
+    const manifest = await readManifest(projectDir);
+    expect(manifest?.layers).toEqual(['process', 'workflow']);
   });
 
   it('ships the work-queue convention (PLAN.md with both queues)', async () => {

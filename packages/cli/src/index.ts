@@ -24,15 +24,25 @@ directory.
 
 Options
   --no-git          skip git init + the pristine-template baseline commit
+  --with-workflow   also install the experimental, opt-in workflow layer (the
+                    queue adapter, the loop and pr-ship skills, run-state,
+                    journal, revalidation, claim-records, and the PR-lifecycle
+                    helpers) — see init below; default is the core layer only
   --no-color        plain output (NO_COLOR is respected too)
   --version         print the version (--version --json: the contract handshake,
                     one JSON object with the name, version and contract version)
   -h, --help        this text
 
-Also: create-agent-rig init [--dry-run]
+Also: create-agent-rig init [--dry-run] [--with-workflow]
   Install the process layer (rules, gates, stop rules — no architecture
   assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md
   or AGENTS.md.
+  --with-workflow also installs the experimental workflow layer: an
+  autonomous, cooperative multi-session queue/loop/PR-lifecycle mechanism,
+  never required by Lean Core. Without it, only the core layer is installed.
+  A rig that already has the workflow layer keeps it on a plain re-run with
+  no flag — the flag only ever adds the layer, never drops one a previous
+  run already recorded.
   --force is deprecated: it refuses and points at upgrade, which refreshes a
   rig file by file. It is removed in 0.6.
 
@@ -110,7 +120,12 @@ async function runSetup(rawArgs: string[]): Promise<number> {
 }
 
 async function runInit(rawArgs: string[]): Promise<number> {
-  let values: { 'dry-run'?: boolean; force?: boolean; 'no-color'?: boolean };
+  let values: {
+    'dry-run'?: boolean;
+    force?: boolean;
+    'no-color'?: boolean;
+    'with-workflow'?: boolean;
+  };
   try {
     ({ values } = parseArgs({
       args: rawArgs,
@@ -120,6 +135,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
         'dry-run': { type: 'boolean' },
         force: { type: 'boolean' },
         'no-color': { type: 'boolean' },
+        'with-workflow': { type: 'boolean' },
       },
       allowPositionals: false,
     }));
@@ -129,6 +145,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
   }
   const cwd = process.cwd();
   const dryRun = values['dry-run'] === true;
+  const withWorkflow = values['with-workflow'] === true;
 
   // `init` adopts a repo the rig knows nothing about. Run inside a rig `create`
   // generated — reachable when its CLAUDE.md was deleted — it is the wrong
@@ -143,9 +160,9 @@ async function runInit(rawArgs: string[]): Promise<number> {
   // one alone reads as wider.
   const existing = await readManifest(cwd);
 
-  const plan = await planInit(cwd);
+  const plan = await planInit(cwd, { withWorkflow });
   process.stdout.write(
-    `agent-rig init — process layer into ${cwd}\n\n` +
+    `agent-rig init — process layer${withWorkflow ? ' + the opt-in workflow layer' : ''} into ${cwd}\n\n` +
       plan.files.map((f) => `  + ${f.path}`).join('\n') +
       '\n',
   );
@@ -162,7 +179,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
     );
   }
 
-  const result = await initProject(cwd, { dryRun, force: values.force === true });
+  const result = await initProject(cwd, { dryRun, force: values.force === true, withWorkflow });
   if (dryRun) {
     process.stdout.write(`\nDry run — nothing written (${result.plannedCount} files planned).\n`);
     return 0;
@@ -389,6 +406,7 @@ async function main(): Promise<number> {
     json?: boolean;
     'no-git'?: boolean;
     'no-color'?: boolean;
+    'with-workflow'?: boolean;
   };
   try {
     ({ positionals, values } = parseArgs({
@@ -401,6 +419,7 @@ async function main(): Promise<number> {
         json: { type: 'boolean' },
         'no-git': { type: 'boolean' },
         'no-color': { type: 'boolean' },
+        'with-workflow': { type: 'boolean' },
       },
       allowPositionals: true,
     }));
@@ -431,6 +450,7 @@ async function main(): Promise<number> {
   const { projectDir, projectName } = await createProject(dirArg, {
     cwd: process.cwd(),
     git: values['no-git'] !== true,
+    withWorkflow: values['with-workflow'] === true,
   });
 
   const palette = makePalette(

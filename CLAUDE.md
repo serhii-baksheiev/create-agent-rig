@@ -33,10 +33,16 @@ is invisibly wrong.
 .claude/hooks/     the checks that refuse a violation at the tool layer
 .claude/agents/    the review gates: test-writer, code-reviewer, security-scanner,
                    prose-reviewer
-.claude/skills/    the drivers: loop, pr-ship, worktree-task, new-invariant,
-                   check-premises
-.claude/scripts/   the queue adapter, the preflight, the out-of-band sweeps
+.claude/skills/    the drivers: worktree-task, new-invariant, check-premises —
+                   loop and pr-ship ship only with the opt-in workflow layer
+.claude/scripts/   git-env, doctor, the verdict/gate-coverage checker, the
+                   kill switch and the unattended-flag guard
 ```
+
+This is Lean Core, installed by every `init`/`create` — never conditioned on an
+autonomous session existing. A second, **experimental and opt-in** layer adds
+autonomous, cooperative multi-session workflow governance on top of it; see
+"The opt-in workflow layer" below.
 
 **The architecture rules of this project are yours to write.** When this repo
 has a boundary worth stating — a layer that must not import another, a module
@@ -64,22 +70,22 @@ it a hook via the `new-invariant` skill.
   `.claude/rules/workflow.md` ("Branches and commits", "PR flow"). When another
   session may touch this repo at the same time, the branch lives in its own
   worktree — the `worktree-task` skill has the lifecycle and the cleanup.
-- **Gates.** Every PR is routed before it is reviewed — the
-  `decision-router` picks the cheapest lane the change earns
-  (`deterministic` → `fast-path` → `model`), and risk flags escalate ahead of
-  all three. `code-reviewer` runs on the `model` lane, which is **everything the
-  two cheap lanes did not claim** — code, a rulebook document, an unclassifiable
-  path, a derived artifact git does not report as drift, or anything a risk flag
-  escalated;
-  `security-scanner` when a change touches auth, secrets, parsing, or outbound
-  calls; `prose-reviewer` when it touches the documents that instruct agents —
-  rules, skills, agent specs, this file, the README. Those last two are
-  **lane-independent and may only add** — the lane is a floor, never a ceiling.
+- **Gates.** Every change reaches `code-reviewer` unless it is pure
+  documentation outside the rulebook, in which case `prose-reviewer` alone is
+  the floor; `security-scanner` runs in addition whenever a change touches
+  auth, secrets, parsing, or outbound calls, and `prose-reviewer` runs in
+  addition whenever it touches the documents that instruct agents — rules,
+  skills, agent specs, this file, the README. Those last two **may only
+  add** — nothing narrows the `code-reviewer` floor. With the opt-in workflow
+  layer installed, `decision-router` automates *which* of the cheaper lanes a
+  change earns (`deterministic` → `fast-path` → `model`) and the `pr-ship`
+  skill drives the fan-out; without it, the same floor applies and a human or
+  the session decides which reviewers a change needs, by the same triggers.
   `.claude/rules/workflow.md` carries the ladder and what the cheap lanes give
-  up. Blocking findings are resolved, not argued with, and the
-  `pr-ship` skill drives the fan-out. **No hook launches them** — a gate here is
-  a session following a written rule, so "the gate ran" is a claim, not a
-  guarantee. That is the honest reading of every gate in this file.
+  up. Blocking findings are resolved, not argued with. **No hook launches a
+  reviewer** — a gate here is a session or a skill following a written rule,
+  so "the gate ran" is a claim, not a guarantee. That is the honest reading of
+  every gate in this file.
 - **Enforcement is mechanical.** `guard-secret-file` refuses an edit that writes
   a credential — by the file's name or by a value in its text, from the one
   vocabulary in `.claude/scripts/lib/secrets.mjs`; `block-no-verify` refuses
@@ -105,11 +111,47 @@ it a hook via the `new-invariant` skill.
   until it is removed. Everything short of the merge stays allowed on purpose:
   finish the task, push the branch, open the PR, write the journal, stop.
   Stopping cleanly never means losing the work.
-- **Work comes from the queue, through an adapter.** The `loop` skill selects via
-  `.claude/scripts/queue/index.mjs`, which reads whichever queue
-  `.claude/queue.json` names — the Agent queue in `PLAN.md` by default, issues in
-  this repository once it has a remote. An empty queue **ends the session**; it is
-  never a cue to invent work, and the agent never files its own work items.
+- **Without the opt-in workflow layer, work comes from `PLAN.md`'s Agent
+  queue**, read by a session rather than selected by a script — an item there
+  is Tier 0/1 work an agent may pick up; anything needing a human decision
+  waits in the Operator queue. An empty Agent queue is never a cue to invent
+  work.
+
+## The opt-in workflow layer (experimental)
+
+Everything above is Lean Core — it is the same install whether one person is
+at the keyboard or an unattended session is. This second layer adds
+autonomous, cooperative multi-session workflow governance on top of it:
+`create-agent-rig init --with-workflow` (or `create-agent-rig <dir>
+--with-workflow`) installs it; a plain re-run of `init` with no flag never
+drops a layer a previous run already recorded, so an existing rig can keep
+what it has.
+
+It replaces the plain `PLAN.md` reading above with a driven queue: the `loop`
+skill selects through the adapter at `.claude/scripts/queue/index.mjs`, which
+reads whichever queue `.claude/queue.json` names — the Agent queue in
+`PLAN.md` by default, issues in this repository once it has a remote. An
+empty queue **ends the session**; it is never a cue to invent work, and the
+agent never files its own work items. It also brings the `pr-ship` skill and
+the PR-lifecycle helpers that automate the gate above: `decision-router.mjs`
+(lane selection), `detect-missed-gate.mjs` (the Tier-2 sweep autonomy.md
+describes), `reconcile-external-prs.mjs` (sorts merged PRs into queue /
+external / owner-directed lanes), and `run-state.mjs` (the deploy
+HEALTHY/REGRESSION verdict autonomy.md's "Post-deploy verification"
+describes) — plus the run journal, revalidation and claim-records.
+
+**A queue claim is advisory, not a lock.** Selecting an item through the
+adapter records that a session took it up; nothing about the mechanism is
+transactional, and nothing prevents two sessions from claiming the same item
+— that is exactly why distributed multi-controller execution stays
+experimental. Board status remains task authority the same way it always
+was: this layer reads and writes it, it does not arbitrate it. Git/worktree/PR
+remains code authority regardless of whether this layer is installed.
+
+Revalidation and claim-records carry their own freeze, independent of this
+layer's experimental status: their behavior does not change before the date
+recorded in this project's own tracker, and an install of this layer may only
+relocate them, never alter what they do (`docs/decisions/workflow-layer-split.md`).
 
 ## Four things this install left for you to finish
 

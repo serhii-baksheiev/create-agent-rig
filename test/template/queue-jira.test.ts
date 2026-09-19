@@ -1175,14 +1175,15 @@ describe('the queue this repository reads, and the one a generated project gets'
 });
 
 describe('composition', () => {
-  it('layers.json classifies the adapter as process', async () => {
+  // RP-180: the queue seam is opt-in workflow layer, not Lean Core.
+  it('layers.json classifies the adapter as workflow', async () => {
     const manifest = JSON.parse(
       await readFile(
         path.join(repoRoot, 'templates', 'agent-os', 'universal', 'layers.json'),
         'utf8',
       ),
     ) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/queue/jira.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/queue/jira.mjs');
   });
 
   it('the loop skill names all three adapters, so the choice is visible', async () => {

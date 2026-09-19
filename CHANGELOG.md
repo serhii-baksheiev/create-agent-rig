@@ -44,6 +44,22 @@ The full pre-0.10 migration path is pinned in `test/e2e/upgrade.test.ts` ›
 "retires the deleted stack overlay, and preserves the application and the
 process layer".
 
+**Breaking: the workflow layer (queue/loop/pr-ship/run-state/journal/
+revalidation/claim-records/PR-lifecycle helpers) is now an experimental,
+opt-in install (RP-180).** A default `init`/`create` installs Lean Core only
+— rules, gates, stop rules, the review-gate agents and their hooks — and
+never the autonomous, cooperative multi-session machinery on top of it. Pass
+`--with-workflow` to `init` or to `create-agent-rig <dir>` to install it too;
+a rig that already has it keeps it on a plain re-run of `init` with no flag.
+`RigManifest` gains a `layers` field recording the choice, and `upgrade`
+refreshes only the layer(s) a rig recorded. Migration for an existing rig:
+nothing breaks and nothing is deleted — a manifest written before this field
+existed carries no `layers` key, and that absence is read as "every layer,"
+exactly what every release before this one installed, so `upgrade` keeps
+managing the workflow files a rig already has. Revalidation and claim-records
+keep their existing behavior unchanged (RP-53's freeze through the RP-26 gate
+on 2026-10-27) — this release only relocates their install-time layer.
+
 **This repository's own node-ts conventions move out of the shipped
 package**, into `scripts/dogfood/` — a repo-local overlay `sync-agent-os.mjs`
 composes into this repository's own rulebook, same as before, just no longer

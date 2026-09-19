@@ -16,17 +16,21 @@ npx create-agent-rig my-app   # mkdir + git init + the rig, into a new directory
 ```
 
 There is exactly one payload — no `--target`, no application skeleton to
-choose between. `--no-git` skips the initial baseline commit; `--no-color`
-(and `NO_COLOR`) plainens the output. Pinned in
-`packages/cli/test/create.test.ts` › "makes the directory and installs the one
-payload into it" and `test/e2e/generate.test.ts` › "rejects retired --target
-without creating the requested directory".
+choose between — split into a Lean Core layer, always installed, and an
+**experimental, opt-in workflow layer** (the queue adapter, the `loop` and
+`pr-ship` skills, run-state, the run journal, revalidation, claim-records and
+the PR-lifecycle helpers): pass `--with-workflow` to install it too. `--no-git`
+skips the initial baseline commit; `--no-color` (and `NO_COLOR`) plainens the
+output. Pinned in `packages/cli/test/create.test.ts` › "makes the directory
+and installs the one payload into it" and `test/e2e/generate.test.ts` ›
+"rejects retired --target without creating the requested directory".
 
 Already have a repo? Install the same payload into it directly:
 
 ```sh
-npx create-agent-rig init            # rules, gates, stop rules into the current repo
-npx create-agent-rig init --dry-run  # print the plan, write nothing
+npx create-agent-rig init                          # rules, gates, stop rules into the current repo
+npx create-agent-rig init --dry-run                # print the plan, write nothing
+npx create-agent-rig init --with-workflow           # also install the opt-in workflow layer
 ```
 
 `create <dir>` is a thin convenience wrapper over exactly this: make the
@@ -247,6 +251,11 @@ nothing reads the rule. Everything short of the merge stays allowed on purpose:
 finish the task, push the branch, open the PR, write the journal. Stopping
 cleanly must not mean losing work.
 
+**The opt-in workflow layer** (`init --with-workflow`) adds autonomous,
+cooperative multi-session workflow governance — experimental, and not part of
+Lean Core. It brings the two sweeps below, the queue adapter, and the `loop`
+and `pr-ship` skills.
+
 **Two sweeps meant to run outside any session** — nothing schedules them for you;
 that is deliberate, because a check a run performs on itself is one a hurried run
 skips. `detect-missed-gate` finds merges
@@ -260,7 +269,9 @@ missed gate — the run that skipped it is exactly the run that will not mention
 elevated-tier ration, stop conditions) with adapters for `PLAN.md` (the default,
 working before a project has a remote), GitHub Issues, and Jira. Two rules are
 load-bearing and tested from both directions — **blockers resolve from links,
-never labels**, and **the agent never files its own work items**.
+never labels**, and **the agent never files its own work items**. A queue claim
+is advisory, not a lock: nothing about it is transactional, which is why
+distributed multi-controller execution stays experimental.
 
 Around all of it: **autonomy tiers** (what an agent does alone / after review /
 never), **stop rules** (three strikes, flaky ≠ retry, session staleness),
