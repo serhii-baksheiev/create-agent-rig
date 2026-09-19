@@ -703,55 +703,97 @@ never asked.
 
 ## uninstall (RP-181)
 
-`uninstall [dir] [--dry-run] [--json]` removes what a rig installed from `dir`
-(default: the current directory) — file by file, against the evidence the
-manifest carries and nothing else. It is not a member of the foundation verb
-set above, and it does not use that set's five-code exit table: like `create`,
-`init` and `upgrade`, it exits 0 on success (including "nothing to do") and 1
-on a refusal or a partial failure. `## Conformance today`'s row on `create`,
-`init`, `setup` and `upgrade` speaking prose predates this command and is
-unchanged by it — `uninstall` speaks prose too, and additionally answers
-`--json` the way `--version --json` does: one JSON object, nothing else on
-stdout, `schemaVersion` at the top level, additive evolution.
+`uninstall [dir] [--dry-run] [--yes] [--json]` removes what a rig installed
+from `dir` (default: the current directory) — file by file, against the
+evidence the manifest carries and nothing else. It is not a member of the
+foundation verb set above, and it does not use that set's five-code exit
+table: like `create`, `init` and `upgrade`, it exits 0 on success (including
+"nothing to do") and 1 on a refusal or a partial failure. `## Conformance
+today`'s row on `create`, `init`, `setup` and `upgrade` speaking prose
+predates this command and is unchanged by it — `uninstall` speaks prose too,
+and additionally answers `--json` the way `--version --json` does: one JSON
+object, nothing else on stdout, `schemaVersion` at the top level, additive
+evolution.
 
 `### Payload rules specific to the shim`'s "no file paths" rule is, as its own
 heading says, specific to the shim — the concern behind it is a payload
 travelling somewhere a path could point at a credential. `uninstall`'s own
 payload rule is different and looser: its paths are ordinary
 repository-relative rule-file paths, already fully visible in the plain-prose
-plan `upgrade` prints today, so `removed`, `absent`, `preserved`, `completed`,
-`remaining` and `error` may all name one. Recognised structurally, the way a
-doctor record is, by the field that makes a payload this shape:
-`command: "uninstall"` — never by a bare `removed` or `preserved` key alone.
-Pinned in `test/template/command-contract.test.ts` › "exempts uninstall's own
-path fields only on its own payload, never by field name alone".
+plan `upgrade` prints today, so `planned`, `removed`, `absent`, `preserved`,
+`completed`, `remaining` and `error` may all name one. Recognised
+structurally, the way a doctor record is, by the field that makes a payload
+this shape: `command: "uninstall"` — never by a bare `removed` or `preserved`
+key alone. Pinned in `test/template/command-contract.test.ts` › "exempts
+uninstall's own path fields only on its own payload, never by field name
+alone".
 
-Per manifest path, in order: absent on disk is `absent`; bytes matching the
-recorded hash exactly is `remove`; bytes matching only after normalising line
-endings (CRLF/LF, checked both directions against the one recorded hash — this
-command holds no other record of the original bytes) is `preserved` with
-reason `line-endings-only`; any other mismatch is `preserved` with reason
-`modified`. A path under `manifest.kept` is always `preserved`, reason
-`user-owned (kept by init)`. `.claude/settings.json` and `.codex/hooks.json`
-use whole-file ownership only — no line-ending leniency, no `kept` check — so a
-hash match is `remove` and anything else is `preserved` with reason
-`wiring-modified — remove the rig's hook entries by hand`, naming the hook
-files the current wiring still references. A manifest path that resolves
-outside `dir` refuses the whole run before anything is touched, the same
-containment `upgrade` applies on write.
+Ownership hashes compare exact bytes, never a decoded string (ADR-RP-003):
+the file on disk is read and hashed as bytes, so a binary file is compared
+correctly and a CRLF/LF classification (below) is only ever attempted on
+bytes that round-trip through UTF-8 without loss.
 
-No manifest on disk is success with nothing to do (`removed`, `absent` and
-`preserved` all empty, `manifestRemoved: false`), which is also what makes a
-repeat run idempotent — the first run's removals leave no manifest for the
-second to find. A manifest that exists but will not parse is refused outright:
-nothing is removed, exit 1.
+Per manifest path, in order: outside `dir` (`..`, an absolute path, or
+anything else that fails the same containment `upgrade` applies on write), or
+anywhere under `.git`, refuses the WHOLE run before anything is touched —
+never a per-path `preserved`, because a manifest is committed and therefore
+untrusted input, and a manifest pairing a `.git` path with its true on-disk
+hash would otherwise make a confirmed run delete the repository's own git
+state. A path whose top-level segment is not one this release actually
+installs (derived from the same install set `init`/`upgrade` use, never a
+hand-written list) is `preserved`, reason `not a path this release installs`.
+Absent on disk is `absent`. **Any ancestor directory down to the file itself
+that is a symlink — or any other non-regular entry — is `preserved`, reason
+`not a regular file inside the repository (symlink)`; this branch is checked
+before any read, so a symlinked ancestor is never followed to reach the file
+and is left untouched either way.** Only once all of the above pass: bytes
+matching the recorded hash exactly is `remove`; bytes matching only after
+normalising line endings (CRLF/LF, checked both directions against the one
+recorded hash — this command holds no other record of the original bytes) is
+`preserved` with reason `line-endings-only`; any other mismatch is `preserved`
+with reason `modified`. A path under `manifest.kept` is always `preserved`,
+reason `user-owned (kept by init)`. `.claude/settings.json` and
+`.codex/hooks.json` use whole-file ownership only — no line-ending leniency,
+no `kept` check — so a hash match is `remove` and anything else is `preserved`
+with reason `wiring-modified — remove the rig's hook entries by hand`, naming
+the hook files the current wiring still references.
 
-The manifest is deleted last, only once every `remove` action has succeeded.
-On the first failure the run stops where it is, keeps the manifest, and the
-payload carries `completed` (what finished), `remaining` (what a re-run still
-owes, including the path that failed) and `error`. `--dry-run` performs none of
-it and reports the same `removed`/`absent`/`preserved` lists with
-`manifestRemoved: false`.
+No manifest on disk is success with nothing to do (`planned`, `removed`,
+`absent` and `preserved` all empty, `manifestRemoved: false`), which is also
+part of what makes a repeat run idempotent. A manifest that exists but will
+not parse is refused outright: nothing is removed, exit 1.
+
+Removing anything is destructive, so it asks first: `--yes` on the command
+line answers up front, an interactive terminal is asked (`Remove these
+files?`, mirroring `upgrade`'s own `promptConfirm` and exit codes), and a
+non-interactive run without `--yes` refuses — exit 1, nothing removed, a
+message naming `--yes`. `--json` never prompts, on principle: it is read by a
+script, and a script blocking on a TTY question is a hang, not a safeguard, so
+without `--yes` it gets the same refusal, reported in its own payload
+(`manifestRemoved: false`, `error` naming `--yes`) instead of a stderr
+sentence. `--dry-run` needs no consent at all — it performs no removal
+regardless of `--yes`.
+
+`removed` is always what was **actually** deleted from disk — empty on a
+`--dry-run`, a consent refusal, or a plan that itself failed to compute, and
+on a partial failure the SUBSET that finished, never every `remove`-verdict
+path the plan named. `planned` is the plan's own answer regardless of outcome
+— every `remove`-verdict path, whether or not this run went on to remove it —
+so a caller can always tell "what would this have done" from "what did it
+do"; on `--dry-run` the two necessarily differ (`planned` non-empty, `removed`
+empty).
+
+The manifest is deleted last, and only once every `remove` action succeeded
+**and nothing in the plan is `preserved`.** A `preserved` action means the rig
+still owns bytes it did not remove — an edit, a CRLF checkout, wiring left in
+place, a path outside the current install set — and deleting the manifest
+anyway would discard the only evidence naming what it still owns, blinding a
+later `upgrade`. This holds even when every removal that WAS planned
+succeeded: nothing was removed at all (e.g. every file preserved by a CRLF
+checkout) keeps the manifest exactly as a partial failure does. On an actual
+failure the run stops where it is, keeps the manifest, and the payload
+carries `completed` (what finished), `remaining` (what a re-run still owes,
+including the path that failed) and `error`.
 
 Removing a manifest-owned file also removes any parent directory that becomes
 empty as a result, walking up from that file and never past `dir` itself — with
@@ -759,7 +801,14 @@ one named exception: `.rig/` is never removed, empty or not, because it holds
 evidence (claims, run state) this command has no ownership evidence for and
 therefore never inspects. The one manifest-owned path this repository's own
 `init` writes under `.rig/` (`.rig/revalidation.json`) is removed like any
-other file when its hash matches; the directory itself is not.
+other file when its hash matches; the directory itself is not. This walk is
+symlink-safe the same way the removal itself is: each ancestor directory is
+checked one path SEGMENT at a time before it is read or emptied, never as one
+joined path handed to a single `lstat` — the OS resolves every intermediate
+segment of a multi-component path transparently and only leaves the FINAL one
+unfollowed, so a single `lstat` on the whole path would silently walk through
+an ancestor swapped for a symlink after the file's own removal to reach
+whatever it points at.
 
 Implementation: `packages/cli/src/commands/uninstall.ts` (`planUninstall`,
 `applyUninstall`), wired in `packages/cli/src/index.ts`. Pinned in
@@ -860,14 +909,18 @@ the degradation list is what those counters oblige:
 }
 ```
 
-`uninstall --json`, one file preserved for each of the three reasons this
-command reports, and two removed:
+`uninstall --yes --json`, one file preserved for each of the three ordinary
+reasons this command reports, and two removed. Every removal that was PLANNED
+succeeded — `removed` equals `planned` — but the manifest is kept anyway: it
+still names bytes the rig did not remove, so deleting it would blind a later
+`upgrade` to every one of them:
 
 ```json
 {
   "schemaVersion": 1,
   "command": "uninstall",
   "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
   "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
   "absent": [],
   "preserved": [
@@ -875,19 +928,37 @@ command reports, and two removed:
     { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
     { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
   ],
-  "manifestRemoved": true
+  "manifestRemoved": false
 }
 ```
 
-The same run had it failed partway through, on the second file — exit 1, the
-manifest kept:
+The same two files, on a pristine rig with nothing else installed — nothing
+preserved, so this time the manifest is removed too:
 
 ```json
 {
   "schemaVersion": 1,
   "command": "uninstall",
   "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
   "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "absent": [],
+  "preserved": [],
+  "manifestRemoved": true
+}
+```
+
+The first run had it failed partway through instead, on the second file —
+exit 1, the manifest kept, and `removed` now the SUBSET that actually finished
+before the error, not the full `planned` list:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "removed": [".claude/hooks/block-no-verify.mjs"],
   "absent": [],
   "preserved": [
     { "path": ".claude/rules/invariants.md", "reason": "modified" },

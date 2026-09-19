@@ -49,16 +49,22 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
   one declared root. Performs the --version --json handshake first and refuses
   a foreign contract major with exit 4 before writing anything.
 
-Also: create-agent-rig uninstall [dir] [--dry-run] [--json]
+Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--json]
   Remove what a rig installed from [dir] (default: the current directory) —
-  only files whose bytes on disk still match what the manifest recorded.
-  Everything else (edited, foreign, deleted already, or kept by init) is left
-  in place and reported. The manifest itself is removed last, only once every
-  file it names has been removed; a failed run keeps it, so a re-run picks up
-  where it stopped. --json prints one JSON object and nothing else on stdout
-  (see docs/command-contract.md); without it, uninstall reports in prose like
-  init and upgrade. Idempotent: a repeat run finds no manifest and does
-  nothing, exit 0.
+  only files whose bytes on disk still match what the manifest recorded, and
+  only under a top-level path this release actually installs; anything under
+  .git is refused outright, whatever hash a manifest pairs it with.
+  Everything else (edited, foreign, deleted already, kept by init, or not a
+  path this release owns) is left in place and reported. The manifest is
+  removed last, and only once every removal succeeded AND nothing was
+  preserved — a preserved path means the rig still owns bytes it did not
+  remove, so the evidence naming them stays; a failed run also keeps it, so a
+  re-run picks up where it stopped. Prints the plan, then asks before removing
+  anything: --yes answers up front (required off a terminal, and always
+  required with --json, which never prompts). --json prints one JSON object
+  and nothing else on stdout (see docs/command-contract.md); without it,
+  uninstall reports in prose like init and upgrade. Idempotent: a repeat run
+  finds no manifest and does nothing, exit 0.
 
 Also: create-agent-rig memory <doctor|load> [args…]
   Run a Memory verb through the registered executable: the --version --json
@@ -384,6 +390,9 @@ interface UninstallPayload {
   schemaVersion: 1;
   command: 'uninstall';
   dryRun: boolean;
+  /** What the plan would remove — every `remove`-verdict path, whether or not this run actually removed it. */
+  planned: string[];
+  /** What was actually deleted from disk. Always `[]` on a dry run, a refusal, or when planning itself failed. */
   removed: string[];
   absent: string[];
   preserved: Array<{ path: string; reason: string }>;
@@ -393,9 +402,18 @@ interface UninstallPayload {
   error?: string;
 }
 
+/**
+ * `removed` is always what actually happened — `applyUninstall`'s own result
+ * — never a re-derivation of the plan: empty on a dry run, a consent refusal,
+ * or a plan that itself failed, and on a partial failure the SUBSET that
+ * finished, not every `remove`-verdict path the plan named. `planned` is the
+ * plan's own answer regardless of outcome, so a caller can tell "what would
+ * this have done" from "what did it do" even when they differ.
+ */
 function uninstallPayload(
   dryRun: boolean,
   actions: readonly UninstallAction[],
+  removed: readonly string[],
   applied?: {
     manifestRemoved: boolean;
     completed?: string[];
@@ -409,7 +427,8 @@ function uninstallPayload(
     schemaVersion: 1,
     command: 'uninstall',
     dryRun,
-    removed: of('remove'),
+    planned: of('remove'),
+    removed: [...removed],
     absent: of('absent'),
     preserved: actions
       .filter((a) => a.verdict === 'preserved')
@@ -443,13 +462,14 @@ function renderUninstallPlan(repoDir: string, plan: UninstallPlan): string {
 
 async function runUninstall(rawArgs: string[]): Promise<number> {
   let positionals: string[];
-  let values: { 'dry-run'?: boolean; json?: boolean; 'no-color'?: boolean };
+  let values: { 'dry-run'?: boolean; json?: boolean; yes?: boolean; 'no-color'?: boolean };
   try {
     ({ positionals, values } = parseArgs({
       args: rawArgs,
       options: {
         'dry-run': { type: 'boolean' },
         json: { type: 'boolean' },
+        yes: { type: 'boolean' },
         'no-color': { type: 'boolean' },
       },
       allowPositionals: true,
@@ -465,6 +485,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
   const repoDir = path.resolve(process.cwd(), positionals[0] ?? '.');
   const dryRun = values['dry-run'] === true;
   const json = values.json === true;
+  const yes = values.yes === true;
 
   let plan: UninstallPlan;
   try {
@@ -473,7 +494,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
     if (error instanceof UninstallError) {
       if (json) {
         process.stdout.write(
-          `${JSON.stringify(uninstallPayload(dryRun, [], { manifestRemoved: false, error: error.message }))}\n`,
+          `${JSON.stringify(uninstallPayload(dryRun, [], [], { manifestRemoved: false, error: error.message }))}\n`,
         );
       } else {
         process.stderr.write(`${error.message}\n`);
@@ -485,31 +506,70 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 
   if (plan.noManifest) {
     if (json) {
-      process.stdout.write(`${JSON.stringify(uninstallPayload(dryRun, []))}\n`);
+      process.stdout.write(`${JSON.stringify(uninstallPayload(dryRun, [], []))}\n`);
     } else {
       process.stdout.write(`No rig manifest found in ${repoDir} — nothing to uninstall.\n`);
     }
     return 0;
   }
 
+  // The plan is the review step, so it is shown before anything is decided —
+  // in both output modes, and before the consent question below, not after.
+  if (!json) process.stdout.write(renderUninstallPlan(repoDir, plan));
+
   if (dryRun) {
     if (json) {
-      process.stdout.write(`${JSON.stringify(uninstallPayload(true, plan.actions))}\n`);
+      process.stdout.write(`${JSON.stringify(uninstallPayload(true, plan.actions, []))}\n`);
     } else {
-      process.stdout.write(renderUninstallPlan(repoDir, plan));
       process.stdout.write('\nDry run — nothing removed.\n');
     }
     return 0;
   }
 
+  // Consent, never guessed, least of all when the answer deletes files — the
+  // same shape `upgrade` asks before it writes: `--yes` up front, a prompt on
+  // a terminal, and an outright refusal off one. `--json` stays
+  // non-interactive on principle, the same reason `--version --json` and
+  // every other JSON payload here never prompts: it is read by a script, and
+  // a script blocking on a TTY question is a hang, not a safeguard. So
+  // without `--yes` it gets the same refusal a non-interactive run gets,
+  // reported in its own shape instead of a stderr sentence.
+  const isInteractive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+  if (!yes) {
+    if (json || !isInteractive) {
+      const message = 'Refusing to remove files without --yes in a non-interactive run.';
+      if (json) {
+        process.stdout.write(
+          `${JSON.stringify(
+            uninstallPayload(false, plan.actions, [], { manifestRemoved: false, error: message }),
+          )}\n`,
+        );
+      } else {
+        process.stderr.write(
+          `${message} Re-run with --yes once the plan above is what you want ` +
+            '(or --dry-run to keep looking).\n',
+        );
+      }
+      return 1;
+    }
+    const confirmed = await promptConfirm('\nRemove these files?', {
+      input: process.stdin,
+      output: process.stderr,
+      isInteractive,
+    });
+    if (!confirmed) {
+      process.stdout.write('Nothing removed.\n');
+      return 0;
+    }
+  }
+
   const result = await applyUninstall(repoDir, plan);
-  if (!json) process.stdout.write(renderUninstallPlan(repoDir, plan));
 
   if (result.error !== undefined) {
     if (json) {
       process.stdout.write(
         `${JSON.stringify(
-          uninstallPayload(false, plan.actions, {
+          uninstallPayload(false, plan.actions, result.removed, {
             manifestRemoved: false,
             completed: result.completed,
             remaining: result.remaining,
@@ -530,10 +590,23 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 
   if (json) {
     process.stdout.write(
-      `${JSON.stringify(uninstallPayload(false, plan.actions, { manifestRemoved: result.manifestRemoved }))}\n`,
+      `${JSON.stringify(
+        uninstallPayload(false, plan.actions, result.removed, {
+          manifestRemoved: result.manifestRemoved,
+        }),
+      )}\n`,
     );
-  } else {
+  } else if (result.manifestRemoved) {
     process.stdout.write(`\nRemoved ${result.removed.length} files and the manifest.\n`);
+  } else {
+    // Every removal that was planned succeeded, but something else in the
+    // plan was preserved — the rig still owns bytes it did not remove, so the
+    // manifest naming them was kept on purpose, not left behind by a failure.
+    const preservedCount = plan.actions.filter((a) => a.verdict === 'preserved').length;
+    process.stdout.write(
+      `\nRemoved ${result.removed.length} files. ${preservedCount} preserved — the manifest ` +
+        'was kept: the rig is still installed.\n',
+    );
   }
   return 0;
 }

@@ -91,6 +91,7 @@ describe('create-agent-rig uninstall', () => {
       schemaVersion: number;
       command: string;
       dryRun: boolean;
+      planned: string[];
       removed: string[];
       absent: string[];
       preserved: Array<{ path: string; reason: string }>;
@@ -99,8 +100,85 @@ describe('create-agent-rig uninstall', () => {
     expect(payload.schemaVersion).toBe(1);
     expect(payload.command).toBe('uninstall');
     expect(payload.dryRun).toBe(true);
-    expect(payload.removed).toContain('.claude/rules/workflow.md');
+    // a dry run PLANS the removal but performs none of it
+    expect(payload.planned).toContain('.claude/rules/workflow.md');
+    expect(payload.removed).toEqual([]);
     expect(payload.manifestRemoved).toBe(false);
+  });
+
+  it('refuses to remove anything in a non-interactive run without --yes, and leaves the rig in place', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const result = await runCli(['uninstall']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/--yes/);
+    await expect(
+      readFile(path.join(repo, '.claude', 'rules', 'workflow.md')),
+    ).resolves.toBeTruthy();
+    await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).resolves.toBeTruthy();
+  });
+
+  it('--json without --yes refuses to delete, as one JSON object and a non-zero exit', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const result = await runCli(['uninstall', '--json']);
+    expect(result.code).toBe(1);
+    const lines = result.stdout.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const payload = JSON.parse(lines[0]!) as {
+      schemaVersion: number;
+      removed: string[];
+      manifestRemoved: boolean;
+      error?: string;
+    };
+    expect(payload.schemaVersion).toBe(1);
+    expect(payload.removed).toEqual([]);
+    expect(payload.manifestRemoved).toBe(false);
+    expect(payload.error).toMatch(/--yes/);
+    await expect(
+      readFile(path.join(repo, '.claude', 'rules', 'workflow.md')),
+    ).resolves.toBeTruthy();
+    await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).resolves.toBeTruthy();
+  });
+
+  it('--yes removes without asking, and its JSON payload reports what was actually removed', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const result = await runCli(['uninstall', '--yes', '--json']);
+    expect(result.code, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout.trim()) as { removed: string[]; planned: string[] };
+    expect(payload.removed.length).toBeGreaterThan(0);
+    expect(payload.removed).toEqual(payload.planned);
+    await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
+  });
+
+  it('refuses the whole run when a manifest names a path under .git, even with --yes', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    await mkdir(path.join(repo, '.git', 'hooks'), { recursive: true });
+    const hookContent = '#!/bin/sh\nexit 0\n';
+    await writeFile(path.join(repo, '.git', 'hooks', 'pre-commit'), hookContent);
+    const manifestPath = path.join(repo, '.claude', '.rig-manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      files: Record<string, string>;
+    };
+    const { createHash } = await import('node:crypto');
+    manifest.files['.git/hooks/pre-commit'] = createHash('sha256')
+      .update(hookContent, 'utf8')
+      .digest('hex');
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const result = await runCli(['uninstall', '--yes']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/\.git/);
+    expect(await readFile(path.join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')).toBe(
+      hookContent,
+    );
+    await expect(readFile(manifestPath)).resolves.toBeTruthy();
   });
 
   // The acceptance criterion, in full: a clean repository with committed user
@@ -118,7 +196,7 @@ describe('create-agent-rig uninstall', () => {
 
     const before = await readFile(path.join(repo, 'src', 'index.js'), 'utf8');
 
-    const result = await runCli(['uninstall']);
+    const result = await runCli(['uninstall', '--yes']);
     expect(result.code, result.stderr).toBe(0);
 
     // uninstall only removes files; the commit that added them stays in
@@ -149,10 +227,14 @@ describe('create-agent-rig uninstall', () => {
     const foreign = path.join(repo, '.claude', 'my-own-notes.md');
     await writeFile(foreign, "not the rig's file\n");
 
-    const result = await runCli(['uninstall']);
+    const result = await runCli(['uninstall', '--yes']);
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/wiring-modified/);
     expect(result.stdout).toContain('.claude/rules/workflow.md');
+    // something was preserved, so the manifest is kept on purpose — the rig
+    // is still installed, not left behind by a failure
+    expect(result.stdout).toMatch(/still installed/i);
+    await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).resolves.toBeTruthy();
 
     // preserved wiring, byte-identical
     expect(await readFile(settingsPath, 'utf8')).toBe(
@@ -168,9 +250,10 @@ describe('create-agent-rig uninstall', () => {
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
     expect((await runCli(['init'])).code).toBe(0);
 
-    const first = await runCli(['uninstall']);
+    const first = await runCli(['uninstall', '--yes']);
     expect(first.code, first.stderr).toBe(0);
 
+    // no manifest left to act on, so the second run needs no consent at all
     const second = await runCli(['uninstall']);
     expect(second.code, second.stderr).toBe(0);
     expect(second.stdout).toMatch(/nothing to uninstall/i);

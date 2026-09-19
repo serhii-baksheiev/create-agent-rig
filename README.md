@@ -198,23 +198,43 @@ write yourselves:
 
 ```sh
 npx create-agent-rig@latest uninstall --dry-run  # print the plan, remove nothing
-npx create-agent-rig@latest uninstall            # remove what the rig owns and you never touched
-npx create-agent-rig@latest uninstall --json     # one JSON object, for a script
+npx create-agent-rig@latest uninstall            # print the plan, then ask before removing
+npx create-agent-rig@latest uninstall --yes      # the answer up front (required off a terminal, and always with --json)
+npx create-agent-rig@latest uninstall --json     # one JSON object, for a script — needs --yes to remove anything
 ```
 
 It removes only a path whose bytes on disk still match the hash
-`.claude/.rig-manifest.json` recorded — nothing else moves. A file you edited,
-already deleted, or that `init` found already in place and left alone (`kept`)
-is reported and never touched, exactly the way `upgrade` reports a conflict.
-`.claude/settings.json` and `.codex/hooks.json` follow the same rule `upgrade`
-applies to them: removed only when the manifest proves the rig wrote those
-exact bytes, reported with the hooks still wired otherwise. The manifest
-itself is deleted last, only once every file it names has been removed; a run
-interrupted partway keeps the manifest and reports what finished and what a
-re-run still owes, so uninstall is safe to run again. It never touches
-`.rig/` — that directory is evidence (claims, run state), not something this
-command has ownership evidence for. Full semantics, the JSON shape and worked
-examples are in `docs/command-contract.md` ("## uninstall (RP-181)").
+`.claude/.rig-manifest.json` recorded, is a plain file (never a symlink,
+directory, or other non-regular entry — checked one path segment at a time
+from the repository root, so a symlinked ANCESTOR is caught wherever it sits,
+never only the file itself), and sits under a top-level path this release
+actually installs; anything under `.git` is refused outright, for the whole
+run, no matter what hash a manifest pairs it with. A file you edited, already
+deleted, that `init` found already in place and left alone (`kept`), or that
+simply is not a path this rig owns is reported and never touched, exactly the
+way `upgrade` reports a conflict. `.claude/settings.json` and
+`.codex/hooks.json` follow the same rule `upgrade` applies to them: removed
+only when the manifest proves the rig wrote those exact bytes, reported with
+the hooks still wired otherwise.
+
+Removing files is destructive, so it asks first — `--yes` on the command
+line, or a yes/no prompt on a terminal; a non-interactive run without `--yes`
+refuses, and `--json` never prompts (it is read by a script, so it refuses the
+same way off a terminal). `--dry-run` never asks, because it never removes
+anything.
+
+The manifest itself is removed last, and only once every file it names has
+either been removed or was already gone — **and only when nothing was
+preserved.** If anything was left in place (an edit, a CRLF checkout, a path
+outside this release's install set), the manifest stays too: it is the rig's
+only record of what it still owns, and deleting it would leave the rig
+installed with no evidence naming what belongs to it, blinding a later
+`upgrade`. A run interrupted partway also keeps the manifest and reports what
+finished and what a re-run still owes, so `uninstall` is safe to run again
+either way. It never removes `.rig/` itself — that directory is evidence
+(claims, run state), not something this command has ownership evidence for.
+Full semantics, the JSON shape and worked examples are in
+`docs/command-contract.md` ("## uninstall (RP-181)").
 
 Registering plugin and MCP entries this rig owns is not part of this command
 yet — it lands once RP-179/RP-22 define what an owned registration is; today

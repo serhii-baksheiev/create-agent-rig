@@ -101,17 +101,34 @@ generator's own repository, ahead of 0.10.0.
 
 ### Added
 
-- **`uninstall [dir] [--dry-run] [--json]`** removes what a rig installed,
-  file by file, against the evidence `.claude/.rig-manifest.json` carries and
-  nothing else: a path is removed only when its bytes on disk still match the
-  recorded hash exactly; an edited, already-deleted, foreign, or `init`-kept
-  file is reported and left in place, and so is modified hook wiring
+- **`uninstall [dir] [--dry-run] [--yes] [--json]`** removes what a rig
+  installed, file by file, against the evidence `.claude/.rig-manifest.json`
+  carries and nothing else: a path is removed only when its bytes on disk
+  still match the recorded hash exactly (compared as raw bytes, never a
+  UTF-8-decoded string — ADR-RP-003), the path is a plain file the whole way
+  down from the repository root (never a symlinked ancestor or a symlink
+  itself), and the path sits under a top-level directory this release
+  actually installs; anything under `.git` is refused outright, for the whole
+  run, regardless of the hash a manifest pairs it with. An edited,
+  already-deleted, foreign, `init`-kept, or otherwise unrecognised file is
+  reported and left in place, and so is modified hook wiring
   (`.claude/settings.json`, `.codex/hooks.json`), which names the hooks still
-  referenced. The manifest is deleted last, only once every file it names has
-  been removed, so an interrupted run keeps it and a re-run picks up where it
-  stopped; a repeat run with nothing left to do is a no-op, exit 0. `.rig/` is
-  never touched. `--json` prints one JSON object and nothing else on stdout,
-  documented next to the other command contracts in
+  referenced. It prints the plan, then asks before removing anything —
+  `--yes` up front, a prompt on a terminal, an outright refusal off one, and
+  always required with `--json`, which never prompts and never deletes
+  unattended. The manifest is deleted last, and only once nothing was
+  preserved: a CRLF checkout, an edit, or any other conflict keeps the
+  manifest even after every removal that WAS planned succeeded, because the
+  rig still owns bytes it did not remove and the manifest is the only record
+  naming them. A run interrupted partway also keeps it and reports what
+  finished and what a re-run still owes, so a repeat run — with nothing left
+  to remove, or after a partial one — is safe, and a repeat run that finds no
+  manifest at all is a no-op, exit 0. `.rig/` itself is never removed, empty
+  or not; the one manifest-owned file the rig installs directly inside it is
+  removed like any other file when it is pristine. `--json` prints one JSON
+  object and nothing else on stdout — `removed` is always what was actually
+  deleted, and `planned` carries the plan's own answer regardless of outcome
+  — documented next to the other command contracts in
   `docs/command-contract.md` ("## uninstall (RP-181)"). Removing plugin/MCP
   registrations this rig owns is deferred to RP-179/RP-22 (RP-181).
 

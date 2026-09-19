@@ -180,6 +180,7 @@ const collectPathLikeStrings = (value: unknown, keyPath: string, out: string[]):
     // or `preserved` key on some other, unrelated object.
     const isUninstallPayload = fieldOf(value, 'command') === 'uninstall';
     const UNINSTALL_PATH_FIELDS = new Set([
+      'planned',
       'removed',
       'absent',
       'preserved',
