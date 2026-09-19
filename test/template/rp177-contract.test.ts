@@ -1,21 +1,29 @@
-import { readFile, stat } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { needsGit, skipUnless } from '../helpers/env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const read = (file: string): Promise<string> => readFile(path.join(repoRoot, file), 'utf8');
 
 describe('RP-177 repository contract after removing application scaffolding', () => {
-  it('keeps the documented ./demo.sh entry point executable', async () => {
-    const [readme, metadata] = await Promise.all([
-      read('README.md'),
-      stat(path.join(repoRoot, 'demo.sh')),
-    ]);
+  it('keeps the documented ./demo.sh entry point executable', async (ctx) => {
+    // The executable bit a clone receives is the one git records, so that is
+    // what is read: a file-system mode bit does not exist on Windows, and
+    // asserting one there failed the windows-e2e lane on every run since the
+    // RP-177 merge.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
+    const readme = await read('README.md');
+    const staged = execFileSync('git', ['ls-files', '--stage', '--', 'demo.sh'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
 
     expect(readme).toMatch(/^\.\/demo\.sh\b/m);
-    expect(metadata.mode & 0o111).not.toBe(0);
+    expect(staged).toMatch(/^100755 /);
   });
 
   it('does not make pnpm or a generated workspace a requirement for installing the rig', async () => {
