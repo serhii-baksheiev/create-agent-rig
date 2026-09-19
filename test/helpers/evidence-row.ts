@@ -5,14 +5,31 @@
  * (`docs/decisions/concurrent-sessions.md`, `docs/capability-evidence.json`).
  *
  * This used to be `packages/cli/src/policy/core/evidence-matrix.js`, a shipped
- * "policy library" module. RP-178 removed that library — nothing in the
- * package ever called it at runtime (`docs/compatibility.md` has the
- * consumer graph) — so this file carries forward only the one property the
- * two surviving tests need: a row must name its harness, surface, version,
- * mechanism and evidence pointer, must timestamp itself with a zoned
- * ISO-8601 instant, and must give a reason exactly when its status is not
- * `SUPPORTED`. It is deliberately not a general-purpose validator and is not
- * exported outside `test/`.
+ * "policy library" module, itself built on `./validation.js`. RP-178 removed
+ * both — nothing in the package ever called them at runtime (the consumer
+ * graph is on pull request #227) — so this file carries
+ * forward exactly what the two surviving tests need, no more and no less:
+ *
+ * - every row is a closed-shape object: `harness`, `surface`, `harnessVersion`,
+ *   `os`, `observedAt`, `mechanism`, `observableSignal`, `status`,
+ *   `evidencePointer`, and `downgradeReason` when present — nothing else
+ *   (`evidence-row.test.ts` › "refuses a field the shape does not declare, and
+ *   names it");
+ * - `harness`, `surface`, `mechanism`, `observableSignal` and `evidencePointer`
+ *   are non-blank strings;
+ * - `harnessVersion` names one immutable build — a version number
+ *   (`2.1.270`, optionally `v`-prefixed, optionally carrying a pre-release or
+ *   build suffix) or a 7-to-64-character hex build id — never a range or a
+ *   moving label (`evidence-row.test.ts` › "refuses a version range, a
+ *   wildcard or a moving label");
+ * - `observedAt` is a zoned ISO-8601 date-time, never a bare date;
+ * - `status` is one of the four capability states, and carries a
+ *   `downgradeReason` exactly when it is not `SUPPORTED`.
+ *
+ * It is deliberately not a general-purpose validator (no `ownField`/
+ * `carriesField` prototype-chain hardening — RP-157/RP-161's concern, moot for
+ * hand-authored object literals in a test file) and is not exported outside
+ * `test/`.
  */
 
 export type CapabilityState = 'SUPPORTED' | 'DEGRADED' | 'UNSUPPORTED' | 'INTEGRATION-FAILED';
@@ -39,6 +56,19 @@ const CAPABILITY_STATES: readonly CapabilityState[] = [
   'INTEGRATION-FAILED',
 ];
 
+const KEYS = [
+  'harness',
+  'surface',
+  'harnessVersion',
+  'os',
+  'observedAt',
+  'mechanism',
+  'observableSignal',
+  'status',
+  'downgradeReason',
+  'evidencePointer',
+] as const;
+
 const REQUIRED_TEXT = [
   'harness',
   'surface',
@@ -53,6 +83,13 @@ const REQUIRED_TEXT = [
 // rule the removed module pinned.
 const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
+// One immutable build: a version number (optionally v-prefixed, optionally
+// carrying a -pre-release or +build suffix) or a 7-to-64-character hex build
+// id — never a range, a wildcard, or a moving channel label.
+const BUILD_NUMBER = /^v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z][0-9A-Za-z.+-]*)?$/;
+const BUILD_ID = /^[0-9a-fA-F]{7,64}$/;
+const isExactVersion = (value: string): boolean => BUILD_NUMBER.test(value) || BUILD_ID.test(value);
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -64,8 +101,17 @@ export function validateEvidenceRow(input: unknown): EvidenceRowVerdict {
   if (!isRecord(input)) return { ok: false, problems: ['an evidence row is an object'] };
   const problems: string[] = [];
 
+  for (const key of Object.keys(input)) {
+    if (!(KEYS as readonly string[]).includes(key)) problems.push(`${key}: unknown field`);
+  }
   for (const field of REQUIRED_TEXT) {
     if (!nonBlank(input[field])) problems.push(`${field} must be a non-blank string`);
+  }
+  if (nonBlank(input.harnessVersion) && !isExactVersion(input.harnessVersion)) {
+    problems.push(
+      `harnessVersion must name one immutable build (a version number or a 7-to-64-char hex ` +
+        `build id), got ${JSON.stringify(input.harnessVersion)}`,
+    );
   }
   if (!ISO_8601.test(String(input.observedAt))) {
     problems.push('observedAt must be an ISO-8601 date-time with a zone');
