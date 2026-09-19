@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
  * - every row whose status claims something measured (SUPPORTED, DEGRADED,
  *   UNSUPPORTED) carries at least one evidence pointer, and every pointer in
  *   the evidence column resolves: the test file exists in this repository and
- *   the quoted test name is declared in it;
+ *   its source contains the quoted test name;
  * - a row that claims nothing measured (NOT-APPLICABLE, UNVERIFIED) says why,
  *   in its notes column.
  *
@@ -156,7 +156,7 @@ describe('docs/compatibility.md: one status vocabulary, and every claim resolves
     expect(problems).toEqual([]);
   });
 
-  it('resolves every evidence pointer to a tracked test file that declares the quoted name', async () => {
+  it('resolves every evidence pointer to a tracked test file whose source contains the quoted name', async () => {
     const doc = await readFile(DOC, 'utf8');
     const tests = trackedTests();
     const dead: string[] = [];

@@ -90,11 +90,10 @@ generator's own repository, ahead of 0.10.0.
   named the deleted benchmark files, and the project-count/ordering
   assertions that named the deleted `benchmark` vitest project.
 - **RP-110: the CI spawn-baseline diagnostic is removed** from the
-  `windows-smoke` job. It measured bare `node` startup and read "healthy" on
-  the run it was built to diagnose (a red run and its green rerun differed by
-  roughly a fifth on the baseline and by roughly half on the wall clock the
-  suite actually ran under) — a diagnostic that argues against the correct
-  conclusion is worse than none. No replacement baseline was added, per the
+  `windows-smoke` job. It measured bare `node` startup, which stayed flat
+  across a red run and its green rerun while their wall clocks differed by
+  roughly half, so it read "healthy" on the run it was built to diagnose — a
+  diagnostic that argues against the correct conclusion is worse than none. No replacement baseline was added, per the
   ticket's own accepted resolution.
 
 ## 0.9.1

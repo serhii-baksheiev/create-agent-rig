@@ -234,9 +234,10 @@ The map above describes the projects this tool **generates**. This repo is the
 generator itself, dogfooding the same rulebook. Its own map:
 
 ```
-packages/cli/       the generator (TS, tested): copy-tree, substitute, and
-                    policy/ — the typed policy declaration, registry and
-                    decision-record schema with one adapter per harness
+packages/cli/       the generator (TS, tested): the create, init, upgrade,
+                    setup and memory commands over copy-tree, substitute
+                    and the ownership manifest (RP-178 removed the unused
+                    policy/ library)
 templates/agent-os/ the one payload the package ships: universal rules only
                     (RP-177 retired the per-target stack overlays and the
                     init-only override layer — there is one flavour, and

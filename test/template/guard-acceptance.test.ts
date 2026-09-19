@@ -28,6 +28,10 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * the wired set from the two wiring files, so a newly wired guard with neither
  * fails it without anyone updating a count.
  *
+ * The commands run this repository's dogfooded `.claude/hooks/*` copies, not
+ * the template files; the two are held byte-identical by `dogfood.test.ts` ›
+ * "CLAUDE.md and .claude/ are in sync with templates/agent-os".
+ *
  * ⚠ Executed on POSIX only. On Windows every execution below skips through
  * `posixShellAvailable`, and the Codex cases assert only that a
  * `commandWindows` string is present — which is wiring, not execution.
@@ -125,73 +129,125 @@ afterEach(async () => {
   await removeFixture(home);
 });
 
-interface Fixture {
-  hookFile: string;
-  event: 'PreToolUse';
+/** The patch Codex sends for an edit: its editing tool is `apply_patch`, not `Write`. */
+const applyPatch = (header: string, addition: string) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'apply_patch',
+  tool_input: {
+    command: ['*** Begin Patch', header, '@@', `+${addition}`, '*** End Patch', ''].join('\n'),
+  },
+});
+
+/** A Claude Code `Agent` dispatch, the payload shape `guard-subagent-model` judges. */
+const agent = (toolInput: Record<string, unknown>) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'Agent',
+  tool_input: { description: 'fixture dispatch', prompt: 'review the change', ...toolInput },
+});
+
+interface Case {
   allowed: object;
   denied: object;
-  /** Extra env beyond HOME (and, for Claude, CLAUDE_PROJECT_DIR). */
-  env?: Record<string, string>;
+}
+
+interface Fixture {
+  hookFile: string;
+  /**
+   * One allowed and one denied payload per harness whose wiring carries the
+   * guard, each in the shape that harness sends. A harness left out must not
+   * wire the guard — the first case below asserts that too.
+   */
+  claude: Case;
+  codex?: Case;
+  /** What the refusal says, so a deny for the wrong reason is not a pass. */
+  reason: RegExp;
 }
 
 const FIXTURES: Fixture[] = [
   {
     hookFile: 'guard-secret-file.mjs',
-    event: 'PreToolUse',
-    allowed: write('notes/ideas.md', '# ideas\n\nnothing sensitive here.\n'),
-    denied: write('notes/ideas.md', `token = "${GITHUB_PAT}"\n`),
+    claude: {
+      allowed: write('notes/ideas.md', '# ideas\n\nnothing sensitive here.\n'),
+      denied: write('notes/ideas.md', `token = "${GITHUB_PAT}"\n`),
+    },
+    codex: {
+      allowed: applyPatch('*** Add File: notes/ideas.md', '# ideas'),
+      denied: applyPatch('*** Add File: notes/ideas.md', `token = "${GITHUB_PAT}"`),
+    },
+    reason: /credential/i,
   },
   {
     hookFile: 'block-no-verify.mjs',
-    event: 'PreToolUse',
-    allowed: bash('git commit -m "ordinary commit"'),
-    denied: bash('git commit --no-verify -m "bypass"'),
+    claude: {
+      allowed: bash('git commit -m "ordinary commit"'),
+      denied: bash('git commit --no-verify -m "bypass"'),
+    },
+    codex: {
+      allowed: bash('git commit -m "ordinary commit"'),
+      denied: bash('git commit --no-verify -m "bypass"'),
+    },
+    reason: /pre-commit/i,
   },
   {
     hookFile: 'guard-bash.mjs',
-    event: 'PreToolUse',
-    allowed: bash('git status'),
-    denied: bash('git push --force origin master'),
+    claude: { allowed: bash('git status'), denied: bash('git push --force origin master') },
+    codex: { allowed: bash('git status'), denied: bash('git push --force origin master') },
+    reason: /force/i,
+  },
+  {
+    // Claude-only: Codex has no `Agent` tool, and its projection does not wire
+    // this guard. The pin it defends is this repository's own
+    // `.claude/agents/code-reviewer.md` frontmatter `model:`.
+    hookFile: 'guard-subagent-model.mjs',
+    claude: {
+      allowed: agent({ subagent_type: 'code-reviewer' }),
+      denied: agent({ subagent_type: 'code-reviewer', model: 'haiku' }),
+    },
+    reason: /without .?model/i,
   },
 ];
 
-describe('every retained PreToolUse guard, run through the shipped wiring, on both harnesses', () => {
+describe('every retained PreToolUse guard, run through the shipped wiring of each harness that carries it', () => {
   for (const fixture of FIXTURES) {
     describe(fixture.hookFile, () => {
-      it('is wired under PreToolUse in both settings.json and hooks.json', () => {
+      it('is wired under PreToolUse exactly on the harnesses that have a fixture', () => {
         expect(() => commandFor(claudeSettings, 'PreToolUse', fixture.hookFile)).not.toThrow();
-        expect(() => commandFor(codexHooks, 'PreToolUse', fixture.hookFile)).not.toThrow();
+        if (fixture.codex) {
+          expect(() => commandFor(codexHooks, 'PreToolUse', fixture.hookFile)).not.toThrow();
+        } else {
+          expect(wiredHookFiles(codexHooks, 'PreToolUse').has(fixture.hookFile)).toBe(false);
+        }
       });
 
       it('Claude Code wiring: allows the allowed fixture and blocks the denied one', async (ctx) => {
         const posix = posixShellAvailable();
         skipUnless(ctx, posix.ok, posix.reason);
         const entry = commandFor(claudeSettings, 'PreToolUse', fixture.hookFile);
-        const env = {
-          ...process.env,
-          ...fixture.env,
-          HOME: home,
-          CLAUDE_PROJECT_DIR: repoRoot,
-        };
-        const allow = await runWired(entry.command, fixture.allowed, env, repoRoot);
+        const env = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: repoRoot };
+        const allow = await runWired(entry.command, fixture.claude.allowed, env, repoRoot);
         expect(allow.code, allow.stderr).toBe(0);
-        const deny = await runWired(entry.command, fixture.denied, env, repoRoot);
+        const deny = await runWired(entry.command, fixture.claude.denied, env, repoRoot);
         expect(deny.code, deny.stderr).toBe(2);
+        expect(deny.stderr).toMatch(fixture.reason);
       });
 
-      it('Codex wiring: allows the allowed fixture and blocks the denied one, and declares a Windows command too', async (ctx) => {
-        const entry = commandFor(codexHooks, 'PreToolUse', fixture.hookFile);
-        expect(typeof entry.commandWindows, 'a Windows command string').toBe('string');
-        expect((entry.commandWindows ?? '').length).toBeGreaterThan(0);
+      if (fixture.codex) {
+        const codex = fixture.codex;
+        it('Codex wiring: allows the allowed fixture and blocks the denied one, and declares a Windows command too', async (ctx) => {
+          const entry = commandFor(codexHooks, 'PreToolUse', fixture.hookFile);
+          expect(typeof entry.commandWindows, 'a Windows command string').toBe('string');
+          expect((entry.commandWindows ?? '').length).toBeGreaterThan(0);
 
-        const posix = posixShellAvailable();
-        skipUnless(ctx, posix.ok, posix.reason);
-        const env = { ...process.env, ...fixture.env, HOME: home };
-        const allow = await runWired(entry.command, fixture.allowed, env, repoRoot);
-        expect(allow.code, allow.stderr).toBe(0);
-        const deny = await runWired(entry.command, fixture.denied, env, repoRoot);
-        expect(deny.code, deny.stderr).toBe(2);
-      });
+          const posix = posixShellAvailable();
+          skipUnless(ctx, posix.ok, posix.reason);
+          const env = { ...process.env, HOME: home };
+          const allow = await runWired(entry.command, codex.allowed, env, repoRoot);
+          expect(allow.code, allow.stderr).toBe(0);
+          const deny = await runWired(entry.command, codex.denied, env, repoRoot);
+          expect(deny.code, deny.stderr).toBe(2);
+          expect(deny.stderr).toMatch(fixture.reason);
+        });
+      }
     });
   }
 });
@@ -206,6 +262,10 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
   const deniedPath = '.claude/rules/workflow.md';
   const allowed = write(allowedPath, '# create-agent-rig\n');
   const denied = write(deniedPath, '# tampered\n');
+  // Codex edits through apply_patch, so its fixtures are patches to the same two paths.
+  const codexAllowed = applyPatch(`*** Update File: ${allowedPath}`, '# create-agent-rig');
+  const codexDenied = applyPatch(`*** Update File: ${deniedPath}`, '# tampered');
+  const reason = /rulebook|unattended/i;
 
   it('picks one path outside the rulebook and one inside it, by the module that decides', async () => {
     const { isRulebookPath } = (await import(
@@ -247,6 +307,7 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
     expect(allow.code, allow.stderr).toBe(0);
     const deny = await runWired(entry.command, denied, env, repoRoot);
     expect(deny.code, deny.stderr).toBe(2);
+    expect(deny.stderr).toMatch(reason);
   });
 
   it('Codex wiring: allows README.md and blocks a rule file while unattended, and declares a Windows command too', async (ctx) => {
@@ -256,10 +317,11 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
     skipUnless(ctx, posix.ok, posix.reason);
     await arm(repoRoot);
     const env = { ...process.env, HOME: home };
-    const allow = await runWired(entry.command, allowed, env, repoRoot);
+    const allow = await runWired(entry.command, codexAllowed, env, repoRoot);
     expect(allow.code, allow.stderr).toBe(0);
-    const deny = await runWired(entry.command, denied, env, repoRoot);
+    const deny = await runWired(entry.command, codexDenied, env, repoRoot);
     expect(deny.code, deny.stderr).toBe(2);
+    expect(deny.stderr).toMatch(reason);
   });
 });
 
@@ -276,12 +338,9 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
  * what this file and the doc claim (a name that is not actually wired, or
  * not an existing hook file, fails the reverse checks).
  */
-const ACCEPTANCE_EXCEPTIONS: Record<string, string> = {
-  'guard-subagent-model.mjs':
-    'Claude-only (matcher Agent; Codex has no Agent tool). Its allow/deny fixtures are in ' +
-    'subagent-routing-hooks.test.ts, invoked against the hook file directly — the pattern this ' +
-    "file already uses for guard-bash/guard-rulebook's richer behaviour, not a gap.",
-};
+// Empty today: every wired PreToolUse guard is executed above. An entry here
+// names a guard this file cannot execute through its wiring, and the reason.
+const ACCEPTANCE_EXCEPTIONS: Record<string, string> = {};
 
 async function guardSection(): Promise<string> {
   const doc = await readFile(path.join(repoRoot, 'docs', 'compatibility.md'), 'utf8');
