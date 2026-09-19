@@ -82,7 +82,7 @@ interface Pointer {
   names: string[];
 }
 
-const POINTER = /`([\w.-]+\.test\.(?:ts|mjs))`((?:\s*(?:and\s*)?›\s*"[^"]+")*)/g;
+const POINTER = /`([\w./-]+\.test\.(?:ts|mjs))`((?:\s*(?:and\s*)?›\s*"[^"]+")*)/g;
 
 function pointers(cell: string): Pointer[] {
   return [...cell.matchAll(POINTER)].map((m) => ({
@@ -91,14 +91,25 @@ function pointers(cell: string): Pointer[] {
   }));
 }
 
-function trackedTests(): Map<string, string> {
-  const files = execFileSync('git', ['ls-files', 'test', 'packages/cli/test'], {
+function trackedTestFiles(): string[] {
+  return execFileSync('git', ['ls-files', 'test', 'packages/cli/test'], {
     cwd: repoRoot,
     encoding: 'utf8',
   })
     .split('\n')
     .filter((f) => /\.test\.(ts|mjs)$/.test(f));
-  return new Map(files.map((f) => [path.basename(f), f]));
+}
+
+/**
+ * Every tracked path a pointer could mean. A bare basename that two files
+ * share resolves to BOTH, and the caller refuses it: picking one silently is
+ * how a citation ends up pointing at a file nobody meant (`upgrade.test.ts`
+ * exists under `packages/cli/test/` and under `test/e2e/`). A pointer that
+ * carries a path — `test/e2e/upgrade.test.ts` — names one file and resolves.
+ */
+function candidatesFor(pointerFile: string, files: string[]): string[] {
+  if (pointerFile.includes('/')) return files.filter((f) => f === pointerFile);
+  return files.filter((f) => path.basename(f) === pointerFile);
 }
 
 describe('docs/compatibility.md: one status vocabulary, and every claim resolves to a test', () => {
@@ -158,16 +169,23 @@ describe('docs/compatibility.md: one status vocabulary, and every claim resolves
 
   it('resolves every evidence pointer to a tracked test file whose source contains the quoted name', async () => {
     const doc = await readFile(DOC, 'utf8');
-    const tests = trackedTests();
+    const tracked = trackedTestFiles();
     const dead: string[] = [];
     for (const table of claimTables(doc)) {
       for (const row of table.rows) {
         for (const pointer of pointers(row.cells.evidence ?? '')) {
-          const file = tests.get(pointer.file);
-          if (!file) {
+          const candidates = candidatesFor(pointer.file, tracked);
+          if (candidates.length === 0) {
             dead.push(`line ${row.line}: no tracked test file ${pointer.file}`);
             continue;
           }
+          if (candidates.length > 1) {
+            dead.push(
+              `line ${row.line}: ${pointer.file} is ambiguous (${candidates.join(', ')}) — cite the path`,
+            );
+            continue;
+          }
+          const file = candidates[0]!;
           const source = await readFile(path.join(repoRoot, file), 'utf8');
           if (pointer.names.length === 0) {
             dead.push(`line ${row.line}: ${pointer.file} is cited without a › "test name"`);
@@ -190,6 +208,22 @@ describe('docs/compatibility.md: one status vocabulary, and every claim resolves
     const [table] = claimTables(planted);
     expect(statusColumns(table!)).toEqual(['claude code']);
     expect(VOCABULARY.includes(table!.rows[0]!.cells['claude code']!)).toBe(false);
-    expect(trackedTests().has(pointers(table!.rows[0]!.cells.evidence!)[0]!.file)).toBe(false);
+    const tracked = trackedTestFiles();
+    expect(candidatesFor(pointers(table!.rows[0]!.cells.evidence!)[0]!.file, tracked)).toEqual([]);
+  });
+
+  it('refuses a basename two tracked files share, and resolves the same pointer given as a path', () => {
+    const tracked = trackedTestFiles();
+    const shared = [...new Set(tracked.map((f) => path.basename(f)))].filter(
+      (name) => tracked.filter((f) => path.basename(f) === name).length > 1,
+    );
+    expect(
+      shared.length,
+      'no basename is shared by two tracked test files, so this check has nothing to prove',
+    ).toBeGreaterThan(0);
+    const name = shared[0]!;
+    expect(candidatesFor(name, tracked).length).toBeGreaterThan(1);
+    const withPath = tracked.find((f) => path.basename(f) === name)!;
+    expect(candidatesFor(withPath, tracked)).toEqual([withPath]);
   });
 });
