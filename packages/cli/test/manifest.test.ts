@@ -165,6 +165,33 @@ describe('the install manifest — the evidence upgrade reads', () => {
     expect(legitimate({ project: { name: '_work', scope: '_work', region: '' } })).not.toBeNull();
   });
 
+  // `uninstall`'s plan prints `action.rel` raw to a screen a maintainer reads
+  // immediately before confirming a deletion — a control character or a
+  // Unicode format control (RTL override, zero-width joiner steering how the
+  // rest of the line renders) in a manifest KEY could forge that line the same
+  // way an unchecked `version` could forge a plan header (AR-128). `files` and
+  // `kept` share one path-key validator (`isSafeManifestPath`), so this pins
+  // it for both without duplicating the check.
+  describe.each([
+    ['a literal ESC', '.claude/[2Kevil.md'],
+    ['a carriage return', '.claude/rules\r/workflow.md'],
+    ['a line feed', 'CLAUDE.md\ndelete: .claude/hooks/guard-bash.mjs'],
+    ['a NUL byte', '.claude/ hidden.md'],
+    ['a Unicode RTL override (format control)', '.claude/‮evil.md'],
+  ] as const)('a manifest key carrying %s', (_shape, key) => {
+    it('voids the manifest when it is a `files` key', () => {
+      expect(
+        parseManifest(JSON.stringify({ ...sample(), files: { [key]: sha256('x') } })),
+      ).toBeNull();
+    });
+
+    it('voids the manifest when it is a `kept` key', () => {
+      expect(
+        parseManifest(JSON.stringify({ ...sample(), kept: { [key]: sha256('x') } })),
+      ).toBeNull();
+    });
+  });
+
   it('writes to .claude/.rig-manifest.json and reads back what it wrote', async () => {
     await writeManifest(repo, sample());
     expect(await readManifest(repo)).toEqual(sample());

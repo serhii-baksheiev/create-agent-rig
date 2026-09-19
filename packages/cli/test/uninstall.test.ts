@@ -134,6 +134,69 @@ describe('planUninstall — per-file verdicts', () => {
 
     await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
   });
+
+  // Ownership hashes cover exact bytes (ADR-RP-003 / RP-177): the manifest
+  // comparison reads the file as bytes and hashes those bytes, never a
+  // UTF-8-decoded string. A file that is not valid UTF-8 at all is the sharpest
+  // test of that — decoding it loses information a hash must not lose.
+  it('matches a binary (non-UTF-8) file by its exact raw bytes, never a decoded string', async () => {
+    await installRig();
+    const binary = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x81, 0x0a, 0x0d, 0x00]);
+    await writeFile(abs(WORKFLOW), binary);
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.files[WORKFLOW] = sha256(binary);
+    await writeManifest(repo, manifest);
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, WORKFLOW)?.verdict).toBe('remove');
+
+    await applyUninstall(repo, plan);
+    await expect(readFile(abs(WORKFLOW))).rejects.toThrow();
+  });
+
+  it('never treats a binary file as a line-endings-only match against an unrelated hash', async () => {
+    await installRig();
+    const binary = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x81, 0x0a, 0x0d, 0x00]);
+    await writeFile(abs(WORKFLOW), binary);
+    // recorded hash is whatever the rig actually wrote (text) — nothing about
+    // decoding the binary bytes as UTF-8 and normalising line endings should
+    // ever reach that hash.
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, WORKFLOW);
+    expect(action?.verdict).toBe('preserved');
+    expect(action?.reason).toBe('modified');
+  });
+
+  it('refuses the whole run when a manifest path names something under .git, even with its true hash', async () => {
+    await installRig();
+    await mkdir(abs('.git/hooks'), { recursive: true });
+    await write('.git/hooks/pre-commit', '#!/bin/sh\nexit 0\n');
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.files['.git/hooks/pre-commit'] = sha256(await readFile(abs('.git/hooks/pre-commit')));
+    await writeManifest(repo, manifest);
+
+    await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
+    expect(await read('.git/hooks/pre-commit')).toBe('#!/bin/sh\nexit 0\n');
+  });
+
+  it('preserves a path this release does not install, even with its true hash, and never removes it', async () => {
+    await installRig();
+    await write('src/app.ts', 'export const x = 1;\n');
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.files['src/app.ts'] = sha256(await readFile(abs('src/app.ts')));
+    await writeManifest(repo, manifest);
+
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, 'src/app.ts');
+    expect(action?.verdict).toBe('preserved');
+    expect(action?.reason).toMatch(/not a path this release installs/i);
+
+    await applyUninstall(repo, plan);
+    expect(await read('src/app.ts')).toBe('export const x = 1;\n');
+  });
 });
 
 describe('planUninstall — wiring files', () => {
@@ -198,6 +261,29 @@ describe('applyUninstall — the happy path', () => {
     // .rig itself is never removed, empty or not, and anything under it is untouched
     expect((await stat(abs('.rig'))).isDirectory()).toBe(true);
     expect(await read('.rig/marker.local')).toBe('evidence');
+  });
+
+  it('keeps the manifest when nothing was actually removed — a CRLF checkout leaves everything preserved', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    for (const rel of Object.keys(manifest.files)) {
+      const original = await readFile(abs(rel), 'utf8');
+      await writeFile(abs(rel), original.replace(/\n/g, '\r\n'));
+    }
+
+    const plan = await planUninstall(repo);
+    expect(plan.actions.length).toBeGreaterThan(0);
+    expect(plan.actions.every((a) => a.verdict === 'preserved')).toBe(true);
+
+    const result = await applyUninstall(repo, plan);
+    expect(result.removed).toEqual([]);
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.error).toBeUndefined();
+    // the rig is still fully installed — the evidence naming what it owns
+    // stays, or a later upgrade would be blind to every preserved file
+    expect(await exists(MANIFEST_REL)).toBe(true);
+    expect(await readManifest(repo)).not.toBeNull();
   });
 
   it('a dry run writes nothing', async () => {
@@ -343,6 +429,67 @@ describe('planUninstall / applyUninstall — a symlink never gets read or remove
 
         expect((await lstat(abs(WORKFLOW))).isSymbolicLink()).toBe(true);
         expect(await readFile(target, 'utf8')).toBe('attacker content');
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  onlyWhereSymlinksExist(
+    'never reads or empties a directory reached only through a symlinked ANCESTOR while cleaning up empty parents',
+    async () => {
+      await installRig();
+
+      // A manifest-owned file several directories deep, so the empty-parent
+      // walk has more than one level to climb — and an ancestor ABOVE the
+      // file's own directory that a symlink can stand in for.
+      const deepRel = '.claude/scratch/deep/deeper/marker.txt';
+      await write(deepRel, 'evidence\n');
+      const manifest = await readManifest(repo);
+      if (manifest === null) throw new Error('fixture: no manifest');
+      manifest.files[deepRel] = sha256(await readFile(abs(deepRel)));
+      await writeManifest(repo, manifest);
+
+      const plan = await planUninstall(repo);
+      expect(actionFor(plan, deepRel)?.verdict).toBe('remove');
+
+      // An external tree that LOOKS like a legitimate empty tail of the same
+      // shape — a naive "lstat the whole joined path" cleanup would resolve
+      // straight through the symlinked ancestor and find it.
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        await mkdir(path.join(outside, 'deep', 'deeper'), { recursive: true });
+
+        // Simulates the window between the apply-time re-check and the
+        // parent-directory cleanup that follows it: the file is genuinely
+        // removed, then its ANCESTOR (not its own immediate directory) is
+        // swapped for a symlink before cleanup walks up through it. Only the
+        // ONE removal that matters performs the swap — this seam runs once
+        // per removed path, and a second pass over an already-swapped
+        // `scratchDir` would itself read and delete straight through the
+        // symlink, destroying the very evidence this test checks afterwards.
+        // fixture-cleanup-audit.test.ts holds every recursive-removal call
+        // site in this suite to a written exception — the fixture tree here is
+        // a fixed, fully-known shape (one file at a known depth), so it is
+        // unwound by exact name like every other fixture in this file, never
+        // with `{ recursive: true }`.
+        let swapped = false;
+        const swapAncestorThenRemove = async (target: string): Promise<void> => {
+          await rm(target);
+          if (swapped || !target.endsWith(path.join('deeper', 'marker.txt'))) return;
+          swapped = true;
+          const scratchDir = abs('.claude/scratch');
+          await rmdir(path.join(scratchDir, 'deep', 'deeper'));
+          await rmdir(path.join(scratchDir, 'deep'));
+          await rmdir(scratchDir);
+          await symlink(outside, scratchDir, 'dir');
+        };
+
+        await applyUninstall(repo, plan, { removeFile: swapAncestorThenRemove });
+
+        // Left alone: the symlink itself, and everything reachable through it.
+        expect((await lstat(abs('.claude/scratch'))).isSymbolicLink()).toBe(true);
+        expect((await stat(path.join(outside, 'deep', 'deeper'))).isDirectory()).toBe(true);
       } finally {
         await removeFixture(outside);
       }

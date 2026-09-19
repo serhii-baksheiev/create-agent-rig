@@ -1,7 +1,9 @@
 import { lstat, readFile, readdir, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { initInstallSet } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
+import type { RigManifest } from '../lib/manifest.js';
 import { resolveInside } from '../lib/safe-path.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
@@ -71,13 +73,18 @@ function onDisk(repoDir: string, rel: string): string {
 }
 
 /**
- * The file's bytes, or `null` when it is genuinely absent. Any other failure —
- * permissions, a directory where a file should be — is rethrown, because a
- * plan that cannot tell "gone" from "unreadable" must not guess.
+ * The file's raw bytes, or `null` when it is genuinely absent. Any other
+ * failure — permissions, a directory where a file should be — is rethrown,
+ * because a plan that cannot tell "gone" from "unreadable" must not guess.
+ *
+ * Read as bytes, never decoded — ADR-RP-003 (raw-byte ownership): a hash
+ * compares exactly what the rig wrote against exactly what is on disk, and a
+ * file that is not valid UTF-8 must not be silently rewritten through
+ * replacement characters before it is hashed.
  */
-async function readIfPresent(repoDir: string, rel: string): Promise<string | null> {
+async function readIfPresent(repoDir: string, rel: string): Promise<Buffer | null> {
   try {
-    return await readFile(onDisk(repoDir, rel), 'utf8');
+    return await readFile(onDisk(repoDir, rel));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
@@ -146,12 +153,59 @@ const normalizeToCRLF = (content: string): string => normalizeToLF(content).repl
  * endings — checked both directions, since the recorded hash was taken of
  * whatever the rig actually wrote, and this command has no other record of
  * those original bytes to compare against.
+ *
+ * A binary file — one whose bytes do not round-trip through UTF-8 without
+ * loss — can never take this branch: decoding it would hash a
+ * replacement-character string standing in for bytes that were never text,
+ * exactly what ADR-RP-003 forbids. Its own raw-byte hash was already checked
+ * and did not match, so it falls through to `modified` instead, the same as
+ * `upgrade`'s `isReleasedVersion` treats an invalid-UTF-8 candidate.
  */
-function isLineEndingOnlyMatch(current: string, recordedHash: string): boolean {
+function isLineEndingOnlyMatch(current: Buffer, recordedHash: string): boolean {
+  const decoded = current.toString('utf8');
+  if (!Buffer.from(decoded, 'utf8').equals(current)) return false;
   return (
-    sha256(normalizeToLF(current)) === recordedHash ||
-    sha256(normalizeToCRLF(current)) === recordedHash
+    sha256(normalizeToLF(decoded)) === recordedHash ||
+    sha256(normalizeToCRLF(decoded)) === recordedHash
   );
+}
+
+/** The first path segment — the top-level name a manifest entry lives under. */
+function topSegment(rel: string): string {
+  return rel.split('/')[0]!;
+}
+
+/**
+ * Refuses the whole run outright when any manifest path — `files` or `kept` —
+ * names something under `.git`. A manifest is committed, so it is untrusted
+ * input the same way a pull request is; a manifest that pairs
+ * `.git/hooks/pre-commit` with that file's true on-disk hash would otherwise
+ * make a confirmed `uninstall` remove the repository's own git hooks. Checked
+ * once, over every key, before anything else runs.
+ */
+function refuseGitPaths(manifest: RigManifest): void {
+  const all = [...Object.keys(manifest.files), ...Object.keys(manifest.kept ?? {})];
+  const gitPath = all.find((rel) => topSegment(rel) === '.git');
+  if (gitPath !== undefined) {
+    throw new UninstallError(
+      `${MANIFEST_REL} names "${gitPath}", under .git. A rig manifest never legitimately owns ` +
+        'anything there — refusing to run.',
+    );
+  }
+}
+
+/**
+ * Every top-level path this release actually installs — the ownership
+ * boundary a `remove` verdict is held to, beyond the manifest's own say-so.
+ * Read from the same install-set generator `init`/`upgrade` use, never
+ * hand-listed: a hand-written list of "rig directories" drifts the day the
+ * install set changes shape, and a manifest naming a path outside it (a
+ * tampered entry, or simply a stale one from a release that installed
+ * something this one does not) is not evidence this command can act on.
+ */
+async function rigOwnedRoots(repoDir: string): Promise<Set<string>> {
+  const files = await initInstallSet(repoDir);
+  return new Set(files.map((f) => topSegment(f.rel)));
 }
 
 /**
@@ -159,24 +213,39 @@ function isLineEndingOnlyMatch(current: string, recordedHash: string): boolean {
  *
  * Ownership evidence is the manifest alone: a path's recorded hash is the only
  * thing that can mark it for removal, and only when the bytes on disk still
- * match it exactly. Everything else — absent, edited, kept by init, wiring
- * this rig no longer recognises, or the CRLF/LF twin of what it wrote — is
- * reported and left alone.
+ * match it exactly AND the path sits under a top-level root this release
+ * actually installs. Everything else — absent, edited, kept by init, wiring
+ * this rig no longer recognises, a path outside the current install set, or
+ * the CRLF/LF twin of what it wrote — is reported and left alone.
  */
 export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
   const raw = await readIfPresent(repoDir, MANIFEST_REL);
   if (raw === null) return { noManifest: true, actions: [] };
 
-  const manifest = parseManifest(raw);
+  const manifest = parseManifest(raw.toString('utf8'));
   if (manifest === null) {
     throw new UninstallError(
       `${MANIFEST_REL} exists but could not be read as a rig manifest. Refusing to remove anything.`,
     );
   }
+  refuseGitPaths(manifest);
+  const ownedRoots = await rigOwnedRoots(repoDir);
 
   const actions: UninstallAction[] = [];
   for (const rel of Object.keys(manifest.files).sort()) {
     const recorded = manifest.files[rel]!;
+    // Lexical containment unconditionally, before the ownership check below —
+    // a `..`-escaping path is refused outright regardless of whether its top
+    // segment happens to look owned.
+    onDisk(repoDir, rel);
+    if (!ownedRoots.has(topSegment(rel))) {
+      actions.push({
+        rel,
+        verdict: 'preserved',
+        reason: `not a path this release installs (top-level "${topSegment(rel)}" is not part of the current install set)`,
+      });
+      continue;
+    }
     const status = await regularFileStatus(repoDir, rel);
     if (status === 'absent') {
       actions.push({ rel, verdict: 'absent' });
@@ -188,13 +257,13 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
     }
     // status === 'ok': every ancestor is a real directory and the path itself
     // is a regular file — safe to read and to hash.
-    const current = await readFile(onDisk(repoDir, rel), 'utf8');
+    const current = await readFile(onDisk(repoDir, rel));
 
     if (WIRING_PATHS.has(rel)) {
       if (sha256(current) === recorded) {
         actions.push({ rel, verdict: 'remove' });
       } else {
-        const hooks = [...hookFilesReferencedIn(current)].sort();
+        const hooks = [...hookFilesReferencedIn(current.toString('utf8'))].sort();
         actions.push({
           rel,
           verdict: 'preserved',
@@ -224,14 +293,48 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
 }
 
 /**
+ * True when every segment of `relDir`, walked one at a time from `repoDir`,
+ * `lstat`s as a real (non-symlink) directory.
+ *
+ * Mirrors {@link regularFileStatus}'s own per-segment walk, for the same
+ * reason: a single `lstat` on the whole joined path has the OS resolve every
+ * INTERMEDIATE component transparently — only the final component is left
+ * unfollowed — so it would happily walk through a symlinked ancestor to
+ * answer "is the last segment a directory". Checking one segment at a time
+ * means each `lstat` only ever extends a prefix the previous iteration has
+ * already proven is a real directory, so no call in the chain can be resolved
+ * through a symlink it did not itself just reject.
+ */
+async function isPlainDirectoryChain(repoDir: string, relDir: string): Promise<boolean> {
+  let current = repoDir;
+  for (const segment of relDir.split('/')) {
+    current = path.join(current, segment);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch {
+      return false;
+    }
+    if (!info.isDirectory()) return false;
+  }
+  return true;
+}
+
+/**
  * Removes `rel`'s parent directories while they are empty, stopping at the
  * repository root and never removing `.rig` itself — evidence lives there,
  * and the directory staying in place (even empty) is the rig's own record
  * that it once ran here.
+ *
+ * Symlink-safe the same way removal itself is: before any directory is read
+ * or emptied, {@link isPlainDirectoryChain} re-walks it segment by segment, so
+ * an ancestor swapped for a symlink after the file itself was removed is left
+ * alone rather than read or emptied through.
  */
 async function removeEmptyParents(repoDir: string, rel: string): Promise<void> {
   let dir = path.posix.dirname(rel.split(path.sep).join('/'));
   while (dir !== '.' && dir !== '' && dir !== RIG_DIR) {
+    if (!(await isPlainDirectoryChain(repoDir, dir))) return;
     const abs = path.join(repoDir, ...dir.split('/'));
     let entries: string[];
     try {
@@ -250,10 +353,14 @@ async function removeEmptyParents(repoDir: string, rel: string): Promise<void> {
 }
 
 /**
- * Removes the `remove`-verdict paths in `plan`, then the manifest — only once
- * every one of them succeeded. A failure stops the run where it is: the
- * manifest stays, so a re-run's plan sees the removed paths as `absent` and
- * picks up exactly where this one stopped.
+ * Removes the `remove`-verdict paths in `plan`, then the manifest — but only
+ * once every one of them succeeded AND nothing else in the plan is
+ * `preserved`. A `preserved` action means the rig still owns bytes it did not
+ * remove (an edit, a CRLF checkout, wiring the run left alone); deleting the
+ * manifest anyway would discard the only evidence naming what it still owns,
+ * blinding a later `upgrade`. A failure among the removals stops the run
+ * where it is either way: the manifest stays, so a re-run's plan sees the
+ * removed paths as `absent` and picks up exactly where this one stopped.
  */
 export async function applyUninstall(
   repoDir: string,
@@ -291,6 +398,13 @@ export async function applyUninstall(
     }
     removed.push(rel);
     await removeEmptyParents(repoDir, rel);
+  }
+
+  // Something is still preserved — the rig remains installed, on purpose. The
+  // manifest is the only record naming what it still owns, so it is kept even
+  // though every removal that WAS planned just succeeded.
+  if (plan.actions.some((a) => a.verdict === 'preserved')) {
+    return { removed, manifestRemoved: false };
   }
 
   try {
