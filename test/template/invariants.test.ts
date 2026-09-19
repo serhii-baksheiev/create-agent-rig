@@ -260,8 +260,8 @@ describe('composition', () => {
     }
   });
 
-  it('CLAUDE.md points at the pattern, so a reader finds it without grep', async () => {
-    const claudeMd = await read(universal, 'CLAUDE.md');
-    expect(claudeMd).toMatch(/invariants\.md|new-invariant/);
+  it('AGENTS.md points at the pattern, so a reader finds it without grep', async () => {
+    const agentsMd = await read(universal, 'AGENTS.md');
+    expect(agentsMd).toMatch(/invariants\.md|new-invariant/);
   });
 });

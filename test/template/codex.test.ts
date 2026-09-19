@@ -58,11 +58,26 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     ).resolves.toBeTruthy();
   });
 
-  it.each(['universal'])('%s exposes the same repository map as AGENTS.md', async (layer) => {
-    const dir = path.join(agentOs, layer);
-    await expect(text(dir, 'AGENTS.md')).resolves.toBe(await text(dir, 'CLAUDE.md'));
-    await expect(text(dir, 'AGENTS.md')).resolves.toMatch(/Claude Code and Codex/);
-  });
+  // RP-179 round 3 (owner correction): Claude Code reads `AGENTS.md` natively
+  // since v2.1.277 (docs/decisions/plugin-capability-matrix.md, "AGENTS.md is
+  // canonical"). `AGENTS.md` carries the shared rulebook; `CLAUDE.md` is
+  // reduced to the one-line `@AGENTS.md` import the official docs themselves
+  // recommend for a project that also wants Claude-specific instructions or
+  // needs to keep working on a Claude Code build before that version. The
+  // equality check against the exported constant is what goes red if someone
+  // re-duplicates the shared text into CLAUDE.md instead of editing AGENTS.md.
+  it.each(['universal'])(
+    '%s: CLAUDE.md is the @AGENTS.md shim, and AGENTS.md carries the shared rulebook',
+    async (layer) => {
+      const dir = path.join(agentOs, layer);
+      const { CLAUDE_MD_SHIM } = (await import(
+        pathToFileURL(path.join(repoRoot, 'scripts', 'sync-codex-adapter.mjs')).href
+      )) as { CLAUDE_MD_SHIM: string };
+      await expect(text(dir, 'CLAUDE.md')).resolves.toBe(CLAUDE_MD_SHIM);
+      await expect(text(dir, 'CLAUDE.md')).resolves.toBe('@AGENTS.md\n');
+      await expect(text(dir, 'AGENTS.md')).resolves.toMatch(/Claude Code and Codex/);
+    },
+  );
 
   it('publishes every shared skill through the Codex repository skill location', async () => {
     const claudeSkills = await readdir(path.join(universal, '.claude', 'skills'));
@@ -477,7 +492,9 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
   });
 
   it('declares generated Codex hook wiring as an elevated path', async () => {
-    const map = await text(universal, 'CLAUDE.md');
+    // AGENTS.md, not CLAUDE.md: the elevated-paths block lives in the
+    // canonical rulebook now; CLAUDE.md is a bare `@AGENTS.md` import.
+    const map = await text(universal, 'AGENTS.md');
     const elevated = /```elevated-paths\n([\s\S]*?)```/.exec(map)?.[1] ?? '';
     expect(elevated.split(/\r?\n/)).toContain('.codex/');
   });

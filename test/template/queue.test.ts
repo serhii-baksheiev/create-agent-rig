@@ -4108,7 +4108,7 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
 describe('the ignore block the init doc tells a reader to paste', () => {
   /** The block, dedented exactly as pasting it out of the fence would give it. */
   const pastedBlock = async (): Promise<string> => {
-    const doc = await read(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md');
+    const doc = await read(repoRoot, 'templates', 'agent-os', 'universal', 'AGENTS.md');
     const fenced = [...doc.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
       .map((match) => match[1] ?? '')
       .filter((body) => body.includes('.claude/queue.state.json'));

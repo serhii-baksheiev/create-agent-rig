@@ -358,7 +358,7 @@ describe('the generator dogfoods the switch', () => {
     expect(own.options.project).toBeUndefined();
     for (const file of [
       path.join(repoRoot, '.gitignore'),
-      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md'),
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'AGENTS.md'),
     ]) {
       expect(await readFile(file, 'utf8'), file).toContain('.claude/queue.board');
     }

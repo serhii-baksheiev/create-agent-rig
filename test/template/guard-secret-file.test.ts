@@ -613,7 +613,7 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
     expect(
       surfaces.map(({ file }) => file),
       'the walk found no rulebook document describing guard-secret-file at all',
-    ).toEqual(expect.arrayContaining(['CLAUDE.md', 'README.md', '.claude/rules/autonomy.md']));
+    ).toEqual(expect.arrayContaining(['AGENTS.md', 'README.md', '.claude/rules/autonomy.md']));
 
     const offenders = surfaces.flatMap(({ file, blocks }) =>
       blocks

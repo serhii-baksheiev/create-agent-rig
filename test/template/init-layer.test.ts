@@ -51,10 +51,13 @@ describe('the init layer installs a rig with no dangling references', () => {
   });
 
   it('explains every reference it leaves deliberately unbacked', async () => {
-    const claudeMd = (await installed()).get('CLAUDE.md');
-    expect(claudeMd).toBeDefined();
+    // AGENTS.md, not CLAUDE.md: AGENTS.md is the canonical rulebook a reader
+    // (and Claude Code natively, since v2.1.277) reads; CLAUDE.md is now a
+    // one-line `@AGENTS.md` compatibility shim with nothing of its own to say.
+    const agentsMd = (await installed()).get('AGENTS.md');
+    expect(agentsMd).toBeDefined();
     for (const target of Object.keys(DOCUMENTED_ABSENT)) {
-      expect(claudeMd, target).toContain(path.basename(target));
+      expect(agentsMd, target).toContain(path.basename(target));
     }
   });
 
@@ -78,14 +81,14 @@ describe('the init layer installs a rig with no dangling references', () => {
   // reader still listed the previous four. A reader cannot use what nothing names.
   it('names every skill it installs in the map it hands the reader', async () => {
     const files = await installed();
-    const claudeMd = files.get('CLAUDE.md');
-    expect(claudeMd).toBeDefined();
+    const agentsMd = files.get('AGENTS.md');
+    expect(agentsMd).toBeDefined();
     const skills = [...files.keys()]
       .filter((rel) => rel.startsWith('.claude/skills/') && rel.endsWith('/SKILL.md'))
       .map((rel) => rel.split('/')[2]!);
     expect(skills.length).toBeGreaterThan(0);
     for (const skill of skills) {
-      expect(claudeMd, `${skill} is installed but unnamed in CLAUDE.md`).toContain(skill);
+      expect(agentsMd, `${skill} is installed but unnamed in AGENTS.md`).toContain(skill);
     }
   });
 

@@ -57,9 +57,10 @@ describe('initProject — the install', () => {
     expect(await readFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'utf8')).toContain(
       'TDD',
     );
-    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(
-      await readFile(path.join(repo, 'CLAUDE.md'), 'utf8'),
-    );
+    // AGENTS.md is the canonical rulebook; CLAUDE.md is the one-line
+    // `@AGENTS.md` shim, not a byte-identical copy (RP-179 round 3).
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toContain('TDD');
     await expect(
       readFile(path.join(repo, '.agents', 'skills', 'pr-ship', 'SKILL.md'), 'utf8'),
     ).resolves.toBeTruthy();
@@ -184,28 +185,32 @@ describe('initProject — token substitution', () => {
 // The installed CLAUDE.md is the map an agent reads first. Shipping the
 // generated monorepo's map into an arbitrary repo describes directories that
 // do not exist and links to rules that were deliberately not installed.
+// RP-179 round 3 (owner correction): AGENTS.md is the canonical rulebook
+// (Claude Code reads it natively since v2.1.277); CLAUDE.md is reduced to a
+// one-line `@AGENTS.md` compatibility shim with no prose of its own, so every
+// check below that reads the installed map for content reads AGENTS.md.
 describe('initProject — the map describes THIS repo, not the generated shape', () => {
   it('claims no monorepo layout', async () => {
     await initProject(repo, {});
-    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
     for (const ghost of ['packages/core/', 'packages/db/', 'apps/web/']) {
-      expect(claudeMd, ghost).not.toContain(ghost);
+      expect(agentsMd, ghost).not.toContain(ghost);
     }
   });
 
   it('links to no rule or hook that init does not install', async () => {
     await initProject(repo, {});
-    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).not.toContain('architecture.md');
-    expect(claudeMd).not.toContain('guard-core-purity');
-    expect(claudeMd).not.toContain('guard-web-boundary');
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).not.toContain('architecture.md');
+    expect(agentsMd).not.toContain('guard-core-purity');
+    expect(agentsMd).not.toContain('guard-web-boundary');
   });
 
   it('declares elevated paths that exist here, not in the generated shape', async () => {
     await initProject(repo, {});
-    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
-    const block = /```elevated-paths\n([\s\S]*?)```/.exec(claudeMd);
-    expect(block, 'CLAUDE.md must still declare an elevated-paths block').not.toBeNull();
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    const block = /```elevated-paths\n([\s\S]*?)```/.exec(agentsMd);
+    expect(block, 'AGENTS.md must still declare an elevated-paths block').not.toBeNull();
     const paths = (block?.[1] ?? '').trim().split('\n');
     expect(paths).toContain('.claude/');
     expect(paths.some((p) => p.startsWith('packages/'))).toBe(false);
@@ -213,8 +218,14 @@ describe('initProject — the map describes THIS repo, not the generated shape',
 
   it('says the DoD stop gate is inert until the repo supplies its checks', async () => {
     await initProject(repo, {});
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('dod-checks.json');
+  });
+
+  it('CLAUDE.md is the @AGENTS.md shim, and restates none of the rulebook', async () => {
+    await initProject(repo, {});
     const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('dod-checks.json');
+    expect(claudeMd).toBe('@AGENTS.md\n');
   });
 
   it('does not claim runtime ignore entries remain after the project has added them', async () => {
@@ -231,15 +242,15 @@ describe('initProject — the map describes THIS repo, not the generated shape',
     );
     await initProject(repo, {});
 
-    for (const map of ['CLAUDE.md', 'AGENTS.md']) {
-      const content = await readFile(path.join(repo, map), 'utf8');
-      const finishList =
-        content.split('## Four things this install left for you to finish')[1] ?? '';
-      const ignoreSection = /\n3\. \*\*[\s\S]*?(?=\n4\. \*\*)/.exec(finishList)?.[0] ?? '';
-      expect(ignoreSection, `${map} must still explain the runtime ignore entries`).toBeTruthy();
-      expect(ignoreSection).toMatch(/if[^\n]{0,100}missing|add only[^\n]{0,80}missing/i);
-      expect(ignoreSection).not.toMatch(/Add all five/i);
-    }
+    // AGENTS.md only: it is the canonical map now, and the only one of the
+    // two with a "Four things" section to check — CLAUDE.md is the one-line
+    // `@AGENTS.md` shim, checked for that shape by the test above.
+    const content = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    const finishList = content.split('## Four things this install left for you to finish')[1] ?? '';
+    const ignoreSection = /\n3\. \*\*[\s\S]*?(?=\n4\. \*\*)/.exec(finishList)?.[0] ?? '';
+    expect(ignoreSection, 'AGENTS.md must still explain the runtime ignore entries').toBeTruthy();
+    expect(ignoreSection).toMatch(/if[^\n]{0,100}missing|add only[^\n]{0,80}missing/i);
+    expect(ignoreSection).not.toMatch(/Add all five/i);
   });
 });
 

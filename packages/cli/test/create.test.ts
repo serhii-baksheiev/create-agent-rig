@@ -30,9 +30,12 @@ describe('createProject', { timeout: 60_000 }, () => {
   it('makes the directory and installs the one payload into it', async () => {
     const { projectDir } = await createProject('my-app', { cwd: work });
     expect(projectDir).toBe(path.join(work, 'my-app'));
-    const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('my-app');
-    expect(claudeMd).not.toContain('__PROJECT_NAME__');
+    // AGENTS.md is the canonical, substituted rulebook; CLAUDE.md is the
+    // one-line `@AGENTS.md` shim with no project name of its own to carry.
+    const agentsMd = await readFile(path.join(projectDir, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('my-app');
+    expect(agentsMd).not.toContain('__PROJECT_NAME__');
+    expect(await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
     // no application scaffolding of any kind
     await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).rejects.toThrow();
   });

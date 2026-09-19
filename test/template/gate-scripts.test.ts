@@ -91,17 +91,27 @@ describe('the elevated-path declaration is the single source', () => {
     expect(result.findings[0].actions).toContain('journal-line');
   });
 
-  it('the shipped CLAUDE.md declares a non-empty, commented block', async () => {
+  it('the shipped AGENTS.md declares a non-empty, commented block', async () => {
+    // AGENTS.md is the canonical rulebook (RP-179: Claude Code reads it
+    // natively since v2.1.277); CLAUDE.md is a one-line `@AGENTS.md` shim
+    // with no block of its own — `readDeclaredPaths` reads both, but only
+    // AGENTS.md is expected to carry one.
     const { parseElevatedPaths } = await load('detect-missed-gate.mjs');
+    const agentsMd = await readFile(
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'AGENTS.md'),
+      'utf8',
+    );
+    const declared = parseElevatedPaths(agentsMd) as string[] | null;
+    expect(declared).not.toBeNull();
+    expect(declared!.length).toBeGreaterThan(0);
+    // and the reader is told it is theirs to extend, not a law they inherited
+    expect(agentsMd).toMatch(/extend|add the paths|yours/i);
+
     const claudeMd = await readFile(
       path.join(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md'),
       'utf8',
     );
-    const declared = parseElevatedPaths(claudeMd) as string[] | null;
-    expect(declared).not.toBeNull();
-    expect(declared!.length).toBeGreaterThan(0);
-    // and the reader is told it is theirs to extend, not a law they inherited
-    expect(claudeMd).toMatch(/extend|add the paths|yours/i);
+    expect(parseElevatedPaths(claudeMd), 'the shim must not also carry the block').toBeNull();
   });
 });
 

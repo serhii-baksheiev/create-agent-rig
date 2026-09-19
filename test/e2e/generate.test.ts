@@ -49,9 +49,13 @@ describe('create-agent-rig <dir>', () => {
     expect(result.stdout).toContain('my-app');
 
     const projectDir = path.join(work, 'my-app');
-    const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('my-app');
-    expect(claudeMd).not.toContain('__PROJECT_NAME__');
+    // AGENTS.md is the canonical, substituted rulebook; CLAUDE.md is the
+    // one-line `@AGENTS.md` shim with no project name of its own to carry
+    // (RP-179 round 3: Claude Code reads AGENTS.md natively since v2.1.277).
+    const agentsMd = await readFile(path.join(projectDir, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('my-app');
+    expect(agentsMd).not.toContain('__PROJECT_NAME__');
+    expect(await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
     // no application scaffolding of any kind
     await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).rejects.toThrow();
   });
@@ -152,7 +156,7 @@ describe('npm pack tarball (distribution path)', () => {
         env: installEnv(path.join(work, 'npx-cache')),
       },
     );
-    const claudeMd = await readFile(path.join(appDir, 'tar-app', 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('tar-app');
+    const agentsMd = await readFile(path.join(appDir, 'tar-app', 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('tar-app');
   });
 });
