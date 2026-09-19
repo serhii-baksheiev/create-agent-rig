@@ -127,12 +127,13 @@ the published `package.json`).
 
 RP-179's scope bullet asks that a future `doctor` receipt record
 provider/plugin identity and observed version. That receipt is RP-22's to
-build. This ticket only reserves the vocabulary word: `native-plugin` joins
-`external-installer`, `hosted-service` and `external-executable` as a legal
-installation-mode value, for the day a capability in `docs/compatibility.md`
-moves from `UNVERIFIED`/`NOT-APPLICABLE` to a native-plugin `SUPPORTED`. No
-code in this repository reads or writes that value yet, and nothing here
-claims otherwise.
+build, and so is the vocabulary it is written in: the installation-mode words
+RP-22's ticket text proposes (`external-installer`, `native-plugin`,
+`hosted-service`, `external-executable`) live in that ticket and appear
+nowhere in this repository — no enum, no schema, no type. This ticket
+reserves nothing and produces no receipt; it leaves RP-22 the evidence above
+to classify. Stated here because an earlier draft of this record claimed to
+"reserve" a word in a vocabulary that does not exist.
 
 ## Evidence
 

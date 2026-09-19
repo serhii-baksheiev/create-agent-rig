@@ -20,10 +20,14 @@ import { describe, expect, it } from 'vitest';
  *   in its notes column.
  *
  * What counts as a pointer, stated exactly: a backticked `*.test.ts` or
- * `*.test.mjs` file name followed by one or more `› "test name"` segments. The
- * file resolves by basename against the tracked test files; a quoted name is
- * matched as a substring of that file's source. A table without an `evidence`
- * column is not a claim table and is not read.
+ * `*.test.mjs` name — a bare file name, or a repository-relative path —
+ * followed by one or more `› "test name"` segments. A path resolves to that
+ * one tracked file; a bare name resolves to the tracked file with that
+ * basename, and is REFUSED when two files share it (`upgrade.test.ts` exists
+ * twice), because picking one silently is how a citation ends up checking a
+ * file nobody meant. A quoted name is matched as a substring of the resolved
+ * file's source. A table without an `evidence` column is not a claim table
+ * and is not read.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');

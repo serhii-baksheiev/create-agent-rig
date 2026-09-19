@@ -107,15 +107,20 @@ choices rather than per-harness capabilities.
 | Ruler used as the cross-harness projection mechanism                                                               | UNSUPPORTED | `no-vendored-plugins.test.ts` › "references neither Ruler nor Superpowers anywhere a rig receives"                                                                                                                                     | Spike F found Ruler's projection destructive on a bounded fixture; not adopted unless a new bounded fixture disproves that (acceptance #6). |
 | Superpowers in the default/product profile                                                                         | UNSUPPORTED | `no-vendored-plugins.test.ts` › "references neither Ruler nor Superpowers anywhere a rig receives"                                                                                                                                     | Deferred until its overlapping capabilities can be selectively disabled and verified (acceptance #7).                                       |
 | third-party plugin source, catalog, or marketplace manifest shipped under `templates/` or in the published tarball | UNSUPPORTED | `no-vendored-plugins.test.ts` › "carries no `.claude-plugin/` directory and no `marketplace.json` file"; `package-contents.test.ts` › "keeps a `.claude-plugin/` directory and a `marketplace.json` file out of the published tarball" | Acceptance #5.                                                                                                                              |
-| npm package runtime dependencies                                                                                   | SUPPORTED   | `package-contents.test.ts` › "declares no runtime `dependencies` in the published package.json"                                                                                                                                        | Acceptance #5.                                                                                                                              |
+| zero runtime dependencies in the published package                                                                 | SUPPORTED   | `package-contents.test.ts` › "declares no runtime `dependencies` in the published package.json"                                                                                                                                        | Acceptance #5.                                                                                                                              |
 
 RP-179's scope also asks that a future `doctor` receipt record provider/plugin
-identity and observed version. That receipt is RP-22's to build; this ticket
-only reserves the vocabulary word `native-plugin` alongside
-`external-installer`, `hosted-service` and `external-executable` as a legal
-installation-mode value, for the day a row above moves from
-UNVERIFIED/NOT-APPLICABLE to a native-plugin `SUPPORTED`. No code in this
-repository reads or writes that value yet.
+identity and observed version. **Nothing here builds one**, and this repository
+has no installation-mode vocabulary for it to join: the words RP-22's own
+ticket text proposes (`external-installer`, `native-plugin`, `hosted-service`,
+`external-executable`) exist in that ticket and nowhere in this tree. RP-22
+owns both the receipt and the vocabulary; this section is the evidence RP-22
+will classify, not the classification.
+
+The scope bullet "remove tracked duplicate projections from templates when
+replacement evidence exists" has no target either: the replacement it names
+would be a native import, which Codex does not offer, so the committed
+projection stays and the bullet is recorded as unmet rather than done.
 
 ## What this replaces
 
