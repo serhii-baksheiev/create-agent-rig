@@ -309,4 +309,100 @@ describe('create-agent-rig uninstall', () => {
     expect(result.stderr).toMatch(/manifest/i);
     expect(await readFile(path.join(repo, '.claude', 'sentinel'), 'utf8')).toBe('still here');
   });
+
+  it('a partial run (something preserved) reports outcome "partial" in --json, and keeps the manifest', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const workflowPath = path.join(repo, '.claude', 'rules', 'workflow.md');
+    await writeFile(workflowPath, `${await readFile(workflowPath, 'utf8')}\n<!-- mine -->\n`);
+
+    const result = await runCli(['uninstall', '--yes', '--json']);
+    expect(result.code, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout.trim()) as {
+      outcome: string;
+      manifestRemoved: boolean;
+      preserved: Array<{ path: string; reason: string }>;
+    };
+    expect(payload.outcome).toBe('partial');
+    expect(payload.manifestRemoved).toBe(false);
+    expect(payload.preserved.some((p) => p.path === '.claude/rules/workflow.md')).toBe(true);
+    await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).resolves.toBeTruthy();
+  });
+
+  describe('--detach', () => {
+    it('a clean repo detach reports outcome "detached" and behaves like an ordinary clean uninstall', async () => {
+      await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+      expect((await runCli(['init'])).code).toBe(0);
+
+      const result = await runCli(['uninstall', '--yes', '--detach', '--json']);
+      expect(result.code, result.stderr).toBe(0);
+      const payload = JSON.parse(result.stdout.trim()) as {
+        outcome: string;
+        manifestRemoved: boolean;
+        preserved: Array<{ path: string; reason: string }>;
+      };
+      expect(payload.outcome).toBe('detached');
+      expect(payload.manifestRemoved).toBe(true);
+      expect(payload.preserved).toEqual([]);
+      await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
+    });
+
+    it('detaches a repo with preserved files: manifest gone, preserved files intact, handover list printed', async () => {
+      await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+      expect((await runCli(['init'])).code).toBe(0);
+
+      const workflowPath = path.join(repo, '.claude', 'rules', 'workflow.md');
+      const edited = `${await readFile(workflowPath, 'utf8')}\n<!-- mine -->\n`;
+      await writeFile(workflowPath, edited);
+
+      const result = await runCli(['uninstall', '--yes', '--detach']);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/detached/i);
+      expect(result.stdout).toContain('.claude/rules/workflow.md');
+      // the manifest is gone — detach removed it despite the preserved file
+      await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
+      // detach never forces a conflicting file away
+      expect(await readFile(workflowPath, 'utf8')).toBe(edited);
+    });
+
+    it('--detach --json reports outcome "detached" with the full handover list of what it left behind', async () => {
+      await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+      expect((await runCli(['init'])).code).toBe(0);
+
+      const workflowPath = path.join(repo, '.claude', 'rules', 'workflow.md');
+      await writeFile(workflowPath, `${await readFile(workflowPath, 'utf8')}\n<!-- mine -->\n`);
+      const settingsPath = path.join(repo, '.claude', 'settings.json');
+      await writeFile(
+        settingsPath,
+        `${(await readFile(settingsPath, 'utf8')).replace('"hooks"', '"mine": true, "hooks"')}`,
+      );
+
+      const result = await runCli(['uninstall', '--yes', '--detach', '--json']);
+      expect(result.code, result.stderr).toBe(0);
+      const payload = JSON.parse(result.stdout.trim()) as {
+        outcome: string;
+        manifestRemoved: boolean;
+        preserved: Array<{ path: string; reason: string }>;
+      };
+      expect(payload.outcome).toBe('detached');
+      expect(payload.manifestRemoved).toBe(true);
+      const preservedPaths = payload.preserved.map((p) => p.path);
+      expect(preservedPaths).toContain('.claude/rules/workflow.md');
+      expect(preservedPaths).toContain('.claude/settings.json');
+      await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
+    });
+
+    it('consent applies to --detach exactly as to an ordinary destructive run', async () => {
+      await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+      expect((await runCli(['init'])).code).toBe(0);
+
+      const result = await runCli(['uninstall', '--detach']);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/--yes/);
+      await expect(
+        readFile(path.join(repo, '.claude', '.rig-manifest.json')),
+      ).resolves.toBeTruthy();
+    });
+  });
 });

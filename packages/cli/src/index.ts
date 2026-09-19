@@ -7,8 +7,18 @@ import { InitError, initFileContents, initProject, planInit } from './commands/i
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
-import { UninstallError, applyUninstall, planUninstall } from './commands/uninstall.js';
-import type { UninstallAction, UninstallPlan, UninstallVerdict } from './commands/uninstall.js';
+import {
+  CHANGED_SINCE_PLANNING_REASON,
+  UninstallError,
+  applyUninstall,
+  planUninstall,
+} from './commands/uninstall.js';
+import type {
+  UninstallAction,
+  UninstallOutcome,
+  UninstallPlan,
+  UninstallVerdict,
+} from './commands/uninstall.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest, sha256 } from './lib/manifest.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
@@ -49,22 +59,29 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
   one declared root. Performs the --version --json handshake first and refuses
   a foreign contract major with exit 4 before writing anything.
 
-Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--json]
+Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]
   Remove what a rig installed from [dir] (default: the current directory) —
-  only files whose bytes on disk still match what the manifest recorded, and
-  only under a top-level path this release actually installs; anything under
-  .git is refused outright, whatever hash a manifest pairs it with.
-  Everything else (edited, foreign, deleted already, kept by init, or not a
-  path this release owns) is left in place and reported. The manifest is
-  removed last, and only once every removal succeeded AND nothing was
+  only files whose bytes on disk still match what the manifest recorded, are
+  still one of the exact paths this release installs, and still match right
+  up to the moment each one is removed; anything under .git is refused
+  outright, whatever hash a manifest pairs it with. Everything else (edited,
+  foreign, deleted already, kept by init, changed since the plan was shown, or
+  not a path this release owns) is left in place and reported. The manifest
+  is removed last, and only once every removal succeeded AND nothing was
   preserved — a preserved path means the rig still owns bytes it did not
   remove, so the evidence naming them stays; a failed run also keeps it, so a
-  re-run picks up where it stopped. Prints the plan, then asks before removing
-  anything: --yes answers up front (required off a terminal, and always
-  required with --json, which never prompts). --json prints one JSON object
-  and nothing else on stdout (see docs/command-contract.md); without it,
-  uninstall reports in prose like init and upgrade. Idempotent: a repeat run
-  finds no manifest and does nothing, exit 0.
+  re-run picks up where it stopped. --detach removes the manifest anyway,
+  after the same safe cleanup, leaving every preserved path for you and
+  printing the full handover list — it never forces away a conflicting or
+  modified file. --json's payload names which of three outcomes a run
+  reached: "uninstalled" (clean), "partial" (something kept, manifest stays),
+  "detached" (--detach: manifest gone, a handover list left behind). Prints
+  the plan, then asks before removing anything: --yes answers up front
+  (required off a terminal, and always required with --json, which never
+  prompts) — the same consent rule applies to --detach. --json prints one
+  JSON object and nothing else on stdout (see docs/command-contract.md);
+  without it, uninstall reports in prose like init and upgrade. Idempotent: a
+  repeat run finds no manifest and does nothing, exit 0.
 
 Also: create-agent-rig memory <doctor|load> [args…]
   Run a Memory verb through the registered executable: the --version --json
@@ -400,6 +417,8 @@ interface UninstallPayload {
   completed?: string[];
   remaining?: string[];
   error?: string;
+  /** Which of `uninstalled` / `partial` / `detached` this run reached — absent exactly when `error` is present. See `docs/command-contract.md`, "## uninstall (RP-181)". */
+  outcome?: UninstallOutcome;
 }
 
 /**
@@ -409,6 +428,13 @@ interface UninstallPayload {
  * finished, not every `remove`-verdict path the plan named. `planned` is the
  * plan's own answer regardless of outcome, so a caller can tell "what would
  * this have done" from "what did it do" even when they differ.
+ *
+ * `changedSincePlanning` paths are folded into `preserved`, reason
+ * {@link CHANGED_SINCE_PLANNING_REASON} — they are not in `plan.actions`
+ * (they were `remove` at plan time, and only discovered changed at apply
+ * time), but they are exactly as un-removed as any other preserved path, and
+ * a caller reading `preserved` for "what did this run leave behind" must see
+ * them there too, not in a fourth, easy-to-miss list.
  */
 function uninstallPayload(
   dryRun: boolean,
@@ -419,6 +445,8 @@ function uninstallPayload(
     completed?: string[];
     remaining?: string[];
     error?: string;
+    changedSincePlanning?: string[];
+    outcome?: UninstallOutcome;
   },
 ): UninstallPayload {
   const of = (verdict: UninstallVerdict) =>
@@ -430,14 +458,21 @@ function uninstallPayload(
     planned: of('remove'),
     removed: [...removed],
     absent: of('absent'),
-    preserved: actions
-      .filter((a) => a.verdict === 'preserved')
-      .map((a) => ({ path: a.rel, reason: a.reason ?? '' })),
+    preserved: [
+      ...actions
+        .filter((a) => a.verdict === 'preserved')
+        .map((a) => ({ path: a.rel, reason: a.reason ?? '' })),
+      ...(applied?.changedSincePlanning ?? []).map((path) => ({
+        path,
+        reason: CHANGED_SINCE_PLANNING_REASON,
+      })),
+    ],
     manifestRemoved: applied?.manifestRemoved ?? false,
   };
   if (applied?.completed !== undefined) payload.completed = applied.completed;
   if (applied?.remaining !== undefined) payload.remaining = applied.remaining;
   if (applied?.error !== undefined) payload.error = applied.error;
+  if (applied?.outcome !== undefined) payload.outcome = applied.outcome;
   return payload;
 }
 
@@ -462,7 +497,13 @@ function renderUninstallPlan(repoDir: string, plan: UninstallPlan): string {
 
 async function runUninstall(rawArgs: string[]): Promise<number> {
   let positionals: string[];
-  let values: { 'dry-run'?: boolean; json?: boolean; yes?: boolean; 'no-color'?: boolean };
+  let values: {
+    'dry-run'?: boolean;
+    json?: boolean;
+    yes?: boolean;
+    detach?: boolean;
+    'no-color'?: boolean;
+  };
   try {
     ({ positionals, values } = parseArgs({
       args: rawArgs,
@@ -470,6 +511,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
         'dry-run': { type: 'boolean' },
         json: { type: 'boolean' },
         yes: { type: 'boolean' },
+        detach: { type: 'boolean' },
         'no-color': { type: 'boolean' },
       },
       allowPositionals: true,
@@ -486,6 +528,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
   const dryRun = values['dry-run'] === true;
   const json = values.json === true;
   const yes = values.yes === true;
+  const detach = values.detach === true;
 
   let plan: UninstallPlan;
   try {
@@ -514,7 +557,11 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 
   if (plan.noManifest) {
     if (json) {
-      process.stdout.write(`${JSON.stringify(uninstallPayload(dryRun, [], []))}\n`);
+      process.stdout.write(
+        `${JSON.stringify(
+          uninstallPayload(dryRun, [], [], { manifestRemoved: false, outcome: 'uninstalled' }),
+        )}\n`,
+      );
     } else {
       process.stdout.write(`No rig manifest found in ${repoDir} — nothing to uninstall.\n`);
     }
@@ -571,7 +618,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
     }
   }
 
-  const result = await applyUninstall(repoDir, plan);
+  const result = await applyUninstall(repoDir, plan, { detach });
 
   if (result.error !== undefined) {
     if (json) {
@@ -582,6 +629,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
             completed: result.completed,
             remaining: result.remaining,
             error: result.error,
+            changedSincePlanning: result.changedSincePlanning,
           }),
         )}\n`,
       );
@@ -601,21 +649,41 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
       `${JSON.stringify(
         uninstallPayload(false, plan.actions, result.removed, {
           manifestRemoved: result.manifestRemoved,
+          changedSincePlanning: result.changedSincePlanning,
+          outcome: result.outcome,
         }),
       )}\n`,
     );
     return 0;
   }
 
-  if (result.manifestRemoved) {
+  // The three outcomes `--json` names structurally are said in prose here
+  // too, not only encoded in a field: `preserved` below folds together the
+  // plan's own `preserved` verdicts and any path caught changed only at apply
+  // time — both are equally "left behind", and a report naming only one kind
+  // would read as if the other never happened.
+  const preserved = [
+    ...plan.actions.filter((a) => a.verdict === 'preserved').map((a) => a.rel),
+    ...(result.changedSincePlanning ?? []),
+  ];
+  if (result.outcome === 'detached') {
+    process.stdout.write(
+      `\nDetached: removed ${result.removed.length} files and the manifest.\n` +
+        (preserved.length > 0
+          ? `${preserved.length} file(s) left behind — they are yours now, uninstall no longer owns them:\n` +
+            preserved.map((rel) => `  ! ${rel}`).join('\n') +
+            '\n'
+          : ''),
+    );
+  } else if (result.manifestRemoved) {
     process.stdout.write(`\nRemoved ${result.removed.length} files and the manifest.\n`);
   } else {
-    // Every removal that was planned succeeded, but something else in the
-    // plan was preserved — the rig still owns bytes it did not remove, so the
-    // manifest naming them was kept on purpose, not left behind by a failure.
-    const preservedCount = plan.actions.filter((a) => a.verdict === 'preserved').length;
+    // Every removal that was planned succeeded, but something else was
+    // preserved (in the plan, or discovered changed at apply time) — the rig
+    // still owns bytes it did not remove, so the manifest naming them was
+    // kept on purpose, not left behind by a failure.
     process.stdout.write(
-      `\nRemoved ${result.removed.length} files. ${preservedCount} preserved — the manifest ` +
+      `\nRemoved ${result.removed.length} files. ${preserved.length} preserved — the manifest ` +
         'was kept: the rig is still installed.\n',
     );
   }
