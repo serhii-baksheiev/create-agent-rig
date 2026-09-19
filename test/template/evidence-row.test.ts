@@ -35,6 +35,29 @@ describe('an evidence row is a closed shape naming one exact build', () => {
     expect(verdict.ok ? [] : verdict.problems).toContain('verifiedBy: unknown field');
   });
 
+  it('refuses a bare date where a zoned date-time is required', () => {
+    for (const observedAt of ['2026-09-12', '2026-09-12T20:03:48']) {
+      expect(validateEvidenceRow({ ...row, observedAt }).ok, observedAt).toBe(false);
+    }
+  });
+
+  it('pairs a downgrade reason with every status but SUPPORTED, and with SUPPORTED never', () => {
+    expect(validateEvidenceRow({ ...row, status: 'DEGRADED' }).ok).toBe(false);
+    expect(
+      validateEvidenceRow({ ...row, status: 'DEGRADED', downgradeReason: 'loses the effort pin' }),
+    ).toEqual({ ok: true });
+    expect(validateEvidenceRow({ ...row, downgradeReason: 'nothing to explain' }).ok).toBe(false);
+  });
+
+  it('refuses a blank downgrade reason even on a SUPPORTED row', () => {
+    for (const downgradeReason of ['', '   ']) {
+      expect(
+        validateEvidenceRow({ ...row, downgradeReason }).ok,
+        JSON.stringify(downgradeReason),
+      ).toBe(false);
+    }
+  });
+
   it('refuses a version range, a wildcard or a moving label', () => {
     for (const harnessVersion of ['>=2.1.251', '2.1.x', '^2.1.0', 'latest', 'stable', '2.1.*']) {
       const verdict = validateEvidenceRow({ ...row, harnessVersion });

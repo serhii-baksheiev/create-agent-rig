@@ -119,6 +119,9 @@ export function validateEvidenceRow(input: unknown): EvidenceRowVerdict {
   const status = input.status;
   const knownStatus = CAPABILITY_STATES.includes(status as CapabilityState);
   if (!knownStatus) problems.push(`status must be one of ${CAPABILITY_STATES.join(', ')}`);
+  if ('downgradeReason' in input && !nonBlank(input.downgradeReason)) {
+    problems.push('downgradeReason, when present, must be a non-blank string');
+  }
   const hasReason = 'downgradeReason' in input && nonBlank(input.downgradeReason);
   if (knownStatus && status !== 'SUPPORTED' && !hasReason) {
     problems.push('downgradeReason must be a non-blank string when status is not SUPPORTED');
