@@ -788,8 +788,11 @@ reaches the escape check above and never aborts the run on that path's
 account (see the bullet above for why that is the right call, not a
 weakening). Then: a path that is not one of the EXACT paths this
 release actually installs (derived from the same install set `init`/`upgrade`
-use, never a hand-written list, and never merely a top-level directory such
-paths sit under) is `preserved`, reason `not a path this release installs` —
+use — every layer `layers.json` names, RP-180, not only the layer(s) a given
+rig actually chose; which layer(s) THIS rig has is a `manifest.files`/`kept`
+question, answered per path below, never a hand-written list, and never
+merely a top-level directory such paths sit under) is `preserved`, reason
+`not a path this release installs` —
 drawing the boundary at a top-level segment rather than the exact path would
 let a manifest pair almost anything under an owned directory (`.claude/`,
 `.rig/`, `docs/`, `journal/`) with its true hash and have it removed, and it

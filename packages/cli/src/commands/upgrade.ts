@@ -4,8 +4,8 @@ import { initInstallSet, projectNameFor } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
-import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
-import type { RigManifest, RigProject } from '../lib/manifest.js';
+import { ALL_LAYERS, MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
+import type { Layer, RigManifest, RigProject } from '../lib/manifest.js';
 import { isSafeSubstitutionValue, resolveInside, resolveWritableInside } from '../lib/safe-path.js';
 import { packageVersion } from '../lib/version.js';
 
@@ -272,12 +272,26 @@ export async function planUpgrade(
     region: detected.region,
   };
   const history = options.history ?? (await loadHashHistory());
-  // The single payload, always — RP-177 retired the per-target stack overlays
-  // that used to make this depend on `kind`/`stacks`. A path an OLDER
-  // manifest still names but this install set no longer contains is reported
-  // below as `retired`, never resolved through a stack directory that may not
-  // even exist any more.
-  const files = await initInstallSet(repoDir, project);
+  // RP-180: which layer(s) this rig is allowed to have refreshed.
+  //
+  // - A readable manifest is authoritative, and `parseManifest` already
+  //   resolves its own absence of `layers` to `ALL_LAYERS` (every release
+  //   before RP-180 shipped one payload, so an old manifest with no such
+  //   field installed everything) — so `manifest.layers` is never actually
+  //   `undefined` here.
+  // - No manifest at all (`bootstrapped`) is the same "could be anything
+  //   pre-0.10" uncertainty `detectInstall` already carries for `kind` and
+  //   `stacks`: the candidate set is every layer, and a workflow file that
+  //   turns out to be genuinely absent is read as `deleted` (it shipped in
+  //   every release the hash history knows), never as `new` — the existing
+  //   `presentInEveryRelease` guard, unchanged, does that work.
+  const layers: Layer[] = manifest?.layers ?? [...ALL_LAYERS];
+  // A path an OLDER manifest still names but this rig's OWN recorded layers
+  // no longer cover (a manifest hand-edited to drop a layer, or one from a
+  // release that shipped a layer this one renamed) falls out of `files`
+  // below exactly like a path RP-177 retired outright: never written, never
+  // deleted, simply no longer this plan's to manage.
+  const files = await initInstallSet(repoDir, project, layers);
 
   const actions: UpgradeAction[] = [];
   const contents = new Map<string, string>();
@@ -464,6 +478,10 @@ export async function planUpgrade(
       // An older manifest's `stacks` is read (never crashes on an unknown
       // entry — RP-177) but never carried forward.
       stacks: [],
+      // Carried forward unchanged: `upgrade` refreshes the layers a rig
+      // already recorded, it never adds or drops one. Opting in happens
+      // through `init --with-workflow`.
+      layers,
       files: nextFiles,
       ...(Object.keys(nextKept).length > 0 ? { kept: nextKept } : {}),
     },

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { initProject, projectNameFor } from '../src/commands/init.js';
+import { initInstallSet, initProject, projectNameFor } from '../src/commands/init.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from '../src/commands/upgrade.js';
 import type { HashHistory } from '../src/lib/history.js';
@@ -728,5 +728,84 @@ describe('planUpgrade — a path `kept` by init, not written (RP-182)', () => {
     expect(await read(WORKFLOW)).not.toBe(obsolete);
     const onDisk = await readManifest(repo);
     expect(onDisk?.kept?.[WORKFLOW]).toBeUndefined();
+  });
+});
+
+// RP-180: the workflow layer (queue/loop/pr-ship/run-state/journal/
+// revalidation/claim-records/PR-lifecycle helpers) is an opt-in layer.
+// `upgrade` must refresh only the layers a rig's manifest recorded — and an
+// OLD manifest (written before `layers` existed) recorded no such field
+// because every release before RP-180 shipped one payload. Treating that
+// absence as "core only" would make the very next upgrade report every
+// workflow file a dogfood repo already has as `retired` and stop managing
+// it — the exact data-loss direction the acceptance forbids. Both directions
+// are pinned here before `upgrade.ts` reads `layers` at all.
+describe('upgrade and the opt-in workflow layer (RP-180)', () => {
+  const QUEUE_CONFIG = '.claude/queue.json';
+  const LOOP_SKILL = '.claude/skills/loop/SKILL.md';
+
+  /** Add the workflow layer's files to `repo` and its manifest, by hand — the
+   * shape a pre-RP-180 `create`/`init` left behind, before `layers` existed. */
+  async function addWorkflowLayerLikeAPreRp180Install(): Promise<void> {
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    const workflowFiles = await initInstallSet(repo, manifest.project, ['workflow']);
+    for (const file of workflowFiles) {
+      await write(file.rel, file.content);
+      manifest.files[file.rel] = sha256(file.content);
+    }
+    // The pre-RP-180 shape: no `layers` key at all — simulated by deleting it
+    // after `readManifest`/`writeManifest` round-tripped it in (every manifest
+    // this rig's own `init` writes now includes one).
+    const raw = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
+    delete raw.layers;
+    await write(MANIFEST_REL, `${JSON.stringify(raw, null, 2)}\n`);
+  }
+
+  it('a freshly installed core-only rig never gains the workflow layer on upgrade', async () => {
+    await installRig();
+    expect((await readManifest(repo))?.layers).toEqual(['process']);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.actions.find((a) => a.rel === QUEUE_CONFIG)).toBeUndefined();
+    expect(plan.actions.find((a) => a.rel === LOOP_SKILL)).toBeUndefined();
+
+    await applyUpgrade(repo, plan);
+    await expect(read(QUEUE_CONFIG)).rejects.toThrow();
+    expect((await readManifest(repo))?.layers).toEqual(['process']);
+  });
+
+  it('a pre-RP-180 manifest with no `layers` field keeps every workflow file it already has', async () => {
+    await installRig();
+    await addWorkflowLayerLikeAPreRp180Install();
+    // the fixture really does reproduce the pre-RP-180 shape
+    const raw = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
+    expect(raw.layers).toBeUndefined();
+
+    const dryRunPlan = await planUpgrade(repo, { history: emptyHistory });
+    expect(dryRunPlan.actions.find((a) => a.rel === QUEUE_CONFIG)?.verdict).not.toBe('retired');
+    expect(dryRunPlan.actions.find((a) => a.rel === LOOP_SKILL)?.verdict).not.toBe('retired');
+
+    await applyUpgrade(repo, dryRunPlan);
+    // still on disk — an old dogfood repo's workflow layer survives without
+    // being told to opt back in
+    expect(await read(QUEUE_CONFIG)).toContain('adapter');
+    expect(await read(LOOP_SKILL)).toBeTruthy();
+    const manifest = await readManifest(repo);
+    expect(manifest?.layers).toEqual(['process', 'workflow']);
+    expect(manifest?.files[QUEUE_CONFIG]).toBe(sha256(await read(QUEUE_CONFIG)));
+  });
+
+  it('a rig that explicitly recorded `layers: ["process"]` stays core-only across an upgrade even if workflow files are found on disk', async () => {
+    await installRig();
+    // a file placed by hand, never through `init --with-workflow` — the
+    // manifest's own `layers` says this rig never opted in
+    await write(QUEUE_CONFIG, '{"adapter":"plan-md"}\n');
+    expect((await readManifest(repo))?.layers).toEqual(['process']);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    // not a file this plan's install set even considers — the rig does not
+    // manage it, exactly like any other file it never installed
+    expect(plan.actions.find((a) => a.rel === QUEUE_CONFIG)).toBeUndefined();
   });
 });

@@ -3978,8 +3978,11 @@ describe('the loop skill drives the seam, not one tracker', () => {
   });
 });
 
+// RP-180: the queue seam (and the preflight that reads it) is the opt-in
+// workflow layer, not Lean Core — `init --with-workflow` carries it, a
+// default `init` does not.
 describe('composition', () => {
-  it('layers.json classifies the queue seam as process', async () => {
+  it('layers.json classifies the queue seam as workflow', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
     for (const file of [
       '.claude/scripts/queue/core.mjs',
@@ -3988,7 +3991,7 @@ describe('composition', () => {
       '.claude/scripts/queue/index.mjs',
       '.claude/scripts/preflight.mjs',
     ]) {
-      expect(manifest['process'], file).toContain(file);
+      expect(manifest['workflow'], file).toContain(file);
     }
   });
 
@@ -3998,7 +4001,7 @@ describe('composition', () => {
   // which is the state this item exists to end.
   it('layers.json carries the close step that writes the tier', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/queue/state.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/queue/state.mjs');
   });
 
   // The same failure one level down, and a worse one: `checkout.mjs` is imported
@@ -4007,7 +4010,7 @@ describe('composition', () => {
   // not there — the queue CLI fails to load at all, on the first `next`.
   it('layers.json carries the resolver the writer and the reader both import', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/queue/checkout.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/queue/checkout.mjs');
   });
 
   // and the general form, so the next module extracted out of this seam cannot
@@ -4053,7 +4056,7 @@ describe('composition', () => {
   // `sync-agent-os.mjs --check` failure that sent this design back.
   it('composes the queue config and never the queue state', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/queue.json');
+    expect(manifest['workflow']).toContain('.claude/queue.json');
     for (const layer of Object.keys(manifest)) {
       expect(manifest[layer], layer).not.toContain('.claude/queue.state.json');
     }
@@ -6156,6 +6159,6 @@ describe('a fired trigger is recorded by the same CLI the verdict and the budget
 describe('composition carries the run state module', () => {
   it('layers.json names the module the queue CLI reads the run state through', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/run-state.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/run-state.mjs');
   });
 });

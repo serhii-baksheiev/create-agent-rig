@@ -55,6 +55,32 @@ and a stdout failure other than an abandoned reader is reported on stderr
 with a non-zero exit rather than looking like a healthy session
 (`docs/decisions/session-start-wire-format.md`).
 
+**Breaking: the workflow layer (queue/loop/pr-ship/run-state/journal/
+revalidation/claim-records/PR-lifecycle helpers) is now an experimental,
+opt-in install (RP-180).** A default `init`/`create` installs Lean Core only
+— rules, gates, stop rules, the review-gate agents and their hooks — and
+never the autonomous, cooperative multi-session machinery on top of it. Pass
+`--with-workflow` to `init` or to `create-agent-rig <dir>` to install it too;
+a rig that already has it keeps it on a plain re-run of `init` with no flag.
+`RigManifest` gains a `layers` field recording the choice, and `upgrade`
+refreshes only the layer(s) a rig recorded. Migration for an existing rig:
+nothing breaks and nothing is deleted — a manifest written before this field
+existed carries no `layers` key, and that absence is read as "every layer,"
+exactly what every release before this one installed, so `upgrade` keeps
+managing the workflow files a rig already has. Revalidation and claim-records
+keep their existing behavior unchanged (RP-53's freeze through the RP-26 gate
+on 2026-10-27) — this release only relocates their install-time layer.
+`uninstall` (RP-181) needs no layer awareness of its own: it walks
+`manifest.files` and `manifest.kept` directly, and those two records already
+reflect exactly what a given install wrote, by construction — a Core-only
+rig's manifest simply has no workflow-layer entries in `files` for
+`uninstall` to find, and an inherited pre-0.10 rig's workflow files are
+recorded in `files` exactly as every other installed path is (its manifest
+carries no `layers` key, read as "every layer" the same way `upgrade` reads
+it), so `uninstall` removes them under the same byte-hash check as anything
+else it owns. Nothing about the layer split widens or narrows what
+`uninstall` was already willing to remove.
+
 **This repository's own node-ts conventions move out of the shipped
 package**, into `scripts/dogfood/` — a repo-local overlay `sync-agent-os.mjs`
 composes into this repository's own rulebook, same as before, just no longer

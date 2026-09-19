@@ -61,6 +61,13 @@ travels one path to merge, in this order:
    | `fast-path` | documentation outside the rulebook, and derived files under those same two rules | `prose-reviewer` |
    | `model` | everything else, including anything unclassifiable | `code-reviewer`, **always** |
 
+   **`.claude/scripts/decision-router.mjs` ships with the opt-in workflow
+   layer** (`init --with-workflow`; `CLAUDE.md`'s "The opt-in workflow layer"
+   section). Without it, this table is still the rule — it is just applied by
+   a human or the session rather than by the script, and the safe default on
+   any doubt is `model`, exactly as the script's own refusal-to-decide reads
+   below.
+
    `.claude/scripts/decision-router.mjs` decides this from the **committed**
    diff's paths — an uncommitted edit is not routed — and **risk flags escalate
    ahead of all three**: a file under a declared elevated path, a dependency

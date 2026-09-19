@@ -758,14 +758,16 @@ describe('the sweeps are declared where the rules can point at them', () => {
     expect(rules).toMatch(/will not report it|cannot report/i);
   });
 
-  it('layers.json classifies the scripts as process, so `init` carries them', async () => {
+  // RP-180: PR-lifecycle helpers ship with the opt-in workflow layer, not
+  // Lean Core — `init --with-workflow` carries them, a default `init` does not.
+  it('layers.json classifies the scripts as workflow, so `init --with-workflow` carries them', async () => {
     const manifest = JSON.parse(
       await readFile(
         path.join(repoRoot, 'templates', 'agent-os', 'universal', 'layers.json'),
         'utf8',
       ),
     ) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/detect-missed-gate.mjs');
-    expect(manifest['process']).toContain('.claude/scripts/reconcile-external-prs.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/detect-missed-gate.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/reconcile-external-prs.mjs');
   });
 });
