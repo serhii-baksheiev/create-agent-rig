@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,4 +52,41 @@ describe('the package publish path', () => {
       await removeFixture(packDir);
     }
   }, 120_000);
+});
+
+// RP-179 acceptance #5: no plugin catalog/marketplace is created, and the npm
+// package keeps zero runtime dependencies. `templates/` is checked separately
+// and more broadly by `test/template/no-vendored-plugins.test.ts`; this
+// describes the same invariant from the other side — the actual tarball `npm
+// publish` would upload, and the manifest that ships inside it.
+describe('the npm package carries no plugin catalog and no runtime dependency', () => {
+  it('keeps a `.claude-plugin/` directory and a `marketplace.json` file out of the published tarball', async () => {
+    const packDir = await mkdtemp(path.join(tmpdir(), 'caf-plugin-pack-'));
+    try {
+      const { stdout } = await runPackageManager(
+        'npm',
+        ['pack', '--json', '--pack-destination', packDir],
+        { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
+      );
+      const [packed] = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
+      if (!packed) throw new Error('fixture: npm pack produced no package');
+
+      const paths = packed.files.map((file) => file.path);
+      const pluginArtifacts = paths.filter(
+        (p) => p.split('/').includes('.claude-plugin') || path.basename(p) === 'marketplace.json',
+      );
+      expect(pluginArtifacts).toEqual([]);
+    } finally {
+      await removeFixture(packDir);
+    }
+  }, 120_000);
+
+  it('declares no runtime `dependencies` in the published package.json', async () => {
+    const raw = await readFile(path.join(repoRoot, 'package.json'), 'utf8');
+    const pkg = JSON.parse(raw) as { dependencies?: Record<string, string> };
+    // Absent is the normal shape (this repo's own package.json today); an
+    // explicit empty object must also pass, so a future edit that adds one
+    // `{}` "for clarity" is not itself the regression this test exists for.
+    expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);
+  });
 });
