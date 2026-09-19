@@ -37,8 +37,8 @@ import { describe, expect, it } from 'vitest';
  * pin below: it measured bare `node` startup, which stayed flat across a red
  * run and its green rerun of the same head while the run's own wall time
  * differed by roughly half — a diagnostic that reads "healthy" on the run it
- * exists to diagnose. No replacement baseline was required
- * (`docs/compatibility.md` has the full resolution).
+ * exists to diagnose. No replacement baseline was required (RP-110's own
+ * accepted resolution).
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');

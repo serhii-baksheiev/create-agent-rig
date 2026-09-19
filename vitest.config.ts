@@ -10,8 +10,7 @@ import { configDefaults, defineConfig } from 'vitest/config';
 // deadline, through its own benchmark runner rather than through the wiring a
 // generated project actually uses — a parallel invocation path. The "policy"
 // library surface (`packages/cli/src/policy/`) it also exercised was the
-// unreachable part: nothing in the CLI ever called it (see
-// docs/compatibility.md for the consumer graph). Guard behaviour is now
+// unreachable part: nothing in the CLI ever called it. Guard behaviour is now
 // covered directly, through the real wiring, in the template project, by
 // test/template/guard-acceptance.test.ts.
 

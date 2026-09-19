@@ -12,7 +12,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
  *
  * RP-178 removed the exact-count half of this file's check (it enumerated
  * every call site of the platform-skip helpers, including ten sites in the
- * since-deleted policy-benchmark suite — see docs/compatibility.md). A count
+ * since-deleted policy-benchmark suite). A count
  * of call sites protects nothing a user of the shipped package can observe;
  * what remains is the one invariant that does: no platform skip without a
  * reason travelling to the report.

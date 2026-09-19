@@ -53,10 +53,7 @@ document does not name is not contract, and may change without a version bump.
   token itself still occurs nowhere else in this repository; it is the item's
   name for that layer, not a path.
 - **RP-57's schema** — the lifecycle state vocabulary below is contract now; its
-  schema spelling is RP-57's, in another repository. This is the same
-  behaviour-here/type-spelling-elsewhere split the retired session-messaging
-  design (RP-178; the design lives in git history, not in this working tree)
-  used when it deferred type spelling to RP-12.
+  schema spelling is RP-57's, in another repository.
 - **RP-57's account of budget semantics.** Amendment (e)'s default and bounds are
   fixed below, by measurement and by the owner ruling of 2026-08-31
   respectively. RP-57 still owns the wider behavioural account — determinism,

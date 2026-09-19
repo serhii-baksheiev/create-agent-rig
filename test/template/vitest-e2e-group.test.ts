@@ -16,9 +16,8 @@ import config from '../../vitest.config.js';
 // template.
 //
 // RP-178 removed the policy benchmark project this file used to order itself
-// against (the benchmark ran last; see vitest.config.ts and
-// docs/compatibility.md) — the ordering claim below is against unit and
-// template only now.
+// against (the benchmark ran last) — the ordering claim below is against
+// unit and template only now.
 
 interface ProjectConfig {
   name?: string;

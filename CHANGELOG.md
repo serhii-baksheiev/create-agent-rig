@@ -60,23 +60,29 @@ generator's own repository, ahead of 0.10.0.
   it) shipped nothing a CLI command, an installed hook, or the sync scripts
   ever called — its own module header said so. Removed as dead code, along
   with `contracts/session-messaging/` (its sole remaining consumer) and the
-  vitest `benchmark` project. `docs/compatibility.md` has the full consumer
-  graph and closes RP-157, RP-160 and RP-161 by deletion rather than by fix,
-  since all three findings were against this unreachable surface.
+  vitest `benchmark` project. RP-157, RP-160 and RP-161 are closed by
+  deletion rather than by fix, since all three findings were against this
+  unreachable surface; the consumer graph behind each deletion is on pull
+  request #227.
 - **`docs/compatibility.md`** replaces the removed framework's claim to be a
   compatibility check: a Claude Code × Codex × capability matrix — every
-  retained guard, skills/agents delivery, hook wiring, and the 0.9 external
-  subsystem contract — where every row points at an executable test or an
-  exact release-evidence citation.
-- **`test/template/guard-acceptance.test.ts`** invokes six of the seven
-  retained `PreToolUse` guards through the real `.claude/settings.json` /
-  `.codex/hooks.json` wiring strings, with one allowed and one denied fixture
-  per guard per harness — the thing the benchmark measured a parallel path
-  for instead of the wiring a generated project actually runs. (The seventh,
-  `guard-subagent-model`, is Claude-only and already has its own fixtures in
-  `subagent-routing-hooks.test.ts`; a bidirectional check keeps this file's
-  fixture list, the wiring, and `docs/compatibility.md`'s guard table from
-  drifting apart.)
+  wired hook, the Windows command strings, skills/agents delivery, and the
+  optional external-subsystem contract — with one status vocabulary
+  (SUPPORTED, DEGRADED, UNSUPPORTED, NOT-APPLICABLE, UNVERIFIED).
+  `test/template/compatibility-matrix.test.ts` refuses a status outside it,
+  a measured status without a test pointer, and a pointer whose test file or
+  test name no longer exists. Windows is stated as measured: the Claude Code
+  wiring and most Codex `commandWindows` scripts are UNVERIFIED there.
+- **`test/template/guard-acceptance.test.ts`** invokes the retained
+  `PreToolUse` guards through the real `.claude/settings.json` /
+  `.codex/hooks.json` wiring strings on POSIX, with one allowed and one
+  denied fixture per guard per harness, the denied one exiting exactly 2 —
+  the wiring a generated project actually runs, not a parallel path. The
+  guard list is derived from the two wiring files, so a newly wired guard
+  with no fixture and no reasoned exception fails the suite, and so does one
+  without a `docs/compatibility.md` row. `guard-subagent-model` is the one
+  exception: Claude-only, with its fixtures in
+  `subagent-routing-hooks.test.ts`.
 - **Meta-tests that pinned shape instead of behaviour were removed or cut
   down to the assertion that survives review as real**, each with its own
   reason recorded in the pull request: a citation count nothing rereads
