@@ -273,12 +273,14 @@ no `--force`: nothing safety refuses to remove becomes removable by adding a
 flag, in this command or any future one in this PR.
 
 `--json`'s payload names which of three outcomes a completed run reached, in
-one field: `uninstalled` (everything gone, including the manifest),
+one field, `outcome`: `uninstalled` (everything gone, including the manifest),
 `partial` (something preserved, manifest kept), `detached` (`--detach`: manifest
-gone, a handover list left behind). A successful removal is a working-tree
-change, not a commit — `uninstall` never touches git history itself — so it
-says as much and points at `git add -A` and a commit as the next step. Full
-semantics, the JSON shape and worked examples are in
+gone, a handover list left behind). It is present on every completed run
+that is **not** a `--dry-run` preview — a preview has no end state to name,
+so the field is left out entirely rather than invented. A successful removal
+is a working-tree change, not a commit — `uninstall` never touches git
+history itself — so it says as much and points at `git add -A` and a commit
+as the next step. Full semantics, the JSON shape and worked examples are in
 `docs/command-contract.md` ("## uninstall (RP-181)").
 
 Registering plugin and MCP entries this rig owns is not part of this command

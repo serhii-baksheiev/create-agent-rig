@@ -908,13 +908,17 @@ false`.
    only the manifest, `error` names the mismatch.
 
 `--json`'s payload states the run's end state in one word, `outcome`, present
-on every completed run (absent exactly when `error` is set):
+on every completed run **that is not a `--dry-run` preview** (absent when
+`error` is set, AND absent on `--dry-run` over an existing plan — a preview
+has no end state to name, so the field is left out entirely rather than
+carrying a fourth, invented value):
 
-| `outcome`     | when                                                                                                                                                  | manifest                                    |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `uninstalled` | nothing in the plan was `preserved`, and nothing was caught changed since planning (also reported for `noManifest`: nothing installed, nothing to do) | removed                                     |
-| `partial`     | something was `preserved`, or caught changed since planning, and `--detach` was not given                                                             | kept                                        |
-| `detached`    | `--detach` was given                                                                                                                                  | removed, regardless of what was `preserved` |
+| `outcome`     | when                                                                                                                                                                                                                    | manifest                                    |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `uninstalled` | nothing in the plan was `preserved`, and nothing was caught changed since planning (also reported for `noManifest`: nothing installed, nothing to do, regardless of `--dry-run` — that end state does not depend on it) | removed                                     |
+| `partial`     | something was `preserved`, or caught changed since planning, and `--detach` was not given                                                                                                                               | kept                                        |
+| `detached`    | `--detach` was given                                                                                                                                                                                                    | removed, regardless of what was `preserved` |
+| _(absent)_    | `--dry-run` over an existing plan: the plan was only shown, nothing was decided yet                                                                                                                                     | unchanged — nothing was touched             |
 
 **`--detach`** performs the identical safe cleanup — every check on this page
 applies exactly the same, including the two manifest-digest checkpoints — and

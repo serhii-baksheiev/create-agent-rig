@@ -80,7 +80,7 @@ describe('create-agent-rig uninstall', () => {
     await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).resolves.toBeTruthy();
   });
 
-  it('--json prints exactly one JSON object and nothing else on stdout', async () => {
+  it('--json prints exactly one JSON object and nothing else on stdout, and carries no outcome — a preview has no end state to name', async () => {
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
     expect((await runCli(['init'])).code).toBe(0);
 
@@ -97,6 +97,7 @@ describe('create-agent-rig uninstall', () => {
       absent: string[];
       preserved: Array<{ path: string; reason: string }>;
       manifestRemoved: boolean;
+      outcome?: string;
     };
     expect(payload.schemaVersion).toBe(1);
     expect(payload.command).toBe('uninstall');
@@ -105,6 +106,11 @@ describe('create-agent-rig uninstall', () => {
     expect(payload.planned).toContain('.claude/rules/workflow.md');
     expect(payload.removed).toEqual([]);
     expect(payload.manifestRemoved).toBe(false);
+    // `outcome` names one of three end states a run reached; a --dry-run
+    // over an existing plan reached none of them, so the field is absent
+    // entirely rather than carrying a fourth, made-up value
+    expect(payload.outcome).toBeUndefined();
+    expect('outcome' in payload).toBe(false);
   });
 
   it('refuses to remove anything in a non-interactive run without --yes, and leaves the rig in place', async () => {
@@ -150,9 +156,16 @@ describe('create-agent-rig uninstall', () => {
 
     const result = await runCli(['uninstall', '--yes', '--json']);
     expect(result.code, result.stderr).toBe(0);
-    const payload = JSON.parse(result.stdout.trim()) as { removed: string[]; planned: string[] };
+    const payload = JSON.parse(result.stdout.trim()) as {
+      removed: string[];
+      planned: string[];
+      outcome?: string;
+    };
     expect(payload.removed.length).toBeGreaterThan(0);
     expect(payload.removed).toEqual(payload.planned);
+    // unlike a --dry-run preview, a completed real run always names its
+    // outcome
+    expect(payload.outcome).toBe('uninstalled');
     await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
   });
 

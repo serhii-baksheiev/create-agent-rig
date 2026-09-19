@@ -107,8 +107,10 @@ a template any generated rig receives.
   whole apply, nothing removed) and once immediately before the manifest's
   own deletion (a mismatch keeps the manifest and reports an honest partial
   result — what finished, and that the manifest is what a re-run still owes).
-  `--json`'s payload now names which of three outcomes a completed run
-  reached — `uninstalled`, `partial`, `detached` — and folds any
+  `--json`'s payload now names which of three outcomes a completed,
+  non-dry-run reached — `uninstalled`, `partial`, `detached`; a `--dry-run`
+  preview names none of them, since it has no end state to name — and folds
+  any
   changed-since-planning path into `preserved` rather than a separate,
   easy-to-miss list. **`--detach`** performs the identical safe cleanup and
   then removes the manifest anyway, leaving every preserved (or
