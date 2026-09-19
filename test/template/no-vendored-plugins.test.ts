@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -6,34 +6,46 @@ import { describe, expect, it } from 'vitest';
 /**
  * RP-179 acceptance #5, #6, #7. `templates/` is the one payload `init`,
  * `create` and `upgrade` copy into a rig — so anything it carries is
- * something a downstream project receives. This file mechanically pins three
- * decisions recorded in `docs/decisions/plugin-capability-matrix.md`:
+ * something a downstream project receives.
  *
- * - no third-party plugin source, catalog, or marketplace manifest is copied
- *   into Rig (a `.claude-plugin/` directory, or a `marketplace.json` file, are
- *   both Claude Code plugin-marketplace artifacts — see
- *   https://code.claude.com/docs/en/plugin-marketplaces — and Rig ships
- *   neither);
- * - Ruler is not used for projection (acceptance #6);
- * - Superpowers is not part of the default/product profile (acceptance #7).
+ * This file checks by SHAPE, not by name — the owner's ruling on RP-179
+ * round 2: "product names are not a security or licensing boundary." An
+ * earlier version of this file grepped `templates/` for the literal words
+ * `Ruler` and `Superpowers`; that proved only that two words were absent,
+ * which says nothing about an unnamed fork, a renamed vendor drop, or a
+ * differently-branded tool that does the same thing. That check is deleted
+ * here, not weakened — `docs/decisions/plugin-capability-matrix.md` ("Ruler
+ * and Superpowers") records why and what replaced it: this file's shape
+ * checks, plus the published-tarball allowlist in
+ * `packages/cli/test/package-contents.test.ts`, which is the authoritative,
+ * post-build version of the same property.
  *
- * Scoped to `templates/` only, not the whole repository: this generator's own
- * docs, journal and decision records may discuss Ruler or Superpowers by name
- * (as this very file's header does) without that being a product regression —
- * only what ships into a rig is checked.
- *
- * `Ruler` is matched case-sensitively, deliberately: it is also an ordinary
- * English noun (a drawing/measuring tool), and a case-insensitive whole-word
- * match would flag legitimate prose that happens to name one. `Superpowers`
- * has no such collision risk in this codebase (verified: zero hits, either
- * case, anywhere under `templates/` before this file existed), so it stays
- * case-insensitive.
+ * `isVendoredArtifact` is the one predicate both tests below share — a
+ * vendored plugin catalog, a bundled/minified file, or a dependency-install
+ * directory, wherever it appears under `templates/`.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const templatesDir = path.join(repoRoot, 'templates');
 
-const FORBIDDEN_WORDS = [/\bRuler\b/, /\bsuperpowers\b/i];
+const VENDOR_DIR_NAMES = new Set([
+  '.claude-plugin',
+  'node_modules',
+  'vendor',
+  'third_party',
+  'third-party',
+  '.cache',
+]);
+const BUNDLED_FILE_PATTERN = /\.(min\.js|min\.css|bundle\.js)$/;
+
+/** A vendored, bundled, or plugin-catalog-shaped path — the one predicate both tests use. */
+function isVendoredArtifact(relPath: string): boolean {
+  const segments = relPath.split('/');
+  if (segments.some((segment) => VENDOR_DIR_NAMES.has(segment))) return true;
+  if (path.basename(relPath) === 'marketplace.json') return true;
+  if (BUNDLED_FILE_PATTERN.test(relPath)) return true;
+  return false;
+}
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -48,45 +60,28 @@ function walk(dir: string): string[] {
 
 const rel = (p: string): string => path.relative(repoRoot, p).split(path.sep).join('/');
 
-describe('templates/ ships no vendored plugin catalog and no Ruler or Superpowers reference', () => {
+describe('templates/ carries no vendored, bundled, or plugin-catalog-shaped path', () => {
   it('has files to scan at all — a scan over an empty tree is not a pass', () => {
     expect(statSync(templatesDir).isDirectory()).toBe(true);
     expect(walk(templatesDir).length).toBeGreaterThan(50);
   });
 
-  it('carries no `.claude-plugin/` directory and no `marketplace.json` file', () => {
-    const files = walk(templatesDir).map(rel);
-    const pluginArtifacts = files.filter(
-      (f) => f.split('/').includes('.claude-plugin') || path.basename(f) === 'marketplace.json',
-    );
-    expect(pluginArtifacts).toEqual([]);
-  });
-
-  it('references neither Ruler nor Superpowers anywhere a rig receives', () => {
-    const offenders: string[] = [];
-    for (const file of walk(templatesDir)) {
-      const text = readFileSync(file, 'utf8');
-      for (const pattern of FORBIDDEN_WORDS) {
-        if (pattern.test(text)) offenders.push(`${rel(file)}: ${pattern.source}`);
-      }
-    }
+  it('carries no vendored, bundled, or plugin-catalog-shaped path', () => {
+    const offenders = walk(templatesDir).map(rel).filter(isVendoredArtifact);
     expect(offenders).toEqual([]);
   });
 
-  it('is non-vacuous: the same checks catch a planted violation, and clear a same-shaped legitimate word', () => {
-    const files = [
-      'templates/agent-os/universal/.claude-plugin/plugin.json',
-      'templates/agent-os/universal/marketplace.json',
-    ];
-    const planted = files.filter(
-      (f) => f.split('/').includes('.claude-plugin') || path.basename(f) === 'marketplace.json',
+  it('is non-vacuous: the same predicate catches a planted violation of every shape, and clears an ordinary path', () => {
+    expect(isVendoredArtifact('templates/agent-os/universal/.claude-plugin/plugin.json')).toBe(
+      true,
     );
-    expect(planted).toEqual(files);
-
-    expect(FORBIDDEN_WORDS.some((p) => p.test('projected with Ruler'))).toBe(true);
-    expect(FORBIDDEN_WORDS.some((p) => p.test('ships the Superpowers plugin'))).toBe(true);
-    // the ordinary noun, lowercase, stays allowed — the guard names the
-    // product by its capitalized form, it does not own the word
-    expect(FORBIDDEN_WORDS.some((p) => p.test('a straightedge ruler for the diagram'))).toBe(false);
+    expect(isVendoredArtifact('templates/agent-os/universal/marketplace.json')).toBe(true);
+    expect(isVendoredArtifact('templates/agent-os/universal/node_modules/x/index.js')).toBe(true);
+    expect(isVendoredArtifact('templates/agent-os/universal/vendor/lib.js')).toBe(true);
+    expect(isVendoredArtifact('templates/agent-os/universal/third_party/lib.js')).toBe(true);
+    expect(isVendoredArtifact('templates/agent-os/universal/dist/app.min.js')).toBe(true);
+    expect(isVendoredArtifact('templates/agent-os/universal/dist/app.bundle.js')).toBe(true);
+    // an ordinary authored path stays allowed
+    expect(isVendoredArtifact('templates/agent-os/universal/CLAUDE.md')).toBe(false);
   });
 });
