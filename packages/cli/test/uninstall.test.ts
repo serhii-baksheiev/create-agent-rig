@@ -20,7 +20,7 @@ import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.j
 import { hookFilesReferencedIn } from '../src/lib/init-settings.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
-import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
+import { onlyOnWindows, skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 
 let repo: string;
 
@@ -257,6 +257,7 @@ describe('planUninstall — per-file verdicts', () => {
     ['.claude/doctor-exemptions.json', '{}'],
     ['docs/architecture.md', '# not shipped by this release\n'],
     ['journal/2026-09.md', '# journal entry\n'],
+    ['.claude/user-secret.txt', 'sk-not-a-real-secret-but-treated-as-user-owned\n'],
   ] as const)(
     'preserves %s even with its true hash — ownership is the exact path, not the top-level directory',
     async (rel, content) => {
@@ -366,6 +367,7 @@ describe('applyUninstall — the happy path', () => {
 
     expect(result.manifestRemoved).toBe(true);
     expect(result.error).toBeUndefined();
+    expect(result.outcome).toBe('uninstalled');
     for (const action of plan.actions) {
       if (action.verdict !== 'remove') continue;
       expect(result.removed).toContain(action.rel);
@@ -417,6 +419,7 @@ describe('applyUninstall — the happy path', () => {
     expect(result.removed).toEqual([]);
     expect(result.manifestRemoved).toBe(false);
     expect(result.error).toBeUndefined();
+    expect(result.outcome).toBe('partial');
     // the rig is still fully installed — the evidence naming what it owns
     // stays, or a later upgrade would be blind to every preserved file
     expect(await exists(MANIFEST_REL)).toBe(true);
@@ -589,8 +592,13 @@ describe('planUninstall / applyUninstall — a symlink never gets read or remove
       // would be treated.
       const deepRel = '.claude/scratch/deep/deeper/marker.txt';
       await write(deepRel, 'evidence\n');
+      // `manifestHash: null` and no `recordedHash` on the action deliberately
+      // opt this hand-built plan out of the manifest-digest and per-file
+      // content checks — both are pinned by their own dedicated tests, and
+      // this fixture's whole point is a path outside the real manifest.
       const plan: UninstallPlan = {
         noManifest: false,
+        manifestHash: null,
         actions: [{ rel: deepRel, verdict: 'remove' }],
       };
 
@@ -693,6 +701,106 @@ describe('planUninstall / applyUninstall — a symlink never gets read or remove
   );
 });
 
+// Windows CI, not this development environment, is what actually measures
+// this: a directory JUNCTION is the Windows reparse-point kind a symlink test
+// above cannot cover, because `symlink(..., 'dir')` needs a privilege an
+// ordinary CI account lacks while a junction does not — that asymmetry is
+// exactly why junctions are worth their own case rather than being folded
+// into `symlinksAvailable`. `regularFileStatus`'s own safety does not lean on
+// any one classification of a junction: the intermediate-segment check is
+// `info.isSymbolicLink() || !info.isDirectory()`, so it refuses whether a
+// junction is reported as a symlink (the documented Node/libuv behaviour on
+// Windows, and the same behaviour this repository's own ancestor-escape
+// fixtures elsewhere already rely on — e.g.
+// `test/template/content-blind-revalidation.test.ts`'s
+// `process.platform === 'win32' ? 'junction' : 'dir'` pattern) or, failing
+// that, simply because it is not a plain directory either way.
+describe('planUninstall / applyUninstall — a Windows junction never gets read or removed through', () => {
+  const onlyOnWindowsPlatform = (name: string, body: () => Promise<void>): void =>
+    it(name, async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      await body();
+    });
+
+  onlyOnWindowsPlatform(
+    'preserves a file whose ancestor directory is a junction out of the repository, and never touches the external target',
+    async () => {
+      await installRig();
+      const originalContent = await read(WORKFLOW);
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        await mkdir(path.join(outside, 'rules'), { recursive: true });
+        await writeFile(path.join(outside, 'rules', 'workflow.md'), originalContent);
+
+        const rulesDir = abs('.claude/rules');
+        for (const entry of await readdir(rulesDir)) {
+          await rm(path.join(rulesDir, entry));
+        }
+        await rmdir(rulesDir);
+        // A junction, not a symlink — creatable on Windows without an
+        // elevated privilege, which is the whole point of exercising this
+        // reparse-point kind separately from the `dir`-symlink tests above.
+        await symlink(path.join(outside, 'rules'), rulesDir, 'junction');
+
+        const plan = await planUninstall(repo);
+        const action = actionFor(plan, WORKFLOW);
+        expect(action?.verdict).toBe('preserved');
+        expect(action?.reason).toMatch(/symlink/i);
+
+        await applyUninstall(repo, plan);
+
+        expect(await readFile(path.join(outside, 'rules', 'workflow.md'), 'utf8')).toBe(
+          originalContent,
+        );
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  // A junction is a directory-only reparse point — it cannot stand in for the
+  // managed FILE itself the way a symlink can (that form needs a `file`-type
+  // link, which requires the same elevated privilege a `dir` symlink does on
+  // Windows, so it gains nothing from being tested as a junction). The
+  // ancestor case above is the one junctions actually widen coverage for.
+  onlyOnWindowsPlatform(
+    'refuses to remove a path whose ancestor became a junction between planning and applying, as a failed run',
+    async () => {
+      await installRig();
+      const plan = await planUninstall(repo);
+      expect(actionFor(plan, WORKFLOW)?.verdict).toBe('remove');
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        await mkdir(path.join(outside, 'rules'), { recursive: true });
+        await writeFile(path.join(outside, 'rules', 'workflow.md'), 'attacker content');
+
+        const rulesDir = abs('.claude/rules');
+        for (const entry of await readdir(rulesDir)) {
+          await rm(path.join(rulesDir, entry));
+        }
+        await rmdir(rulesDir);
+        await symlink(path.join(outside, 'rules'), rulesDir, 'junction');
+
+        // the stale plan still says "remove" — the guard has to be
+        // re-checked at apply time, not trusted from the plan
+        const result = await applyUninstall(repo, plan);
+        expect(result.manifestRemoved).toBe(false);
+        expect(result.error).toBeTruthy();
+        expect(result.remaining).toContain(WORKFLOW);
+        expect(result.completed).not.toContain(WORKFLOW);
+
+        expect(await readFile(path.join(outside, 'rules', 'workflow.md'), 'utf8')).toBe(
+          'attacker content',
+        );
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+});
+
 describe('applyUninstall — an interrupted run', () => {
   it('stops on the first failure, keeps the manifest, and reports completed/remaining', async () => {
     await installRig();
@@ -756,5 +864,177 @@ describe('applyUninstall — an interrupted run', () => {
     expect(result.manifestRemoved).toBe(false);
     expect(result.remaining).toContain(failingRel);
     expect(result.remaining).not.toContain(MANIFEST_REL);
+  });
+});
+
+// `UninstallAction` carries the plan's recorded hash for every `remove`
+// verdict, and `applyUninstall` re-reads the actual bytes immediately before
+// each unlink — not only the file's regularFileStatus, which a plain content
+// edit (no symlink, still a regular file) never changes. Content drift in the
+// window between the plan being shown and the user answering `yes` must be
+// caught the same way a symlink appearing there already is, but the response
+// is different on purpose: a symlink is suspicious enough to abort the whole
+// run, while an edit is ordinary enough that the right answer is "skip this
+// one file, keep going" — the same posture `preserved: modified` already
+// takes for a file caught edited at PLAN time.
+describe('applyUninstall — a file that changed after planning', () => {
+  it('does not remove it, does not abort the run, and reports it apart from removed/preserved', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, WORKFLOW)?.verdict).toBe('remove');
+
+    // simulates an edit made in the window between the plan being printed
+    // and the user typing `yes`
+    await write(WORKFLOW, `${await read(WORKFLOW)}\n<!-- edited after planning -->\n`);
+
+    const result = await applyUninstall(repo, plan);
+    expect(result.error).toBeUndefined();
+    expect(result.removed).not.toContain(WORKFLOW);
+    expect(result.changedSincePlanning).toContain(WORKFLOW);
+    expect(await exists(WORKFLOW)).toBe(true);
+    expect(await read(WORKFLOW)).toContain('edited after planning');
+  });
+
+  it('keeps removing everything else the plan named, and keeps the manifest since something is now effectively preserved', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    const toRemove = plan.actions.filter((a) => a.verdict === 'remove').map((a) => a.rel);
+    expect(toRemove.length).toBeGreaterThan(1);
+
+    await write(WORKFLOW, `${await read(WORKFLOW)}\n<!-- edited after planning -->\n`);
+
+    const result = await applyUninstall(repo, plan);
+    expect(result.changedSincePlanning).toEqual([WORKFLOW]);
+    expect(result.removed.length).toBe(toRemove.length - 1);
+    expect(result.removed).not.toContain(WORKFLOW);
+    // the rig still owns WORKFLOW's bytes — the manifest is the only record
+    // naming that, so it stays, exactly as a plan-time `preserved` would keep it
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.outcome).toBe('partial');
+    await expect(readManifest(repo)).resolves.not.toBeNull();
+  });
+
+  it('never removes a wiring file whose bytes changed after planning either', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, SETTINGS)?.verdict).toBe('remove');
+
+    await write(SETTINGS, `${await read(SETTINGS)}\n`);
+
+    const result = await applyUninstall(repo, plan);
+    expect(result.changedSincePlanning).toContain(SETTINGS);
+    expect(await exists(SETTINGS)).toBe(true);
+  });
+});
+
+// The manifest's own bytes are the evidence the whole plan rests on — a
+// digest taken at plan time is verified twice: once before ANY removal
+// starts (a plan built from bytes that no longer exist authorises nothing),
+// and again immediately before the manifest's own deletion (the window every
+// per-file removal that came before it could have used).
+describe('applyUninstall — the manifest itself changed after planning', () => {
+  it('refuses the whole apply and removes nothing when the manifest changed before the first action', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await writeManifest(repo, {
+      ...manifest,
+      files: { ...manifest.files, 'CLAUDE.md': sha256('tampered') },
+    });
+
+    const result = await applyUninstall(repo, plan);
+    expect(result.removed).toEqual([]);
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.error).toBeTruthy();
+    expect(result.error).toContain(MANIFEST_REL);
+    // nothing this run would have removed was touched
+    expect(await exists(WORKFLOW)).toBe(true);
+    expect(await exists(SETTINGS)).toBe(true);
+  });
+
+  it('does not delete the manifest, and reports an honest partial result, when the manifest changes during the run', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    const toRemove = plan.actions.filter((a) => a.verdict === 'remove').map((a) => a.rel);
+    expect(toRemove.length).toBeGreaterThan(0);
+    const lastRel = toRemove[toRemove.length - 1]!;
+
+    const tamperManifestAfterLastFile = async (target: string): Promise<void> => {
+      await rm(target);
+      if (!target.endsWith(lastRel.split('/').join(path.sep))) return;
+      // the very next step after this removal is the manifest's own
+      // checkpoint and unlink — swap its content right in that window
+      const manifest = await readManifest(repo);
+      if (manifest === null) throw new Error('fixture: manifest missing mid-run');
+      await writeManifest(repo, {
+        ...manifest,
+        files: { ...manifest.files, 'CLAUDE.md': sha256('tampered') },
+      });
+    };
+
+    const result = await applyUninstall(repo, plan, { removeFile: tamperManifestAfterLastFile });
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.error).toBeTruthy();
+    expect(result.error).toContain(MANIFEST_REL);
+    // honest partial result: every file that really was removed is named,
+    // and the manifest is what a re-run still owes
+    expect(result.completed).toEqual(toRemove);
+    expect(result.remaining).toEqual([MANIFEST_REL]);
+    await expect(readManifest(repo)).resolves.not.toBeNull();
+  });
+});
+
+describe('applyUninstall — --detach', () => {
+  it('behaves exactly like an ordinary clean uninstall on a repo with nothing to preserve, outcome "detached"', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+
+    const result = await applyUninstall(repo, plan, { detach: true });
+    expect(result.manifestRemoved).toBe(true);
+    expect(result.outcome).toBe('detached');
+    expect(result.removed.length).toBeGreaterThan(0);
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  it('removes the manifest even though something is preserved, leaves every preserved path exactly alone, and never forces a conflicting file away', async () => {
+    await installRig();
+    const editedContent = `${await read(WORKFLOW)}\n<!-- mine -->\n`;
+    await write(WORKFLOW, editedContent);
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, WORKFLOW)?.verdict).toBe('preserved');
+
+    const result = await applyUninstall(repo, plan, { detach: true });
+    expect(result.manifestRemoved).toBe(true);
+    expect(result.outcome).toBe('detached');
+    // the conflicting file was never forced away — detach never deletes what
+    // ordinary uninstall would not
+    expect(await read(WORKFLOW)).toBe(editedContent);
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  it('never removes anything a normal run would not — the same per-file safety applies, detach only changes what happens to the manifest', async () => {
+    await installRig();
+    await write('src/app.ts', 'export const x = 1;\n');
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.files['src/app.ts'] = sha256(await readFile(abs('src/app.ts')));
+    await writeManifest(repo, manifest);
+
+    const plan = await planUninstall(repo);
+    const result = await applyUninstall(repo, plan, { detach: true });
+    expect(result.manifestRemoved).toBe(true);
+    expect(await read('src/app.ts')).toBe('export const x = 1;\n');
+  });
+
+  it('a dry run is unaffected by --detach — it still removes nothing', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    const result = await applyUninstall(repo, plan, { detach: true, dryRun: true });
+    expect(result.removed).toEqual([]);
+    expect(result.manifestRemoved).toBe(false);
+    await expect(readManifest(repo)).resolves.not.toBeNull();
   });
 });

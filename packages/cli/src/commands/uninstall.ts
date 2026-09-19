@@ -16,6 +16,16 @@ export interface UninstallAction {
   verdict: UninstallVerdict;
   /** Why, for `preserved` — always set on that verdict, never on the others. */
   reason?: string;
+  /**
+   * The manifest's recorded hash, set on every `remove` verdict a real plan
+   * produces. `applyUninstall` re-reads the file's actual bytes immediately
+   * before each removal and compares against this value — the plan can be
+   * stale by the time it is applied, and `regularFileStatus`'s own re-check
+   * only catches a symlink or a missing file, never a plain content edit.
+   * Absent only on a hand-built plan a test constructs directly (bypassing
+   * `planUninstall`) to opt out of that check on purpose.
+   */
+  recordedHash?: string;
 }
 
 export interface UninstallPlan {
@@ -28,6 +38,15 @@ export interface UninstallPlan {
    */
   noManifest: boolean;
   actions: UninstallAction[];
+  /**
+   * sha256 of the manifest's own raw bytes at plan time — `null` only when
+   * `noManifest`. `applyUninstall` re-verifies this twice: once before the
+   * first removal (a plan built from bytes that no longer exist authorises
+   * nothing) and again immediately before the manifest's own deletion (the
+   * window every removal before it could have used) — so a manifest replaced
+   * after planning is caught rather than acted on, in either direction.
+   */
+  manifestHash: string | null;
 }
 
 export interface ApplyUninstallOptions {
@@ -38,7 +57,38 @@ export interface ApplyUninstallOptions {
    * a multi-file removal without a mocking framework.
    */
   removeFile?: (absolutePath: string) => Promise<void>;
+  /**
+   * After the same safe cleanup ordinary `uninstall` performs, remove the
+   * manifest anyway even when something in the plan is `preserved` (or turned
+   * out to be {@link ApplyUninstallResult.changedSincePlanning} at apply
+   * time) — leaving every one of those paths for the user rather than
+   * refusing to touch the manifest on their account. Detaching never deletes
+   * a path this run would not otherwise have deleted on its own: the per-file
+   * safety checks (ownership, hash, symlink, changed-since-planning) apply
+   * identically either way, and a conflicting or modified file is never
+   * forced away. This is the only thing `detach` changes.
+   */
+  detach?: boolean;
 }
+
+/**
+ * The one word `--json` reports for what a completed run actually did:
+ *
+ * - `uninstalled` — every `remove`-verdict path was removed and the manifest
+ *   itself was deleted too. Also reported when there was no manifest to act
+ *   on at all (nothing installed, nothing to do).
+ * - `partial` — something in the plan is `preserved`, or turned out to have
+ *   changed since planning, so the manifest was kept on purpose: the rig
+ *   still owns bytes it did not remove, and the manifest is the only record
+ *   naming them.
+ * - `detached` — `--detach` was requested: the same safe cleanup ran, and the
+ *   manifest was removed regardless of what else was left behind.
+ *
+ * Present only on a run that actually completed (no `error`) — a hard failure
+ * (a symlink appeared, the manifest itself went stale) is its own signal and
+ * carries no outcome of this vocabulary.
+ */
+export type UninstallOutcome = 'uninstalled' | 'partial' | 'detached';
 
 export interface ApplyUninstallResult {
   /** Paths actually deleted from disk (real run only — empty on a dry run). */
@@ -51,7 +101,21 @@ export interface ApplyUninstallResult {
   remaining?: string[];
   /** Present only after a failed, partial run: the error's own message. */
   error?: string;
+  /**
+   * Paths the plan marked `remove` whose bytes no longer matched the plan's
+   * recorded hash when their turn to be removed actually came — present only
+   * when at least one occurred. Not removed, not a failure: the run kept
+   * going, and the manifest is kept (or, under `--detach`, the path is named
+   * in the handover) exactly as any other `preserved` path would be.
+   */
+  changedSincePlanning?: string[];
+  /** Which of the three {@link UninstallOutcome}s this run reached — absent exactly when `error` is present. */
+  outcome?: UninstallOutcome;
 }
+
+/** The reason named for a path discovered changed at apply time, never at plan time. */
+export const CHANGED_SINCE_PLANNING_REASON =
+  'changed since planning — its bytes no longer match what was planned to be removed';
 
 const WIRING_PATHS = new Set(['.claude/settings.json', '.codex/hooks.json']);
 
@@ -103,6 +167,24 @@ export const NOT_A_REGULAR_FILE_REASON = 'not a regular file inside the reposito
  * `'absent'` covers a missing ancestor as well as a missing file — both mean
  * "nothing here to remove", which is what the existing `absent` verdict
  * already says.
+ *
+ * ⚠ **Windows junctions.** A directory junction is a distinct NTFS
+ * reparse-point kind from a symlink, and Node/libuv report it through
+ * `Stats.isSymbolicLink()` on Windows the same way a real symlink is
+ * reported — the same behaviour this repository's own ancestor-escape
+ * fixtures already rely on elsewhere (`test/template/*.test.ts`'s
+ * `process.platform === 'win32' ? 'junction' : 'dir'` pattern) and the reason
+ * `fs.symlink(target, path, 'junction')` is the documented way to create a
+ * directory link on Windows without administrator privilege. Every check
+ * below is written to hold regardless of that classification anyway: an
+ * intermediate segment is refused unless it is BOTH a real directory and not
+ * a symlink, and the final segment is refused unless it is a plain file and
+ * not a symlink — so even a hypothetical junction that reported
+ * `isDirectory(): true` would still be caught. Exercised through
+ * `planUninstall`/`applyUninstall` by `packages/cli/test/uninstall.test.ts`'s
+ * Windows-only junction tests (`onlyOnWindows`), which run only in the
+ * `windows-e2e` CI lane — this repository's own development environment
+ * cannot create a junction to verify it directly.
  */
 async function regularFileStatus(
   repoDir: string,
@@ -125,8 +207,8 @@ async function regularFileStatus(
       throw error;
     }
     const isLast = index === segments.length - 1;
-    if (isLast) return info.isFile() ? 'ok' : 'unsafe';
-    if (!info.isDirectory()) return 'unsafe';
+    if (isLast) return !info.isSymbolicLink() && info.isFile() ? 'ok' : 'unsafe';
+    if (info.isSymbolicLink() || !info.isDirectory()) return 'unsafe';
   }
   // Unreachable: `segments` always has at least one element (`''.split('/')`
   // is `['']`), and every branch inside the loop returns. Here only to
@@ -306,7 +388,8 @@ async function protectedHooksFor(
  */
 export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
   const raw = await readManifestBytes(repoDir);
-  if (raw === null) return { noManifest: true, actions: [] };
+  if (raw === null) return { noManifest: true, actions: [], manifestHash: null };
+  const manifestHash = sha256(raw);
 
   const manifest = parseManifest(raw.toString('utf8'));
   if (manifest === null) {
@@ -349,7 +432,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
 
     if (WIRING_PATHS.has(rel)) {
       if (sha256(current) === recorded) {
-        actions.push({ rel, verdict: 'remove' });
+        actions.push({ rel, verdict: 'remove', recordedHash: recorded });
       } else {
         const hooks = [...hookFilesReferencedIn(current.toString('utf8'))].sort();
         actions.push({
@@ -375,7 +458,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
 
     const currentHash = sha256(current);
     if (currentHash === recorded) {
-      actions.push({ rel, verdict: 'remove' });
+      actions.push({ rel, verdict: 'remove', recordedHash: recorded });
     } else if (isLineEndingOnlyMatch(current, recorded)) {
       actions.push({ rel, verdict: 'preserved', reason: 'line-endings-only' });
     } else {
@@ -387,7 +470,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
     actions.push({ rel, verdict: 'preserved', reason: 'user-owned (kept by init)' });
   }
 
-  return { noManifest: false, actions };
+  return { noManifest: false, actions, manifestHash };
 }
 
 /**
@@ -413,7 +496,10 @@ async function isPlainDirectoryChain(repoDir: string, relDir: string): Promise<b
     } catch {
       return false;
     }
-    if (!info.isDirectory()) return false;
+    // `isSymbolicLink()` checked explicitly, not only `isDirectory()` — the
+    // same defensive pairing `regularFileStatus` uses, so this holds for a
+    // Windows junction regardless of exactly how it is classified.
+    if (info.isSymbolicLink() || !info.isDirectory()) return false;
   }
   return true;
 }
@@ -451,35 +537,91 @@ async function removeEmptyParents(repoDir: string, rel: string): Promise<void> {
 }
 
 /**
+ * `null` when the manifest still matches `expectedHash` exactly; otherwise the
+ * one sentence explaining why it does not — gone, behind a symlinked ancestor
+ * (or another non-regular entry), or simply different bytes now. Never
+ * throws: a symlinked ancestor is exactly one of the reasons this reports
+ * rather than the caller having to catch {@link UninstallError} itself.
+ */
+async function manifestMismatchReason(
+  repoDir: string,
+  expectedHash: string,
+): Promise<string | null> {
+  let raw: Buffer | null;
+  try {
+    raw = await readManifestBytes(repoDir);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  if (raw === null) return `"${MANIFEST_REL}" is gone — changed since planning`;
+  if (sha256(raw) !== expectedHash) {
+    return `"${MANIFEST_REL}" changed since planning — its bytes no longer match the plan`;
+  }
+  return null;
+}
+
+/**
  * Removes the `remove`-verdict paths in `plan`, then the manifest — but only
- * once every one of them succeeded AND nothing else in the plan is
- * `preserved`. A `preserved` action means the rig still owns bytes it did not
- * remove (an edit, a CRLF checkout, wiring the run left alone); deleting the
- * manifest anyway would discard the only evidence naming what it still owns,
- * blinding a later `upgrade`. A failure among the removals stops the run
- * where it is either way: the manifest stays, so a re-run's plan sees the
- * removed paths as `absent` and picks up exactly where this one stopped.
+ * once every one of them succeeded AND (outside `--detach`) nothing else in
+ * the plan is `preserved`, nor turned out to have changed since planning. A
+ * `preserved` action, or a path caught changed at apply time, means the rig
+ * still owns bytes it did not remove; deleting the manifest anyway would
+ * discard the only evidence naming what it still owns, blinding a later
+ * `upgrade` — unless `options.detach` says to do exactly that on purpose,
+ * leaving those paths for the user instead.
+ *
+ * Two kinds of "this is not the plan I made" are both re-checked here, never
+ * trusted from `plan`, because the window between the plan being shown and
+ * this call — a confirmation prompt sits in it — is exactly where either can
+ * happen: the manifest's own bytes ({@link manifestMismatchReason}, checked
+ * once before the first removal and again immediately before the manifest's
+ * own deletion) and each `remove`-verdict file's own bytes (checked
+ * immediately before its removal, via `recordedHash`). A symlink appearing
+ * where a plain file was planned is a THIRD kind, and gets a different
+ * response on purpose: it aborts the whole run rather than skipping one path,
+ * because it is the one shape suspicious enough that continuing is the wrong
+ * default.
  */
 export async function applyUninstall(
   repoDir: string,
   plan: UninstallPlan,
   options: ApplyUninstallOptions = {},
 ): Promise<ApplyUninstallResult> {
-  if (plan.noManifest) return { removed: [], manifestRemoved: false };
+  if (plan.noManifest) return { removed: [], manifestRemoved: false, outcome: 'uninstalled' };
 
-  const toRemove = plan.actions.filter((a) => a.verdict === 'remove').map((a) => a.rel);
+  const toRemove = plan.actions.filter((a) => a.verdict === 'remove');
   if (options.dryRun === true) return { removed: [], manifestRemoved: false };
 
-  // Whether a clean re-run of what's left would go on to delete the manifest
-  // too — used below to decide whether `remaining` on a failure names it. When
-  // nothing else in the plan is `preserved`, it would; when something is, the
-  // manifest is never deleted regardless of this run's outcome, so naming it
-  // as "still owed" would be misleading rather than informative.
-  const wouldDeleteManifest = !plan.actions.some((a) => a.verdict === 'preserved');
+  const detach = options.detach === true;
+  // Whether this run, absent any hard failure, would go on to delete the
+  // manifest: always true under `--detach` (that is the point of it), and
+  // otherwise only when nothing in the plan is `preserved`. A `changed since
+  // planning` discovery below can still turn this off for an ordinary run —
+  // detach is the only thing that overrides it.
+  const wouldDeleteManifest = detach || !plan.actions.some((a) => a.verdict === 'preserved');
+
+  // Checkpoint 1: the manifest itself, before anything is touched at all. A
+  // plan built from bytes that no longer exist is not evidence for what
+  // follows, so nothing is removed — not even the files a fresh plan would
+  // still agree to remove.
+  if (plan.manifestHash !== null) {
+    const mismatch = await manifestMismatchReason(repoDir, plan.manifestHash);
+    if (mismatch !== null) {
+      return {
+        removed: [],
+        manifestRemoved: false,
+        completed: [],
+        remaining: [...toRemove.map((a) => a.rel), ...(wouldDeleteManifest ? [MANIFEST_REL] : [])],
+        error: `Refusing to apply a stale plan: ${mismatch}`,
+      };
+    }
+  }
 
   const removeFile = options.removeFile ?? ((absolutePath: string) => unlink(absolutePath));
   const removed: string[] = [];
-  for (const rel of toRemove) {
+  const changedSincePlanning: string[] = [];
+  for (let i = 0; i < toRemove.length; i++) {
+    const { rel, recordedHash } = toRemove[i]!;
     try {
       // Re-checked here, not trusted from the plan: the plan can be stale by
       // the time this runs, and a symlink swapped in after planning is
@@ -491,48 +633,71 @@ export async function applyUninstall(
             '(a symlink appeared since planning)',
         );
       }
+      // Content re-checked too, not only the file's TYPE: the symlink check
+      // above cannot see a plain edit, and the confirmation prompt between
+      // the plan and this call is exactly the window one could happen in. A
+      // mismatch is not suspicious the way a symlink is — it is skipped, not
+      // aborted, and the run keeps going.
+      if (recordedHash !== undefined) {
+        const current = await readFile(onDisk(repoDir, rel));
+        if (sha256(current) !== recordedHash) {
+          changedSincePlanning.push(rel);
+          continue;
+        }
+      }
       await removeFile(onDisk(repoDir, rel));
     } catch (error) {
-      const stillOwed = toRemove.slice(removed.length);
+      const stillOwed = toRemove.slice(i).map((a) => a.rel);
       return {
         removed,
         manifestRemoved: false,
         completed: [...removed],
         remaining: wouldDeleteManifest ? [...stillOwed, MANIFEST_REL] : stillOwed,
         error: (error as Error).message,
+        ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
       };
     }
     removed.push(rel);
     await removeEmptyParents(repoDir, rel);
   }
 
-  // Something is still preserved — the rig remains installed, on purpose. The
-  // manifest is the only record naming what it still owns, so it is kept even
-  // though every removal that WAS planned just succeeded.
-  if (!wouldDeleteManifest) {
-    return { removed, manifestRemoved: false };
-  }
+  const stillPreserved = !wouldDeleteManifest || changedSincePlanning.length > 0;
 
-  // Re-checked the same symlink-safe way as any other manifest-owned path,
-  // not trusted from the plan: the window since planning (or since the last
-  // file above) is exactly the one a symlinked ancestor could have appeared
-  // in, and the manifest itself deserves no less scrutiny than the files it
-  // names. This narrows that window; it does not close it entirely — a
-  // concurrent swap in the instant between this check and the `unlink` call
-  // below is a residual race no check-then-act sequence over the filesystem
-  // can rule out (docs/command-contract.md, "## uninstall (RP-181)").
-  const manifestStatus = await regularFileStatus(repoDir, MANIFEST_REL);
-  if (manifestStatus !== 'ok') {
+  // Something is still preserved and this is not a detach — the rig remains
+  // installed, on purpose. The manifest is the only record naming what it
+  // still owns, so it is kept even though every removal that WAS planned
+  // (and still matched its recorded hash) just succeeded.
+  if (!detach && stillPreserved) {
     return {
       removed,
       manifestRemoved: false,
-      completed: [...removed],
-      remaining: [MANIFEST_REL],
-      error:
-        manifestStatus === 'absent'
-          ? `"${MANIFEST_REL}" is gone — changed since planning`
-          : `refusing to remove "${MANIFEST_REL}": an ancestor directory is a symlink (or another non-regular entry) — changed since planning`,
+      outcome: 'partial',
+      ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
     };
+  }
+
+  // Checkpoint 2: the manifest again, immediately before deleting it — the
+  // window every removal above could have used. Re-checked the same
+  // symlink-safe, content-verified way as checkpoint 1, not trusted from the
+  // first check: this narrows the window a swap can exploit; it does not
+  // close it entirely — a concurrent swap in the instant between THIS check
+  // and the `unlink` call below is a residual race no check-then-act sequence
+  // over the filesystem can rule out (docs/command-contract.md, "## uninstall
+  // (RP-181)"). On a mismatch here the manifest is kept, never deleted, and
+  // the result is an honest partial one: `completed` names every file that
+  // really was removed, `remaining` names only the manifest.
+  if (plan.manifestHash !== null) {
+    const mismatch = await manifestMismatchReason(repoDir, plan.manifestHash);
+    if (mismatch !== null) {
+      return {
+        removed,
+        manifestRemoved: false,
+        completed: [...removed],
+        remaining: [MANIFEST_REL],
+        error: mismatch,
+        ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+      };
+    }
   }
 
   try {
@@ -544,6 +709,7 @@ export async function applyUninstall(
       completed: [...removed],
       remaining: [MANIFEST_REL],
       error: (error as Error).message,
+      ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
     };
   }
   // The manifest is often the last file left in `.claude/` — its own removal
@@ -551,5 +717,10 @@ export async function applyUninstall(
   // for it.
   await removeEmptyParents(repoDir, MANIFEST_REL);
 
-  return { removed, manifestRemoved: true };
+  return {
+    removed,
+    manifestRemoved: true,
+    outcome: detach ? 'detached' : 'uninstalled',
+    ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+  };
 }
