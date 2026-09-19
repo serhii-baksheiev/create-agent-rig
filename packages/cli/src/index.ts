@@ -491,14 +491,22 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
   try {
     plan = await planUninstall(repoDir);
   } catch (error) {
+    // `UninstallError` is a message this command composed on purpose — the
+    // usual case. Anything else (EACCES, ENOTDIR, a permission the caller did
+    // not expect) is unplanned, but `--json` promises one JSON object and
+    // nothing else on stdout regardless of which kind it is: a stack trace on
+    // stderr with no payload at all breaks that promise for a caller who only
+    // ever reads stdout. Off `--json`, the trace is still the right
+    // diagnostic, so it is rethrown to `main()`'s own handler unchanged.
+    const message = error instanceof Error ? error.message : String(error);
+    if (json) {
+      process.stdout.write(
+        `${JSON.stringify(uninstallPayload(dryRun, [], [], { manifestRemoved: false, error: message }))}\n`,
+      );
+      return 1;
+    }
     if (error instanceof UninstallError) {
-      if (json) {
-        process.stdout.write(
-          `${JSON.stringify(uninstallPayload(dryRun, [], [], { manifestRemoved: false, error: error.message }))}\n`,
-        );
-      } else {
-        process.stderr.write(`${error.message}\n`);
-      }
+      process.stderr.write(`${message}\n`);
       return 1;
     }
     throw error;
@@ -596,7 +604,10 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
         }),
       )}\n`,
     );
-  } else if (result.manifestRemoved) {
+    return 0;
+  }
+
+  if (result.manifestRemoved) {
     process.stdout.write(`\nRemoved ${result.removed.length} files and the manifest.\n`);
   } else {
     // Every removal that was planned succeeded, but something else in the
@@ -607,6 +618,14 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
       `\nRemoved ${result.removed.length} files. ${preservedCount} preserved — the manifest ` +
         'was kept: the rig is still installed.\n',
     );
+  }
+  // A removal is a working-tree change, not a commit — uninstall never
+  // touches git history itself (docs/command-contract.md, "## uninstall
+  // (RP-181)"), so nothing here is recorded until a run stages and commits
+  // it. Said only when something was actually deleted; a preserved-only or
+  // no-op run leaves nothing to stage.
+  if (result.removed.length > 0) {
+    process.stdout.write('Run `git add -A` and commit to record the removal.\n');
   }
   return 0;
 }

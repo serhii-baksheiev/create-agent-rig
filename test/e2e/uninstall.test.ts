@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
+import { modeBitsDeny, skipUnless } from '../helpers/env.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -153,6 +154,45 @@ describe('create-agent-rig uninstall', () => {
     expect(payload.removed.length).toBeGreaterThan(0);
     expect(payload.removed).toEqual(payload.planned);
     await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
+  });
+
+  it('--json reports an unexpected filesystem error as the documented payload, never a bare stack trace', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    // Denies traversal into the directory entirely — the per-file read
+    // during planning hits EACCES, not ENOENT, an error this command never
+    // composed itself.
+    const rulesDir = path.join(repo, '.claude', 'rules');
+    await chmod(rulesDir, 0o000);
+    try {
+      const result = await runCli(['uninstall', '--yes', '--json']);
+      expect(result.code).toBe(1);
+      const lines = result.stdout.trim().split('\n');
+      expect(lines, `stdout was:\n${result.stdout}`).toHaveLength(1);
+      const payload = JSON.parse(lines[0]!) as {
+        schemaVersion: number;
+        manifestRemoved: boolean;
+        error?: string;
+      };
+      expect(payload.schemaVersion).toBe(1);
+      expect(payload.manifestRemoved).toBe(false);
+      expect(payload.error).toBeTruthy();
+      // no stack trace on stderr either — the error was composed, not printed raw
+      expect(result.stderr).not.toMatch(/at .*\(.*:\d+:\d+\)/);
+    } finally {
+      await chmod(rulesDir, 0o755);
+    }
+  });
+
+  it('a successful removal points at the next step — staging and committing the working-tree change', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const result = await runCli(['uninstall', '--yes']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/git add -A/);
   });
 
   it('refuses the whole run when a manifest names a path under .git, even with --yes', async () => {
