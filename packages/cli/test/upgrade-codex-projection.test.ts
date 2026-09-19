@@ -26,10 +26,14 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
  *
  * A separate file, not a describe block inside `upgrade.test.ts`: a test file
  * named `upgrade.test.ts` already exists under `test/e2e/`, and
- * `docs/compatibility.md`'s evidence pointers resolve a citation by basename
- * alone (`test/template/compatibility-matrix.test.ts`), so an ambiguous name
- * would cite whichever file wins that lookup, silently. This file's name is
- * unique in the repository.
+ * `test/template/compatibility-matrix.test.ts` resolves a bare-name evidence
+ * pointer to the tracked file with that basename — REFUSING it outright when
+ * two files share it, rather than guessing which one was meant. A citation
+ * of `upgrade.test.ts` in `docs/compatibility.md` would therefore have to
+ * name a path (`test/e2e/upgrade.test.ts` or
+ * `packages/cli/test/upgrade.test.ts`) to resolve at all. This file's name
+ * is unique in the repository, so it resolves as a bare name with no such
+ * ambiguity to disambiguate.
  */
 
 let repo: string;
