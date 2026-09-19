@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   rmdir,
   stat,
@@ -16,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initProject } from '../src/commands/init.js';
 import { UninstallError, applyUninstall, planUninstall } from '../src/commands/uninstall.js';
 import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.js';
+import { hookFilesReferencedIn } from '../src/lib/init-settings.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
@@ -181,6 +183,48 @@ describe('planUninstall — per-file verdicts', () => {
     expect(await read('.git/hooks/pre-commit')).toBe('#!/bin/sh\nexit 0\n');
   });
 
+  // "Under .git" is a segment-normalisation rule, not an exact-string one: the
+  // filesystem (or git itself) treats each of these as naming the same `.git`
+  // a plain lowercase segment would, and a manifest crafted around any of them
+  // must be refused exactly as the plain spelling is.
+  it.each([
+    ['an uppercase segment', '.GIT/hooks/pre-commit'],
+    ['a trailing dot Windows strips when resolving the path', '.git./hooks/pre-commit'],
+    ['a trailing space Windows strips when resolving the path', '.git /hooks/pre-commit'],
+    ['a Windows alternate-data-stream suffix', '.git::$DATA/hooks/pre-commit'],
+    ['a nested .git several segments deep', '.claude/worktrees/x/.git/hooks/pre-commit'],
+  ] as const)('refuses a manifest path under .git spelled as %s', async (_shape, hostileRel) => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    // The hash does not have to be real for this refusal — it never reaches
+    // the point where a hash is checked — but a plausible one keeps the
+    // fixture honest about what is actually being refused.
+    manifest.files[hostileRel] = sha256('whatever the manifest claims this is');
+    await writeManifest(repo, manifest);
+
+    await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
+  });
+
+  // A manifest this rig ever wrote never lists the same path in both `files`
+  // and `kept` — `planUpgrade` explicitly excludes a `kept` path the moment
+  // it becomes one the rig vouches for. A manifest that does is therefore
+  // either corrupt or hand-edited, and it must not be allowed to resolve the
+  // ambiguity in the reader's favour: the file it names is refused, not
+  // silently removed, silently kept, or removed while ALSO being reported as
+  // preserved on the same run.
+  it('refuses a manifest that lists the same path under both files and kept', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.kept = { ...(manifest.kept ?? {}), [WORKFLOW]: manifest.files[WORKFLOW]! };
+    await writeManifest(repo, manifest);
+
+    await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
+    // nothing removed
+    await expect(readFile(abs(WORKFLOW))).resolves.toBeTruthy();
+  });
+
   it('preserves a path this release does not install, even with its true hash, and never removes it', async () => {
     await installRig();
     await write('src/app.ts', 'export const x = 1;\n');
@@ -196,6 +240,73 @@ describe('planUninstall — per-file verdicts', () => {
 
     await applyUninstall(repo, plan);
     expect(await read('src/app.ts')).toBe('export const x = 1;\n');
+  });
+
+  // The ownership boundary must be the EXACT set of paths this release
+  // installs, not merely their top-level segment — a top-level check lets a
+  // hostile manifest pair ANY path under an owned directory (`.rig/`,
+  // `.claude/`, `docs/`, `journal/`) with its true on-disk hash and have it
+  // removed, even though this release never installs that exact path. Each
+  // target below is a real file this repository's own tooling depends on,
+  // paired with its own true hash — a naive top-segment check would remove
+  // every one of them.
+  it.each([
+    ['.rig/claims/RP-111.json', '{"id":"RP-111"}'],
+    ['.rig/run-state.json', '{"deploy":"REGRESSION"}'],
+    ['.claude/queue.state.json', '{"tier":"elevated"}'],
+    ['.claude/doctor-exemptions.json', '{}'],
+    ['docs/architecture.md', '# not shipped by this release\n'],
+    ['journal/2026-09.md', '# journal entry\n'],
+  ] as const)(
+    'preserves %s even with its true hash — ownership is the exact path, not the top-level directory',
+    async (rel, content) => {
+      await installRig();
+      await write(rel, content);
+      const manifest = await readManifest(repo);
+      if (manifest === null) throw new Error('fixture: no manifest');
+      manifest.files[rel] = sha256(await readFile(abs(rel)));
+      await writeManifest(repo, manifest);
+
+      const plan = await planUninstall(repo);
+      const action = actionFor(plan, rel);
+      expect(action?.verdict).toBe('preserved');
+      expect(action?.reason).toMatch(/not a path this release installs/i);
+
+      await applyUninstall(repo, plan);
+      expect(await read(rel)).toBe(content);
+    },
+  );
+
+  it('still removes the paths this release actually installs, exactly as before the ownership fix', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, WORKFLOW)?.verdict).toBe('remove');
+    expect(actionFor(plan, SETTINGS)?.verdict).toBe('remove');
+  });
+
+  // A Windows NTFS alternate-data-stream suffix (`::$DATA`) addresses the
+  // same underlying file as the plain name, but is a DIFFERENT string — an
+  // exact-path ownership check refuses it on that ground alone, without this
+  // command needing to know anything about ADS semantics.
+  it("preserves a manifest key spelled with a Windows alternate-data-stream suffix, even with the real file's true hash", async () => {
+    await installRig();
+    const adsRel = `${WORKFLOW}::$DATA`;
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.files[adsRel] = sha256(await readFile(abs(WORKFLOW)));
+    await writeManifest(repo, manifest);
+
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, adsRel);
+    expect(action?.verdict).toBe('preserved');
+    expect(action?.reason).toMatch(/not a path this release installs/i);
+
+    // the ADS-suffixed key is simply not one of the exact paths this release
+    // owns, so applying the plan never tries to touch it — the run otherwise
+    // proceeds normally, including the real WORKFLOW file's own (unrelated)
+    // pristine removal
+    const result = await applyUninstall(repo, plan);
+    expect(result.error).toBeUndefined();
   });
 });
 
@@ -218,6 +329,32 @@ describe('planUninstall — wiring files', () => {
     expect(action?.verdict).toBe('preserved');
     expect(action?.reason).toMatch(/wiring-modified/);
     expect(action?.reason).toMatch(/still referenced/);
+  });
+
+  // Deleting a hook file a preserved (edited) wiring file still calls would
+  // leave that wiring pointing at nothing — the settings.json the user
+  // deliberately kept, silently disarmed, including the secret guard if it
+  // happened to be the hook in question.
+  it('preserves a hook file still referenced by wiring this run preserved as modified, and names the wiring that holds it', async () => {
+    await installRig();
+    const original = await read(SETTINGS);
+    const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+    await write(SETTINGS, edited);
+
+    const referencedHooks = [...hookFilesReferencedIn(edited)];
+    expect(referencedHooks.length).toBeGreaterThan(0);
+
+    const plan = await planUninstall(repo);
+    for (const hookRel of referencedHooks) {
+      const hookAction = actionFor(plan, hookRel);
+      expect(hookAction?.verdict, hookRel).toBe('preserved');
+      expect(hookAction?.reason, hookRel).toContain(SETTINGS);
+    }
+
+    await applyUninstall(repo, plan);
+    for (const hookRel of referencedHooks) {
+      expect(await exists(hookRel), hookRel).toBe(true);
+    }
   });
 });
 
@@ -440,18 +577,22 @@ describe('planUninstall / applyUninstall — a symlink never gets read or remove
     async () => {
       await installRig();
 
-      // A manifest-owned file several directories deep, so the empty-parent
-      // walk has more than one level to climb — and an ancestor ABOVE the
-      // file's own directory that a symlink can stand in for.
+      // A file several directories deep, so the empty-parent walk has more
+      // than one level to climb — and an ancestor ABOVE the file's own
+      // directory that a symlink can stand in for. `applyUninstall` is
+      // exercised directly, with a hand-built plan, rather than through
+      // `planUninstall`: this fixture's path is not one of the exact paths
+      // this release installs (the ownership boundary `planUninstall` checks,
+      // pinned separately above), and that is not what this test is about —
+      // `applyUninstall` itself trusts the plan it is handed and re-verifies
+      // only the filesystem, exactly as a `remove` verdict from a real plan
+      // would be treated.
       const deepRel = '.claude/scratch/deep/deeper/marker.txt';
       await write(deepRel, 'evidence\n');
-      const manifest = await readManifest(repo);
-      if (manifest === null) throw new Error('fixture: no manifest');
-      manifest.files[deepRel] = sha256(await readFile(abs(deepRel)));
-      await writeManifest(repo, manifest);
-
-      const plan = await planUninstall(repo);
-      expect(actionFor(plan, deepRel)?.verdict).toBe('remove');
+      const plan: UninstallPlan = {
+        noManifest: false,
+        actions: [{ rel: deepRel, verdict: 'remove' }],
+      };
 
       // An external tree that LOOKS like a legitimate empty tail of the same
       // shape — a naive "lstat the whole joined path" cleanup would resolve
@@ -495,6 +636,61 @@ describe('planUninstall / applyUninstall — a symlink never gets read or remove
       }
     },
   );
+
+  onlyWhereSymlinksExist(
+    'refuses to trust the manifest itself when its own ancestor is a symlink, rather than reading through it or reporting noManifest',
+    async () => {
+      await installRig();
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        // A real, valid `.claude` (manifest included) re-homed behind a
+        // symlink — a naive read would find a plausible-looking manifest
+        // instead of noticing the ancestor cannot be trusted.
+        await rename(abs('.claude'), path.join(outside, '.claude'));
+        await symlink(path.join(outside, '.claude'), abs('.claude'), 'dir');
+
+        await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  onlyWhereSymlinksExist(
+    'refuses to remove the manifest through an ancestor swapped for a symlink between planning and applying',
+    async () => {
+      // No files to remove at all — only the manifest itself remains to be
+      // deleted, so the very next step after planning is the manifest's own
+      // safety re-check and unlink, with nothing else in between to race.
+      await installRig();
+      const manifest = await readManifest(repo);
+      if (manifest === null) throw new Error('fixture: no manifest');
+      manifest.files = {};
+      await writeManifest(repo, manifest);
+
+      const plan = await planUninstall(repo);
+      expect(plan.actions).toEqual([]);
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const attackerManifest = path.join(outside, '.claude', '.rig-manifest.json');
+        await mkdir(path.dirname(attackerManifest), { recursive: true });
+        await writeFile(attackerManifest, 'attacker content');
+
+        await rename(abs('.claude'), path.join(outside, 'real-claude'));
+        await symlink(path.join(outside, '.claude'), abs('.claude'), 'dir');
+
+        const result = await applyUninstall(repo, plan);
+        expect(result.manifestRemoved).toBe(false);
+        expect(result.error).toBeTruthy();
+
+        expect((await lstat(abs('.claude'))).isSymbolicLink()).toBe(true);
+        expect(await readFile(attackerManifest, 'utf8')).toBe('attacker content');
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
 });
 
 describe('applyUninstall — an interrupted run', () => {
@@ -519,6 +715,10 @@ describe('applyUninstall — an interrupted run', () => {
     expect(result.remaining).toBeDefined();
     expect(result.remaining).toContain(failingRel);
     expect(result.completed).not.toContain(failingRel);
+    // a re-run still owes the manifest too — nothing in this plan is
+    // preserved, so a clean re-run really would go on to delete it once the
+    // remaining files are gone
+    expect(result.remaining).toContain(MANIFEST_REL);
     // the manifest is untouched
     expect(await exists(MANIFEST_REL)).toBe(true);
 
@@ -531,5 +731,30 @@ describe('applyUninstall — an interrupted run', () => {
 
     const retryResult = await applyUninstall(repo, retry);
     expect(retryResult.manifestRemoved).toBe(true);
+  });
+
+  it('does not list the manifest as remaining when something else in the plan is preserved — a re-run would not delete it anyway', async () => {
+    await installRig();
+    // one edited file, so the plan carries a `preserved` action alongside the
+    // removable ones — the manifest is never going to be deleted this run
+    // (or a clean re-run of it) regardless of the failure below
+    await write(WORKFLOW, `${await read(WORKFLOW)}\n<!-- mine -->\n`);
+
+    const plan = await planUninstall(repo);
+    const toRemove = plan.actions.filter((a) => a.verdict === 'remove').map((a) => a.rel);
+    expect(toRemove.length).toBeGreaterThan(0);
+    const failingRel = toRemove[0]!;
+
+    const flaky = async (target: string): Promise<void> => {
+      if (target.endsWith(failingRel.split('/').join(path.sep))) {
+        throw new Error('simulated failure');
+      }
+      await rm(target);
+    };
+
+    const result = await applyUninstall(repo, plan, { removeFile: flaky });
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.remaining).toContain(failingRel);
+    expect(result.remaining).not.toContain(MANIFEST_REL);
   });
 });
