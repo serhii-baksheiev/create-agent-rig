@@ -49,6 +49,56 @@ package**, into `scripts/dogfood/` — a repo-local overlay `sync-agent-os.mjs`
 composes into this repository's own rulebook, same as before, just no longer
 a template any generated rig receives.
 
+**Generator-only (RP-178): nothing a newly scaffolded project receives changes.**
+No file under `templates/` moved. This entry records what changed inside the
+generator's own repository, ahead of 0.10.0.
+
+- **The speculative policy-declaration library and its benchmark are gone.**
+  `packages/cli/src/policy/` (a declaration schema, registry, decision-record
+  format and per-harness adapters, RP-36/RP-76) and
+  `scripts/policy-benchmark*.mjs` (the child-process benchmark that measured
+  it) shipped nothing a CLI command, an installed hook, or the sync scripts
+  ever called — its own module header said so. Removed as dead code, along
+  with `contracts/session-messaging/` (its sole remaining consumer) and the
+  vitest `benchmark` project. RP-157, RP-160 and RP-161 are closed by
+  deletion rather than by fix, since all three findings were against this
+  unreachable surface; the consumer graph behind each deletion is on pull
+  request #227.
+- **`docs/compatibility.md`** replaces the removed framework's claim to be a
+  compatibility check: a Claude Code × Codex × capability matrix — every
+  wired hook, the Windows command strings, skills/agents delivery, and the
+  optional external-subsystem contract — with one status vocabulary for the
+  matrix (SUPPORTED, DEGRADED, UNSUPPORTED, NOT-APPLICABLE, UNVERIFIED).
+  `test/template/compatibility-matrix.test.ts` refuses a status outside it,
+  a measured status without a test pointer, and a pointer whose test file is
+  gone or no longer contains the quoted test name. Windows is stated as
+  measured: the Claude Code wiring and most Codex `commandWindows` scripts
+  are UNVERIFIED there.
+- **`test/template/guard-acceptance.test.ts`** invokes the retained
+  `PreToolUse` guards through the real `.claude/settings.json` /
+  `.codex/hooks.json` wiring strings on POSIX, with one allowed and one
+  denied fixture per guard for each harness that wires it, in the payload
+  shape that harness sends (Codex edits arrive as `apply_patch`); the denied
+  one must exit exactly 2 and name its reason. It is the wiring a generated
+  project actually runs, not a parallel path. The guard list is derived from
+  the two wiring files, so a newly wired guard with no fixture and no
+  reasoned exception fails the suite, and so does one without a
+  `docs/compatibility.md` row. `guard-subagent-model` is Claude-only and
+  runs through the Claude Code wiring alone.
+- **Meta-tests that pinned shape instead of behaviour were removed or cut
+  down to the assertion that survives review as real**, each with its own
+  reason recorded in the pull request: a citation count nothing rereads
+  (RP-82, `generator-neutrality.test.ts`), an exact skip-site count that
+  named the deleted benchmark files, and the project-count/ordering
+  assertions that named the deleted `benchmark` vitest project.
+- **RP-110: the CI spawn-baseline diagnostic is removed** from the
+  `windows-smoke` job. It measured bare `node` startup, which stayed flat
+  across a red run and its green rerun while their wall clocks differed by
+  roughly half, so it read "healthy" on the run it was built to diagnose — a
+  diagnostic that argues against the correct conclusion is worse than none.
+  No replacement baseline was added, per the ticket's own accepted
+  resolution.
+
 ## 0.9.1
 
 **A patch, numbered by the owner.** Every entry corrects existing behaviour;

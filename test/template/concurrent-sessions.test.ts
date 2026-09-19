@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { validateEvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
-import type { EvidenceRow } from '../../packages/cli/src/policy/core/evidence-matrix.js';
+import { validateEvidenceRow } from '../helpers/evidence-row.js';
+import type { EvidenceRow } from '../helpers/evidence-row.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 // RP-120, narrowed to the Rig's own state: which parts of it two sessions on
