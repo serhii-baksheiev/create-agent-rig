@@ -36,15 +36,19 @@ import { dirname, join } from 'node:path';
  * detecting. Reading the declaration removes that failure mode instead of
  * monitoring it.
  *
- * `CLAUDE.md` carries the project's own paths; each stack layer's rule file
- * carries the ones that only exist in that shape (`infra/` comes from the
- * infrastructure layer, and a project without one must not declare it). Seeding
- * every path in one place would declare directories that do not exist in half the
- * targets — and a gate declared over a missing directory reports "clean" while
- * looking nowhere.
+ * `CLAUDE.md` and `AGENTS.md` both carry the project's own paths — `AGENTS.md`
+ * is the canonical rulebook (RP-179: Claude Code reads it natively since
+ * v2.1.277) and normally carries the block; `CLAUDE.md` is usually just an
+ * `@AGENTS.md` import with nothing of its own to declare, but a project that
+ * customised it past the shim is read too, so neither file can be the sole
+ * source. Each stack layer's rule file carries the ones that only exist in
+ * that shape (`infra/` comes from the infrastructure layer, and a project
+ * without one must not declare it). Seeding every path in one place would
+ * declare directories that do not exist in half the targets — and a gate
+ * declared over a missing directory reports "clean" while looking nowhere.
  */
 export const readDeclaredPaths = (projectRoot, { readFile = readFileSync, listDir = null } = {}) => {
-  const sources = [join(projectRoot, 'CLAUDE.md')];
+  const sources = [join(projectRoot, 'CLAUDE.md'), join(projectRoot, 'AGENTS.md')];
   try {
     const rulesDir = join(projectRoot, '.claude', 'rules');
     const entries = listDir ? listDir(rulesDir) : readdirSync(rulesDir);

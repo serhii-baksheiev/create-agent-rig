@@ -12,7 +12,7 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { syncCodexAdapters } from './sync-codex-adapter.mjs';
+import { CLAUDE_MD_SHIM, syncCodexAdapters } from './sync-codex-adapter.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -137,12 +137,19 @@ function compose() {
   for (const overlay of overlays) addTree(overlay);
 
   const addendum = readFileSync(path.join(repoRoot, '.claude', 'CLAUDE.addendum.md'), 'utf8');
+  // `AGENTS.md` is the authoring surface (RP-179: Claude Code reads it
+  // natively since v2.1.277); `CLAUDE.md` is the one-line `@AGENTS.md`
+  // compatibility shim `sync-codex-adapter.mjs` derives for every layer,
+  // including this repo's own root — composed here rather than imported from
+  // there only because this repo's root `CLAUDE.md` sits one level up from
+  // `templates/agent-os/universal/CLAUDE.md` and needs its own copy of the
+  // same literal.
   const repositoryMap =
-    withElevatedPaths(substitute(readFileSync(path.join(universal, 'CLAUDE.md'), 'utf8'))) +
+    withElevatedPaths(substitute(readFileSync(path.join(universal, 'AGENTS.md'), 'utf8'))) +
     '\n---\n\n' +
     addendum;
-  out.set('CLAUDE.md', repositoryMap);
   out.set('AGENTS.md', repositoryMap);
+  out.set('CLAUDE.md', CLAUDE_MD_SHIM);
 
   // Repo-specific override: this repo's `pnpm test` is the full e2e (minutes).
   // The DoD stop gate needs the cheap, deterministic loop instead.

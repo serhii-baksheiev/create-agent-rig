@@ -1,8 +1,15 @@
 // Codex adapter for the Claude Code-shaped Agent OS templates.
 //
-// Claude files remain the authoring surface. This script derives Codex-native
-// repository guidance, skills, custom agents and hook wiring so both harnesses
-// execute the same operating system without two hand-maintained rulebooks.
+// `AGENTS.md` is the authoring surface for the shared rulebook (RP-179: Claude
+// Code reads `AGENTS.md` natively since v2.1.277 — see
+// docs/decisions/plugin-capability-matrix.md). `CLAUDE.md` is derived from it
+// as a one-line compatibility shim (`@AGENTS.md`), for Claude Code sessions
+// that cannot read `AGENTS.md` directly (an older version, a session that
+// cannot fetch feature flags, the first session after an install/upgrade, or
+// `disableAllHooks`/`allowManagedHooksOnly`/the built-in `agents-md` plugin
+// disabled). This script also derives Codex-native repository guidance,
+// skills, custom agents and hook wiring so both harnesses execute the same
+// operating system without two hand-maintained rulebooks.
 //
 // Subagent routing is read from the one policy both harnesses share
 // (`templates/agent-os/subagent-routing.json`, through `subagent-routing.mjs`):
@@ -25,6 +32,15 @@ import {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const agentOsRoot = path.join(repoRoot, 'templates', 'agent-os');
 const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
+
+/**
+ * The whole of a layer's `CLAUDE.md`: an `@AGENTS.md` import and nothing
+ * else. No genuinely Claude-specific instruction exists in this rulebook
+ * today, so there is nothing to add below the import — see
+ * docs/decisions/plugin-capability-matrix.md ("AGENTS.md is canonical").
+ * Exported so no second file has to spell this literal to check it.
+ */
+export const CLAUDE_MD_SHIM = '@AGENTS.md\n';
 
 /**
  * Hooks that act on a Claude Code surface Codex does not have, so they are not
@@ -228,9 +244,14 @@ function expectedFiles() {
   });
   const policy = loadAgentProfiles(sourceAgents);
   for (const layer of layerDirs()) {
-    const claudeMd = path.join(layer, 'CLAUDE.md');
-    if (existsSync(claudeMd)) {
-      expected.set(path.join(layer, 'AGENTS.md'), readFileSync(claudeMd, 'utf8'));
+    // `AGENTS.md` is hand-authored (not generated) — this only checks it
+    // exists, to derive the one-line `CLAUDE.md` shim beside it. Editing
+    // `CLAUDE.md` directly instead of `AGENTS.md` is exactly the drift this
+    // `--check` catches, the same way it always caught an edit to the
+    // generated Codex files.
+    const agentsMd = path.join(layer, 'AGENTS.md');
+    if (existsSync(agentsMd)) {
+      expected.set(path.join(layer, 'CLAUDE.md'), CLAUDE_MD_SHIM);
     }
 
     const claudeSkills = path.join(layer, '.claude', 'skills');
@@ -274,8 +295,8 @@ function expectedFiles() {
 function generatedFiles() {
   const files = [];
   for (const layer of layerDirs()) {
-    const agentsMd = path.join(layer, 'AGENTS.md');
-    if (existsSync(agentsMd)) files.push(agentsMd);
+    const claudeMd = path.join(layer, 'CLAUDE.md');
+    if (existsSync(claudeMd)) files.push(claudeMd);
     files.push(...walk(path.join(layer, '.agents')));
     files.push(...walk(path.join(layer, '.codex')));
   }
@@ -308,7 +329,7 @@ export function syncCodexAdapters({ check = false } = {}) {
   for (const layer of layerDirs()) {
     rmSync(path.join(layer, '.agents'), { recursive: true, force: true });
     rmSync(path.join(layer, '.codex'), { recursive: true, force: true });
-    rmSync(path.join(layer, 'AGENTS.md'), { force: true });
+    rmSync(path.join(layer, 'CLAUDE.md'), { force: true });
   }
   for (const [target, content] of expected) {
     mkdirSync(path.dirname(target), { recursive: true });
