@@ -192,6 +192,37 @@ describe('the upgrade plan header states what it knows, not what it infers', () 
     expect(line).toMatch(/matching files against released versions/);
   });
 
+  // RP-180 round 4, blocker A(4): a bootstrapped run that inferred the
+  // workflow layer from disk says so, and from how much evidence — never
+  // silently. Round 3's plan had no such line at all.
+  it('says the workflow layer was inferred from disk, and from how much of it, on a bootstrapped workflow rig', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await rm(abs(MANIFEST_REL));
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const line = lineMatching(run.stdout, /workflow layer inferred/i);
+    expect(line, 'the plan printed no line about the inferred layer at all').toBeTruthy();
+    expect(line).toMatch(/inferred from \d+ of \d+ files on disk/);
+  });
+
+  // The reverse: a Core-only rig with a single stray workflow-layer file,
+  // bootstrapped, says the file was seen and left alone — never claims the
+  // layer.
+  it('says a stray workflow-layer file was seen and left below quorum, never adopted, on a bootstrapped Core-only rig', async () => {
+    await installRig();
+    await mkdir(path.dirname(abs('journal/README.md')), { recursive: true });
+    await writeFile(abs('journal/README.md'), 'not a rig file\n');
+    await rm(abs(MANIFEST_REL));
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const line = lineMatching(run.stdout, /workflow-layer files found on disk/i);
+    expect(line, 'the plan printed no line about the stray file at all').toBeTruthy();
+    expect(line).toMatch(/below quorum/i);
+    expect(line).not.toMatch(/inferred/i);
+  });
+
   it.each([
     'retired.md\n  - forged destructive action',
     `retired.md${String.fromCharCode(27)}[2Jforged destructive action`,
@@ -323,6 +354,39 @@ describe('the plan summary accounts for every file it planned', () => {
     expect(removed).toBeLessThan(wiring);
     // and it still adds up with both of them in it
     expect(sum(numbersIn(summary ?? ''))).toBe(plan.actions.length);
+  });
+
+  // RP-180 round 5: run 1 (bootstrapped) declines to recreate 5 hand-deleted
+  // workflow files and now RECORDS them as deleted; run 2 (an entirely
+  // ordinary upgrade against the manifest run 1 just wrote) must report
+  // ZERO new files and count all 5 as "you removed (left removed)" — never
+  // silently proposing to restore an operator's deliberate deletion.
+  it('a second, ordinary upgrade after a bootstrapped adoption reports 0 new and counts the hand-deleted files as removed', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const handDeleted = [
+      '.claude/scripts/queue/as-of.mjs',
+      '.claude/scripts/queue/checkout.mjs',
+      '.claude/scripts/revalidation-report.mjs',
+      '.agents/skills/pr-ship/SKILL.md',
+      '.claude/scripts/preflight.mjs',
+    ];
+    for (const rel of handDeleted) await rm(abs(rel));
+    await rm(abs(MANIFEST_REL));
+
+    const run1 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run1.code, run1.stderr).toBe(0);
+
+    const run2 = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run2.code, run2.stderr).toBe(0);
+    for (const rel of handDeleted) {
+      expect(run2.stdout, rel).toContain(rel);
+      const line = lineMatching(run2.stdout, new RegExp(rel.replace(/[.]/g, '\\.')));
+      expect(line, rel).toContain('installed by the rig, removed since — not restored');
+    }
+    const summary = lineMatching(run2.stdout, /to replace/);
+    expect(summary, 'the plan printed no summary line').toBeTruthy();
+    expect(summary).toMatch(/\b0 new\b/);
+    expect(summary).toMatch(/5 you removed \(left removed\)/);
   });
 
   it('renders a plan with no wiring action exactly as it does today', async () => {

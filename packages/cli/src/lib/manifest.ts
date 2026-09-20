@@ -18,6 +18,35 @@ import { hasControlCharacter } from './safe-text.js';
  */
 export const MANIFEST_REL = '.claude/.rig-manifest.json';
 
+/** A key in `templates/agent-os/universal/layers.json` — the layers a rig can install. */
+export type Layer = 'process' | 'workflow';
+
+/** Every layer this release ships. */
+export const ALL_LAYERS: readonly Layer[] = ['process', 'workflow'];
+
+/** What a fresh `init`/`create` installs when nothing opts into more. */
+export const DEFAULT_LAYERS: readonly Layer[] = ['process'];
+
+/**
+ * What an OLD manifest — written before this field existed — is read as
+ * having installed.
+ *
+ * Every release before RP-180 shipped exactly one payload, and that payload
+ * is what is now split into `process` + `workflow`. So a manifest with no
+ * `layers` key did not choose "core only" — there was no choice to make yet
+ * — it installed everything the single array named. Reading the absence as
+ * `DEFAULT_LAYERS` (core only) would make the very next `upgrade` treat
+ * every workflow file a pre-RP-180 rig has on disk as `retired` and stop
+ * managing it: exactly the data-loss direction RP-180's acceptance forbids.
+ * Pinned in `packages/cli/test/manifest.test.ts` › "a manifest with no
+ * `layers` key parses as though it recorded every layer" and
+ * `packages/cli/test/upgrade.test.ts` › "a pre-RP-180 manifest with no
+ * `layers` field keeps every workflow file it already has".
+ */
+const LEGACY_LAYERS: readonly Layer[] = ALL_LAYERS;
+
+const isLayer = (value: unknown): value is Layer => value === 'process' || value === 'workflow';
+
 export interface RigProject {
   name: string;
   scope: string;
@@ -33,6 +62,15 @@ export interface RigManifest {
   project: RigProject;
   /** agent-os stack overlays composed in (empty for `init`). */
   stacks: string[];
+  /**
+   * Which `layers.json` layer(s) this rig installed — read by `upgrade` to
+   * decide which files it is still allowed to refresh (RP-180). Always
+   * populated on the object `parseManifest` returns: an old manifest with no
+   * `layers` key in its JSON is resolved to {@link LEGACY_LAYERS} rather than
+   * left absent, so every caller downstream of `readManifest` sees a concrete
+   * answer and never has to re-derive the same default.
+   */
+  layers: Layer[];
   /** Install-relative path → sha256 of the bytes written there. */
   files: Record<string, string>;
   /**
@@ -132,6 +170,13 @@ export function parseManifest(raw: string): RigManifest | null {
   if (project.region !== '' && !isSafeSubstitutionValue(project.region)) return null;
   if (!Array.isArray(m.stacks) || m.stacks.some((s) => typeof s !== 'string')) return null;
   if (m.stacks.some((s) => !isSafeSubstitutionValue(s))) return null;
+  // Optional, like `kept` below — absent is every manifest written before this
+  // field existed (resolved to `LEGACY_LAYERS` in the return, not left
+  // undefined). Present in a shape this reader does not accept voids the
+  // manifest, exactly as `stacks` and `kept` do.
+  if (m.layers !== undefined && (!Array.isArray(m.layers) || !m.layers.every(isLayer))) {
+    return null;
+  }
   if (!isStringRecord(m.files) || Object.keys(m.files).some((rel) => !isSafeManifestPath(rel))) {
     return null;
   }
@@ -148,6 +193,14 @@ export function parseManifest(raw: string): RigManifest | null {
     kind: m.kind,
     project: { name: project.name, scope: project.scope, region: project.region },
     stacks: [...m.stacks],
+    // Deduplicated here, once (RP-180 round 3, security blocker S2): the
+    // closed set has exactly two members, so a valid manifest never needs
+    // more than two entries, but nothing upstream of this reader bounds the
+    // array's length — a committed manifest could otherwise repeat one name
+    // thousands of times and make every downstream reader of `.layers` (this
+    // module's own callers, `upgrade.ts`, `doctor.mjs`) do unbounded work per
+    // entry for no reason.
+    layers: m.layers !== undefined ? [...new Set(m.layers as Layer[])] : [...LEGACY_LAYERS],
     files: { ...m.files },
     ...(m.kept !== undefined ? { kept: { ...m.kept } } : {}),
   };

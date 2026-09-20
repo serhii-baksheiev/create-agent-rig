@@ -36,8 +36,8 @@ too when it asserts behaviour — the file it lives in does not change what a cl
 🔴 **`PREMISE FALSE` belongs to the first entry point only.** At the second one the
 claims are your own and the remedy is an edit, so a false one is not an escalation:
 it is `UNMEASURED`'s neighbour — delete or correct the sentence and carry on. Reading
-it as the escalation `loop` §6 defines would send a finished branch back to the queue
-over one sentence.
+it as the escalation `loop` §6 (opt-in workflow layer) defines would send a
+finished branch back to the queue over one sentence.
 
 ## Why it sits here and not in review
 
@@ -185,9 +185,13 @@ inside the block; both forms are the contract.
   actually says, and `file`/`line` is the citation §3 requires.
 - `PREMISES_HOLD` carries an empty `blockers` list; the other three name at
   least one. A stop verdict without one is not an answer the caller can act on,
-  and the caller is what checks: the `loop` skill runs
-  `node .claude/scripts/verdict.mjs check <report> check-premises` on what you
-  return. Nothing in this skill runs it — this skill writes nothing at all.
+  and the caller is what checks: `node .claude/scripts/verdict.mjs check
+  <report> check-premises` on what you return — `verdict.mjs` is Core and runs
+  standalone, so the caller is whichever session invoked this skill (this is a
+  Core skill, meant to run with no queue and no loop); the `loop` skill (opt-in
+  workflow layer) runs the same command the same way when it is the one that
+  invoked you. Nothing in this skill runs it — this skill writes nothing at
+  all.
 - **`headSha` is the commit you read** — `git rev-parse HEAD` in the checkout
   you examined. A premise check answers about a tree, and the tree moves.
 
@@ -231,6 +235,6 @@ is invisible to every gate downstream.
   when a task starts building on an unchecked claim, and no artifact outlives the
   step — so a run that skipped it and a run that passed it look identical
   afterwards. That is the honest description of every rule of this shape here
-  (the `loop` skill says the same about its own no-hand-feeding rule), and it is
-  why the citation matters: a `file:line` in the report is the one part of this a
-  later reader can re-check.
+  (the `loop` skill — opt-in workflow layer — says the same about its own
+  no-hand-feeding rule), and it is why the citation matters: a `file:line` in
+  the report is the one part of this a later reader can re-check.

@@ -27,6 +27,33 @@ const DOCUMENTED_ABSENT: Record<string, string> = {
   '.claude/doctor-exemptions.json':
     'authored by the project: an exemption is a file AND a reason, and a shipped ' +
     'list would exempt hooks nobody here decided to exempt',
+  // RP-180: the workflow layer is opt-in (`init --layer workflow`), so a
+  // default (core-only) install never carries these — but the core rulebook
+  // still names them, either to describe what the opt-in layer adds
+  // (CLAUDE.md, autonomy.md, workflow.md) or to protect the path whether or
+  // not that layer is installed (`unattended-flag.mjs`'s `RULEBOOK_PREFIXES`).
+  // CLAUDE.md's "opt-in workflow layer" section says the same thing.
+  '.claude/queue.json':
+    'ships only with the opt-in workflow layer — protected by ' +
+    '`unattended-flag.mjs` either way, and described in CLAUDE.md’s opt-in ' +
+    'workflow layer section',
+  '.claude/scripts/queue/index.mjs':
+    'the queue CLI the `loop` skill drives — part of the opt-in workflow ' +
+    'layer, named in CLAUDE.md’s core "Work comes from the queue" bullet',
+  '.claude/scripts/decision-router.mjs':
+    'automated PR-lane routing — part of the opt-in workflow layer; ' +
+    'workflow.md’s "PR flow" section names the core fallback when it is not ' +
+    'installed',
+  '.claude/scripts/detect-missed-gate.mjs':
+    'the Tier-2 gate sweep — part of the opt-in workflow layer; autonomy.md ' +
+    'says so where it is named',
+  '.claude/scripts/reconcile-external-prs.mjs':
+    'sorts merged PRs into queue/external/owner-directed lanes — part of the ' +
+    'opt-in workflow layer; autonomy.md says so where it is named',
+  '.claude/scripts/run-state.mjs':
+    'the deploy HEALTHY/REGRESSION verdict that feeds the next automated ' +
+    'selection — part of the opt-in workflow layer; autonomy.md’s ' +
+    '"Post-deploy verification" says so',
 };
 
 async function installed(): Promise<Map<string, string>> {

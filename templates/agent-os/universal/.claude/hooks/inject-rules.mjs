@@ -203,8 +203,9 @@ function main() {
       ? 'This is `.claude/rules/autonomy.md` in full.\n\n'
       : 'This is `.claude/rules/autonomy.md` with the sections it marks as ' +
         'reference removed — read the file itself for those: how the Tier-2 ' +
-        'gate is swept from outside, how external work is reconciled, ' +
-        'post-deploy verification, and the escalation format.\n\n';
+        'gate is swept from outside (opt-in workflow layer), how external ' +
+        'work is reconciled, post-deploy verification, and the escalation ' +
+        'format.\n\n';
 
   const additionalContext =
     `[agent-os] Autonomy rules refresh — in force regardless of compaction.\n${notice}${body}\n`;

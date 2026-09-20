@@ -177,5 +177,7 @@ calling gate reads.
   checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
   <commit>` tell "this gate answered for the commit being merged" from "it
   answered two pushes ago". A verdict naming no commit is counted as neither
-  covered nor missing, so `pr-ship` holds on it — and only `pr-ship`: no hook
-  runs that check, so a session that skips the gate skips this with it.
+  covered nor missing, so whoever runs that check holds on it —
+  `pr-ship` where the opt-in workflow layer is installed, the session itself
+  running `node .claude/scripts/verdict.mjs coverage` by hand otherwise: no
+  hook runs it either way, so skipping the gate skips this with it.

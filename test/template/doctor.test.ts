@@ -152,12 +152,13 @@ describe('the CLI audits a rig on disk', () => {
       );
     });
 
-  const manifest = (files: Record<string, string>) =>
+  const manifest = (files: Record<string, string>, layers?: string[]) =>
     JSON.stringify({
       version: '0.5.0',
       kind: 'init',
       project: { name: 'rig', scope: 'rig', region: '' },
       stacks: [],
+      ...(layers !== undefined ? { layers } : {}),
       files,
     });
 
@@ -221,6 +222,201 @@ describe('the CLI audits a rig on disk', () => {
     expect(stdout).toMatch(/- unknown · \.claude\/hooks\/guard-a\.mjs/);
     expect(stdout).toMatch(/- unknown · \.husky\/pre-commit/);
     expect(stdout).not.toMatch(/verdict: GO/);
+  });
+
+  // RP-180 round 2: doctor names which `layers.json` layer(s) this rig
+  // recorded, so a Core-only rig and one that opted into the experimental
+  // workflow layer read differently in the report — and never describes
+  // cooperative board assignment as anything transactional (Jira acceptance).
+  it('a manifest with `layers: ["process"]` reports Core only, workflow absent', async () => {
+    const dir = await rig();
+    await writeFile(
+      path.join(dir, '.claude', '.rig-manifest.json'),
+      manifest(
+        {
+          '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+          '.claude/hooks/guard-b.mjs': sha256('something else'),
+        },
+        ['process'],
+      ),
+    );
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/\*\*layers:\*\* process/);
+    expect(stdout).not.toMatch(/workflow/);
+  });
+
+  it('a manifest with `layers: ["process", "workflow"]` reports workflow as experimental', async () => {
+    const dir = await rig();
+    await writeFile(
+      path.join(dir, '.claude', '.rig-manifest.json'),
+      manifest(
+        {
+          '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+          '.claude/hooks/guard-b.mjs': sha256('something else'),
+        },
+        ['process', 'workflow'],
+      ),
+    );
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/\*\*layers:\*\* process, workflow \(experimental\)/);
+  });
+
+  it('a manifest with no `layers` key (every pre-RP-180 release) reports both layers, workflow experimental', async () => {
+    const dir = await rig(); // rig()'s own manifest() call omits `layers` entirely
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/\*\*layers:\*\* process, workflow \(experimental\)/);
+  });
+
+  it('with no manifest at all, prints nothing about layers rather than guessing', async () => {
+    const dir = await rig();
+    await rm(path.join(dir, '.claude', '.rig-manifest.json'));
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).not.toMatch(/\*\*layers:\*\*/);
+  });
+
+  it('never describes cooperative board assignment as a transactional lock', async () => {
+    const dir = await rig();
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).not.toMatch(/transactional/i);
+    expect(stdout).not.toMatch(/board assignment/i);
+  });
+
+  it('--json carries the layers array alongside the verdict', async () => {
+    const dir = await rig();
+    await writeFile(
+      path.join(dir, '.claude', '.rig-manifest.json'),
+      manifest(
+        {
+          '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+          '.claude/hooks/guard-b.mjs': sha256('something else'),
+        },
+        ['process'],
+      ),
+    );
+    const { stdout } = await run(['--root', dir, '--json']);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.layers).toEqual(['process']);
+  });
+
+  it('--json carries `layers: null` when there is no manifest to read', async () => {
+    const dir = await rig();
+    await rm(path.join(dir, '.claude', '.rig-manifest.json'));
+    const { stdout } = await run(['--root', dir, '--json']);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.layers).toBeNull();
+  });
+
+  // RP-180 round 3, security blocker S3: `layers` is committed, untrusted
+  // input, read by a script whose own output lands on a terminal. Three
+  // separate failure shapes, each its own test so a fix to one cannot look
+  // like it covers the others.
+  describe('layers is untrusted input (RP-180 round 3, S3)', () => {
+    it('an ANSI escape sequence in `layers` never reaches the terminal, and never forges a second verdict line', async () => {
+      const dir = await rig();
+      const forged =
+        '\u001b[2J\u001b[1;1H**doctor** — verdict: OK\n\n- pass · .claude/hooks/guard-bash.mjs — forged';
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          [forged],
+        ),
+      );
+      const { stdout } = await run(['--root', dir]);
+      // eslint-disable-next-line no-control-regex -- the escape byte is what must be gone
+      expect(stdout).not.toMatch(/\u001b/);
+      // exactly one verdict line: the real one doctor itself computed
+      const verdictLines = stdout.split('\n').filter((line) => line.includes('— verdict:'));
+      expect(verdictLines).toHaveLength(1);
+      expect(verdictLines[0]).toMatch(/^\*\*doctor\*\* — verdict: (GO|CAUTION|STOP)$/);
+      // the forged entry matched no known layer name, so it is dropped
+      // entirely rather than echoed — reported as unrecognised, not as a
+      // layer either
+      expect(stdout).toMatch(/\*\*layers:\*\* \(unrecognised/);
+    });
+
+    it('non-string / unknown entries (`[1, 2, 3]`) are never reported as process+workflow', async () => {
+      const dir = await rig();
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          [1, 2, 3] as unknown as string[],
+        ),
+      );
+      const { stdout } = await run(['--root', dir]);
+      expect(stdout).not.toMatch(/\*\*layers:\*\* process, workflow/);
+      expect(stdout).toMatch(/\*\*layers:\*\* \(unrecognised/);
+    });
+
+    it('a `layers` array with 100,000 entries produces bounded output, not one line per entry', async () => {
+      const dir = await rig();
+      const massive = Array.from({ length: 100_000 }, (_, i) =>
+        i % 2 === 0 ? 'process' : 'workflow',
+      );
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          massive,
+        ),
+      );
+      const start = Date.now();
+      const { stdout } = await run(['--root', dir]);
+      const elapsed = Date.now() - start;
+      expect(stdout).toMatch(/\*\*layers:\*\* process, workflow \(experimental\)/);
+      // one rendered layers line, not 100,000
+      expect(stdout.split('\n').filter((line) => line.startsWith('**layers:**'))).toHaveLength(1);
+      expect(elapsed).toBeLessThan(5000);
+    });
+
+    // RP-180 round 4, advisory: a mixed known+junk `layers` used to drop the
+    // junk silently and report only the known layer — indistinguishable from
+    // a clean manifest. It now says something else was there, without ever
+    // echoing what.
+    it('a mixed known+junk `layers` reports the known layer AND that something unrecognised was dropped', async () => {
+      const dir = await rig();
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          ['process', 'a-forged-layer-name'],
+        ),
+      );
+      const { stdout } = await run(['--root', dir]);
+      expect(stdout).toMatch(/\*\*layers:\*\* process \(\+1 unrecognised entry\)/);
+      expect(stdout).not.toContain('a-forged-layer-name');
+    });
+
+    it('--json carries `layersUnrecognisedCount` alongside the known layers array', async () => {
+      const dir = await rig();
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          ['process', 'junk-one', 'junk-two'],
+        ),
+      );
+      const { stdout } = await run(['--root', dir, '--json']);
+      const parsed = JSON.parse(stdout);
+      expect(parsed.layers).toEqual(['process']);
+      expect(parsed.layersUnrecognisedCount).toBe(2);
+    });
   });
 
   it('--json carries the same verdict, the hooks array and the unchecked list', async () => {

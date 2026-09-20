@@ -68,7 +68,7 @@ describe('npm pack → install → generate (the publish path)', () => {
       'CLAUDE.md',
       'AGENTS.md',
       '.codex/hooks.json',
-      '.agents/skills/pr-ship/SKILL.md',
+      '.agents/skills/worktree-task/SKILL.md',
     ]) {
       await expect(readFile(path.join(projectDir, p), 'utf8'), p).resolves.toBeTruthy();
     }
@@ -76,15 +76,22 @@ describe('npm pack → install → generate (the publish path)', () => {
     await expect(
       readFile(path.join(projectDir, '.claude', 'rules', 'architecture.md'), 'utf8'),
     ).rejects.toThrow();
+    // RP-180: the opt-in workflow layer is not part of the default install —
+    // the tarball carries it (checked above), the generated project does not.
+    await expect(
+      readFile(path.join(projectDir, '.agents', 'skills', 'pr-ship', 'SKILL.md'), 'utf8'),
+    ).rejects.toThrow();
   });
 
   it('the generated project records what the rig installed, and nothing more', async () => {
     const manifest = JSON.parse(
       await readFile(path.join(projectDir, '.claude', '.rig-manifest.json'), 'utf8'),
-    ) as { kind: string; stacks: string[]; files: Record<string, string> };
+    ) as { kind: string; stacks: string[]; layers: string[]; files: Record<string, string> };
     expect(manifest.kind).toBe('init');
     expect(manifest.stacks).toEqual([]);
+    expect(manifest.layers).toEqual(['process']);
     expect(manifest.files['.claude/rules/workflow.md']).toMatch(/^[0-9a-f]{64}$/);
+    expect(manifest.files['.claude/scripts/queue/index.mjs']).toBeUndefined();
   });
 
   it('file modes survive the pack → generate path', async () => {

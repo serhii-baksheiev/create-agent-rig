@@ -150,6 +150,54 @@ describe('create-agent-rig init (into an existing repo)', () => {
   });
 });
 
+// RP-180 round 2: the owner's flag spelling is `--layer <name>`, not
+// `--with-workflow`. `process`/Core installs unconditionally and is never a
+// name a user passes; `workflow` is the only accepted name today.
+describe('create-agent-rig init --layer (RP-180)', () => {
+  it('installs the workflow layer when given --layer workflow', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const result = await runInit(['--layer', 'workflow']);
+    expect(result.code, result.stderr).toBe(0);
+    await expect(
+      readFile(path.join(repo, '.claude', 'skills', 'loop', 'SKILL.md')),
+    ).resolves.toBeTruthy();
+    const manifest = JSON.parse(
+      await readFile(path.join(repo, '.claude', '.rig-manifest.json'), 'utf8'),
+    ) as { layers: string[] };
+    expect(manifest.layers.sort()).toEqual(['process', 'workflow']);
+  });
+
+  it('repeating --layer workflow is harmless', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const result = await runInit(['--layer', 'workflow', '--layer', 'workflow']);
+    expect(result.code, result.stderr).toBe(0);
+    await expect(
+      readFile(path.join(repo, '.claude', 'skills', 'loop', 'SKILL.md')),
+    ).resolves.toBeTruthy();
+  });
+
+  it('refuses an unknown --layer name, naming the accepted values, and installs nothing', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const result = await runInit(['--layer', 'bogus']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/bogus/);
+    expect(result.stderr).toMatch(/workflow/);
+    await expect(readFile(path.join(repo, '.claude', 'rules', 'workflow.md'))).rejects.toThrow();
+  });
+
+  it('refuses a bare --layer with no value', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const result = await runInit(['--layer']);
+    expect(result.code).toBe(1);
+    expect(result.stderr.length).toBeGreaterThan(0);
+  });
+
+  it('never mentions --with-workflow in its own usage text', async () => {
+    const result = await runInit(['--help']);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('--with-workflow');
+  });
+});
+
 // RP-185: the wired `.codex/hooks.json` SessionStart command is the thing a
 // real Codex session actually invokes — not a reimplementation of it. This
 // runs the ACTUAL generated command (POSIX form, and its Windows

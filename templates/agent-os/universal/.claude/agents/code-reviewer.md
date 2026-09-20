@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Reviews a completed change against the checklist before a PR is opened or merged. Use after any non-trivial implementation work, and always before opening a PR the decision-router puts on its `model` lane, which is everything its two cheap lanes did not claim — code, a rulebook document, an unclassifiable path, a derived artifact git does not report as drift, or anything a risk flag escalated. Blocking findings must be resolved, not argued with.
+description: Reviews a completed change against the checklist before a PR is opened or merged. Use after any non-trivial implementation work, and always before opening a PR that reaches the `model` lane — everything the two cheap lanes do not claim (code, a rulebook document, an unclassifiable path, a derived artifact git does not report as drift, or anything a risk flag escalated), decided by `decision-router.mjs` where the opt-in workflow layer is installed, or by the same rule applied by hand otherwise. Blocking findings must be resolved, not argued with.
 tools: Read, Grep, Glob, Bash
 model: claude-opus-5
 effort: high
@@ -88,5 +88,7 @@ reads; a report that never writes one is read as whatever the caller expected.
   checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
   <commit>` tell "this gate answered for the commit being merged" from "it
   answered two pushes ago". A verdict naming no commit is counted as neither
-  covered nor missing, so `pr-ship` holds on it — and only `pr-ship`: no hook
-  runs that check, so a session that skips the gate skips this with it.
+  covered nor missing, so whoever runs that check holds on it —
+  `pr-ship` where the opt-in workflow layer is installed, the session itself
+  running `node .claude/scripts/verdict.mjs coverage` by hand otherwise: no
+  hook runs it either way, so skipping the gate skips this with it.

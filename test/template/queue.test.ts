@@ -3978,8 +3978,11 @@ describe('the loop skill drives the seam, not one tracker', () => {
   });
 });
 
+// RP-180: the queue seam (and the preflight that reads it) is the opt-in
+// workflow layer, not Lean Core — `init --layer workflow` carries it, a
+// default `init` does not.
 describe('composition', () => {
-  it('layers.json classifies the queue seam as process', async () => {
+  it('layers.json classifies the queue seam as workflow', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
     for (const file of [
       '.claude/scripts/queue/core.mjs',
@@ -3988,7 +3991,7 @@ describe('composition', () => {
       '.claude/scripts/queue/index.mjs',
       '.claude/scripts/preflight.mjs',
     ]) {
-      expect(manifest['process'], file).toContain(file);
+      expect(manifest['workflow'], file).toContain(file);
     }
   });
 
@@ -3998,7 +4001,7 @@ describe('composition', () => {
   // which is the state this item exists to end.
   it('layers.json carries the close step that writes the tier', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/queue/state.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/queue/state.mjs');
   });
 
   // The same failure one level down, and a worse one: `checkout.mjs` is imported
@@ -4007,7 +4010,7 @@ describe('composition', () => {
   // not there — the queue CLI fails to load at all, on the first `next`.
   it('layers.json carries the resolver the writer and the reader both import', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/queue/checkout.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/queue/checkout.mjs');
   });
 
   // and the general form, so the next module extracted out of this seam cannot
@@ -4053,7 +4056,7 @@ describe('composition', () => {
   // `sync-agent-os.mjs --check` failure that sent this design back.
   it('composes the queue config and never the queue state', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/queue.json');
+    expect(manifest['workflow']).toContain('.claude/queue.json');
     for (const layer of Object.keys(manifest)) {
       expect(manifest[layer], layer).not.toContain('.claude/queue.state.json');
     }
@@ -4106,18 +4109,32 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
 // pattern. Reproduced with the block as written — `git check-ignore -q
 // .claude/queue.state.json` exits 1, and `git status --short` shows `?? .claude/`.
 describe('the ignore block the init doc tells a reader to paste', () => {
-  /** The block, dedented exactly as pasting it out of the fence would give it. */
+  /**
+   * The block(s), dedented exactly as pasting each fence out would give it,
+   * concatenated. RP-180 round 3 split "Four things" item 3 into two fences
+   * — one Core path (`.claude/worktrees/`, always relevant) and one for the
+   * four paths that exist only with the opt-in workflow layer — since a
+   * Core-only reader has no use for the workflow-only paths. A reader who
+   * DOES have the workflow layer pastes both; this test reproduces that
+   * (the fuller) case, so it still proves every one of the five paths is
+   * ignored once pasted.
+   */
   const pastedBlock = async (): Promise<string> => {
     const doc = await read(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md');
     const fenced = [...doc.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
       .map((match) => match[1] ?? '')
-      .filter((body) => body.includes('.claude/queue.state.json'));
-    expect(fenced, 'the doc must still show the reader one block to paste').toHaveLength(1);
-    const lines = (fenced[0] ?? '').replace(/\n$/, '').split('\n');
-    const indent = lines
-      .filter((line) => line.trim())
-      .reduce((least, line) => Math.min(least, line.length - line.trimStart().length), Infinity);
-    return lines.map((line) => line.slice(indent)).join('\n');
+      .filter(
+        (body) => body.includes('.claude/queue.state.json') || body.includes('.claude/worktrees/'),
+      );
+    expect(fenced, 'the doc must still show the reader the blocks to paste').toHaveLength(2);
+    const dedent = (block: string): string => {
+      const lines = block.replace(/\n$/, '').split('\n');
+      const indent = lines
+        .filter((line) => line.trim())
+        .reduce((least, line) => Math.min(least, line.length - line.trimStart().length), Infinity);
+      return lines.map((line) => line.slice(indent)).join('\n');
+    };
+    return fenced.map(dedent).join('\n');
   };
 
   const git = (args: string[], cwd: string): Promise<number> =>
@@ -6156,6 +6173,6 @@ describe('a fired trigger is recorded by the same CLI the verdict and the budget
 describe('composition carries the run state module', () => {
   it('layers.json names the module the queue CLI reads the run state through', async () => {
     const manifest = JSON.parse(await read(universal, 'layers.json')) as Record<string, string[]>;
-    expect(manifest['process']).toContain('.claude/scripts/run-state.mjs');
+    expect(manifest['workflow']).toContain('.claude/scripts/run-state.mjs');
   });
 });

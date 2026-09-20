@@ -28,6 +28,11 @@ const sample = (): RigManifest => ({
   kind: 'init',
   project: { name: 'host', scope: 'host', region: '' },
   stacks: [],
+  // Every real manifest this rig has ever written installed both layers —
+  // there was only one payload before RP-180 split it. A fixture that omits
+  // this field on purpose is built explicitly, below, not by leaving it off
+  // `sample()`.
+  layers: ['process', 'workflow'],
   files: { 'b.md': sha256('b'), 'a.md': sha256('a') },
 });
 
@@ -250,5 +255,60 @@ describe('kept — provenance for a file init found on disk and left alone (RP-1
     const serialisedEmpty = serializeManifest(emptyKept);
     expect(serialisedEmpty).not.toContain('"kept"');
     expect(serialisedEmpty).toBe(noKeptField);
+  });
+});
+
+describe('layers — which install-time layer(s) this manifest recorded (RP-180)', () => {
+  // The highest-risk detail in RP-180: every manifest written before this
+  // field existed came from a rig that shipped ONE payload — the workflow
+  // layer was not yet optional, so it was always installed. Reading an
+  // absent field as "process only" would make the very next `upgrade` on a
+  // dogfood repo report every workflow file as `retired` and stop managing
+  // it. Absent must mean "both layers", never "core only".
+  it('a manifest with no `layers` key parses as though it recorded every layer', () => {
+    const withoutLayers: Record<string, unknown> = { ...sample() };
+    delete withoutLayers.layers;
+    const parsed = parseManifest(JSON.stringify(withoutLayers));
+    expect(parsed?.layers).toEqual(['process', 'workflow']);
+  });
+
+  // The other direction, and the one a FRESH `init` (no --layer workflow) now
+  // produces: an explicit, narrower `layers` value round-trips exactly —
+  // it is never silently widened back to "everything".
+  it('a freshly written manifest naming only the core layer round-trips exactly', () => {
+    const coreOnly: RigManifest = { ...sample(), layers: ['process'] };
+    const serialised = serializeManifest(coreOnly);
+    expect(parseManifest(serialised)).toEqual(coreOnly);
+    expect(parseManifest(serialised)?.layers).toEqual(['process']);
+  });
+
+  it('voids the manifest when `layers` is present but not an array of known layer names', () => {
+    const hostile = (layers: unknown) => parseManifest(JSON.stringify({ ...sample(), layers }));
+    expect(hostile('process')).toBeNull();
+    expect(hostile(['process', 'nonsense'])).toBeNull();
+    expect(hostile([1, 2])).toBeNull();
+    expect(hostile({})).toBeNull();
+  });
+
+  // RP-180 round 3, security blocker S2: `layers` was accepted as an
+  // ARBITRARY-length array of `'process' | 'workflow'` values, never
+  // deduplicated. The closed set has exactly two members, so nothing about a
+  // valid manifest ever needs more than two entries — but nothing stopped a
+  // committed manifest from repeating one thousands of times, and every
+  // caller of `RigManifest.layers` (this file's own `[...m.layers]`,
+  // `upgrade.ts`'s `initInstallSet`, `doctor.mjs`'s `layersOf`) then does
+  // O(n) or worse work per entry. Deduped at parse, once, so no downstream
+  // reader has to defend itself.
+  it('dedupes `layers` at parse — a manifest with 2000 duplicate entries parses to the 2-member list', () => {
+    const massive = Array.from({ length: 2000 }, (_, i) => (i % 2 === 0 ? 'process' : 'workflow'));
+    const start = Date.now();
+    const parsed = parseManifest(JSON.stringify({ ...sample(), layers: massive }));
+    const elapsed = Date.now() - start;
+    expect(parsed?.layers.sort()).toEqual(['process', 'workflow']);
+    expect(parsed?.layers.length).toBe(2);
+    // Bounded work, not just a fast wall-clock: parsing 2000 duplicate
+    // entries into a 2-member set must not scale with the input size in any
+    // way a reader would notice.
+    expect(elapsed).toBeLessThan(200);
   });
 });
