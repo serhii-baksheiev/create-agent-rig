@@ -190,6 +190,8 @@ templates/agent-os/universal/docs/decisions/
 docs/decisions/
 contracts/
 scripts/dogfood/
+packages/cli/src/integrations/
+contracts/integrations/
 .claude/
 ```
 

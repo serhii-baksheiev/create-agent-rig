@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/serhii-baksheiev/create-agent-rig/contracts/integrations/v1/declaration.schema.json",
+  "title": "Rig integrations declaration",
+  "description": "The accepted shape of .rig/integrations.json (RP-22 S1). Validated with the dependency-free subset in scripts/lib/json-schema-subset.mjs — no $ref, no oneOf.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "integrations"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "integrations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          },
+          "harnesses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["claude-code", "codex"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
