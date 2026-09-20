@@ -11,18 +11,24 @@
  * so is a root key outside `schemaVersion`/`integrations`.
  *
  * This module imports only its sibling `./registry.js` and `../lib/safe-text.js`.
- * Pinned by `packages/cli/test/integrations-registry.test.ts` › "registry.ts
- * and declaration.ts import only their declared relative modules, and never
- * require, dynamically import, fetch, createRequire, process.binding,
- * bare-import, or re-export".
+ * Pinned by `packages/cli/test/integrations-registry.test.ts` › "every
+ * integrations/ module imports only its declared relative modules, and never
+ * requires, dynamically imports, fetches, createRequires, process.bindings,
+ * bare-imports, or re-exports" and, more precisely for this file, › "each
+ * module imports EXACTLY its declared set — registry.ts and state.ts import
+ * nothing at all".
  *
  * `parseDeclaration` is TOTAL: no string input may make it throw. The one
  * property that would break that promise — an iterative-vs-recursive walk
  * over attacker-controlled JSON — is pinned by
  * `packages/cli/test/integrations-declaration.test.ts` › "a fuzz list of
- * hostile shapes never makes parseDeclaration throw".
+ * hostile shapes never makes parseDeclaration throw". The walk itself
+ * (`scanForDepthAndControlChars`) and the `isPlainObject` predicate live in
+ * `../lib/safe-text.js`, shared with `receipt.ts` rather than duplicated
+ * (RP-22 S2 gate finding — `.claude/rules/invariants.md`, "One mechanism, one
+ * implementation").
  */
-import { hasControlCharacter } from '../lib/safe-text.js';
+import { isPlainObject, scanForDepthAndControlChars } from '../lib/safe-text.js';
 import { validateDescriptor, type Harness, type ProviderDescriptor } from './registry.js';
 
 export const DECLARATION_REL = '.rig/integrations.json';
@@ -46,12 +52,25 @@ export const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  */
 const MAX_DECLARATION_DEPTH = 4;
 
-const ROOT_KEYS = new Set(['schemaVersion', 'integrations']);
+const ROOT_KEYS_LIST = ['schemaVersion', 'integrations'] as const;
+
+/**
+ * Exported so a test can assert this is the SAME array as the schema's
+ * top-level `properties` keys — one fact, one spelling
+ * (`.claude/rules/invariants.md`, "One mechanism, one implementation"). A
+ * frozen ARRAY, not a `Set`: `Object.freeze` on a `Set` leaves its internal
+ * slots (`add`/`delete`) open, so a live `Set` export is still mutable
+ * (RP-22 S2 carry-over) — the same reasoning as {@link KNOWN_ENTRY_KEYS} below.
+ */
+export const ROOT_KEYS: readonly string[] = Object.freeze([...ROOT_KEYS_LIST]);
+const ROOT_KEYS_SET = new Set(ROOT_KEYS);
 const ARBITRARY_COMMAND_KEYS = new Set(['command', 'args', 'env']);
 const NON_OFFICIAL_SOURCE_KEYS = new Set(['source', 'url', 'headers']);
 
+const KNOWN_ENTRY_KEYS_LIST = ['id', 'required', 'version', 'harnesses'] as const;
+
 /**
- * Exported so a test can assert this is the SAME set as the schema's
+ * Exported so a test can assert this is the SAME array as the schema's
  * `properties.integrations.items.properties` keys — one fact, one spelling
  * (`.claude/rules/invariants.md`, "One mechanism, one implementation"). Before
  * that correspondence test existed, the schema's own `additionalProperties:
@@ -60,8 +79,15 @@ const NON_OFFICIAL_SOURCE_KEYS = new Set(['source', 'url', 'headers']);
  * unknown entry key at different LEVELS (parser: per-entry rejection, file
  * still `ok`; schema: the whole document fails to validate), so neither
  * layer's own test suite alone could notice the other losing its closure.
+ *
+ * A frozen ARRAY, not a `Set` (RP-22 S2 carry-over, gate finding on S1): a
+ * frozen `Set` is still mutable through `add`/`delete` — `Object.freeze`
+ * only closes the object's own property slots, not the methods a `Set`
+ * dispatches through internally. The membership check below uses a private,
+ * un-exported `Set` built from this array.
  */
-export const KNOWN_ENTRY_KEYS = new Set(['id', 'required', 'version', 'harnesses']);
+export const KNOWN_ENTRY_KEYS: readonly string[] = Object.freeze([...KNOWN_ENTRY_KEYS_LIST]);
+const KNOWN_ENTRY_KEYS_SET = new Set(KNOWN_ENTRY_KEYS);
 const MAX_ECHOED_ID_LENGTH = 64;
 
 export type DeclaredIntegration = {
@@ -86,55 +112,14 @@ export type ParseResult =
   | { status: 'ok'; entries: DeclaredIntegration[]; rejected: Rejection[] }
   | { status: 'invalid'; error: string };
 
-/** A value longer than {@link MAX_ECHOED_ID_LENGTH} truncated for a message a maintainer reads. */
-function truncateForMessage(value: string): string {
-  return value.length > MAX_ECHOED_ID_LENGTH ? `${value.slice(0, MAX_ECHOED_ID_LENGTH)}…` : value;
-}
-
-type DepthScan = { tooDeep: boolean; hasControlChar: boolean };
-
 /**
- * One iterative, explicit-worklist pass over the parsed JSON value that
- * answers two questions at once: does anything here carry a control or
- * Unicode-format character (as `manifest.ts` already refuses in its own
- * strings), and does the value nest deeper than {@link MAX_DECLARATION_DEPTH}.
- *
- * Iterative on purpose. A naive recursive walk over attacker-controlled JSON
- * stack-overflows well inside the 64 KiB size cap — `JSON.parse` itself
- * tolerates a depth of 30 000+ — so recursion here would be the one way this
- * module could stop being total (`invariants.md`, "no recursion over input").
- * Total work is bounded by the number of JSON tokens in `root`, which the
- * 64 KiB byte cap already bounds before this ever runs.
+ * A value longer than {@link MAX_ECHOED_ID_LENGTH} truncated for a message a
+ * maintainer reads. Exported so `receipt.ts` does not re-implement the same
+ * truncation rule (`.claude/rules/invariants.md`, "One mechanism, one
+ * implementation").
  */
-function scanParsedValue(root: unknown): DepthScan {
-  const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];
-  let hasControlChar = false;
-  while (stack.length > 0) {
-    const next = stack.pop();
-    if (next === undefined) break; // guarded by the loop condition; stated for the type checker
-    const { value, depth } = next;
-    if (depth > MAX_DECLARATION_DEPTH) return { tooDeep: true, hasControlChar };
-    if (typeof value === 'string') {
-      if (hasControlCharacter(value)) hasControlChar = true;
-      continue;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) stack.push({ value: item, depth: depth + 1 });
-      continue;
-    }
-    if (typeof value === 'object' && value !== null) {
-      for (const [key, child] of Object.entries(value)) {
-        if (hasControlCharacter(key)) hasControlChar = true;
-        stack.push({ value: child, depth: depth + 1 });
-      }
-    }
-  }
-  return { tooDeep: false, hasControlChar };
-}
-
-/** A type predicate, not a cast: narrows `unknown` to an indexable object without asserting anything. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+export function truncateForMessage(value: string): string {
+  return value.length > MAX_ECHOED_ID_LENGTH ? `${value.slice(0, MAX_ECHOED_ID_LENGTH)}…` : value;
 }
 
 function isHarness(value: string): value is Harness {
@@ -171,7 +156,7 @@ function mostSevereUnknownKeyReason(entry: Record<string, unknown>): RejectionRe
   for (const key of Object.keys(entry)) {
     let reason: RejectionReason | null;
     let severity: number;
-    if (KNOWN_ENTRY_KEYS.has(key)) {
+    if (KNOWN_ENTRY_KEYS_SET.has(key)) {
       reason = null;
       severity = SEVERITY.known;
     } else if (ARBITRARY_COMMAND_KEYS.has(key)) {
@@ -223,7 +208,7 @@ export function parseDeclaration(
     return { status: 'invalid', error: 'the declaration is not valid JSON' };
   }
 
-  const scan = scanParsedValue(parsed);
+  const scan = scanForDepthAndControlChars(parsed, MAX_DECLARATION_DEPTH);
   if (scan.tooDeep) {
     return {
       status: 'invalid',
@@ -240,7 +225,7 @@ export function parseDeclaration(
   const root = parsed;
 
   for (const key of Object.keys(root)) {
-    if (!ROOT_KEYS.has(key)) {
+    if (!ROOT_KEYS_SET.has(key)) {
       return {
         status: 'invalid',
         error: 'the declaration has a root key outside {schemaVersion, integrations}',
