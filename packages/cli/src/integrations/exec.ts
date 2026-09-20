@@ -54,6 +54,21 @@
  *    `ChildProcess.kill()` on Windows calls `TerminateProcess` on the named
  *    PID only, so the same failure mode is *expected* to hold, but that is a
  *    claim, not a measurement, until a win32 run proves it.
+ * 4. {@link ALLOWED_ENV_VARS} is a floor for what THIS MODULE deliberately
+ *    forwards, not a ceiling the operating system enforces beneath it. On
+ *    win32, a spawned child's `process.env` was measured (windows-smoke CI)
+ *    to carry additional user-profile variables — `HOMEDRIVE`, `HOMEPATH` —
+ *    that this module never put in the filtered block it passed to
+ *    `execFile`. Windows appears to populate a handful of such variables for
+ *    a new process regardless of the given environment, the same way
+ *    `SystemRoot` already needs to be present for system DLL loading; this
+ *    module has not exhaustively enumerated that set, only the two members
+ *    observed so far. The property this module actually guarantees, and the
+ *    one its own test asserts on every platform, is negative: nothing this
+ *    module was HANDED and did not allow-list (a secret, a stray variable,
+ *    `NODE_OPTIONS`) is ever forwarded. The positive "the child's environment
+ *    is exactly this set" check only holds where the platform adds nothing
+ *    of its own — measured true on Linux, measured false on win32.
  */
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
@@ -72,10 +87,11 @@ export function isValidToolName(name: string): boolean {
  * as `declaration.ts`'s `ROOT_KEYS` (`Object.freeze` on a `Set` still leaves
  * `add`/`delete` open).
  *
- * `HOMEDRIVE` is here for a measured reason, not a guessed one: the
- * windows-smoke CI job observed it present in a spawned child's
- * `process.env` even though it is absent from the filtered block this
- * module builds — Windows populates it for a child process regardless of
+ * `HOMEDRIVE`/`HOMEPATH` are here for a measured reason, not a guessed one:
+ * the windows-smoke CI job observed each present in a spawned child's
+ * `process.env` — one round at a time, `HOMEDRIVE` first, `HOMEPATH` on the
+ * very next run — even though neither is in the filtered block this module
+ * builds. Windows populates this pair for a child process regardless of
  * what this module passes, the same way `SystemRoot` is needed for system
  * DLL loading. Refusing to allow-list an entry the platform adds anyway
  * would only make this module's own accounting wrong, not the child's
@@ -86,6 +102,7 @@ const ALLOWED_ENV_VARS_LIST = [
   'HOME',
   'USERPROFILE',
   'HOMEDRIVE',
+  'HOMEPATH',
   'TEMP',
   'TMP',
   'SystemRoot',
