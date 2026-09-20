@@ -218,6 +218,111 @@ cross-repository run lives in the private `claude-config` repository, which
 checks this repository out at an explicit full SHA and runs the command above
 against its own tree; the CI here runs only the offline tests.
 
+## Uninstalling a rig
+
+Remove what a rig installed, file by file, keeping everything you did not
+write yourselves:
+
+```sh
+npx create-agent-rig@latest uninstall --dry-run   # print the plan, remove nothing
+npx create-agent-rig@latest uninstall             # print the plan, then ask before removing
+npx create-agent-rig@latest uninstall --yes       # the answer up front (required off a terminal, and always with --json)
+npx create-agent-rig@latest uninstall --json      # one JSON object, for a script — needs --yes to remove anything
+npx create-agent-rig@latest uninstall --yes --detach  # same safe cleanup, but also removes the manifest and hands over what it left behind
+```
+
+It removes only a path whose bytes on disk still match the hash
+`.claude/.rig-manifest.json` recorded, is a plain file (never a symlink,
+directory, or other non-regular entry — checked one path segment at a time
+from the repository root, so a symlinked ANCESTOR is caught wherever it sits,
+never only the file itself), and is itself one of the EXACT paths this
+release installs — not merely a path that happens to sit under an owned
+directory such as `.claude/` or `.rig/`, which would let a manifest pair
+almost anything under one with its true hash and have it removed. Anything
+under `.git` is refused outright, for the whole run — any spelling that
+resolves to the same `.git` (a different case, a Windows alternate-data-stream
+suffix, a trailing dot or space, a nested `.git` several directories down) —
+no matter what hash a manifest pairs it with. A file you edited, already
+deleted, that `init` found already in place and left alone (`kept`), or that
+simply is not a path this rig owns is reported and never touched, exactly the
+way `upgrade` reports a conflict; a manifest naming the same path under both
+`files` and `kept` is refused outright rather than left to resolve the
+ambiguity on its own. `.claude/settings.json` and `.codex/hooks.json` follow
+the same rule `upgrade` applies to them: removed only when the manifest proves
+the rig wrote those exact bytes, reported with the hooks still wired
+otherwise — and a hook file a preserved (edited, itself a symlink, or simply
+`kept` — a pre-existing settings file `init` never took ownership of, which
+is preserved unconditionally with no hash to compare) wiring file still
+calls is itself preserved too, along with everything THAT hook file in turn
+imports (its own `.claude/hooks/lib/` and `.claude/scripts/` dependencies,
+walked to a fixed point, every real read gated the same symlink-safe way
+every other read here is) — naming which wiring file holds it, whether that
+wiring's own state is discovered at plan time or only at apply time (an edit
+inside the confirmation-prompt window is re-checked before the first hook is
+removed) — so `uninstall` never leaves a settings file the run deliberately
+kept pointing at a hook, or at one of that hook's own imports, that is no
+longer there. The manifest
+itself is read and, at checkpoints below, verified
+through the same symlink-safe check every other file gets — never a plain
+lexical path — so a symlinked `.claude` cannot make this command trust a
+manifest it did not really find, or delete one through a link that appeared
+after planning.
+
+A plan can go stale between being shown and being applied — a confirmation
+prompt sits in that window on purpose. Two things are re-verified, never
+trusted from the plan: each file's own bytes, immediately before its removal
+(a mismatch skips that ONE file — reported, not deleted, and the run keeps
+going — never aborts the way a symlink appearing in its place does), and the
+manifest's own bytes, checked once before the first removal (a mismatch there
+refuses the whole apply, nothing removed) and again immediately before the
+manifest's own deletion (a mismatch there keeps the manifest and reports an
+honest partial result: what finished, and that the manifest is what remains).
+
+Removing files is destructive, so it asks first — `--yes` on the command
+line, or a yes/no prompt on a terminal; a non-interactive run without `--yes`
+refuses, and `--json` never prompts (it is read by a script, so it refuses the
+same way off a terminal). `--dry-run` never asks, because it never removes
+anything. `--detach` asks exactly the same way.
+
+The manifest itself is removed last, and only once every file it names has
+either been removed or was already gone — **and only when nothing was
+preserved.** If anything was left in place (an edit, a CRLF checkout, a path
+outside this release's install set, a file caught changed since planning),
+the manifest stays too: it is the rig's only record of what it still owns,
+and deleting it would leave the rig installed with no evidence naming what
+belongs to it, blinding a later `upgrade`. A run interrupted partway also
+keeps the manifest and reports what finished and what a re-run still owes —
+including the manifest itself, whenever a clean re-run really would go on to
+delete it — so `uninstall` is safe to run again either way. It never removes
+`.rig/` itself — that directory is evidence (claims, run state), not
+something this command has ownership evidence for; a FILE under it that is
+one of the exact paths this release installs is still removed like any other
+manifest-owned file.
+
+**`--detach`** is the one way past "the manifest stays while anything is
+preserved": after the identical safe cleanup — every per-file check above
+applies exactly the same, and a conflicting or modified file is never forced
+away — it removes the manifest anyway and prints the complete list of what it
+is leaving behind. Use it when you mean to keep some of what the rig wrote
+(as your own files from here on) rather than fix or discard it first. There is
+no `--force`: nothing safety refuses to remove becomes removable by adding a
+flag, in this command or any future one in this PR.
+
+`--json`'s payload names which of three outcomes a completed run reached, in
+one field, `outcome`: `uninstalled` (everything gone, including the manifest),
+`partial` (something preserved, manifest kept), `detached` (`--detach`: manifest
+gone, a handover list left behind). It is present on every completed run
+that is **not** a `--dry-run` preview — a preview has no end state to name,
+so the field is left out entirely rather than invented. A successful removal
+is a working-tree change, not a commit — `uninstall` never touches git
+history itself — so it says as much and points at `git add -A` and a commit
+as the next step. Full semantics, the JSON shape and worked examples are in
+`docs/command-contract.md` ("## uninstall (RP-181)").
+
+Registering plugin and MCP entries this rig owns is not part of this command
+yet — it lands once RP-179/RP-22 define what an owned registration is; today
+`uninstall` only ever touches files the manifest names.
+
 ## What you get
 
 **A system of boundaries, each held by tooling.** An agent (or a human using

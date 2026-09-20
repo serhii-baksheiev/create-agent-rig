@@ -701,6 +701,567 @@ never asked.
   and no revision behind it; the conclusion rests on `load.sh:14-15` and
   `load.ps1:5-6` instead.
 
+## uninstall (RP-181)
+
+`uninstall [dir] [--dry-run] [--yes] [--detach] [--json]` removes what a rig
+installed from `dir` (default: the current directory) — file by file, against
+the evidence the manifest carries and nothing else. It is not a member of the
+foundation verb set above, and it does not use that set's five-code exit
+table: like `create`, `init` and `upgrade`, it exits 0 on success (including
+"nothing to do") and 1 on a refusal or a partial failure. `## Conformance
+today`'s row on `create`, `init`, `setup` and `upgrade` speaking prose
+predates this command and is unchanged by it — `uninstall` speaks prose too,
+and additionally answers `--json` the way `--version --json` does: one JSON
+object, nothing else on stdout, `schemaVersion` at the top level, additive
+evolution.
+
+`### Payload rules specific to the shim`'s "no file paths" rule is, as its own
+heading says, specific to the shim — the concern behind it is a payload
+travelling somewhere a path could point at a credential. `uninstall`'s own
+payload rule is different and looser: its paths are ordinary
+repository-relative rule-file paths, already fully visible in the plain-prose
+plan `upgrade` prints today, so `planned`, `removed`, `absent`, `preserved`,
+`completed`, `remaining` and `error` may all name one. Recognised
+structurally, the way a doctor record is, by the field that makes a payload
+this shape: `command: "uninstall"` — never by a bare `removed` or `preserved`
+key alone. Pinned in `test/template/command-contract.test.ts` › "exempts
+uninstall's own path fields only on its own payload, never by field name
+alone".
+
+Ownership hashes compare exact bytes, never a decoded string (ADR-RP-003):
+the file on disk is read and hashed as bytes, so a binary file is compared
+correctly and a CRLF/LF classification (below) is only ever attempted on
+bytes that round-trip through UTF-8 without loss.
+
+Before any per-path decision, the manifest as a whole is checked and can
+refuse the WHOLE run before anything is touched — never a per-path
+`preserved`, because a manifest is committed and therefore untrusted input:
+
+- any path (in `files`) that genuinely ESCAPES `dir` lexically — `..`, an
+  absolute path, or anything else that fails the same containment `upgrade`
+  applies on write. A path with more path segments than any path this
+  release installs (pinned by measurement, not by a guessed number:
+  `packages/cli/test/safe-path.test.ts` › "caps a path at more segments than
+  any path this release's own install set ships, measured not guessed")
+  deliberately does NOT take this branch, even though `resolveInside` itself
+  refuses it the identical way it refuses an escape: such a path can never
+  have been one this release owns regardless (checked below, and always
+  true, since nothing this release installs comes anywhere near that deep),
+  so it is reported the same honest, per-path `preserved` way as any other
+  unowned path — the escape check right below it still aborts the whole run
+  for a path that genuinely leaves `dir`, unweakened; a too-deep path is
+  refused by never reaching that check at all, and is never read, hashed, or
+  written either way. The two checks are independent safety nets, not
+  substitutes for each other. (Before this was measured and separated out, a
+  17-segment manifest key aborted the whole run — including a `--dry-run`
+  the operator could not then even preview — through a message that read
+  "resolves outside `dir`", which was simply false for a path that never left
+  it lexically at all.)
+- any path with a segment that NORMALISES to `.git` — case folded, a Windows
+  alternate-data-stream suffix (`name::$DATA`) stripped, then trailing dots
+  and spaces stripped, the two characters Windows itself silently drops when
+  it resolves a segment on disk — at ANY depth, not only as the first
+  segment, so `.GIT/hooks/pre-commit`, `.git./x`, `.git /x`,
+  `.git::$DATA/x` and `.claude/worktrees/w/.git/x` are refused exactly as
+  `.git/x` is. A manifest pairing such a path with its true on-disk hash
+  would otherwise make a confirmed run delete the repository's own git
+  state;
+- the same path listed under both `files` and `kept` — nothing this tool
+  ever writes produces that overlap (`planUpgrade` drops a `kept` path the
+  moment a release vouches for it as one of `files`), so a manifest that has
+  it is corrupt or hand-edited, and resolving the ambiguity silently (by
+  picking a winner) is exactly how a path ends up removed on one line of the
+  plan while the same plan reports it `preserved` on another.
+
+The manifest itself is read this same untrusting way before any of that: not
+through a plain lexical path, but through the identical per-segment
+`regularFileStatus` check every manifest-owned path gets below, so a
+symlinked `.claude` can neither make this command trust a manifest that
+actually lives outside the repository nor make it silently report
+`noManifest` for one that is only reachable through the link — either case
+refuses with an error naming the ancestor.
+
+Per manifest path, in order: a path with more segments than
+{@link MAX_PATH_SEGMENTS} (`safe-path.ts`) is `preserved`, reason naming the
+limit — checked BEFORE the path is resolved on disk at all, so it never
+reaches the escape check above and never aborts the run on that path's
+account (see the bullet above for why that is the right call, not a
+weakening). Then: a path that is not one of the EXACT paths this
+release actually installs (derived from the same install set `init`/`upgrade`
+use, never a hand-written list, and never merely a top-level directory such
+paths sit under) is `preserved`, reason `not a path this release installs` —
+drawing the boundary at a top-level segment rather than the exact path would
+let a manifest pair almost anything under an owned directory (`.claude/`,
+`.rig/`, `docs/`, `journal/`) with its true hash and have it removed, and it
+is also what makes a path spelled with a Windows alternate-data-stream suffix
+(`name::$DATA`) fall to this branch: the suffixed string is simply a
+different, unowned path, with no need for this command to know anything
+about ADS semantics. Absent on disk is `absent`. **Any ancestor directory
+down to the file itself that is a symlink — or any other non-regular entry —
+is `preserved`, reason `not a regular file inside the repository — a symlink,
+a directory (or other non-file entry) sitting where a plain file belongs, or
+an ancestor whose real path leaves the repository`; this branch is checked
+before any read, so a symlinked ancestor is never followed to reach the file
+and is left untouched either way.** The reason deliberately does not say
+"(symlink)" the way it once did — the SAME `'unsafe'` verdict also covers a
+plain directory sitting where the manifest expects a file, and a segment
+whose `realpath` escapes the repository regardless of how `lstat` classifies
+it, and naming a kind the code has not actually confirmed was the same
+mistake a hook-protection reason string made elsewhere on this page
+(security-lens advisory, RP-181 cycle 5). A hook file
+(`.claude/hooks/*.mjs`) that a wiring file this run is preserving as
+`wiring-modified` still references is `preserved`, reason `still referenced
+by <wiring path>, which was preserved as edited — removing this file would
+leave it pointing at nothing` — computed as a pass over the wiring files
+before the main per-path decision, because a wiring path sorts AFTER the hook
+files it references and a single alphabetical pass would otherwise decide a
+hook's own verdict before its wiring file's preserved status was known. Only
+once all of the above pass: bytes matching the recorded hash exactly is
+`remove`; bytes matching only after normalising line endings (CRLF/LF,
+checked both directions against the one recorded hash — this command holds no
+other record of the original bytes) is `preserved` with reason
+`line-endings-only`; any other mismatch is `preserved` with reason
+`modified`. A path under `manifest.kept` is always `preserved`, reason
+`user-owned (kept by init)`. `.claude/settings.json` and `.codex/hooks.json`
+use whole-file ownership only — no line-ending leniency, no `kept` check — so
+a hash match is `remove` and anything else is `preserved` with reason
+`wiring-modified — remove the rig's hook entries by hand`, naming the hook
+files the current wiring still references.
+
+`remove` is the plan's answer, not a guarantee: a `remove`-verdict path whose
+bytes no longer match the plan's recorded hash when `applyUninstall` actually
+reaches it — the confirmation prompt is exactly the window an edit can happen
+in — is skipped, never deleted, and reported in `--json`'s `preserved` array
+with reason `CHANGED_SINCE_PLANNING_REASON` ("changed since planning — its
+bytes no longer match what was planned to be removed"); the run keeps going
+with the rest. This is a different response from a SYMLINK appearing in the
+same window (`regularFileStatus`'s own re-check, immediately before the same
+call): that aborts the whole run, because it is the one shape suspicious
+enough that continuing is the wrong default, while an ordinary content edit
+is not.
+
+Every ancestor check above — `regularFileStatus`'s per-segment walk and its
+equivalent for the parent-cleanup below — makes TWO independent checks at
+every segment, not one. The first is classification: an intermediate segment
+is refused unless it is BOTH a real directory and not a symlink
+(`info.isSymbolicLink() || !info.isDirectory()`), and the final segment
+unless it is a plain file and not a symlink. The second, separate check does
+not read that classification at all: `realpath` is resolved on that same
+segment and the result must still fall inside the repository root. This
+second check is what makes the containment guarantee hold BY CONSTRUCTION for
+any reparse-point kind, including one `lstat` does not report as a symlink at
+all — `realpath` resolves the actual target regardless of how the entry
+classifies itself, so a segment whose real target lands outside the
+repository is refused whatever tag produced it.
+
+⚠ **What is, and is not, measured for a Windows directory junction
+specifically.** This repository's own development environment cannot create
+one. `packages/cli/test/uninstall.test.ts`'s junction tests, gated by
+`onlyOnWindows` and run only in the `windows-e2e` CI lane, measure that
+Node/libuv reports a junction through `Stats.isSymbolicLink()` on Windows the
+same way a real symlink is (the same behaviour this repository's own
+ancestor-escape fixtures already rely on elsewhere — e.g.
+`test/template/content-blind-revalidation.test.ts`'s
+`process.platform === 'win32' ? 'junction' : 'dir'` pattern) — that is, they
+exercise the FIRST (classification) check. They do not exercise the
+`realpath` check, and no claim is made that they do: that check needs no
+junction-specific measurement, because its containment property follows from
+what `realpath` does on any platform, independent of how the segment it is
+given happens to be classified.
+
+No manifest on disk is success with nothing to do (`planned`, `removed`,
+`absent` and `preserved` all empty, `manifestRemoved: false`), which is also
+part of what makes a repeat run idempotent. A manifest that exists but will
+not parse is refused outright: nothing is removed, exit 1.
+
+Removing anything is destructive, so it asks first: `--yes` on the command
+line answers up front, an interactive terminal is asked (`Remove these
+files?`, mirroring `upgrade`'s own `promptConfirm` and exit codes), and a
+non-interactive run without `--yes` refuses — exit 1, nothing removed, a
+message naming `--yes`. `--json` never prompts, on principle: it is read by a
+script, and a script blocking on a TTY question is a hang, not a safeguard, so
+without `--yes` it gets the same refusal, reported in its own payload
+(`manifestRemoved: false`, `error` naming `--yes`) instead of a stderr
+sentence. `--dry-run` needs no consent at all — it performs no removal
+regardless of `--yes`. `--detach` asks the identical way — it changes what
+happens to the manifest once cleanup finishes, not whether removing anything
+still needs a yes.
+
+`--json` keeps that one-object promise even for an error this command did not
+compose itself — a permission or filesystem failure (`EACCES`, `ENOTDIR`) hit
+while planning, not only its own refusals (a bad manifest, `.git`, a consent
+refusal). Such a failure is reported the same way: `manifestRemoved: false`
+and `error` carrying the underlying message, exit 1, never a stack trace with
+no payload at all. Without `--json`, an error of this second kind is still
+the unexpected-error diagnostic every other command here uses (a full trace),
+because that is the more useful answer for a human reading the terminal
+directly.
+
+`removed` is always what was **actually** deleted from disk — empty on a
+`--dry-run`, a consent refusal, or a plan that itself failed to compute, and
+on a partial failure the SUBSET that finished, never every `remove`-verdict
+path the plan named. `planned` is the plan's own answer regardless of outcome
+— every `remove`-verdict path, whether or not this run went on to remove it —
+so a caller can always tell "what would this have done" from "what did it
+do"; on `--dry-run` the two necessarily differ (`planned` non-empty, `removed`
+empty).
+
+The manifest is deleted last, and only once every `remove` action succeeded
+**and — outside `--detach` — nothing in the plan is `preserved`, nor turned
+out changed since planning.** A `preserved` action means the rig still owns
+bytes it did not remove — an edit, a CRLF checkout, wiring left in place, a
+hook a preserved wiring file still calls, a path outside the current install
+set, a file caught changed at apply time — and deleting the manifest anyway
+would discard the only evidence naming what it still owns, blinding a later
+`upgrade`. This holds even when every removal that WAS planned succeeded:
+nothing was removed at all (e.g. every file preserved by a CRLF checkout)
+keeps the manifest exactly as a partial failure does. On an actual failure
+the run stops where it is, keeps the manifest, and the payload carries
+`completed` (what finished), `remaining` (what a re-run still owes, including
+the path that failed) and `error`. `remaining` names the manifest itself too,
+appended last, whenever a clean re-run really would go on to delete it — that
+is, whenever nothing in the plan is `preserved` (or `--detach` was given,
+which always intends to); when something else IS preserved and this is not a
+detach, the manifest is never deleted regardless of this run's outcome, and
+`remaining` does not name it, since it is not something a re-run would
+actually do.
+
+### The manifest's own digest, and `--detach`
+
+The manifest's raw bytes are hashed at plan time and carried as
+`plan.manifestHash`. `applyUninstall` re-verifies it against that recorded
+value at two checkpoints, using the identical symlink-safe read every other
+manifest access gets:
+
+1. **Before the first removal.** A plan built from bytes that no longer exist
+   authorises nothing — on a mismatch here, NOTHING is removed at all, not
+   even a file a fresh plan would still agree to remove, and the payload
+   carries `error` naming the manifest, `completed: []`, `manifestRemoved:
+false`.
+2. **Immediately before the manifest's own deletion.** This is the window
+   every per-file removal before it could have used. On a mismatch here the
+   manifest is kept — never deleted — and the result is an honest partial one:
+   `completed` names every file that really was removed, `remaining` names
+   only the manifest, `error` names the mismatch.
+
+`--json`'s payload states the run's end state in one word, `outcome`. **One
+rule, no exceptions:** present on every completed run that is not a
+`--dry-run`, and absent on every `--dry-run` — including `noManifest`, where
+"nothing installed, nothing to do" only becomes an end state once a real
+(non-dry) run has acted, or declined to act, on it. Also absent whenever
+`error` is set — a hard failure is its own signal, not one of the three:
+
+| `outcome`     | when                                                                                                                                                | manifest                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `uninstalled` | not `--dry-run`; nothing in the plan was `preserved`, and nothing was caught changed since planning (also the `noManifest` case)                    | removed                                     |
+| `partial`     | not `--dry-run`; something was `preserved`, caught changed since planning, or a hook was protected only at apply time, and `--detach` was not given | kept                                        |
+| `detached`    | not `--dry-run`; `--detach` was given                                                                                                               | removed, regardless of what was `preserved` |
+| _(absent)_    | `--dry-run` — the plan was only shown, nothing was decided yet, whether or not a manifest exists                                                    | unchanged — nothing was touched             |
+
+A hook file (`.claude/hooks/*.mjs`) a wiring file still calls is preserved
+even when that protection is discovered only at APPLY time, not at plan
+time: `planUninstall`'s own per-file pass can only see the wiring file's
+state as it was when planning ran, so a wiring file still pristine then but
+edited — or replaced with a symlink — in the confirmation-prompt window is
+re-checked again, immediately before the first hook removal, using the SAME
+protection logic against current disk state.
+
+**Protection is not limited to the hook files a wiring file names directly.**
+A directly-wired hook (`.claude/hooks/guard-bash.mjs`) is not
+self-contained — it imports its own dependencies, some under
+`.claude/hooks/lib/` and some across into `.claude/scripts/`
+(`stop-flag.mjs`, `unattended-flag.mjs`, `lib/shell-tools.mjs`, …), and every
+one of those is itself an owned path a manifest can mark `remove` on its own
+account. Protecting only the directly-named hook and deleting what it
+imports leaves that hook dying at module resolution with exit 1 on every
+call the moment the wiring file's own protection kicks in — and since a
+`PreToolUse` hook that exits non-2 is non-blocking, the tool call proceeds
+anyway. So a protected hook's relative `.mjs` imports are walked to a fixed
+point, and everything found that this release owns is protected too, the
+same way and under the same wiring path.
+
+🔴 **This is MODULE-IMPORT protection specifically, not "everything a hook
+needs to keep working."** A hook that reads another path at RUNTIME rather
+than importing it — `inject-rules.mjs` reading `.claude/rules/`,
+`guard-subagent-model.mjs` reading `.claude/agents/` for a pinned-model
+override — is not covered by this walk, and this page does not claim it is:
+those paths are ordinary manifest entries, protected or removed on their own
+merits exactly as before this feature existed. Pinned, not merely asserted
+(`.claude/rules/invariants.md`, "State the limits — and test them" — a
+"Measured:" sentence with no test behind it is indistinguishable from a
+guess a month later): `test/template/hooks.test.ts` › "exits 0 and injects
+nothing when .claude/rules/ itself is missing entirely — the runtime-read
+gap the import walk does not cover" runs `inject-rules.mjs` against a planted
+tree with no `.claude/rules/` directory at all and confirms exit 0, empty
+stdout; `test/template/subagent-routing-hooks.test.ts` › "allows a call-site
+model override once .claude/agents/ itself is gone — the runtime-read gap
+the import walk does not cover" runs `guard-subagent-model.mjs` against the
+identical pinned-agent payload with and without `.claude/agents/` present
+and confirms the same dispatch goes from blocked (exit 2) to allowed (exit
+0). Both are existing, unrelated gaps this feature neither creates nor
+closes — the three Never-tier guards this feature's own motivating case
+names (`guard-bash`/`block-no-verify`/`guard-secret-file`) import every
+module they need rather than reading one at runtime, which is exactly why
+they stay self-contained and still block once this walk protects their
+imports.
+
+Every real READ this walk performs is gated by the same symlink-safe
+{@link regularFileStatus} check every other read on this page gets — not the
+purely lexical containment `onDisk` alone provides. A hook file swapped for a
+symlink to an unbounded or blocking special file, with the wiring that
+references it also modified, would otherwise make the walk's own `readFile`
+hang or exhaust the heap — reachable from nothing worse than `git clone`ing a
+hostile branch, before consent, since a symlink survives `git add`/commit as
+mode `120000`. The file stays protected either way (it was recorded before
+the read is attempted) — walked or not — the same "protecting too many is
+the safe direction" doctrine below covers exactly this case too.
+
+**An unreadable file also loses the ability to name what IT imports — and the
+walk protects the conservative superset rather than losing those too.** An
+earlier version of this stopped at "the symlinked file itself stays
+protected", on the reasoning that every dependency the walk needs to reach
+through `.claude/scripts/` is also imported by at least one OTHER,
+ordinarily-readable hook. That reasoning was checked against the shipped
+import graph and found false: `.claude/scripts/lib/secrets.mjs` has exactly
+ONE seeder (`guard-secret-file.mjs`), and `.claude/scripts/unattended-flag.mjs`
+has exactly one (`guard-rulebook.mjs`). Symlinking that one seeder — with the
+wiring referencing it also preserved — used to drop the dependency's
+protection entirely, measured end to end through a real `git commit` and a
+fresh `git clone`: the credential guard (`guard-secret-file.mjs`) went from
+blocking a credential write (exit 2) to dying at module resolution
+(`ERR_MODULE_NOT_FOUND`, exit 1, non-blocking for `PreToolUse`) once
+`secrets.mjs` was gone, wiring still in place, still claiming to enforce it.
+So an unreadable file now protects every owned `.mjs` path outright — the
+same move the `unsafe`-wiring branch below already makes one level up —
+rather than only the file itself. Pinned by
+`packages/cli/test/uninstall.test.ts` › "protects a dependency with only ONE
+seeder even when that exact seeder is symlinked — the credential guard's own
+import" and its `guard-rulebook.mjs`/`unattended-flag.mjs` sibling.
+
+⚠ **The sweep triggers on `regularFileStatus` returning `'unsafe'`
+specifically — never on `'absent'`, and that distinction is load-bearing.**
+An earlier version swept on any non-`'ok'` status, absence included:
+measured cost, deleting one ordinary hook file by hand (`block-no-verify.mjs`,
+with the wiring still naming it and that wiring itself preserved) turned 83
+planned removals into 40 planned / 43 preserved — an operator who simply
+turned a hook off, or whose `kept` `.claude/settings.json` names a hook from
+other tooling entirely (an ordinary thing for a file they own), could no
+longer complete a plain `uninstall` without `--detach` (code-lens and
+security-lens review, RP-181). Nothing is gained by sweeping on absence
+either: a file that is not there has no imports that can fail to resolve,
+because the module that would make them is itself gone — the sweep's whole
+justification (a file we cannot READ might import something we cannot
+discover) does not apply to a file that does not exist. Pinned by
+`packages/cli/test/uninstall.test.ts` › "deleting a hook file (not symlinking
+it) never triggers the superset sweep — an ordinary \"turned this hook off\"
+leaves the rest of the plan alone".
+
+⚠ **A file the sweep catches is reported honestly as unconfirmed, not as a
+traced reference.** See the fifth wording below.
+
+Bounded, but precisely: every REAL read happens at most once per owned path
+— a visited set is checked before reading, and only an import target already
+among the ~80 paths this release installs is ever opened, so a path this
+release does not ship is never read regardless of what a hostile file
+claims to import. The walk's transient queue length is a different question
+from read count, and is bounded by the number of import-shaped matches
+across files actually read, not by the size of the owned-path set — an
+irrelevant distinction at this release's real scale, pinned rather than
+merely asserted (`.claude/rules/invariants.md`, "State the limits — and test
+them") by `packages/cli/test/uninstall.test.ts` › "processes 400,000
+duplicate import matches to the same owned dependency in bounded time",
+stated here only so the claim matches what the code does rather than
+rounding up to "bounded by `|ownedPaths|`" in both places at once.
+
+A wiring file this command cannot safely READ at that point (itself a
+symlink, or reached through one) protects every hook path this release owns
+— matched structurally (any `.mjs` file under `.claude/hooks/`, at any
+depth, not only the top level), and then walked the identical way — not a
+computed subset: this command has no safe way to learn which hooks an unsafe
+entry actually references without reading through it, and protecting too
+many is the safe direction; protecting too few is the bug this closes.
+
+**A `kept` wiring file protects its hooks too, exactly as a `files` one
+does — this was not always true.** `init` records a pre-existing
+`.claude/settings.json` under `kept`, never `files`, when the repository
+already had one (the ordinary "starts from an existing repository" path).
+`planUninstall`'s own `kept` loop preserves such a path UNCONDITIONALLY, with
+no hash to compare — there is no "pristine, about to be removed" case for it
+to fall into, ever. The walk treats it accordingly: a `kept` wiring path's
+CURRENT hook references are always protected, never skipped on a hash match
+that does not exist for this purpose.
+
+⚠ **Known gap, pre-existing and not changed by this feature, the opposite
+lever from the three kinds above:** a wiring path named in NEITHER `files`
+nor `kept` at all is untracked, and `trackingFor`'s `{ tracked: false }`
+short-circuit means it protects nothing while ALSO never being removed
+itself — a manifest simply omitting `.codex/hooks.json`, for instance, still
+deletes the 6 hooks it wires while leaving that file on disk still
+referencing them, reported `outcome: "uninstalled"` (security-lens review,
+RP-181). Recorded here as a known limitation rather than chased in this
+change: every real `init`/`upgrade` run always records a wiring path in one
+of the two, so reaching this requires a manifest already missing an entry a
+real run never omits.
+
+⚠ **A second known gap, judged materially weaker than the hole this whole
+apply-time re-check exists to close, and deliberately left as a documented
+limitation rather than chased in this change (security-lens review, RP-181,
+cycle 8):** if a hook an EDITED (not `kept`) wiring file names is genuinely
+ABSENT at plan time, its single-seeded dependency (if it has one) is never
+swept — correctly, since an absent file has nothing to protect a dependency
+on behalf of — and gets an ordinary `remove` verdict. If the hook then
+REAPPEARS, rewired (a symlink, or a legitimate working file), in the
+confirmation-prompt window before apply, nothing re-examines it: the
+apply-time re-check only re-derives protection for a wiring path that was
+ITSELF a plan-time `remove` verdict, and an edited wiring file never is one.
+The dependency is removed on schedule. This needs write access to the
+working tree in the narrow window between the plan being shown and `--yes`
+being answered — materially weaker than the hole this feature closes, which
+needed only a symlink committed and surviving a fresh `git clone`, no
+post-plan write access at all. Closing it would mean re-deriving apply-time
+protection for every wiring path unconditionally rather than only ones
+already known to be plan-time `remove` verdicts — a wider change than this
+cycle's fix earns.
+
+The same END STATE needs no window and no second writer, and the comparison
+above does not bound it: delete a wired hook by hand, run `uninstall --yes`
+(the hook's single-seeded dependency is removed, correctly, since the hook
+that needed it is gone), then restore the hook from git. The restored hook
+fails at module resolution and exits 1, which a `PreToolUse` hook's caller
+reads as non-blocking, while the preserved wiring still names it. The run
+reports the hook under the wiring file's `still referenced:` list and under
+`absent`, and its dependency under `removed`; nothing in the report connects
+the three. Restoring a hook after an uninstall means restoring what it
+imports too.
+
+A hook is reported in `--json`'s `preserved` array with one of FIVE reason
+wordings, decided by `protectedFileReason` from whichever evidence for its
+protection actually exists — a genuine import trace beats mere caution
+beats a bare direct reference — and, for a directly-named hook, WHY the
+wiring file protecting it is itself preserved (its `WiringPreservedKind` —
+`'edited'`, `'kept'`, or `'unsafe'`, decided once per wiring path from the
+exact same distinction `planUninstall`/`applyUninstall` already compute,
+never assumed):
+
+- **Edited** — a `files`-tracked wiring file whose current bytes no longer
+  match the recorded hash: `still referenced by <wiring path>, which was
+preserved as edited — removing this file would leave it pointing at
+nothing`.
+- **Kept** — a `kept` wiring file `init` found already in place and never
+  took ownership of, so it was never "edited" by anyone this command has
+  evidence about: `still referenced by <wiring path>, which init found
+already in place and never took ownership of — removing this file would
+leave it pointing at nothing`.
+- **Unsafe** — the wiring file itself could not be safely read (a symlink,
+  or reached through one), so its content was never compared to anything:
+  `still referenced by <wiring path>, which could not be safely read (itself
+a symlink, or reached through one) — removing this file would leave it
+pointing at nothing`.
+- **Imported** — a file reached only through another protected file's own
+  import, regardless of that file's own `WiringPreservedKind` —
+  `.claude/scripts/lib/secrets.mjs` is never mentioned by
+  `.claude/settings.json` at ALL, only `.claude/hooks/guard-secret-file.mjs`
+  is — gets a wording that names the immediate importer instead:
+  `imported by <importer>, itself needed — directly or through further
+imports — by the still-preserved <wiring path>, which is why it survives
+too. Removing this file would leave <importer> unable to load`, so an
+  operator grepping the wiring file for the path they actually care about is
+  not left empty-handed.
+- **Unverified** — a path the conservative superset sweep protected without
+  ever tracing it, because SOME other file the walk needed to read to keep
+  tracing could not be read at all: `protected because <unreadable file>
+could not be read, so every file this release installs is being kept rather
+than risk removing one it needs`. Deliberately its own wording rather than
+  reusing Edited/Kept/Unsafe's "still referenced by" sentence — that sentence
+  claims a specific, confirmed connection this file does not have. Reusing
+  it made the wording that sounds MOST certain describe the files the
+  command is LEAST sure about: in one reproduced run, of 84 owned paths
+  under one preserved wiring file, roughly 7 were genuinely referenced by it
+  and roughly 30 were swept in by this precaution alone — including a TEST
+  FIXTURE
+  (`.agents/skills/new-invariant/guard-invariant.example.test.mjs`) no hook
+  could ever import — all reported with the identical, fully-confident
+  "still referenced by … edited" sentence (UX-lens and code-lens review,
+  RP-181).
+
+The first three exist because reusing the "edited" wording for a `kept` or
+`unsafe` wiring file told two contradictory stories about the same
+repository state in one report — `.claude/settings.json` → "user-owned (kept
+by init)", two lines away `guard-bash.mjs` → "preserved as **edited**",
+about a file nobody edited. None of the five wordings claims the immediate
+importer is itself directly named by the wiring file — only that the wiring
+file needs it, directly or transitively — which stays true at any import
+depth, including a dependency reached three hops down
+(`.claude/hooks/lib/edit-input.mjs` imports `.claude/scripts/git-env.mjs`,
+and neither is named in `.claude/settings.json` at all). A reader who needs
+the next hop finds it on the importer's OWN `preserved` entry. And the
+Unverified wording never claims a connection at all — it names the file
+whose own unreadability triggered the sweep, not a file this one supposedly
+needs, which is the one honest thing left to say about a path the walk
+never actually traced.
+
+**`--detach`** performs the identical safe cleanup — every check on this page
+applies exactly the same, including the two manifest-digest checkpoints and
+the apply-time hook re-check — and then removes the manifest anyway, even
+when something in the plan is `preserved` or was caught changed (or
+protected) at apply time. It never deletes a path this command would not
+otherwise have deleted on its own: `--detach` changes only whether the
+manifest survives a run that left something behind, never the per-path
+safety decisions above. There is no `--force` in this command, now or
+planned: nothing safety refuses to remove becomes removable by a flag. Every
+preserved, changed-since-planning, and apply-time-protected path is still
+reported in `preserved`, which under `--detach` doubles as the handover list
+— what the rig is leaving for the user to own from here.
+
+Removing a manifest-owned file also removes any parent directory that becomes
+empty as a result, walking up from that file and never past `dir` itself — with
+one named exception: `.rig/` is never removed, empty or not, because it holds
+evidence (claims, run state) this command has no ownership evidence for and
+therefore never inspects. The one manifest-owned path this repository's own
+`init` writes under `.rig/` (`.rig/revalidation.json`) is removed like any
+other file when its hash matches; the directory itself is not. This walk is
+symlink-safe the same way the removal itself is: each ancestor directory is
+checked one path SEGMENT at a time before it is read or emptied, never as one
+joined path handed to a single `lstat` — the OS resolves every intermediate
+segment of a multi-component path transparently and only leaves the FINAL one
+unfollowed, so a single `lstat` on the whole path would silently walk through
+an ancestor swapped for a symlink after the file's own removal to reach
+whatever it points at. The manifest's own removal gets the identical
+per-segment re-check — folded into the two digest checkpoints above, which
+both read the manifest through `regularFileStatus` before comparing bytes —
+for the same reason every other removal is re-checked rather than trusted
+from the plan.
+
+⚠ **Every re-check above narrows the window an attacker can exploit; none of
+them close it to zero.** Every check-then-act sequence over a filesystem —
+`regularFileStatus`'s recheck before each file removal, the per-file hash
+recheck immediately after it, the manifest-digest checkpoints, `upgrade`'s
+own equivalents — has an unavoidable instant between the check succeeding and
+the act (`unlink`, `readFile`) that immediately follows it, in which a
+concurrent process with write access to the same tree could still swap
+something in. Nothing in this command (or in `upgrade`) closes that instant;
+each check instead closes a SPECIFIC, larger hole that would otherwise be
+open the whole time between planning and applying, not the residual instant
+around its own act:
+
+- the per-segment ancestor walk closes a single `lstat` on a multi-segment
+  path being resolved through an INTERMEDIATE symlink the OS itself is
+  willing to follow;
+- the per-file hash recheck closes the whole confirmation-prompt window for a
+  plain content edit, which `regularFileStatus`'s type-only recheck cannot see
+  at all;
+- the two manifest-digest checkpoints close that same window for the
+  manifest's own bytes, at the two points — before anything starts, and
+  immediately before its own deletion — where trusting a stale value would
+  otherwise authorise or discard evidence for a plan that no longer describes
+  reality.
+
+Implementation: `packages/cli/src/commands/uninstall.ts` (`planUninstall`,
+`applyUninstall`), wired in `packages/cli/src/index.ts`. A successful removal
+prints a reminder that the change is unstaged (`git add -A`, then commit) —
+`uninstall` itself never touches git history. Pinned in
+`packages/cli/test/uninstall.test.ts` and `test/e2e/uninstall.test.ts`.
+
 ## Fixtures
 
 Examples, one per shape the contract names. They are illustrative payloads, not
@@ -793,5 +1354,89 @@ the degradation list is what those counters oblige:
   "counters": { "eligible": 7, "injected": 4, "budgetSkipped": 3, "invalid": 0 },
   "budget": { "limitBytes": 8192, "usedBytes": 7681 },
   "degradation": ["budget-skipped"]
+}
+```
+
+`uninstall --yes --json`, one file preserved for each of the three ordinary
+reasons this command reports, and two removed. Every removal that was PLANNED
+succeeded — `removed` equals `planned` — but the manifest is kept anyway: it
+still names bytes the rig did not remove, so deleting it would blind a later
+`upgrade` to every one of them:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "absent": [],
+  "preserved": [
+    { "path": ".claude/rules/invariants.md", "reason": "modified" },
+    { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
+    { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
+  ],
+  "manifestRemoved": false,
+  "outcome": "partial"
+}
+```
+
+The same two files, on a pristine rig with nothing else installed — nothing
+preserved, so this time the manifest is removed too:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "absent": [],
+  "preserved": [],
+  "manifestRemoved": true,
+  "outcome": "uninstalled"
+}
+```
+
+The first run had it failed partway through instead, on the second file —
+exit 1, the manifest kept, `removed` now the SUBSET that actually finished
+before the error rather than the full `planned` list, and no `outcome` at
+all: a hard failure is its own signal, not one of the three end states:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "removed": [".claude/hooks/block-no-verify.mjs"],
+  "absent": [],
+  "preserved": [
+    { "path": ".claude/rules/invariants.md", "reason": "modified" },
+    { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
+    { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
+  ],
+  "manifestRemoved": false,
+  "completed": [".claude/hooks/block-no-verify.mjs"],
+  "remaining": [".claude/settings.json"],
+  "error": "EPERM: operation not permitted, unlink '.claude/settings.json'"
+}
+```
+
+`uninstall --yes --detach --json` over the same preserved file as the first
+fixture: the manifest is removed anyway, `outcome` says so, and the preserved
+path is the handover list — the one thing left for the user to own:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "planned": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
+  "absent": [],
+  "preserved": [{ "path": ".claude/rules/invariants.md", "reason": "modified" }],
+  "manifestRemoved": true,
+  "outcome": "detached"
 }
 ```

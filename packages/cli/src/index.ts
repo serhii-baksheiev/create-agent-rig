@@ -7,6 +7,22 @@ import { InitError, initFileContents, initProject, planInit } from './commands/i
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
+import {
+  CHANGED_SINCE_PLANNING_REASON,
+  UninstallError,
+  applyUninstall,
+  isUnverifiedReason,
+  planUninstall,
+  protectedFileReason,
+} from './commands/uninstall.js';
+import type {
+  ApplyUninstallResult,
+  UninstallAction,
+  UninstallOutcome,
+  UninstallPlan,
+  UninstallVerdict,
+  WiringPreservedKind,
+} from './commands/uninstall.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest, sha256 } from './lib/manifest.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
@@ -46,6 +62,30 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
   (~/.config/create-agent-rig/subsystems.json; %APPDATA% on Windows) from the
   one declared root. Performs the --version --json handshake first and refuses
   a foreign contract major with exit 4 before writing anything.
+
+Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]
+  Remove what a rig installed from [dir] (default: the current directory) —
+  only files whose bytes on disk still match what the manifest recorded, are
+  still one of the exact paths this release installs, and still match right
+  up to the moment each one is removed; anything under .git is refused
+  outright, whatever hash a manifest pairs it with. Everything else (edited,
+  foreign, deleted already, kept by init, changed since the plan was shown, or
+  not a path this release owns) is left in place and reported. The manifest
+  is removed last, and only once every removal succeeded AND nothing was
+  preserved — a preserved path means the rig still owns bytes it did not
+  remove, so the evidence naming them stays; a failed run also keeps it, so a
+  re-run picks up where it stopped. --detach removes the manifest anyway,
+  after the same safe cleanup, leaving every preserved path for you and
+  printing the full handover list — it never forces away a conflicting or
+  modified file. --json's payload names which of three outcomes a run
+  reached: "uninstalled" (clean), "partial" (something kept, manifest stays),
+  "detached" (--detach: manifest gone, a handover list left behind). Prints
+  the plan, then asks before removing anything: --yes answers up front
+  (required off a terminal, and always required with --json, which never
+  prompts) — the same consent rule applies to --detach. --json prints one
+  JSON object and nothing else on stdout (see docs/command-contract.md);
+  without it, uninstall reports in prose like init and upgrade. Idempotent: a
+  repeat run finds no manifest and does nothing, exit 0.
 
 Also: create-agent-rig memory <doctor|load> [args…]
   Run a Memory verb through the registered executable: the --version --json
@@ -361,6 +401,419 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   return 0;
 }
 
+const UNINSTALL_MARK: Record<UninstallVerdict, string> = {
+  remove: '-',
+  absent: '·',
+  preserved: '!',
+};
+
+interface UninstallPayload {
+  schemaVersion: 1;
+  command: 'uninstall';
+  dryRun: boolean;
+  /** What the plan would remove — every `remove`-verdict path, whether or not this run actually removed it. */
+  planned: string[];
+  /** What was actually deleted from disk. Always `[]` on a dry run, a refusal, or when planning itself failed. */
+  removed: string[];
+  absent: string[];
+  preserved: Array<{ path: string; reason: string }>;
+  manifestRemoved: boolean;
+  completed?: string[];
+  remaining?: string[];
+  error?: string;
+  /** Which of `uninstalled` / `partial` / `detached` this run reached — absent exactly when `error` is present. See `docs/command-contract.md`, "## uninstall (RP-181)". */
+  outcome?: UninstallOutcome;
+}
+
+/**
+ * `removed` is always what actually happened — `applyUninstall`'s own result
+ * — never a re-derivation of the plan: empty on a dry run, a consent refusal,
+ * or a plan that itself failed, and on a partial failure the SUBSET that
+ * finished, not every `remove`-verdict path the plan named. `planned` is the
+ * plan's own answer regardless of outcome, so a caller can tell "what would
+ * this have done" from "what did it do" even when they differ.
+ *
+ * `changedSincePlanning` and `protectedHooksAtApply` paths are both folded
+ * into `preserved` — the first with reason
+ * {@link CHANGED_SINCE_PLANNING_REASON}, the second worded by
+ * {@link protectedFileReason} — the SAME function `planUninstall` itself
+ * calls to word a hook it protects at PLAN time, so a reader cannot tell
+ * which pass discovered the protection from the wording alone, and picking
+ * the right one of the four underlying strings never happens twice: a
+ * directly-named hook's wording depends on `entry.wiringKind` (a `kept`
+ * wiring file's hook was never "preserved as edited", and reusing that
+ * wording told two contradictory stories about the same file), a
+ * transitively-imported one on `entry.importedBy`, and one protected only by
+ * the conservative superset sweep — never traced at all — on
+ * `entry.unverifiedBecause`, which names the file whose own unreadability
+ * triggered the sweep rather than claiming a connection this command never
+ * confirmed. Neither `changedSincePlanning` nor
+ * `protectedHooksAtApply` is in `plan.actions` (both were `remove` at plan
+ * time and only discovered otherwise at apply time), but both are exactly as
+ * un-removed as any other preserved path, and a caller reading `preserved`
+ * for "what did this run leave behind" must see them there too, not in a
+ * third and fourth, easy-to-miss list.
+ *
+ * `outcome` is passed straight through from `applyUninstall`'s own result:
+ * present on every completed, non-dry-run call, absent on `--dry-run` and on
+ * a hard failure alike — this function never invents or infers it.
+ */
+function uninstallPayload(
+  dryRun: boolean,
+  actions: readonly UninstallAction[],
+  removed: readonly string[],
+  applied?: {
+    manifestRemoved: boolean;
+    completed?: string[];
+    remaining?: string[];
+    error?: string;
+    changedSincePlanning?: string[];
+    protectedHooksAtApply?: Array<{
+      rel: string;
+      wiringRel: string;
+      wiringKind: WiringPreservedKind;
+      importedBy?: string;
+      unverifiedBecause?: string;
+    }>;
+    outcome?: UninstallOutcome;
+  },
+): UninstallPayload {
+  const of = (verdict: UninstallVerdict) =>
+    actions.filter((a) => a.verdict === verdict).map((a) => a.rel);
+  const payload: UninstallPayload = {
+    schemaVersion: 1,
+    command: 'uninstall',
+    dryRun,
+    planned: of('remove'),
+    removed: [...removed],
+    absent: of('absent'),
+    preserved: [
+      ...actions
+        .filter((a) => a.verdict === 'preserved')
+        .map((a) => ({ path: a.rel, reason: a.reason ?? '' })),
+      ...(applied?.changedSincePlanning ?? []).map((path) => ({
+        path,
+        reason: CHANGED_SINCE_PLANNING_REASON,
+      })),
+      ...(applied?.protectedHooksAtApply ?? []).map(
+        ({ rel, wiringRel, wiringKind, importedBy, unverifiedBecause }) => ({
+          path: rel,
+          reason: protectedFileReason(wiringRel, wiringKind, importedBy, unverifiedBecause),
+        }),
+      ),
+    ],
+    manifestRemoved: applied?.manifestRemoved ?? false,
+  };
+  if (applied?.completed !== undefined) payload.completed = applied.completed;
+  if (applied?.remaining !== undefined) payload.remaining = applied.remaining;
+  if (applied?.error !== undefined) payload.error = applied.error;
+  if (applied?.outcome !== undefined) payload.outcome = applied.outcome;
+  return payload;
+}
+
+function renderUninstallPlan(repoDir: string, plan: UninstallPlan): string {
+  const of = (verdict: UninstallVerdict) => plan.actions.filter((a) => a.verdict === verdict);
+  const lines: string[] = [`agent-rig uninstall — ${repoDir}`, ''];
+  for (const verdict of ['remove', 'preserved', 'absent'] as const) {
+    for (const action of of(verdict)) {
+      lines.push(
+        `  ${UNINSTALL_MARK[verdict]} ${action.rel}` +
+          (action.reason ? `  — ${action.reason}` : ''),
+      );
+    }
+  }
+  lines.push(
+    '',
+    `  ${of('remove').length} to remove, ${of('preserved').length} preserved, ` +
+      `${of('absent').length} already gone`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+async function runUninstall(rawArgs: string[]): Promise<number> {
+  let positionals: string[];
+  let values: {
+    'dry-run'?: boolean;
+    json?: boolean;
+    yes?: boolean;
+    detach?: boolean;
+    'no-color'?: boolean;
+  };
+  try {
+    ({ positionals, values } = parseArgs({
+      args: rawArgs,
+      options: {
+        'dry-run': { type: 'boolean' },
+        json: { type: 'boolean' },
+        yes: { type: 'boolean' },
+        detach: { type: 'boolean' },
+        // `--no-color` for the same reason it is accepted on `init` and
+        // `upgrade`: USAGE offers it without scoping it to one command. It
+        // has no observable effect here specifically — uninstall's report
+        // never uses the colour palette in the first place — accepted only
+        // so the flag never produces an "unknown option" error a reader of
+        // USAGE would not expect.
+        'no-color': { type: 'boolean' },
+      },
+      allowPositionals: true,
+    }));
+  } catch (error) {
+    process.stderr.write(`${(error as Error).message}\n\n${USAGE}\n`);
+    return 1;
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(`${USAGE}\n`);
+    return 1;
+  }
+  const repoDir = path.resolve(process.cwd(), positionals[0] ?? '.');
+  const dryRun = values['dry-run'] === true;
+  const json = values.json === true;
+  const yes = values.yes === true;
+  const detach = values.detach === true;
+
+  let plan: UninstallPlan;
+  try {
+    plan = await planUninstall(repoDir);
+  } catch (error) {
+    // `UninstallError` is a message this command composed on purpose — the
+    // usual case. Anything else (EACCES, ENOTDIR, a permission the caller did
+    // not expect) is unplanned, but `--json` promises one JSON object and
+    // nothing else on stdout regardless of which kind it is: a stack trace on
+    // stderr with no payload at all breaks that promise for a caller who only
+    // ever reads stdout. Off `--json`, the trace is still the right
+    // diagnostic, so it is rethrown to `main()`'s own handler unchanged.
+    const message = error instanceof Error ? error.message : String(error);
+    if (json) {
+      process.stdout.write(
+        `${JSON.stringify(uninstallPayload(dryRun, [], [], { manifestRemoved: false, error: message }))}\n`,
+      );
+      return 1;
+    }
+    if (error instanceof UninstallError) {
+      process.stderr.write(`${message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+
+  if (plan.noManifest) {
+    if (json) {
+      // `outcome` names an END STATE a real run reached; `--dry-run` never
+      // reaches one, even here — "nothing installed" is an end state only
+      // once a real (non-dry) run has acted, or declined to act, on it.
+      process.stdout.write(
+        `${JSON.stringify(
+          uninstallPayload(
+            dryRun,
+            [],
+            [],
+            dryRun
+              ? { manifestRemoved: false }
+              : { manifestRemoved: false, outcome: 'uninstalled' },
+          ),
+        )}\n`,
+      );
+    } else {
+      process.stdout.write(`No rig manifest found in ${repoDir} — nothing to uninstall.\n`);
+    }
+    return 0;
+  }
+
+  // The plan is the review step, so it is shown before anything is decided —
+  // in both output modes, and before the consent question below, not after.
+  if (!json) process.stdout.write(renderUninstallPlan(repoDir, plan));
+
+  if (dryRun) {
+    if (json) {
+      process.stdout.write(`${JSON.stringify(uninstallPayload(true, plan.actions, []))}\n`);
+    } else {
+      process.stdout.write('\nDry run — nothing removed.\n');
+    }
+    return 0;
+  }
+
+  // Consent, never guessed, least of all when the answer deletes files — the
+  // same shape `upgrade` asks before it writes: `--yes` up front, a prompt on
+  // a terminal, and an outright refusal off one. `--json` stays
+  // non-interactive on principle, the same reason `--version --json` and
+  // every other JSON payload here never prompts: it is read by a script, and
+  // a script blocking on a TTY question is a hang, not a safeguard. So
+  // without `--yes` it gets the same refusal a non-interactive run gets,
+  // reported in its own shape instead of a stderr sentence.
+  const isInteractive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+  if (!yes) {
+    if (json || !isInteractive) {
+      const message = 'Refusing to remove files without --yes in a non-interactive run.';
+      if (json) {
+        process.stdout.write(
+          `${JSON.stringify(
+            uninstallPayload(false, plan.actions, [], { manifestRemoved: false, error: message }),
+          )}\n`,
+        );
+      } else {
+        process.stderr.write(
+          `${message} Re-run with --yes once the plan above is what you want ` +
+            '(or --dry-run to keep looking).\n',
+        );
+      }
+      return 1;
+    }
+    const confirmed = await promptConfirm('\nRemove these files?', {
+      input: process.stdin,
+      output: process.stderr,
+      isInteractive,
+    });
+    if (!confirmed) {
+      process.stdout.write('Nothing removed.\n');
+      return 0;
+    }
+  }
+
+  let result: ApplyUninstallResult;
+  try {
+    result = await applyUninstall(repoDir, plan, { detach });
+  } catch (error) {
+    // Mirrors the `planUninstall` try/catch above, for the same reason: the
+    // apply-time hook-protection re-check added in the same change as this
+    // comment reads the filesystem again (`regularFileStatus`, `readFile`)
+    // OUTSIDE of `applyUninstall`'s own per-file try/catch, so an EACCES or
+    // ENOTDIR surfacing from THAT read must not escape as a bare stack trace
+    // with no JSON on stdout — `--json` promises exactly one object there
+    // regardless of which kind of failure this is.
+    const message = error instanceof Error ? error.message : String(error);
+    if (json) {
+      // `removed: []` here is not a guess: EVERY call inside `applyUninstall`
+      // that can throw uncaught (`rigOwnedPaths`, the apply-time
+      // `protectedHooksFor` pass) runs strictly before its own removal loop
+      // starts — that loop wraps every per-file removal in its OWN
+      // try/catch and always RETURNS a result (with the real `removed` so
+      // far) rather than throwing. So an exception reaching this `catch` can
+      // only mean nothing was removed yet. This is a structural property of
+      // `applyUninstall`'s own control flow (see the comment immediately
+      // above its removal loop), not backed by a test of the hypothetical
+      // case, which does not exist today — if a future edit adds a
+      // throwing call INSIDE or AFTER that loop, this array would start
+      // lying, silently, exactly here.
+      process.stdout.write(
+        `${JSON.stringify(
+          uninstallPayload(false, plan.actions, [], { manifestRemoved: false, error: message }),
+        )}\n`,
+      );
+      return 1;
+    }
+    if (error instanceof UninstallError) {
+      process.stderr.write(`${message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+
+  if (result.error !== undefined) {
+    if (json) {
+      process.stdout.write(
+        `${JSON.stringify(
+          uninstallPayload(false, plan.actions, result.removed, {
+            manifestRemoved: false,
+            completed: result.completed,
+            remaining: result.remaining,
+            error: result.error,
+            changedSincePlanning: result.changedSincePlanning,
+            protectedHooksAtApply: result.protectedHooksAtApply,
+          }),
+        )}\n`,
+      );
+    } else {
+      process.stderr.write(
+        `\nStopped after a failure: ${result.error}\n` +
+          `  completed: ${(result.completed ?? []).join(', ') || '(none)'}\n` +
+          `  remaining: ${(result.remaining ?? []).join(', ') || '(none)'}\n` +
+          `The manifest was kept — re-run to continue.\n`,
+      );
+    }
+    return 1;
+  }
+
+  if (json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        uninstallPayload(false, plan.actions, result.removed, {
+          manifestRemoved: result.manifestRemoved,
+          changedSincePlanning: result.changedSincePlanning,
+          protectedHooksAtApply: result.protectedHooksAtApply,
+          outcome: result.outcome,
+        }),
+      )}\n`,
+    );
+    return 0;
+  }
+
+  // The three outcomes `--json` names structurally are said in prose here
+  // too, not only encoded in a field: `preserved` below is the IDENTICAL
+  // list `uninstallPayload` already built for `--json` above (not a second,
+  // separately-maintained computation of the same thing) — the plan's own
+  // `preserved` verdicts, any path caught changed only at apply time, and
+  // any hook a wiring file's OWN apply-time edit or symlink just protected,
+  // each with the reason that pass recorded. All three are equally "left
+  // behind", and a report naming only one kind — or naming a count instead
+  // of the paths themselves — would read as if the others never happened, or
+  // leave an operator with nothing to grep for once the count passes a
+  // handful.
+  const { preserved } = uninstallPayload(false, plan.actions, result.removed, {
+    manifestRemoved: result.manifestRemoved,
+    changedSincePlanning: result.changedSincePlanning,
+    protectedHooksAtApply: result.protectedHooksAtApply,
+    outcome: result.outcome,
+  });
+  const preservedList = (): string =>
+    preserved.map(({ path, reason }) => `  ! ${path}${reason ? ` — ${reason}` : ''}`).join('\n');
+  // A roll-up, on top of the per-line reasons, distinguishing what the
+  // command actually traced from what it kept only as a precaution — at
+  // the scale a symlinked, single-seeded hook dependency can now produce
+  // (dozens of paths swept in by caution alone), one line naming the split
+  // does more for an operator than reading every reason individually
+  // (UX-lens review, RP-181, carried since cycle 5 as the roll-up advisory).
+  const unverifiedCount = preserved.filter((p) => isUnverifiedReason(p.reason)).length;
+  const rollup =
+    unverifiedCount > 0
+      ? `  (${preserved.length - unverifiedCount} genuinely referenced or imported; ` +
+        `${unverifiedCount} kept only as a precaution — something needed to verify them ` +
+        `could not be read)\n`
+      : '';
+  if (result.outcome === 'detached') {
+    process.stdout.write(
+      `\nDetached: removed ${result.removed.length} files and the manifest.\n` +
+        (preserved.length > 0
+          ? `${preserved.length} file(s) left behind — they are yours now, uninstall no longer owns them:\n` +
+            rollup +
+            `${preservedList()}\n`
+          : ''),
+    );
+  } else if (result.manifestRemoved) {
+    process.stdout.write(`\nRemoved ${result.removed.length} files and the manifest.\n`);
+  } else {
+    // Every removal that was planned succeeded, but something else was
+    // preserved (in the plan, or discovered changed at apply time) — the rig
+    // still owns bytes it did not remove, so the manifest naming them was
+    // kept on purpose, not left behind by a failure. Named, not only
+    // counted: a run with the now-larger preserved count a transitive-import
+    // walk can produce still needs to be actionable from this one line of
+    // output, without re-running `--json` just to learn what survived.
+    process.stdout.write(
+      `\nRemoved ${result.removed.length} files. ${preserved.length} preserved — the manifest ` +
+        `was kept: the rig is still installed.\n${rollup}${preservedList()}\n`,
+    );
+  }
+  // A removal is a working-tree change, not a commit — uninstall never
+  // touches git history itself (docs/command-contract.md, "## uninstall
+  // (RP-181)"), so nothing here is recorded until a run stages and commits
+  // it. Said only when something was actually deleted; a preserved-only or
+  // no-op run leaves nothing to stage.
+  if (result.removed.length > 0) {
+    process.stdout.write('Run `git add -A` and commit to record the removal.\n');
+  }
+  return 0;
+}
+
 async function main(): Promise<number> {
   if (process.argv[2] === 'init') {
     return runInit(process.argv.slice(3));
@@ -370,6 +823,9 @@ async function main(): Promise<number> {
   }
   if (process.argv[2] === 'upgrade') {
     return runUpgrade(process.argv.slice(3));
+  }
+  if (process.argv[2] === 'uninstall') {
+    return runUninstall(process.argv.slice(3));
   }
   if (process.argv[2] === 'memory') {
     // The consumer path of the RP-19 handshake: manifest → `--version --json`
@@ -449,7 +905,8 @@ main()
     if (
       error instanceof CreateError ||
       error instanceof InitError ||
-      error instanceof UpgradeError
+      error instanceof UpgradeError ||
+      error instanceof UninstallError
     ) {
       process.stderr.write(`${error.message}\n`);
     } else {

@@ -128,6 +128,49 @@ describe('guard-subagent-model hook (a call-site model never overrides a pinned 
     expect(result.code).toBe(0);
   });
 
+  // `docs/command-contract.md` (RP-181, "## uninstall") names this exactly as
+  // the limit that makes the import-walk's transitive hook-dependency
+  // protection honest: that protection covers what a hook file IMPORTS, not
+  // what it reads at runtime — a preserved, correctly-wired
+  // `guard-subagent-model.mjs` with `.claude/agents/` itself removed (e.g. by
+  // `uninstall`, or by hand) can no longer find the pin it would otherwise
+  // enforce, and ALLOWS a call-site model override it would have BLOCKED with
+  // the same agents directory in place. Uses its own isolated fixture, not
+  // the shared `root` above, since this test destroys `.claude/agents/`
+  // entirely and every other test in this file depends on it surviving.
+  it('allows a call-site model override once .claude/agents/ itself is gone — the runtime-read gap the import walk does not cover', async () => {
+    const isolated = await mkdtemp(path.join(tmpdir(), 'guard-subagent-model-no-agents-'));
+    try {
+      const agents = path.join(isolated, '.claude', 'agents');
+      await mkdir(agents, { recursive: true });
+      await writeFile(
+        path.join(agents, 'code-reviewer.md'),
+        agentFile('code-reviewer', ['model: claude-opus-5', 'effort: high']),
+      );
+
+      const dispatchOverride = dispatch({ subagent_type: 'code-reviewer', model: 'haiku' });
+      const withAgents = await runHookRaw(
+        'guard-subagent-model.mjs',
+        JSON.stringify(dispatchOverride),
+        { ...process.env, CLAUDE_PROJECT_DIR: isolated },
+      );
+      // sanity: the SAME payload really is blocked while the pin exists —
+      // otherwise this test would pass vacuously for the wrong reason
+      expect(withAgents.code).toBe(2);
+
+      await removeFixture(agents);
+
+      const withoutAgents = await runHookRaw(
+        'guard-subagent-model.mjs',
+        JSON.stringify(dispatchOverride),
+        { ...process.env, CLAUDE_PROJECT_DIR: isolated },
+      );
+      expect(withoutAgents.code).toBe(0);
+    } finally {
+      await removeFixture(isolated);
+    }
+  });
+
   it.each<[string, Record<string, unknown>]>([
     ['an ad-hoc subagent with no subagent_type', { model: 'haiku' }],
     ['the built-in general-purpose agent', { subagent_type: 'general-purpose', model: 'haiku' }],
