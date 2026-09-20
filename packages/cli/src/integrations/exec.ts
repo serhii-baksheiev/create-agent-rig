@@ -56,7 +56,12 @@
  * refuses a `cwd` that resolves inside `repoDir` (gate cycle 1, blocker 4).
  * Omitted, the child's `cwd` defaults to a FRESH, PER-RUN temporary
  * directory created under `os.tmpdir()` (or an injectable `tempRoot`) with
- * mode `0700`, removed once the run ends on every exit path — rather than
+ * mode `0700`; this module ALWAYS attempts removal on every exit path, but
+ * the attempt can fail (measured on win32 — see limit 10) and the result
+ * then carries `cwdCleanup: 'left-behind'` instead of removal actually
+ * having happened (gate cycle 4, blocker 6: this sentence used to claim
+ * unconditional removal, contradicted by {@link removeOwnedCwd} in this same
+ * file) — rather than
  * `os.tmpdir()` itself, a shared, world-writable directory a spawned tool's
  * own `cwd`-relative configuration lookup (an `.npmrc` beside a
  * `package.json`) could otherwise be poisoned through (gate cycle 2
@@ -216,12 +221,48 @@
  *    This is not tested against a real such filesystem (none is available
  *    in this suite); the pure `identityContainment` unit tests exercise the
  *    `'unknown'` branch directly via an injected `stat` function instead.
+ *    A dead or unresponsive `\\server\share` `PATH` entry is not merely
+ *    "unavailable" the way a missing directory is: `realpathSync`/`statSync`
+ *    against it can block for an OS-level SMB connection timeout (commonly
+ *    tens of seconds) rather than failing fast, making the whole walk — not
+ *    just that one entry — as slow as the slowest dead server on `PATH`.
  * 12. `argv` elements passed to `boundedRun` are NOT validated or sanitized
  *    in any way — see "LIMIT: argv elements are passed through completely
  *    unvalidated — a caller must not rely on this module to sanitize its
  *    own arguments". This module's own guarantees are about the PROCESS
  *    (deadline, output cap, cwd, env), never about the caller's own
  *    arguments.
+ * 13. Supplying a `realpath` or `stat` option is a CALLER DUTY that can
+ *    surrender containment entirely — these are trust boundaries, not
+ *    conveniences. A caller-supplied `stat` that answers `null` for
+ *    everything (deferring wholly to the string check) combined with a
+ *    repository given by a spelling the string check cannot canonicalise
+ *    (a UNC admin-share path) resolves an in-repo tool `ok` — measured via
+ *    `stat: () => null` plus a UNC `repoDir` in this suite. Both injected
+ *    functions are also called WITHOUT a `try`/`catch` around each call site
+ *    (gate cycle 4 advisory): a caller-supplied function that THROWS
+ *    propagates out of `resolveTool`/`boundedRun` rather than being treated
+ *    as "unavailable", which is a totality gap for an otherwise-total
+ *    function family.
+ * 14. A hardlink OUTSIDE the repository to a file whose CONTENT lives inside
+ *    it resolves `ok` — the hardlink's own path is genuinely outside, and
+ *    this module's containment checks are path-based (string or
+ *    directory-entry identity), never content-based. A hardlink shares the
+ *    same inode as its target, so `resolveTool`'s `PATH`-entry-level
+ *    identity check, which only ever `stat`s ANCESTOR directories rather
+ *    than every other name pointing at the same inode, does not see it as
+ *    "the same file as something inside the repo" — only as "a path outside
+ *    the repository", which it genuinely is.
+ * 15. Removing `boundedRun`'s own per-run `cwd` ({@link removeOwnedCwd}) is
+ *    NOT bounded by `timeoutMs` — it runs after the child has already been
+ *    classified, on its own, unbounded-by-any-deadline recursive `rm` (plus
+ *    one bounded 50ms-backoff retry). Measured: an 8000-file directory tree
+ *    took ~6.8s to remove on this suite's own host — proportional to what
+ *    was created under it, not to the run's own deadline. A directory this
+ *    module leaves behind (`cwdCleanup: 'left-behind'`, limit 10) also has
+ *    no reaper: nothing in this module, or elsewhere in this codebase,
+ *    later retries or garbage-collects it — it is left exactly where
+ *    `os.tmpdir()` (or the caller's `tempRoot`) put it, indefinitely.
  */
 import { execFile } from 'node:child_process';
 import { readdirSync, realpathSync, statSync } from 'node:fs';
@@ -520,6 +561,42 @@ function statIdentityOrNull(target: string): StatIdentity | null {
  * partway through the walk.
  */
 /**
+ * Whether `p` is already one of the three ROOTED floors this walk must never
+ * step past: the POSIX root (`/`), a win32 drive root (`C:\`), or a UNC share
+ * root (`\\server\share`, with or without a trailing separator). Once here,
+ * {@link stepUpOnePathSegment} returns `p` unchanged rather than stepping
+ * further — there is no path-segment "above" a volume or a share, and a bare
+ * drive designator (`C:`, no trailing separator) or a bare UNC prefix
+ * (`\\server`, no share) is NOT one of these floors: it is a Windows
+ * PROCESS-RELATIVE notion (the cwd on that drive), not a filesystem root, and
+ * stepping there is exactly gate cycle 4's blocker 1 (see
+ * {@link stepUpOnePathSegment}'s own comment).
+ */
+function isRootFloor(p: string): boolean {
+  if (p === '/') return true;
+  if (/^[A-Za-z]:\\$/.test(p)) return true;
+  if (/^\\\\[^\\]+\\[^\\]+\\?$/.test(p)) return true;
+  return false;
+}
+
+/**
+ * A host-independent (not `path.isAbsolute`, which is HOST-bound — see this
+ * function's own callers) check for whether `p` is rooted at all, in EITHER
+ * flavour: a leading `/` (POSIX), a drive letter followed by a separator
+ * (`C:\` or `C:/`), or a UNC prefix (`\\server…`). This is the second,
+ * defensive layer gate cycle 4's blocker 1 asks for: even if
+ * {@link stepUpOnePathSegment} were ever wrong again, {@link identityContainment}
+ * refuses to `stat` a step this function does not recognise as rooted, rather
+ * than trusting the stepper alone.
+ */
+function looksHostAbsolute(p: string): boolean {
+  if (p.startsWith('/')) return true;
+  if (/^[A-Za-z]:[\\/]/.test(p)) return true;
+  if (/^\\\\[^\\]+/.test(p)) return true;
+  return false;
+}
+
+/**
  * One step up the path, accepting EITHER separator (`/` or `\`) regardless
  * of the host — `path.dirname` alone uses the HOST's own flavour
  * (`path.posix` on Linux, which does not treat a backslash as a separator
@@ -528,8 +605,18 @@ function statIdentityOrNull(target: string): StatIdentity | null {
  * pin). On the real filesystem calls this module makes elsewhere, the
  * strings are always host-native anyway, so this is never less correct
  * than the host's own `dirname` there — only more so when the two disagree.
+ *
+ * NEVER yields a non-rooted path (gate cycle 4, blocker 1): a bare drive
+ * designator (`"C:"`, no trailing separator) is not a filesystem root at
+ * all — Windows resolves it as the PROCESS's own current directory on that
+ * drive, so a walk that ever `stat`s it answers with whatever directory the
+ * process happens to be standing in, not the volume. Once already at a
+ * recognised floor ({@link isRootFloor} — `/`, `C:\`, or a UNC share root),
+ * this returns the SAME string unchanged rather than stepping past it: there
+ * is nothing above a volume or a share to ascend to.
  */
-function stepUpOnePathSegment(target: string): string {
+export function stepUpOnePathSegment(target: string): string {
+  if (isRootFloor(target)) return target; // already at a recognised floor: go no further
   const withoutTrailingSeparators = target.replace(/[\\/]+$/, '');
   const lastSeparator = Math.max(
     withoutTrailingSeparators.lastIndexOf('/'),
@@ -537,7 +624,12 @@ function stepUpOnePathSegment(target: string): string {
   );
   if (lastSeparator < 0) return target; // no separator left at all: cannot ascend further
   if (lastSeparator === 0) return withoutTrailingSeparators.slice(0, 1); // a bare POSIX root ("/…")
-  return withoutTrailingSeparators.slice(0, lastSeparator);
+  let parent = withoutTrailingSeparators.slice(0, lastSeparator);
+  // A bare drive designator ("C:") is not a rooted path (see this function's
+  // own comment) — normalise it to the true drive root ("C:\") instead of
+  // ever stating or stepping past it.
+  if (/^[A-Za-z]:$/.test(parent)) parent = `${parent}\\`;
+  return parent;
 }
 
 export function identityContainment(
@@ -564,6 +656,11 @@ export function identityContainment(
     }
     const parent = stepUpOnePathSegment(current);
     if (parent === current) break; // reached the top of the path; cannot ascend further
+    // Defensive second layer (gate cycle 4, blocker 1): even if the stepper
+    // above were ever wrong again, this walk refuses to `stat` a step it
+    // cannot itself recognise as host-rooted — ending the walk here (as
+    // "no further match found") rather than trusting the stepper alone.
+    if (!looksHostAbsolute(parent)) break;
     current = parent;
     identity = stat(current);
   }
@@ -614,6 +711,25 @@ function realpathOrNull(target: string): string | null {
 }
 
 /**
+ * Wraps a canonicalisation/identity function — this module's own default, or
+ * a CALLER-SUPPLIED `realpath`/`stat` option — so a THROW from it can never
+ * propagate out of `resolveTool`/`boundedRun` and break their own totality
+ * (gate cycle 4 advisory, limit 13). A throwing seam is treated exactly like
+ * that seam's own "unavailable" answer (`null`) — this module's defaults
+ * already catch their own failures internally, so wrapping them again is a
+ * no-op; a caller-supplied function is the case this actually protects.
+ */
+function safelyCalled<T>(fn: (target: string) => T | null): (target: string) => T | null {
+  return (target: string): T | null => {
+    try {
+      return fn(target);
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
  * Pure: split a `PATH`-shaped string on the DECLARED platform's delimiter
  * (`;` for win32, `:` elsewhere) — never the host's own. An empty string
  * yields no entries; an empty ENTRY (`::` or a leading/trailing delimiter)
@@ -661,8 +777,8 @@ export function resolveTool(
   },
 ): ResolveToolResult {
   if (!isValidToolName(name)) return { status: 'tool-not-found' };
-  const realpath = options.realpath ?? realpathOrNull;
-  const stat = options.stat ?? statIdentityOrNull;
+  const realpath = safelyCalled(options.realpath ?? realpathOrNull);
+  const stat = safelyCalled(options.stat ?? statIdentityOrNull);
 
   const repoReal = realpath(options.repoDir) ?? path.resolve(options.repoDir);
 
@@ -862,7 +978,7 @@ export async function boundedRun(
     return { status: 'spawn-error', code: INVALID_BOUND_CODE, message: INVALID_BOUND_MESSAGE };
   }
 
-  const stat = options.stat ?? statIdentityOrNull;
+  const stat = safelyCalled(options.stat ?? statIdentityOrNull);
 
   // Never the inherited `process.cwd()` — during this project's own tests
   // (and plausibly during a real run) that IS the untrusted repository being
@@ -880,6 +996,11 @@ export async function boundedRun(
     try {
       ownedCwd = await mkdtemp(path.join(options.tempRoot ?? tmpdir(), 'rig-run-'));
     } catch (error) {
+      // node:fs/promises' own types declare `mkdtemp`'s rejection as `unknown`
+      // in a `catch` clause, but every real failure mode here (ENOENT, EACCES,
+      // a `tempRoot` that is a file) is a Node filesystem error carrying
+      // `.code` — the cast documents that assumption rather than widening the
+      // catch to inspect the value's actual shape (gate cycle 4 advisory).
       return spawnErrorFrom(error as NodeJS.ErrnoException);
     }
     try {
@@ -904,12 +1025,20 @@ export async function boundedRun(
   const cwdReal = realpathOrNull(cwd) ?? path.resolve(cwd);
   const repoReal = realpathOrNull(options.repoDir) ?? path.resolve(options.repoDir);
   if (isInsideEitherWay(cwdReal, repoReal, process.platform, stat)) {
-    if (ownedCwd !== null) await removeOwnedCwd(ownedCwd); // never surfaced: nothing was spawned to report a cleanup signal against
-    return {
-      status: 'spawn-error',
-      code: undefined,
-      message: 'boundedRun refuses a cwd inside the repository',
-    };
+    // Nothing was spawned, but this module still OWNS `ownedCwd` (it created
+    // it before this check ever ran) and still reports the cleanup outcome
+    // on the result — the same field every other exit path carries, rather
+    // than a silently discarded one (gate cycle 4, blocker 6: this used to
+    // await the cleanup and then drop its answer).
+    const cleanup = ownedCwd !== null ? await removeOwnedCwd(ownedCwd) : 'removed';
+    return withCwdCleanup(
+      {
+        status: 'spawn-error',
+        code: undefined,
+        message: 'boundedRun refuses a cwd inside the repository',
+      },
+      cleanup,
+    );
   }
 
   const childEnv = filterAllowedEnv(options.env ?? {}, process.platform);
@@ -938,6 +1067,11 @@ export async function boundedRun(
             return;
           }
 
+          // `execFile`'s own callback type declares `error` as
+          // `ExecException | null`, which does not carry `.killed`/`.signal`
+          // — but Node's real runtime error object always does for a
+          // non-null callback error, and every branch below reads them
+          // (gate cycle 4 advisory: this cast was previously uncommented).
           const err = error as ExecFileError;
 
           if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
@@ -998,7 +1132,10 @@ export async function boundedRun(
       // async error) instead of ever invoking the callback above. Without
       // this `try`/`catch` the throw propagated out of the `new Promise`
       // executor and rejected the promise this function promises to always
-      // RESOLVE (gate cycle 1, blocker 1).
+      // RESOLVE (gate cycle 1, blocker 1). The cast documents the same
+      // assumption as the `mkdtemp` one above: every synchronous `execFile`
+      // throw measured so far (a NUL byte, an invalid option, win32's EINVAL
+      // on a `.cmd`) is a Node error carrying `.code` (gate cycle 4 advisory).
       resolve(spawnErrorFrom(error as NodeJS.ErrnoException));
     }
   });

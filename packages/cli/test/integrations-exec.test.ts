@@ -16,6 +16,7 @@ import {
   isValidToolName,
   resolveTool,
   splitPathVar,
+  stepUpOnePathSegment,
   type StatIdentity,
 } from '../src/integrations/exec.js';
 import { stripComments } from '../../../test/template/lib/source-scan.js';
@@ -234,25 +235,38 @@ describe('resolveTool — containment is checked against the HOST platform, neve
         }
       }
 
+      // `stat: () => null` forces identityContainment to answer 'unknown'
+      // (limit 11), deferring entirely to the STRING check this test exists
+      // to pin — otherwise the identity half (which shares no `dev`/`ino`
+      // fixture with this scenario, since these are REAL directories with
+      // real, non-conflicting inodes) never actually decides either way, but
+      // a mutant that disables the string check outright could still be
+      // masked BY COINCIDENCE if a future identity fixture were added here
+      // (gate cycle 4, blocker 2: replayed against the `options.platform`
+      // mutant at exec.ts's two isInsideEitherWay call sites, this test was
+      // measured GREEN — i.e. failing to catch it — without this).
       const result = resolveTool('claude', {
         env: { PATH: pathEntry },
         platform: nonHostPlatform,
         repoDir: fakeRepo,
+        stat: () => null,
       });
       expect(result.status).toBe('tool-not-found');
 
       // The positive control: the SAME PATH-entry shape, SAME declared
-      // (non-host) platform, but a directory genuinely OUTSIDE the
-      // repository — this must resolve `ok`, proving the fixture shape
-      // itself is capable of a positive result and that the negative
-      // result above is not an artifact of some unrelated defect (like the
-      // extension-mismatch bug gate cycle 3 found in the previous version).
+      // (non-host) platform, SAME `stat: () => null`, but a directory
+      // genuinely OUTSIDE the repository — this must resolve `ok`, proving
+      // the fixture shape itself is capable of a positive result and that
+      // the negative result above is not an artifact of some unrelated
+      // defect (like the extension-mismatch bug gate cycle 3 found in the
+      // previous version).
       await writeFile(path.join(outside, 'claude'), 'legitimate');
       await writeFile(path.join(outside, 'claude.exe'), 'legitimate');
       const control = resolveTool('claude', {
         env: { PATH: outsidePathEntry },
         platform: nonHostPlatform,
         repoDir: fakeRepo,
+        stat: () => null,
       });
       expect(control.status).toBe('ok');
     } finally {
@@ -308,19 +322,107 @@ describe('identityContainment — the IDENTITY half of containment (gate cycle 3
     expect(identityContainment('/repo/bin', '/repo', stat)).toBe('unknown');
   });
 
-  it("never loops: the walk is bounded by the candidate's own path-segment count, even if every stat call returns a fresh non-matching identity", () => {
+  it('never loops: the walk is bounded by the candidate\'s own path-segment count — proportionally, not just "a small number" (gate cycle 4 advisory: a shallow 6-segment candidate against a `< 20` ceiling passes whether or not the bound logic is even present; a 50-segment candidate makes an actually-unbounded walk time this test out rather than merely fail an assertion, and the assertion itself now scales with depth)', () => {
+    const depth = 50;
+    const candidate = `/${Array.from({ length: depth }, (_, i) => `seg${i}`).join('/')}`;
     let calls = 0;
     const stat = (target: string): StatIdentity | null => {
       calls += 1;
       if (target === '/repo') return idA;
       return { dev: 2n, ino: BigInt(calls) }; // never matches idA, never repeats
     };
-    expect(identityContainment('/a/b/c/d/e/f', '/repo', stat)).toBe('outside');
-    expect(calls).toBeLessThan(20); // a handful of path segments, not unbounded
+    expect(identityContainment(candidate, '/repo', stat)).toBe('outside');
+    // root + candidate + at most `depth` further ancestor steps, bounded by
+    // the candidate's OWN path-segment count — never unbounded.
+    expect(calls).toBeLessThanOrEqual(depth + 2);
+    // And genuinely walked most of the way up, not short-circuited early —
+    // proving the bound is what stopped it, not an accidental early match.
+    expect(calls).toBeGreaterThan(depth / 2);
   });
 });
 
-describe('resolveTool/boundedRun — UNC vs drive-letter is the SAME repository (gate cycle 3, blocker 2)', () => {
+describe('stepUpOnePathSegment — never yields a non-rooted path (gate cycle 4, blocker 1: the identity walk used to ascend a win32 path to a bare drive designator ("C:", no trailing separator) and stat it — Windows resolves that as the PROCESS\'s own current directory on that drive, not the volume root)', () => {
+  it('steps a win32 path up to the true drive root (drive letter, colon, ONE trailing backslash), never a bare drive designator with no trailing backslash', () => {
+    expect(stepUpOnePathSegment('C:\\Users\\x')).toBe('C:\\Users');
+    expect(stepUpOnePathSegment('C:\\Users')).toBe('C:\\');
+    expect(stepUpOnePathSegment('C:\\')).toBe('C:\\'); // already at the floor: stays put
+  });
+
+  it('steps a UNC path up to the share root, never past it to the bare server or a bare "\\\\\\\\"', () => {
+    expect(stepUpOnePathSegment('\\\\server\\share\\x\\y')).toBe('\\\\server\\share\\x');
+    expect(stepUpOnePathSegment('\\\\server\\share\\x')).toBe('\\\\server\\share');
+    expect(stepUpOnePathSegment('\\\\server\\share')).toBe('\\\\server\\share'); // floor
+  });
+
+  it('steps a POSIX path up to "/" and stops there', () => {
+    expect(stepUpOnePathSegment('/a/b')).toBe('/a');
+    expect(stepUpOnePathSegment('/a')).toBe('/');
+    expect(stepUpOnePathSegment('/')).toBe('/'); // floor
+  });
+
+  it('the identity walk never stats a bare drive designator or a bare UNC prefix, even walking a deep win32 path all the way to its root (host-independent: records every path an injected stat is asked about)', () => {
+    const statted: string[] = [];
+    let counter = 0n;
+    const stat = (target: string): StatIdentity => {
+      statted.push(target);
+      counter += 1n;
+      return { dev: 1n, ino: counter }; // unique every call: nothing ever matches, so the walk runs to its floor
+    };
+    identityContainment('C:\\Users\\x\\y\\z', 'C:\\Other', stat);
+    expect(statted.length).toBeGreaterThan(1); // the walk genuinely ran
+    for (const p of statted) {
+      expect(p).not.toBe('C:'); // never the bare, process-relative drive designator
+      expect(p).not.toMatch(/^\\\\[^\\]+$/); // never a bare "\\server", missing its share
+      expect(p).not.toBe('\\');
+    }
+    expect(statted).toContain('C:\\'); // the walk DID reach the true root
+  });
+});
+
+describe('resolveTool/boundedRun — a repository whose realpath equals process.cwd() does not make every path on the same drive "inside" it (gate cycle 4, blocker 1\'s own integration pin)', () => {
+  it("resolveTool and boundedRun both still resolve a genuinely outside tool/cwd ok when the process's own cwd IS the repository, on the same drive as TEMP — this is exactly the configuration gate cycle 4 measured to make identityContainment answer 'inside' for every absolute path on that drive before the fix", async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    // Both created under os.tmpdir() so they share a drive with each other
+    // AND with boundedRun's own default per-run cwd (also under
+    // os.tmpdir()) — the hosted runner has the checkout on one drive and
+    // TEMP on another, so this must all live under TEMP to discriminate.
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-drivebug-repo-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-drivebug-outside-'));
+    const originalCwd = process.cwd();
+    try {
+      await writeFile(path.join(outside, 'claude.exe'), 'legit');
+      process.chdir(fakeRepo);
+
+      const resolved = resolveTool('claude', {
+        env: { PATH: outside },
+        platform: 'win32',
+        repoDir: fakeRepo,
+      });
+      expect(resolved.status).toBe('ok');
+
+      const defaultCwdResult = await boundedRun(process.execPath, ['--version'], {
+        timeoutMs: 5000,
+        maxBuffer: 1024,
+        repoDir: fakeRepo,
+      });
+      expect(defaultCwdResult.status).toBe('ok');
+
+      const explicitOutsideResult = await boundedRun(process.execPath, ['--version'], {
+        timeoutMs: 5000,
+        maxBuffer: 1024,
+        repoDir: fakeRepo,
+        cwd: outside,
+      });
+      expect(explicitOutsideResult.status).toBe('ok');
+    } finally {
+      process.chdir(originalCwd);
+      await removeFixture(fakeRepo);
+      await removeFixture(outside);
+    }
+  });
+});
+
+describe("resolveTool — UNC vs drive-letter is the SAME repository, on a real win32 filesystem (gate cycle 3, blocker 2; renamed in gate cycle 4, blocker 5: this describe used to claim boundedRun coverage too, but only ever called resolveTool — see the describe below for boundedRun's own identity coverage)", () => {
   it("a UNC admin-share spelling and its drive-letter equivalent are treated as the SAME repository, in both orientations — the identity check catches what realpath's string form cannot", async (ctx) => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
     const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-unc-repo-'));
@@ -354,6 +456,103 @@ describe('resolveTool/boundedRun — UNC vs drive-letter is the SAME repository 
       expect(result2.status).toBe('tool-not-found');
     } finally {
       await removeFixture(fakeRepo);
+    }
+  });
+});
+
+describe("resolveTool/boundedRun — identity containment via an injected stat, host-independent (gate cycle 4, blocker 5: boundedRun's own identity containment had no test on any host, and nothing above passed stat to either entry point)", () => {
+  it('resolveTool refuses via the injected stat identity alone, even though the two directories are genuinely UNRELATED by string', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-resolve-repo-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-resolve-outside-'));
+    try {
+      const toolFile = process.platform === 'win32' ? 'claude.exe' : 'claude';
+      await writeFile(path.join(outside, toolFile), 'legit');
+      // Every stat call answers with the SAME literal dev/ino — an
+      // unrelated-by-string pair of directories that nonetheless "share
+      // identity" as far as this injected fixture is concerned.
+      const sharedIdentity: StatIdentity = { dev: 1n, ino: 1n };
+      const stat = (): StatIdentity => sharedIdentity;
+      const result = resolveTool('claude', {
+        env: { PATH: outside },
+        platform: process.platform,
+        repoDir: fakeRepo,
+        stat,
+      });
+      expect(result.status).toBe('tool-not-found');
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outside);
+    }
+  });
+
+  it('resolveTool resolves ok when the injected stat reports genuinely DIFFERING identities (positive control for the test above)', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-resolve-ok-repo-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-resolve-ok-outside-'));
+    try {
+      const toolFile = process.platform === 'win32' ? 'claude.exe' : 'claude';
+      await writeFile(path.join(outside, toolFile), 'legit');
+      let counter = 0n;
+      // A fresh, never-repeating identity on every call — never matches.
+      const stat = (): StatIdentity => {
+        counter += 1n;
+        return { dev: 1n, ino: counter };
+      };
+      const result = resolveTool('claude', {
+        env: { PATH: outside },
+        platform: process.platform,
+        repoDir: fakeRepo,
+        stat,
+      });
+      expect(result.status).toBe('ok');
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outside);
+    }
+  });
+
+  it('boundedRun refuses a cwd via the injected stat identity alone, with the fixed cwd-refusal message, even though the two directories are genuinely UNRELATED by string', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-run-repo-'));
+    const outsideCwd = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-run-outside-'));
+    try {
+      const sharedIdentity: StatIdentity = { dev: 1n, ino: 1n };
+      const stat = (): StatIdentity => sharedIdentity;
+      const result = await boundedRun(process.execPath, ['--version'], {
+        timeoutMs: 5000,
+        maxBuffer: 1024,
+        repoDir: fakeRepo,
+        cwd: outsideCwd,
+        stat,
+      });
+      expect(result.status).toBe('spawn-error');
+      if (result.status === 'spawn-error') {
+        expect(result.message).toBe('boundedRun refuses a cwd inside the repository');
+      }
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outsideCwd);
+    }
+  });
+
+  it('boundedRun accepts a cwd when the injected stat reports genuinely DIFFERING identities (positive control for the test above)', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-run-ok-repo-'));
+    const outsideCwd = await mkdtemp(path.join(tmpdir(), 'rig-exec-identity-run-ok-outside-'));
+    try {
+      let counter = 0n;
+      const stat = (): StatIdentity => {
+        counter += 1n;
+        return { dev: 1n, ino: counter };
+      };
+      const result = await boundedRun(process.execPath, ['--version'], {
+        timeoutMs: 5000,
+        maxBuffer: 1024,
+        repoDir: fakeRepo,
+        cwd: outsideCwd,
+        stat,
+      });
+      expect(result.status).toBe('ok');
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outsideCwd);
     }
   });
 });
@@ -523,8 +722,21 @@ describe('resolveTool — win32 8.3 short-name canonicalisation', () => {
         return;
       }
 
+      // `stat: () => null` forces identityContainment to answer 'unknown'
+      // (limit 11), so this test pins the STRING check alone — the real
+      // short-name/long-name pair here share genuine, coinciding `dev`/`ino`
+      // on disk (they are the SAME directory), so without this the identity
+      // half decides the case regardless of whether the string-side fix (the
+      // whole point of this test) is even present (gate cycle 4, blocker 2:
+      // replayed against a mutant reverting to plain `realpathSync`, this
+      // test was measured GREEN — i.e. failing to catch it — without this).
       const env = { PATH: shortForm };
-      const result = resolveTool('claude', { env, platform: 'win32', repoDir: longDir });
+      const result = resolveTool('claude', {
+        env,
+        platform: 'win32',
+        repoDir: longDir,
+        stat: () => null,
+      });
       expect(result.status).toBe('tool-not-found');
     } finally {
       await removeFixture(parent);
@@ -830,6 +1042,38 @@ describe('resolveTool — declared limits 1 and 2, demonstrated', () => {
       await removeFixture(fakeRepo);
     }
   });
+
+  it("LIMIT (whole-name pointer for limit 14): a hardlink OUTSIDE the repository to a file planted INSIDE it resolves ok — this module's containment checks are path-based, never content/inode-based, and a hardlink's own path genuinely is outside", async (ctx) => {
+    skipUnless(
+      ctx,
+      process.platform !== 'win32',
+      'hardlink creation semantics vary too much on win32 for this pin; the property is demonstrated on POSIX',
+    );
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-hardlink-repo-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-hardlink-outside-'));
+    try {
+      const { link: linkP } = await import('node:fs/promises');
+      const insideTarget = path.join(fakeRepo, 'claude');
+      const outsideHardlink = path.join(outside, 'claude');
+      await writeFile(insideTarget, '#!/bin/sh\necho hardlinked\n');
+      await chmod(insideTarget, 0o755);
+      try {
+        await linkP(insideTarget, outsideHardlink);
+      } catch (error) {
+        ctx.skip(
+          `hardlink creation failed on this filesystem (${(error as Error).message}) — cannot construct this scenario here`,
+        );
+        return;
+      }
+
+      const env = { PATH: outside };
+      const result = resolveTool('claude', { env, platform: process.platform, repoDir: fakeRepo });
+      expect(result.status).toBe('ok');
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outside);
+    }
+  });
 });
 
 describe('boundedRun — refuses a non-absolute file, never shells out', () => {
@@ -1108,6 +1352,11 @@ describe('boundedRun — is TOTAL end to end, even when owning and cleaning up i
     });
     expect(result.status).toBe('timeout');
     if (result.status === 'timeout') {
+      // The script's own precondition: stdout must genuinely carry the cwd
+      // path this test then checks was removed — an empty string would make
+      // `existsSync('')` a vacuous pass rather than proof of anything
+      // (gate cycle 4 advisory).
+      expect(result.stdout.length).toBeGreaterThan(0);
       expect(existsSync(result.stdout)).toBe(false);
       expect(result.cwdCleanup).toBeUndefined();
     }
@@ -1132,21 +1381,47 @@ describe('boundedRun — is TOTAL end to end, even when owning and cleaning up i
     });
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
+    // Both the parse/definedness assertions AND the substantive ones now
+    // live inside the SAME try, with the grandchild kill and directory
+    // cleanup in a finally that covers ALL of them (gate cycle 4 advisory:
+    // a failed FIRST expect used to sit outside the try/finally entirely,
+    // so failing it would skip cleanup of the still-live grandchild process
+    // this test itself spawned).
     const [pidText, dir] = result.stdout.split('\n');
-    expect(pidText).toBeDefined();
-    expect(dir).toBeDefined();
-    if (pidText === undefined || dir === undefined) return;
     try {
+      expect(pidText).toBeDefined();
+      expect(dir).toBeDefined();
+      if (pidText === undefined || dir === undefined) return;
       expect(result.cwdCleanup).toBe('left-behind');
       expect(existsSync(dir)).toBe(true);
-      expect(JSON.stringify(result)).not.toContain(dir); // no path anywhere in the result
-    } finally {
-      try {
-        process.kill(Number(pidText));
-      } catch {
-        // best effort — this is test cleanup, not the module under test
+      // Per FIELD the module owns, in both the raw and JSON-escaped
+      // spellings (gate cycle 4, blocker 4: `JSON.stringify(result).not
+      // .toContain(dir)` cannot fail on win32 — JSON.stringify doubles each
+      // backslash, so a leak landing in a field via `JSON.stringify` would
+      // carry the ESCAPED form, which the raw-`dir` needle never matches).
+      // `stdout`/`stderr` are excluded: those are the CHILD's own output,
+      // not a field this module itself writes a path into.
+      const forbiddenRaw = dir;
+      const forbiddenEscaped = dir.replace(/\\/g, '\\\\');
+      for (const [key, value] of Object.entries(result)) {
+        if (key === 'stdout' || key === 'stderr') continue;
+        if (typeof value !== 'string') continue;
+        expect(value, `field "${key}" leaked the cwd path (raw)`).not.toContain(forbiddenRaw);
+        expect(value, `field "${key}" leaked the cwd path (JSON-escaped)`).not.toContain(
+          forbiddenEscaped,
+        );
       }
-      await removeFixture(dir);
+    } finally {
+      if (pidText !== undefined) {
+        try {
+          process.kill(Number(pidText));
+        } catch {
+          // best effort — this is test cleanup, not the module under test
+        }
+      }
+      if (dir !== undefined) {
+        await removeFixture(dir);
+      }
     }
   });
 
@@ -1252,14 +1527,15 @@ describe('boundedRun — environment allow-list', () => {
     }
   });
 
-  it('boundedRun called with no env option at all hands the child NOTHING — default-deny, never an accidental inherit (gate cycle 2 advisory; gate cycle 3, blocker 4: the only assertion here used to sit inside an `if (platform !== win32)` guard, so this test reported PASS on win32 with nothing checked at all — the shape platform-skips.test.ts exists to refuse)', async () => {
-    // A sentinel set on THIS process's own env — boundedRun with no `env`
-    // option never reads `process.env` at all today (it defaults to `{}`),
-    // so this sentinel proves nothing UNLESS a future change regresses that
-    // default to `options.env ?? process.env` — exactly the regression this
-    // test guards against, on every platform, not only where the stricter
-    // empty-keys check below also happens to apply.
-    const sentinelKey = 'RIG_EXEC_TEST_SENTINEL_DEFAULT_DENY';
+  it("boundedRun called with no env option at all hands the child NOTHING — default-deny, never an accidental inherit (gate cycle 2 advisory; gate cycle 3, blocker 4: the only assertion here used to sit inside an `if (platform !== win32)` guard, so this test reported PASS on win32 with nothing checked at all; gate cycle 4, blocker 3: that fix's sentinel, a NON-allow-listed key, could never fail for the regression it names — filterAllowedEnv strips a non-allow-listed key regardless of whether the default source is `{}` or `process.env`, so the sentinel proved nothing on ANY platform. LC_ALL is allow-listed (see ALLOWED_ENV_VARS): measured to discriminate — undefined in the child at this head, and it WOULD leak through if the default ever regressed to `options.env ?? process.env`, since filterAllowedEnv would then forward it like any other allow-listed key)", async () => {
+    // A sentinel set on THIS process's own env, under an ALLOW-LISTED key —
+    // boundedRun with no `env` option never reads `process.env` at all today
+    // (it defaults to `{}`), so this sentinel proves nothing UNLESS a future
+    // change regresses that default to `options.env ?? process.env`. Because
+    // LC_ALL is itself allow-listed, that regression WOULD leak it through
+    // filterAllowedEnv — a non-allow-listed sentinel would be stripped either
+    // way and could never discriminate the two.
+    const sentinelKey = 'LC_ALL';
     const previous = process.env[sentinelKey];
     process.env[sentinelKey] = 'must-not-leak-into-the-child';
     try {
@@ -1560,8 +1836,9 @@ describe('boundedRun — output sanitization', () => {
     expect(result.stdout).toBe('abc');
   });
 
-  it('strips DEL (0x7f), the full C1 control range (0x7f-0x9f) including U+009B — a terminal-injection-shaped case — and the low-range controls \\x05 and \\x1f (gate cycle 2, blocker 5: this range was implemented but never asserted; gate cycle 3 advisory: widened to include \\^E/\\^_)', async () => {
-    const script = "process.stdout.write('a\\u007fb\\u009bc\\u001bd\\u0005e\\u001ff');";
+  it('strips DEL (0x7f), the full C1 control range (0x7f-0x9f) — now including its own two BOUNDARY points U+0085 (NEL) and U+009F (APC), not just an interior sample (U+009B) — and the low-range controls \\x05 and \\x1f (gate cycle 2, blocker 5: this range was implemented but never asserted; gate cycle 3 advisory: widened to include \\^E/\\^_; gate cycle 4 advisory: the title claimed "full range" while only sampling one interior C1 point — \\x05/\\x1f are LOW-range ASCII controls, 0x00-0x1F, not C1 at all — so this now also samples the C1 range\'s own two edges)', async () => {
+    const script =
+      "process.stdout.write('a\\u007fb\\u009bc\\u001bd\\u0005e\\u001ff\\u0085g\\u009fh');";
     const result = await boundedRun(process.execPath, ['-e', script], {
       timeoutMs: 5000,
       maxBuffer: 1024 * 1024,
@@ -1569,7 +1846,7 @@ describe('boundedRun — output sanitization', () => {
     });
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
-    expect(result.stdout).toBe('abcdef');
+    expect(result.stdout).toBe('abcdefgh');
   });
 
   it('never splits a surrogate pair when capping the stderr tail, even if the result ends up one code unit shorter than the cap (gate cycle 3 advisory)', async () => {

@@ -1636,8 +1636,10 @@ describe('license.id and SPDX_EXPRESSION_PATTERN have one spelling', () => {
  * Refusing it in `isValidLocator` makes the PARSER stricter than the schema
  * here — the opposite direction from every divergence above — and the
  * contract schema is not this slice's to change (a separate, Tier-2
- * decision), so this is named as its own divergence (4) below rather than
- * claimed closed.
+ * decision), so this is named as its own divergence 3 below (the test is
+ * titled "named divergence 3 (backslash)" — gate cycle 4, blocker 7: this
+ * comment used to say "(4)", disagreeing with the test's own number) rather
+ * than claimed closed.
  *
  * A separate shape closed in the OTHER direction in gate cycle 1: scheme
  * casing. `isHttpsUrl`'s real `URL` parse accepts any casing of the scheme
