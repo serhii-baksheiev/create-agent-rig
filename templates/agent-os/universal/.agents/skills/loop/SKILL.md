@@ -966,13 +966,28 @@ three poisons the only channel by which this project learns.
   ```
 
   `--merge-commit` names the exact SHA the tracker's own PR metadata records as
-  THIS item's merge commit — the one piece of evidence that lets a `targetSha`
-  move which is nothing but that merge read as `CURRENT` instead of
-  `claim:scope` drift. Resolve it from the PR just merged, by name, never by
+  THIS item's merge commit — one piece of evidence among several that let a
+  `targetSha` move which is nothing but that merge read as `CURRENT` instead
+  of `claim:scope` drift. Resolve it from the PR just merged, by name, never by
   reading `git log` text, and only after the merge has landed and been
   fetched. Omitting it (the item has not merged yet, or an older loop that
   predates this flag) leaves any target movement holding exactly as it did
-  before this flag existed — it is purely additive to that default.
+  before this flag existed — it is purely additive to that default. Naming the
+  SHA is necessary but never sufficient: the exemption also requires the
+  target to have advanced by EXACTLY ONE commit — a genuine squash merge; a
+  merge commit or any multi-commit range still holds
+  (`test/template/revalidate.test.ts` (absent in a generated rig) › "a foreign
+  commit plus the real merge in the same range, --merge-commit correctly
+  naming the real one") — and it binds to THIS checkout: the named commit's
+  tree must equal `HEAD`'s tree here, and `HEAD` must still be the pre-merge
+  checkout, not one already fast-forwarded onto the merge
+  (`test/template/revalidate.test.ts` (absent in a generated rig) › "a single
+  FOREIGN commit named as --merge-commit does not exempt it — reproduces the
+  gate-hold attack and proves it now holds" and › "HEAD already at the merge
+  commit is vacuous, and still holds (a fast-forwarded checkout must not
+  self-satisfy the exemption)"). That binding stops a lazy or mistaken flag,
+  not an adversary who controls this run's own checkout — see
+  `isOwnMergeAdvance` in `claim-records.mjs` for the exact limit.
 
   It compares the tracked claim's `scope` and `commentary` fingerprint sets;
   commentary becomes hold-authoritative only here. Marker/take-up movement is
