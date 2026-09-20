@@ -4,7 +4,7 @@ The rule lives in `.claude/rules/workflow.md`, under "PR flow". This file
 explains the one part of it that reads like an inconsistency and is not, so that
 nobody "tidies" the two sets into agreement. It is not loaded into any session.
 
-## The sets
+## The sets (opt-in workflow layer)
 
 All three mechanisms below — the gate sweep, the router, and the queue's
 elevated ration — ship with the opt-in workflow layer (`init --layer

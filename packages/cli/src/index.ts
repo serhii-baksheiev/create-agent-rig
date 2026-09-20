@@ -306,8 +306,20 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
       ? `  no readable manifest here (deleted, never written, or unparseable) — matching files against released versions`
       : `  installed by ${plan.fromVersion}`,
     `  upgrading to ${plan.toVersion}`,
-    '',
   ];
+
+  // RP-180 round 4, blocker A(4): when a layer's membership was inferred
+  // from disk rather than read from a manifest, say so — and how much
+  // evidence it rested on — instead of silently deciding.
+  for (const note of plan.layerInference ?? []) {
+    lines.push(
+      note.adopted
+        ? `  ${note.layer} layer inferred from ${note.present} of ${note.total} files on disk`
+        : `  ${note.present} of ${note.total} ${note.layer}-layer files found on disk — below quorum, left as your own (not adopted)`,
+    );
+  }
+
+  lines.push('');
 
   for (const verdict of ['update', 'new', 'deleted', 'retired', 'conflict', 'wiring'] as const) {
     for (const action of of(verdict)) {

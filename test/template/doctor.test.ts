@@ -378,6 +378,45 @@ describe('the CLI audits a rig on disk', () => {
       expect(stdout.split('\n').filter((line) => line.startsWith('**layers:**'))).toHaveLength(1);
       expect(elapsed).toBeLessThan(5000);
     });
+
+    // RP-180 round 4, advisory: a mixed known+junk `layers` used to drop the
+    // junk silently and report only the known layer — indistinguishable from
+    // a clean manifest. It now says something else was there, without ever
+    // echoing what.
+    it('a mixed known+junk `layers` reports the known layer AND that something unrecognised was dropped', async () => {
+      const dir = await rig();
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          ['process', 'a-forged-layer-name'],
+        ),
+      );
+      const { stdout } = await run(['--root', dir]);
+      expect(stdout).toMatch(/\*\*layers:\*\* process \(\+1 unrecognised entry\)/);
+      expect(stdout).not.toContain('a-forged-layer-name');
+    });
+
+    it('--json carries `layersUnrecognisedCount` alongside the known layers array', async () => {
+      const dir = await rig();
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          ['process', 'junk-one', 'junk-two'],
+        ),
+      );
+      const { stdout } = await run(['--root', dir, '--json']);
+      const parsed = JSON.parse(stdout);
+      expect(parsed.layers).toEqual(['process']);
+      expect(parsed.layersUnrecognisedCount).toBe(2);
+    });
   });
 
   it('--json carries the same verdict, the hooks array and the unchecked list', async () => {

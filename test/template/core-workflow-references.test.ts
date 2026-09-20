@@ -1,26 +1,48 @@
-// RP-180 round 3, prose blocker P8: seven Core-layer documents instructed or
-// presupposed a workflow-only capability without saying so — a Core-only rig
-// following its own rulebook literally would run a command
-// (`run-state.mjs`), rely on a skill (`loop`, `pr-ship`) or read a file
-// (`journal/README.md`) that install never gave it. The dangling-reference
-// check that already existed (`test/template/init-layer.test.ts`) only
-// scanned `.claude/…` paths inside CLAUDE.md — none of the seven blockers
-// were paths under `.claude/` inside CLAUDE.md specifically, so nothing
-// caught them.
+// RP-180 round 3, prose blocker P8 (rewritten round 4, blocker C): Core-layer
+// documents must never instruct or presuppose a workflow-only capability
+// without saying so — a Core-only rig following its own rulebook literally
+// must never be told to run a command, rely on a skill, or read a file that
+// its own install never gave it.
 //
-// This file is the mechanical check for the general shape: every Core
-// document, scanned for a mention of a workflow-layer FILE or a
-// workflow-only SKILL NAME, each mention required to sit in a paragraph (or
-// under the nearest heading above it) that names the workflow layer, or to
-// be on the explicit, reasoned allow-list below.
+// This file scans every Core-layer document for a mention of a
+// workflow-layer FILE (its full relative path, or a distinctive basename)
+// or a workflow-only SKILL NAME written in backticks (`` `loop` ``,
+// `` `pr-ship` ``) — both read from `layers.json` itself, never hand-listed.
+// Each mention must sit in a paragraph (or its immediate neighbours — a
+// caveat sentence followed by a code example, or a table intro followed by
+// its rows, read as one unit to a human) or under a heading that ITSELF
+// states the STRICT qualifying phrase, or be on the explicit, reasoned
+// allow-list below.
 //
-// What counts as "the workflow layer" or a "workflow-only skill name" is
-// read from `layers.json` itself, never hand-listed here — the closed set
-// this file's own `layers-split.test.ts` already pins. What counts as
-// "named" is a structural check (does the covering paragraph/heading contain
-// the word "workflow"), independent of whatever the prose being scanned
-// happens to say — this file does not trust the documents it is checking to
-// grade themselves.
+// The strict phrase — `/opt-in workflow layer|--layer workflow|workflow
+// layer/` — is deliberately narrower than the bare word "workflow" (round
+// 3's predicate). The bare word passed on an incidental citation of
+// `.claude/rules/workflow.md` by NAME, or on that file's own H1 ("Workflow —
+// TDD, branches, PR policy, Definition of Done", which contains "Workflow"
+// and qualifies nothing), so stripping every caveat from `workflow.md`, or
+// deleting CLAUDE.md's whole "opt-in workflow layer" section, both stayed
+// green. The strict phrase requires an actual qualifying clause, not the
+// word appearing anywhere for any reason.
+//
+// What is OUT of scope, stated rather than silently assumed: a Core `.mjs`
+// file's own header comments (this file walks Core `.md`/`.toml` documents
+// only — a hook or script's internal comments are not user-facing rulebook
+// prose, and `layers-split.test.ts`'s import-graph check already covers the
+// one thing that matters for `.mjs` files: that Core code never imports a
+// workflow-layer module); and a skill name mentioned WITHOUT backticks (an
+// English sentence saying "loop over the items" is not a citation of the
+// `loop` skill, and there is no reliable way to tell the two apart short of
+// requiring the same backtick convention this rulebook already uses
+// everywhere it names a skill on purpose).
+//
+// What is scanned, and why the composed root copy is separate from the
+// rig-facing one: `templates/agent-os/universal/CLAUDE.md` is what a
+// GENERATED RIG actually receives — this is the check that matters for the
+// ticket's own acceptance ("Core rulebook must be true for a Core-only
+// rig"). The composed root `CLAUDE.md`/`AGENTS.md` (universal plus this
+// repository's own addendum) is scanned too, labelled as what it is: this
+// repository's OWN dogfood copy, which can introduce its own additional
+// mentions the universal source does not have.
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,25 +60,36 @@ async function layers(): Promise<LayersJson> {
   return JSON.parse(await readFile(path.join(universalDir, 'layers.json'), 'utf8')) as LayersJson;
 }
 
-/** Every Core document worth scanning: the process array's own .md/.toml
- *  entries, plus the two composed maps (never in the array — `init.ts`'s
- *  `MAPS` applies them outside the per-layer loop) and PLAN.md (already in
- *  the array, restated here only because the ticket names it explicitly). */
-async function coreDocuments(): Promise<Array<{ rel: string; content: string }>> {
+interface CoreDoc {
+  /** How the doc is named in violation messages — includes a `(dogfood copy)`
+   *  suffix for the two root-level files, so a reader never mistakes them for
+   *  the rig-facing template source. */
+  label: string;
+  abs: string;
+  content: string;
+}
+
+/**
+ * Every Core document worth scanning: the process array's own .md/.toml
+ * entries (the RIG-FACING set — what a generated Core-only rig actually
+ * receives), plus the two composed maps at the repo root, labelled as this
+ * repository's own dogfood copy (never in the array — `init.ts`'s `MAPS`
+ * applies them outside the per-layer loop, and the root copy also carries
+ * this repo's addendum, which the universal source does not).
+ */
+async function coreDocuments(): Promise<CoreDoc[]> {
   const manifest = await layers();
-  const rels = new Set(
-    manifest.process.filter((rel) => rel.endsWith('.md') || rel.endsWith('.toml')),
-  );
-  rels.add('CLAUDE.md');
-  rels.add('AGENTS.md');
-  const docs: Array<{ rel: string; content: string }> = [];
-  for (const rel of rels) {
-    // CLAUDE.md/AGENTS.md are read from the repo root — the COMPOSED
-    // artifact (universal + this repo's own addendum) is what a reader (and
-    // a generated rig) actually receives; the universal source alone would
-    // miss anything the addendum itself introduces.
-    const base = rel === 'CLAUDE.md' || rel === 'AGENTS.md' ? repoRoot : universalDir;
-    docs.push({ rel, content: await readFile(path.join(base, ...rel.split('/')), 'utf8') });
+  const rigFacingRels = [
+    ...new Set(manifest.process.filter((rel) => rel.endsWith('.md') || rel.endsWith('.toml'))),
+  ];
+  const docs: CoreDoc[] = [];
+  for (const rel of rigFacingRels) {
+    const abs = path.join(universalDir, ...rel.split('/'));
+    docs.push({ label: rel, abs, content: await readFile(abs, 'utf8') });
+  }
+  for (const rel of ['CLAUDE.md', 'AGENTS.md']) {
+    const abs = path.join(repoRoot, rel);
+    docs.push({ label: `${rel} (dogfood copy)`, abs, content: await readFile(abs, 'utf8') });
   }
   return docs;
 }
@@ -91,7 +124,35 @@ const GENERIC_BASENAMES = new Set([
  * substring that no longer appears in that file is itself a failure below,
  * so this list cannot silently outlive what it was written for.
  */
-const ALLOWLIST: ReadonlyArray<{ file: string; contains: string; reason: string }> = [];
+const ALLOWLIST: ReadonlyArray<{ file: string; contains: string; reason: string }> = [
+  {
+    file: 'CLAUDE.md (dogfood copy)',
+    contains: 'detect-missed-gate` and the `loop` skill here are ahead of the copies',
+    reason:
+      'this repository\'s own addendum ("Repo-specific rules", item 0), describing THIS ' +
+      'generator repo — which dogfoods the workflow layer unconditionally, never a claim ' +
+      'about what a generated Core-only rig has (see docs/decisions/workflow-layer-split.md ' +
+      'on how sync-agent-os.mjs installs every layer into this repo regardless of the split)',
+  },
+  {
+    file: 'AGENTS.md (dogfood copy)',
+    contains: 'detect-missed-gate` and the `loop` skill here are ahead of the copies',
+    reason: 'same as the CLAUDE.md entry above — AGENTS.md is its Codex projection',
+  },
+  {
+    file: 'CLAUDE.md (dogfood copy)',
+    contains: '(`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and',
+    reason:
+      'this repository\'s own addendum ("Repo-specific rules", item 5), listing what ' +
+      "sync-agent-os.mjs synchronises into THIS repo's own tree — again a statement about " +
+      'this always-workflow-ful dogfood repo, not an instruction to a generated rig',
+  },
+  {
+    file: 'AGENTS.md (dogfood copy)',
+    contains: '(`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and',
+    reason: 'same as the CLAUDE.md entry above — AGENTS.md is its Codex projection',
+  },
+];
 
 interface Hit {
   file: string;
@@ -124,69 +185,29 @@ function paragraphBoundsAt(lines: string[], idx: number): [number, number] {
 }
 
 /**
- * The active heading breadcrumb at `idx` — the most recent heading line seen
- * at each level (1–6) while scanning from the top of the file, so a mention
- * deep under an H3 is still "covered" by an ancestor H1/H2 that names the
- * workflow layer, exactly the way a reader treats a document's own title as
- * governing everything under it.
+ * The STRICT qualifying phrase — deliberately not the bare word "workflow"
+ * (round 3's predicate, which a mere citation of `.claude/rules/workflow.md`
+ * or that file's own H1 satisfied for free, and which let stripping every
+ * real caveat out of a document stay green). A paragraph, its immediate
+ * neighbours, or a heading must contain one of these to count as covered.
  */
-function activeHeadingsAt(lines: string[], idx: number): string[] {
-  const stack: Array<string | null> = new Array(7).fill(null);
-  for (let i = 0; i < idx; i += 1) {
-    const m = /^(#{1,6})\s+(.*)$/.exec(lines[i]!);
-    if (m) {
-      const level = m[1]!.length;
-      stack[level] = lines[i]!;
-      for (let l = level + 1; l <= 6; l += 1) stack[l] = null;
-    }
-  }
-  return stack.filter((s): s is string => s !== null);
-}
-
-/**
- * The nearest heading AT OR ABOVE `idx`, and the body of the section it
- * opens — from that heading down to the next heading of the same or a
- * shallower level (exclusive), or end of file. A section that states its
- * workflow-layer caveat ONCE, near the top, and then writes the rest of the
- * section as though the layer is present (exactly the shape
- * `autonomy.md`'s "gate is swept from outside" section and
- * `review-lanes.md`'s router tables use) is covered throughout — a
- * per-paragraph requirement would force the same sentence repeated many
- * times over for no gain in what a reader actually learns.
- */
-function sectionTextFor(lines: string[], idx: number): string {
-  let headingIdx = -1;
-  let headingLevel = 7;
-  for (let i = idx; i >= 0; i -= 1) {
-    const m = /^(#{1,6})\s/.exec(lines[i]!);
-    if (m) {
-      headingIdx = i;
-      headingLevel = m[1]!.length;
-      break;
-    }
-  }
-  if (headingIdx === -1) return '';
-  let end = lines.length;
-  for (let i = headingIdx + 1; i < lines.length; i += 1) {
-    const m = /^(#{1,6})\s/.exec(lines[i]!);
-    if (m && m[1]!.length <= headingLevel) {
-      end = i;
-      break;
-    }
-  }
-  return lines.slice(headingIdx, end).join('\n');
-}
+const STRICT_WORKFLOW_PHRASE = /opt-in workflow layer|--layer workflow|workflow layer/;
 
 /**
  * Coverage text for a hit at `idx`: its own paragraph plus the immediately
  * preceding and following paragraphs (a caveat sentence followed by a code
  * example, or a table intro followed by its rows, are separate
- * blank-line-delimited blocks that read as one unit to a human), every
- * active heading above it, and the enclosing section's own body (see
- * {@link sectionTextFor}). A mention is "covered" when this text names the
- * workflow layer anywhere.
+ * blank-line-delimited blocks that read as one unit to a human). A heading
+ * is deliberately NOT included as ambient coverage here — see
+ * `headingCoversAt` below, checked separately, and only when the heading
+ * ITSELF states the strict phrase (round 4, blocker C: the round-3 version
+ * widened to "every ancestor heading, or the whole enclosing section",
+ * which is exactly how a real, unqualified mention in
+ * `check-premises/SKILL.md` and `worktree-task/SKILL.md` passed unnoticed —
+ * a whole section inherits its covering caveat from ONE sentence somewhere
+ * in it, which is too coarse a unit to trust here).
  */
-function coverageTextFor(lines: string[], idx: number): string {
+function paragraphCoverageTextFor(lines: string[], idx: number): string {
   const [start, end] = paragraphBoundsAt(lines, idx);
   const parts: string[] = [lines.slice(start, end + 1).join('\n')];
   if (start > 0) {
@@ -197,10 +218,21 @@ function coverageTextFor(lines: string[], idx: number): string {
     const [nStart, nEnd] = paragraphBoundsAt(lines, end + 1);
     parts.push(lines.slice(nStart, nEnd + 1).join('\n'));
   }
-  return [...activeHeadingsAt(lines, idx), sectionTextFor(lines, idx), ...parts].join('\n');
+  return parts.join('\n');
 }
 
-const WORKFLOW_MENTION = /workflow/i;
+/**
+ * Whether the nearest heading AT OR ABOVE `idx` itself states the strict
+ * phrase — a heading counts only on its own words, never because something
+ * elsewhere under it happens to.
+ */
+function headingCoversAt(lines: string[], idx: number): boolean {
+  for (let i = idx; i >= 0; i -= 1) {
+    const m = /^#{1,6}\s/.exec(lines[i]!);
+    if (m) return STRICT_WORKFLOW_PHRASE.test(lines[i]!);
+  }
+  return false;
+}
 
 async function scan(): Promise<{ hit: Hit; covered: boolean; allowed: boolean }[]> {
   const manifest = await layers();
@@ -209,22 +241,20 @@ async function scan(): Promise<{ hit: Hit; covered: boolean; allowed: boolean }[
     (b) => !GENERIC_BASENAMES.has(b),
   );
   const skillNames = [...new Set(paths.map(skillNameOf).filter((s): s is string => s !== null))];
-  const pathNeedles = paths;
-  const basenameNeedles = basenames;
-  const skillNeedles = skillNames.map((s) => `\`${s}\``);
-  const needles = [...pathNeedles, ...basenameNeedles, ...skillNeedles];
+  const needles = [...paths, ...basenames, ...skillNames.map((s) => `\`${s}\``)];
 
   const docs = await coreDocuments();
   const results: { hit: Hit; covered: boolean; allowed: boolean }[] = [];
-  for (const { rel, content } of docs) {
+  for (const { label, content } of docs) {
     const lines = content.split('\n');
-    const hits = findHits(rel, content, needles);
+    const hits = findHits(label, content, needles);
     for (const hit of hits) {
-      const coverage = coverageTextFor(lines, hit.line);
-      const covered = WORKFLOW_MENTION.test(coverage);
+      const covered =
+        STRICT_WORKFLOW_PHRASE.test(paragraphCoverageTextFor(lines, hit.line)) ||
+        headingCoversAt(lines, hit.line);
       const allowed = ALLOWLIST.some(
         (entry) =>
-          entry.file === rel && hit.text.includes(entry.contains) && entry.reason.trim() !== '',
+          entry.file === label && hit.text.includes(entry.contains) && entry.reason.trim() !== '',
       );
       results.push({ hit, covered, allowed });
     }
@@ -232,15 +262,15 @@ async function scan(): Promise<{ hit: Hit; covered: boolean; allowed: boolean }[
   return results;
 }
 
-describe('Core-layer documents never presuppose the opt-in workflow layer silently (RP-180 round 3, P8)', () => {
-  it('every mention of a workflow-layer path or skill, in a Core document, sits in a paragraph or heading naming the workflow layer', async () => {
+describe('Core-layer documents never presuppose the opt-in workflow layer silently (RP-180 round 4, blocker C)', () => {
+  it('every mention of a workflow-layer path or skill, in a Core document, sits in a paragraph or heading stating the strict workflow-layer phrase', async () => {
     const results = await scan();
     const violations = results
       .filter((r) => !r.covered && !r.allowed)
       .map(
         (r) =>
-          `${r.hit.file}:${r.hit.line + 1} mentions "${r.hit.matched}" with no "workflow" in its ` +
-          `paragraph or heading: ${JSON.stringify(r.hit.text.trim())}`,
+          `${r.hit.file}:${r.hit.line + 1} mentions "${r.hit.matched}" with no qualifying phrase ` +
+          `in its paragraph or heading: ${JSON.stringify(r.hit.text.trim())}`,
       );
     expect(violations).toEqual([]);
   });
@@ -250,66 +280,85 @@ describe('Core-layer documents never presuppose the opt-in workflow layer silent
   // like `doctor.mjs`'s own stale-exemption check.
   it('every allow-list entry still matches something in the file it names', async () => {
     const docs = await coreDocuments();
-    const byFile = new Map(docs.map((d) => [d.rel, d.content]));
+    const byLabel = new Map(docs.map((d) => [d.label, d.content]));
     const stale = ALLOWLIST.filter(
-      (entry) => !(byFile.get(entry.file) ?? '').includes(entry.contains),
+      (entry) => !(byLabel.get(entry.file) ?? '').includes(entry.contains),
     );
     expect(stale).toEqual([]);
   });
 
-  // Mutation: this suite must have teeth going forward, not only on the
-  // fixed sample above. Strip the layer caveat back out of one already-fixed
-  // paragraph and confirm the scan reports it.
-  it('mutation: removing a caveat from an already-fixed paragraph turns the scan red', async () => {
-    const docs = await coreDocuments();
-    const autonomy = docs.find((d) => d.rel === '.claude/rules/autonomy.md');
-    if (!autonomy) throw new Error('fixture: autonomy.md not found among Core documents');
-    // Strip exactly the qualifier this round added, leaving the bare
-    // unconditional mention `run-state.mjs` behind — the pre-fix shape. Line
-    // by line rather than one big regex, so a rewording of the surrounding
-    // prose (which does not touch these exact lines) cannot silently make
-    // this mutation a no-op.
-    const linesIn = autonomy.content.split('\n');
-    const mutatedLines = linesIn.filter(
-      (line) =>
-        !line.includes('**With the opt-in workflow layer installed**') &&
-        !line.includes('`run-state.mjs` ships only with it') &&
-        !line.includes('both words also get recorded as a mechanical verdict:') &&
-        !line.includes('Without the layer, there is no automated selection to gate') &&
-        !line.includes('verify-then-revert rule still applies'),
-    );
-    const mutated = mutatedLines.join('\n');
-    expect(mutated, 'fixture: the mutation must actually change the text').not.toBe(
-      autonomy.content,
-    );
-    expect(mutated).toContain('run-state.mjs');
-    // The specific bullet's own paragraph, post-mutation, no longer carries
-    // the qualifier — checked on the bullet's paragraph alone, since the
-    // unrelated (and unmutated) "Post-deploy verification" section further
-    // down the same file legitimately still says "workflow layer" and would
-    // otherwise make this assertion pass for the wrong reason.
-    const mutatedLinesArr = mutated.split('\n');
-    const bulletIdx = mutatedLinesArr.findIndex((l) => l.includes('run-state.mjs'));
-    expect(
-      bulletIdx,
-      'fixture: run-state.mjs must still appear post-mutation',
-    ).toBeGreaterThanOrEqual(0);
-    expect(coverageTextFor(mutatedLinesArr, bulletIdx)).not.toMatch(
-      /opt-in workflow layer|--layer workflow/,
-    );
+  // Mutations: this suite must have teeth going forward, not only on the
+  // fixed sample above. Three documents, three different shapes of removal.
+  describe('mutation: stripping a caveat turns the scan red', () => {
+    async function scanMutated(label: string, mutatedContent: string): Promise<string[]> {
+      const manifest = await layers();
+      const basenames = [...new Set(manifest.workflow.map((p) => path.posix.basename(p)))].filter(
+        (b) => !GENERIC_BASENAMES.has(b),
+      );
+      const skillNames = [
+        ...new Set(manifest.workflow.map(skillNameOf).filter((s): s is string => s !== null)),
+      ];
+      const needles = [...manifest.workflow, ...basenames, ...skillNames.map((s) => `\`${s}\``)];
+      const lines = mutatedContent.split('\n');
+      const hits = findHits(label, mutatedContent, needles);
+      return hits
+        .filter(
+          (hit) =>
+            !STRICT_WORKFLOW_PHRASE.test(paragraphCoverageTextFor(lines, hit.line)) &&
+            !headingCoversAt(lines, hit.line),
+        )
+        .map((hit) => `${hit.file}:${hit.line + 1}`);
+    }
 
-    const manifest = await layers();
-    const basenames = [...new Set(manifest.workflow.map((p) => path.posix.basename(p)))].filter(
-      (b) => !GENERIC_BASENAMES.has(b),
-    );
-    const lines = mutated.split('\n');
-    const hits = findHits('.claude/rules/autonomy.md', mutated, [
-      ...manifest.workflow,
-      ...basenames,
-    ]);
-    const uncovered = hits.filter(
-      (hit) => !WORKFLOW_MENTION.test(coverageTextFor(lines, hit.line)),
-    );
-    expect(uncovered.length, 'mutation must be caught').toBeGreaterThan(0);
+    // Deletes every line matching the strict phrase itself, wherever it sits
+    // in the file — the general shape of "someone stripped every caveat" —
+    // rather than a hand-picked substring list that could leave one
+    // surviving occurrence (a parenthetical repeating `--layer workflow`)
+    // and mask the mutation. Headings that state the phrase are stripped too
+    // (`headingCoversAt` would otherwise keep covering everything under a
+    // heading whose OWN caveat text this mutation is supposed to remove).
+    function stripEveryStrictPhraseLine(content: string): string {
+      return content
+        .split('\n')
+        .filter((line) => !STRICT_WORKFLOW_PHRASE.test(line))
+        .join('\n');
+    }
+
+    it('autonomy.md: stripping the stop-rule caveat is caught', async () => {
+      const docs = await coreDocuments();
+      const doc = docs.find((d) => d.label === '.claude/rules/autonomy.md');
+      if (!doc) throw new Error('fixture: autonomy.md not found');
+      const mutated = stripEveryStrictPhraseLine(doc.content);
+      expect(mutated, 'fixture: the mutation must change the text').not.toBe(doc.content);
+      expect(mutated).toContain('run-state.mjs');
+      const uncovered = await scanMutated(doc.label, mutated);
+      expect(uncovered.length, 'mutation must be caught').toBeGreaterThan(0);
+    });
+
+    it('workflow.md: stripping the pr-ship layer caveat is caught', async () => {
+      const docs = await coreDocuments();
+      const doc = docs.find((d) => d.label === '.claude/rules/workflow.md');
+      if (!doc) throw new Error('fixture: workflow.md not found');
+      const mutated = stripEveryStrictPhraseLine(doc.content);
+      expect(mutated, 'fixture: the mutation must change the text').not.toBe(doc.content);
+      expect(mutated).toContain('`pr-ship`');
+      const uncovered = await scanMutated(doc.label, mutated);
+      expect(uncovered.length, 'mutation must be caught').toBeGreaterThan(0);
+    });
+
+    it("CLAUDE.md: deleting the whole opt-in workflow layer section is caught (the section's own paths still cited elsewhere)", async () => {
+      const docs = await coreDocuments();
+      const doc = docs.find((d) => d.label === 'CLAUDE.md (dogfood copy)');
+      if (!doc) throw new Error('fixture: CLAUDE.md not found');
+      const start = doc.content.indexOf('## The opt-in workflow layer');
+      expect(start, 'fixture: the section must exist').toBeGreaterThan(-1);
+      const nextHeading = doc.content.indexOf('\n## ', start + 1);
+      const mutated =
+        doc.content.slice(0, start) +
+        doc.content.slice(nextHeading === -1 ? doc.content.length : nextHeading + 1);
+      expect(mutated).not.toContain('## The opt-in workflow layer');
+      const uncovered = await scanMutated(doc.label, mutated);
+      expect(uncovered.length, 'mutation must be caught').toBeGreaterThan(0);
+    });
   });
 });

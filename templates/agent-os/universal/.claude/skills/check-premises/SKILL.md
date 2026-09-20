@@ -36,8 +36,8 @@ too when it asserts behaviour — the file it lives in does not change what a cl
 🔴 **`PREMISE FALSE` belongs to the first entry point only.** At the second one the
 claims are your own and the remedy is an edit, so a false one is not an escalation:
 it is `UNMEASURED`'s neighbour — delete or correct the sentence and carry on. Reading
-it as the escalation `loop` §6 defines would send a finished branch back to the queue
-over one sentence.
+it as the escalation `loop` §6 (opt-in workflow layer) defines would send a
+finished branch back to the queue over one sentence.
 
 ## Why it sits here and not in review
 

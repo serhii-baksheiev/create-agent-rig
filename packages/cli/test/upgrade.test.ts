@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initInstallSet, initProject, projectNameFor } from '../src/commands/init.js';
+import { applyUninstall, planUninstall } from '../src/commands/uninstall.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from '../src/commands/upgrade.js';
 import type { HashHistory } from '../src/lib/history.js';
@@ -844,6 +845,24 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
     expect(after?.files[QUEUE_CONFIG]).toBeUndefined();
     expect(after?.layers).toEqual(['process']);
   });
+
+  // RP-180 round 4, blocker E: the decision record's "a workflow rig's
+  // manifest went from 86 file entries to 53" is a specific, checkable
+  // number — pinned here, on a clean `--layer workflow` install, rather than
+  // left as a claim nothing asserts.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 86 manifest entries to 53', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const before = await readManifest(repo);
+    expect(before, 'fixture: no manifest').not.toBeNull();
+    expect(Object.keys(before!.files).length).toBe(86);
+
+    await writeManifest(repo, { ...before!, layers: ['process'] });
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    await applyUpgrade(repo, plan);
+
+    const after = await readManifest(repo);
+    expect(Object.keys(after!.files).length).toBe(53);
+  });
 });
 
 // RP-180 round 3, security blocker S1: `manifest?.layers ?? ALL_LAYERS`
@@ -953,5 +972,145 @@ describe('upgrade — layer inference when the manifest cannot be read at all (R
 
     const plan = await planUpgrade(repo, { history: emptyHistory });
     expect(plan.bootstrapped).toBe(false);
+  });
+});
+
+// RP-180 round 4, blockers A (code + security): `detectLayersOnDisk` treated
+// ONE present path as evidence the whole workflow layer belongs to this rig.
+// A Core-only rig with a single stray file that happens to share a path with
+// the workflow layer (the user's own `journal/README.md`, or any of the
+// other five below) plus ANY manifest corruption re-adopted all ~33 files
+// and recorded `layers` as both. The fix is a quorum: a layer is adopted
+// from disk only when MORE THAN HALF of its own files are already present —
+// `LAYER_ADOPTION_QUORUM`, chosen from the two populations this has to tell
+// apart (a genuine workflow rig with a deleted manifest has nearly all 33; a
+// Core-only rig with a stray file has one or a handful), not from either
+// population's exact size. Below quorum, the layer is not recorded and its
+// stray files are left alone entirely — not written, not read into the
+// manifest. At or above quorum, present files are refreshed/owned exactly as
+// today, but no ABSENT file of that layer is ever created — an opt-in layer
+// inferred from partial evidence must never manufacture the files it did not
+// find.
+describe('upgrade — the layer-adoption quorum on the bootstrapped path (RP-180 round 4, blocker A)', () => {
+  const QUEUE_CONFIG = '.claude/queue.json';
+  const LOOP_SKILL = '.claude/skills/loop/SKILL.md';
+
+  async function corruptManifest(mutate: (raw: Record<string, unknown>) => void): Promise<void> {
+    const raw = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
+    mutate(raw);
+    await write(MANIFEST_REL, `${JSON.stringify(raw)}\n`);
+  }
+
+  // Exactly the five reproduction paths the security report named, plus
+  // journal/README.md itself.
+  const STRAY_PATHS = [
+    'journal/README.md',
+    '.claude/queue.json',
+    '.claude/scripts/queue/index.mjs',
+    'docs/decisions/run-directory.md',
+    '.claude/scripts/run-state.mjs',
+  ];
+
+  it.each(STRAY_PATHS)(
+    'a Core-only rig with one stray workflow-layer file (%s) plus a corrupted manifest adopts nothing',
+    async (strayRel) => {
+      await installRig();
+      const strayContent = `not a rig file — planted by the user\n${strayRel}\n`;
+      await write(strayRel, strayContent);
+      await corruptManifest((raw) => (raw.layers = 'workflow'));
+      expect(await readManifest(repo)).toBeNull();
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(plan.bootstrapped).toBe(true);
+      // no workflow file written — the stray path itself included: this run
+      // never treats it as a rig file at all
+      const workflowVerdicts = plan.actions.filter((a) =>
+        [QUEUE_CONFIG, LOOP_SKILL, strayRel].includes(a.rel),
+      );
+      expect(workflowVerdicts).toEqual([]);
+
+      await applyUpgrade(repo, plan);
+      // untouched, byte-identical
+      expect(await read(strayRel)).toBe(strayContent);
+      const after = await readManifest(repo);
+      expect(after?.layers).toEqual(['process']);
+      expect(after?.files[strayRel]).toBeUndefined();
+    },
+  );
+
+  it('a workflow rig with a deleted manifest: all files kept, both layers recorded, and the plan says the layer was inferred', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await rm(abs(MANIFEST_REL));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.bootstrapped).toBe(true);
+    expect(plan.layerInference).not.toBeNull();
+    const workflowNote = plan.layerInference?.find((n) => n.layer === 'workflow');
+    expect(workflowNote?.adopted).toBe(true);
+    expect(workflowNote?.total).toBeGreaterThan(20); // the ~33-file layer, not a guessed number
+    expect(workflowNote?.present).toBe(workflowNote?.total);
+
+    await applyUpgrade(repo, plan);
+    const after = await readManifest(repo);
+    expect(after?.layers?.sort()).toEqual(['process', 'workflow']);
+  });
+
+  it('a workflow rig with a FEW files hand-deleted, and a deleted manifest, stays above quorum and does not recreate the missing ones', async () => {
+    await initProject(repo, { withWorkflow: true });
+    // delete a small number of workflow files by hand — nowhere near enough
+    // to fall below quorum (~33 files; deleting 3 leaves ~30, comfortably
+    // over half)
+    const handDeleted = [
+      '.claude/scripts/queue/as-of.mjs',
+      '.claude/scripts/queue/checkout.mjs',
+      '.claude/scripts/revalidation-report.mjs',
+    ];
+    for (const rel of handDeleted) await rm(abs(rel));
+    await rm(abs(MANIFEST_REL));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.bootstrapped).toBe(true);
+    const workflowNote = plan.layerInference?.find((n) => n.layer === 'workflow');
+    expect(workflowNote?.adopted).toBe(true);
+
+    // the layer is adopted (present files refreshed/owned), but the ABSENT
+    // ones must not be recreated by this bootstrap run
+    for (const rel of handDeleted) {
+      expect(plan.actions.find((a) => a.rel === rel)).toBeUndefined();
+    }
+    await applyUpgrade(repo, plan);
+    for (const rel of handDeleted) {
+      await expect(read(rel)).rejects.toThrow();
+    }
+    expect((await readManifest(repo))?.layers?.sort()).toEqual(['process', 'workflow']);
+  });
+
+  // The exact composed sequence the security report used to demonstrate the
+  // defect: opt in, edit one workflow file (so uninstall preserves it),
+  // uninstall, delete the leftover manifest, re-init (Core-only), corrupt
+  // the new manifest, upgrade. Must land Core-only throughout — the single
+  // preserved file is nowhere near quorum.
+  it('the composed repro sequence (opt in, edit, uninstall, re-init, corrupt, upgrade) stays Core-only', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const journalPath = 'journal/README.md';
+    await write(journalPath, `${await read(journalPath)}\n<!-- edited by hand -->\n`);
+
+    const uninstallPlan = await planUninstall(repo);
+    await applyUninstall(repo, uninstallPlan);
+    // the manifest survives (something was preserved) — remove it by hand,
+    // as an operator clearing the slate would
+    await rm(abs(MANIFEST_REL)).catch(() => {});
+
+    // re-init Core-only into the same directory
+    await initProject(repo, {});
+    await corruptManifest((raw) => (raw.layers = 'workflow'));
+    expect(await readManifest(repo)).toBeNull();
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(plan.actions.find((a) => a.rel === QUEUE_CONFIG)).toBeUndefined();
+    expect(plan.actions.find((a) => a.rel === LOOP_SKILL)).toBeUndefined();
+
+    await applyUpgrade(repo, plan);
+    expect((await readManifest(repo))?.layers).toEqual(['process']);
   });
 });

@@ -239,11 +239,21 @@ const KNOWN_LAYERS = ['process', 'workflow'];
 export const layersOf = (root) => {
   const parsed = readJson(path.join(root, ...MANIFEST_REL.split('/')));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  if (!Object.prototype.hasOwnProperty.call(parsed, 'layers')) return [...KNOWN_LAYERS];
+  if (!Object.prototype.hasOwnProperty.call(parsed, 'layers')) {
+    return { known: [...KNOWN_LAYERS], unrecognisedCount: 0 };
+  }
   const { layers } = parsed;
-  if (!Array.isArray(layers)) return [];
-  const known = layers.filter((entry) => typeof entry === 'string' && KNOWN_LAYERS.includes(entry));
-  return [...new Set(known)];
+  if (!Array.isArray(layers)) return { known: [], unrecognisedCount: 0 };
+  const known = new Set();
+  let unrecognisedCount = 0;
+  // One pass, bounded regardless of the array's length: a manifest naming
+  // the same junk entry 100,000 times reports the same one count, never
+  // grows the output, and the entry itself is counted, never echoed.
+  for (const entry of layers) {
+    if (typeof entry === 'string' && KNOWN_LAYERS.includes(entry)) known.add(entry);
+    else unrecognisedCount += 1;
+  }
+  return { known: [...known], unrecognisedCount };
 };
 
 /** `workflow` reads as experimental everywhere doctor names it; every other layer is plain. */
@@ -348,18 +358,25 @@ export const report = (root) => {
   const all = [...problems, ...audited.hooks];
   const audit = { verdict: verdictOf(all.map((r) => r.mark)), hooks: all };
   const absent = scopes.filter((scope) => !scope.present && scope.dir !== HOOKS_DIR).map((scope) => scope.dir);
-  const layers = layersOf(root);
+  const layerInfo = layersOf(root);
   // `layers` is untrusted committed input, exactly like an exemption reason
   // or a hook's own relative path elsewhere in this report — printed only
-  // through `printable`, never raw. An empty (but non-null) result means the
-  // field was PRESENT and malformed rather than absent, which reads
-  // differently from "nothing to say" and is worth its own line.
-  const layersLine =
-    layers === null
-      ? null
-      : layers.length > 0
-        ? `**layers:** ${printable(layers.map(layerLabel).join(', '))}`
-        : `**layers:** (unrecognised — see ${MANIFEST_REL})`;
+  // through `printable`, never raw, and an unrecognised entry is COUNTED,
+  // never echoed. An empty `known` list (but a non-null result) means the
+  // field was PRESENT and had nothing recognisable in it, which reads
+  // differently from "nothing to say" and is worth its own line. A MIXED
+  // manifest (a known layer alongside junk) says both: the known layer by
+  // name, and that something else was there and dropped.
+  const layersLine = (() => {
+    if (layerInfo === null) return null;
+    const { known, unrecognisedCount } = layerInfo;
+    const suffix =
+      unrecognisedCount > 0
+        ? ` (+${unrecognisedCount} unrecognised ${unrecognisedCount === 1 ? 'entry' : 'entries'})`
+        : '';
+    if (known.length === 0) return `**layers:** (unrecognised — see ${MANIFEST_REL})`;
+    return `**layers:** ${printable(known.map(layerLabel).join(', '))}${printable(suffix)}`;
+  })();
   const lines = [
     `**doctor** — verdict: ${audit.verdict}`,
     '',
@@ -374,7 +391,14 @@ export const report = (root) => {
     `_Not checked by this script — still yours (${UNCHECKED.length}):_`,
     ...UNCHECKED.map((item) => `- ${item}`),
   ];
-  return { ...audit, scopes, layers, unchecked: UNCHECKED, rendered: lines.join('\n') };
+  return {
+    ...audit,
+    scopes,
+    layers: layerInfo === null ? null : layerInfo.known,
+    layersUnrecognisedCount: layerInfo === null ? 0 : layerInfo.unrecognisedCount,
+    unchecked: UNCHECKED,
+    rendered: lines.join('\n'),
+  };
 };
 
 const invokedDirectly = () => {
@@ -401,7 +425,18 @@ if (invokedDirectly()) {
   const result = report(root);
   process.stdout.write(
     args.includes('--json')
-      ? `${JSON.stringify({ verdict: result.verdict, hooks: result.hooks, scopes: result.scopes, layers: result.layers, unchecked: result.unchecked }, null, 2)}\n`
+      ? `${JSON.stringify(
+          {
+            verdict: result.verdict,
+            hooks: result.hooks,
+            scopes: result.scopes,
+            layers: result.layers,
+            layersUnrecognisedCount: result.layersUnrecognisedCount,
+            unchecked: result.unchecked,
+          },
+          null,
+          2,
+        )}\n`
       : `${result.rendered}\n`,
   );
   process.exit(result.verdict === 'STOP' ? 1 : 0);

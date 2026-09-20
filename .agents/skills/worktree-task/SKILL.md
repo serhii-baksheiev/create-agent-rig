@@ -12,9 +12,9 @@ directories, with one `.git`. Without it, an unattended run and a hand-driven
 session share a working tree and overwrite each other's edits.
 
 **Use one when** anything else may touch this repo while you work — an
-unattended `loop` run, a colleague, a second Claude session. A single attended
-session on a quiet repo can just use a branch; the discipline that is never
-optional is the branch, not the worktree.
+unattended `loop` run (opt-in workflow layer), a colleague, a second Claude
+session. A single attended session on a quiet repo can just use a branch; the
+discipline that is never optional is the branch, not the worktree.
 
 ## Start
 

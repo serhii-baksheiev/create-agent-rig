@@ -132,11 +132,24 @@ workflow files, exactly like any other installed path".
 ## There is no opt-out short of `uninstall`
 
 Once a rig has the workflow layer — `init --layer workflow`, or inherited
-from before RP-180 — nothing in `init` or `upgrade` ever DROPS a layer a
-manifest already recorded; `effectiveLayers`/`detectLayersOnDisk` are both
-additive by construction. The only supported way back to Core-only is
-`uninstall` (removing the workflow files this rig owns) followed by a fresh
-`init` with no `--layer` flag.
+from before RP-180 — nothing in `init` or `upgrade` ever drops a layer a
+READABLE manifest already recorded; `effectiveLayers` (`init.ts`) is
+additive by construction, full stop. `detectLayersOnDisk` (`upgrade.ts`) is
+a narrower claim: it only ever runs when there is NO readable manifest at
+all, and even then it does not treat "a layer's files exist" as license to
+keep them regardless of how many — it is additive in the same direction
+(never narrows what a READABLE manifest said), but on the bootstrapped path
+it decides per layer by quorum (`LAYER_ADOPTION_QUORUM`, more than half of
+the layer's own files present), and can legitimately decide a layer is NOT
+this rig's: a Core-only rig with one or a few stray files that happen to
+share a workflow-layer path is left at Core, its stray files untouched and
+unrecorded (round 4, blocker A — round 3's fix asked only "does at least one
+file exist", which re-adopted the whole layer from a single stray path).
+The only supported way back to Core-only for a rig the manifest genuinely
+still names as having the workflow layer is `uninstall` (removing the
+workflow files this rig owns) followed by a fresh `init` with no `--layer`
+flag — see "The exact opt-out procedure, measured" below for what that
+takes when `uninstall` had to preserve something.
 
 **Hand-editing `layers` in `.claude/.rig-manifest.json` down to `["process"]`
 is not that opt-out, and it does not do what it looks like it does.** The
@@ -148,9 +161,12 @@ workflow path drops out of that plan's own install set and is reported
 manages it; it is now yours"` — the same verdict RP-177 gave a deleted stack
 overlay, applied here to files that are simply no longer read as this rig's
 layer. `applyUpgrade` then writes a manifest whose `files` map has no entry
-for any of the roughly three dozen workflow paths at all (measured: a
-workflow rig's manifest went from 86 file entries to 53 across exactly this
-edit + upgrade). The files stay on disk, silently un-hashed and unowned —
+for any of the roughly three dozen workflow paths at all — measured, on a
+clean `--layer workflow` install, at exactly 86 file entries down to 53
+(`packages/cli/test/upgrade.test.ts`, absent in a generated rig, pins "a
+clean workflow-layer install hand-edited down to a core-only layers array
+goes from 86 manifest entries to 53").
+The files stay on disk, silently un-hashed and unowned —
 and a LATER `uninstall`, reading the same manifest, has nothing there to
 recognise them by: they read as an ordinary foreign/untracked path, not as
 something this release ever installed, and are left alone. The manifest
@@ -158,5 +174,50 @@ itself does not warn about this because it has no opinion on why `layers`
 changed; the tool trusts its own evidence file. This is measured behaviour,
 not a guess: `packages/cli/test/upgrade.test.ts` (absent in a generated rig)
 pins the `retired` verdict and the orphaning it causes in "hand-editing
-`layers` down to `[\"process\"]` on a rig that already has the workflow
+`layers` down to `["process"]` on a rig that already has the workflow
 layer retires every workflow file — on disk, unowned, never deleted".
+
+## The exact opt-out procedure, measured (RP-180 round 4, blocker B)
+
+`uninstall --yes` followed by a fresh `init` (no `--layer` flag) reaches
+Core-only in exactly ONE of the two cases that matter, and round 3 stated it
+as though it always worked. Measured on the built CLI, both ways:
+
+- **Nothing on the rig was ever edited.** `uninstall --yes` removes every
+  file it owns — Core and workflow alike — and, because nothing was left to
+  preserve, deletes the manifest too. A fresh `init` then finds no manifest
+  and no workflow files: Core-only, as documented. Measured: 87 files → 0 →
+  a fresh `init` installs 54 (Core only).
+- **Anything was edited — one file is enough.** `uninstall --yes` preserves
+  that one file (and reports it) and, because something was preserved,
+  **keeps the manifest** — still recording `layers: ["process","
+  workflow"]`. The next plain `init` reads that surviving manifest
+  (`effectiveLayers` in `init.ts`: `previous?.layers.includes('workflow')`)
+  and reinstalls the entire workflow layer right back. Measured: 87 files →
+  `uninstall --yes` leaves 2 (the one preserved file plus the manifest) →
+  a plain `init` afterward brings it back to 87, `layers` still both. The
+  "fresh `init`" instruction alone does NOT reach Core-only here — round 3
+  said it did.
+
+**The procedure that actually reaches Core-only when something was
+preserved: pass `--detach`.** `uninstall --yes --detach` performs the
+identical safe removal and then deletes the manifest regardless of what is
+left behind, handing the preserved file(s) over to the operator outright
+(they stay on disk, no longer named by anything). The next plain `init`
+then finds no manifest at all and installs Core only. Measured: 87 → 2
+(the preserved file; no manifest) → a fresh `init` installs 55 (54 Core +
+the one preserved file untouched) with `layers: ["process"]`. No new flag
+was added for this — `--detach` already existed (RP-181) for the identical
+reason: a manifest kept alive only by something it has no business
+prescribing further action over.
+
+Equivalently, without `--detach`: remove the file(s) `uninstall --yes`
+reported as preserved, then remove `.claude/.rig-manifest.json` by hand,
+then run a plain `init`. Both procedures were measured to reach the same
+end state; `--detach` is the one to recommend because it is one command
+instead of a report a human has to read and act on by hand.
+
+Pinned end-to-end on the built CLI in `test/e2e/uninstall.test.ts` (absent in
+a generated rig) › `describe('the opt-out procedure to Core-only, measured
+(RP-180 round 4, blocker B)')`: both cases end in `layers: ["process"]` and
+no un-preserved workflow file left on disk.

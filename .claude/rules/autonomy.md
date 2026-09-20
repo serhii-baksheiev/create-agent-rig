@@ -55,7 +55,7 @@ nothing checks.
      rules for whoever performs the sweep, which is not the run. If that stops
      being true, move them out rather than arguing with the marker. -->
 
-#### The gate is swept from outside, because a run cannot report this on itself
+#### The gate is swept from outside (opt-in workflow layer), because a run cannot report this on itself
 
 **`detect-missed-gate.mjs` and `reconcile-external-prs.mjs` below ship with
 the opt-in workflow layer** (`init --layer workflow`) — see `CLAUDE.md`'s "The
@@ -129,11 +129,16 @@ own cost figures are read next to the lane they do not cover.
   from proper-prefix widening". An entry
   outside the set — ordinary source — is not widening and is accepted. A second
   copy in prose is a copy that goes stale, and this one did. Mechanical:
-  the hook refuses the edit while the unattended flag the `loop` skill writes
-  at claim time is on disk (`.claude/scripts/unattended-flag.mjs`), and does
-  nothing in an attended session. ⚠ It sees edit tool calls only — a
-  shell redirect into a protected file is not one — and the flag, not
-  the run, is what arms it; its header states the rest of its limits.
+  the hook refuses the edit while the unattended flag is on disk
+  (`.claude/scripts/unattended-flag.mjs`, Core — usable by hand on any rig),
+  and does nothing in an attended session. **On a Core-only rig nothing arms
+  this flag automatically** — the `loop` skill, opt-in workflow layer, is
+  what writes it at claim time; without that layer the flag is only ever set
+  by someone running `unattended-flag.mjs on` directly, so `guard-rulebook`'s
+  unattended-only refusal stays dormant unless an operator arms it by hand.
+  ⚠ It sees edit tool calls only — a shell redirect into a protected file is
+  not one — and the flag, not the run, is what arms it; its header states
+  the rest of its limits.
 
 ## Stop rules — by work-state, not by feelings
 
@@ -169,9 +174,11 @@ these lines is the failure mode:
   `REGRESSION` is what makes the next selection refuse to build on it, and
   `HEALTHY` is the only thing that clears one — a run that reverts, redeploys,
   verifies and then stops at "healthy → done" has left the refusal latched
-  behind it. Without the layer, there is no automated selection to gate: the
-  verify-then-revert rule still applies, and the record of it is the human
-  one (the journal), not a file `queue/index.mjs next` reads. The procedure
+  behind it. Without the layer, there is no automated selection to gate, and
+  no journal either (workflow layer only, `PLAN.md`) — the verify-then-revert
+  rule still applies, and the record of it is whatever this project's own
+  operational notes are (a PR description, a commit message, telling the
+  human directly), never a file `queue/index.mjs next` reads. The procedure
   behind the verdict is further down this file; the verdict is here because a
   compacted run has to carry it at the moment it is under the most pressure.
 
@@ -195,23 +202,26 @@ logs — the target's README says which). The verdict is binary:
 **`run-state.mjs` and the mechanism below ship with the opt-in workflow
 layer** (`init --layer workflow`). The rule — verify before calling a deploy
 done, revert first on a regression — applies regardless; without this layer
-there is no automated selection to gate, so recording the verdict is the
-human record (the journal) rather than a file the next `queue/index.mjs next`
-reads.
+there is no automated selection to gate, and no journal either (workflow
+layer only, `PLAN.md`) — recording the verdict is whatever this project's own
+operational notes are (a PR description, a commit message, telling the human
+directly), never a file the next `queue/index.mjs next` reads.
 
-**Record the verdict where the next selection reads it**, or it stops nothing —
-an unattended run's memory of "the deploy went badly" does not survive a
-compaction, and the queue hands out the next item regardless:
+**Record the verdict where the next selection reads it** (opt-in workflow
+layer), or it stops nothing — an unattended run's memory of "the deploy went
+badly" does not survive a compaction, and the queue hands out the next item
+regardless:
 
 ```sh
 node .claude/scripts/run-state.mjs deploy REGRESSION    # or HEALTHY
 ```
 
-It writes into the run directory the `loop` skill declared, and the next
-`queue/index.mjs next` refuses to select on a `REGRESSION` — which is what makes
-"start no new work on top of it" a mechanism rather than a resolution. In an
-attended session with no run directory the command refuses, and that is
-correct: there is no run for the verdict to belong to.
+It writes into the run directory the `loop` skill (opt-in workflow layer)
+declared, and the next `queue/index.mjs next` refuses to select on a
+`REGRESSION` — which is what makes "start no new work on top of it" a
+mechanism rather than a resolution. In an attended session with no run
+directory the command refuses, and that is correct: there is no run for the
+verdict to belong to.
 
 ## Escalation format
 

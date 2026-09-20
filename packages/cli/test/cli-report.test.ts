@@ -192,6 +192,37 @@ describe('the upgrade plan header states what it knows, not what it infers', () 
     expect(line).toMatch(/matching files against released versions/);
   });
 
+  // RP-180 round 4, blocker A(4): a bootstrapped run that inferred the
+  // workflow layer from disk says so, and from how much evidence — never
+  // silently. Round 3's plan had no such line at all.
+  it('says the workflow layer was inferred from disk, and from how much of it, on a bootstrapped workflow rig', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await rm(abs(MANIFEST_REL));
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const line = lineMatching(run.stdout, /workflow layer inferred/i);
+    expect(line, 'the plan printed no line about the inferred layer at all').toBeTruthy();
+    expect(line).toMatch(/inferred from \d+ of \d+ files on disk/);
+  });
+
+  // The reverse: a Core-only rig with a single stray workflow-layer file,
+  // bootstrapped, says the file was seen and left alone — never claims the
+  // layer.
+  it('says a stray workflow-layer file was seen and left below quorum, never adopted, on a bootstrapped Core-only rig', async () => {
+    await installRig();
+    await mkdir(path.dirname(abs('journal/README.md')), { recursive: true });
+    await writeFile(abs('journal/README.md'), 'not a rig file\n');
+    await rm(abs(MANIFEST_REL));
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const line = lineMatching(run.stdout, /workflow-layer files found on disk/i);
+    expect(line, 'the plan printed no line about the stray file at all').toBeTruthy();
+    expect(line).toMatch(/below quorum/i);
+    expect(line).not.toMatch(/inferred/i);
+  });
+
   it.each([
     'retired.md\n  - forged destructive action',
     `retired.md${String.fromCharCode(27)}[2Jforged destructive action`,
