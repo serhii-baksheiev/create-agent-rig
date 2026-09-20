@@ -66,6 +66,33 @@ describe('create-agent-rig uninstall', () => {
     expect(result.stdout).toMatch(/nothing to uninstall/i);
   });
 
+  // `applyUninstall`'s `noManifest` branch names `outcome: 'uninstalled'` on
+  // this leg specifically — added by the same commit that made a `--dry-run`
+  // over the identical repository state name none at all (the test right
+  // below this one). Neither leg had e2e coverage before now.
+  it('--json over a repository with no rig reports outcome "uninstalled" — nothing installed IS an end state on a real run', async () => {
+    const result = await runCli(['uninstall', '--json']);
+    expect(result.code).toBe(0);
+    const lines = result.stdout.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const payload = JSON.parse(lines[0]!);
+    expect(payload.outcome).toBe('uninstalled');
+    expect(payload.manifestRemoved).toBe(false);
+    expect(payload.removed).toEqual([]);
+    expect(payload.error).toBeUndefined();
+  });
+
+  it('--dry-run --json over a repository with no rig carries no outcome at all', async () => {
+    const result = await runCli(['uninstall', '--dry-run', '--json']);
+    expect(result.code).toBe(0);
+    const lines = result.stdout.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const payload = JSON.parse(lines[0]!);
+    expect(payload.outcome).toBeUndefined();
+    expect(payload.manifestRemoved).toBe(false);
+    expect(payload.removed).toEqual([]);
+  });
+
   it('--dry-run reports the plan and removes nothing', async () => {
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
     expect((await runCli(['init'])).code).toBe(0);

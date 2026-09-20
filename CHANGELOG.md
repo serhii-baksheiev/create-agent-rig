@@ -122,6 +122,24 @@ a template any generated rig receives.
   hook is protected instead of a guessed subset) or one edited inside the
   confirmation-prompt window, re-checked immediately before the first hook
   removal, since hook files sort ahead of the wiring that references them.
+  **Protection also now follows a hook's own imports to a fixed point**: a
+  wired hook is not self-contained (`guard-bash.mjs` imports
+  `.claude/hooks/lib/hook-input.mjs`, `.claude/scripts/stop-flag.mjs`,
+  `.claude/scripts/lib/shell-tools.mjs`, …), and protecting only the
+  directly-named hook while deleting what it imports left every one of
+  those dying at module resolution with exit 1 — silently inert, since a
+  `PreToolUse` hook that exits non-2 is non-blocking. The walk is bounded by
+  the fixed set of paths this release installs, not by input size. Two other
+  apply-time-only fixes in the same area: the removal loop now re-reads a
+  wiring file's bytes fresh, immediately before that file's own removal,
+  instead of reusing a copy `protectedHooksFor` read before the loop even
+  started (an edit landing in that window was previously missed); and a
+  filesystem error surfacing from the new apply-time hook-protection re-check
+  itself is now caught the same way `planUninstall`'s own errors are, so
+  `--json` still gets its one promised object rather than a bare stack trace.
+  A manifest key with more path segments than any real path this release ever
+  installs is now refused outright before it reaches the native path-join
+  call that segment count could otherwise overflow.
   Every ancestor check now makes two independent tests per segment, not one:
   the existing symlink/type classification, and a separate `realpath`
   containment check that does not read that classification at all — the

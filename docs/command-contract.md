@@ -933,17 +933,38 @@ time: `planUninstall`'s own per-file pass can only see the wiring file's
 state as it was when planning ran, so a wiring file still pristine then but
 edited — or replaced with a symlink — in the confirmation-prompt window is
 re-checked again, immediately before the first hook removal, using the SAME
-protection logic against current disk state. A wiring file this command
-cannot safely READ at that point (itself a symlink, or reached through one)
-protects every hook path this release owns, not a computed subset — this
-command has no safe way to learn which hooks an unsafe entry actually
-references without reading through it, and protecting too many is the safe
-direction; protecting too few is the bug this closes. Such a hook is reported
-in `--json`'s `preserved` array with the identical reason wording
-`planUninstall` itself uses for a hook it protects at plan time (`still
-referenced by <wiring path>, which was preserved as edited — removing this
-file would leave it pointing at nothing`), so a reader cannot tell which pass
-discovered the protection from the wording alone.
+protection logic against current disk state.
+
+**Protection is not limited to the hook files a wiring file names directly.**
+A directly-wired hook (`.claude/hooks/guard-bash.mjs`) is not
+self-contained — it imports its own dependencies, some under
+`.claude/hooks/lib/` and some across into `.claude/scripts/`
+(`stop-flag.mjs`, `unattended-flag.mjs`, `lib/shell-tools.mjs`, …), and every
+one of those is itself an owned path a manifest can mark `remove` on its own
+account. Protecting only the directly-named hook and deleting what it
+imports leaves that hook dying at module resolution with exit 1 on every
+call the moment the wiring file's own protection kicks in — and since a
+`PreToolUse` hook that exits non-2 is non-blocking, the tool call proceeds
+anyway. So a protected hook's relative `.mjs` imports are walked to a fixed
+point, and everything found that this release owns is protected too, the
+same way and under the same wiring path. The walk is bounded by construction
+— it only ever follows an import target that is already one of the ~80 paths
+this release installs, and a visited set stops it re-reading any of them
+twice — never by a budget on input size.
+
+A wiring file this command cannot safely READ at that point (itself a
+symlink, or reached through one) protects every hook path this release owns
+— matched structurally (any `.mjs` file under `.claude/hooks/`, at any
+depth, not only the top level), and then walked the identical way — not a
+computed subset: this command has no safe way to learn which hooks an unsafe
+entry actually references without reading through it, and protecting too
+many is the safe direction; protecting too few is the bug this closes. Such
+a hook is reported in `--json`'s `preserved` array with the identical reason
+wording `planUninstall` itself uses for a hook it protects at plan time
+(`still referenced by <wiring path>, which was preserved as edited —
+removing this file would leave it pointing at nothing`), so a reader cannot
+tell which pass, or which depth of the import walk, discovered the
+protection from the wording alone.
 
 **`--detach`** performs the identical safe cleanup — every check on this page
 applies exactly the same, including the two manifest-digest checkpoints and

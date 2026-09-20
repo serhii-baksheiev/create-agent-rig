@@ -54,9 +54,33 @@ export function isSafeSubstitutionValue(value: string): boolean {
 }
 
 /**
+ * The most path segments any legitimate `rel` this codebase constructs or
+ * tests ever needs. The deepest path this release's own install set ships is
+ * `.claude/skills/worktree-task/SKILL.md` (4 segments); this leaves 4x
+ * headroom for a rule, skill or hook nested one or two levels deeper someday,
+ * without coming anywhere near the cost boundary below.
+ *
+ * `rel` is not always this command's own construction, though — a rig
+ * manifest is committed input (`uninstall`'s `files`/`kept` keys reach
+ * {@link resolveInside} through `onDisk`, one key at a time, before ownership
+ * is even checked), so a hostile one can name a key of unbounded segment
+ * count. `path.resolve(base, ...segments)` below is a SPREAD over
+ * `segments`, and past roughly 65,000–130,000 elements (engine-dependent)
+ * that raises an uncaught `RangeError: Maximum call stack size exceeded` —
+ * not caught anywhere on this path, so it would surface as a raw stack trace
+ * instead of the refusal this function exists to return, and under `--json`
+ * as a bare message instead of the promised payload. This is the "no spread
+ * of an array whose length is unbounded by input" case named in
+ * `.claude/rules/invariants.md`'s fail-open rule; the cap below closes it by
+ * refusing before the spread is ever reached.
+ */
+const MAX_PATH_SEGMENTS = 16;
+
+/**
  * `rel` resolved under `root`, or `null` when it would land anywhere else —
- * including an absolute path, an empty path, and the classic sibling
- * (`/tmp/rig` must not contain `/tmp/rig-evil`).
+ * including an absolute path, an empty path, the classic sibling
+ * (`/tmp/rig` must not contain `/tmp/rig-evil`), or a segment count past
+ * {@link MAX_PATH_SEGMENTS}.
  *
  * This is the containment behind every write an upgrade makes. It is deliberate
  * belt-and-braces: the values that build `rel` are validated where they are
@@ -65,6 +89,7 @@ export function isSafeSubstitutionValue(value: string): boolean {
 export function resolveInside(root: string, rel: string): string | null {
   if (rel === '' || path.isAbsolute(rel)) return null;
   const segments = rel.split('/');
+  if (segments.length > MAX_PATH_SEGMENTS) return null;
   // Refused, not repaired: joining an absolute or `..`-bearing path onto the
   // root would silently turn hostile input into a plausible-looking write.
   if (segments.some((segment) => !isSafeSegment(segment))) return null;

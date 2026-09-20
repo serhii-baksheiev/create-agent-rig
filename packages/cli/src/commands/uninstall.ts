@@ -401,12 +401,81 @@ async function readManifestBytes(repoDir: string): Promise<Buffer | null> {
   return readFile(onDisk(repoDir, MANIFEST_REL));
 }
 
-/** Matches an owned hook file's path shape — `.claude/hooks/<name>.mjs`. */
-const HOOK_REL_PATTERN = /^\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs$/;
+/**
+ * Matches any `.mjs` file anywhere under `.claude/hooks/` — deliberately not
+ * anchored to the top level, so it also matches `.claude/hooks/lib/hook-input.mjs`.
+ * Used only in the `unsafe`-wiring branch below, to seed the closure walk from
+ * every owned hook path, not only the ones a readable wiring file happens to
+ * name directly.
+ */
+const HOOK_REL_PATTERN = /^\.claude\/hooks\/.+\.mjs$/;
+
+/**
+ * A relative ESM import target inside a `.mjs` file — `from './x.mjs'` or
+ * `from '../y/z.mjs'`. Only a RELATIVE specifier is ever matched (a bare one
+ * names a package, not a file this rig owns), and only one ending in `.mjs` —
+ * the shape every hook and lib module in this fleet's own tree uses.
+ */
+const RELATIVE_MJS_IMPORT = /from\s+['"](\.\.?\/[^'"]+\.mjs)['"]/g;
 
 /** Reason named when a hook file is preserved because the wiring file that still calls it is itself preserved. */
 export function hookStillReferencedReason(wiringRel: string): string {
   return `still referenced by ${wiringRel}, which was preserved as edited — removing this file would leave it pointing at nothing`;
+}
+
+/**
+ * `seedRel` plus everything it (transitively) imports that is itself one of
+ * `ownedPaths` — each one added to `protectedHooks` under `wiringRel`,
+ * mutating both maps in place.
+ *
+ * A directly-wired hook file (`.claude/hooks/guard-bash.mjs`) is not
+ * self-contained: it imports `.claude/hooks/lib/hook-input.mjs`,
+ * `.claude/scripts/lib/shell-tools.mjs`, `.claude/scripts/stop-flag.mjs` — its
+ * own dependencies, which are themselves owned paths a manifest can mark
+ * `remove` on their own account. `hookFilesReferencedIn`/{@link HOOK_REL_PATTERN}
+ * only ever name the hook files a wiring file calls DIRECTLY; without this
+ * walk, a preserved `.claude/settings.json` protects `guard-bash.mjs` itself
+ * but not what it imports, and the removal loop deletes `hook-input.mjs` out
+ * from under it. `guard-bash.mjs` then dies at module resolution with exit 1
+ * on every call — a `PreToolUse` hook that exits non-2 is non-blocking, so
+ * the Never tier, the credential guard, `block-no-verify` and the kill switch
+ * all go silently inert while `.claude/settings.json` still wires them. This
+ * is `safe-path.ts`'s "a brake that looks installed and is not".
+ *
+ * Provably bounded, per `.claude/rules/invariants.md`'s fail-open rule: no
+ * recursion, and `queue`/`visited` are driven entirely by `ownedPaths` — a
+ * fixed set this release installs (currently on the order of 80 entries) — so
+ * the walk can touch each owned path at most once no matter how many, or how
+ * large, the files it reads are. An import naming a path NOT in `ownedPaths`
+ * (a package specifier, or a relative path this release does not ship) is
+ * never followed and never read.
+ */
+async function protectHookAndDeps(
+  repoDir: string,
+  ownedPaths: ReadonlySet<string>,
+  seedRel: string,
+  wiringRel: string,
+  protectedHooks: Map<string, string>,
+  visited: Set<string>,
+): Promise<void> {
+  const queue = [seedRel];
+  while (queue.length > 0) {
+    const rel = queue.pop()!;
+    if (visited.has(rel)) continue;
+    visited.add(rel);
+    if (!protectedHooks.has(rel)) protectedHooks.set(rel, wiringRel);
+    let text: string;
+    try {
+      text = await readFile(onDisk(repoDir, rel), 'utf8');
+    } catch {
+      continue; // gone, or unreadable — nothing further to walk from here
+    }
+    const dir = path.posix.dirname(rel);
+    for (const match of text.matchAll(RELATIVE_MJS_IMPORT)) {
+      const resolved = path.posix.normalize(path.posix.join(dir, match[1]!));
+      if (ownedPaths.has(resolved) && !visited.has(resolved)) queue.push(resolved);
+    }
+  }
 }
 
 /**
@@ -433,11 +502,16 @@ export function hookStillReferencedReason(wiringRel: string): string {
  *
  * A wiring file this command cannot safely READ (`status === 'unsafe'` —
  * itself a symlink, or reached through one) still gets its hooks protected:
- * every hook path this release owns, not a computed subset, because reading
- * an unsafe entry to learn exactly which hooks it names is precisely what
- * `regularFileStatus` exists to refuse. Protecting too many hooks is the
- * safe direction; protecting too few — leaving a settings file the run kept
- * pointing at a hook it just deleted — is the bug this exists to close.
+ * every owned hook path {@link HOOK_REL_PATTERN} matches, not a computed
+ * subset, because reading an unsafe entry to learn exactly which hooks it
+ * names is precisely what `regularFileStatus` exists to refuse. Protecting
+ * too many hooks is the safe direction; protecting too few — leaving a
+ * settings file the run kept pointing at a hook it just deleted — is the bug
+ * this exists to close. Each matched hook is also run through
+ * {@link protectHookAndDeps}: `HOOK_REL_PATTERN` only reaches paths under
+ * `.claude/hooks/`, and a hook's own dependencies reach across that boundary
+ * into `.claude/scripts/` (`stop-flag.mjs`, `unattended-flag.mjs`, …) — the
+ * pattern alone does not, and cannot, name those.
  */
 async function protectedHooksFor(
   repoDir: string,
@@ -446,6 +520,7 @@ async function protectedHooksFor(
 ): Promise<{ protectedHooks: Map<string, string>; wiringBytes: Map<string, Buffer> }> {
   const protectedHooks = new Map<string, string>();
   const wiringBytes = new Map<string, Buffer>();
+  const visited = new Set<string>();
   for (const wiringRel of WIRING_PATHS) {
     const recorded = recordedHashFor(wiringRel);
     if (recorded === undefined || !ownedPaths.has(wiringRel)) continue;
@@ -453,8 +528,8 @@ async function protectedHooksFor(
     if (status === 'absent') continue;
     if (status === 'unsafe') {
       for (const rel of ownedPaths) {
-        if (HOOK_REL_PATTERN.test(rel) && !protectedHooks.has(rel)) {
-          protectedHooks.set(rel, wiringRel);
+        if (HOOK_REL_PATTERN.test(rel)) {
+          await protectHookAndDeps(repoDir, ownedPaths, rel, wiringRel, protectedHooks, visited);
         }
       }
       continue;
@@ -463,7 +538,7 @@ async function protectedHooksFor(
     wiringBytes.set(wiringRel, current);
     if (sha256(current) === recorded) continue; // pristine — removed, not preserved
     for (const hook of hookFilesReferencedIn(current.toString('utf8'))) {
-      if (!protectedHooks.has(hook)) protectedHooks.set(hook, wiringRel);
+      await protectHookAndDeps(repoDir, ownedPaths, hook, wiringRel, protectedHooks, visited);
     }
   }
   return { protectedHooks, wiringBytes };
@@ -749,8 +824,14 @@ export async function applyUninstall(
   // time), which is exactly the case this re-check exists to catch — a
   // wiring path the plan already preserved protected its hooks in the plan's
   // own actions already, and needs no second pass here.
+  //
+  // `wiringBytes` is deliberately NOT taken from this call: it is the read
+  // this pass itself performs of a wiring file's bytes, at the SAME
+  // too-early point in time the comment below explains — reusing it at the
+  // removal site would just reintroduce the bug this apply-time re-check
+  // exists to close.
   const ownedPaths = await rigOwnedPaths();
-  const { protectedHooks: applyTimeProtectedHooks, wiringBytes } = await protectedHooksFor(
+  const { protectedHooks: applyTimeProtectedHooks } = await protectedHooksFor(
     repoDir,
     ownedPaths,
     (wiringRel) => toRemove.find((a) => a.rel === wiringRel)?.recordedHash,
@@ -788,10 +869,21 @@ export async function applyUninstall(
       // above cannot see a plain edit, and the confirmation prompt between
       // the plan and this call is exactly the window one could happen in. A
       // mismatch is not suspicious the way a symlink is — it is skipped, not
-      // aborted, and the run keeps going. A wiring file's bytes may already
-      // be cached from the hook-protection re-check above.
+      // aborted, and the run keeps going.
+      //
+      // Read FRESH here, never from `wiringBytes` — that cache was filled by
+      // `protectedHooksFor` BEFORE this removal loop started, so for
+      // `.claude/settings.json` / `.codex/hooks.json` it is not "immediately
+      // before removal" the way `UninstallAction.recordedHash`'s own contract
+      // promises: it is the whole loop above this file's turn (on the order
+      // of a hundred unlinks plus directory cleanups). An edit landing in
+      // that span would be missed and the modified wiring file deleted —
+      // exactly what this re-check, and `changedSincePlanning`, exist to
+      // prevent. (`wiringBytes` is still used at plan time, in `planUninstall`
+      // above — there it IS the immediate read, since nothing runs between it
+      // and that file's own verdict.)
       if (recordedHash !== undefined) {
-        const current = wiringBytes.get(rel) ?? (await readFile(onDisk(repoDir, rel)));
+        const current = await readFile(onDisk(repoDir, rel));
         if (sha256(current) !== recordedHash) {
           changedSincePlanning.push(rel);
           continue;

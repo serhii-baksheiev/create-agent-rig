@@ -15,6 +15,7 @@ import {
   planUninstall,
 } from './commands/uninstall.js';
 import type {
+  ApplyUninstallResult,
   UninstallAction,
   UninstallOutcome,
   UninstallPlan,
@@ -649,7 +650,32 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
     }
   }
 
-  const result = await applyUninstall(repoDir, plan, { detach });
+  let result: ApplyUninstallResult;
+  try {
+    result = await applyUninstall(repoDir, plan, { detach });
+  } catch (error) {
+    // Mirrors the `planUninstall` try/catch above, for the same reason: the
+    // apply-time hook-protection re-check added in the same change as this
+    // comment reads the filesystem again (`regularFileStatus`, `readFile`)
+    // OUTSIDE of `applyUninstall`'s own per-file try/catch, so an EACCES or
+    // ENOTDIR surfacing from THAT read must not escape as a bare stack trace
+    // with no JSON on stdout — `--json` promises exactly one object there
+    // regardless of which kind of failure this is.
+    const message = error instanceof Error ? error.message : String(error);
+    if (json) {
+      process.stdout.write(
+        `${JSON.stringify(
+          uninstallPayload(false, plan.actions, [], { manifestRemoved: false, error: message }),
+        )}\n`,
+      );
+      return 1;
+    }
+    if (error instanceof UninstallError) {
+      process.stderr.write(`${message}\n`);
+      return 1;
+    }
+    throw error;
+  }
 
   if (result.error !== undefined) {
     if (json) {

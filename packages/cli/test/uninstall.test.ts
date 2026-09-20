@@ -1,4 +1,5 @@
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -9,6 +10,7 @@ import {
   rmdir,
   stat,
   symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,7 +22,12 @@ import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.j
 import { hookFilesReferencedIn } from '../src/lib/init-settings.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
-import { onlyOnWindows, skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
+import {
+  modeBitsDeny,
+  onlyOnWindows,
+  skipUnless,
+  symlinksAvailable,
+} from '../../../test/helpers/env.js';
 
 let repo: string;
 
@@ -226,6 +233,27 @@ describe('planUninstall — per-file verdicts', () => {
     expect(Date.now() - start).toBeLessThan(2000);
   });
 
+  // `resolveInside` (`safe-path.ts`) spreads a manifest key's path segments
+  // into `path.resolve(base, ...segments)` — a call every manifest key
+  // reaches, before ownership is even checked. Past roughly 65,000–130,000
+  // array elements (engine-dependent) a spread like that raises an uncaught
+  // `RangeError: Maximum call stack size exceeded`, not the `UninstallError`
+  // refusal this command promises for hostile input — surfacing as a bare
+  // stack trace instead of the documented payload. This uses a count an order
+  // of magnitude past that boundary to stay decisive regardless of engine.
+  it('refuses a manifest key with an extreme number of path segments cleanly — no RangeError, no crash', async () => {
+    await installRig();
+    const hostileRel = `${'a/'.repeat(400_000)}pre-commit`;
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.files[hostileRel] = sha256('whatever the manifest claims this is');
+    await writeManifest(repo, manifest);
+
+    const start = Date.now();
+    await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
   // A manifest this rig ever wrote never lists the same path in both `files`
   // and `kept` — `planUpgrade` explicitly excludes a `kept` path the moment
   // it becomes one the rig vouches for. A manifest that does is therefore
@@ -380,6 +408,50 @@ describe('planUninstall — wiring files', () => {
       expect(await exists(hookRel), hookRel).toBe(true);
     }
   });
+
+  // A wired hook is not self-contained: `guard-bash.mjs` imports
+  // `.claude/hooks/lib/hook-input.mjs` and reaches across into
+  // `.claude/scripts/` for `stop-flag.mjs` and `lib/shell-tools.mjs`;
+  // `guard-secret-file.mjs` imports `.claude/scripts/lib/secrets.mjs` and
+  // `.claude/hooks/lib/edit-input.mjs`. None of those four are named by
+  // `hookFilesReferencedIn` at all — it only ever finds the hook files a
+  // wiring file calls DIRECTLY — so this test names every expected path
+  // LITERALLY rather than deriving the expectation from that function. That
+  // derivation is exactly what let three earlier review rounds ship this gap:
+  // both regression tests guarding hook protection asserted precisely the set
+  // the implementation itself computed, so an implementation that
+  // under-protects and a test that mirrors it agree with each other and with
+  // nothing else.
+  it("preserves a hook's own imported dependencies, named literally — including ones a wiring file never references directly — when the wiring is preserved as modified", async () => {
+    await installRig();
+    const HOOK_INPUT = '.claude/hooks/lib/hook-input.mjs';
+    const EDIT_INPUT = '.claude/hooks/lib/edit-input.mjs';
+    const SECRETS_LIB = '.claude/scripts/lib/secrets.mjs';
+    const STOP_FLAG = '.claude/scripts/stop-flag.mjs';
+    const deps = [HOOK_INPUT, EDIT_INPUT, SECRETS_LIB, STOP_FLAG];
+    // Sanity: the literal paths above are really what this fixture installs,
+    // so a future change to the shipped hook tree fails this assertion first,
+    // loudly, rather than the test below passing vacuously.
+    for (const dep of deps) {
+      expect(await exists(dep), dep).toBe(true);
+    }
+
+    const original = await read(SETTINGS);
+    const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+    await write(SETTINGS, edited);
+
+    const plan = await planUninstall(repo);
+    for (const dep of deps) {
+      const action = actionFor(plan, dep);
+      expect(action?.verdict, dep).toBe('preserved');
+      expect(action?.reason, dep).toContain(SETTINGS);
+    }
+
+    await applyUninstall(repo, plan);
+    for (const dep of deps) {
+      expect(await exists(dep), dep).toBe(true);
+    }
+  });
 });
 
 describe('applyUninstall — the happy path', () => {
@@ -471,6 +543,27 @@ describe('applyUninstall — the happy path', () => {
     const result = await applyUninstall(repo, second);
     expect(result.removed).toEqual([]);
     expect(result.manifestRemoved).toBe(false);
+    // Non-dry-run: "nothing installed, nothing to do" IS an end state a real
+    // run reached, and `UninstallOutcome`'s own doc comment names it —
+    // `outcome: 'uninstalled'` on this leg specifically, not merely absent.
+    expect(result.outcome).toBe('uninstalled');
+    expect(result.error).toBeUndefined();
+  });
+
+  // The sibling of the test above: a `--dry-run` never reaches an end state
+  // to name, and `applyUninstall`'s own `noManifest` branch says so with a
+  // ternary on `options.dryRun` — added the same commit (c9164f7) that made
+  // the non-dry leg say `outcome: 'uninstalled'` instead of always naming it,
+  // reversing what the previous commit had asserted. Nothing exercised this
+  // leg before now: `outcome` must stay absent here exactly as it does on
+  // every other `--dry-run` result, `noManifest` included.
+  it('a dry run over a repository with no manifest at all names no outcome either', async () => {
+    const plan = await planUninstall(repo);
+    expect(plan.noManifest).toBe(true);
+    const result = await applyUninstall(repo, plan, { dryRun: true });
+    expect(result).toEqual({ removed: [], manifestRemoved: false });
+    expect(result.outcome).toBeUndefined();
+    expect(result.error).toBeUndefined();
   });
 
   it('leaves no empty .claude directory once every managed file and the manifest are gone', async () => {
@@ -894,6 +987,28 @@ describe('applyUninstall — an interrupted run', () => {
     expect(result.remaining).toContain(failingRel);
     expect(result.remaining).not.toContain(MANIFEST_REL);
   });
+
+  // The apply-time hook-protection re-check reads the filesystem again
+  // (`regularFileStatus`, `readFile` on each wiring path) OUTSIDE of this
+  // function's own per-removal try/catch — so a filesystem error there
+  // (EACCES, ENOTDIR) propagates as a REJECTED promise, not a result object
+  // naming `error`. This is what makes wrapping the `applyUninstall` call in
+  // `index.ts` in its own try/catch (mirroring `planUninstall`'s) load-
+  // bearing rather than defensive: without it, this exact rejection would
+  // have escaped as a bare stack trace with no JSON on stdout.
+  it('propagates an unexpected filesystem error rather than swallowing it, when the apply-time hook-protection re-check cannot read a wiring file', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    await installRig();
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, SETTINGS)?.verdict).toBe('remove');
+
+    await chmod(abs(SETTINGS), 0o000);
+    try {
+      await expect(applyUninstall(repo, plan)).rejects.toThrow();
+    } finally {
+      await chmod(abs(SETTINGS), 0o644);
+    }
+  });
 });
 
 // `UninstallAction` carries the plan's recorded hash for every `remove`
@@ -968,6 +1083,46 @@ describe('applyUninstall — a file that changed after planning', () => {
     }
   });
 
+  // `UninstallAction.recordedHash`'s own contract is that a wiring file's
+  // bytes are re-read "immediately before" ITS OWN removal. Reusing a copy
+  // read by `protectedHooksFor` BEFORE the removal loop even started widens
+  // that window to the whole loop — every other file's removal and directory
+  // cleanup in between. This forces an edit to land in exactly that widened
+  // window (via the `removeFile` test seam, on the FIRST file the loop
+  // removes) to prove the promised instant, not the wider one, is what is
+  // actually checked.
+  it("re-reads a wiring file's bytes fresh immediately before ITS OWN removal — an edit landing after `protectedHooksFor`'s own earlier read, but before this file's turn, is still caught", async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, SETTINGS)?.verdict).toBe('remove');
+
+    const toRemoveRels = plan.actions.filter((a) => a.verdict === 'remove').map((a) => a.rel);
+    const settingsIndex = toRemoveRels.indexOf(SETTINGS);
+    expect(settingsIndex).toBeGreaterThan(0); // something removes before it
+    const firstRel = toRemoveRels[0]!;
+    expect(firstRel).not.toBe(SETTINGS);
+
+    const original = await read(SETTINGS);
+    let editedYet = false;
+    const removeFile = async (absolutePath: string): Promise<void> => {
+      if (!editedYet && absolutePath === abs(firstRel)) {
+        editedYet = true;
+        // Simulates an edit landing after `protectedHooksFor`'s pre-loop read
+        // of SETTINGS (already taken by the time `applyUninstall` reaches
+        // this callback) but before the loop reaches SETTINGS's own turn —
+        // exactly the span the stale `wiringBytes` cache used to paper over.
+        await write(SETTINGS, `${original}\n<!-- edited mid-removal-loop -->\n`);
+      }
+      await unlink(absolutePath);
+    };
+
+    const result = await applyUninstall(repo, plan, { removeFile });
+    expect(result.changedSincePlanning).toContain(SETTINGS);
+    expect(result.removed).not.toContain(SETTINGS);
+    expect(await exists(SETTINGS)).toBe(true);
+    expect(await read(SETTINGS)).toContain('edited mid-removal-loop');
+  });
+
   onlyWhereSymlinksExist(
     'never removes a hook file referenced by wiring that is itself a symlink, even though it cannot safely read which hooks the wiring names',
     async () => {
@@ -989,6 +1144,47 @@ describe('applyUninstall — a file that changed after planning', () => {
         await applyUninstall(repo, plan);
         for (const hookRel of referencedHooks) {
           expect(await exists(hookRel), hookRel).toBe(true);
+        }
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  // The `unsafe`-wiring branch protects every owned hook path structurally
+  // (it cannot safely read the symlinked settings.json to learn which hooks
+  // it names) — but a hook's own dependencies still need the SAME import
+  // walk `protectHookAndDeps` performs for the readable branch above, since
+  // `.claude/scripts/lib/secrets.mjs` and `.claude/scripts/stop-flag.mjs` sit
+  // outside `.claude/hooks/` entirely and no hook-path pattern, however wide,
+  // reaches them on its own. Named literally, not via `hookFilesReferencedIn`
+  // — see the comment on the readable-branch version of this test above.
+  onlyWhereSymlinksExist(
+    "preserves a hook's own imported dependencies, named literally, when the wiring that needs them is itself a symlink",
+    async () => {
+      await installRig();
+      const original = await read(SETTINGS);
+      const HOOK_INPUT = '.claude/hooks/lib/hook-input.mjs';
+      const SECRETS_LIB = '.claude/scripts/lib/secrets.mjs';
+      const STOP_FLAG = '.claude/scripts/stop-flag.mjs';
+      const deps = [HOOK_INPUT, SECRETS_LIB, STOP_FLAG];
+      for (const dep of deps) {
+        expect(await exists(dep), dep).toBe(true);
+      }
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const target = path.join(outside, 'external-settings.json');
+        await writeFile(target, original);
+        await rm(abs(SETTINGS));
+        await symlink(target, abs(SETTINGS));
+
+        const plan = await planUninstall(repo);
+        expect(actionFor(plan, SETTINGS)?.verdict).toBe('preserved');
+
+        await applyUninstall(repo, plan);
+        for (const dep of deps) {
+          expect(await exists(dep), dep).toBe(true);
         }
       } finally {
         await removeFixture(outside);
