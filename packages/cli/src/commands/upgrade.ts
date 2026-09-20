@@ -480,7 +480,7 @@ export async function planUpgrade(
       stacks: [],
       // Carried forward unchanged: `upgrade` refreshes the layers a rig
       // already recorded, it never adds or drops one. Opting in happens
-      // through `init --with-workflow`.
+      // through `init --layer workflow`.
       layers,
       files: nextFiles,
       ...(Object.keys(nextKept).length > 0 ? { kept: nextKept } : {}),

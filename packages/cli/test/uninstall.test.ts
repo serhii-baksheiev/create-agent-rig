@@ -419,7 +419,7 @@ describe('planUninstall — the workflow layer (RP-180)', () => {
   });
 
   it('a workflow-layer file never installed here (Core-only rig) is simply absent from the manifest, never reported "not a path this release installs"', async () => {
-    await installRig(); // Core-only: no --with-workflow
+    await installRig(); // Core-only: no --layer workflow
     const manifest = await readManifest(repo);
     expect(manifest?.files[LOOP_SKILL]).toBeUndefined();
     const plan = await planUninstall(repo);
@@ -1769,7 +1769,7 @@ describe('applyUninstall — a file that changed after planning', () => {
     // the SHAPE: most of the plan stays removable, nowhere near an
     // even split with "preserved". The multiplier was 3 before RP-180; Lean
     // Core's default install (workflow files moved to the opt-in layer,
-    // installRig() here takes no `--with-workflow`) is smaller, so the fixed
+    // installRig() here takes no `--layer workflow`) is smaller, so the fixed
     // superset-sweep footprint (the hooks `settings.json` still wires, and
     // their own shared dependencies) is a bigger share of a smaller whole —
     // measured at removable=36 / preserved=15 (2.4x) on the current Core set.

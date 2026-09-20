@@ -19,7 +19,7 @@ There is exactly one payload — no `--target`, no application skeleton to
 choose between — split into a Lean Core layer, always installed, and an
 **experimental, opt-in workflow layer** (the queue adapter, the `loop` and
 `pr-ship` skills, run-state, the run journal, revalidation, claim-records and
-the PR-lifecycle helpers): pass `--with-workflow` to install it too. `--no-git`
+the PR-lifecycle helpers): pass `--layer workflow` to install it too. `--no-git`
 skips the initial baseline commit; `--no-color` (and `NO_COLOR`) plainens the
 output. Pinned in `packages/cli/test/create.test.ts` › "makes the directory
 and installs the one payload into it" and `test/e2e/generate.test.ts` ›
@@ -30,7 +30,7 @@ Already have a repo? Install the same payload into it directly:
 ```sh
 npx create-agent-rig init                          # rules, gates, stop rules into the current repo
 npx create-agent-rig init --dry-run                # print the plan, write nothing
-npx create-agent-rig init --with-workflow           # also install the opt-in workflow layer
+npx create-agent-rig init --layer workflow          # also install the opt-in workflow layer
 ```
 
 ### Which version you get, and why it matters
@@ -383,7 +383,7 @@ nothing reads the rule. Everything short of the merge stays allowed on purpose:
 finish the task, push the branch, open the PR, write the journal. Stopping
 cleanly must not mean losing work.
 
-**The opt-in workflow layer** (`init --with-workflow`) adds autonomous,
+**The opt-in workflow layer** (`init --layer workflow`) adds autonomous,
 cooperative multi-session workflow governance — experimental, and not part of
 Lean Core. It brings the two sweeps below, the queue adapter, and the `loop`
 and `pr-ship` skills.

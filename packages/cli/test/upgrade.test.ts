@@ -798,7 +798,7 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
 
   it('a rig that explicitly recorded `layers: ["process"]` stays core-only across an upgrade even if workflow files are found on disk', async () => {
     await installRig();
-    // a file placed by hand, never through `init --with-workflow` — the
+    // a file placed by hand, never through `init --layer workflow` — the
     // manifest's own `layers` says this rig never opted in
     await write(QUEUE_CONFIG, '{"adapter":"plan-md"}\n');
     expect((await readManifest(repo))?.layers).toEqual(['process']);

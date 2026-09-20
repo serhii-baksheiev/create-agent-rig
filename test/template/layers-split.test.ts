@@ -1,7 +1,7 @@
 // RP-180: `templates/agent-os/universal/layers.json` splits the single
 // install array into `process` (Lean Core, always installed) and `workflow`
 // (the experimental, opt-in autonomous multi-session layer — `init
-// --with-workflow`). Two things can drift silently once a split like this
+// --layer workflow`). Two things can drift silently once a split like this
 // exists, and this file is the mechanical check for both, per
 // `invariants.md`'s "one mechanism, one implementation":
 //

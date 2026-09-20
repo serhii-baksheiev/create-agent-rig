@@ -3979,7 +3979,7 @@ describe('the loop skill drives the seam, not one tracker', () => {
 });
 
 // RP-180: the queue seam (and the preflight that reads it) is the opt-in
-// workflow layer, not Lean Core — `init --with-workflow` carries it, a
+// workflow layer, not Lean Core — `init --layer workflow` carries it, a
 // default `init` does not.
 describe('composition', () => {
   it('layers.json classifies the queue seam as workflow', async () => {

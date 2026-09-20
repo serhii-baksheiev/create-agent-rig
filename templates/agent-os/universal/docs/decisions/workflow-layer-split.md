@@ -16,7 +16,7 @@ library gets the same review gates and stop rules with none of the
 autonomous, cooperative machinery, and shipping it anyway made every fresh
 rig carry queue-selection semantics it never asked for.
 
-The workflow layer is what a project opts into with `init --with-workflow`:
+The workflow layer is what a project opts into with `init --layer workflow`:
 the queue adapter (`.claude/scripts/queue/`, `.claude/queue.json`), the
 `loop` and `pr-ship` skills, `run-state.mjs`, the run journal
 (`run-journal.mjs` — see the one exception below —, `journal/README.md`),
@@ -92,7 +92,7 @@ getting it backwards is silent and destructive: a manifest written **before**
 this field existed recorded nothing about layers because there was only one
 payload to record — so `parseManifest` reads that absence as `['process',
 'workflow']`, never as `['process']`. A fresh `init` with no
-`--with-workflow` flag writes `['process']` explicitly. The two defaults
+`--layer workflow` flag writes `['process']` explicitly. The two defaults
 point in opposite directions on purpose, and swapping them would make the
 very next `upgrade` on an existing dogfood repository report every workflow
 file it already has as `retired` and stop managing it.
@@ -105,7 +105,7 @@ and both of those already name exactly the paths a given install wrote or
 found, regardless of which `layers.json` array a path happens to live in. Three
 cases, all covered by the same unmodified byte-hash check:
 
-- **A Core-only rig** (no `--with-workflow`) never has a workflow-layer path in
+- **A Core-only rig** (no `--layer workflow`) never has a workflow-layer path in
   `manifest.files` in the first place — `initManifest` only reads the layers
   `effectiveLayers` resolved — so `uninstall` has nothing workflow-shaped to
   remove and reports nothing about it.

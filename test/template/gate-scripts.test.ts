@@ -759,8 +759,8 @@ describe('the sweeps are declared where the rules can point at them', () => {
   });
 
   // RP-180: PR-lifecycle helpers ship with the opt-in workflow layer, not
-  // Lean Core — `init --with-workflow` carries them, a default `init` does not.
-  it('layers.json classifies the scripts as workflow, so `init --with-workflow` carries them', async () => {
+  // Lean Core — `init --layer workflow` carries them, a default `init` does not.
+  it('layers.json classifies the scripts as workflow, so `init --layer workflow` carries them', async () => {
     const manifest = JSON.parse(
       await readFile(
         path.join(repoRoot, 'templates', 'agent-os', 'universal', 'layers.json'),

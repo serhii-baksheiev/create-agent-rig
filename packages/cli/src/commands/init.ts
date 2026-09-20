@@ -57,7 +57,7 @@ export interface InitOptions {
    * A rig that already has the workflow layer installed (its manifest's
    * `layers` includes `'workflow'`) keeps it on a plain re-run of `init` with
    * no flag — this only ever ADDS the layer, never drops one a previous run
-   * or `--with-workflow` already recorded.
+   * or `--layer workflow` already recorded.
    */
   withWorkflow?: boolean;
 }
@@ -71,7 +71,7 @@ interface Manifest {
  * The layers this install writes, given what a previous run (if any)
  * recorded and whether this run opted in.
  *
- * Never narrows what a previous run already installed: `--with-workflow` is
+ * Never narrows what a previous run already installed: `--layer workflow` is
  * additive, and a rig that already carries the workflow layer keeps it on a
  * plain re-run with no flag (RP-180's "existing dogfood repositories can
  * explicitly retain the layer" applies to `init` re-runs, not only to
@@ -231,7 +231,7 @@ export async function initInstallSet(
 }
 
 export interface PlanInitOptions {
-  /** Plan as though `--with-workflow` were given (RP-180). */
+  /** Plan as though `--layer workflow` were given (RP-180). */
   withWorkflow?: boolean;
 }
 

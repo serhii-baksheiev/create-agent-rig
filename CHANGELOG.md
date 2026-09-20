@@ -60,7 +60,7 @@ revalidation/claim-records/PR-lifecycle helpers) is now an experimental,
 opt-in install (RP-180).** A default `init`/`create` installs Lean Core only
 — rules, gates, stop rules, the review-gate agents and their hooks — and
 never the autonomous, cooperative multi-session machinery on top of it. Pass
-`--with-workflow` to `init` or to `create-agent-rig <dir>` to install it too;
+`--layer workflow` to `init` or to `create-agent-rig <dir>` to install it too;
 a rig that already has it keeps it on a plain re-run of `init` with no flag.
 `RigManifest` gains a `layers` field recording the choice, and `upgrade`
 refreshes only the layer(s) a rig recorded. Migration for an existing rig:

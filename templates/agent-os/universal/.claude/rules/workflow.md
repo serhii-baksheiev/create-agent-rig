@@ -62,7 +62,7 @@ travels one path to merge, in this order:
    | `model` | everything else, including anything unclassifiable | `code-reviewer`, **always** |
 
    **`.claude/scripts/decision-router.mjs` ships with the opt-in workflow
-   layer** (`init --with-workflow`; `CLAUDE.md`'s "The opt-in workflow layer"
+   layer** (`init --layer workflow`; `CLAUDE.md`'s "The opt-in workflow layer"
    section). Without it, this table is still the rule — it is just applied by
    a human or the session rather than by the script, and the safe default on
    any doubt is `model`, exactly as the script's own refusal-to-decide reads

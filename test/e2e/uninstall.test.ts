@@ -419,7 +419,7 @@ describe('create-agent-rig uninstall', () => {
   // swallow gets the DIRECT wording back, not the caution one.
   //
   // The precaution-only count was 29 before RP-180: `init` here installs Lean
-  // Core only (no `--with-workflow`), and the superset sweep's precaution
+  // Core only (no `--layer workflow`), and the superset sweep's precaution
   // bucket is every owned `.mjs` path the direct/imported trace does not
   // already account for — a smaller Core install set means fewer such paths,
   // not a change in how the sweep itself works. The 15 genuinely-traced count

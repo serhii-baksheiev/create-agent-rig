@@ -40,20 +40,23 @@ directory.
 
 Options
   --no-git          skip git init + the pristine-template baseline commit
-  --with-workflow   also install the experimental, opt-in workflow layer (the
+  --layer workflow  also install the experimental, opt-in workflow layer (the
                     queue adapter, the loop and pr-ship skills, run-state,
                     journal, revalidation, claim-records, and the PR-lifecycle
-                    helpers) — see init below; default is the core layer only
+                    helpers) — see init below; default is the core layer only.
+                    "workflow" is the only accepted name — process/Core
+                    installs unconditionally and is never named. Repeatable;
+                    repeating the same name is harmless.
   --no-color        plain output (NO_COLOR is respected too)
   --version         print the version (--version --json: the contract handshake,
                     one JSON object with the name, version and contract version)
   -h, --help        this text
 
-Also: create-agent-rig init [--dry-run] [--with-workflow]
+Also: create-agent-rig init [--dry-run] [--layer workflow]
   Install the process layer (rules, gates, stop rules — no architecture
   assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md
   or AGENTS.md.
-  --with-workflow also installs the experimental workflow layer: an
+  --layer workflow also installs the experimental workflow layer: an
   autonomous, cooperative multi-session queue/loop/PR-lifecycle mechanism,
   never required by Lean Core. Without it, only the core layer is installed.
   A rig that already has the workflow layer keeps it on a plain re-run with
@@ -159,12 +162,36 @@ async function runSetup(rawArgs: string[]): Promise<number> {
   }
 }
 
+/**
+ * `--layer <name>`, repeatable (RP-180 round 2: the owner's spelling is
+ * `--layer workflow`, never `--with-workflow`). `workflow` is the only name a
+ * user may opt into today — `process`/Core installs unconditionally and is
+ * never something a user names. Repeating the same name is harmless; naming
+ * anything else is a usage error the caller reports the same way it reports
+ * any other bad flag (message to stderr + USAGE, exit 1) — neither `init` nor
+ * the top-level `create` accepts `--json` today, so there is no JSON error
+ * shape to match here; this follows the one shape those two commands already
+ * use.
+ */
+function resolveLayerFlag(
+  layer: string[] | undefined,
+): { withWorkflow: boolean } | { error: string } {
+  const names = layer ?? [];
+  const unknown = names.find((name) => name !== 'workflow');
+  if (unknown !== undefined) {
+    return {
+      error: `Unknown --layer "${unknown}" — the only accepted layer name is "workflow" (process/Core installs unconditionally and is never named).`,
+    };
+  }
+  return { withWorkflow: names.length > 0 };
+}
+
 async function runInit(rawArgs: string[]): Promise<number> {
   let values: {
     'dry-run'?: boolean;
     force?: boolean;
     'no-color'?: boolean;
-    'with-workflow'?: boolean;
+    layer?: string[];
   };
   try {
     ({ values } = parseArgs({
@@ -175,7 +202,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
         'dry-run': { type: 'boolean' },
         force: { type: 'boolean' },
         'no-color': { type: 'boolean' },
-        'with-workflow': { type: 'boolean' },
+        layer: { type: 'string', multiple: true },
       },
       allowPositionals: false,
     }));
@@ -183,9 +210,14 @@ async function runInit(rawArgs: string[]): Promise<number> {
     process.stderr.write(`${(error as Error).message}\n\n${USAGE}\n`);
     return 1;
   }
+  const layerResult = resolveLayerFlag(values.layer);
+  if ('error' in layerResult) {
+    process.stderr.write(`${layerResult.error}\n\n${USAGE}\n`);
+    return 1;
+  }
   const cwd = process.cwd();
   const dryRun = values['dry-run'] === true;
-  const withWorkflow = values['with-workflow'] === true;
+  const { withWorkflow } = layerResult;
 
   // `init` adopts a repo the rig knows nothing about. Run inside a rig `create`
   // generated — reachable when its CLAUDE.md was deleted — it is the wrong
@@ -862,7 +894,7 @@ async function main(): Promise<number> {
     json?: boolean;
     'no-git'?: boolean;
     'no-color'?: boolean;
-    'with-workflow'?: boolean;
+    layer?: string[];
   };
   try {
     ({ positionals, values } = parseArgs({
@@ -875,7 +907,7 @@ async function main(): Promise<number> {
         json: { type: 'boolean' },
         'no-git': { type: 'boolean' },
         'no-color': { type: 'boolean' },
-        'with-workflow': { type: 'boolean' },
+        layer: { type: 'string', multiple: true },
       },
       allowPositionals: true,
     }));
@@ -903,10 +935,16 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  const layerResult = resolveLayerFlag(values.layer);
+  if ('error' in layerResult) {
+    process.stderr.write(`${layerResult.error}\n\n${USAGE}\n`);
+    return 1;
+  }
+
   const { projectDir, projectName } = await createProject(dirArg, {
     cwd: process.cwd(),
     git: values['no-git'] !== true,
-    withWorkflow: values['with-workflow'] === true,
+    withWorkflow: layerResult.withWorkflow,
   });
 
   const palette = makePalette(

@@ -58,7 +58,7 @@ nothing checks.
 #### The gate is swept from outside, because a run cannot report this on itself
 
 **`detect-missed-gate.mjs` and `reconcile-external-prs.mjs` below ship with
-the opt-in workflow layer** (`init --with-workflow`) — see `CLAUDE.md`'s "The
+the opt-in workflow layer** (`init --layer workflow`) — see `CLAUDE.md`'s "The
 opt-in workflow layer" section. Without that layer, sweep merged PRs against
 the elevated-paths block by hand; the rule they enforce — a Tier-2 change
 needs a `human-review` label — does not change with or without the script.
@@ -188,7 +188,7 @@ logs — the target's README says which). The verdict is binary:
   broken runtime.
 
 **`run-state.mjs` and the mechanism below ship with the opt-in workflow
-layer** (`init --with-workflow`). The rule — verify before calling a deploy
+layer** (`init --layer workflow`). The rule — verify before calling a deploy
 done, revert first on a regression — applies regardless; without this layer
 there is no automated selection to gate, so recording the verdict is the
 human record (the journal) rather than a file the next `queue/index.mjs next`

@@ -122,8 +122,8 @@ it a hook via the `new-invariant` skill.
 Everything above is Lean Core — it is the same install whether one person is
 at the keyboard or an unattended session is. This second layer adds
 autonomous, cooperative multi-session workflow governance on top of it:
-`create-agent-rig init --with-workflow` (or `create-agent-rig <dir>
---with-workflow`) installs it; a plain re-run of `init` with no flag never
+`create-agent-rig init --layer workflow` (or `create-agent-rig <dir>
+--layer workflow`) installs it; a plain re-run of `init` with no flag never
 drops a layer a previous run already recorded, so an existing rig can keep
 what it has.
 

@@ -27,7 +27,7 @@ const DOCUMENTED_ABSENT: Record<string, string> = {
   '.claude/doctor-exemptions.json':
     'authored by the project: an exemption is a file AND a reason, and a shipped ' +
     'list would exempt hooks nobody here decided to exempt',
-  // RP-180: the workflow layer is opt-in (`init --with-workflow`), so a
+  // RP-180: the workflow layer is opt-in (`init --layer workflow`), so a
   // default (core-only) install never carries these — but the core rulebook
   // still names them, either to describe what the opt-in layer adds
   // (CLAUDE.md, autonomy.md, workflow.md) or to protect the path whether or
