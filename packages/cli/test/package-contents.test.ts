@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { runPackageManager } from '../../../test/e2e/run.js';
+import { isPluginMarketplaceArtifact } from '../../../test/helpers/plugin-artifact.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -72,9 +73,7 @@ describe('the npm package carries no plugin catalog and no runtime dependency', 
       if (!packed) throw new Error('fixture: npm pack produced no package');
 
       const paths = packed.files.map((file) => file.path);
-      const pluginArtifacts = paths.filter(
-        (p) => p.split('/').includes('.claude-plugin') || path.basename(p) === 'marketplace.json',
-      );
+      const pluginArtifacts = paths.filter(isPluginMarketplaceArtifact);
       expect(pluginArtifacts).toEqual([]);
     } finally {
       await removeFixture(packDir);

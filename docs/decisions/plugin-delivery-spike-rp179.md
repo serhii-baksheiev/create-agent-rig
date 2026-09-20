@@ -163,7 +163,7 @@ mechanically-proven part stated separately from the unmeasured part.
 
 ```sh
 which codex
-# /mnt/c/Users/SerhiiBaksheiev/AppData/Roaming/npm/codex   (a Windows npm
+# /mnt/c/Users/<user>/AppData/Roaming/npm/codex   (a Windows npm
 # shim on WSL's PATH)
 codex --version
 # Error: Missing optional dependency @openai/codex-linux-x64.
@@ -187,16 +187,19 @@ on that page. This is a statement about what the search did and did not
 find on this page, on this date — not a claim that no such surface exists
 anywhere undocumented.
 
-**Conclusion — Codex native plugin-delivered hooks: `degraded`.** The
-mechanism itself is real (native plugin installation exists, bundles hooks,
-per the docs) — `unsupported` would overstate the gap. But Rig's `init` and
-`upgrade` run unattended, and the one documented install path requires a
-human at an interactive prompt plus a new session afterward. For Rig's own
-unattended delivery use case specifically, that is a working capability with
-a stated, structural loss (no non-interactive form), which is exactly what
-`degraded` means in `docs/compatibility.md`'s vocabulary — not `unsupported`
-(nothing was asked for and refused) and not `unverified` (the gap itself is
-directly documented, not merely un-run).
+**Conclusion — Codex native plugin-delivered hooks: `unverified`.** Nothing
+on the Codex side was executed in this spike — no working `codex` binary
+exists in this isolated environment, and the section above is documented
+surface only. Per `docs/compatibility.md`'s own vocabulary, `DEGRADED`
+requires "a test executes what remains"; no test ran here, so `DEGRADED`
+would overstate this spike's evidence, not merely its confidence.
+`unsupported` would also overstate it — nothing was asked for and refused,
+the docs simply do not name a non-interactive path. `unverified` is the
+word this spike actually earned: a non-interactive path may exist
+somewhere undocumented, but this spike ran neither it nor a check that
+would confirm its absence. This matches `docs/compatibility.md:99`'s own
+`UNVERIFIED` cell for the same capability — one word for one (here,
+unmeasured) capability, not two.
 
 ## Model (c) — hybrid: tracked security guards + plugin-delivered everything else
 
@@ -206,9 +209,10 @@ migration). Its verdict is **`unverified`** as a *combined* model, composed
 from the two measurements above rather than guessed independently:
 
 - the tracked-guard half is model (a), already `supported` (running today);
-- the plugin-delivered half is model (b): `unverified` on Claude Code (the
-  install mechanics are proven, the execution/lockdown behaviour is not),
-  `degraded` on Codex (the mechanism exists, unattended delivery does not);
+- the plugin-delivered half is model (b): `unverified` on both providers —
+  on Claude Code because the install mechanics are proven but the
+  execution/lockdown behaviour is not, on Codex because nothing on that
+  side was executed at all;
 - nothing about combining them changes either half's measurement — a
   hybrid does not average two verdicts into a third, so this record states
   the parts rather than inventing a combined score.

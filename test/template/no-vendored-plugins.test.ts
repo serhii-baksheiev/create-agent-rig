@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { isPluginMarketplaceArtifact } from '../helpers/plugin-artifact.js';
 
 /**
  * RP-179 acceptance #5, #6, #7. `templates/` is the one payload `init`,
@@ -28,6 +29,13 @@ import { describe, expect, it } from 'vitest';
  * has no such collision risk in this codebase (verified: zero hits, either
  * case, anywhere under `templates/` before this file existed), so it stays
  * case-insensitive.
+ *
+ * The plugin-marketplace-artifact predicate lives in
+ * `test/helpers/plugin-artifact.ts`, shared with
+ * `packages/cli/test/package-contents.test.ts`'s tarball-side check — one
+ * implementation, so the non-vacuity test below proves the check that
+ * actually runs, not a copy of it (`.claude/rules/invariants.md`, "one
+ * mechanism, one implementation").
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -56,9 +64,7 @@ describe('templates/ ships no vendored plugin catalog and no Ruler or Superpower
 
   it('carries no `.claude-plugin/` directory and no `marketplace.json` file', () => {
     const files = walk(templatesDir).map(rel);
-    const pluginArtifacts = files.filter(
-      (f) => f.split('/').includes('.claude-plugin') || path.basename(f) === 'marketplace.json',
-    );
+    const pluginArtifacts = files.filter(isPluginMarketplaceArtifact);
     expect(pluginArtifacts).toEqual([]);
   });
 
@@ -78,9 +84,7 @@ describe('templates/ ships no vendored plugin catalog and no Ruler or Superpower
       'templates/agent-os/universal/.claude-plugin/plugin.json',
       'templates/agent-os/universal/marketplace.json',
     ];
-    const planted = files.filter(
-      (f) => f.split('/').includes('.claude-plugin') || path.basename(f) === 'marketplace.json',
-    );
+    const planted = files.filter(isPluginMarketplaceArtifact);
     expect(planted).toEqual(files);
 
     expect(FORBIDDEN_WORDS.some((p) => p.test('projected with Ruler'))).toBe(true);

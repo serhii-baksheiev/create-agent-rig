@@ -27,9 +27,11 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
  * A separate file, not a describe block inside `upgrade.test.ts`: a test file
  * named `upgrade.test.ts` already exists under `test/e2e/`, and
  * `docs/compatibility.md`'s evidence pointers resolve a citation by basename
- * alone (`test/template/compatibility-matrix.test.ts`), so an ambiguous name
- * would cite whichever file wins that lookup, silently. This file's name is
- * unique in the repository.
+ * (`test/template/compatibility-matrix.test.ts`). An ambiguous basename is
+ * refused rather than silently resolved — `candidatesFor` returns every match
+ * and the caller reports "… is ambiguous (…) — cite the path" (RP-179,
+ * commit `090066e`) — but a refusal is still worse than not hitting it, so
+ * this file's name stays unique in the repository.
  */
 
 let repo: string;
