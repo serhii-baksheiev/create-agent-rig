@@ -3,8 +3,15 @@ import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
 import { mapConcurrent } from '../lib/copy-tree.js';
-import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
-import type { RigManifest, RigProject } from '../lib/manifest.js';
+import {
+  ALL_LAYERS,
+  DEFAULT_LAYERS,
+  MANIFEST_REL,
+  readManifest,
+  sha256,
+  writeManifest,
+} from '../lib/manifest.js';
+import type { Layer, RigManifest, RigProject } from '../lib/manifest.js';
 import { resolveWritableInside } from '../lib/safe-path.js';
 import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
@@ -39,10 +46,40 @@ export interface InitOptions {
    * as-is instead of being re-derived.
    */
   project?: RigProject;
+  /**
+   * Opt into the workflow layer (RP-180): the queue adapter, the `loop` and
+   * `pr-ship` skills, run-state/journal, revalidation and claim-records, and
+   * the PR-lifecycle helpers (`decision-router`, `detect-missed-gate`,
+   * `reconcile-external-prs`). Experimental — an autonomous, cooperative
+   * multi-session workflow, not required by Lean Core. Default `false`: a
+   * fresh install carries the process layer only.
+   *
+   * A rig that already has the workflow layer installed (its manifest's
+   * `layers` includes `'workflow'`) keeps it on a plain re-run of `init` with
+   * no flag — this only ever ADDS the layer, never drops one a previous run
+   * or `--layer workflow` already recorded.
+   */
+  withWorkflow?: boolean;
 }
 
 interface Manifest {
   process: string[];
+  workflow: string[];
+}
+
+/**
+ * The layers this install writes, given what a previous run (if any)
+ * recorded and whether this run opted in.
+ *
+ * Never narrows what a previous run already installed: `--layer workflow` is
+ * additive, and a rig that already carries the workflow layer keeps it on a
+ * plain re-run with no flag (RP-180's "existing dogfood repositories can
+ * explicitly retain the layer" applies to `init` re-runs, not only to
+ * `upgrade`).
+ */
+function effectiveLayers(previous: RigManifest | null, withWorkflow: boolean): Layer[] {
+  const wantsWorkflow = withWorkflow || (previous?.layers.includes('workflow') ?? false);
+  return wantsWorkflow ? [...ALL_LAYERS] : [...DEFAULT_LAYERS];
 }
 
 /** One installed path, and the template file behind it (`null` = generated here). */
@@ -81,6 +118,21 @@ async function loadManifest(): Promise<Manifest> {
   return JSON.parse(raw) as Manifest;
 }
 
+/**
+ * Exactly `layers.json`'s own array for one layer — never the always-added
+ * extras (`SETTINGS`, `CODEX_HOOKS`, `STATIC_EXTRAS`, `MAPS`) `initManifest`
+ * appends to every layer regardless of which one was asked for. A caller
+ * that wants to know whether a SPECIFIC layer's own files are on disk (RP-180
+ * round 3, `commands/upgrade.ts`'s `detectLayersOnDisk`) needs this
+ * distinction: those extras exist for any rig at all, Core-only included, so
+ * checking `initManifest([layer])`'s full output against disk would report
+ * every layer as "present" always.
+ */
+export async function layerOnlyPaths(layer: Layer): Promise<string[]> {
+  const manifest = await loadManifest();
+  return manifest[layer];
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await access(p);
@@ -116,11 +168,12 @@ export function projectNameFor(repoDir: string): string {
  * copied: derived from the shipped settings so they name exactly the hooks
  * that travelled.
  */
-export async function initManifest(): Promise<InitFile[]> {
+export async function initManifest(layers: readonly Layer[] = DEFAULT_LAYERS): Promise<InitFile[]> {
   const manifest = await loadManifest();
   const universal = agentOsUniversalDir();
 
-  const files: InitFile[] = [...manifest.process, ...STATIC_EXTRAS, ...MAPS].map((rel) => ({
+  const layerFiles = layers.flatMap((layer) => manifest[layer]);
+  const files: InitFile[] = [...layerFiles, ...STATIC_EXTRAS, ...MAPS].map((rel) => ({
     rel,
     source: path.join(universal, rel),
   }));
@@ -141,13 +194,14 @@ export async function initManifest(): Promise<InitFile[]> {
 export async function initFileContents(
   repoDir: string,
   project?: RigProject,
+  layers: readonly Layer[] = DEFAULT_LAYERS,
 ): Promise<Map<string, string>> {
   const projectName = project?.name ?? projectNameFor(repoDir);
   const ctx: SubstitutionContext = {
     projectName,
   };
 
-  const files = await initManifest();
+  const files = await initManifest(layers);
   const contents = new Map<string, string>();
   const sourceFiles = files.filter(
     (file): file is InitFile & { source: string } => file.source !== null,
@@ -184,14 +238,22 @@ export async function initFileContents(
 export async function initInstallSet(
   repoDir: string,
   project?: RigProject,
+  layers: readonly Layer[] = DEFAULT_LAYERS,
 ): Promise<InstalledFile[]> {
-  const files = await initManifest();
-  const contents = await initFileContents(repoDir, project);
+  const files = await initManifest(layers);
+  const contents = await initFileContents(repoDir, project, layers);
   return files.map(({ rel, source }) => ({ rel, source, content: contents.get(rel) ?? '' }));
 }
 
-export async function planInit(repoDir: string): Promise<InitPlan> {
-  const files = (await initManifest()).map((f) => f.rel);
+export interface PlanInitOptions {
+  /** Plan as though `--layer workflow` were given (RP-180). */
+  withWorkflow?: boolean;
+}
+
+export async function planInit(repoDir: string, options: PlanInitOptions = {}): Promise<InitPlan> {
+  const previous = await readManifest(repoDir);
+  const layers = effectiveLayers(previous, options.withWorkflow === true);
+  const files = (await initManifest(layers)).map((f) => f.rel);
   const conflicts = (
     await mapConcurrent(files, 16, async (rel) =>
       (await exists(path.join(repoDir, rel))) ? rel : null,
@@ -206,8 +268,9 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // file from the manifest instead of overriding one refusal wholesale.
   if (options.force) throw new InitError(FORCE_DEPRECATED);
 
-  const files = (await initManifest()).map((f) => f.rel);
   const previous = await readManifest(repoDir);
+  const layers = effectiveLayers(previous, options.withWorkflow === true);
+  const files = (await initManifest(layers)).map((f) => f.rel);
 
   // Resolve the whole write set before the first edit. A lexical child can
   // still escape through a symlink at the leaf or in any existing parent, and
@@ -244,7 +307,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     }
   }
 
-  const contents = await initFileContents(repoDir, options.project);
+  const contents = await initFileContents(repoDir, options.project, layers);
   const plannedCount = files.length;
   const actions = await mapConcurrent(files, 16, async (rel) => {
     const dest = destinations.get(rel)!;
@@ -264,7 +327,9 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);
   const skipped = actions.filter(({ verdict }) => verdict === 'skipped').map(({ rel }) => rel);
 
-  if (!options.dryRun) await recordInstall(repoDir, written, skipped, contents, options.project);
+  if (!options.dryRun) {
+    await recordInstall(repoDir, written, skipped, contents, layers, options.project);
+  }
 
   return { written, skipped, plannedCount };
 }
@@ -331,6 +396,7 @@ async function recordInstall(
   written: readonly string[],
   skipped: readonly string[],
   contents: Map<string, string>,
+  layers: readonly Layer[],
   project?: RigProject,
 ): Promise<void> {
   const previous = await readManifest(repoDir);
@@ -354,6 +420,11 @@ async function recordInstall(
     // themselves, and `init` deliberately does not reach for it.
     project: previous?.project ?? project ?? { name, scope: name, region: '' },
     stacks: previous?.stacks ?? [],
+    // `layers` is what THIS run resolved (already unioned with whatever the
+    // previous manifest recorded — RP-180's `effectiveLayers`), not
+    // re-derived here: a second computation of the same union is exactly the
+    // "second copy that goes stale" `invariants.md` warns about.
+    layers: [...layers],
     files,
     ...(Object.keys(kept).length > 0 ? { kept } : {}),
   };

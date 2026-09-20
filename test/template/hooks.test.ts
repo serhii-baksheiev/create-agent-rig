@@ -2126,6 +2126,54 @@ describe('excerptAutonomy (the rules excerpt, as a pure function)', () => {
     expect(excerpt).not.toContain('detect-missed-gate.mjs');
     expect(excerpt).not.toBe(odd);
   });
+
+  // RP-180 round 3, prose blocker P1: the "A deploy that regressed" stop-rule
+  // bullet sits ABOVE the first `inject:skip` marker, so it is carried into
+  // every session unconditionally — but `run-state.mjs` (the file the bullet
+  // told every session to run) ships only with the opt-in workflow layer. A
+  // caveat placed INSIDE the skip region (as this file's own "Post-deploy
+  // verification" section does, deliberately, for on-demand reading) never
+  // reaches the injected text at all. This runs the real hook function
+  // against the real template file — not a synthetic fixture — so a future
+  // edit that reintroduces an unconditional `run-state.mjs` mention outside
+  // the skip region, or removes the layer qualifier from inside the injected
+  // text, is caught here rather than only by eye.
+  it('names the workflow layer in the ACTUAL injected text wherever it names run-state.mjs (real autonomy.md, RP-180 round 3)', async () => {
+    const autonomyPath = path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'rules',
+      'autonomy.md',
+    );
+    const real = await readFile(autonomyPath, 'utf8');
+    const injected = await excerptAutonomy(real);
+
+    // Sanity: the fixture really does mention run-state.mjs in the injected
+    // text (a stale test that always passes because the mention moved
+    // entirely into the skip region would be worse than no test).
+    expect(injected).toContain('run-state.mjs');
+
+    for (const line of injected.split('\n')) {
+      if (!line.includes('run-state.mjs')) continue;
+      // Every line naming run-state.mjs, in the text a session actually
+      // receives, must also name the layer that gates it — either directly
+      // or by being part of the same qualified sentence. Checked at
+      // paragraph granularity: a paragraph is a run of non-blank lines.
+      const lines = injected.split('\n');
+      const idx = lines.indexOf(line);
+      let start = idx;
+      while (start > 0 && lines[start - 1]!.trim() !== '') start -= 1;
+      let end = idx;
+      while (end < lines.length - 1 && lines[end + 1]!.trim() !== '') end += 1;
+      const paragraph = lines.slice(start, end + 1).join('\n');
+      expect(paragraph, `paragraph containing "${line}"`).toMatch(
+        /opt-in workflow layer|--layer workflow/,
+      );
+    }
+  });
 });
 
 describe('hook wiring (settings.json)', () => {

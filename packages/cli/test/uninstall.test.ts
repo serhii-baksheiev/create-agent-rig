@@ -407,6 +407,46 @@ describe('planUninstall — per-file verdicts', () => {
   });
 });
 
+describe('planUninstall — the workflow layer (RP-180)', () => {
+  const LOOP_SKILL = '.claude/skills/loop/SKILL.md';
+
+  it('removes an installed workflow-layer file exactly like any Core file, when the rig opted in', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, LOOP_SKILL);
+    expect(action?.verdict).toBe('remove');
+    expect(action?.reason).toBeUndefined();
+  });
+
+  it('a workflow-layer file never installed here (Core-only rig) is simply absent from the manifest, never reported "not a path this release installs"', async () => {
+    await installRig(); // Core-only: no --layer workflow
+    const manifest = await readManifest(repo);
+    expect(manifest?.files[LOOP_SKILL]).toBeUndefined();
+    const plan = await planUninstall(repo);
+    // Not in `manifest.files` at all, so `planUninstall` never emits an
+    // action for it — there is nothing to act on, which is the correct
+    // "never installed" outcome, not the "unowned path" reason a stale or
+    // tampered manifest entry gets.
+    expect(actionFor(plan, LOOP_SKILL)).toBeUndefined();
+  });
+
+  it('an inherited pre-layers manifest (no `layers` key) still owns its workflow files, exactly like any other installed path', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    // Simulate a manifest written before RP-180: no `layers` key at all —
+    // `parseManifest` reads that absence as "every layer" (LEGACY_LAYERS).
+    const legacyShape: Record<string, unknown> = { ...manifest };
+    delete legacyShape.layers;
+    await writeFile(abs(MANIFEST_REL), `${JSON.stringify(legacyShape, null, 2)}\n`);
+
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, LOOP_SKILL);
+    expect(action?.verdict).toBe('remove');
+    expect(action?.reason).toBeUndefined();
+  });
+});
+
 describe('planUninstall — wiring files', () => {
   it('removes wiring the rig owns unmodified', async () => {
     await installRig();
@@ -1477,7 +1517,9 @@ describe('applyUninstall — a file that changed after planning', () => {
   // cannot safely construct an infinite or blocking special file — instead
   // it proves the GATE itself is what runs: the symlink's target contains a
   // relative import naming a real owned "canary" path
-  // (`.claude/scripts/preflight.mjs`, never otherwise reachable from
+  // (`.claude/scripts/doctor.mjs` — a Core-layer path an unmodified `installRig()`
+  // always has since RP-180 moved the previous canary, `preflight.mjs`, into
+  // the opt-in workflow layer; never otherwise reachable from
   // `guard-bash.mjs`'s real closure) that only an actual read would ever
   // discover.
   //
@@ -1494,7 +1536,7 @@ describe('applyUninstall — a file that changed after planning', () => {
     'never reads a hook file through a symlink while walking its import closure — a spoofed import in the link target is never discovered',
     async () => {
       await installRig();
-      const CANARY = '.claude/scripts/preflight.mjs';
+      const CANARY = '.claude/scripts/doctor.mjs';
       expect(await exists(CANARY)).toBe(true);
 
       const original = await read(SETTINGS);
@@ -1507,7 +1549,7 @@ describe('applyUninstall — a file that changed after planning', () => {
         const target = path.join(outside, 'not-actually-guard-bash.mjs');
         // a relative import naming the canary — only reachable if this file
         // is actually opened and scanned, which the fix refuses to do
-        await writeFile(target, "import { x } from '../scripts/preflight.mjs';\n");
+        await writeFile(target, "import { x } from '../scripts/doctor.mjs';\n");
         await rm(abs(guardBash));
         await symlink(target, abs(guardBash));
 
@@ -1725,8 +1767,15 @@ describe('applyUninstall — a file that changed after planning', () => {
     // Loose bounds, not exact counts, so this does not itself become a
     // hand-maintained list that drifts with the shipped tree — the point is
     // the SHAPE: most of the plan stays removable, nowhere near an
-    // even split with "preserved".
-    expect(removable.length).toBeGreaterThan(preserved.length * 3);
+    // even split with "preserved". The multiplier was 3 before RP-180; Lean
+    // Core's default install (workflow files moved to the opt-in layer,
+    // installRig() here takes no `--layer workflow`) is smaller, so the fixed
+    // superset-sweep footprint (the hooks `settings.json` still wires, and
+    // their own shared dependencies) is a bigger share of a smaller whole —
+    // measured at removable=37 / preserved=15 (2.47x) on the current Core set
+    // (37, not 36: `docs/decisions/session-start-wire-format.md` joined Core
+    // in RP-185/#237 after this bound was first measured).
+    expect(removable.length).toBeGreaterThan(preserved.length * 2);
 
     // A path with no plausible connection to the deleted hook — not a hook,
     // not a dependency of one, an ordinary shipped script — must still be

@@ -414,9 +414,17 @@ describe('create-agent-rig uninstall', () => {
   // security measured against the built CLI (15 genuinely referenced or
   // imported — 7 direct hooks + 6 real imports + the two non-dependency
   // entries `settings.json` and `guard-secret-file.mjs` themselves, neither
-  // of whose OWN reasons start with "protected because" — and 29 kept only
+  // of whose OWN reasons start with "protected because" — and 10 kept only
   // as a precaution) and that a directly-wired hook the sweep used to
   // swallow gets the DIRECT wording back, not the caution one.
+  //
+  // The precaution-only count was 29 before RP-180: `init` here installs Lean
+  // Core only (no `--layer workflow`), and the superset sweep's precaution
+  // bucket is every owned `.mjs` path the direct/imported trace does not
+  // already account for — a smaller Core install set means fewer such paths,
+  // not a change in how the sweep itself works. The 15 genuinely-traced count
+  // is unchanged: every hook `.claude/settings.json` wires, and their real
+  // imports, are unaffected by which OTHER files moved to the opt-in layer.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -438,7 +446,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(15 genuinely referenced or imported; 29 kept only as a precaution',
+        '(15 genuinely referenced or imported; 10 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',
@@ -622,5 +630,90 @@ describe('create-agent-rig uninstall', () => {
         readFile(path.join(repo, '.claude', '.rig-manifest.json')),
       ).resolves.toBeTruthy();
     });
+  });
+});
+
+// RP-180 round 4, blocker B: round 3's decision record said "uninstall, then
+// a fresh init" reaches Core-only. Measured on the built CLI, that is true
+// only when nothing on the rig was ever edited — the moment `uninstall`
+// has to preserve even one file, it keeps the manifest (still recording
+// both layers), and a plain `init` afterward reads that surviving manifest
+// and reinstalls the entire workflow layer right back (measured: 87 -> 2 ->
+// 87 again). `--detach` is the procedure that actually reaches Core-only in
+// that case: it removes the manifest regardless of what it had to preserve,
+// so the next plain `init` finds no manifest and installs Core only.
+describe('the opt-out procedure to Core-only, measured (RP-180 round 4, blocker B)', () => {
+  const manifestPath = (): string => path.join(repo, '.claude', '.rig-manifest.json');
+
+  async function readManifestJson(): Promise<{ layers: string[] } | null> {
+    try {
+      return JSON.parse(await readFile(manifestPath(), 'utf8')) as { layers: string[] };
+    } catch {
+      return null;
+    }
+  }
+
+  it('nothing edited: uninstall --yes then a plain init reaches Core-only on its own', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init', '--layer', 'workflow'])).code).toBe(0);
+
+    const uninstallResult = await runCli(['uninstall', '--yes']);
+    expect(uninstallResult.code, uninstallResult.stderr).toBe(0);
+    // nothing preserved -> the manifest itself is gone
+    await expect(readFile(manifestPath())).rejects.toThrow();
+
+    const initResult = await runCli(['init']);
+    expect(initResult.code, initResult.stderr).toBe(0);
+
+    const manifest = await readManifestJson();
+    expect(manifest?.layers).toEqual(['process']);
+    await expect(readFile(path.join(repo, '.claude', 'queue.json'))).rejects.toThrow();
+    await expect(readFile(path.join(repo, 'journal', 'README.md'))).rejects.toThrow();
+  });
+
+  it('one file edited: plain uninstall + plain init does NOT reach Core-only (measured, for the record)', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init', '--layer', 'workflow'])).code).toBe(0);
+    const journalPath = path.join(repo, 'journal', 'README.md');
+    await writeFile(journalPath, `${await readFile(journalPath, 'utf8')}\n<!-- edited -->\n`);
+
+    expect((await runCli(['uninstall', '--yes'])).code).toBe(0);
+    // something preserved -> the manifest survives, still naming both layers
+    const survived = await readManifestJson();
+    expect(survived?.layers?.sort()).toEqual(['process', 'workflow']);
+
+    expect((await runCli(['init'])).code).toBe(0);
+    const after = await readManifestJson();
+    // the documented-in-round-3 procedure does NOT reach Core-only here
+    expect(after?.layers?.sort()).toEqual(['process', 'workflow']);
+    await expect(readFile(path.join(repo, '.claude', 'queue.json'))).resolves.toBeTruthy();
+  });
+
+  it('one file edited: uninstall --yes --detach then a plain init reaches Core-only, preserving only the edited file', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init', '--layer', 'workflow'])).code).toBe(0);
+    const journalPath = path.join(repo, 'journal', 'README.md');
+    const edited = `${await readFile(journalPath, 'utf8')}\n<!-- edited -->\n`;
+    await writeFile(journalPath, edited);
+
+    const detachResult = await runCli(['uninstall', '--yes', '--detach']);
+    expect(detachResult.code, detachResult.stderr).toBe(0);
+    // --detach removes the manifest regardless of what it preserved
+    await expect(readFile(manifestPath())).rejects.toThrow();
+    // the edited file is handed over, not deleted
+    expect(await readFile(journalPath, 'utf8')).toBe(edited);
+
+    const initResult = await runCli(['init']);
+    expect(initResult.code, initResult.stderr).toBe(0);
+
+    const manifest = await readManifestJson();
+    expect(manifest?.layers).toEqual(['process']);
+    // no OTHER (un-preserved) workflow file reappeared
+    await expect(readFile(path.join(repo, '.claude', 'queue.json'))).rejects.toThrow();
+    await expect(
+      readFile(path.join(repo, '.claude', 'scripts', 'run-state.mjs')),
+    ).rejects.toThrow();
+    // the one preserved file is exactly, and only, what survives
+    expect(await readFile(journalPath, 'utf8')).toBe(edited);
   });
 });

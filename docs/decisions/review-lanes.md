@@ -4,10 +4,13 @@ The rule lives in `.claude/rules/workflow.md`, under "PR flow". This file
 explains the one part of it that reads like an inconsistency and is not, so that
 nobody "tidies" the two sets into agreement. It is not loaded into any session.
 
-## The sets
+## The sets (opt-in workflow layer)
 
-Three different mechanisms each carry their own notion of "this file is only
-words":
+All three mechanisms below — the gate sweep, the router, and the queue's
+elevated ration — ship with the opt-in workflow layer (`init --layer
+workflow`); a Core-only rig applies the same rulebook exemptions by hand,
+since none of these scripts exist for it to run. Three different mechanisms
+each carry their own notion of "this file is only words":
 
 **The first two carve out the rulebook**, and only then differ; the third runs
 *after* the sweep has already answered, so it sees only what survived:
@@ -58,10 +61,11 @@ is one of the risk flags — and its extension happens to be `.txt`.
 
 Copying the sweep's `.mdx` into the router's prose set would put executable MDX
 back on the prose lane. MDX carries components and imports; it is a program that
-renders, not a document that is read. The ration reads it the same way and for
-the same reason (`spacing-rations-mechanisms.md`): calling it prose there would
-clear the spacing hold on a file this rig treats as a program, on the permissive
-side.
+renders, not a document that is read. The ration (workflow layer, like the
+mechanism it rations) reads it the same way and for the same reason
+(`spacing-rations-mechanisms.md`, also workflow layer): calling it prose there
+would clear the spacing hold on a file this rig treats as a program, on the
+permissive side.
 
 ## The shape of the mistake this prevents
 

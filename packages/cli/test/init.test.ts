@@ -61,7 +61,7 @@ describe('initProject — the install', () => {
       await readFile(path.join(repo, 'CLAUDE.md'), 'utf8'),
     );
     await expect(
-      readFile(path.join(repo, '.agents', 'skills', 'pr-ship', 'SKILL.md'), 'utf8'),
+      readFile(path.join(repo, '.agents', 'skills', 'check-premises', 'SKILL.md'), 'utf8'),
     ).resolves.toBeTruthy();
     await expect(
       readFile(path.join(repo, '.codex', 'agents', 'code-reviewer.toml'), 'utf8'),
@@ -69,6 +69,11 @@ describe('initProject — the install', () => {
     // it never brought architecture rules
     await expect(
       readFile(path.join(repo, '.claude', 'rules', 'architecture.md')),
+    ).rejects.toThrow();
+    // and, by default, never the opt-in workflow layer (RP-180) — see
+    // "the workflow layer is opt-in (RP-180)" below for the dedicated coverage
+    await expect(
+      readFile(path.join(repo, '.agents', 'skills', 'pr-ship', 'SKILL.md')),
     ).rejects.toThrow();
   });
 
@@ -285,6 +290,58 @@ describe('initManifest — one list, used by the plan and the install alike', ()
     expect(rels).toContain('.claude/settings.json');
     expect(rels).toContain('.codex/hooks.json');
     expect(rels).not.toContain('.claude/rules/architecture.md');
+  });
+});
+
+// RP-180: the workflow layer (queue/loop/pr-ship/run-state/journal/
+// revalidation/claim-records/PR-lifecycle helpers) is an experimental
+// opt-in, never part of the default install.
+describe('the workflow layer is opt-in (RP-180)', () => {
+  it('a default init installs no workflow-layer file', async () => {
+    const result = await initProject(repo, {});
+    const workflowPaths = [
+      '.claude/queue.json',
+      '.claude/skills/loop/SKILL.md',
+      '.claude/skills/pr-ship/SKILL.md',
+      '.claude/scripts/queue/index.mjs',
+      '.claude/scripts/decision-router.mjs',
+      '.claude/scripts/lib/claim-records.mjs',
+      '.rig/revalidation.json',
+    ];
+    for (const rel of workflowPaths) {
+      expect(result.written, rel).not.toContain(rel);
+      await expect(readFile(path.join(repo, ...rel.split('/')))).rejects.toThrow();
+    }
+    const manifest = await readManifest(repo);
+    expect(manifest?.layers).toEqual(['process']);
+  });
+
+  it('`{ withWorkflow: true }` installs the workflow layer and records both layers', async () => {
+    const result = await initProject(repo, { withWorkflow: true });
+    expect(result.written).toContain('.claude/queue.json');
+    expect(result.written).toContain('.claude/skills/loop/SKILL.md');
+    expect(await readFile(path.join(repo, '.claude', 'queue.json'), 'utf8')).toContain('adapter');
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.layers).toEqual(['process', 'workflow']);
+  });
+
+  it('planInit without the flag lists no workflow-layer file; with it, it does', async () => {
+    const core = await planInit(repo);
+    expect(core.files.map((f) => f.path)).not.toContain('.claude/queue.json');
+
+    const withWorkflow = await planInit(repo, { withWorkflow: true });
+    expect(withWorkflow.files.map((f) => f.path)).toContain('.claude/queue.json');
+    expect(withWorkflow.files.map((f) => f.path)).toContain('.claude/skills/loop/SKILL.md');
+  });
+
+  it('re-running plain init on a rig that already opted in keeps the workflow layer installed', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const result = await initProject(repo, {});
+    // nothing new to write on a no-op re-run, and the layer stays recorded
+    expect(result.written).toEqual([]);
+    const manifest = await readManifest(repo);
+    expect(manifest?.layers).toEqual(['process', 'workflow']);
   });
 });
 

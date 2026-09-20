@@ -49,7 +49,10 @@ const verdictFor = (plan: UpgradePlan, rel: string): UpgradeVerdict | undefined 
   plan.actions.find((a) => a.rel === rel)?.verdict;
 
 async function installRig(): Promise<void> {
-  await initProject(repo, {});
+  // `.agents/skills/loop/SKILL.md` is a workflow-layer path (RP-180) and is
+  // not part of the default Lean Core install — request it explicitly so
+  // this file keeps covering the Codex projection for all three paths.
+  await initProject(repo, { withWorkflow: true });
 }
 
 const emptyHistory: HashHistory = { versions: [], files: {} };

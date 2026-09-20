@@ -40,15 +40,28 @@ directory.
 
 Options
   --no-git          skip git init + the pristine-template baseline commit
+  --layer workflow  also install the experimental, opt-in workflow layer (the
+                    queue adapter, the loop and pr-ship skills, run-state,
+                    journal, revalidation, claim-records, and the PR-lifecycle
+                    helpers) — see init below; default is the core layer only.
+                    "workflow" is the only accepted name — process/Core
+                    installs unconditionally and is never named. Repeatable;
+                    repeating the same name is harmless.
   --no-color        plain output (NO_COLOR is respected too)
   --version         print the version (--version --json: the contract handshake,
                     one JSON object with the name, version and contract version)
   -h, --help        this text
 
-Also: create-agent-rig init [--dry-run]
+Also: create-agent-rig init [--dry-run] [--layer workflow]
   Install the process layer (rules, gates, stop rules — no architecture
   assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md
   or AGENTS.md.
+  --layer workflow also installs the experimental workflow layer: an
+  autonomous, cooperative multi-session queue/loop/PR-lifecycle mechanism,
+  never required by Lean Core. Without it, only the core layer is installed.
+  A rig that already has the workflow layer keeps it on a plain re-run with
+  no flag — the flag only ever adds the layer, never drops one a previous
+  run already recorded.
   --force is deprecated: it refuses and points at upgrade, which refreshes a
   rig file by file. It is removed in 0.6.
 
@@ -149,8 +162,37 @@ async function runSetup(rawArgs: string[]): Promise<number> {
   }
 }
 
+/**
+ * `--layer <name>`, repeatable (RP-180 round 2: the owner's spelling is
+ * `--layer workflow`, never `--with-workflow`). `workflow` is the only name a
+ * user may opt into today — `process`/Core installs unconditionally and is
+ * never something a user names. Repeating the same name is harmless; naming
+ * anything else is a usage error the caller reports the same way it reports
+ * any other bad flag (message to stderr + USAGE, exit 1) — neither `init` nor
+ * the top-level `create` accepts `--json` today, so there is no JSON error
+ * shape to match here; this follows the one shape those two commands already
+ * use.
+ */
+function resolveLayerFlag(
+  layer: string[] | undefined,
+): { withWorkflow: boolean } | { error: string } {
+  const names = layer ?? [];
+  const unknown = names.find((name) => name !== 'workflow');
+  if (unknown !== undefined) {
+    return {
+      error: `Unknown --layer "${unknown}" — the only accepted layer name is "workflow" (process/Core installs unconditionally and is never named).`,
+    };
+  }
+  return { withWorkflow: names.length > 0 };
+}
+
 async function runInit(rawArgs: string[]): Promise<number> {
-  let values: { 'dry-run'?: boolean; force?: boolean; 'no-color'?: boolean };
+  let values: {
+    'dry-run'?: boolean;
+    force?: boolean;
+    'no-color'?: boolean;
+    layer?: string[];
+  };
   try {
     ({ values } = parseArgs({
       args: rawArgs,
@@ -160,6 +202,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
         'dry-run': { type: 'boolean' },
         force: { type: 'boolean' },
         'no-color': { type: 'boolean' },
+        layer: { type: 'string', multiple: true },
       },
       allowPositionals: false,
     }));
@@ -167,8 +210,14 @@ async function runInit(rawArgs: string[]): Promise<number> {
     process.stderr.write(`${(error as Error).message}\n\n${USAGE}\n`);
     return 1;
   }
+  const layerResult = resolveLayerFlag(values.layer);
+  if ('error' in layerResult) {
+    process.stderr.write(`${layerResult.error}\n\n${USAGE}\n`);
+    return 1;
+  }
   const cwd = process.cwd();
   const dryRun = values['dry-run'] === true;
+  const { withWorkflow } = layerResult;
 
   // `init` adopts a repo the rig knows nothing about. Run inside a rig `create`
   // generated — reachable when its CLAUDE.md was deleted — it is the wrong
@@ -183,9 +232,9 @@ async function runInit(rawArgs: string[]): Promise<number> {
   // one alone reads as wider.
   const existing = await readManifest(cwd);
 
-  const plan = await planInit(cwd);
+  const plan = await planInit(cwd, { withWorkflow });
   process.stdout.write(
-    `agent-rig init — process layer into ${cwd}\n\n` +
+    `agent-rig init — process layer${withWorkflow ? ' + the opt-in workflow layer' : ''} into ${cwd}\n\n` +
       plan.files.map((f) => `  + ${f.path}`).join('\n') +
       '\n',
   );
@@ -202,7 +251,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
     );
   }
 
-  const result = await initProject(cwd, { dryRun, force: values.force === true });
+  const result = await initProject(cwd, { dryRun, force: values.force === true, withWorkflow });
   if (dryRun) {
     process.stdout.write(`\nDry run — nothing written (${result.plannedCount} files planned).\n`);
     return 0;
@@ -257,8 +306,20 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
       ? `  no readable manifest here (deleted, never written, or unparseable) — matching files against released versions`
       : `  installed by ${plan.fromVersion}`,
     `  upgrading to ${plan.toVersion}`,
-    '',
   ];
+
+  // RP-180 round 4, blocker A(4): when a layer's membership was inferred
+  // from disk rather than read from a manifest, say so — and how much
+  // evidence it rested on — instead of silently deciding.
+  for (const note of plan.layerInference ?? []) {
+    lines.push(
+      note.adopted
+        ? `  ${note.layer} layer inferred from ${note.present} of ${note.total} files on disk`
+        : `  ${note.present} of ${note.total} ${note.layer}-layer files found on disk — below quorum, left as your own (not adopted)`,
+    );
+  }
+
+  lines.push('');
 
   for (const verdict of ['update', 'new', 'deleted', 'retired', 'conflict', 'wiring'] as const) {
     for (const action of of(verdict)) {
@@ -845,6 +906,7 @@ async function main(): Promise<number> {
     json?: boolean;
     'no-git'?: boolean;
     'no-color'?: boolean;
+    layer?: string[];
   };
   try {
     ({ positionals, values } = parseArgs({
@@ -857,6 +919,7 @@ async function main(): Promise<number> {
         json: { type: 'boolean' },
         'no-git': { type: 'boolean' },
         'no-color': { type: 'boolean' },
+        layer: { type: 'string', multiple: true },
       },
       allowPositionals: true,
     }));
@@ -884,9 +947,16 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  const layerResult = resolveLayerFlag(values.layer);
+  if ('error' in layerResult) {
+    process.stderr.write(`${layerResult.error}\n\n${USAGE}\n`);
+    return 1;
+  }
+
   const { projectDir, projectName } = await createProject(dirArg, {
     cwd: process.cwd(),
     git: values['no-git'] !== true,
+    withWorkflow: layerResult.withWorkflow,
   });
 
   const palette = makePalette(

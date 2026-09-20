@@ -1,11 +1,11 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { initInstallSet, projectNameFor } from './init.js';
+import { initInstallSet, layerOnlyPaths, projectNameFor } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
-import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
-import type { RigManifest, RigProject } from '../lib/manifest.js';
+import { ALL_LAYERS, MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
+import type { Layer, RigManifest, RigProject } from '../lib/manifest.js';
 import { isSafeSubstitutionValue, resolveInside, resolveWritableInside } from '../lib/safe-path.js';
 import { packageVersion } from '../lib/version.js';
 
@@ -50,6 +50,13 @@ export interface UpgradePlan {
   toVersion: string;
   /** True when provenance came from the hash history rather than a manifest. */
   bootstrapped: boolean;
+  /**
+   * What `detectLayersOnDisk` measured for each non-Core layer, or `null`
+   * when there was a readable manifest to trust instead — the plan and the
+   * summary read this to say when a layer was inferred, and from how much
+   * evidence, rather than deciding silently.
+   */
+  layerInference: LayerInferenceNote[] | null;
   actions: UpgradeAction[];
   /** The first handed-over wiring file's released bytes, for CLI display. */
   wiring: string | null;
@@ -98,6 +105,106 @@ async function exists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether `p` is a REGULAR file — `lstat`, never `access`, and never
+ * following a symlink. Quorum evidence (`detectLayersOnDisk`) uses this
+ * rather than `exists`: a directory or a symlink sitting at a workflow-layer
+ * path is not a file this release ever installed there, and counting it
+ * toward the quorum would let something that is not actually one of the
+ * layer's files push an unrelated layer over the threshold. `lstat` (not
+ * `stat`) so a symlink itself is correctly seen as "not a regular file"
+ * rather than resolved through to whatever it points at.
+ */
+async function isRegularFile(p: string): Promise<boolean> {
+  try {
+    return (await lstat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What was measured for one non-Core layer while bootstrapping — surfaced on
+ * `UpgradePlan.layerInference` so the plan text and summary can say why a
+ * layer was (or was not) adopted, rather than silently deciding.
+ */
+export interface LayerInferenceNote {
+  layer: Layer;
+  /** How many of the layer's own files are on disk right now. */
+  present: number;
+  /** How many files `layers.json` lists for the layer. */
+  total: number;
+  /** Whether `present` cleared {@link LAYER_ADOPTION_QUORUM}. */
+  adopted: boolean;
+}
+
+/**
+ * The quorum a bootstrapped, opt-in layer must clear to be adopted: MORE
+ * THAN HALF of its own files already on disk (RP-180 round 4, blocker A).
+ *
+ * Chosen from the two populations this has to tell apart, not from either
+ * one's exact size: a genuine workflow rig with a deleted or corrupted
+ * manifest still has (nearly) all ~33 of its files on disk — comfortably
+ * over half. A Core-only rig that happens to have a stray file sharing a
+ * workflow-layer path (a hand-placed `journal/README.md`, a `.claude/
+ * queue.json` written for something unrelated) has one, or a small handful
+ * — comfortably under half. The threshold does not need to sit close to
+ * either population; it needs to separate them, and a strict majority does
+ * that with room on both sides. Pinned in `packages/cli/test/upgrade.test.ts`
+ * › `describe('upgrade — the layer-adoption quorum on the bootstrapped path
+ * (RP-180 round 4, blocker A)')`.
+ */
+export const LAYER_ADOPTION_QUORUM = 0.5;
+
+/**
+ * Which layer(s) to treat as installed when there is no manifest to read at
+ * all — `readManifest` returns `null` both for a genuinely missing file and
+ * for one `parseManifest` voided over ANY invalid field (a corrupt `layers`,
+ * an unsafe `version`, a non-array `stacks`, …), so this path is reached far
+ * more often than "this rig predates the manifest" alone.
+ *
+ * Two defects lived here in turn. The first (round 3): the fallback was
+ * `ALL_LAYERS` unconditionally — `presentInEveryRelease` below does not save
+ * it, since that guard only covers paths the hash history already has an
+ * entry for, and a workflow file added for the first time has none. The
+ * second (round 4, blocker A): the round-3 fix asked only "does AT LEAST ONE
+ * of this layer's files exist", so a Core-only rig with a single stray file
+ * sharing a workflow-layer path — the user's own `journal/README.md` is
+ * enough — re-adopted the WHOLE ~33-file layer the moment the manifest broke
+ * for any reason.
+ *
+ * The fix is a quorum, not a presence check: an opt-in layer is adopted only
+ * when {@link LAYER_ADOPTION_QUORUM} of its own files are already there.
+ * `process` is never put through this — it is not opt-in, and is normalised
+ * into the result unconditionally below, so a `layers` this function returns
+ * can never lack it (a `["workflow"]`-only result would leave every
+ * enforcement hook unowned). Below quorum, a layer's stray files are left
+ * alone entirely: not read into the plan, not adopted into the manifest —
+ * see the caller in `planUpgrade` for how "adopted" also bounds what gets
+ * WRITTEN (an adopted layer's ABSENT files are still never created).
+ */
+export async function detectLayersOnDisk(
+  repoDir: string,
+): Promise<{ layers: Layer[]; notes: LayerInferenceNote[] }> {
+  const notes: LayerInferenceNote[] = [];
+  const adopted = new Set<Layer>();
+  for (const layer of ALL_LAYERS) {
+    if (layer === 'process') continue; // never opt-in; normalised in below regardless of measurement
+    const paths = await layerOnlyPaths(layer);
+    let present = 0;
+    for (const rel of paths) {
+      if (await isRegularFile(onDisk(repoDir, rel))) present += 1;
+    }
+    const isAdopted = present > paths.length * LAYER_ADOPTION_QUORUM;
+    notes.push({ layer, present, total: paths.length, adopted: isAdopted });
+    if (isAdopted) adopted.add(layer);
+  }
+  // `process` is always present in the result — never a measurement, a
+  // normalisation, so a bootstrapped `layers` can never lack Core.
+  const layers: Layer[] = ['process', ...adopted];
+  return { layers, notes };
 }
 
 /**
@@ -272,12 +379,58 @@ export async function planUpgrade(
     region: detected.region,
   };
   const history = options.history ?? (await loadHashHistory());
-  // The single payload, always — RP-177 retired the per-target stack overlays
-  // that used to make this depend on `kind`/`stacks`. A path an OLDER
-  // manifest still names but this install set no longer contains is reported
-  // below as `retired`, never resolved through a stack directory that may not
-  // even exist any more.
-  const files = await initInstallSet(repoDir, project);
+  // RP-180: which layer(s) this rig is allowed to have refreshed.
+  //
+  // - A readable manifest is authoritative, and `parseManifest` already
+  //   resolves its own absence of `layers` to `ALL_LAYERS` (every release
+  //   before RP-180 shipped one payload, so an old manifest with no such
+  //   field installed everything) — so `manifest.layers` is never actually
+  //   `undefined` here.
+  // - No manifest at all (`bootstrapped` — `manifest === null`, which covers
+  //   a genuinely missing file AND one `parseManifest` voided over ANY
+  //   invalid field, not only a missing `layers` key) reads the candidate
+  //   set off the disk itself, by quorum — see {@link detectLayersOnDisk}
+  //   and its own history of what was tried here and why each attempt
+  //   before it was not enough.
+  const inference = manifest === null ? await detectLayersOnDisk(repoDir) : null;
+  const layers: Layer[] = manifest?.layers ?? inference!.layers;
+  // A path an OLDER manifest still names but this rig's OWN recorded layers
+  // no longer cover (a manifest hand-edited to drop a layer, or one from a
+  // release that shipped a layer this one renamed) falls out of `files`
+  // below exactly like a path RP-177 retired outright: never written, never
+  // deleted, simply no longer this plan's to manage.
+  const files = await initInstallSet(repoDir, project, layers);
+  // Blocker A's second half, and round 5's correction to it: even an
+  // ADOPTED bootstrapped opt-in layer must never manufacture a file it did
+  // not find, but "does not create it" is not the same thing as "forgets it
+  // existed". Round 4 dropped an absent adopted-layer path from the plan
+  // ENTIRELY, which left the rebuilt manifest with no memory of it at all —
+  // the very next ORDINARY upgrade (a readable manifest now) then read the
+  // absence as "never installed" and proposed `new`, silently reinstating an
+  // operator's deliberate deletion with no note that that is what it was
+  // doing. An intact manifest never has this problem: a `files` entry naming
+  // a path that is now absent already gets the `deleted` verdict, reason
+  // "installed by the rig, removed since — not restored", and carries the
+  // path's hash forward into the next manifest so this stays true on every
+  // later run too.
+  //
+  // The fix reuses exactly that path rather than inventing a new manifest
+  // field: for an absent file of an ADOPTED bootstrapped opt-in layer,
+  // `recorded` below is treated as the hash THIS RELEASE would have
+  // installed — the same value a normal install would have recorded for it
+  // — instead of `undefined`. That is the one piece of information the
+  // per-file logic needs to take the identical `deleted`/"not restored"
+  // branch an intact manifest takes; nothing else about that branch changes.
+  // A file that IS present is untouched by this: `recorded` stays whatever
+  // the (bootstrapped, so absent) manifest says, `undefined`, and the
+  // existing present-file logic decides its verdict exactly as before.
+  const inferredOptInPaths = new Set<string>();
+  if (inference !== null) {
+    for (const layer of inference.layers) {
+      if (layer === 'process') continue;
+      for (const rel of await layerOnlyPaths(layer)) inferredOptInPaths.add(rel);
+    }
+  }
 
   const actions: UpgradeAction[] = [];
   const contents = new Map<string, string>();
@@ -287,7 +440,11 @@ export async function planUpgrade(
 
   for (const file of files) {
     const currentBytes = await readIfPresent(repoDir, file.rel);
-    const recorded = manifest?.files[file.rel];
+    const recordedInManifest = manifest?.files[file.rel];
+    const recorded =
+      recordedInManifest === undefined && currentBytes === null && inferredOptInPaths.has(file.rel)
+        ? sha256(file.content)
+        : recordedInManifest;
     contents.set(file.rel, file.content);
 
     if (currentBytes === null) {
@@ -452,6 +609,7 @@ export async function planUpgrade(
     fromVersion: manifest?.version ?? null,
     toVersion: await packageVersion(),
     bootstrapped: manifest === null,
+    layerInference: inference?.notes ?? null,
     actions,
     wiring,
     wiringByPath,
@@ -464,6 +622,10 @@ export async function planUpgrade(
       // An older manifest's `stacks` is read (never crashes on an unknown
       // entry — RP-177) but never carried forward.
       stacks: [],
+      // Carried forward unchanged: `upgrade` refreshes the layers a rig
+      // already recorded, it never adds or drops one. Opting in happens
+      // through `init --layer workflow`.
+      layers,
       files: nextFiles,
       ...(Object.keys(nextKept).length > 0 ? { kept: nextKept } : {}),
     },

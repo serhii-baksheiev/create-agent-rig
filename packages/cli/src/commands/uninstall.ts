@@ -2,7 +2,7 @@ import { lstat, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promi
 import path from 'node:path';
 import { initManifest } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
-import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
+import { ALL_LAYERS, MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
 import type { RigManifest } from '../lib/manifest.js';
 import { MAX_PATH_SEGMENTS, exceedsMaxPathSegments, resolveInside } from '../lib/safe-path.js';
 
@@ -402,9 +402,21 @@ function refuseFilesKeptOverlap(manifest: RigManifest): void {
  * what bytes it would write there; coupling it to content rendering means a
  * destructive command's plan can fail on a template error that has nothing
  * to do with what is being deleted.
+ *
+ * Passes {@link ALL_LAYERS} explicitly (RP-180) rather than taking
+ * `initManifest`'s own default (`DEFAULT_LAYERS`, Core only): this set is the
+ * ownership BOUNDARY a `remove` verdict is held to, not a description of what
+ * a plain `init` would install today. A rig that opted into the workflow
+ * layer has those paths in `manifest.files` exactly like any Core path, and
+ * this set has to include them or `uninstall` would report every one of them
+ * "not a path this release installs" and refuse to ever remove it — a rig
+ * that opted in would never be able to fully uninstall. Which layers a GIVEN
+ * rig actually has is a manifest question (`manifest.files`/`manifest.kept`,
+ * see `docs/decisions/workflow-layer-split.md`, "Interaction with
+ * `uninstall`"), not a question this boundary answers.
  */
 async function rigOwnedPaths(): Promise<Set<string>> {
-  const files = await initManifest();
+  const files = await initManifest(ALL_LAYERS);
   return new Set(files.map((f) => f.rel));
 }
 

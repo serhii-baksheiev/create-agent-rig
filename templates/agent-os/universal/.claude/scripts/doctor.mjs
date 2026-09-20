@@ -208,6 +208,66 @@ export const manifestFilesOf = (root) => {
   return files;
 };
 
+/** The closed set `layers.json` names today — the only strings `layersOf` ever echoes back. */
+const KNOWN_LAYERS = ['process', 'workflow'];
+
+/**
+ * Which `layers.json` layer(s) this rig recorded installing (RP-180), or
+ * `null` when there is no manifest to read at all — a third answer, not a
+ * guess: `report()` prints nothing about layers in that case rather than
+ * claiming either "Core only" or "every layer".
+ *
+ * A manifest with no `layers` key (every release before RP-180) means "every
+ * layer" — the CLI's own default (`packages/cli/src/lib/manifest.ts`,
+ * `LEGACY_LAYERS`), restated here rather than imported: this script ships
+ * standalone into a generated rig and has no access to the CLI package.
+ *
+ * RP-180 round 3 security review: a PRESENT `layers` is filtered down to
+ * {@link KNOWN_LAYERS} and deduplicated — never echoed as typed, and never
+ * widened to "every layer" just because it failed to parse as a clean array.
+ * A committed manifest is untrusted input read by a script whose own output
+ * lands on a terminal: an unknown or non-string entry is dropped rather than
+ * printed, and a `layers` field that is present but not a usable array (the
+ * wrong type, or an array with nothing recognisable in it) reports as
+ * `[]` — the caller's own "nothing to say" — never silently promoted back to
+ * "every layer", which is reserved for the field's TRUE ABSENCE. Bounded
+ * work regardless of the array's length: filter + `Set` is one pass, and the
+ * result can never hold more than {@link KNOWN_LAYERS}'s own two entries, so
+ * a manifest naming the same layer 100,000 times costs no more render-time
+ * output than naming it once.
+ *
+ * ⚠ **Exported for this file's own tests only — not a stable contract.**
+ * Round 4 changed this function's own return shape (`string[] | null` to
+ * `{ known, unrecognisedCount }`) to carry the unrecognised count out to
+ * `report()`; a caller outside this module that had come to depend on the
+ * OLD shape would have broken silently. `report()`'s own return value
+ * (`layers: string[] | null`, `layersUnrecognisedCount: number`) is the
+ * stable, documented surface — read that, or the rendered/`--json` output,
+ * never this function's return value directly.
+ */
+export const layersOf = (root) => {
+  const parsed = readJson(path.join(root, ...MANIFEST_REL.split('/')));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (!Object.prototype.hasOwnProperty.call(parsed, 'layers')) {
+    return { known: [...KNOWN_LAYERS], unrecognisedCount: 0 };
+  }
+  const { layers } = parsed;
+  if (!Array.isArray(layers)) return { known: [], unrecognisedCount: 0 };
+  const known = new Set();
+  let unrecognisedCount = 0;
+  // One pass, bounded regardless of the array's length: a manifest naming
+  // the same junk entry 100,000 times reports the same one count, never
+  // grows the output, and the entry itself is counted, never echoed.
+  for (const entry of layers) {
+    if (typeof entry === 'string' && KNOWN_LAYERS.includes(entry)) known.add(entry);
+    else unrecognisedCount += 1;
+  }
+  return { known: [...known], unrecognisedCount };
+};
+
+/** `workflow` reads as experimental everywhere doctor names it; every other layer is plain. */
+const layerLabel = (layer) => (layer === 'workflow' ? `${layer} (experimental)` : layer);
+
 /**
  * The files directly in `dir`: `{ names, unreadable }`, or `null` when the
  * directory itself cannot be listed. One entry that cannot be stat'ed (a dangling
@@ -307,9 +367,29 @@ export const report = (root) => {
   const all = [...problems, ...audited.hooks];
   const audit = { verdict: verdictOf(all.map((r) => r.mark)), hooks: all };
   const absent = scopes.filter((scope) => !scope.present && scope.dir !== HOOKS_DIR).map((scope) => scope.dir);
+  const layerInfo = layersOf(root);
+  // `layers` is untrusted committed input, exactly like an exemption reason
+  // or a hook's own relative path elsewhere in this report — printed only
+  // through `printable`, never raw, and an unrecognised entry is COUNTED,
+  // never echoed. An empty `known` list (but a non-null result) means the
+  // field was PRESENT and had nothing recognisable in it, which reads
+  // differently from "nothing to say" and is worth its own line. A MIXED
+  // manifest (a known layer alongside junk) says both: the known layer by
+  // name, and that something else was there and dropped.
+  const layersLine = (() => {
+    if (layerInfo === null) return null;
+    const { known, unrecognisedCount } = layerInfo;
+    const suffix =
+      unrecognisedCount > 0
+        ? ` (+${unrecognisedCount} unrecognised ${unrecognisedCount === 1 ? 'entry' : 'entries'})`
+        : '';
+    if (known.length === 0) return `**layers:** (unrecognised — see ${MANIFEST_REL})`;
+    return `**layers:** ${printable(known.map(layerLabel).join(', '))}${printable(suffix)}`;
+  })();
   const lines = [
     `**doctor** — verdict: ${audit.verdict}`,
     '',
+    ...(layersLine !== null ? [layersLine, ''] : []),
     // Names come from the file system, reasons from a repo file; both are
     // stripped of control bytes here, once, where they reach the terminal.
     ...audit.hooks.map((hook) => `- ${hook.mark} · ${printable(hook.rel)} — ${printable(hook.detail)}`),
@@ -320,7 +400,14 @@ export const report = (root) => {
     `_Not checked by this script — still yours (${UNCHECKED.length}):_`,
     ...UNCHECKED.map((item) => `- ${item}`),
   ];
-  return { ...audit, scopes, unchecked: UNCHECKED, rendered: lines.join('\n') };
+  return {
+    ...audit,
+    scopes,
+    layers: layerInfo === null ? null : layerInfo.known,
+    layersUnrecognisedCount: layerInfo === null ? 0 : layerInfo.unrecognisedCount,
+    unchecked: UNCHECKED,
+    rendered: lines.join('\n'),
+  };
 };
 
 const invokedDirectly = () => {
@@ -347,7 +434,18 @@ if (invokedDirectly()) {
   const result = report(root);
   process.stdout.write(
     args.includes('--json')
-      ? `${JSON.stringify({ verdict: result.verdict, hooks: result.hooks, scopes: result.scopes, unchecked: result.unchecked }, null, 2)}\n`
+      ? `${JSON.stringify(
+          {
+            verdict: result.verdict,
+            hooks: result.hooks,
+            scopes: result.scopes,
+            layers: result.layers,
+            layersUnrecognisedCount: result.layersUnrecognisedCount,
+            unchecked: result.unchecked,
+          },
+          null,
+          2,
+        )}\n`
       : `${result.rendered}\n`,
   );
   process.exit(result.verdict === 'STOP' ? 1 : 0);
