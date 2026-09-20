@@ -184,7 +184,15 @@ describe('resolveTool — PATH entry hygiene', () => {
         'x',
       );
       const relEntry = path.relative(process.cwd(), absDir);
-      expect(path.isAbsolute(relEntry)).toBe(false); // sanity: the fixture is actually relative
+      // On win32, process.cwd() and os.tmpdir() can sit on different drive
+      // letters (measured on the windows-smoke runner: the checkout is on
+      // one drive, TEMP on another) — path.win32.relative() cannot express
+      // that as a relative path and returns the absolute target instead.
+      // The fixture cannot be built as genuinely relative on such a host, so
+      // skip rather than fail on an environmental impossibility unrelated to
+      // the guard under test (mirrors the same guard in "refuses a relative
+      // absFile that genuinely WOULD run if spawned" below).
+      if (path.isAbsolute(relEntry)) return;
       const env = { PATH: relEntry };
       const result = resolveTool('claude', { env, platform: process.platform, repoDir: repoRoot });
       expect(result.status).toBe('tool-not-found');
@@ -302,6 +310,7 @@ describe('boundedRun — environment allow-list', () => {
       'PATH',
       'HOME',
       'USERPROFILE',
+      'HOMEDRIVE',
       'TEMP',
       'TMP',
       'SystemRoot',

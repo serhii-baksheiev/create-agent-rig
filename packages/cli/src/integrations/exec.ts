@@ -71,11 +71,21 @@ export function isValidToolName(name: string): boolean {
  * {@link boundedRun} may see. Frozen ARRAY, not a `Set` — the same reasoning
  * as `declaration.ts`'s `ROOT_KEYS` (`Object.freeze` on a `Set` still leaves
  * `add`/`delete` open).
+ *
+ * `HOMEDRIVE` is here for a measured reason, not a guessed one: the
+ * windows-smoke CI job observed it present in a spawned child's
+ * `process.env` even though it is absent from the filtered block this
+ * module builds — Windows populates it for a child process regardless of
+ * what this module passes, the same way `SystemRoot` is needed for system
+ * DLL loading. Refusing to allow-list an entry the platform adds anyway
+ * would only make this module's own accounting wrong, not the child's
+ * actual environment smaller.
  */
 const ALLOWED_ENV_VARS_LIST = [
   'PATH',
   'HOME',
   'USERPROFILE',
+  'HOMEDRIVE',
   'TEMP',
   'TMP',
   'SystemRoot',
