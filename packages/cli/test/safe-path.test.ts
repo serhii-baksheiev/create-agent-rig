@@ -1,6 +1,13 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isSafeSegment, isSafeSubstitutionValue, resolveInside } from '../src/lib/safe-path.js';
+import { initManifest } from '../src/commands/init.js';
+import {
+  MAX_PATH_SEGMENTS,
+  exceedsMaxPathSegments,
+  isSafeSegment,
+  isSafeSubstitutionValue,
+  resolveInside,
+} from '../src/lib/safe-path.js';
 
 describe('path safety — the containment `upgrade` writes behind', () => {
   const root = path.resolve('/tmp/rig');
@@ -23,6 +30,32 @@ describe('path safety — the containment `upgrade` writes behind', () => {
   it('a prefix match is not containment', () => {
     // /tmp/rig-evil starts with /tmp/rig but is a different directory
     expect(resolveInside(root, '../rig-evil/x')).toBeNull();
+  });
+
+  // `safe-path.ts`'s own comment on `MAX_PATH_SEGMENTS` deliberately names no
+  // specific path or count as its justification — that sentence would go
+  // stale the day a rule moves a directory deeper, and nothing would catch
+  // it (`.claude/rules/invariants.md`, "State the limits — and test them").
+  // This is what backs the cap instead: it reads the REAL install set
+  // through `initManifest()`, so a future path nested deeper than today's
+  // fails HERE, loudly, before it ever reaches the cap in production.
+  it("caps a path at more segments than any path this release's own install set ships, measured not guessed", async () => {
+    const files = await initManifest();
+    const deepest = Math.max(...files.map((f) => f.rel.split('/').length));
+    expect(deepest).toBeGreaterThan(0); // sanity: the install set is not empty
+    // Headroom, not equality — the cap must comfortably outlast today's
+    // deepest shipped path without approaching the RangeError boundary
+    // `MAX_PATH_SEGMENTS`'s own doc comment names.
+    expect(MAX_PATH_SEGMENTS).toBeGreaterThanOrEqual(deepest * 2);
+
+    // The cap's own refusal behaviour, pinned at its exact boundary — this
+    // constant otherwise has no test of its own anywhere in this module.
+    const atCap = `${'a/'.repeat(MAX_PATH_SEGMENTS - 1)}x`;
+    const overCap = `${'a/'.repeat(MAX_PATH_SEGMENTS)}x`;
+    expect(exceedsMaxPathSegments(atCap)).toBe(false);
+    expect(exceedsMaxPathSegments(overCap)).toBe(true);
+    expect(resolveInside(root, atCap)).not.toBeNull();
+    expect(resolveInside(root, overCap)).toBeNull();
   });
 
   it('names the values that are safe to substitute into a path', () => {

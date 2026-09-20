@@ -737,8 +737,26 @@ Before any per-path decision, the manifest as a whole is checked and can
 refuse the WHOLE run before anything is touched — never a per-path
 `preserved`, because a manifest is committed and therefore untrusted input:
 
-- any path (in `files` or `kept`) outside `dir` — `..`, an absolute path, or
-  anything else that fails the same containment `upgrade` applies on write;
+- any path (in `files`) that genuinely ESCAPES `dir` lexically — `..`, an
+  absolute path, or anything else that fails the same containment `upgrade`
+  applies on write. A path with more path segments than any path this
+  release installs (pinned by measurement, not by a guessed number:
+  `packages/cli/test/safe-path.test.ts` › "caps a path at more segments than
+  any path this release's own install set ships, measured not guessed")
+  deliberately does NOT take this branch, even though `resolveInside` itself
+  refuses it the identical way it refuses an escape: such a path can never
+  have been one this release owns regardless (checked below, and always
+  true, since nothing this release installs comes anywhere near that deep),
+  so it is reported the same honest, per-path `preserved` way as any other
+  unowned path — the escape check right below it still aborts the whole run
+  for a path that genuinely leaves `dir`, unweakened; a too-deep path is
+  refused by never reaching that check at all, and is never read, hashed, or
+  written either way. The two checks are independent safety nets, not
+  substitutes for each other. (Before this was measured and separated out, a
+  17-segment manifest key aborted the whole run — including a `--dry-run`
+  the operator could not then even preview — through a message that read
+  "resolves outside `dir`", which was simply false for a path that never left
+  it lexically at all.)
 - any path with a segment that NORMALISES to `.git` — case folded, a Windows
   alternate-data-stream suffix (`name::$DATA`) stripped, then trailing dots
   and spaces stripped, the two characters Windows itself silently drops when
@@ -763,7 +781,12 @@ actually lives outside the repository nor make it silently report
 `noManifest` for one that is only reachable through the link — either case
 refuses with an error naming the ancestor.
 
-Per manifest path, in order: a path that is not one of the EXACT paths this
+Per manifest path, in order: a path with more segments than
+{@link MAX_PATH_SEGMENTS} (`safe-path.ts`) is `preserved`, reason naming the
+limit — checked BEFORE the path is resolved on disk at all, so it never
+reaches the escape check above and never aborts the run on that path's
+account (see the bullet above for why that is the right call, not a
+weakening). Then: a path that is not one of the EXACT paths this
 release actually installs (derived from the same install set `init`/`upgrade`
 use, never a hand-written list, and never merely a top-level directory such
 paths sit under) is `preserved`, reason `not a path this release installs` —
@@ -947,10 +970,46 @@ call the moment the wiring file's own protection kicks in — and since a
 `PreToolUse` hook that exits non-2 is non-blocking, the tool call proceeds
 anyway. So a protected hook's relative `.mjs` imports are walked to a fixed
 point, and everything found that this release owns is protected too, the
-same way and under the same wiring path. The walk is bounded by construction
-— it only ever follows an import target that is already one of the ~80 paths
-this release installs, and a visited set stops it re-reading any of them
-twice — never by a budget on input size.
+same way and under the same wiring path.
+
+🔴 **This is MODULE-IMPORT protection specifically, not "everything a hook
+needs to keep working."** A hook that reads another path at RUNTIME rather
+than importing it — `inject-rules.mjs` reading `.claude/rules/`,
+`guard-subagent-model.mjs` reading `.claude/agents/` for a pinned-model
+override — is not covered by this walk, and this page does not claim it is:
+those paths are ordinary manifest entries, protected or removed on their own
+merits exactly as before this feature existed. Measured: a preserved,
+correctly-wired `inject-rules.mjs` with `.claude/rules/` removed exits 0
+having injected nothing; `guard-subagent-model.mjs` with `.claude/agents/`
+removed allows a pinned-model override it would otherwise refuse. Both are
+existing, unrelated gaps this feature neither creates nor closes — the three
+Never-tier guards this feature's own motivating case names
+(`guard-bash`/`block-no-verify`/`guard-secret-file`) import every module they
+need rather than reading one at runtime, which is exactly why they stay
+self-contained and still block once this walk protects their imports.
+
+Every real READ this walk performs is gated by the same symlink-safe
+{@link regularFileStatus} check every other read on this page gets — not the
+purely lexical containment `onDisk` alone provides. A hook file swapped for a
+symlink to an unbounded or blocking special file, with the wiring that
+references it also modified, would otherwise make the walk's own `readFile`
+hang or exhaust the heap — reachable from nothing worse than `git clone`ing a
+hostile branch, before consent, since a symlink survives `git add`/commit as
+mode `120000`. The file stays protected either way (it was recorded before
+the read is attempted) — walked or not — the same "protecting too many is
+the safe direction" doctrine below covers exactly this case too.
+
+Bounded, but precisely: every REAL read happens at most once per owned path
+— a visited set is checked before reading, and only an import target already
+among the ~80 paths this release installs is ever opened, so a path this
+release does not ship is never read regardless of what a hostile file
+claims to import. The walk's transient queue length is a different question
+from read count, and is bounded by the number of import-shaped matches
+across files actually read, not by the size of the owned-path set — an
+irrelevant distinction at this release's real scale (measured: ~400,000
+duplicate matches in a 15 MB file cost roughly a second), stated here only so
+the claim matches what the code does rather than rounding up to "bounded by
+`|ownedPaths|`" in both places at once.
 
 A wiring file this command cannot safely READ at that point (itself a
 symlink, or reached through one) protects every hook path this release owns
@@ -958,13 +1017,36 @@ symlink, or reached through one) protects every hook path this release owns
 depth, not only the top level), and then walked the identical way — not a
 computed subset: this command has no safe way to learn which hooks an unsafe
 entry actually references without reading through it, and protecting too
-many is the safe direction; protecting too few is the bug this closes. Such
-a hook is reported in `--json`'s `preserved` array with the identical reason
-wording `planUninstall` itself uses for a hook it protects at plan time
-(`still referenced by <wiring path>, which was preserved as edited —
-removing this file would leave it pointing at nothing`), so a reader cannot
-tell which pass, or which depth of the import walk, discovered the
-protection from the wording alone.
+many is the safe direction; protecting too few is the bug this closes.
+
+**A `kept` wiring file protects its hooks too, exactly as a `files` one
+does — this was not always true.** `init` records a pre-existing
+`.claude/settings.json` under `kept`, never `files`, when the repository
+already had one (the ordinary "starts from an existing repository" path).
+`planUninstall`'s own `kept` loop preserves such a path UNCONDITIONALLY, with
+no hash to compare — there is no "pristine, about to be removed" case for it
+to fall into, ever. The walk treats it accordingly: a `kept` wiring path's
+CURRENT hook references are always protected, never skipped on a hash match
+that does not exist for this purpose.
+
+A hook is reported in `--json`'s `preserved` array with one of two reason
+wordings, depending on how the walk reached it: a hook a wiring file names
+DIRECTLY gets the same wording `planUninstall` uses for a hook it protects at
+plan time (`still referenced by <wiring path>, which was preserved as edited
+— removing this file would leave it pointing at nothing`); a file reached
+only through another protected file's own import — `.claude/scripts/lib/secrets.mjs`
+is never mentioned by `.claude/settings.json` at ALL, only
+`.claude/hooks/guard-secret-file.mjs` is — gets a wording that names the
+immediate importer instead (`imported by <importer>, itself needed —
+directly or through further imports — by the still-preserved <wiring path>,
+which is why it survives too`), so an operator grepping the wiring file for
+the path they actually care about is not left empty-handed. Neither wording
+claims the immediate importer is itself directly named by the wiring
+file — only that the wiring file needs it, directly or transitively — which
+stays true at any import depth, including a dependency reached three hops
+down (`.claude/hooks/lib/edit-input.mjs` imports `.claude/scripts/git-env.mjs`,
+and neither is named in `.claude/settings.json` at all). A reader who needs
+the next hop finds it on the importer's OWN `preserved` entry.
 
 **`--detach`** performs the identical safe cleanup — every check on this page
 applies exactly the same, including the two manifest-digest checkpoints and

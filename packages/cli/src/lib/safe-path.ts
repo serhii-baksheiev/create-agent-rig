@@ -55,10 +55,19 @@ export function isSafeSubstitutionValue(value: string): boolean {
 
 /**
  * The most path segments any legitimate `rel` this codebase constructs or
- * tests ever needs. The deepest path this release's own install set ships is
- * `.claude/skills/worktree-task/SKILL.md` (4 segments); this leaves 4x
- * headroom for a rule, skill or hook nested one or two levels deeper someday,
- * without coming anywhere near the cost boundary below.
+ * tests ever needs.
+ *
+ * 🔴 No specific number or path is claimed here as evidence for where this is
+ * set — a sentence naming today's deepest shipped path would go stale the day
+ * a rule moves one directory deeper, and nothing would catch it (the norm
+ * `.claude/rules/invariants.md` states under "State the limits — and test
+ * them"). What backs this value instead is
+ * `packages/cli/test/safe-path.test.ts` › "caps a path at more segments than
+ * any path this release's own install set ships, measured not guessed" —
+ * it reads the real install set through `initManifest()`, asserts this
+ * constant leaves it comfortable headroom, and pins the cap's own refusal
+ * behaviour at the boundary. Read that test for the current numbers; this
+ * comment does not repeat them so it cannot drift from what the test finds.
  *
  * `rel` is not always this command's own construction, though — a rig
  * manifest is committed input (`uninstall`'s `files`/`kept` keys reach
@@ -74,13 +83,30 @@ export function isSafeSubstitutionValue(value: string): boolean {
  * `.claude/rules/invariants.md`'s fail-open rule; the cap below closes it by
  * refusing before the spread is ever reached.
  */
-const MAX_PATH_SEGMENTS = 16;
+export const MAX_PATH_SEGMENTS = 16;
+
+/**
+ * `rel` has more path segments than {@link MAX_PATH_SEGMENTS} allows.
+ * Exported so a caller that needs to say WHICH limit a refusal hit — rather
+ * than `resolveInside`'s one undifferentiated `null` — can ask this specific
+ * question before calling `resolveInside` at all, without re-implementing the
+ * threshold: there is exactly one count-the-segments-and-compare here, and
+ * `resolveInside` below calls it rather than repeating it.
+ */
+export function exceedsMaxPathSegments(rel: string): boolean {
+  return rel.split('/').length > MAX_PATH_SEGMENTS;
+}
 
 /**
  * `rel` resolved under `root`, or `null` when it would land anywhere else —
  * including an absolute path, an empty path, the classic sibling
  * (`/tmp/rig` must not contain `/tmp/rig-evil`), or a segment count past
- * {@link MAX_PATH_SEGMENTS}.
+ * {@link MAX_PATH_SEGMENTS}. The `null` does not say which of these it was;
+ * a caller that needs to (`uninstall`'s per-file plan, so it can report a
+ * too-deep manifest key honestly instead of through the generic "resolves
+ * outside" message) checks {@link exceedsMaxPathSegments} itself, before
+ * ever calling this function, rather than trying to reverse-engineer the
+ * reason from `null`.
  *
  * This is the containment behind every write an upgrade makes. It is deliberate
  * belt-and-braces: the values that build `rel` are validated where they are
@@ -88,8 +114,8 @@ const MAX_PATH_SEGMENTS = 16;
  */
 export function resolveInside(root: string, rel: string): string | null {
   if (rel === '' || path.isAbsolute(rel)) return null;
+  if (exceedsMaxPathSegments(rel)) return null;
   const segments = rel.split('/');
-  if (segments.length > MAX_PATH_SEGMENTS) return null;
   // Refused, not repaired: joining an absolute or `..`-bearing path onto the
   // root would silently turn hostile input into a plausible-looking write.
   if (segments.some((segment) => !isSafeSegment(segment))) return null;

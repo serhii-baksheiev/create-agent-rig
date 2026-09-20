@@ -128,8 +128,21 @@ a template any generated rig receives.
   `.claude/scripts/lib/shell-tools.mjs`, …), and protecting only the
   directly-named hook while deleting what it imports left every one of
   those dying at module resolution with exit 1 — silently inert, since a
-  `PreToolUse` hook that exits non-2 is non-blocking. The walk is bounded by
-  the fixed set of paths this release installs, not by input size. Two other
+  `PreToolUse` hook that exits non-2 is non-blocking. Every REAL read this
+  walk performs is gated by the same symlink-safe check every other read in
+  this command gets, not the purely lexical containment alone: a hook file
+  swapped for a symlink to an unbounded or blocking special file — reachable
+  from nothing worse than `git clone`ing a hostile branch, before consent —
+  no longer makes the walk's own read hang or exhaust the heap; the file
+  stays protected regardless, since that is recorded before the read is
+  attempted. A `kept` wiring file (a pre-existing `.claude/settings.json`
+  `init` never took ownership of — the ordinary "starts from an existing
+  repository" path) now protects its hooks too: it used to protect NONE of
+  them, silently, because the pass that decides this read only `files`'
+  hashes and a `kept` path has none. A file reached only through another
+  protected file's own import, rather than named by the wiring file
+  directly, now gets its own reason wording naming the immediate importer,
+  since the wiring file itself may never mention it at all. Two other
   apply-time-only fixes in the same area: the removal loop now re-reads a
   wiring file's bytes fresh, immediately before that file's own removal,
   instead of reusing a copy `protectedHooksFor` read before the loop even
@@ -138,8 +151,14 @@ a template any generated rig receives.
   itself is now caught the same way `planUninstall`'s own errors are, so
   `--json` still gets its one promised object rather than a bare stack trace.
   A manifest key with more path segments than any real path this release ever
-  installs is now refused outright before it reaches the native path-join
-  call that segment count could otherwise overflow.
+  installs no longer reaches the native path-join call that segment count
+  could otherwise overflow — reported the same honest, per-path `preserved`
+  way any other unowned path is (deeper than any path this release could ever
+  own), rather than aborting the whole run, `--dry-run` included, through a
+  message that used to claim the path "resolves outside" the repository,
+  which was simply false for one that never left it lexically at all; the
+  genuine `..`/absolute escape check is unweakened and still aborts the whole
+  run exactly as before.
   Every ancestor check now makes two independent tests per segment, not one:
   the existing symlink/type classification, and a separate `realpath`
   containment check that does not read that classification at all — the

@@ -237,11 +237,17 @@ describe('planUninstall — per-file verdicts', () => {
   // into `path.resolve(base, ...segments)` — a call every manifest key
   // reaches, before ownership is even checked. Past roughly 65,000–130,000
   // array elements (engine-dependent) a spread like that raises an uncaught
-  // `RangeError: Maximum call stack size exceeded`, not the `UninstallError`
-  // refusal this command promises for hostile input — surfacing as a bare
-  // stack trace instead of the documented payload. This uses a count an order
-  // of magnitude past that boundary to stay decisive regardless of engine.
-  it('refuses a manifest key with an extreme number of path segments cleanly — no RangeError, no crash', async () => {
+  // `RangeError: Maximum call stack size exceeded`. `exceedsMaxPathSegments`
+  // is checked BEFORE that point is ever reached, so this key never resolves
+  // on disk at all — it is reported `preserved`, honestly, the same way any
+  // other path deeper than this release's own install set is, rather than
+  // aborting the WHOLE run the way a genuine `..`/absolute escape still does
+  // (cycle-4 review, blocker 3: the abort's own message read "resolves
+  // outside `dir`", which is simply false for a path that never left it
+  // lexically at all — and it took `--dry-run` down with it). This uses a
+  // count an order of magnitude past the RangeError boundary to stay
+  // decisive regardless of engine.
+  it('reports a manifest key with an extreme number of path segments as an ordinary preserved path — no RangeError, no crash, no aborted run', async () => {
     await installRig();
     const hostileRel = `${'a/'.repeat(400_000)}pre-commit`;
     const manifest = await readManifest(repo);
@@ -250,8 +256,17 @@ describe('planUninstall — per-file verdicts', () => {
     await writeManifest(repo, manifest);
 
     const start = Date.now();
-    await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
+    const plan = await planUninstall(repo);
     expect(Date.now() - start).toBeLessThan(2000);
+    const action = actionFor(plan, hostileRel);
+    expect(action?.verdict).toBe('preserved');
+    expect(action?.reason).toMatch(/path segment/i);
+    // the false "resolves outside" message must not appear anywhere for this
+    // path — the whole point of separating this from the escape check
+    expect(action?.reason).not.toMatch(/resolves outside/i);
+    // the run was never aborted — every OTHER file the fixture installed is
+    // still decided normally
+    expect(actionFor(plan, WORKFLOW)?.verdict).toBe('remove');
   });
 
   // A manifest this rig ever wrote never lists the same path in both `files`
@@ -370,6 +385,59 @@ describe('planUninstall — wiring files', () => {
     expect(actionFor(plan, CODEX_HOOKS)?.verdict).toBe('remove');
   });
 
+  // Cycle-4 review, blocker 2: `protectedHooksFor` used to read a wiring
+  // path's recorded hash from `manifest.files` ONLY. A `.claude/settings.json`
+  // that already existed before `init` ran is recorded under `kept`, never
+  // `files` (`packages/cli/src/commands/init.ts`'s `kept` map) — the ordinary
+  // "starts from an existing repository" path `README.md` names — so
+  // `recorded` read `undefined`, the whole wiring pass silently skipped it,
+  // and NONE of its hooks were protected. Reproduced here with a settings
+  // file that pre-exists `init` and genuinely wires `guard-bash.mjs`.
+  it('protects a hook a KEPT wiring file still references, exactly as a FILES-tracked one does', async () => {
+    const keptSettings = JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs"',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await write(SETTINGS, keptSettings); // pre-existing, so init leaves it and kept-records it
+    await installRig();
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.[SETTINGS]).toBeTruthy();
+    expect(manifest?.files[SETTINGS]).toBeUndefined();
+    // sanity: init really left the content alone rather than merging into it
+    expect(await read(SETTINGS)).toBe(keptSettings);
+
+    const plan = await planUninstall(repo);
+    const settingsAction = actionFor(plan, SETTINGS);
+    expect(settingsAction?.verdict).toBe('preserved');
+    expect(settingsAction?.reason).toBe('user-owned (kept by init)');
+
+    const guardBash = '.claude/hooks/guard-bash.mjs';
+    const guardBashAction = actionFor(plan, guardBash);
+    expect(guardBashAction?.verdict).toBe('preserved');
+    expect(guardBashAction?.reason).toContain(SETTINGS);
+
+    // the walk over a KEPT wiring path's hooks follows imports exactly the
+    // same way it does for a FILES one — a transitive dependency survives too
+    const stopFlag = '.claude/scripts/stop-flag.mjs';
+    expect(actionFor(plan, stopFlag)?.verdict).toBe('preserved');
+
+    await applyUninstall(repo, plan);
+    expect(await exists(SETTINGS)).toBe(true);
+    expect(await exists(guardBash)).toBe(true);
+    expect(await exists(stopFlag)).toBe(true);
+  });
+
   it('preserves modified wiring and names the hooks still referenced', async () => {
     await installRig();
     const original = await read(SETTINGS);
@@ -450,6 +518,42 @@ describe('planUninstall — wiring files', () => {
     await applyUninstall(repo, plan);
     for (const dep of deps) {
       expect(await exists(dep), dep).toBe(true);
+    }
+  });
+
+  // `RELATIVE_MJS_IMPORT` matches only `from '...'`-style relative imports
+  // ending in `.mjs` — it does not match a dynamic `import('./x.mjs')` or a
+  // bare side-effect `import './x.mjs';` (no `from`). No shipped
+  // hook-reachable file uses either form today, which this test measures
+  // directly against the REAL, currently-reachable set (via `planUninstall`
+  // itself, not a hand-maintained list that could itself drift) — so a
+  // future hook, or one of its own dependencies, gaining such a form is
+  // caught here loudly, rather than silently reintroducing the closure-walk
+  // gap the cycle-4 review found (a hook-reachable file that uses an
+  // unmatched import form is invisible to the walk exactly the way
+  // `hookFilesReferencedIn`'s narrower pattern was).
+  it('every hook-reachable file uses only the from-relative .mjs import form the closure walk understands', async () => {
+    await installRig();
+    const original = await read(SETTINGS);
+    const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+    await write(SETTINGS, edited);
+
+    const plan = await planUninstall(repo);
+    const reachable = plan.actions
+      .filter(
+        (a) =>
+          a.verdict === 'preserved' && a.rel !== SETTINGS && (a.reason ?? '').includes(SETTINGS),
+      )
+      .map((a) => a.rel);
+    // sanity: this is really exercising the closure, not an empty selector
+    expect(reachable.length).toBeGreaterThan(3);
+
+    for (const rel of reachable) {
+      const content = await read(rel);
+      expect(content, `${rel}: dynamic import()`).not.toMatch(/\bimport\s*\(/);
+      expect(content, `${rel}: bare side-effect import`).not.toMatch(
+        /^\s*import\s+['"][^'"]+['"]\s*;/m,
+      );
     }
   });
 });
@@ -1186,6 +1290,61 @@ describe('applyUninstall — a file that changed after planning', () => {
         for (const dep of deps) {
           expect(await exists(dep), dep).toBe(true);
         }
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  // Cycle-4 review, blocker 1: `protectHookAndDeps` read a protected hook's
+  // bytes through `onDisk` alone (purely lexical) with no `regularFileStatus`
+  // gate — unlike every other read in this file. A hook file swapped for a
+  // symlink (with the wiring that references it also modified, so the walk
+  // actually runs) let `readFile` open whatever the link pointed at. This
+  // does not reproduce the reported hang/OOM directly — a portable unit test
+  // cannot safely construct an infinite or blocking special file — instead
+  // it proves the GATE itself is what runs: the symlink's target contains a
+  // relative import naming a real owned "canary" path
+  // (`.claude/scripts/preflight.mjs`, never otherwise reachable from
+  // `guard-bash.mjs`'s real closure) that only an actual read would ever
+  // discover. If the read happened, the canary would show up `preserved`
+  // (protected as an import); the fix means it never does.
+  onlyWhereSymlinksExist(
+    'never reads a hook file through a symlink while walking its import closure — it stays protected without being opened',
+    async () => {
+      await installRig();
+      const CANARY = '.claude/scripts/preflight.mjs';
+      expect(await exists(CANARY)).toBe(true);
+
+      const original = await read(SETTINGS);
+      const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+      await write(SETTINGS, edited);
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const guardBash = '.claude/hooks/guard-bash.mjs';
+        const target = path.join(outside, 'not-actually-guard-bash.mjs');
+        // a relative import naming the canary — only reachable if this file
+        // is actually opened and scanned, which the fix refuses to do
+        await writeFile(target, "import { x } from '../scripts/preflight.mjs';\n");
+        await rm(abs(guardBash));
+        await symlink(target, abs(guardBash));
+
+        const start = Date.now();
+        const plan = await planUninstall(repo);
+        expect(Date.now() - start).toBeLessThan(2000);
+
+        // the symlinked hook itself: still protected (it was set into
+        // `protectedHooks` before the gate is ever checked), just via the
+        // ordinary "not a regular file" verdict its own manifest entry gets
+        expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
+        // the canary: NOT protected — proof the symlink's content was never
+        // read to discover this "import" at all
+        expect(actionFor(plan, CANARY)?.verdict).toBe('remove');
+
+        await applyUninstall(repo, plan);
+        const info = await lstat(abs(guardBash));
+        expect(info.isSymbolicLink()).toBe(true); // untouched, never read or removed
       } finally {
         await removeFixture(outside);
       }

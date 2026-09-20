@@ -11,6 +11,7 @@ import {
   CHANGED_SINCE_PLANNING_REASON,
   UninstallError,
   applyUninstall,
+  hookImportedByReason,
   hookStillReferencedReason,
   planUninstall,
 } from './commands/uninstall.js';
@@ -434,14 +435,17 @@ interface UninstallPayload {
  * `changedSincePlanning` and `protectedHooksAtApply` paths are both folded
  * into `preserved` — the first with reason
  * {@link CHANGED_SINCE_PLANNING_REASON}, the second with
- * {@link hookStillReferencedReason}, the same function `planUninstall` itself
- * calls to word a hook it protects at PLAN time, so a reader cannot tell
- * which pass discovered the protection from the wording alone. Neither is in
- * `plan.actions` (both were `remove` at plan time and only discovered
- * otherwise at apply time), but both are exactly as un-removed as any other
- * preserved path, and a caller reading `preserved` for "what did this run
- * leave behind" must see them there too, not in a third and fourth,
- * easy-to-miss list.
+ * {@link hookStillReferencedReason} (a path a wiring file names directly) or
+ * {@link hookImportedByReason} (a path reached only through another
+ * protected file's own import — `entry.importedBy` says which), the same
+ * two functions `planUninstall` itself calls to word a hook it protects at
+ * PLAN time, so a reader cannot tell which pass discovered the protection
+ * from the wording alone. Neither `changedSincePlanning` nor
+ * `protectedHooksAtApply` is in `plan.actions` (both were `remove` at plan
+ * time and only discovered otherwise at apply time), but both are exactly as
+ * un-removed as any other preserved path, and a caller reading `preserved`
+ * for "what did this run leave behind" must see them there too, not in a
+ * third and fourth, easy-to-miss list.
  *
  * `outcome` is passed straight through from `applyUninstall`'s own result:
  * present on every completed, non-dry-run call, absent on `--dry-run` and on
@@ -457,7 +461,7 @@ function uninstallPayload(
     remaining?: string[];
     error?: string;
     changedSincePlanning?: string[];
-    protectedHooksAtApply?: Array<{ rel: string; wiringRel: string }>;
+    protectedHooksAtApply?: Array<{ rel: string; wiringRel: string; importedBy?: string }>;
     outcome?: UninstallOutcome;
   },
 ): UninstallPayload {
@@ -478,9 +482,12 @@ function uninstallPayload(
         path,
         reason: CHANGED_SINCE_PLANNING_REASON,
       })),
-      ...(applied?.protectedHooksAtApply ?? []).map(({ rel, wiringRel }) => ({
+      ...(applied?.protectedHooksAtApply ?? []).map(({ rel, wiringRel, importedBy }) => ({
         path: rel,
-        reason: hookStillReferencedReason(wiringRel),
+        reason:
+          importedBy === undefined
+            ? hookStillReferencedReason(wiringRel)
+            : hookImportedByReason(importedBy, wiringRel),
       })),
     ],
     manifestRemoved: applied?.manifestRemoved ?? false,
@@ -663,6 +670,18 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
     // regardless of which kind of failure this is.
     const message = error instanceof Error ? error.message : String(error);
     if (json) {
+      // `removed: []` here is not a guess: EVERY call inside `applyUninstall`
+      // that can throw uncaught (`rigOwnedPaths`, the apply-time
+      // `protectedHooksFor` pass) runs strictly before its own removal loop
+      // starts — that loop wraps every per-file removal in its OWN
+      // try/catch and always RETURNS a result (with the real `removed` so
+      // far) rather than throwing. So an exception reaching this `catch` can
+      // only mean nothing was removed yet. This is a structural property of
+      // `applyUninstall`'s own control flow (see the comment immediately
+      // above its removal loop), not backed by a test of the hypothetical
+      // case, which does not exist today — if a future edit adds a
+      // throwing call INSIDE or AFTER that loop, this array would start
+      // lying, silently, exactly here.
       process.stdout.write(
         `${JSON.stringify(
           uninstallPayload(false, plan.actions, [], { manifestRemoved: false, error: message }),
@@ -717,23 +736,30 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
   }
 
   // The three outcomes `--json` names structurally are said in prose here
-  // too, not only encoded in a field: `preserved` below folds together the
-  // plan's own `preserved` verdicts, any path caught changed only at apply
-  // time, and any hook a wiring file's OWN apply-time edit or symlink just
-  // protected — all three are equally "left behind", and a report naming
-  // only one kind would read as if the others never happened.
-  const preserved = [
-    ...plan.actions.filter((a) => a.verdict === 'preserved').map((a) => a.rel),
-    ...(result.changedSincePlanning ?? []),
-    ...(result.protectedHooksAtApply ?? []).map((p) => p.rel),
-  ];
+  // too, not only encoded in a field: `preserved` below is the IDENTICAL
+  // list `uninstallPayload` already built for `--json` above (not a second,
+  // separately-maintained computation of the same thing) — the plan's own
+  // `preserved` verdicts, any path caught changed only at apply time, and
+  // any hook a wiring file's OWN apply-time edit or symlink just protected,
+  // each with the reason that pass recorded. All three are equally "left
+  // behind", and a report naming only one kind — or naming a count instead
+  // of the paths themselves — would read as if the others never happened, or
+  // leave an operator with nothing to grep for once the count passes a
+  // handful.
+  const { preserved } = uninstallPayload(false, plan.actions, result.removed, {
+    manifestRemoved: result.manifestRemoved,
+    changedSincePlanning: result.changedSincePlanning,
+    protectedHooksAtApply: result.protectedHooksAtApply,
+    outcome: result.outcome,
+  });
+  const preservedList = (): string =>
+    preserved.map(({ path, reason }) => `  ! ${path}${reason ? ` — ${reason}` : ''}`).join('\n');
   if (result.outcome === 'detached') {
     process.stdout.write(
       `\nDetached: removed ${result.removed.length} files and the manifest.\n` +
         (preserved.length > 0
           ? `${preserved.length} file(s) left behind — they are yours now, uninstall no longer owns them:\n` +
-            preserved.map((rel) => `  ! ${rel}`).join('\n') +
-            '\n'
+            `${preservedList()}\n`
           : ''),
     );
   } else if (result.manifestRemoved) {
@@ -742,10 +768,13 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
     // Every removal that was planned succeeded, but something else was
     // preserved (in the plan, or discovered changed at apply time) — the rig
     // still owns bytes it did not remove, so the manifest naming them was
-    // kept on purpose, not left behind by a failure.
+    // kept on purpose, not left behind by a failure. Named, not only
+    // counted: a run with the now-larger preserved count a transitive-import
+    // walk can produce still needs to be actionable from this one line of
+    // output, without re-running `--json` just to learn what survived.
     process.stdout.write(
       `\nRemoved ${result.removed.length} files. ${preserved.length} preserved — the manifest ` +
-        'was kept: the rig is still installed.\n',
+        `was kept: the rig is still installed.\n${preservedList()}\n`,
     );
   }
   // A removal is a working-tree change, not a commit — uninstall never
