@@ -202,6 +202,16 @@ would confirm its absence. This matches `docs/compatibility.md`'s own
 cell is `UNVERIFIED` for the same capability — one word for one (here,
 unmeasured) capability, not two.
 
+> **Corrected 2026-09-20 by `integration-composition-rp22.md` M6:** "no
+> working `codex` binary exists" was a property of that spike's environment,
+> not of the package — a fresh install of `@openai/codex@0.155.1` runs a full
+> non-interactive `codex plugin add/list/remove/marketplace add` CLI with
+> `--json` on every verb, live-run and quoted verbatim there. The status word
+> in `docs/compatibility.md` is unchanged (still `UNVERIFIED`, because no
+> repository test executes it), and this note does not re-decide RP-179's or
+> RP-22's installer-selection question — that re-decision belongs to RP-22
+> S6+, per `plugin-capability-matrix.md`'s trigger 6.
+
 ## Model (c) — hybrid: tracked security guards + plugin-delivered everything else
 
 Not built or run — there is no Rig-specific implementation to measure yet,
@@ -225,6 +235,13 @@ payload out of the repository (measured directly, above) — the previous
 draft of the decision record's opposite claim was wrong. Codex has native
 plugin installation, not "no scriptable surface at all" — also measured,
 by reading its own current docs, not carried over from an earlier note.
+**Corrected 2026-09-20 by `integration-composition-rp22.md` M6:** that native
+surface is now measured to be *non-interactive and scriptable too*, not only
+"native" in the browsable/interactive sense this spike found — see the
+correction on the conclusion above. Trigger 6 in
+`plugin-capability-matrix.md`'s cost section has therefore fired; whether
+Rig's own installer adopts it is RP-22's decision, not restated or made
+here.
 
 **Left open, explicitly, for RP-22 to measure before choosing a delivery
 model for any specific guard:** whether a plugin-delivered guard actually
