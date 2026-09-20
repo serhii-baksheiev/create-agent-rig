@@ -166,7 +166,15 @@ The plugin install appended two top-level keys to the rig's own
 `.claude/settings.json` (the file `init` had just written, carrying the rig's
 hook wiring):
 
+`git --no-pager diff --no-color -- .claude/settings.json`, re-verified
+2026-09-20 (round 2) with a clean re-run of this exact reproduction, so the
+hunk header's counts below are checked against the body they head (context
+5, added 11, `5+11=16` matching `+65,16`) rather than hand-trimmed from an
+earlier capture — the `diff --git`/`index` lines are the only thing cut:
+
 ```diff
+--- a/.claude/settings.json
++++ b/.claude/settings.json
 @@ -65,5 +65,16 @@
          ]
        }
@@ -174,13 +182,24 @@ hook wiring):
 +  },
 +  "extraKnownMarketplaces": {
 +    "rp22-s0-marketplace": {
-+      "source": { "source": "directory", "path": "/tmp/rp22-s0/marketplace" }
++      "source": {
++        "source": "directory",
++        "path": "/tmp/rp22-s0/marketplace"
++      }
 +    }
 +  },
-+  "enabledPlugins": { "rig-guard-demo@rp22-s0-marketplace": true }
++  "enabledPlugins": {
++    "rig-guard-demo@rp22-s0-marketplace": true
    }
  }
 ```
+
+(the JSON is valid despite the last two context lines appearing to close
+`enabledPlugins`/`hooks` alike — those two lines, `"  }"` and `"}"`, are
+byte-identical between the old and new file at that position, so git's
+text-based diff matches them as unchanged context even though they now close
+a different object than before; this is ordinary line-based-diff behaviour,
+not a transcription error.)
 
 `upgrade --dry-run` verbatim (trimmed to the summary and the relevant file
 line):
@@ -328,24 +347,33 @@ Commands:
 `<SOURCE>`, plus a `--json` flag; `codex plugin list --help` and `codex
 plugin remove --help` both document `--json` too.
 
-**Run against the same fixture marketplace the Claude Code measurements
-used** (unmodified — Codex's marketplace loader accepts the
+**Re-run 2026-09-20 (round 2), in a fresh isolated environment
+(`WORK=/tmp/rp22-s0b`), against the same fixture marketplace the Claude Code
+measurements used, unmodified** (Codex's marketplace loader accepts the
 `.claude-plugin/marketplace.json` shape directly, without a Codex-specific
-manifest):
+manifest). **Every command below is run and quoted separately — none of
+these outputs are merged, and every field shown was actually printed by that
+exact invocation**, correcting round 1 of this record, which had folded
+`plugin list --json`'s entry fields into `plugin add --json`'s result
+without ever running `list` itself.
 
 ```sh
-export HOME="$WORK/codexhome1"
-export CODEX_HOME="$WORK/codexhome1/.codex"
-cd /tmp/rp22-s0-codex1 && git init -q .
+export HOME="$WORK/codexhome"
+export CODEX_HOME="$WORK/codexhome/.codex"
+cd /tmp/rp22-s0b-project && git init -q .
 "$CODEXBIN" plugin marketplace add "$WORK/marketplace"
-"$CODEXBIN" plugin add rig-guard-demo@rp22-s0-marketplace --json
 ```
 
 ```
-WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("<home>/.codex"))
-Added marketplace `rp22-s0-marketplace` from <home>/rp22-s0/marketplace.
-Installed marketplace root: <home>/rp22-s0/marketplace
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("/tmp/rp22-s0b/codexhome/.codex"))
+Added marketplace `rp22-s0-marketplace` from /tmp/rp22-s0b/marketplace.
+Installed marketplace root: /tmp/rp22-s0b/marketplace
 ```
+
+`codex plugin add rig-guard-demo@rp22-s0-marketplace --json` — **verbatim,
+exactly 6 keys** (the WARNING line above is Codex's own stderr-ish banner,
+printed before the JSON on every invocation in this environment; not part of
+the JSON):
 
 ```json
 {
@@ -353,23 +381,101 @@ Installed marketplace root: <home>/rp22-s0/marketplace
   "name": "rig-guard-demo",
   "marketplaceName": "rp22-s0-marketplace",
   "version": "1.0.0",
-  "installedPath": "<home>/.codex/plugins/cache/rp22-s0-marketplace/rig-guard-demo/1.0.0",
-  "installed": true,
-  "enabled": true,
-  "source": { "source": "local", "path": "<home>/rp22-s0/marketplace/plugins/rig-guard-demo" },
-  "marketplaceSource": { "sourceType": "local", "source": "<home>/rp22-s0/marketplace" },
-  "installPolicy": "AVAILABLE",
+  "installedPath": "/tmp/rp22-s0b/codexhome/.codex/plugins/cache/rp22-s0-marketplace/rig-guard-demo/1.0.0",
   "authPolicy": "ON_INSTALL"
 }
 ```
 
-`codex plugin remove rig-guard-demo@rp22-s0-marketplace --json` returned exit
-0 and a matching JSON object; no interactive prompt occurred at any step.
-**Zero files landed in the project repository** (`find /tmp/rp22-s0-codex1`
-after install shows only ordinary `git init` output — no `.codex/` and no
-marker file in the repo itself); the entire marketplace registration and
-plugin payload live under `$CODEX_HOME` (`config.toml` gets one
-`[marketplaces.<name>]` table; the cached plugin payload sits under
+`codex plugin list --json`, run immediately after — **verbatim, a wrapper
+object with `installed`/`available` arrays, entries carrying 10 fields
+each** (`installed`, `enabled`, `source`, `marketplaceSource` and
+`installPolicy` live here, not on `add`'s result):
+
+```json
+{
+  "installed": [
+    {
+      "pluginId": "rig-guard-demo@rp22-s0-marketplace",
+      "name": "rig-guard-demo",
+      "marketplaceName": "rp22-s0-marketplace",
+      "version": "1.0.0",
+      "installed": true,
+      "enabled": true,
+      "source": {
+        "source": "local",
+        "path": "/tmp/rp22-s0b/marketplace/plugins/rig-guard-demo"
+      },
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "/tmp/rp22-s0b/marketplace"
+      },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_INSTALL"
+    }
+  ],
+  "available": []
+}
+```
+
+`codex plugin list --available --json`, run immediately after that — in this
+fixture (one plugin, already installed, no second uninstalled plugin in the
+marketplace) it returned **byte-identical** output to `list --json` above:
+the `--available` flag adds uninstalled marketplace plugins to the
+`available` array, and this fixture has none to add. Not independently
+re-quoted since it is the same JSON as immediately above; the flag's effect
+on a marketplace that actually has an uninstalled second plugin is
+unmeasured here.
+
+`config.toml` inside `$CODEX_HOME`, read right after `add`, before `remove`
+— **`add` writes a second table beyond the marketplace registration**:
+
+```toml
+[marketplaces.rp22-s0-marketplace]
+source_type = "local"
+source = "/tmp/rp22-s0b/marketplace"
+
+[plugins."rig-guard-demo@rp22-s0-marketplace"]
+enabled = true
+```
+
+`codex plugin remove rig-guard-demo@rp22-s0-marketplace --json` — **verbatim,
+exactly 3 keys**:
+
+```json
+{
+  "pluginId": "rig-guard-demo@rp22-s0-marketplace",
+  "name": "rig-guard-demo",
+  "marketplaceName": "rp22-s0-marketplace"
+}
+```
+
+`config.toml` read again immediately after `remove` — the `[plugins."…"]`
+table is gone; the marketplace registration is untouched (mirrors Claude
+Code's uninstall, which also leaves `extraKnownMarketplaces` behind):
+
+```toml
+[marketplaces.rp22-s0-marketplace]
+source_type = "local"
+source = "/tmp/rp22-s0b/marketplace"
+```
+
+`codex plugin list --json`, run once more after `remove`, confirming nothing
+is left installed:
+
+```json
+{
+  "installed": [],
+  "available": []
+}
+```
+
+No interactive prompt occurred at any step across `marketplace add` / `add`
+/ `list` / `list --available` / `remove`. **Zero files landed in the project
+repository** at any point (a `find` of the throwaway project directory
+after every step above shows only ordinary `git init` output — no `.codex/`
+and no marker file in the repo itself); the entire marketplace registration
+and plugin payload live under `$CODEX_HOME` (`config.toml`'s two tables
+above, plus the cached plugin payload under
 `plugins/cache/<marketplace>/<plugin>/<version>/`). This is a stronger
 repo-cleanliness property than Claude Code's `--scope project`, which does
 write an enablement stanza into the tracked `.claude/settings.json`.
@@ -389,9 +495,11 @@ signal.
 
 **Conclusion — measured, and it changes S5–S9's starting premise.**
 Codex is **not** guided/interactive-only for plugin delivery. It has a full
-non-interactive plugin CLI (`add`/`list`/`remove`/`marketplace add`), with
-`--json` on every verb, that keeps the tracked repository untouched and
-puts everything under `$CODEX_HOME`. The only side of RP-179's "Codex has no
+non-interactive plugin CLI — `marketplace add`, `add`, `list`, `list
+--available` and `remove` were each run above, separately, every verb with
+`--json` where quoted — that keeps the tracked repository untouched and
+puts everything under `$CODEX_HOME` (`config.toml`'s `[marketplaces.…]` and
+`[plugins."…"]` tables, plus the cache directory). The only side of RP-179's "Codex has no
 scriptable install path" claim that still stands is the *bundled skill*
 surface cited from `learn.chatgpt.com/docs/plugins` (`codex /plugins`,
 interactive) — that page was describing a different, older or
@@ -427,21 +535,25 @@ spawn threw synchronously: Error spawn EINVAL EINVAL -4071
 shell:true stdout: hello from cmd
 ```
 
-**Conclusion — measured.** On Windows, Node 24.18.0, spawning a `.cmd` file
-directly with `shell: false` (the safe default this repo's own security
-posture prefers — no shell string interpolation) throws **synchronously**
-(not via the error callback/event) with `Error: spawn EINVAL`, `code:
-'EINVAL'`, `errno: -4071`. Any RP-22 code path that shells out to a
+**Conclusion — measured, and it names a boundary for RP-22, not just a
+finding.** On Windows, Node 24.18.0, spawning a `.cmd` file directly with
+`shell: false` throws **synchronously** (not via the error callback/event)
+with `Error: spawn EINVAL`, `code: 'EINVAL'`, `errno: -4071`. `shell: true`
+does make the same call succeed (shown above), but it is **not an admissible
+fix for RP-22**: this repository's own security posture treats shell-string
+interpolation of a resolved path/argv as exactly the shape `guard-bash` and
+this project's own child-process conventions exist to avoid, so trading a
+spawn refusal for a shell string is not a net improvement, it is a different
+hazard. The only admissible path for any RP-22 code that shells out to a
 provider CLI resolved to a `.cmd` shim on Windows (npm-installed `claude`,
-`codex`, or a future third CLI all commonly install as `<name>.cmd` on
-Windows) **must** either pass `shell: true` (reintroducing the string-escaping
-concerns `shell: false` exists to avoid) or resolve to the underlying `.js`
-entry point and invoke it with `node` directly — mirroring what this record's
-own probe scripts already do (`$WORK/npmprefix/bin/claude` on WSL is a
-symlink to the `.js` entry; the equivalent Windows npm install would need the
-same treatment, not a bare `execFile`). This was only reproduced with a
-synthetic `.cmd`, not against the real `claude.cmd`/`codex.cmd` shims — see
-NOT MEASURED.
+`codex`, or a future third CLI all commonly install as `<name>.cmd` there) is
+to **resolve to a directly spawnable entry point** — the underlying `.exe`
+where one exists, or the `.js` entry invoked via `node` directly (mirroring
+what this record's own probe scripts already do: `$WORK/npmprefix/bin/claude`
+on WSL is a symlink straight to the `.js` entry) — **and, when no such entry
+can be resolved, report the tool as not spawnable rather than falling back to
+a shell**. This was only reproduced with a synthetic `.cmd`, not against the
+real `claude.cmd`/`codex.cmd` shims — see NOT MEASURED.
 
 ## M8 — Spec Kit non-interactive invocation
 
