@@ -33,7 +33,8 @@ describe('git install (the `npx github:…` personal-stage distribution path)', 
       cwd: appDir,
       env: installEnv(path.join(work, 'npx-cache')),
     });
-    const claudeMd = await readFile(path.join(appDir, 'git-app', 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('git-app');
+    // RP-186: AGENTS.md carries the substituted project name; CLAUDE.md is a shim.
+    const agentsMd = await readFile(path.join(appDir, 'git-app', 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('git-app');
   });
 });

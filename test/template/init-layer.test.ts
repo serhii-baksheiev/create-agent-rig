@@ -77,11 +77,13 @@ describe('the init layer installs a rig with no dangling references', () => {
     expect(offences).toEqual([]);
   });
 
+  // RP-186: this explanatory text lives in AGENTS.md (the canonical
+  // rulebook) now — CLAUDE.md is a shim and carries none of it.
   it('explains every reference it leaves deliberately unbacked', async () => {
-    const claudeMd = (await installed()).get('CLAUDE.md');
-    expect(claudeMd).toBeDefined();
+    const agentsMd = (await installed()).get('AGENTS.md');
+    expect(agentsMd).toBeDefined();
     for (const target of Object.keys(DOCUMENTED_ABSENT)) {
-      expect(claudeMd, target).toContain(path.basename(target));
+      expect(agentsMd, target).toContain(path.basename(target));
     }
   });
 
@@ -105,14 +107,16 @@ describe('the init layer installs a rig with no dangling references', () => {
   // reader still listed the previous four. A reader cannot use what nothing names.
   it('names every skill it installs in the map it hands the reader', async () => {
     const files = await installed();
-    const claudeMd = files.get('CLAUDE.md');
-    expect(claudeMd).toBeDefined();
+    // RP-186: AGENTS.md is the canonical rulebook this reader-facing map lives
+    // in; CLAUDE.md is a short shim that imports it rather than repeating it.
+    const agentsMd = files.get('AGENTS.md');
+    expect(agentsMd).toBeDefined();
     const skills = [...files.keys()]
       .filter((rel) => rel.startsWith('.claude/skills/') && rel.endsWith('/SKILL.md'))
       .map((rel) => rel.split('/')[2]!);
     expect(skills.length).toBeGreaterThan(0);
     for (const skill of skills) {
-      expect(claudeMd, `${skill} is installed but unnamed in CLAUDE.md`).toContain(skill);
+      expect(agentsMd, `${skill} is installed but unnamed in AGENTS.md`).toContain(skill);
     }
   });
 

@@ -58,11 +58,47 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     ).resolves.toBeTruthy();
   });
 
-  it.each(['universal'])('%s exposes the same repository map as AGENTS.md', async (layer) => {
-    const dir = path.join(agentOs, layer);
-    await expect(text(dir, 'AGENTS.md')).resolves.toBe(await text(dir, 'CLAUDE.md'));
-    await expect(text(dir, 'AGENTS.md')).resolves.toMatch(/Claude Code and Codex/);
-  });
+  // RP-186: AGENTS.md is the canonical, provider-neutral rulebook and
+  // CLAUDE.md is a short compatibility shim that imports it — they are no
+  // longer byte-identical, and this replaces the identity check that used to
+  // stand here.
+  it.each(['universal'])(
+    '%s: AGENTS.md is canonical, CLAUDE.md is its import shim',
+    async (layer) => {
+      const dir = path.join(agentOs, layer);
+      const agentsMd = await text(dir, 'AGENTS.md');
+      const claudeMd = await text(dir, 'CLAUDE.md');
+      expect(agentsMd).toMatch(/Claude Code and Codex/);
+      expect(agentsMd).toContain('## One operating system, two harnesses');
+      expect(agentsMd).toContain('```elevated-paths');
+
+      // PR #241 round 2 advisory: the shim's own FIRST LINE must be exactly
+      // `@AGENTS.md` — `startsWith` alone would also pass a line like
+      // `@AGENTS.md-ish` or one with trailing text on the same line, neither
+      // of which is Claude Code's import syntax.
+      expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
+
+      // A literal list of AGENTS.md's own section headings, not derived from
+      // AGENTS.md's content — the shim must contain NONE of them, so a
+      // regression that copies even one section back in is caught, not just
+      // the one heading a single `.not.toContain` would have watched.
+      const CANONICAL_SECTION_HEADINGS = [
+        '## One operating system, two harnesses',
+        '## What was installed here, and what was not',
+        '## If you read only three sections, read these',
+        '## How work happens here',
+        '## The opt-in workflow layer (experimental)',
+        '## Four things this install left for you to finish',
+        '## The elevated paths of this project',
+        '## Foot-guns',
+      ];
+      for (const heading of CANONICAL_SECTION_HEADINGS) {
+        expect(claudeMd, `shim must not restate "${heading}"`).not.toContain(heading);
+      }
+      expect(claudeMd).not.toContain('```elevated-paths');
+      expect(claudeMd.length).toBeLessThan(2000);
+    },
+  );
 
   it('publishes every shared skill through the Codex repository skill location', async () => {
     const claudeSkills = await readdir(path.join(universal, '.claude', 'skills'));
@@ -476,8 +512,10 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     }
   });
 
+  // RP-186: the elevated-paths block lives in AGENTS.md now (the canonical
+  // rulebook); CLAUDE.md is a shim and declares no block of its own.
   it('declares generated Codex hook wiring as an elevated path', async () => {
-    const map = await text(universal, 'CLAUDE.md');
+    const map = await text(universal, 'AGENTS.md');
     const elevated = /```elevated-paths\n([\s\S]*?)```/.exec(map)?.[1] ?? '';
     expect(elevated.split(/\r?\n/)).toContain('.codex/');
   });

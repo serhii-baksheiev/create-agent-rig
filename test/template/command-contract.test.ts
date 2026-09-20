@@ -187,6 +187,10 @@ const collectPathLikeStrings = (value: unknown, keyPath: string, out: string[]):
       'completed',
       'remaining',
       'error',
+      // Round 4, blocker 2: the CLAUDE.md/AGENTS.md pair disclosure, the same
+      // shape as `preserved` ({path, note} instead of {path, reason}) and the
+      // same ordinary repository-relative rule-file paths.
+      'notes',
     ]);
     for (const [key, child] of Object.entries(value)) {
       const childPath = keyPath === '' ? key : `${keyPath}.${key}`;

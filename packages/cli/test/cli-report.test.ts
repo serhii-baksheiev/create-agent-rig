@@ -1,10 +1,13 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   copyFile,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -15,9 +18,9 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { initProject } from '../src/commands/init.js';
-import { planUpgrade } from '../src/commands/upgrade.js';
+import { AGENTS_MD_RESCUE, planUpgrade } from '../src/commands/upgrade.js';
 import type { UpgradePlan } from '../src/commands/upgrade.js';
-import { MANIFEST_REL, readManifest } from '../src/lib/manifest.js';
+import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 // What this file is about: the CLI's *report* on its own work — the plan
@@ -96,6 +99,22 @@ async function editTheHookWiring(): Promise<void> {
 
 /** The plan the spawned CLI will compute for this repo, as ground truth. */
 const groundTruth = (): Promise<UpgradePlan> => planUpgrade(repo);
+
+/**
+ * Rewrites `rel` AND its manifest entry, so the rig "recognises" the new
+ * bytes as its own — the same fixture idiom `upgrade.test.ts`'s
+ * `pretendInstalled` uses, needed here to reach the RP-186 held-back
+ * scenario: a fresh `installRig()` from THIS build already installs the new
+ * shim/canonical split, so there is no other way to put CLAUDE.md back into
+ * the pre-RP-186, "would become `update`" state this test needs.
+ */
+async function pretendInstalled(rel: string, content: string): Promise<void> {
+  await writeFile(abs(rel), content);
+  const manifest = await readManifest(repo);
+  if (manifest === null) throw new Error('fixture: no manifest');
+  manifest.files[rel] = sha256(content);
+  await writeManifest(repo, manifest);
+}
 
 beforeAll(async () => {
   sandbox = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-build-'));
@@ -407,5 +426,310 @@ describe('the plan summary accounts for every file it planned', () => {
       /^ {2}\d+ to replace, \d+ new, \d+ yours \(kept\), \d+ already current$/,
     );
     expect(sum(numbersIn(summary ?? ''))).toBe(plan.actions.length);
+  });
+
+  // PR #241 round 3 advisory: a held-back CLAUDE.md is `conflict` in verdict
+  // name only — it is this release's OWN old content, re-vouched pending a
+  // fix to AGENTS.md, not the user's bytes kept aside. Counting it under
+  // "yours (kept)" would tell the reader the opposite of what happened.
+  it('counts a held-back CLAUDE.md separately from "yours (kept)"', async () => {
+    await installRig();
+    const preRp186Text = [
+      '# __PROJECT_NAME__',
+      '',
+      '## One operating system, two harnesses',
+      '',
+      'Old shared rulebook text.',
+      '',
+      '```elevated-paths',
+      '.claude/',
+      '```',
+      '',
+    ].join('\n');
+    await pretendInstalled('CLAUDE.md', preRp186Text);
+    await writeFile(abs('AGENTS.md'), '# not the rulebook at all\n');
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const summary = lineMatching(run.stdout, /to replace/);
+    expect(summary, 'the plan printed no summary line').toBeTruthy();
+    expect(summary).toMatch(/1 held back \(see reason above\)/);
+    // AGENTS.md's own conflict is the only ordinary "yours (kept)" here —
+    // CLAUDE.md must not inflate that count.
+    expect(summary).toMatch(/\b1 yours \(kept\)/);
+  });
+});
+
+// PR #241 round 4, blocker 1 (code, security, CLI-UX): the previous remedy for
+// an unresolved AGENTS.md printed the rendered content to stdout and asked a
+// human to paste it back verbatim — measured, by all three lenses independently,
+// to not actually be pasteable. The fix writes the rendered bytes to a real
+// sibling file (`AGENTS_MD_RESCUE`) instead, and these tests exercise it AT
+// THE CLI BOUNDARY (the spawned, built binary) rather than through
+// `plan.contents`, which is exactly the map the previous test of "the remedy
+// works" trusted circularly.
+//
+// Round 5 design ruling: the rescue file exists ONLY in the GENUINELY
+// held-back state — absent AGENTS.md, or one with no readable
+// `elevated-paths` block. A fresh `installRig()` already has CLAUDE.md AS
+// the shim (verdict `unchanged`), so merely breaking AGENTS.md's CONTENT
+// does not by itself reach the held-back state any more (round 4's own bug,
+// gate cycle 4 blocker 1) — every genuinely-held-back test below also
+// simulates a pre-migration, still-pristine CLAUDE.md
+// (`pretendInstalled('CLAUDE.md', PRE_RP186_TEXT)`), the same fixture idiom
+// `upgrade.test.ts` uses for the identical reason.
+describe('AGENTS.md.rig-new — the CLI-boundary remedy for a GENUINELY held-back AGENTS.md', () => {
+  const PRE_RP186_TEXT = [
+    '# __PROJECT_NAME__',
+    '',
+    '## One operating system, two harnesses',
+    '',
+    'Old shared rulebook text.',
+    '',
+    '```elevated-paths',
+    '.claude/',
+    '```',
+    '',
+  ].join('\n');
+
+  /** Puts AGENTS.md into `conflict`, with NO readable rulebook content. */
+  async function breakAgentsMd(): Promise<void> {
+    await writeFile(abs('AGENTS.md'), '# not the rulebook at all\n');
+  }
+
+  /** The genuinely held-back precondition: see the file-level comment above. */
+  async function makeClaudePristine(): Promise<void> {
+    await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+  }
+
+  const sha256Hex = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+  it('the rescue file is byte-identical to an independently-rendered AGENTS.md for the same project — not `plan.contents`', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+
+    const rescueBytes = await readFile(abs(AGENTS_MD_RESCUE));
+    const rescueHash = sha256Hex(rescueBytes);
+
+    // Independent oracle: a SEPARATE `initProject` call, into a SEPARATE
+    // directory, forced to the same project name — a different code path
+    // than `applyUpgrade`'s `plan.contents` map, computed fresh here rather
+    // than trusted from the run under test.
+    const projectName = (await readManifest(repo))!.project.name;
+    const oracleDir = await mkdtemp(path.join(tmpdir(), 'caf-agents-oracle-'));
+    try {
+      await initProject(oracleDir, {
+        project: { name: projectName, scope: projectName, region: '' },
+      });
+      const oracleHash = sha256Hex(await readFile(path.join(oracleDir, 'AGENTS.md')));
+      expect(rescueHash).toBe(oracleHash);
+    } finally {
+      await removeFixture(oracleDir);
+    }
+  });
+
+  it('moving the rescue file over AGENTS.md and re-running upgrade finishes the migration', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+
+    const run1 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run1.code, run1.stderr).toBe(0);
+    await expect(readFile(abs(AGENTS_MD_RESCUE))).resolves.toBeTruthy();
+
+    await rename(abs(AGENTS_MD_RESCUE), abs('AGENTS.md'));
+
+    const run2 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run2.code, run2.stderr).toBe(0);
+
+    // The exact first-line contract a shim must meet (round 3's own fix),
+    // not a re-implementation of it.
+    const claudeMd = await readFile(abs('CLAUDE.md'), 'utf8');
+    expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
+    await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
+    // Round 5 advisory: a positive completion line on the run that actually
+    // adopts the shim.
+    expect(run2.stdout).toContain('CLAUDE.md now imports AGENTS.md.');
+  });
+
+  it('a dry run writes no rescue file at all, and says a real run would', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+
+    const after = (await readdir(repo)).sort();
+    expect(after).toEqual(before);
+    expect(run.stdout).toMatch(/will write/i);
+    expect(run.stdout).toContain(AGENTS_MD_RESCUE);
+  });
+
+  it('never overwrites a pre-existing AGENTS.md.rig-new that differs from the rendered bytes, and NEVER prints `mv` for it', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+    // A hostile pre-planted rescue file — measured (gate cycle 4, blocker
+    // 2): the previous rule printed `mv` for this anyway, which installs
+    // whatever is here as the live rulebook the moment it is followed.
+    await writeFile(
+      abs(AGENTS_MD_RESCUE),
+      '# hostile\n\n```elevated-paths\n```\n', // "Everything is Tier 0"
+    );
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(await readFile(abs(AGENTS_MD_RESCUE), 'utf8')).toBe(
+      '# hostile\n\n```elevated-paths\n```\n',
+    );
+    expect(run.stdout).toMatch(/already exists with content that is NOT this run's rendering/i);
+    expect(run.stdout).not.toContain(`mv ${AGENTS_MD_RESCUE}`);
+    expect(run.stdout).toContain(`rm ${AGENTS_MD_RESCUE}`);
+  });
+
+  it('stdout never quotes the rulebook, and its last non-empty lines are the concrete remedy', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    // Short: the previous remedy's rendered-content dump is gone entirely.
+    expect(run.stdout).not.toContain('## One operating system, two harnesses');
+    expect(run.stdout).not.toContain('```elevated-paths');
+
+    const nonEmpty = run.stdout
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    expect(nonEmpty.slice(-2)).toEqual([
+      `  mv ${AGENTS_MD_RESCUE} AGENTS.md`,
+      '  create-agent-rig upgrade',
+    ]);
+    // And it says outright that the migration is not finished — never a bare
+    // "Wrote N files." that reads as success.
+    expect(run.stdout).toMatch(/migration is NOT finished/);
+  });
+
+  it('also names the held-back CLAUDE.md consequence when a pristine CLAUDE.md is held back', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toMatch(/CLAUDE\.md is held back/);
+    expect(run.stdout).toMatch(/shimming it now would/);
+    const nonEmpty = run.stdout
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    expect(nonEmpty.slice(-2)).toEqual([
+      `  mv ${AGENTS_MD_RESCUE} AGENTS.md`,
+      '  create-agent-rig upgrade',
+    ]);
+  });
+
+  it('once AGENTS.md resolves, a leftover matching rescue file is cleaned up and reported', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+    const run1 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run1.code, run1.stderr).toBe(0);
+
+    // COPY, not move: AGENTS.md is resolved the same way a user following the
+    // instruction would, but the rescue file is deliberately left behind too
+    // — the leftover this test is about. A `rename` here would remove it
+    // itself, leaving nothing for the next `upgrade` to clean up.
+    await copyFile(abs(AGENTS_MD_RESCUE), abs('AGENTS.md'));
+
+    const run2 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run2.code, run2.stderr).toBe(0);
+    await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
+    expect(run2.stdout).toMatch(/Removed a leftover/);
+  });
+
+  // Round 5, blocker 3: refused BEFORE any other write, exit 1, a clean
+  // payload message (never a stack trace), and — the load-bearing assertion
+  // gate cycle 4 asked for — ZERO files changed and the manifest untouched,
+  // hashed before and after.
+  it('a symlinked AGENTS.md.rig-new in the held-back state: exit 1, a clean message, zero files changed', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-outside-'));
+    try {
+      const target = path.join(outside, 'outside.md');
+      await writeFile(target, 'OUTSIDE BYTES\n');
+      await installRig();
+      await makeClaudePristine();
+      await breakAgentsMd();
+      try {
+        await symlink(target, abs(AGENTS_MD_RESCUE), 'file');
+      } catch {
+        context.skip();
+        return;
+      }
+      const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+      const claudeMdBefore = await readFile(abs('CLAUDE.md'), 'utf8');
+
+      const run = await runCli(repo, ['upgrade', '--yes']);
+      expect(run.code).toBe(1);
+      expect(run.stderr).not.toContain('at '); // no stack trace frame
+      expect(run.stderr.toLowerCase()).toMatch(/not a plain file|refus/);
+
+      expect(await readFile(target, 'utf8')).toBe('OUTSIDE BYTES\n');
+      expect(await readFile(abs('CLAUDE.md'), 'utf8')).toBe(claudeMdBefore);
+      expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('a directory at AGENTS.md.rig-new in the held-back state: exit 1, a clean message, no EISDIR crash', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+    await mkdir(abs(AGENTS_MD_RESCUE));
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code).toBe(1);
+    expect(run.stderr).not.toContain('EISDIR');
+    expect(run.stderr).not.toContain('at '); // no stack trace frame
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+  });
+});
+
+// Round 5, blocker 1/2: the central case the round-5 ruling exists for — a
+// CUSTOMISED AGENTS.md that still carries a readable `elevated-paths` block
+// is the shipped rulebook's own designed steady state (extend the block for
+// your own paths), not a broken rulebook. It must be QUIET: the ordinary
+// `! AGENTS.md — edited since it was installed` line and nothing else.
+describe('a customised-but-readable AGENTS.md conflict is QUIET — no rescue file, no "migration" wording (round 5)', () => {
+  it('fresh init, then a path line added to elevated-paths: upgrade --yes is silent about it, exit 0, AGENTS.md unchanged', async () => {
+    await installRig();
+    const original = await readFile(abs('AGENTS.md'), 'utf8');
+    const customised = original.replace(
+      '```elevated-paths\n',
+      '```elevated-paths\nmy-own-service/\n',
+    );
+    expect(customised).not.toBe(original); // fixture sanity: the edit landed
+    await writeFile(abs('AGENTS.md'), customised);
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).not.toMatch(/migration/i);
+    expect(run.stdout).not.toContain(AGENTS_MD_RESCUE);
+    expect((await readdir(repo)).sort()).toEqual(before);
+    expect(await readFile(abs('AGENTS.md'), 'utf8')).toBe(customised);
+    // The one line this DOES earn — the ordinary, generic conflict line
+    // every other kept file gets, nothing AGENTS.md-specific.
+    const line = lineMatching(run.stdout, /AGENTS\.md/);
+    expect(line).toMatch(/edited since it was installed/);
   });
 });

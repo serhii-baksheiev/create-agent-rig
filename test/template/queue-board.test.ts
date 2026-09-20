@@ -356,9 +356,11 @@ describe('the generator dogfoods the switch', () => {
     expect(Object.keys(own.boards)).toEqual(['AR', 'RP']);
     expect(own.boards.RP).toEqual({ project: 'RP', owner: 'rig' });
     expect(own.options.project).toBeUndefined();
+    // RP-186: the gitignore prose lives in AGENTS.md now (the canonical
+    // rulebook) — CLAUDE.md is a short shim and carries none of it.
     for (const file of [
       path.join(repoRoot, '.gitignore'),
-      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md'),
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'AGENTS.md'),
     ]) {
       expect(await readFile(file, 'utf8'), file).toContain('.claude/queue.board');
     }

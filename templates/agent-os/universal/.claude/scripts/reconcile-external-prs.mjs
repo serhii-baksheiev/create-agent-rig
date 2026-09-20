@@ -22,9 +22,10 @@ import { dirname, join } from 'node:path';
 // Imported, never copied: one home for the elevated declaration and one home for
 // the lane rule. A second copy of either would drift, and each copy would keep
 // passing on its own.
-// `readDeclaredPaths` unions CLAUDE.md with every .claude/rules/*.md declaration,
-// so this sweep sees exactly what the gate sweep sees — including the paths a
-// stack layer contributes for its own shape.
+// `readDeclaredPaths` unions AGENTS.md (the canonical rulebook since RP-186)
+// and CLAUDE.md with every .claude/rules/*.md declaration, so this sweep sees
+// exactly what the gate sweep sees — including the paths a stack layer
+// contributes for its own shape.
 import { elevatedPathsIn, laneOf, readDeclaredPaths } from './detect-missed-gate.mjs';
 // The one credential vocabulary (`guard-secret-file`, the commit sweep and this
 // diagnostic all read it): a second list of token shapes here would drift.

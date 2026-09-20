@@ -29,9 +29,12 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
   file; `--staged` is what pre-commit runs FIRST, before lint/typecheck/test, and
   `--self-test` proves the scanner still detects each shape it claims
 - `pnpm lint` / `pnpm typecheck` / `pnpm format`
-- `node scripts/sync-agent-os.mjs` — compose the Claude rulebook and regenerate
-  its derived Codex projection (`AGENTS.md`, `.agents/`, `.codex/`) from the
-  templates; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
+- `node scripts/sync-agent-os.mjs` — compose the canonical `AGENTS.md` rulebook
+  (and the `CLAUDE.md` shim) plus `.claude/` from the templates, and regenerate
+  the derived Codex projection (`.agents/`, `.codex/`) from the Claude-shaped
+  sources; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
+  `AGENTS.md` is authored, not derived, since RP-186
+  (`docs/decisions/agents-md-canonical.md`).
 
 ## Repo-specific rules
 
@@ -59,8 +62,9 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
    addendum, and run the sync script; the drift test fails otherwise. The synced
    correspondence is pinned in `test/template/dogfood.test.ts` › "CLAUDE.md and
    .claude/ are in sync with templates/agent-os". The synced
-   set is `CLAUDE.md`, everything under `.claude/`, the Codex projection
-   (`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and
+   set is `CLAUDE.md`, `AGENTS.md` (the canonical rulebook, authored — not
+   derived — since RP-186), everything under `.claude/`, the Codex projection
+   (`.agents/`, `.codex/`), **`journal/README.md`** and
    **`docs/decisions/`**. The last two payload paths sit outside either harness's
    configuration tree (AR-64 and AR-63 respectively). Both live in the repo root
    among files this repo does own — `journal/YYYY-MM.md` next to the one, nothing

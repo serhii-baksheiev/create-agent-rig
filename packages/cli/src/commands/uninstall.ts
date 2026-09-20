@@ -1,6 +1,7 @@
 import { lstat, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { initManifest } from './init.js';
+import { AGENTS_MD_RESCUE, renderedAgentsMd } from './upgrade.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { ALL_LAYERS, MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
 import type { RigManifest } from '../lib/manifest.js';
@@ -16,6 +17,16 @@ export interface UninstallAction {
   verdict: UninstallVerdict;
   /** Why, for `preserved` — always set on that verdict, never on the others. */
   reason?: string;
+  /**
+   * An additional disclosure on an otherwise ordinary verdict (round 4,
+   * blocker 2) — currently only ever set on a `remove` verdict for
+   * CLAUDE.md or AGENTS.md when the OTHER of that pair is NOT a clean
+   * removal (preserved as edited, or already `absent`): removing one is
+   * exactly the moment the rulebook could end up with no readable copy at
+   * all, and a bare `- CLAUDE.md` line does not say so. Never set on
+   * `preserved` — that verdict already has `reason` for this purpose.
+   */
+  note?: string;
   /**
    * The manifest's recorded hash, set on every `remove` verdict a real plan
    * produces. `applyUninstall` re-reads the file's actual bytes immediately
@@ -1057,6 +1068,84 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
   for (const rel of Object.keys(manifest.kept ?? {}).sort()) {
     actions.push({ rel, verdict: 'preserved', reason: 'user-owned (kept by init)' });
   }
+
+  // Round 4, blocker 2 (CLI-UX): removing one of CLAUDE.md/AGENTS.md while
+  // the other is not a clean removal — preserved as the user's own edit, or
+  // already gone — is exactly the moment the rulebook could end up with no
+  // readable copy left at all. `upgrade` already narrates the held-back half
+  // of this same situation (`heldBack`); `uninstall` did not narrate its
+  // own half at all. `init` refuses outright over a pre-existing CLAUDE.md
+  // or AGENTS.md (the `MAPS` special case), so neither ever appears under
+  // `manifest.kept` — both are always decided by the loop above, never here.
+  const claudeAction = actions.find((a) => a.rel === 'CLAUDE.md');
+  const agentsAction = actions.find((a) => a.rel === 'AGENTS.md');
+  // Round 5 advisory: the `undefined` case previously said "is not tracked
+  // by this rig", which reads as "is absent" — it is not. `undefined` here
+  // only ever means the manifest never named this path (an old, pre-RP-186
+  // manifest missing an entry the current install set always has); the file
+  // itself may well be sitting right there. Checked directly rather than
+  // guessed at, so the wording says what is actually true.
+  const siblingState = async (a: UninstallAction | undefined, rel: string): Promise<string> => {
+    if (a !== undefined) {
+      return a.verdict === 'absent'
+        ? 'is already gone'
+        : `stays as yours (${a.reason ?? 'edited'})`;
+    }
+    const status = await regularFileStatus(repoDir, rel);
+    return status === 'absent' ? 'is already gone' : 'exists and is yours (untracked by this rig)';
+  };
+  const notACleanRemoval = (a: UninstallAction | undefined): boolean =>
+    a === undefined || a.verdict === 'preserved' || a.verdict === 'absent';
+  if (claudeAction?.verdict === 'remove' && notACleanRemoval(agentsAction)) {
+    claudeAction.note =
+      `this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which ` +
+      `${await siblingState(agentsAction, 'AGENTS.md')}, as the only rulebook copy`;
+  }
+  if (agentsAction?.verdict === 'remove' && notACleanRemoval(claudeAction)) {
+    agentsAction.note =
+      `this is the rig's own AGENTS.md — removing it leaves CLAUDE.md, which ` +
+      `${await siblingState(claudeAction, 'CLAUDE.md')}, as the only rulebook copy`;
+  }
+
+  // Round 4, blocker 1 (round 5: shares `renderedAgentsMd` with `upgrade.ts`
+  // — one implementation of "is this the current rendering", not two that
+  // could drift apart): the sibling `upgrade` writes when CLAUDE.md's shim
+  // is genuinely held back (`AGENTS_MD_RESCUE`, never recorded in the
+  // manifest) is invisible to the loop above — it only ever walks
+  // `manifest.files`/`manifest.kept`. Decided the same way as everything
+  // else here: rig-owned (removable) only when its bytes are EXACTLY what
+  // this release would render for THIS project right now; anything else is
+  // the user's, left alone and reported as preserved. Round 5 advisory:
+  // annotated in every state, not only `preserved` — a bare `remove` line
+  // said nothing about why removing an UNTRACKED path was safe.
+  const rescueStatus = await regularFileStatus(repoDir, AGENTS_MD_RESCUE);
+  if (rescueStatus === 'unsafe') {
+    actions.push({
+      rel: AGENTS_MD_RESCUE,
+      verdict: 'preserved',
+      reason: NOT_A_REGULAR_FILE_REASON,
+    });
+  } else if (rescueStatus === 'ok') {
+    const rescueBytes = await readFile(onDisk(repoDir, AGENTS_MD_RESCUE));
+    const rendered = await renderedAgentsMd(manifest.project, manifest.layers ?? ALL_LAYERS);
+    if (rendered !== null && sha256(rescueBytes) === sha256(Buffer.from(rendered, 'utf8'))) {
+      actions.push({
+        rel: AGENTS_MD_RESCUE,
+        verdict: 'remove',
+        recordedHash: sha256(rescueBytes),
+        note: 'byte-identical to what this release renders for AGENTS.md right now — safe to remove, and never recorded in the manifest as rig-owned',
+      });
+    } else {
+      actions.push({
+        rel: AGENTS_MD_RESCUE,
+        verdict: 'preserved',
+        reason: "not this release's current rendered AGENTS.md — treated as yours",
+      });
+    }
+  }
+  // 'absent': nothing to report — this path was never rig-owned, so "not
+  // there" is simply not there, same as any other path this release never
+  // installs.
 
   return { noManifest: false, actions, manifestHash };
 }

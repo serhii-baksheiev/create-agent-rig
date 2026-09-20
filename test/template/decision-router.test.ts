@@ -1639,19 +1639,21 @@ describe('the gate skill and the rules point at the router', () => {
     expect(flat).toMatch(/exit stays 0|exit code stays 0/i);
   });
 
-  it('CLAUDE.md no longer claims code-reviewer runs before every PR', async () => {
+  // RP-186: this content lives in AGENTS.md now (the canonical rulebook) —
+  // CLAUDE.md is a short shim and makes neither claim.
+  it('AGENTS.md no longer claims code-reviewer runs before every PR', async () => {
     // The map is the document a session reads first, and it was the one artifact
     // still stating the pre-router rule — two answers to one question, with the
     // wrong one in the more prominent place.
     for (const layer of ['universal']) {
       const text = await readFile(
-        path.join(repoRoot, 'templates', 'agent-os', layer, 'CLAUDE.md'),
+        path.join(repoRoot, 'templates', 'agent-os', layer, 'AGENTS.md'),
         'utf8',
       );
-      expect(text, `${layer}/CLAUDE.md still says "before every PR"`).not.toMatch(
+      expect(text, `${layer}/AGENTS.md still says "before every PR"`).not.toMatch(
         /code-reviewer` before every PR/,
       );
-      expect(text, `${layer}/CLAUDE.md never mentions the router`).toMatch(/decision-router/);
+      expect(text, `${layer}/AGENTS.md never mentions the router`).toMatch(/decision-router/);
     }
   });
 

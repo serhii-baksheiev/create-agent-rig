@@ -5,12 +5,18 @@
 
 ## One operating system, two harnesses
 
-This rulebook serves both Claude Code and Codex. The generator authors it as
-`CLAUDE.md` and publishes the same text as `AGENTS.md`, so neither harness gets
-a weaker policy. The `.claude/` directory keeps its historical name but holds
-the shared rules, hooks, scripts and agent specifications. Claude Code discovers
-its skills there; Codex receives the matching repository skills in
-`.agents/skills/` and its native agent and hook configuration in `.codex/`.
+This rulebook serves both Claude Code and Codex. `AGENTS.md` — this file — is
+the canonical, provider-neutral source: the generator authors the rulebook
+once, here. `CLAUDE.md` next to it is a short compatibility shim: an
+`@AGENTS.md` import plus anything genuinely specific to Claude Code. The shim
+exists because Claude Code's own native `AGENTS.md` reading is not always
+active — it depends on the Claude Code version and configuration in use, and
+is off in some sessions entirely — never because this file stopped being the
+source of truth (`docs/decisions/agents-md-canonical.md`). The `.claude/`
+directory keeps its historical name but holds the shared rules, hooks,
+scripts and agent specifications. Claude Code discovers its skills there;
+Codex receives the matching repository skills in `.agents/skills/` and its
+native agent and hook configuration in `.codex/`.
 
 This repository runs under an agent operating system. The important enforceable
 rules are handled by hooks at the tool layer; review gates are session-run checks
@@ -239,6 +245,7 @@ templates/agent-os/universal/CLAUDE.md
 .agents/
 .codex/
 AGENTS.md
+CLAUDE.md
 templates/agent-os/universal/docs/decisions/
 docs/decisions/
 contracts/
@@ -310,9 +317,12 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
   file; `--staged` is what pre-commit runs FIRST, before lint/typecheck/test, and
   `--self-test` proves the scanner still detects each shape it claims
 - `pnpm lint` / `pnpm typecheck` / `pnpm format`
-- `node scripts/sync-agent-os.mjs` — compose the Claude rulebook and regenerate
-  its derived Codex projection (`AGENTS.md`, `.agents/`, `.codex/`) from the
-  templates; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
+- `node scripts/sync-agent-os.mjs` — compose the canonical `AGENTS.md` rulebook
+  (and the `CLAUDE.md` shim) plus `.claude/` from the templates, and regenerate
+  the derived Codex projection (`.agents/`, `.codex/`) from the Claude-shaped
+  sources; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
+  `AGENTS.md` is authored, not derived, since RP-186
+  (`docs/decisions/agents-md-canonical.md`).
 
 ## Repo-specific rules
 
@@ -340,8 +350,9 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
    addendum, and run the sync script; the drift test fails otherwise. The synced
    correspondence is pinned in `test/template/dogfood.test.ts` › "CLAUDE.md and
    .claude/ are in sync with templates/agent-os". The synced
-   set is `CLAUDE.md`, everything under `.claude/`, the Codex projection
-   (`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and
+   set is `CLAUDE.md`, `AGENTS.md` (the canonical rulebook, authored — not
+   derived — since RP-186), everything under `.claude/`, the Codex projection
+   (`.agents/`, `.codex/`), **`journal/README.md`** and
    **`docs/decisions/`**. The last two payload paths sit outside either harness's
    configuration tree (AR-64 and AR-63 respectively). Both live in the repo root
    among files this repo does own — `journal/YYYY-MM.md` next to the one, nothing
