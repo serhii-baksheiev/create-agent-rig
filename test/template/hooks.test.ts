@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -921,10 +921,10 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     const context = additionalContextOf(result);
     expect(context).not.toContain('## Post-deploy verification');
     expect(context).not.toContain('## Escalation format');
-    // Compared against the injected TEXT, not the JSON envelope wrapping it --
-    // the envelope's own overhead (quoting, escaped newlines) is transport, and
-    // measuring it here would make this assertion track the wire format instead
-    // of the excerpt.
+    // Compared against the injected TEXT, not the JSON envelope wrapping
+    // it — the envelope's own overhead (quoting, escaped newlines) is
+    // transport, and measuring it here would make this assertion track the
+    // wire format instead of the excerpt.
     expect(context.length).toBeLessThan(rules.length);
   });
 
@@ -1165,6 +1165,111 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       await removeFixture(planted);
     }
   }
+
+  /** Same planting as runAgainstPlantedRules, but stdout is held PAUSED for a
+   *  while before being allowed to flow — the shape a consumer that is not
+   *  draining yet actually has. execFile, and every other helper in this
+   *  file, attach a reader in the same tick the child is spawned and so
+   *  drain continuously; they cannot tell process.exitCode = main() apart
+   *  from process.exit(main()) because the payload never gets a chance to
+   *  outrun a reader that is already pulling data as fast as it arrives.
+   *
+   *  The data listener is attached immediately — never leaving the stream
+   *  in the state Node treats as "nobody is listening at all", which gets
+   *  torn down and destroyed the moment the child exits, discarding
+   *  anything unread and making the truncation this test needs to observe
+   *  unobservable (verified by hand against this exact helper before it
+   *  landed here) — and then paused in the same tick, so the stream is
+   *  actively held rather than ignored. */
+  async function runAgainstPlantedRulesPausedReader(rules: string): Promise<HookResult> {
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-paused-reader-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks'), { recursive: true });
+      await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
+      await fsp.writeFile(path.join(planted, '.claude', 'rules', 'autonomy.md'), rules);
+
+      return await new Promise<HookResult>((resolve, reject) => {
+        const child = spawn(process.execPath, [hookPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+        if (!child.stdin || !child.stdout || !child.stderr) {
+          reject(new Error('missing a stdio stream'));
+          return;
+        }
+        let code = 0;
+        let stdout = '';
+        let stderr = '';
+        let ended = false;
+        const maybeResolve = () => {
+          if (ended) resolve({ code, stderr, stdout });
+        };
+        child.on('exit', (exitCode) => {
+          code = exitCode ?? 0;
+        });
+        child.on('error', reject);
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString('utf8');
+        });
+        // Paused in the SAME tick data is first wired up, before the child
+        // has had any chance to write — a reader that has arrived but is
+        // not draining yet, not one that never showed up at all.
+        child.stdout.pause();
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString('utf8');
+        });
+        child.stdout.on('end', () => {
+          ended = true;
+          maybeResolve();
+        });
+        // The delay is the whole point: a 7 KB payload finishes in well
+        // under 50ms, so 500ms is comfortably past the point where a
+        // reverted process.exit(main()) would already have torn the process
+        // down. Resuming lets the stream machinery flow whatever it already
+        // buffered while paused — truncated, on the reverted line — and, on
+        // this line, whatever the still-alive child goes on to finish
+        // writing.
+        setTimeout(() => child.stdout!.resume(), 500);
+        child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }));
+        child.stdin.end();
+      });
+    } finally {
+      await removeFixture(planted);
+    }
+  }
+
+  // RP-185 gate round 2 (Blocker 1): process.exit(main()) tears the process
+  // down without waiting for a queued stdout write to drain, which turns a
+  // rules file too large for one pipe write into an INVALID JSON envelope
+  // reported as exit 0 — the same class of silent failure the JSON wire
+  // format exists to fix, just re-armed at the flush boundary instead of the
+  // wire format. process.exitCode = main() (every path through main() returns
+  // 0, so the exit status is unchanged) lets the event loop drain the write
+  // naturally instead. This is the one test in this file that plants a rules
+  // file too large for a default pipe buffer and holds its reader paused
+  // past the point where the old code path would already have exited —
+  // every other test in this suite drains continuously and cannot see this
+  // class of defect at all. Measured red on reversion: 146176 bytes of a
+  // larger payload delivered, additionalContext shorter than the source
+  // rules file it is supposed to carry whole.
+  it('delivers the whole envelope even when the reader does not drain until process.exit(main()) would already have torn the process down', async () => {
+    // Comfortably past a typical 64 KiB default pipe buffer, with no skip
+    // markers, so excerptAutonomy() returns it whole.
+    const big = '# Big rules file\n\n' + 'x'.repeat(300_000) + '\n';
+    const result = await runAgainstPlantedRulesPausedReader(big);
+
+    expect(result.code).toBe(0);
+    let parsed: unknown;
+    expect(() => {
+      parsed = JSON.parse(result.stdout);
+    }, `stdout must parse as JSON, got ${result.stdout.length} bytes`).not.toThrow();
+    const envelope = parsed as { hookSpecificOutput: { additionalContext: string } };
+    expect(envelope.hookSpecificOutput.additionalContext.length).toBeGreaterThan(300_000);
+  });
 
   // The banner is printed unconditionally, but the excerpt is not: on malformed
   // markup `excerptAutonomy` hands the WHOLE file back. The session then reads a

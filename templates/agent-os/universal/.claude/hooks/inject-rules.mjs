@@ -217,6 +217,14 @@ function main() {
   // (code.claude.com/docs/en/hooks) — Codex's JSON-vs-plain-text detection is
   // not published, so this satisfies the one contract that IS written down
   // rather than guessing at the one that is not.
+  // A reader that vanishes mid-write — a closed pipe, a harness that tears
+  // this process down before reading — turns the queued write into an EPIPE
+  // the runtime reports as an unhandled 'error' event: exit 1, a Node stack
+  // trace on stderr, for a stream failure this hook cannot do anything about
+  // and the reader has already abandoned. Silence it the way every other
+  // failure in this file resolves: quietly, never turning an absent reader
+  // into a noisy non-zero SessionStart exit.
+  process.stdout.on('error', () => {});
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext },
@@ -232,8 +240,25 @@ if (invokedDirectly()) {
   // pipe's buffer in one write. A write that process.exit() cuts off mid-object
   // is not a short excerpt, the way the old plain-text form degraded — it is
   // invalid JSON, which is exactly the failure this hook exists to avoid.
-  // Every path through main() returns 0, so setting exitCode and letting the
-  // event loop drain naturally changes nothing about the exit status, only
-  // whether the write actually finished first.
+  // Every path through main() returns 0, so setting exitCode changes nothing
+  // about the exit STATUS. What it does change is whether the process
+  // terminates AT ALL before the write finishes: exitCode lets the event
+  // loop drain naturally, and a reader that never drains at all no longer
+  // gets a fast, wrong exit 0 — it gets a hook that stays alive, waiting on
+  // the write, for as long as the harness lets it. A probe that refuses to
+  // read until the child would already have exited measurably DEADLOCKS this
+  // version where process.exit() would have terminated (truncated). Nothing
+  // in this file bounds that wait; the calling harness's own hook timeout
+  // does. Pinned in hooks.test.ts (absent in a generated rig) ›
+  // "delivers the whole envelope even when the reader does not drain until
+  // process.exit(main()) would already have torn the process down".
+  //
+  // That is the trade made on purpose — a loud hang, bounded by the
+  // harness's timeout, over a silent truncated "success" — and it is worth
+  // stating plainly rather than leaving to be discovered: not reachable at
+  // the size this hook ships today (a few KB, done in well under a second),
+  // but a real behaviour change on a project whose autonomy.md grows large
+  // enough, or whose harness stops reading a hook's stdout at all. See
+  // `docs/decisions/session-start-wire-format.md` for the fuller record.
   process.exitCode = main();
 }

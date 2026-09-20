@@ -82,15 +82,103 @@ kind of guessed, undocumented branching this repository's rules warn against
   the same output uniformly across all three because nothing in either
   contract says to do otherwise.
 
+## The exit path: exitCode vs exit(), and what it trades
+
+The envelope change alone re-armed the original defect at a different trigger.
+`inject-rules.mjs` ended with `process.exit(main())`, and `process.exit()` tears
+the process down without waiting for a queued `stdout.write()` to drain. Under
+the old plain-text wire format a write a pipe's buffer could not hold in one
+piece degraded to *partial rules text* — readable, if incomplete. Under the
+JSON envelope the same truncation is *invalid JSON* — precisely the state
+Codex was measured rejecting wholesale, just moved from "the output starts
+with `[`" to "the output was cut off mid-object". Exit code 0 either way, so
+nothing downstream reports it.
+
+Reproduced independently by two review passes at HEAD before the fix: a
+consumer that does not start reading until well after the child would have
+exited loses everything past the pipe's buffer — at one measurement, a 74 KB
+rules file delivered 0 bytes; at another, 65536 of 73893. Both parse as
+`Unterminated string`.
+
+The fix is `process.exitCode = main()` in place of `process.exit(main())`.
+Every path through `main()` returns `0`, so the exit STATUS does not change.
+What changes is whether the process terminates before the write finishes:
+`exitCode` lets Node's event loop drain naturally, which is what lets a large
+payload actually reach a reader. Verified against the same probe shape that
+found the defect, at four payload sizes (7 083 B through 1 002 552 B) and
+three consumer shapes (a non-draining reader, a slow reader at 4 KiB/50 ms,
+and a plain file redirect): every case delivered the complete envelope and
+parsed. Pinned in the generator's `hooks.test.ts` (absent in a generated rig)
+› "delivers the whole envelope even when the reader does not drain until
+process.exit(main()) would already have torn the process down", which goes
+red (`Unterminated string` at 146174 of a 300000-byte payload) if the single
+line is reverted.
+
+**What this trades away, stated plainly rather than left to be discovered:**
+`process.exit()` also GUARANTEED teardown, and `exitCode` does not. A consumer
+that never reads stdout at all no longer gets a fast, wrong exit 0 — it gets
+a hook that stays alive indefinitely, waiting on the write. Measured: still
+running 8 seconds in in one review's reproduction, at 74 KB and 1 MB payloads
+with nobody draining; completing the instant a reader appeared. A probe built
+to refuse reading until the child would already have exited measurably
+DEADLOCKS this version, where `process.exit()` would have terminated
+(truncated, but terminated). Nothing in this file bounds that wait — the
+calling harness's own hook timeout does. Not reachable at the size this hook
+ships today (a few KB, well under a second to write), but a real behaviour
+change on a project whose `autonomy.md` grows large, or whose harness stops
+reading a hook's stdout entirely. The trade is made on purpose: a loud hang
+bounded by the harness's own timeout is preferred over a silent, truncated
+"success" with no bound on how wrong it can be.
+
+A second, smaller consequence of the same change: a reader that vanishes
+MID-write (a closed pipe, a harness that kills this process before reading)
+now surfaces as an unhandled `error` event on `process.stdout` — exit 1 with
+a Node stack trace on stderr, where the old `process.exit()` path exited 0
+silently in the same situation. `process.stdout.on('error', () => {})` before
+the write restores the silent-failure stance the rest of this file takes.
+
+**Left for a separate decision, not for this one:** seven sibling hooks in
+this same directory still end `process.exit(main())` —
+`block-no-verify.mjs`, `guard-rulebook.mjs`, `guard-subagent-model.mjs`,
+`guard-bash.mjs`, `guard-secret-file.mjs`, `gate-stop-dod.mjs` and
+`warn-subagent-routing.mjs`. Their payloads are short (a refusal message, not
+a whole rules file), so the exposure is far smaller, but the reasoning above
+now lives in one hook's comments only — `invariants.md`'s "one mechanism,
+one implementation" would ask for the same pattern everywhere it applies.
+This change deliberately does not touch the other seven: changing every
+`process.exit()` call in the hooks directory in a PR whose stated purpose is
+a SessionStart wire-format fix is exactly the scope creep `autonomy.md`'s
+Tier-2 discipline exists to catch. Recorded here so the inconsistency is a
+known, named backlog item rather than something the next reader has to
+rediscover.
+
 ## Risk and rollback
 
 Tier 2 (`templates/agent-os/universal/.claude/hooks/` is a declared elevated
-path). The blast radius is narrow: this hook's own stdout contract, read only
-by the two harnesses' SessionStart machinery. If either harness's documented
-shape turns out to differ from what was fetched here, or a future harness
-version stops accepting it, rollback is reverting `inject-rules.mjs` to write
-plain text again — a one-line change, the same one this decision replaces. The
-old plain-text form is pinned by a regression test precisely so it is not
-reintroduced by accident while chasing an unrelated fix: the generator's
-`hooks.test.ts` (absent in a generated rig) ›
+path) for both decisions this record carries, each with its own risk and its
+own rollback:
+
+**The wire format.** The blast radius is narrow: this hook's own stdout
+contract, read only by the two harnesses' SessionStart machinery. If either
+harness's documented shape turns out to differ from what was fetched here, or
+a future harness version stops accepting it, rollback is reverting
+`inject-rules.mjs` to write plain text again — a one-line change, the same
+one this decision replaces. The old plain-text form is pinned by a regression
+test precisely so it is not reintroduced by accident while chasing an
+unrelated fix: the generator's `hooks.test.ts` (absent in a generated rig) ›
 "never regresses to the old bare [agent-os]-prefixed plain-text stdout".
+
+**The exit path** ("The exit path: exitCode vs exit(), and what it trades",
+above). The blast radius is this hook's shutdown behaviour, not its output
+shape: a consumer that never drains stdout at all now holds this process
+alive rather than letting it exit truncated, bounded only by the calling
+harness's own hook timeout. If that trade turns out to be wrong — a harness
+with no such timeout, or one where a hung hook process is worse than a
+truncated one — rollback is reverting the single `process.exitCode = main()`
+line to `process.exit(main())`, independently of the wire-format decision
+above; the two lines do not depend on each other. That reintroduces the
+flush defect this record measures, so a revert of this line alone should
+also remove or explicitly override the test that pins it: the generator's
+`hooks.test.ts` (absent in a generated rig) › "delivers the whole envelope
+even when the reader does not drain until process.exit(main()) would already
+have torn the process down".
