@@ -48,21 +48,32 @@ mechanism that lets a later `upgrade` resolve cleanly — which means a later
 it in place" the way an ordinary, never-vouched conflict does; the decision
 record's uninstall column and a dedicated test cover this.
 
-The one always-reachable remedy for a broken AGENTS.md: pasting the
-already-rendered content `upgrade` now prints alongside the conflict (reusing
-the existing wiring hand-over mechanism — the raw template its "new version:"
-line points at still carries the literal `__PROJECT_NAME__` token and is not
-recognised as released until a future version actually publishes it).
-Measured against the real 0.9.1 release build; see
-`docs/decisions/agents-md-canonical.md`, "The remedy that actually works".
+The one always-reachable remedy for a broken AGENTS.md: `upgrade` now WRITES
+the already-rendered content to a real sibling file, `AGENTS.md.rig-new`
+(never recorded in the manifest), instead of printing it to stdout for a
+verbatim paste — measured (gate cycle 3, round 3's own remedy) not to survive
+a real copy-paste byte-for-byte. Review the file, `mv AGENTS.md.rig-new
+AGENTS.md`, then run `upgrade` again; the instruction is the short, delimited,
+LAST thing the run prints, not buried between the plan and the consent
+prompt. `--dry-run` writes nothing and says a real run would. A pre-existing,
+differing rescue file is never overwritten; once AGENTS.md resolves, a
+leftover matching one is cleaned up and the run says so. **Round 4, security
+disclosure:** `uninstall` removing CLAUDE.md or AGENTS.md while the other of
+the pair is not a clean removal now says so, naming which file stays and as
+what — a bare `- CLAUDE.md` line previously did not. See
+`docs/decisions/agents-md-canonical.md`, "The remedy that actually works",
+for what was measured and what did not work.
 
-Pinned by `packages/cli/test/upgrade.test.ts` › "RP-186: AGENTS.md becomes
-canonical, CLAUDE.md becomes its shim" (untouched pair, edited/deleted each
-side, the shadow-note cases, the held-back cases, the rendered-copy remedy,
-the raw-template latch, the held-back uninstall case, and the full
-pristine/edited/deleted grid across both files) and by
-`test/e2e/agents-md-migration.test.ts` (the same migration against a rig
-built from the actual pre-RP-186 payload).
+Pinned by `packages/cli/test/upgrade.test.ts`'s describe block "RP-186:
+AGENTS.md becomes canonical, CLAUDE.md becomes its shim" (untouched pair,
+edited/deleted each side, the shadow-note cases, the held-back cases, the
+rescue-file state machine, the held-back uninstall case, and the full
+pristine/edited/deleted grid across both files), `packages/cli/test/uninstall.test.ts`'s
+pair-disclosure and rescue-file tests, `packages/cli/test/cli-report.test.ts`'s
+CLI-boundary tests for the rescue file (an independent oracle, never
+`plan.contents`), and `test/e2e/agents-md-migration.test.ts` (the same
+migration, including the rescue-file remedy end to end, against a rig built
+from the actual pre-RP-186 payload).
 
 **Breaking: the application skeletons are removed, exactly as 0.9.0
 announced.** `create <dir>` no longer takes `--target` and no longer

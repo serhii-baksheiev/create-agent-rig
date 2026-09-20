@@ -25,6 +25,7 @@ import {
   hookUnverifiedReason,
   planUninstall,
 } from '../src/commands/uninstall.js';
+import { AGENTS_MD_RESCUE } from '../src/commands/upgrade.js';
 import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.js';
 import { hookFilesReferencedIn } from '../src/lib/init-settings.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
@@ -1895,5 +1896,114 @@ describe('applyUninstall — --detach', () => {
     expect(result.removed).toEqual([]);
     expect(result.manifestRemoved).toBe(false);
     await expect(readManifest(repo)).resolves.not.toBeNull();
+  });
+});
+
+// PR #241 round 4, blocker 2 (CLI-UX): removing one of CLAUDE.md/AGENTS.md
+// while the other is not a clean removal (preserved as edited, or already
+// gone) is exactly the moment the rulebook could end up with no readable
+// copy left at all — a bare `- CLAUDE.md` line did not say so. `upgrade`
+// already narrates the held-back half of the same situation; `uninstall` now
+// carries the same disclosure as an optional `note` on the `remove` action.
+describe('planUninstall — the CLAUDE.md/AGENTS.md pair disclosure (round 4, blocker 2)', () => {
+  it('discloses that removing CLAUDE.md leaves AGENTS.md, preserved as edited, as the only rulebook copy', async () => {
+    await installRig();
+    await write('AGENTS.md', '# my own notes\n');
+
+    const plan = await planUninstall(repo);
+    const claude = actionFor(plan, 'CLAUDE.md');
+    const agents = actionFor(plan, 'AGENTS.md');
+    expect(claude?.verdict).toBe('remove');
+    expect(agents?.verdict).toBe('preserved');
+    expect(claude?.note).toBe(
+      "this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which stays as yours (modified), as the only rulebook copy",
+    );
+  });
+
+  it('discloses the same thing in the opposite direction when AGENTS.md is the one being removed', async () => {
+    await installRig();
+    await write('CLAUDE.md', '# my own notes\n');
+
+    const plan = await planUninstall(repo);
+    const claude = actionFor(plan, 'CLAUDE.md');
+    const agents = actionFor(plan, 'AGENTS.md');
+    expect(agents?.verdict).toBe('remove');
+    expect(claude?.verdict).toBe('preserved');
+    expect(agents?.note).toBe(
+      "this is the rig's own AGENTS.md — removing it leaves CLAUDE.md, which stays as yours (modified), as the only rulebook copy",
+    );
+  });
+
+  it('discloses when the sibling is already gone (absent), not only when it is preserved as edited', async () => {
+    await installRig();
+    await rm(abs('AGENTS.md'));
+
+    const plan = await planUninstall(repo);
+    const claude = actionFor(plan, 'CLAUDE.md');
+    const agents = actionFor(plan, 'AGENTS.md');
+    expect(claude?.verdict).toBe('remove');
+    expect(agents?.verdict).toBe('absent');
+    expect(claude?.note).toBe(
+      "this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which is already gone, as the only rulebook copy",
+    );
+  });
+
+  it('adds no note when both are a clean removal', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, 'CLAUDE.md')?.note).toBeUndefined();
+    expect(actionFor(plan, 'AGENTS.md')?.note).toBeUndefined();
+  });
+
+  it('the disclosure is identical on --dry-run and a real run — set at plan time, never at apply time', async () => {
+    await installRig();
+    await write('AGENTS.md', '# my own notes\n');
+
+    // `--dry-run` and a real run both start from `planUninstall`'s own
+    // output; nothing about applying the plan changes what it already said.
+    const plan = await planUninstall(repo);
+    const noteBeforeApply = actionFor(plan, 'CLAUDE.md')?.note;
+    expect(noteBeforeApply).toBeTruthy();
+    await applyUninstall(repo, plan);
+    expect(actionFor(plan, 'CLAUDE.md')?.note).toBe(noteBeforeApply);
+  });
+});
+
+// PR #241 round 4, blocker 1: the sibling `upgrade` writes when AGENTS.md
+// cannot be resolved automatically (`AGENTS_MD_RESCUE`, never recorded in
+// the manifest) is invisible to the ordinary per-file loop — this is the
+// out-of-band check `planUninstall` runs for it specifically.
+describe('planUninstall — the AGENTS.md.rig-new rescue file (round 4, blocker 1)', () => {
+  it('treats a byte-identical rescue file as removable', async () => {
+    await installRig();
+    // A freshly installed AGENTS.md already IS this release's rendered
+    // content for this project — the same bytes a rescue file would carry.
+    const rendered = await read('AGENTS.md');
+    await write(AGENTS_MD_RESCUE, rendered);
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, AGENTS_MD_RESCUE)?.verdict).toBe('remove');
+
+    await applyUninstall(repo, plan);
+    await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
+  });
+
+  it("leaves a differing rescue file alone, reported as preserved — not this release's own bytes", async () => {
+    await installRig();
+    await write(AGENTS_MD_RESCUE, '# not the release rendered text\n');
+
+    const plan = await planUninstall(repo);
+    const rescue = actionFor(plan, AGENTS_MD_RESCUE);
+    expect(rescue?.verdict).toBe('preserved');
+    expect(rescue?.reason).toMatch(/not this release's current rendered AGENTS\.md/);
+
+    await applyUninstall(repo, plan);
+    expect(await read(AGENTS_MD_RESCUE)).toBe('# not the release rendered text\n');
+  });
+
+  it('nothing to report when there is no rescue file at all', async () => {
+    await installRig();
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, AGENTS_MD_RESCUE)).toBeUndefined();
   });
 });

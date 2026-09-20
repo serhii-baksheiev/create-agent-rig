@@ -5,8 +5,8 @@ import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
-import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
-import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
+import { AGENTS_MD_RESCUE, UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
+import type { AgentsRescueOutcome, UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import {
   CHANGED_SINCE_PLANNING_REASON,
   UninstallError,
@@ -359,12 +359,11 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   // — it is not the user's bytes kept aside, it is THIS release's own old
   // content re-vouched pending a fix elsewhere (see the coupling in
   // `upgrade.ts`), and counting it under "yours (kept)" tells the reader the
-  // opposite of what happened. Detected by its reason's own fixed prefix
-  // rather than a new verdict, so every other conflict-handling branch in
-  // this file is untouched.
-  const isHeldBack = (reason: string | undefined): boolean =>
-    reason !== undefined && reason.startsWith('held back');
-  const heldBack = of('conflict').filter((a) => isHeldBack(a.reason));
+  // opposite of what happened. Round 4 advisory: read the action's own
+  // `heldBack` field, set by `upgrade.ts` at the one place that decides it —
+  // sniffing `reason` for a fixed prefix broke the moment that wording
+  // changed, which is exactly what happened between round 2 and round 3.
+  const heldBack = of('conflict').filter((a) => a.heldBack === true);
   const keptConflicts = of('conflict').length - heldBack.length;
   const heldBackPhrase =
     heldBack.length > 0 ? [`${heldBack.length} held back (see reason above)`] : [];
@@ -374,6 +373,79 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
       `${keptConflicts} yours (kept), ` +
       [...extra, ...heldBackPhrase, `${of('unchanged').length} already current`].join(', '),
   );
+  return `${lines.join('\n')}\n`;
+}
+
+type AgentsRescueNotice = AgentsRescueOutcome | { kind: 'would-write'; rel: string };
+
+/**
+ * The short, delimited remedy for an unresolved AGENTS.md — round 4,
+ * blocker 1. Printed as the LAST thing a run prints (after the plan, after
+ * the wiring hand-over blocks if any, after "Wrote N files.") so it is what
+ * stays on screen, never buried under a rendered-content dump the way the
+ * previous remedy was. Never quotes the rulebook's own text — pinned by
+ * `cli-report.test.ts`'s CLI-boundary tests, which assert the rulebook
+ * heading does not appear in stdout at all for this case.
+ */
+function renderAgentsRescueNotice(notice: AgentsRescueNotice, claudeHeldBack: boolean): string {
+  const lines: string[] = ['', `---- ${AGENTS_MD_RESCUE} ----`];
+  const unresolved =
+    notice.kind === 'would-write' ||
+    notice.kind === 'wrote' ||
+    notice.kind === 'exists-matches' ||
+    notice.kind === 'exists-differs';
+
+  if (unresolved) {
+    lines.push(
+      'AGENTS.md needs your attention (see its line above) — the migration is NOT finished.',
+    );
+    switch (notice.kind) {
+      case 'would-write':
+        lines.push(
+          `A real run (no --dry-run) will write this release's rendered AGENTS.md content to ${notice.rel}.`,
+        );
+        break;
+      case 'wrote':
+        lines.push(`Wrote this release's rendered AGENTS.md content to ${notice.rel}.`);
+        break;
+      case 'exists-matches':
+        lines.push(`${notice.rel} already holds this release's rendered content, unchanged.`);
+        break;
+      case 'exists-differs':
+        lines.push(
+          `${notice.rel} already exists with DIFFERENT content — left untouched, in case it`,
+          'is your own in-progress merge. Delete it and re-run upgrade for a fresh copy, or',
+          'merge your edits into it before the next two steps.',
+        );
+        break;
+    }
+    if (claudeHeldBack) {
+      lines.push(
+        '',
+        'CLAUDE.md is held back — kept as its old content, not the new shim — until AGENTS.md',
+        'resolves: CLAUDE.md still imports AGENTS.md (`@AGENTS.md`), so shimming it now would',
+        'leave no rulebook loaded at all.',
+      );
+    }
+    // The concrete remedy is always the true LAST content — never followed
+    // by more prose — so a reader scrolling to the bottom of the run finds
+    // the exact two commands, not an explanation.
+    lines.push(
+      '',
+      'Review it, then:',
+      `  mv ${notice.rel} AGENTS.md`,
+      '  create-agent-rig upgrade',
+    );
+  } else if (notice.kind === 'cleaned-up') {
+    lines.push(
+      `Removed a leftover ${notice.rel} — its content matched what this run just installed.`,
+    );
+  } else {
+    lines.push(
+      `Note: ${notice.rel} is still on disk with different content than what this run just`,
+      'installed — left untouched. Delete it by hand if you no longer need it.',
+    );
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -420,38 +492,28 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
     }
   }
 
-  // RP-186 round 3 (PR #241): AGENTS.md is the one conflict whose "new
-  // version:" pointer above names a RAW template file — it still carries the
-  // literal `__PROJECT_NAME__` token, because the template is substituted at
-  // install/upgrade time, not at rest. Pasting that raw file verbatim gives
-  // Claude Code the wrong project name and is not recognised by a later
-  // `upgrade` as this release's bytes either (the history table records
-  // released, not merely current, hashes — and this exact reason is why the
-  // held-back CLAUDE.md reason below points here instead of at its own
-  // "new version:" line). So the plan hands over the already-rendered
-  // content too, the same way a handed-over wiring file is: paste this
-  // verbatim and the NEXT `upgrade` sees byte-identical content and resolves
-  // it immediately, with no dependency on release history at all.
-  const agentsConflict = plan.actions.find(
-    (a) => a.rel === 'AGENTS.md' && a.verdict === 'conflict',
-  );
-  if (agentsConflict !== undefined) {
-    const rendered = plan.contents.get('AGENTS.md');
-    if (rendered !== undefined) {
-      process.stdout.write(
-        `\n!  AGENTS.md's conflict reason is above. Its "new version:" pointer is\n` +
-          `   a raw template — do not paste that file directly, it still carries\n` +
-          `   the unsubstituted \`__PROJECT_NAME__\` token. Paste this rendered\n` +
-          `   copy instead (already substituted for this project), then run\n` +
-          `   \`create-agent-rig upgrade\` again:\n\n` +
-          rendered.replace(/^/gm, '   ') +
-          '\n',
-      );
-    }
-  }
+  // Round 4, blocker 1: AGENTS.md is the one conflict/deleted case that
+  // needs a REMEDY a human can actually carry out, not a report of what
+  // happened. The previous remedy (this same spot, cycle 3) printed the
+  // rendered content itself — up to ~270 lines, between the plan and the
+  // consent prompt — and nothing tested that a human could paste it back;
+  // measured, none of "paste verbatim" and "de-indent and paste" resolved
+  // the conflict. `applyUpgrade` now WRITES the rendered bytes to
+  // `AGENTS_MD_RESCUE` on a real run instead, and this is only the preview:
+  // a dry run touches no file, so it says what a real run would do instead
+  // of doing it.
+  const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
+  const agentsUnresolved =
+    agentsAction?.verdict === 'conflict' || agentsAction?.verdict === 'deleted';
+  const claudeHeldBack = plan.actions.find((a) => a.rel === 'CLAUDE.md')?.heldBack === true;
 
   if (values['dry-run'] === true) {
     process.stdout.write('\nDry run — nothing written.\n');
+    if (agentsUnresolved) {
+      process.stdout.write(
+        renderAgentsRescueNotice({ kind: 'would-write', rel: AGENTS_MD_RESCUE }, claudeHeldBack),
+      );
+    }
     return 0;
   }
 
@@ -502,6 +564,15 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
     if (!(error instanceof SubsystemsError)) throw error;
     process.stdout.write(`Subsystem manifest: not refreshed — ${error.message} (${error.code})\n`);
   }
+
+  // Printed LAST, deliberately — round 4, blocker 1's "the run must not end
+  // on a bare 'Wrote N files.' that reads as success while CLAUDE.md is held
+  // back" — so this is what a reader scrolling to the bottom of the run
+  // actually sees, whether the news is "not finished, here is exactly what
+  // to run next" or a small, ordinary cleanup note.
+  if (result.agentsRescue !== null) {
+    process.stdout.write(renderAgentsRescueNotice(result.agentsRescue, claudeHeldBack));
+  }
   return 0;
 }
 
@@ -521,6 +592,14 @@ interface UninstallPayload {
   removed: string[];
   absent: string[];
   preserved: Array<{ path: string; reason: string }>;
+  /**
+   * A disclosure attached to a `remove`-verdict path (round 4, blocker 2) —
+   * currently only CLAUDE.md or AGENTS.md, when removing it leaves the
+   * other of that pair as the only (or no) readable rulebook copy. Present
+   * identically on `--dry-run` and a real run — set at PLAN time, never at
+   * apply time. Empty, not omitted, when nothing in this run earned one.
+   */
+  notes: Array<{ path: string; note: string }>;
   manifestRemoved: boolean;
   completed?: string[];
   remaining?: string[];
@@ -606,6 +685,7 @@ function uninstallPayload(
         }),
       ),
     ],
+    notes: actions.filter((a) => a.note !== undefined).map((a) => ({ path: a.rel, note: a.note! })),
     manifestRemoved: applied?.manifestRemoved ?? false,
   };
   if (applied?.completed !== undefined) payload.completed = applied.completed;
@@ -620,9 +700,13 @@ function renderUninstallPlan(repoDir: string, plan: UninstallPlan): string {
   const lines: string[] = [`agent-rig uninstall — ${repoDir}`, ''];
   for (const verdict of ['remove', 'preserved', 'absent'] as const) {
     for (const action of of(verdict)) {
+      // `reason` (only ever on `preserved`) and `note` (round 4, blocker 2 —
+      // only ever on `remove`, for the CLAUDE.md/AGENTS.md pair disclosure)
+      // never both apply to the same action, so one disclosure slot renders
+      // either.
+      const disclosure = action.reason ?? action.note;
       lines.push(
-        `  ${UNINSTALL_MARK[verdict]} ${action.rel}` +
-          (action.reason ? `  — ${action.reason}` : ''),
+        `  ${UNINSTALL_MARK[verdict]} ${action.rel}` + (disclosure ? `  — ${disclosure}` : ''),
       );
     }
   }

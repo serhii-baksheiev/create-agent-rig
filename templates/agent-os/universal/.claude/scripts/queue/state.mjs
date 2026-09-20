@@ -157,7 +157,7 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   // and silently relocating it would make it useless.
   //
   // Note the asymmetry, which is deliberate: the DECLARATION is read from the
-  // given `projectRoot` (the worktree's own `CLAUDE.md` is the rulebook the
+  // given `projectRoot` (the worktree's own `AGENTS.md` is the rulebook the
   // change was written against), while the STATE goes to the checkout that
   // outlives the task.
   const file = statePath ?? join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');

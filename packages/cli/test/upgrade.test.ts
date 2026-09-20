@@ -5,7 +5,12 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initInstallSet, initProject, projectNameFor } from '../src/commands/init.js';
 import { applyUninstall, planUninstall } from '../src/commands/uninstall.js';
-import { UpgradeError, applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
+import {
+  AGENTS_MD_RESCUE,
+  UpgradeError,
+  applyUpgrade,
+  planUpgrade,
+} from '../src/commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from '../src/commands/upgrade.js';
 import type { HashHistory } from '../src/lib/history.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
@@ -554,6 +559,130 @@ describe('planUpgrade — what it would do, before it does anything', () => {
       await expect(read('CLAUDE.md')).rejects.toThrow();
     });
 
+    // PR #241 round 4, blocker 1: the mechanism itself, at the `applyUpgrade`
+    // level. `cli-report.test.ts`'s CLI-boundary tests are the independent
+    // oracle for "the bytes are actually right"; these are about the state
+    // machine around the rescue file — write, don't clobber, clean up, leave
+    // stale — which does not need a spawned process to exercise.
+    describe('the AGENTS.md.rig-new rescue file (round 4, blocker 1)', () => {
+      it('writes the rendered AGENTS.md content to AGENTS.md.rig-new when AGENTS.md is conflict', async () => {
+        await installRig();
+        await write('AGENTS.md', '# not the rulebook at all\n');
+
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        expect(verdictFor(plan, 'AGENTS.md')).toBe('conflict');
+        const result = await applyUpgrade(repo, plan);
+
+        expect(result.agentsRescue).toEqual({ kind: 'wrote', rel: AGENTS_MD_RESCUE });
+        expect(await read(AGENTS_MD_RESCUE)).toBe(plan.contents.get('AGENTS.md'));
+      });
+
+      it('writes it when AGENTS.md is deleted too', async () => {
+        await installRig();
+        await rm(abs('AGENTS.md'));
+
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        expect(verdictFor(plan, 'AGENTS.md')).toBe('deleted');
+        const result = await applyUpgrade(repo, plan);
+
+        expect(result.agentsRescue).toEqual({ kind: 'wrote', rel: AGENTS_MD_RESCUE });
+        expect(await read(AGENTS_MD_RESCUE)).toBe(plan.contents.get('AGENTS.md'));
+      });
+
+      it('a second run leaves an already-matching rescue file alone (reports it, never rewrites it)', async () => {
+        await installRig();
+        await write('AGENTS.md', '# not the rulebook at all\n');
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        await applyUpgrade(repo, plan);
+        const firstWrite = await read(AGENTS_MD_RESCUE);
+
+        const plan2 = await planUpgrade(repo, { history: emptyHistory });
+        const result2 = await applyUpgrade(repo, plan2);
+        expect(result2.agentsRescue).toEqual({ kind: 'exists-matches', rel: AGENTS_MD_RESCUE });
+        expect(await read(AGENTS_MD_RESCUE)).toBe(firstWrite);
+      });
+
+      it('never overwrites a pre-existing rescue file that differs from the rendered bytes', async () => {
+        await installRig();
+        await write('AGENTS.md', '# not the rulebook at all\n');
+        await write(AGENTS_MD_RESCUE, '# my own in-progress merge\n');
+
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        const result = await applyUpgrade(repo, plan);
+        expect(result.agentsRescue).toEqual({ kind: 'exists-differs', rel: AGENTS_MD_RESCUE });
+        expect(await read(AGENTS_MD_RESCUE)).toBe('# my own in-progress merge\n');
+      });
+
+      it('cleans up a leftover rescue file once AGENTS.md resolves and its bytes match', async () => {
+        await installRig();
+        await write('AGENTS.md', '# not the rulebook at all\n');
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        await applyUpgrade(repo, plan);
+        const rendered = await read(AGENTS_MD_RESCUE);
+        await write('AGENTS.md', rendered); // resolved by hand, matching this release exactly
+
+        const plan2 = await planUpgrade(repo, { history: emptyHistory });
+        expect(verdictFor(plan2, 'AGENTS.md')).toBe('unchanged');
+        const result2 = await applyUpgrade(repo, plan2);
+        expect(result2.agentsRescue).toEqual({ kind: 'cleaned-up', rel: AGENTS_MD_RESCUE });
+        await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
+      });
+
+      it('leaves a stale, differing rescue file alone once AGENTS.md resolves some other way', async () => {
+        await installRig();
+        await write('AGENTS.md', '# not the rulebook at all\n');
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        await applyUpgrade(repo, plan);
+        const rendered = plan.contents.get('AGENTS.md')!;
+        // The rescue file goes stale: overwritten with something else, as if
+        // it were left over from an earlier attempt this run never rewrites
+        // (it only ever writes when the rescue path is absent).
+        await write(AGENTS_MD_RESCUE, '# a stale rescue copy from a different attempt\n');
+        // AGENTS.md is resolved a DIFFERENT way than moving the rescue file
+        // over — `pretendInstalled` with the release's own rendered bytes.
+        await pretendInstalled('AGENTS.md', rendered);
+
+        const plan2 = await planUpgrade(repo, { history: emptyHistory });
+        expect(verdictFor(plan2, 'AGENTS.md')).toBe('unchanged');
+        const result2 = await applyUpgrade(repo, plan2);
+        expect(result2.agentsRescue).toEqual({ kind: 'left-stale', rel: AGENTS_MD_RESCUE });
+        expect(await read(AGENTS_MD_RESCUE)).toBe(
+          '# a stale rescue copy from a different attempt\n',
+        );
+      });
+
+      it('never recorded in the manifest — it is not rig-owned content the user could lose', async () => {
+        await installRig();
+        await write('AGENTS.md', '# not the rulebook at all\n');
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        await applyUpgrade(repo, plan);
+
+        const manifest = await readManifest(repo);
+        expect(manifest?.files[AGENTS_MD_RESCUE]).toBeUndefined();
+      });
+
+      it('refuses a symlinked AGENTS.md.rig-new and never overwrites its outside bytes', async (context) => {
+        const outside = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-outside-'));
+        try {
+          const target = path.join(outside, 'outside.md');
+          await writeFile(target, 'OUTSIDE BYTES\n');
+          await installRig();
+          await write('AGENTS.md', '# not the rulebook at all\n');
+          try {
+            await symlink(target, abs(AGENTS_MD_RESCUE), 'file');
+          } catch {
+            context.skip();
+            return;
+          }
+          const plan = await planUpgrade(repo, { history: emptyHistory });
+          await expect(applyUpgrade(repo, plan)).rejects.toThrow(UpgradeError);
+          expect(await readFile(target, 'utf8')).toBe('OUTSIDE BYTES\n');
+        } finally {
+          await removeFixture(outside);
+        }
+      });
+    });
+
     it('a CLAUDE.md the user deleted stays deleted — never restored as the new shim', async () => {
       await installRig();
       await rm(abs('CLAUDE.md'));
@@ -577,6 +706,23 @@ describe('planUpgrade — what it would do, before it does anything', () => {
       await applyUpgrade(repo, plan);
       await expect(read('AGENTS.md')).rejects.toThrow();
       expect(await read('CLAUDE.md')).toContain('@AGENTS.md');
+    });
+
+    // Round 4 advisory: "not restored" alone does not say that CLAUDE.md's
+    // own import makes AGENTS.md's absence load NO rulebook at all, not
+    // merely an old one — true whether or not the migration already
+    // finished on this rig, so this is checked on a plain, already-migrated
+    // install, not only the post-migration cell above.
+    it('the deleted-AGENTS.md reason names the consequence: CLAUDE.md imports it, so no rulebook loads', async () => {
+      await installRig();
+      await rm(abs('AGENTS.md'));
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+      expect(action?.verdict).toBe('deleted');
+      expect(action?.reason).toBe(
+        'installed by the rig, removed since — not restored — CLAUDE.md imports it (`@AGENTS.md`), so no rulebook loads until it is back',
+      );
     });
   });
 

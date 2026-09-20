@@ -1,10 +1,13 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   copyFile,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -15,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { initProject } from '../src/commands/init.js';
-import { planUpgrade } from '../src/commands/upgrade.js';
+import { AGENTS_MD_RESCUE, planUpgrade } from '../src/commands/upgrade.js';
 import type { UpgradePlan } from '../src/commands/upgrade.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -454,5 +457,166 @@ describe('the plan summary accounts for every file it planned', () => {
     // AGENTS.md's own conflict is the only ordinary "yours (kept)" here —
     // CLAUDE.md must not inflate that count.
     expect(summary).toMatch(/\b1 yours \(kept\)/);
+  });
+});
+
+// PR #241 round 4, blocker 1 (code, security, CLI-UX): the previous remedy for
+// an unresolved AGENTS.md printed the rendered content to stdout and asked a
+// human to paste it back verbatim — measured, by all three lenses independently,
+// to not actually be pasteable. The fix writes the rendered bytes to a real
+// sibling file (`AGENTS_MD_RESCUE`) instead, and these tests exercise it AT
+// THE CLI BOUNDARY (the spawned, built binary) rather than through
+// `plan.contents`, which is exactly the map the previous test of "the remedy
+// works" trusted circularly.
+describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS.md', () => {
+  /** Puts AGENTS.md into `conflict` without touching CLAUDE.md's own state. */
+  async function breakAgentsMd(): Promise<void> {
+    await writeFile(abs('AGENTS.md'), '# not the rulebook at all\n');
+  }
+
+  const sha256Hex = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+  it('the rescue file is byte-identical to an independently-rendered AGENTS.md for the same project — not `plan.contents`', async () => {
+    await installRig();
+    await breakAgentsMd();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+
+    const rescueBytes = await readFile(abs(AGENTS_MD_RESCUE));
+    const rescueHash = sha256Hex(rescueBytes);
+
+    // Independent oracle: a SEPARATE `initProject` call, into a SEPARATE
+    // directory, forced to the same project name — a different code path
+    // than `applyUpgrade`'s `plan.contents` map, computed fresh here rather
+    // than trusted from the run under test.
+    const projectName = (await readManifest(repo))!.project.name;
+    const oracleDir = await mkdtemp(path.join(tmpdir(), 'caf-agents-oracle-'));
+    try {
+      await initProject(oracleDir, {
+        project: { name: projectName, scope: projectName, region: '' },
+      });
+      const oracleHash = sha256Hex(await readFile(path.join(oracleDir, 'AGENTS.md')));
+      expect(rescueHash).toBe(oracleHash);
+    } finally {
+      await removeFixture(oracleDir);
+    }
+  });
+
+  it('moving the rescue file over AGENTS.md and re-running upgrade finishes the migration', async () => {
+    await installRig();
+    await breakAgentsMd();
+
+    const run1 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run1.code, run1.stderr).toBe(0);
+    await expect(readFile(abs(AGENTS_MD_RESCUE))).resolves.toBeTruthy();
+
+    await rename(abs(AGENTS_MD_RESCUE), abs('AGENTS.md'));
+
+    const run2 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run2.code, run2.stderr).toBe(0);
+
+    // The exact first-line contract a shim must meet (round 3's own fix),
+    // not a re-implementation of it.
+    const claudeMd = await readFile(abs('CLAUDE.md'), 'utf8');
+    expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
+    await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
+  });
+
+  it('a dry run writes no rescue file at all, and says a real run would', async () => {
+    await installRig();
+    await breakAgentsMd();
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+
+    const after = (await readdir(repo)).sort();
+    expect(after).toEqual(before);
+    expect(run.stdout).toMatch(/will write/i);
+    expect(run.stdout).toContain(AGENTS_MD_RESCUE);
+  });
+
+  it('never overwrites a pre-existing AGENTS.md.rig-new that differs from the rendered bytes', async () => {
+    await installRig();
+    await breakAgentsMd();
+    await writeFile(abs(AGENTS_MD_RESCUE), '# my own in-progress merge\n');
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(await readFile(abs(AGENTS_MD_RESCUE), 'utf8')).toBe('# my own in-progress merge\n');
+    expect(run.stdout).toMatch(/already exists with DIFFERENT content/i);
+  });
+
+  it('stdout never quotes the rulebook, and its last non-empty lines are the concrete remedy', async () => {
+    await installRig();
+    await breakAgentsMd();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    // Short: the previous remedy's rendered-content dump is gone entirely.
+    expect(run.stdout).not.toContain('## One operating system, two harnesses');
+    expect(run.stdout).not.toContain('```elevated-paths');
+
+    const nonEmpty = run.stdout
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    expect(nonEmpty.slice(-2)).toEqual([
+      `  mv ${AGENTS_MD_RESCUE} AGENTS.md`,
+      '  create-agent-rig upgrade',
+    ]);
+    // And it says outright that the migration is not finished — never a bare
+    // "Wrote N files." that reads as success.
+    expect(run.stdout).toMatch(/migration is NOT finished/);
+  });
+
+  it('also names the held-back CLAUDE.md consequence when a pristine CLAUDE.md is held back', async () => {
+    await installRig();
+    const preRp186Text = [
+      '# __PROJECT_NAME__',
+      '',
+      '## One operating system, two harnesses',
+      '',
+      'Old shared rulebook text.',
+      '',
+      '```elevated-paths',
+      '.claude/',
+      '```',
+      '',
+    ].join('\n');
+    await pretendInstalled('CLAUDE.md', preRp186Text);
+    await breakAgentsMd();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toMatch(/CLAUDE\.md is held back/);
+    expect(run.stdout).toMatch(/shimming it now would/);
+    const nonEmpty = run.stdout
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    expect(nonEmpty.slice(-2)).toEqual([
+      `  mv ${AGENTS_MD_RESCUE} AGENTS.md`,
+      '  create-agent-rig upgrade',
+    ]);
+  });
+
+  it('once AGENTS.md resolves, a leftover matching rescue file is cleaned up and reported', async () => {
+    await installRig();
+    await breakAgentsMd();
+    const run1 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run1.code, run1.stderr).toBe(0);
+
+    // COPY, not move: AGENTS.md is resolved the same way a user following the
+    // instruction would, but the rescue file is deliberately left behind too
+    // — the leftover this test is about. A `rename` here would remove it
+    // itself, leaving nothing for the next `upgrade` to clean up.
+    await copyFile(abs(AGENTS_MD_RESCUE), abs('AGENTS.md'));
+
+    const run2 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run2.code, run2.stderr).toBe(0);
+    await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
+    expect(run2.stdout).toMatch(/Removed a leftover/);
   });
 });

@@ -55,7 +55,7 @@ export const readDeclaredPaths = (projectRoot, { readFile = readFileSync, listDi
       if (entry.endsWith('.md')) sources.push(join(rulesDir, entry));
     }
   } catch {
-    // no rules directory — CLAUDE.md alone then
+    // no rules directory — AGENTS.md and CLAUDE.md alone then
   }
 
   const declared = [];

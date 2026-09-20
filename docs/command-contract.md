@@ -721,6 +721,7 @@ travelling somewhere a path could point at a credential. `uninstall`'s own
 payload rule is different and looser: its paths are ordinary
 repository-relative rule-file paths, already fully visible in the plain-prose
 plan `upgrade` prints today, so `planned`, `removed`, `absent`, `preserved`,
+`notes` (round 4, blocker 2 — the CLAUDE.md/AGENTS.md pair disclosure),
 `completed`, `remaining` and `error` may all name one. Recognised
 structurally, the way a doctor record is, by the field that makes a payload
 this shape: `command: "uninstall"` — never by a bare `removed` or `preserved`
@@ -1379,6 +1380,7 @@ still names bytes the rig did not remove, so deleting it would blind a later
     { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
     { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
   ],
+  "notes": [],
   "manifestRemoved": false,
   "outcome": "partial"
 }
@@ -1396,6 +1398,7 @@ preserved, so this time the manifest is removed too:
   "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
   "absent": [],
   "preserved": [],
+  "notes": [],
   "manifestRemoved": true,
   "outcome": "uninstalled"
 }
@@ -1419,6 +1422,7 @@ all: a hard failure is its own signal, not one of the three end states:
     { "path": ".claude/rules/workflow.md", "reason": "line-endings-only" },
     { "path": "CLAUDE.md", "reason": "user-owned (kept by init)" }
   ],
+  "notes": [],
   "manifestRemoved": false,
   "completed": [".claude/hooks/block-no-verify.mjs"],
   "remaining": [".claude/settings.json"],
@@ -1439,7 +1443,35 @@ path is the handover list — the one thing left for the user to own:
   "removed": [".claude/hooks/block-no-verify.mjs", ".claude/settings.json"],
   "absent": [],
   "preserved": [{ "path": ".claude/rules/invariants.md", "reason": "modified" }],
+  "notes": [],
   "manifestRemoved": true,
   "outcome": "detached"
+}
+```
+
+`uninstall --yes --json` removing the held-back copy of a CLAUDE.md/AGENTS.md
+pair (round 4, blocker 2): CLAUDE.md is a clean `remove` (re-vouched, rig-owned
+bytes), but AGENTS.md is not — preserved as the user's own edit — so removing
+CLAUDE.md would leave no readable rulebook copy at all, and `notes` says so
+instead of a bare `- CLAUDE.md` line. `notes` is present, and empty, on every
+run that earns none of these — never omitted:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "uninstall",
+  "dryRun": false,
+  "planned": ["CLAUDE.md"],
+  "removed": ["CLAUDE.md"],
+  "absent": [],
+  "preserved": [{ "path": "AGENTS.md", "reason": "modified" }],
+  "notes": [
+    {
+      "path": "CLAUDE.md",
+      "note": "this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which stays as yours (modified), as the only rulebook copy"
+    }
+  ],
+  "manifestRemoved": false,
+  "outcome": "partial"
 }
 ```

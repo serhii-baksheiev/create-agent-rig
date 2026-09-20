@@ -1,4 +1,4 @@
-import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { initInstallSet, layerOnlyPaths, projectNameFor } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
@@ -41,6 +41,13 @@ export interface UpgradeAction {
   reason?: string;
   /** Where the new version lives, so the diff can be done by hand. */
   templatePath?: string | null;
+  /**
+   * True only on CLAUDE.md's own action, and only when the held-back
+   * coupling below fired. Round 4 advisory: a caller (`index.ts`) reads
+   * this instead of sniffing `reason` for a fixed prefix, which breaks
+   * silently the moment that wording is reworded.
+   */
+  heldBack?: boolean;
 }
 
 export interface UpgradePlan {
@@ -77,8 +84,45 @@ export interface ApplyOptions {
   dryRun?: boolean;
 }
 
+/**
+ * The sibling file `upgrade` writes RENDERED (already project-substituted)
+ * AGENTS.md bytes into when AGENTS.md itself cannot be resolved
+ * automatically (round 4, blocker 1 — the previous remedy, a ~270-line dump
+ * to stdout, could not actually be pasted back: de-indenting it byte-for-byte
+ * by hand is not something a human does reliably, and nothing tested that a
+ * human could). Never `AGENTS.md` itself, and never recorded in the
+ * manifest — see {@link AgentsRescueOutcome} for what happens to it on later
+ * runs.
+ */
+export const AGENTS_MD_RESCUE = 'AGENTS.md.rig-new';
+
+/**
+ * What this run did with {@link AGENTS_MD_RESCUE}, for the CLI to report —
+ * `null` when AGENTS.md needed no rescue and none was left over from before.
+ *
+ * - `wrote` — AGENTS.md is `conflict`/`deleted` this run and no rescue file
+ *   existed yet: the rendered content was written to it.
+ * - `exists-matches` — AGENTS.md is still `conflict`/`deleted` and a rescue
+ *   file already there already holds exactly the rendered content (an
+ *   earlier run wrote it and nothing has changed since).
+ * - `exists-differs` — AGENTS.md is still `conflict`/`deleted` and a rescue
+ *   file already there holds something ELSE — never overwritten; the run
+ *   reports it instead.
+ * - `cleaned-up` — AGENTS.md is no longer `conflict`/`deleted` this run (it
+ *   resolved) and a leftover rescue file's bytes matched exactly what this
+ *   run just installed — removed, since it has nothing left to offer.
+ * - `left-stale` — AGENTS.md resolved, but a leftover rescue file's bytes do
+ *   NOT match what was installed — left alone and reported, never guessed at.
+ */
+export type AgentsRescueOutcome = {
+  kind: 'wrote' | 'exists-matches' | 'exists-differs' | 'cleaned-up' | 'left-stale';
+  rel: string;
+};
+
 export interface UpgradeResult {
   written: string[];
+  /** See {@link AgentsRescueOutcome}. */
+  agentsRescue: AgentsRescueOutcome | null;
 }
 
 const SETTINGS = '.claude/settings.json';
@@ -461,7 +505,17 @@ export async function planUpgrade(
         actions.push({
           rel: file.rel,
           verdict: 'deleted',
-          reason: 'installed by the rig, removed since — not restored',
+          reason:
+            'installed by the rig, removed since — not restored' +
+            // Round 4 advisory: this branch fires just as readily on a rig
+            // that finished the RP-186 migration long ago (CLAUDE.md already
+            // the `@AGENTS.md` shim) as on one mid-migration — "not
+            // restored" alone does not say that CLAUDE.md's own import makes
+            // AGENTS.md's absence load NO rulebook at all, not merely an old
+            // one.
+            (file.rel === 'AGENTS.md'
+              ? ' — CLAUDE.md imports it (`@AGENTS.md`), so no rulebook loads until it is back'
+              : ''),
         });
         nextFiles[file.rel] = recorded;
       } else if (presentInEveryRelease(history, file.rel)) {
@@ -607,17 +661,22 @@ export async function planUpgrade(
     (agentsAction.verdict === 'conflict' || agentsAction.verdict === 'deleted')
   ) {
     claudeAction.verdict = 'conflict';
+    claudeAction.heldBack = true;
     claudeAction.reason =
       `held back — AGENTS.md is ${agentsAction.verdict} (${agentsAction.reason ?? 'no reason recorded'}), ` +
       'so writing the `@AGENTS.md` shim now would leave the rulebook unreadable. Resolve ' +
-      "AGENTS.md first — paste the RENDERED copy this run prints below AGENTS.md's own " +
-      'conflict, never the raw file its "new version:" line points at (that one still ' +
-      'carries the literal `__PROJECT_NAME__` token, and is not recognised as a released ' +
-      'version until a later release actually ships it) — then run `create-agent-rig ' +
-      'upgrade` again to finish adopting the shim.';
-    const heldBytes = currentBytesByRel.get('CLAUDE.md');
-    if (heldBytes !== undefined) nextFiles['CLAUDE.md'] = sha256(heldBytes);
-    else delete nextFiles['CLAUDE.md'];
+      `AGENTS.md first — this run wrote a rescue copy to \`${AGENTS_MD_RESCUE}\` (see below); ` +
+      'review it, `mv' +
+      ` ${AGENTS_MD_RESCUE} AGENTS.md\`, then run \`create-agent-rig upgrade\` again to finish ` +
+      'adopting the shim.';
+    // `claudeAction.verdict === 'update'` (the guard just above) is only ever
+    // reached from the branch that requires `currentBytes !== null` — see the
+    // per-file loop above — so `currentBytesByRel` always has an entry for
+    // CLAUDE.md here. Proven by type/flow, not merely observed: pinned by
+    // `upgrade.test.ts`'s full RP-186 describe block, none of which would
+    // pass if this ever executed the (deleted) `else` branch that used to
+    // sit here.
+    nextFiles['CLAUDE.md'] = sha256(currentBytesByRel.get('CLAUDE.md')!);
   }
 
   // A path an OLDER manifest still names but this release's single payload no
@@ -706,7 +765,7 @@ export async function applyUpgrade(
   options: ApplyOptions = {},
 ): Promise<UpgradeResult> {
   const written: string[] = [];
-  if (options.dryRun === true) return { written };
+  if (options.dryRun === true) return { written, agentsRescue: null };
 
   // Preflight the complete write set, including the manifest, before changing
   // any file. Then re-check each destination after mkdir and immediately before
@@ -735,6 +794,48 @@ export async function applyUpgrade(
     await writeFile(await writableOnDisk(repoDir, action.rel), content);
     written.push(action.rel);
   }
+
+  // Round 4, blocker 1: the ACTUAL remedy — never a dump to stdout a human
+  // has to paste back byte-for-byte, which cycle 3 measured could not be
+  // pasted at all. `AGENTS_MD_RESCUE` is refused through a symlink exactly
+  // like every other write above; it is never added to `destinations` above
+  // because it is never `update`/`new` — it is not a tracked path at all.
+  const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
+  const rescueDest = await writableOnDisk(repoDir, AGENTS_MD_RESCUE);
+  const existingRescue = await readIfPresent(repoDir, AGENTS_MD_RESCUE);
+  let agentsRescue: AgentsRescueOutcome | null = null;
+  const renderedAgents = plan.contents.get('AGENTS.md');
+  if (
+    agentsAction !== undefined &&
+    (agentsAction.verdict === 'conflict' || agentsAction.verdict === 'deleted')
+  ) {
+    if (renderedAgents === undefined) {
+      throw new UpgradeError('Internal: no rendered content planned for "AGENTS.md".');
+    }
+    const renderedBytes = Buffer.from(renderedAgents, 'utf8');
+    if (existingRescue === null) {
+      await mkdir(path.dirname(rescueDest), { recursive: true });
+      await writeFile(rescueDest, renderedAgents);
+      agentsRescue = { kind: 'wrote', rel: AGENTS_MD_RESCUE };
+    } else if (existingRescue.equals(renderedBytes)) {
+      // Already there from an earlier run, and still exactly right — never
+      // rewritten for no reason.
+      agentsRescue = { kind: 'exists-matches', rel: AGENTS_MD_RESCUE };
+    } else {
+      // Never overwritten: it might be the user's own in-progress merge.
+      agentsRescue = { kind: 'exists-differs', rel: AGENTS_MD_RESCUE };
+    }
+  } else if (existingRescue !== null && renderedAgents !== undefined) {
+    // AGENTS.md resolved this run (or already had) — a leftover rescue file
+    // has nothing left to offer once its bytes match what is now installed.
+    if (existingRescue.equals(Buffer.from(renderedAgents, 'utf8'))) {
+      await unlink(rescueDest);
+      agentsRescue = { kind: 'cleaned-up', rel: AGENTS_MD_RESCUE };
+    } else {
+      agentsRescue = { kind: 'left-stale', rel: AGENTS_MD_RESCUE };
+    }
+  }
+
   await writeManifest(repoDir, plan.manifest);
-  return { written };
+  return { written, agentsRescue };
 }

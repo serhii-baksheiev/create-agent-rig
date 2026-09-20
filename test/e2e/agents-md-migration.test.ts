@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { installEnv, runNpx } from './run.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
+import { AGENTS_MD_RESCUE } from '../../packages/cli/src/commands/upgrade.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -100,9 +101,9 @@ describe('the RP-186 migration against a rig built from the actual pre-RP-186 pa
     expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
     expect(agentsMd).toContain('## One operating system, two harnesses');
     expect(agentsMd).toContain('```elevated-paths');
-  }, 120_000);
+  });
 
-  it('a legacy rig whose AGENTS.md was edited before upgrading: CLAUDE.md is held back, never shimmed over an unreadable rulebook', async () => {
+  it('a legacy rig whose AGENTS.md was edited before upgrading: CLAUDE.md is held back, never shimmed over an unreadable rulebook — and the rescue file resolves it end to end', async () => {
     const rig = await installLegacyRig(work, 'legacy-edited-app');
 
     // Simulates the real-world trigger for the security fix: something
@@ -114,6 +115,12 @@ describe('the RP-186 migration against a rig built from the actual pre-RP-186 pa
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/held back/i);
     expect(result.stdout).toMatch(/AGENTS\.md/);
+    // Round 4, blocker 1: the previous remedy printed rendered content to
+    // stdout and asked for a verbatim paste — measured not to work. Nothing
+    // resembling the rulebook's own text should be in this run's output at
+    // all; the remedy is a real file on disk instead.
+    expect(result.stdout).not.toContain('## One operating system, two harnesses');
+    expect(result.stdout).toContain(AGENTS_MD_RESCUE);
 
     // The one thing that must never happen: CLAUDE.md is NOT replaced with
     // the shim while AGENTS.md is unreadable, so the rulebook stays exactly
@@ -127,7 +134,25 @@ describe('the RP-186 migration against a rig built from the actual pre-RP-186 pa
     // AGENTS.md is untouched — a real `upgrade` never overwrites a
     // conflicted file either.
     expect(await readFile(path.join(rig, 'AGENTS.md'), 'utf8')).toBe('# not the rulebook at all\n');
-  }, 120_000);
+
+    // The remedy, followed end to end, from the real payload — `mv` (via
+    // `fs.rename`, no shell), then run `upgrade` again exactly as the
+    // printed instruction says.
+    const rescuePath = path.join(rig, AGENTS_MD_RESCUE);
+    await expect(readFile(rescuePath, 'utf8')).resolves.toBeTruthy();
+    await rename(rescuePath, path.join(rig, 'AGENTS.md'));
+
+    const finish = await runCurrentUpgrade(rig, ['--yes']);
+    expect(finish.code, finish.stderr).toBe(0);
+
+    const finalClaudeMd = await readFile(path.join(rig, 'CLAUDE.md'), 'utf8');
+    const finalAgentsMd = await readFile(path.join(rig, 'AGENTS.md'), 'utf8');
+    expect(finalClaudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
+    expect(finalAgentsMd).toContain('## One operating system, two harnesses');
+    expect(finalAgentsMd).toContain('```elevated-paths');
+    // No leftover — the rescue file did its job.
+    await expect(readFile(rescuePath, 'utf8')).rejects.toThrow();
+  });
 
   // PR #241 round 3 blocker/item 5: the migration e2e above only ever
   // upgrades. This is the rest of the lifecycle a real user reaches next —
@@ -153,5 +178,5 @@ describe('the RP-186 migration against a rig built from the actual pre-RP-186 pa
     // the ordinary `remove` path, same as any other untouched process file.
     await expect(readFile(path.join(rig, 'CLAUDE.md'), 'utf8')).rejects.toThrow();
     await expect(readFile(path.join(rig, 'AGENTS.md'), 'utf8')).rejects.toThrow();
-  }, 120_000);
+  });
 });

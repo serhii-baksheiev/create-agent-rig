@@ -88,41 +88,69 @@ a security fix): CLAUDE.md's own verdict is never allowed to become `update`
 `deleted`, because AGENTS.md's content in that state is not what the release
 ships and may carry no rulebook (or `elevated-paths` block) at all. `upgrade`
 holds CLAUDE.md back instead: kept as its current bytes, verdict `conflict`,
-with a reason naming AGENTS.md's own state and the fix (paste the RENDERED
-copy the run hands back for AGENTS.md — see "The remedy that actually works"
-below — then run `upgrade` again).
+with a reason naming AGENTS.md's own state and the fix — a rescue file this
+same run wrote, see "The remedy that actually works" below — then run
+`upgrade` again).
 
 **Held back re-vouches, and that has an `uninstall` consequence (PR #241
-round 3, blocker 2).** Holding CLAUDE.md back does not merely skip writing
-it — it also records `sha256` of its CURRENT bytes into the next manifest
-(`nextFiles['CLAUDE.md']`), the same way an ordinary `update` would record
-the new bytes. This is deliberate (see "The remedy" below: it is what lets a
-LATER `upgrade` resolve cleanly instead of falling through to "not a version
-this rig ever released" forever) — but it means `uninstall`, which reads
-`manifest.files` exactly like every other rig-owned path, now sees a
-held-back CLAUDE.md as rig-owned and unedited since, and **removes it**,
-precisely as it would any other untouched file. It does not "leave it in
-place" the way a genuine `conflict` (bytes the manifest never vouched for)
-does.
+round 3, blocker 2; measured correct in round 4).** Holding CLAUDE.md back
+does not merely skip writing it — it also records `sha256` of its CURRENT
+bytes into the next manifest (`nextFiles['CLAUDE.md']`), the same way an
+ordinary `update` would record the new bytes. This is deliberate (see "The
+remedy" below: it is what lets a LATER `upgrade` resolve cleanly instead of
+falling through to "not a version this rig ever released" forever) — but it
+means `uninstall`, which reads `manifest.files` exactly like every other
+rig-owned path, now sees a held-back CLAUDE.md as rig-owned and unedited
+since, and **removes it**, precisely as it would any other untouched file.
+It does not "leave it in place" the way a genuine `conflict` (bytes the
+manifest never vouched for) does. Pinned by `packages/cli/test/upgrade.test.ts`'s
+test "uninstall removes a held-back CLAUDE.md — the re-vouch makes it
+rig-owned again" (absent in a generated rig — `packages/cli/test/` ships no
+test into the payload, so a mention of it is not a citation this rulebook's
+own checker, `evidence-pointers.test.ts`, examines: it reads `test/` and
+`templates/agent-os/`, never `packages/`).
+
+**Round 4, blocker 2 (CLI-UX): that removal is now disclosed, not silent.**
+Removing CLAUDE.md while AGENTS.md is not a clean removal (preserved as
+edited, or already gone) — or the other way around — is exactly the moment
+the rulebook could end up with no readable copy left at all, and a bare
+`- CLAUDE.md` line did not say so. `UninstallAction` now carries an optional
+`note` (distinct from `reason`, which stays `preserved`-only) for this one
+case, set at PLAN time so `--dry-run` and a real run print it identically,
+and carried in `--json` as a `notes` array alongside `preserved`. Pinned by
+`packages/cli/test/uninstall.test.ts`'s tests "discloses that removing
+CLAUDE.md leaves AGENTS.md, preserved as edited, as the only rulebook copy",
+"discloses the same thing in the opposite direction when AGENTS.md is the
+one being removed", "discloses when the sibling is already gone (absent),
+not only when it is preserved as edited", "adds no note when both are a
+clean removal", and "the disclosure is identical on --dry-run and a real
+run — set at plan time, never at apply time" (absent in a generated rig,
+same reason as above).
 
 | Case | Upgrade outcome | Uninstall outcome |
 | --- | --- | --- |
-| Both untouched since install | Both `update`: `CLAUDE.md` becomes the shim, `AGENTS.md` becomes canonical | Both removed (rig-owned, unedited) |
-| `CLAUDE.md` edited by the user, AGENTS.md untouched | `conflict`: kept exactly as the user left it, never force-shimmed; if the edited content is not already the `@AGENTS.md` shim, the reason also says it shadows AGENTS.md (Claude Code reads CLAUDE.md instead, by default) and names the fix; AGENTS.md upgrades independently | `CLAUDE.md` left in place (not rig-owned bytes — the manifest never vouches for an ordinary conflict) |
-| `AGENTS.md` edited by the user, CLAUDE.md untouched | AGENTS.md `conflict`: kept exactly as the user left it, never overwritten with the canonical text. CLAUDE.md is **held back**: verdict `conflict` (not `update`), kept as its current (old, still-readable) bytes, never written as the shim | AGENTS.md left in place (ordinary conflict, never vouched). **CLAUDE.md is REMOVED** — the hold re-vouches it, so it reads as rig-owned and unedited |
-| `AGENTS.md` deleted by the user, CLAUDE.md untouched | AGENTS.md `deleted`: stays deleted. CLAUDE.md is **held back** the same way, for the same reason (there is no rulebook file at all otherwise) | AGENTS.md stays absent. **CLAUDE.md is REMOVED**, for the same re-vouching reason as the row above |
+| Both untouched since install | Both `update`: `CLAUDE.md` becomes the shim, `AGENTS.md` becomes canonical | Both removed (rig-owned, unedited); no `note` — a clean removal on both sides |
+| `CLAUDE.md` edited by the user, AGENTS.md untouched | `conflict`: kept exactly as the user left it, never force-shimmed; if the edited content is not already the `@AGENTS.md` shim, the reason also says it shadows AGENTS.md (Claude Code reads CLAUDE.md instead, by default) and names the fix; AGENTS.md upgrades independently | `CLAUDE.md` left in place (not rig-owned bytes — the manifest never vouches for an ordinary conflict); AGENTS.md removed WITH a `note`: removing it leaves CLAUDE.md, preserved as edited, as the only rulebook copy |
+| `AGENTS.md` edited by the user, CLAUDE.md untouched | AGENTS.md `conflict`: kept exactly as the user left it, never overwritten with the canonical text. CLAUDE.md is **held back**: verdict `conflict` (not `update`), kept as its current (old, still-readable) bytes, never written as the shim | AGENTS.md left in place (ordinary conflict, never vouched). **CLAUDE.md is REMOVED** — the hold re-vouches it, so it reads as rig-owned and unedited — WITH a `note`: removing it leaves AGENTS.md, preserved as edited, as the only rulebook copy |
+| `AGENTS.md` deleted by the user, CLAUDE.md untouched | AGENTS.md `deleted`: stays deleted. CLAUDE.md is **held back** the same way, for the same reason (there is no rulebook file at all otherwise) | AGENTS.md stays absent. **CLAUDE.md is REMOVED**, for the same re-vouching reason as the row above — WITH a `note`, since "absent" earns the same disclosure as "preserved" |
 | `CLAUDE.md` deleted by the user | `deleted`: stays deleted, never restored as the new shim; unaffected by AGENTS.md's own state | already absent |
 | `AGENTS.md` deleted by the user, CLAUDE.md deleted too | Both `deleted`: stays deleted on both sides — there is nothing left to hold back | already absent |
-| The migration already finished (CLAUDE.md is already the shim), THEN AGENTS.md is deleted on a later run | AGENTS.md `deleted`: stays deleted. CLAUDE.md's own verdict is `unchanged` — the held-back coupling above only overrides a verdict that would otherwise become `update`, and an already-adopted shim's verdict never is, so it is left exactly as it is rather than resurrected, rewritten, or held back a second time | CLAUDE.md (the shim) removed like any other untouched file; AGENTS.md already absent. Pinned by `upgrade.test.ts`'s "AGENTS.md deleted after the migration already finished: the already-adopted shim is left exactly alone" |
-| A repo that had its own `CLAUDE.md` (or `AGENTS.md`) before `init` | `init` **refuses outright** (`InitError`, non-zero exit) rather than installing over it or recording it as `kept` — `MAPS` files are the one install-time exception to the generic "kept" path every other pre-existing process file gets. Pinned in the generator's own CLI test suite (absent in a generated rig — the same basename ambiguity noted above applies): `init.test.ts` under `packages/cli/test/`, cases "refuses to clobber an existing CLAUDE.md unless forced" and "refuses to clobber an existing AGENTS.md" | N/A — `init` never installed here, so there is nothing for `uninstall` to have owned |
+| The migration already finished (CLAUDE.md is already the shim), THEN AGENTS.md is deleted on a later run | AGENTS.md `deleted`: stays deleted. CLAUDE.md's own verdict is `unchanged` — the held-back coupling above only overrides a verdict that would otherwise become `update`, and an already-adopted shim's verdict never is, so it is left exactly as it is rather than resurrected, rewritten, or held back a second time | CLAUDE.md (the shim) removed like any other untouched file — WITH a `note` (AGENTS.md is `absent`); AGENTS.md already absent. Pinned by `packages/cli/test/upgrade.test.ts`'s test "AGENTS.md deleted after the migration already finished: the already-adopted shim is left exactly alone" (absent in a generated rig, same reason as above) |
+| A repo that had its own `CLAUDE.md` (or `AGENTS.md`) before `init` | `init` **refuses outright** (`InitError`, non-zero exit) rather than installing over it or recording it as `kept` — `MAPS` files are the one install-time exception to the generic "kept" path every other pre-existing process file gets. Pinned by `packages/cli/test/init.test.ts`'s tests "refuses to clobber an existing CLAUDE.md unless forced" and "refuses to clobber an existing AGENTS.md" — named by full path deliberately: `test/e2e/init.test.ts` (a different suite) shares the bare basename `init.test.ts`, and either mention is absent in a generated rig for the same reason as above regardless | N/A — `init` never installed here, so there is nothing for `uninstall` to have owned |
 
-Pinned by `upgrade.test.ts`'s "uninstall removes a held-back CLAUDE.md — the
-re-vouch makes it rig-owned again".
+Round 4, blocker 1's rescue file (below) is invisible to the table above — it
+is never a manifest-tracked path — so `uninstall` treats it out of band: a
+byte-identical copy of what THIS release would render right now is
+`remove`d like any other untouched file; anything else is the user's,
+`preserved`. Pinned by `packages/cli/test/uninstall.test.ts`'s tests "treats
+a byte-identical rescue file as removable" and "leaves a differing rescue
+file alone, reported as preserved — not this release's own bytes" (absent
+in a generated rig, same reason as above).
 
-## The remedy that actually works — measured, not assumed (PR #241 round 3)
+## The remedy that actually works — measured, not assumed (PR #241 rounds 3 and 4)
 
-AGENTS.md's own conflict names a fix, but two obvious readings of it do not
-work, and this project measured both rather than asserting either:
+AGENTS.md's own conflict names a fix, but three readings of it do not work,
+and this project measured each rather than asserting any of them:
 
 - **Copying the file the conflict's own `new version:` line points at.**
   That path is the RAW template — still carrying the unsubstituted
@@ -138,40 +166,82 @@ work, and this project measured both rather than asserting either:
   already a conflict, the manifest no longer records what those bytes were
   (the generic rule: "a conflict is not recorded" — deliberately unchanged
   by this ticket, see the top of this section) — there is nothing left on
-  disk or in the manifest to restore TO.
+  disk or in the manifest to restore TO. Measured against the actual 0.9.1
+  release build (`f5a771b`, built in a temp worktree): a rig's exact
+  0.9.1-installed AGENTS.md bytes, if the user still has them, DO match a
+  hash already in `templates/hash-history.json` — so restoring truly
+  historical bytes works. But that is not what a user reaches for from the
+  CLI's own output, and it depends on them having a backup of a past
+  release's exact bytes, which most won't.
+- **Round 3's own remedy: printing the rendered content to stdout for a
+  verbatim paste.** Gate cycle 3 measured this directly, with the built CLI,
+  and it does not work either: pasting the block verbatim, or de-indented,
+  left AGENTS.md at `conflict` and CLAUDE.md held back regardless — nothing
+  about a terminal's own line-wrapping and a human's own copy-paste survives
+  byte-for-byte reliably enough for `planUpgrade`'s exact-bytes comparison.
+  The dump was also ~270 lines sitting between the plan and the consent
+  prompt, scrolling the actionable lines off screen, and the run ended on
+  "Wrote N files." even while CLAUDE.md stayed held back — a bare success
+  line over an unfinished migration.
 
-Measured against the actual 0.9.1 release build (`f5a771b`, built in a temp
-worktree): a rig's exact 0.9.1-installed AGENTS.md bytes, if the user still
-has them, DO match a hash already in `templates/hash-history.json` — so
-restoring truly historical bytes works. But that is not what a user reaches
-for from the CLI's own output, and it depends on them having a backup of a
-past release's exact bytes, which most won't.
+**The fix that is always reachable, with no dependency on release history,
+a terminal, or a human's paste at all:** `create-agent-rig upgrade` now
+WRITES the already-rendered (substituted) content for AGENTS.md — the same
+bytes `UpgradePlan.contents` carries, the same map `applyUpgrade` itself
+writes from — to a real sibling file, `AGENTS_MD_RESCUE` (`AGENTS.md.rig-new`,
+`packages/cli/src/commands/upgrade.ts`), through the same symlink-refusing
+write path (`resolveWritableInside`) every other file in the plan goes
+through. It is never recorded in the manifest, so it can never be mistaken
+for rig-owned content the user could lose. The instruction — `mv
+AGENTS.md.rig-new AGENTS.md` then `create-agent-rig upgrade` again — is
+printed as a short, delimited block, LAST, after the plan, after any wiring
+hand-over, after "Wrote N files.": the previous remedy's placement between
+the plan and the consent prompt is exactly why cycle 3 found "Wrote N files."
+reading as success while the migration was not finished. `--dry-run` writes
+nothing and says a real run would. A pre-existing, differing rescue file is
+never overwritten — reported instead, in case it is the user's own
+in-progress merge. Once AGENTS.md resolves (by this route or any other) and
+a leftover rescue file's bytes still match exactly what was just installed,
+it is removed and the run says so; if it does not match, it is left alone
+and reported.
 
-**The fix that is always reachable, with no dependency on release history at
-all:** `UpgradePlan.contents` already carries the fully rendered (substituted)
-content for every tracked file — the same map `applyUpgrade` itself writes
-from. `create-agent-rig upgrade`'s CLI now prints this rendered copy for an
-AGENTS.md conflict, the same way a handed-over wiring file's bytes are
-already printed for a human to merge by hand (`index.ts`, no new flag).
-Pasting it verbatim makes the next `planUpgrade` see bytes byte-identical to
-`releasedBytes` — `unchanged`, not `update`, decided on sight, before any
-manifest or history lookup runs at all. Pinned by `upgrade.test.ts`'s
-"resolving AGENTS.md and re-running upgrade finishes the migration" (the
-working path) and "pasting the raw, unsubstituted template the conflict
-points at does NOT resolve it" (the latch, pinned so the reason text can
-never again promise what does not happen).
+Verified AT THE CLI BOUNDARY — the spawned, built binary, never
+`plan.contents` as the oracle for "the bytes are right" (that circularity was
+cycle 3's finding about round 3's own test) — by `packages/cli/test/cli-report.test.ts`'s
+tests "the rescue file is byte-identical to an independently-rendered
+AGENTS.md for the same project — not `plan.contents`" (the independent
+oracle is a SEPARATE `initProject` call, forced to the same project name,
+never the map the run under test itself produced), "moving the rescue file
+over AGENTS.md and re-running upgrade finishes the migration", "a dry run
+writes no rescue file at all, and says a real run would", "never overwrites
+a pre-existing AGENTS.md.rig-new that differs from the rendered bytes",
+"stdout never quotes the rulebook, and its last non-empty lines are the
+concrete remedy", "also names the held-back CLAUDE.md consequence when a
+pristine CLAUDE.md is held back", and "once AGENTS.md resolves, a leftover
+matching rescue file is cleaned up and reported" (absent in a generated rig,
+same reason as above). The state machine around the file (write /
+already-matching / already-differing / cleaned-up / left-stale) is pinned at
+the `applyUpgrade` level by `packages/cli/test/upgrade.test.ts`'s describe
+block "the AGENTS.md.rig-new rescue file (round 4, blocker 1)" (same
+absence). And the whole remedy is followed end to end against the real
+pre-RP-186 payload — not a fixture — by
+`test/e2e/agents-md-migration.test.ts` (absent in a generated rig) ›
+"a legacy rig whose AGENTS.md was edited before upgrading: CLAUDE.md is held
+back, never shimmed over an unreadable rulebook — and the rescue file
+resolves it end to end".
 
-Pinned in the generator's own CLI test suite (absent in a generated rig —
-`packages/cli/test/` ships no test into the payload, so a pointer into it is
-not a citation this rulebook's own checker can resolve by basename against a
-shipped file): the describe block titled "RP-186: AGENTS.md becomes
-canonical, CLAUDE.md becomes its shim" under `upgrade.test.ts` — the
-untouched pair, the edited/deleted cases on each side, the shadow-note cases,
-the two held-back cases, "resolving AGENTS.md and re-running upgrade
+Pinned by `packages/cli/test/upgrade.test.ts`'s describe block titled
+"RP-186: AGENTS.md becomes canonical, CLAUDE.md becomes its shim" — the
+untouched pair, the edited/deleted cases on each side, the shadow-note
+cases, the two held-back cases, "resolving AGENTS.md and re-running upgrade
 finishes the migration", and the full 3×3 pristine/edited/deleted grid across
 both files, each cell checked against the real gate-sweep parser as an
-independent oracle. Also see the byte-identity tests this ticket replaced,
-listed in the PR description as an old-test → new-test table.
+independent oracle (absent in a generated rig — `packages/cli/test/` ships
+no test into the payload, so a mention of it is not a citation this
+rulebook's own checker, `evidence-pointers.test.ts`, examines: it reads
+`test/` and `templates/agent-os/`, never `packages/`). Also see the
+byte-identity tests this ticket replaced, listed in the PR description as an
+old-test → new-test table.
 
 ## What did not change
 
