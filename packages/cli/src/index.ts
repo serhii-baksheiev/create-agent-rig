@@ -21,6 +21,7 @@ import type {
   UninstallOutcome,
   UninstallPlan,
   UninstallVerdict,
+  WiringPreservedKind,
 } from './commands/uninstall.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest, sha256 } from './lib/manifest.js';
@@ -435,12 +436,15 @@ interface UninstallPayload {
  * `changedSincePlanning` and `protectedHooksAtApply` paths are both folded
  * into `preserved` — the first with reason
  * {@link CHANGED_SINCE_PLANNING_REASON}, the second with
- * {@link hookStillReferencedReason} (a path a wiring file names directly) or
- * {@link hookImportedByReason} (a path reached only through another
- * protected file's own import — `entry.importedBy` says which), the same
- * two functions `planUninstall` itself calls to word a hook it protects at
- * PLAN time, so a reader cannot tell which pass discovered the protection
- * from the wording alone. Neither `changedSincePlanning` nor
+ * {@link hookStillReferencedReason} (a path a wiring file names directly —
+ * passed `entry.wiringKind`, since a hook a `kept` wiring file references was
+ * never "preserved as edited", and reusing that wording for it told two
+ * contradictory stories about the same file) or {@link hookImportedByReason}
+ * (a path reached only through another protected file's own import —
+ * `entry.importedBy` says which), the same two functions `planUninstall`
+ * itself calls to word a hook it protects at PLAN time, so a reader cannot
+ * tell which pass discovered the protection from the wording alone. Neither
+ * `changedSincePlanning` nor
  * `protectedHooksAtApply` is in `plan.actions` (both were `remove` at plan
  * time and only discovered otherwise at apply time), but both are exactly as
  * un-removed as any other preserved path, and a caller reading `preserved`
@@ -461,7 +465,12 @@ function uninstallPayload(
     remaining?: string[];
     error?: string;
     changedSincePlanning?: string[];
-    protectedHooksAtApply?: Array<{ rel: string; wiringRel: string; importedBy?: string }>;
+    protectedHooksAtApply?: Array<{
+      rel: string;
+      wiringRel: string;
+      wiringKind: WiringPreservedKind;
+      importedBy?: string;
+    }>;
     outcome?: UninstallOutcome;
   },
 ): UninstallPayload {
@@ -482,13 +491,15 @@ function uninstallPayload(
         path,
         reason: CHANGED_SINCE_PLANNING_REASON,
       })),
-      ...(applied?.protectedHooksAtApply ?? []).map(({ rel, wiringRel, importedBy }) => ({
-        path: rel,
-        reason:
-          importedBy === undefined
-            ? hookStillReferencedReason(wiringRel)
-            : hookImportedByReason(importedBy, wiringRel),
-      })),
+      ...(applied?.protectedHooksAtApply ?? []).map(
+        ({ rel, wiringRel, wiringKind, importedBy }) => ({
+          path: rel,
+          reason:
+            importedBy === undefined
+              ? hookStillReferencedReason(wiringRel, wiringKind)
+              : hookImportedByReason(importedBy, wiringRel),
+        }),
+      ),
     ],
     manifestRemoved: applied?.manifestRemoved ?? false,
   };

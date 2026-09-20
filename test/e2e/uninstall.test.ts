@@ -370,6 +370,33 @@ describe('create-agent-rig uninstall', () => {
     await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).resolves.toBeTruthy();
   });
 
+  // Cycle-5 review, blocker 2: the plain-text `partial` summary used to print
+  // only a count ("N preserved — the manifest was kept"), unlike `--detach`,
+  // which already listed every path. Nothing asserted the new listing
+  // behaviour — the closest e2e coverage for `partial` reads `--json`, and
+  // the plain-text assertion that DOES exist (below, for `--detach`) already
+  // passed against the OLD, path-only rendering, so a regression to
+  // count-only here would go red nowhere. The plan header ALSO prints this
+  // same path with its reason before consent, so `.toContain` alone would
+  // pass whether or not the FINAL summary lists anything — this counts
+  // occurrences instead, since the count-only shape shows the path exactly
+  // once (the header) while the fixed shape shows it twice (header, then the
+  // final summary's own list).
+  it('a partial run (plain text) lists every preserved path and its reason in the final summary, not only a count', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const workflowPath = path.join(repo, '.claude', 'rules', 'workflow.md');
+    await writeFile(workflowPath, `${await readFile(workflowPath, 'utf8')}\n<!-- mine -->\n`);
+
+    const result = await runCli(['uninstall', '--yes']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/preserved — the manifest was kept/i);
+    const occurrences = result.stdout.split('.claude/rules/workflow.md').length - 1;
+    expect(occurrences, result.stdout).toBeGreaterThanOrEqual(2);
+    expect(result.stdout).toMatch(/!\s*\.claude\/rules\/workflow\.md — modified/);
+  });
+
   describe('--detach', () => {
     it('a clean repo detach reports outcome "detached" and behaves like an ordinary clean uninstall', async () => {
       await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');

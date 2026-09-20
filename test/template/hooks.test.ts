@@ -1132,6 +1132,45 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     }
   }
 
+  // `docs/command-contract.md` (RP-181, "## uninstall") names this exactly as
+  // the limit that makes the import-walk's transitive hook-dependency
+  // protection honest: that protection covers what a hook file IMPORTS, not
+  // what it reads at runtime — a preserved, correctly-wired `inject-rules.mjs`
+  // with `.claude/rules/` itself removed (e.g. by `uninstall`, or by hand)
+  // exits 0 having injected nothing, silently, rather than failing loudly or
+  // refusing to run. Measured here rather than only asserted in prose, so the
+  // claim cannot go stale the way `.claude/rules/invariants.md` warns an
+  // unpinned "Measured:" sentence does.
+  it('exits 0 and injects nothing when .claude/rules/ itself is missing entirely — the runtime-read gap the import walk does not cover', async () => {
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-no-rules-dir-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
+      // deliberately no `.claude/rules/` directory at all — not merely an
+      // empty file, the whole tree gone, as an `uninstall` of it would leave
+
+      const result = await new Promise<HookResult>((resolve, reject) => {
+        const child = execFile(process.execPath, [hookPath], (error, stdout, stderr) => {
+          resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr, stdout });
+        });
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }));
+        child.stdin.end();
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    } finally {
+      await removeFixture(planted);
+    }
+  });
+
   // The banner is printed unconditionally, but the excerpt is not: on malformed
   // markup `excerptAutonomy` hands the WHOLE file back. The session then reads a
   // banner telling it that post-deploy verification and the escalation format

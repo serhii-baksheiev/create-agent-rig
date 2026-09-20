@@ -123,9 +123,18 @@ export interface ApplyUninstallResult {
    * is named in the handover) exactly as any other preserved hook would be.
    * `importedBy` is present exactly when `rel` was reached through another
    * protected file's own import rather than named by `wiringRel` directly —
-   * see {@link hookImportedByReason}.
+   * see {@link hookImportedByReason}. `wiringKind` is always present — see
+   * {@link WiringPreservedKind} and {@link hookStillReferencedReason} — and
+   * is never `'kept'` here specifically (a `kept` wiring path is never a
+   * plan-time `remove` verdict, which is what this apply-time re-check keys
+   * off of).
    */
-  protectedHooksAtApply?: Array<{ rel: string; wiringRel: string; importedBy?: string }>;
+  protectedHooksAtApply?: Array<{
+    rel: string;
+    wiringRel: string;
+    wiringKind: WiringPreservedKind;
+    importedBy?: string;
+  }>;
   /**
    * Which of the three {@link UninstallOutcome}s this run reached — present
    * on every completed run EXCEPT a `--dry-run` (a preview reaches no end
@@ -165,8 +174,20 @@ function onDisk(repoDir: string, rel: string): string {
   return dest;
 }
 
-/** Why a path that resolves lexically inside the repo is still refused. */
-export const NOT_A_REGULAR_FILE_REASON = 'not a regular file inside the repository (symlink)';
+/**
+ * Why a path that resolves lexically inside the repo is still refused.
+ * Deliberately does NOT say "(symlink)" — `regularFileStatus`'s `'unsafe'`
+ * verdict also covers a directory sitting where the manifest expects a
+ * plain file, a non-directory ancestor blocking the walk, and a segment
+ * whose `realpath` escapes the repository regardless of how `lstat`
+ * classifies it (the Windows-junction case above). A symlink is the common
+ * case, not the only one this reason is used for, and naming a kind the
+ * code has not actually confirmed is the same mistake `hookStillReferencedReason`
+ * made hardcoding "edited" (cycle-5 review, security lens advisory 2).
+ */
+export const NOT_A_REGULAR_FILE_REASON =
+  'not a regular file inside the repository — a symlink, a directory (or other non-file entry) ' +
+  'sitting where a plain file belongs, or an ancestor whose real path leaves the repository';
 
 /**
  * `'ok'`, `'absent'`, or `'unsafe'` — decided with `lstat`, one path segment at
@@ -421,9 +442,44 @@ const HOOK_REL_PATTERN = /^\.claude\/hooks\/.+\.mjs$/;
  */
 const RELATIVE_MJS_IMPORT = /from\s+['"](\.\.?\/[^'"]+\.mjs)['"]/g;
 
-/** Reason named when a hook file is preserved because the wiring file that still calls it is itself preserved. */
-export function hookStillReferencedReason(wiringRel: string): string {
-  return `still referenced by ${wiringRel}, which was preserved as edited — removing this file would leave it pointing at nothing`;
+/**
+ * WHY the wiring file protecting a hook is itself preserved — decided once
+ * per wiring path, from the exact same {@link WiringTracking} distinction
+ * `planUninstall`/`applyUninstall` already compute, and threaded through so
+ * {@link hookStillReferencedReason} can say the true one:
+ *
+ * - `'edited'` — a `files`-tracked path whose current bytes no longer match
+ *   the recorded hash. The rig wrote it; the user changed it since.
+ * - `'kept'` — a `kept` path: `init` found it already in place and never
+ *   took ownership of its bytes at all. Never "edited" by anyone this
+ *   command has evidence about — it may never have matched anything the rig
+ *   ever shipped.
+ * - `'unsafe'` — the wiring file itself could not be safely read (a
+ *   symlink, or reached through one), so its content was never compared to
+ *   anything; every owned hook is protected on the strength of that alone.
+ */
+export type WiringPreservedKind = 'edited' | 'kept' | 'unsafe';
+
+/**
+ * Reason named when a hook file is preserved because the wiring file that
+ * still calls it is itself preserved. `kind` is not decoration: a hook a
+ * `kept` wiring file references was never "preserved as edited" — nobody
+ * edited it, the rig never wrote it, and reusing the `'edited'` wording for
+ * every kind produced a report that told two contradictory stories about the
+ * SAME repository state (`.claude/settings.json` → "user-owned (kept by
+ * init)"; two lines away, `guard-bash.mjs` → "referenced by
+ * .claude/settings.json, which was preserved as edited"). Reproduced by
+ * hand-authoring a wiring `.claude/settings.json`, running `init` over it
+ * (which records it under `kept`, never `files`), then `uninstall --yes`.
+ */
+export function hookStillReferencedReason(wiringRel: string, kind: WiringPreservedKind): string {
+  const why =
+    kind === 'edited'
+      ? 'which was preserved as edited'
+      : kind === 'kept'
+        ? 'which init found already in place and never took ownership of'
+        : 'which could not be safely read (itself a symlink, or reached through one)';
+  return `still referenced by ${wiringRel}, ${why} — removing this file would leave it pointing at nothing`;
 }
 
 /**
@@ -487,9 +543,17 @@ export function hookImportedByReason(importedByRel: string, wiringRel: string): 
  * manifest through nothing worse than `git clone`, before consent, and
  * fatal to the "`--json` prints exactly one object" promise either way.
  * `regularFileStatus !== 'ok'` skips the read entirely; `protectedHooks.set`
- * already ran for `rel` a line above, so the file stays protected — walked
+ * already ran for `rel` a line above, so THAT file stays protected — walked
  * or not, "protecting too many is the safe direction" (below) covers exactly
- * this case too.
+ * this case too. ⚠ What it does NOT cover: `visited.add(rel)` also runs
+ * before the gate, so a symlinked hook's own IMPORTS are never discovered —
+ * a dependency reachable ONLY through it (never seeded directly, never
+ * imported by any other protected file) loses protection along with the
+ * read. Defensible in the shipped tree today (every `.claude/scripts/`
+ * dependency the walk needs to reach is also imported by at least one
+ * OTHER, ordinarily-readable hook — see the candidate-set tests in
+ * `uninstall.test.ts`), but that is a property of today's tree, not a
+ * guarantee this function makes.
  *
  * Bounded, per `.claude/rules/invariants.md`'s fail-open rule, but precisely:
  * no recursion, and every REAL read happens at most once per owned path —
@@ -499,9 +563,10 @@ export function hookImportedByReason(importedByRel: string, wiringRel: string): 
  * `queue` length: `!visited.has(resolved)` is checked at PUSH time, and two
  * different files can each name the same not-yet-popped dependency before
  * either is processed, queuing it more than once. Each duplicate costs one
- * cheap pop-and-skip, never a second read — measured at ~400,000 duplicate
- * matches in a 15 MB file costing roughly a second, immaterial next to the
- * read-side hazard this same function closes above.
+ * cheap pop-and-skip, never a second read — pinned, not merely asserted (see
+ * `.claude/rules/invariants.md`, "State the limits — and test them"), by
+ * `packages/cli/test/uninstall.test.ts` › "processes 400,000 duplicate
+ * import matches to the same owned dependency in bounded time".
  */
 async function protectHookAndDeps(
   repoDir: string,
@@ -610,10 +675,13 @@ async function protectedHooksFor(
   protectedHooks: Map<string, string>;
   /** The immediate importer of a transitively-protected path — absent for a path a wiring file names directly. See {@link hookImportedByReason}. */
   importedBy: Map<string, string>;
+  /** Why the wiring path named in `protectedHooks` is itself preserved, keyed by the WIRING path (not the protected hook). See {@link WiringPreservedKind}. */
+  wiringKind: Map<string, WiringPreservedKind>;
   wiringBytes: Map<string, Buffer>;
 }> {
   const protectedHooks = new Map<string, string>();
   const importedBy = new Map<string, string>();
+  const wiringKind = new Map<string, WiringPreservedKind>();
   const wiringBytes = new Map<string, Buffer>();
   const visited = new Set<string>();
   for (const wiringRel of WIRING_PATHS) {
@@ -622,6 +690,7 @@ async function protectedHooksFor(
     const status = await regularFileStatus(repoDir, wiringRel);
     if (status === 'absent') continue;
     if (status === 'unsafe') {
+      wiringKind.set(wiringRel, 'unsafe');
       for (const rel of ownedPaths) {
         if (HOOK_REL_PATTERN.test(rel)) {
           await protectHookAndDeps(
@@ -644,6 +713,7 @@ async function protectedHooksFor(
     // path never takes this branch: `alwaysPreserved` is true for it
     // unconditionally, hash or no hash.
     if (!tracking.alwaysPreserved && sha256(current) === tracking.recordedHash) continue;
+    wiringKind.set(wiringRel, tracking.alwaysPreserved ? 'kept' : 'edited');
     for (const hook of hookFilesReferencedIn(current.toString('utf8'))) {
       await protectHookAndDeps(
         repoDir,
@@ -656,7 +726,7 @@ async function protectedHooksFor(
       );
     }
   }
-  return { protectedHooks, importedBy, wiringBytes };
+  return { protectedHooks, importedBy, wiringKind, wiringBytes };
 }
 
 /**
@@ -696,7 +766,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       ? { tracked: false }
       : { tracked: true, alwaysPreserved: false, recordedHash };
   };
-  const { protectedHooks, importedBy, wiringBytes } = await protectedHooksFor(
+  const { protectedHooks, importedBy, wiringKind, wiringBytes } = await protectedHooksFor(
     repoDir,
     ownedPaths,
     trackingFor,
@@ -722,7 +792,10 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       actions.push({
         rel,
         verdict: 'preserved',
-        reason: `more than ${MAX_PATH_SEGMENTS} path segments — deeper than any path this release installs, so it is refused without being resolved on disk at all`,
+        reason:
+          `more than ${MAX_PATH_SEGMENTS} path segments — deeper than any path this release ` +
+          'installs, so it is refused without being resolved on disk at all; if this key is ' +
+          `not one you recognise, remove it from ${MANIFEST_REL} by hand`,
       });
       continue;
     }
@@ -777,7 +850,12 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
         verdict: 'preserved',
         reason:
           importer === undefined
-            ? hookStillReferencedReason(protectingWiring)
+            ? // `wiringKind` is set for `protectingWiring` in the SAME
+              // iteration of `protectedHooksFor` that populated
+              // `protectedHooks` with `rel` — never independently, so this
+              // can only be `undefined` if the two maps disagreed with each
+              // other, which would itself be the bug to fix.
+              hookStillReferencedReason(protectingWiring, wiringKind.get(protectingWiring)!)
             : hookImportedByReason(importer, protectingWiring),
       });
       continue;
@@ -991,8 +1069,11 @@ export async function applyUninstall(
       ? { tracked: false }
       : { tracked: true, alwaysPreserved: false, recordedHash };
   };
-  const { protectedHooks: applyTimeProtectedHooks, importedBy: applyTimeImportedBy } =
-    await protectedHooksFor(repoDir, ownedPaths, applyTimeTrackingFor);
+  const {
+    protectedHooks: applyTimeProtectedHooks,
+    importedBy: applyTimeImportedBy,
+    wiringKind: applyTimeWiringKind,
+  } = await protectedHooksFor(repoDir, ownedPaths, applyTimeTrackingFor);
 
   // ⚠ Boundary that `index.ts`'s own outer try/catch around this whole
   // function relies on: nothing above this line has removed anything, and
@@ -1007,7 +1088,12 @@ export async function applyUninstall(
   const removeFile = options.removeFile ?? ((absolutePath: string) => unlink(absolutePath));
   const removed: string[] = [];
   const changedSincePlanning: string[] = [];
-  const protectedHooksAtApply: Array<{ rel: string; wiringRel: string; importedBy?: string }> = [];
+  const protectedHooksAtApply: Array<{
+    rel: string;
+    wiringRel: string;
+    wiringKind: WiringPreservedKind;
+    importedBy?: string;
+  }> = [];
   for (let i = 0; i < toRemove.length; i++) {
     const { rel, recordedHash } = toRemove[i]!;
 
@@ -1016,11 +1102,26 @@ export async function applyUninstall(
       // Discovered only now: the plan said `remove`, but the wiring file
       // that still calls this hook has since been edited or become a
       // symlink. Skipped, never removed, reported loudly — this is not a
-      // silent exit 0.
+      // silent exit 0. Never `'kept'` here specifically: `applyTimeTrackingFor`
+      // above only ever tracks a path that was a plan-time `remove` verdict,
+      // and a `kept` path is never one — ordinarily its hooks were already
+      // protected by the PLAN-TIME call, using the manifest's OWN `kept`
+      // membership, which this re-check does not consult at all. ⚠ Not an
+      // invariant in the one case this re-check exists FOR, though: a `kept`
+      // wiring path that was genuinely ABSENT at plan time (nothing to read,
+      // so the plan-time pass protected nothing on its account) and then
+      // reappears, rewired, in the confirmation-prompt window is exactly the
+      // "changed since planning" shape this whole apply-time pass was built
+      // to catch — and it is not caught here, because this pass is keyed off
+      // `toRemove`, which a `kept` path is never in. Narrow, and no worse
+      // than the pre-existing state (a hook this rig never removes anyway
+      // stays exactly as absent-or-present as it already was), but stated
+      // here rather than left implied.
       const importer = applyTimeImportedBy.get(rel);
       protectedHooksAtApply.push({
         rel,
         wiringRel: protectingWiring,
+        wiringKind: applyTimeWiringKind.get(protectingWiring)!,
         ...(importer !== undefined ? { importedBy: importer } : {}),
       });
       continue;

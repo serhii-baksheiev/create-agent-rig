@@ -17,7 +17,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initProject } from '../src/commands/init.js';
-import { UninstallError, applyUninstall, planUninstall } from '../src/commands/uninstall.js';
+import {
+  UninstallError,
+  applyUninstall,
+  hookImportedByReason,
+  hookStillReferencedReason,
+  planUninstall,
+} from '../src/commands/uninstall.js';
 import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.js';
 import { hookFilesReferencedIn } from '../src/lib/init-settings.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
@@ -425,12 +431,23 @@ describe('planUninstall — wiring files', () => {
     const guardBash = '.claude/hooks/guard-bash.mjs';
     const guardBashAction = actionFor(plan, guardBash);
     expect(guardBashAction?.verdict).toBe('preserved');
-    expect(guardBashAction?.reason).toContain(SETTINGS);
+    // EXACT wording, not merely `.toContain(SETTINGS)` — cycle-5 review,
+    // blocker 3: `hookStillReferencedReason` used to hardcode "which was
+    // preserved as edited" for every kind of protecting wiring file,
+    // including this one, which was never edited at all (the rig never
+    // wrote it in the first place). A substring check on `SETTINGS` alone
+    // cannot tell "edited" and "kept" wording apart, which is exactly how
+    // the false claim survived undetected.
+    expect(guardBashAction?.reason).toBe(hookStillReferencedReason(SETTINGS, 'kept'));
+    expect(guardBashAction?.reason).not.toContain('edited');
 
     // the walk over a KEPT wiring path's hooks follows imports exactly the
-    // same way it does for a FILES one — a transitive dependency survives too
+    // same way it does for a FILES one — a transitive dependency survives
+    // too, with its own (still-accurate, "kept" never even mentioned) wording
     const stopFlag = '.claude/scripts/stop-flag.mjs';
-    expect(actionFor(plan, stopFlag)?.verdict).toBe('preserved');
+    const stopFlagAction = actionFor(plan, stopFlag);
+    expect(stopFlagAction?.verdict).toBe('preserved');
+    expect(stopFlagAction?.reason).toBe(hookImportedByReason(guardBash, SETTINGS));
 
     await applyUninstall(repo, plan);
     expect(await exists(SETTINGS)).toBe(true);
@@ -468,7 +485,9 @@ describe('planUninstall — wiring files', () => {
     for (const hookRel of referencedHooks) {
       const hookAction = actionFor(plan, hookRel);
       expect(hookAction?.verdict, hookRel).toBe('preserved');
-      expect(hookAction?.reason, hookRel).toContain(SETTINGS);
+      // EXACT wording — see the "kept" test above for why a substring check
+      // on `SETTINGS` alone is not enough to catch a wrong "kind" word.
+      expect(hookAction?.reason, hookRel).toBe(hookStillReferencedReason(SETTINGS, 'edited'));
     }
 
     await applyUninstall(repo, plan);
@@ -508,11 +527,51 @@ describe('planUninstall — wiring files', () => {
     const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
     await write(SETTINGS, edited);
 
+    // The exact ONE-HOP importer the closure walk records for each dep is an
+    // implementation detail of traversal order (which wired hook's own
+    // import list happens to reach it first) — not a stated contract — so
+    // this checks membership in every hook actually shipped that imports the
+    // dep, rather than guessing a single winner. What IS pinned exactly:
+    // this is `hookImportedByReason`'s wording, never
+    // `hookStillReferencedReason`'s (cycle-5 review, blocker 1 — nothing
+    // previously distinguished the two for a transitively-reached file, so
+    // `hookImportedByReason` and its whole `importedBy` map could be deleted
+    // outright and the suite stayed green).
+    const validReasonsFor = (importers: readonly string[]): string[] =>
+      importers.map((importer) => hookImportedByReason(importer, SETTINGS));
+    const expectedReasons: Record<string, string[]> = {
+      [HOOK_INPUT]: validReasonsFor([
+        '.claude/hooks/guard-bash.mjs',
+        '.claude/hooks/guard-secret-file.mjs',
+        '.claude/hooks/block-no-verify.mjs',
+        '.claude/hooks/guard-rulebook.mjs',
+        '.claude/hooks/guard-subagent-model.mjs',
+        '.claude/hooks/gate-stop-dod.mjs',
+        '.claude/hooks/inject-rules.mjs',
+        '.claude/hooks/warn-subagent-routing.mjs',
+      ]),
+      [EDIT_INPUT]: validReasonsFor([
+        '.claude/hooks/guard-secret-file.mjs',
+        '.claude/hooks/guard-rulebook.mjs',
+      ]),
+      // Only ONE shipped hook imports this — no traversal-order ambiguity,
+      // so this is the single exact reason, not a candidate set.
+      [SECRETS_LIB]: validReasonsFor(['.claude/hooks/guard-secret-file.mjs']),
+      // Two real paths reach this one: guard-bash.mjs imports it directly,
+      // AND guard-rulebook.mjs imports unattended-flag.mjs, which imports it
+      // too — whichever hook's closure walk runs first (a traversal-order
+      // detail, not a stated contract) claims it.
+      [STOP_FLAG]: validReasonsFor([
+        '.claude/hooks/guard-bash.mjs',
+        '.claude/scripts/unattended-flag.mjs',
+      ]),
+    };
+
     const plan = await planUninstall(repo);
     for (const dep of deps) {
       const action = actionFor(plan, dep);
       expect(action?.verdict, dep).toBe('preserved');
-      expect(action?.reason, dep).toContain(SETTINGS);
+      expect(expectedReasons[dep], dep).toContain(action?.reason);
     }
 
     await applyUninstall(repo, plan);
@@ -555,6 +614,32 @@ describe('planUninstall — wiring files', () => {
         /^\s*import\s+['"][^'"]+['"]\s*;/m,
       );
     }
+  });
+
+  // `protectHookAndDeps`'s own doc comment (and `docs/command-contract.md`)
+  // measure the walk's queue-duplication cost — many files each re-naming an
+  // already-owned, already-visited dependency is cheap (one pop-and-skip per
+  // duplicate, never a second read) — but neither copy was backed by a test,
+  // which `.claude/rules/invariants.md` makes a blocker by rule: a
+  // "Measured:" sentence nothing re-measures is indistinguishable from a
+  // guess a month later. This measures it directly: one owned hook file
+  // overwritten with 400,000 duplicate imports of the SAME already-owned
+  // dependency, all queued before the first one is ever popped.
+  it('processes 400,000 duplicate import matches to the same owned dependency in bounded time', async () => {
+    await installRig();
+    const original = await read(SETTINGS);
+    const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+    await write(SETTINGS, edited);
+
+    const guardBash = '.claude/hooks/guard-bash.mjs';
+    const hookInput = '.claude/hooks/lib/hook-input.mjs';
+    await write(guardBash, "import { x } from './lib/hook-input.mjs';\n".repeat(400_000));
+
+    const start = Date.now();
+    const plan = await planUninstall(repo);
+    expect(Date.now() - start).toBeLessThan(5000);
+    expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
+    expect(actionFor(plan, hookInput)?.verdict).toBe('preserved');
   });
 });
 
@@ -1244,6 +1329,15 @@ describe('applyUninstall — a file that changed after planning', () => {
 
         const plan = await planUninstall(repo);
         expect(actionFor(plan, SETTINGS)?.verdict).toBe('preserved');
+        // EXACT wording — a top-level hook file is never imported by another
+        // hook file in this fleet, so it can only ever be reached as its OWN
+        // direct seed here, never transitively; `'unsafe'` is the only kind
+        // possible since the wiring itself could not be read at all.
+        for (const hookRel of referencedHooks) {
+          expect(actionFor(plan, hookRel)?.reason, hookRel).toBe(
+            hookStillReferencedReason(SETTINGS, 'unsafe'),
+          );
+        }
 
         await applyUninstall(repo, plan);
         for (const hookRel of referencedHooks) {
@@ -1276,6 +1370,38 @@ describe('applyUninstall — a file that changed after planning', () => {
         expect(await exists(dep), dep).toBe(true);
       }
 
+      // `.claude/scripts/lib/secrets.mjs` and `.claude/scripts/stop-flag.mjs`
+      // sit OUTSIDE `.claude/hooks/`, so the `unsafe` branch's own
+      // HOOK_REL_PATTERN seeding can never reach them directly — the ONLY
+      // way either is visited is through the ONE hook that imports each
+      // (verified above), so their reason is exact and deterministic.
+      // `.claude/hooks/lib/hook-input.mjs`, by contrast, itself MATCHES
+      // HOOK_REL_PATTERN (seeded directly, `'unsafe'` wording) and is ALSO
+      // imported by nearly every wired hook — which of the two a given
+      // `ownedPaths` iteration order resolves first is not a stated
+      // contract, so this allows either shape rather than guessing one.
+      const allowedReasonsFor: Record<string, string[]> = {
+        [HOOK_INPUT]: [
+          hookStillReferencedReason(SETTINGS, 'unsafe'),
+          ...[
+            '.claude/hooks/guard-bash.mjs',
+            '.claude/hooks/guard-secret-file.mjs',
+            '.claude/hooks/block-no-verify.mjs',
+            '.claude/hooks/guard-rulebook.mjs',
+            '.claude/hooks/guard-subagent-model.mjs',
+            '.claude/hooks/gate-stop-dod.mjs',
+            '.claude/hooks/inject-rules.mjs',
+            '.claude/hooks/warn-subagent-routing.mjs',
+          ].map((importer) => hookImportedByReason(importer, SETTINGS)),
+        ],
+        [SECRETS_LIB]: [hookImportedByReason('.claude/hooks/guard-secret-file.mjs', SETTINGS)],
+        // Two real paths: guard-bash.mjs directly, or guard-rulebook.mjs via
+        // its own import of unattended-flag.mjs, which imports this too.
+        [STOP_FLAG]: ['.claude/hooks/guard-bash.mjs', '.claude/scripts/unattended-flag.mjs'].map(
+          (importer) => hookImportedByReason(importer, SETTINGS),
+        ),
+      };
+
       const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
       try {
         const target = path.join(outside, 'external-settings.json');
@@ -1285,6 +1411,9 @@ describe('applyUninstall — a file that changed after planning', () => {
 
         const plan = await planUninstall(repo);
         expect(actionFor(plan, SETTINGS)?.verdict).toBe('preserved');
+        for (const dep of deps) {
+          expect(allowedReasonsFor[dep], dep).toContain(actionFor(plan, dep)?.reason);
+        }
 
         await applyUninstall(repo, plan);
         for (const dep of deps) {

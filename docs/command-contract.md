@@ -798,9 +798,17 @@ is also what makes a path spelled with a Windows alternate-data-stream suffix
 different, unowned path, with no need for this command to know anything
 about ADS semantics. Absent on disk is `absent`. **Any ancestor directory
 down to the file itself that is a symlink — or any other non-regular entry —
-is `preserved`, reason `not a regular file inside the repository (symlink)`;
-this branch is checked before any read, so a symlinked ancestor is never
-followed to reach the file and is left untouched either way.** A hook file
+is `preserved`, reason `not a regular file inside the repository — a symlink,
+a directory (or other non-file entry) sitting where a plain file belongs, or
+an ancestor whose real path leaves the repository`; this branch is checked
+before any read, so a symlinked ancestor is never followed to reach the file
+and is left untouched either way.** The reason deliberately does not say
+"(symlink)" the way it once did — the SAME `'unsafe'` verdict also covers a
+plain directory sitting where the manifest expects a file, and a segment
+whose `realpath` escapes the repository regardless of how `lstat` classifies
+it, and naming a kind the code has not actually confirmed was the same
+mistake a hook-protection reason string made elsewhere on this page
+(security-lens advisory, RP-181 cycle 5). A hook file
 (`.claude/hooks/*.mjs`) that a wiring file this run is preserving as
 `wiring-modified` still references is `preserved`, reason `still referenced
 by <wiring path>, which was preserved as edited — removing this file would
@@ -978,15 +986,24 @@ than importing it — `inject-rules.mjs` reading `.claude/rules/`,
 `guard-subagent-model.mjs` reading `.claude/agents/` for a pinned-model
 override — is not covered by this walk, and this page does not claim it is:
 those paths are ordinary manifest entries, protected or removed on their own
-merits exactly as before this feature existed. Measured: a preserved,
-correctly-wired `inject-rules.mjs` with `.claude/rules/` removed exits 0
-having injected nothing; `guard-subagent-model.mjs` with `.claude/agents/`
-removed allows a pinned-model override it would otherwise refuse. Both are
-existing, unrelated gaps this feature neither creates nor closes — the three
-Never-tier guards this feature's own motivating case names
-(`guard-bash`/`block-no-verify`/`guard-secret-file`) import every module they
-need rather than reading one at runtime, which is exactly why they stay
-self-contained and still block once this walk protects their imports.
+merits exactly as before this feature existed. Pinned, not merely asserted
+(`.claude/rules/invariants.md`, "State the limits — and test them" — a
+"Measured:" sentence with no test behind it is indistinguishable from a
+guess a month later): `test/template/hooks.test.ts` › "exits 0 and injects
+nothing when .claude/rules/ itself is missing entirely — the runtime-read
+gap the import walk does not cover" runs `inject-rules.mjs` against a planted
+tree with no `.claude/rules/` directory at all and confirms exit 0, empty
+stdout; `test/template/subagent-routing-hooks.test.ts` › "allows a call-site
+model override once .claude/agents/ itself is gone — the runtime-read gap
+the import walk does not cover" runs `guard-subagent-model.mjs` against the
+identical pinned-agent payload with and without `.claude/agents/` present
+and confirms the same dispatch goes from blocked (exit 2) to allowed (exit
+0). Both are existing, unrelated gaps this feature neither creates nor
+closes — the three Never-tier guards this feature's own motivating case
+names (`guard-bash`/`block-no-verify`/`guard-secret-file`) import every
+module they need rather than reading one at runtime, which is exactly why
+they stay self-contained and still block once this walk protects their
+imports.
 
 Every real READ this walk performs is gated by the same symlink-safe
 {@link regularFileStatus} check every other read on this page gets — not the
@@ -1006,10 +1023,12 @@ release does not ship is never read regardless of what a hostile file
 claims to import. The walk's transient queue length is a different question
 from read count, and is bounded by the number of import-shaped matches
 across files actually read, not by the size of the owned-path set — an
-irrelevant distinction at this release's real scale (measured: ~400,000
-duplicate matches in a 15 MB file cost roughly a second), stated here only so
-the claim matches what the code does rather than rounding up to "bounded by
-`|ownedPaths|`" in both places at once.
+irrelevant distinction at this release's real scale, pinned rather than
+merely asserted (`.claude/rules/invariants.md`, "State the limits — and test
+them") by `packages/cli/test/uninstall.test.ts` › "processes 400,000
+duplicate import matches to the same owned dependency in bounded time",
+stated here only so the claim matches what the code does rather than
+rounding up to "bounded by `|ownedPaths|`" in both places at once.
 
 A wiring file this command cannot safely READ at that point (itself a
 symlink, or reached through one) protects every hook path this release owns
