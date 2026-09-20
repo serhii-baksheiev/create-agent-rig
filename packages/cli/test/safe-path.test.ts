@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { initManifest } from '../src/commands/init.js';
@@ -7,7 +9,10 @@ import {
   isSafeSegment,
   isSafeSubstitutionValue,
   resolveInside,
+  resolveReadableInside,
 } from '../src/lib/safe-path.js';
+import { removeFixture } from '../../../test/helpers/remove-fixture.js';
+import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 
 describe('path safety — the containment `upgrade` writes behind', () => {
   const root = path.resolve('/tmp/rig');
@@ -124,5 +129,134 @@ describe('the values safe to substitute into an installed file', () => {
     expect(isSafeSubstitutionValue('x')).toBe(true);
     expect(isSafeSubstitutionValue('_')).toBe(true);
     expect(isSafeSubstitutionValue('7')).toBe(true);
+  });
+});
+
+// `resolveReadableInside` (RP-22 round 3, safe-path.ts advisory): direct
+// coverage of the read-side counterpart, separate from every place that
+// exercises it only indirectly (packages/cli/test/integrations-cli.test.ts).
+describe('resolveReadableInside — the read-side counterpart of resolveWritableInside', () => {
+  it('reports "absent" when no component of rel exists yet', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    try {
+      const result = await resolveReadableInside(root, 'a/b/c.json', 'file');
+      expect(result).toEqual({ status: 'absent' });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+
+  it('reports "absent" when an intermediate directory does not exist, even if the root does', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    try {
+      const result = await resolveReadableInside(root, 'missing-dir/x.json', 'file');
+      expect(result).toEqual({ status: 'absent' });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+
+  it('reports "absent" when root itself is not a directory', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    try {
+      const notADir = path.join(root, 'plain-file');
+      await writeFile(notADir, 'x');
+      const result = await resolveReadableInside(notADir, 'a.json', 'file');
+      expect(result).toEqual({ status: 'absent' });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+
+  it('reports "unsafe: wrong-kind" when a FILE sits where a DIRECTORY was expected', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    try {
+      await writeFile(path.join(root, 'should-be-a-dir'), 'x');
+      const result = await resolveReadableInside(root, 'should-be-a-dir', 'directory');
+      expect(result).toEqual({ status: 'unsafe', reason: 'wrong-kind' });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+
+  it('reports "unsafe: wrong-kind" when a DIRECTORY sits where a FILE was expected', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    try {
+      await mkdir(path.join(root, 'should-be-a-file'), { recursive: true });
+      const result = await resolveReadableInside(root, 'should-be-a-file', 'file');
+      expect(result).toEqual({ status: 'unsafe', reason: 'wrong-kind' });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+
+  it('reports "unsafe: escapes-root" for a lexically-escaping rel, without ever walking the filesystem', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    try {
+      const result = await resolveReadableInside(root, '../outside.json', 'file');
+      expect(result).toEqual({ status: 'unsafe', reason: 'escapes-root' });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+
+  it('reports "ok" with the resolved path once every segment checks out', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    try {
+      await mkdir(path.join(root, 'a', 'b'), { recursive: true });
+      await writeFile(path.join(root, 'a', 'b', 'c.json'), '{}');
+      const result = await resolveReadableInside(root, 'a/b/c.json', 'file');
+      expect(result).toEqual({ status: 'ok', path: path.join(root, 'a', 'b', 'c.json') });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+
+  it('refuses a symlink at the FINAL segment', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-outside-'));
+    try {
+      await writeFile(path.join(outside, 'real.json'), '{}');
+      await symlink(path.join(outside, 'real.json'), path.join(root, 'link.json'));
+      const result = await resolveReadableInside(root, 'link.json', 'file');
+      expect(result).toEqual({ status: 'unsafe', reason: 'symlink' });
+    } finally {
+      await removeFixture(root);
+      await removeFixture(outside);
+    }
+  });
+
+  it('refuses a symlink at an INTERMEDIATE segment (the first one)', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-outside-'));
+    try {
+      await mkdir(path.join(outside, 'b'), { recursive: true });
+      await writeFile(path.join(outside, 'b', 'c.json'), '{}');
+      await symlink(outside, path.join(root, 'a'));
+      const result = await resolveReadableInside(root, 'a/b/c.json', 'file');
+      expect(result).toEqual({ status: 'unsafe', reason: 'symlink' });
+    } finally {
+      await removeFixture(root);
+      await removeFixture(outside);
+    }
+  });
+
+  it('refuses a symlink at a DEEPER intermediate segment (not the first, not the last)', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-outside-'));
+    try {
+      await mkdir(path.join(root, 'a'), { recursive: true });
+      await mkdir(path.join(outside, 'c'), { recursive: true });
+      await writeFile(path.join(outside, 'c', 'd.json'), '{}');
+      await symlink(outside, path.join(root, 'a', 'b'));
+      const result = await resolveReadableInside(root, 'a/b/c/d.json', 'file');
+      expect(result).toEqual({ status: 'unsafe', reason: 'symlink' });
+    } finally {
+      await removeFixture(root);
+      await removeFixture(outside);
+    }
   });
 });

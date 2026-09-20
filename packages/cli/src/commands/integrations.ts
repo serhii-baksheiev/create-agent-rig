@@ -94,11 +94,24 @@ const HARNESSES: readonly Harness[] = ['claude-code', 'codex'];
  * fake success line on a terminal that interprets escape sequences (RP-22
  * round 2, advisory).
  */
+function stripControlCharacters(value: string): string {
+  return [...value].map((character) => (hasControlCharacter(character) ? '�' : character)).join('');
+}
+
 function sanitizeForDisplay(value: string): string {
-  const truncated = truncateForMessage(value);
-  return [...truncated]
-    .map((character) => (hasControlCharacter(character) ? '�' : character))
-    .join('');
+  return stripControlCharacters(truncateForMessage(value));
+}
+
+/**
+ * `parseArgs`'s own thrown message, stripped of control characters but NOT
+ * truncated — an unknown-flag or missing-value message can legitimately
+ * embed the flag the caller typed, which `truncateForMessage`'s 64-character
+ * cap would clip mid-sentence for no security reason (RP-22 round 3
+ * advisory: gate cycle 2 measured a raw `0x1b` reaching stderr through this
+ * exact path, `sanitizeForDisplay`'s truncation was never the gap).
+ */
+function sanitizeArgError(message: string): string {
+  return stripControlCharacters(message);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,15 +364,29 @@ export type AddRefusalReason =
   /** The on-disk declaration does not parse (and is not merely a symlink), so a safe upsert is impossible. */
   | 'declaration-unreadable'
   /** `resolveWritableInside` refused the write (a symlink, or an escape). */
-  | 'write-refused';
+  | 'write-refused'
+  /**
+   * The REWRITTEN declaration — accepted entries plus every preserved
+   * rejected entry — would exceed `MAX_DECLARATION_BYTES` (RP-22 round 3,
+   * blocker 1). Checked against the file `add` is about to WRITE, not the
+   * one it read: `serializeWithPreservedRejected`'s two-space re-indent of a
+   * preserved entry can be several times larger than however it was
+   * originally formatted, so a file that fit on disk can fail to fit again
+   * once rewritten. Refusing here, before the write, is what stops `add`
+   * from writing a declaration neither `verify` nor a later `add` can read
+   * back.
+   */
+  | 'declaration-too-large';
+
+export type PreservedRejectedEntry = { id: string; reason: RejectionReason };
 
 export type AddOutcome =
   | {
       outcome: 'written' | 'dry-run';
       entry: DeclaredIntegration;
       changed: boolean;
-      /** Ids this call preserved verbatim because the CURRENT registry rejects them — never pruned silently. */
-      preservedRejected: string[];
+      /** Entries this call preserved verbatim because the CURRENT registry rejects them — never pruned silently, each with the reason it was rejected for. */
+      preservedRejected: PreservedRejectedEntry[];
     }
   | { outcome: 'refused'; reason: AddRefusalReason; message?: string };
 
@@ -436,18 +463,43 @@ function serializeWithPreservedRejected(
  */
 export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
   const registry = options.registry ?? REGISTRY;
+
+  // Reject a control/format character in `id`/`version` AT THE ARGUMENT
+  // BOUNDARY, with its own specific message (RP-22 round 3, advisory) —
+  // rather than letting it fall through to the generic "the declaration
+  // carries a control or format character" `reparsed.status === 'invalid'`
+  // branch further down, which names no field and used to be believed
+  // unreachable for exactly this reason (gate cycle 2: a `--version`
+  // carrying a control character reached it).
+  if (hasControlCharacter(options.id)) {
+    return {
+      outcome: 'refused',
+      reason: 'malformed',
+      message: 'the id contains a control or format character',
+    };
+  }
+  if (options.version !== undefined && hasControlCharacter(options.version)) {
+    return {
+      outcome: 'refused',
+      reason: 'malformed',
+      message: 'the version pin contains a control or format character',
+    };
+  }
+
   const read = await readDeclarationFile(options.repoDir, registry);
 
   let previousEntries: DeclaredIntegration[] = [];
   let previousRaw: string | undefined;
   let previousRawEntries: Record<string, unknown>[] = [];
-  let previousRejectedIds = new Set<string>();
+  let previousRejectedById = new Map<string, RejectionReason>();
 
   if (read.status === 'ok') {
     previousEntries = read.entries;
     previousRaw = read.raw;
     previousRawEntries = rawIntegrationEntries(read.raw);
-    previousRejectedIds = new Set(read.rejected.map((rejection) => rejection.id));
+    previousRejectedById = new Map(
+      read.rejected.map((rejection) => [rejection.id, rejection.reason]),
+    );
   } else if (read.status === 'invalid' && !read.symlink) {
     // Bytes on disk are left exactly as they are — this is a refusal, not an
     // attempt that failed partway.
@@ -464,7 +516,7 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
   // trusted from, or overwritten through, a symlinked declaration.
 
   const preservedRaw = previousRawEntries.filter(
-    (entry) => entry.id !== options.id && previousRejectedIds.has(entry.id as string),
+    (entry) => entry.id !== options.id && previousRejectedById.has(entry.id as string),
   );
 
   const previous = previousEntries.find((entry) => entry.id === options.id);
@@ -483,11 +535,15 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
   ];
   const candidateText = serializeDeclaration(upsertedAccepted);
   const reparsed = parseDeclaration(candidateText, registry);
-  /* c8 ignore start -- defensive: candidateText is `serializeDeclaration`'s own closed output shape */
+  // NOT unreachable (gate cycle 2 corrected a prior `c8 ignore` claiming it
+  // was): `id`/`version` are free of control characters by the boundary
+  // check above, but `id` has no length bound at all here — a sufficiently
+  // long `<id>` alone makes `candidateText` exceed the 64 KiB whole-file cap
+  // on its own, landing exactly here. See the "candidate exceeds the file
+  // cap on id length alone" test.
   if (reparsed.status === 'invalid') {
     return { outcome: 'refused', reason: 'declaration-unreadable', message: reparsed.error };
   }
-  /* c8 ignore stop */
 
   const ownRejection = reparsed.rejected.find((rejection) => rejection.id === options.id);
   if (ownRejection !== undefined) {
@@ -527,7 +583,31 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
 
   const finalText = serializeWithPreservedRejected(reparsed.entries, preservedRaw);
   const changed = previousRaw !== finalText;
-  const preservedRejected = preservedRaw.map((entry) => entry.id as string).sort();
+  const preservedRejected: PreservedRejectedEntry[] = preservedRaw
+    .map((entry) => ({
+      id: entry.id as string,
+      // Non-null: every entry in `preservedRaw` was filtered FROM
+      // `previousRejectedById`'s own keys, immediately above.
+      reason: previousRejectedById.get(entry.id as string)!,
+    }))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  // Checked against the REWRITTEN bytes, before the write guard (RP-22
+  // round 3, blocker 1 — a round-2 regression): `serializeWithPreservedRejected`
+  // re-indents every preserved entry into this format's canonical two-space
+  // style, which can be markedly larger than however the entry was
+  // originally formatted. A declaration that fit on disk when it was READ
+  // can therefore fail to fit once rewritten; refusing here — rather than
+  // after `readDeclarationFile`'s own read-time check, which never sees
+  // this file's OUTGOING bytes — is what stops `add` from silently writing
+  // a declaration neither `verify` nor a later `add` can read back.
+  if (new TextEncoder().encode(finalText).byteLength > MAX_DECLARATION_BYTES) {
+    return {
+      outcome: 'refused',
+      reason: 'declaration-too-large',
+      message: 'the rewritten declaration would be larger than 64 KiB',
+    };
+  }
 
   // Containment is decided BEFORE anything is created (RP-22 round 2,
   // blocker 3): a `.rig` committed as a (possibly dangling) symlink must be
@@ -789,10 +869,30 @@ export async function verifyIntegrations(
   };
 }
 
+/**
+ * A caveat line about the receipts-directory scan itself, printed whenever
+ * `orphanScan` is not the clean case (RP-22 round 3 advisory) — a scan that
+ * hit the candidate cap, or one that could not read the directory at all,
+ * is a fact about the ANSWER's completeness that a reader of prose output
+ * deserves as much as a `--json` consumer already gets from the field.
+ */
+function orphanScanNote(scan: OrphanScan): string {
+  if (scan === 'truncated') {
+    return `(orphan scan: truncated at ${MAX_ORPHAN_CANDIDATES} candidates — some receipts were not examined)\n`;
+  }
+  if (scan === 'unreadable') {
+    return '(orphan scan: the receipts directory could not be read)\n';
+  }
+  return '';
+}
+
 function renderVerifyProse(payload: VerifyPayload, only: string | undefined): string {
-  if (payload.declaration === 'absent') return 'No .rig/integrations.json in this repository.\n';
+  const scanNote = orphanScanNote(payload.orphanScan);
+  if (payload.declaration === 'absent') {
+    return `No .rig/integrations.json in this repository.\n${scanNote}`;
+  }
   if (payload.declaration === 'invalid') {
-    return `The declaration does not parse: ${sanitizeForDisplay(payload.error ?? '')}\n`;
+    return `The declaration does not parse: ${sanitizeForDisplay(payload.error ?? '')}\n${scanNote}`;
   }
   const lines: string[] = [];
   for (const entry of payload.integrations) {
@@ -807,14 +907,14 @@ function renderVerifyProse(payload: VerifyPayload, only: string | undefined): st
   for (const id of payload.orphaned) {
     lines.push(`${sanitizeForDisplay(id)}: orphaned receipt, no declaration`);
   }
-  if (lines.length > 0) return `${lines.join('\n')}\n`;
+  if (lines.length > 0) return `${lines.join('\n')}\n${scanNote}`;
   // Distinguish "nothing declared at all" from "--only named something not
   // present here" (RP-22 round 2, CLI-UX advisory) — the two used to print
   // the identical "Nothing declared." line.
   if (only !== undefined) {
-    return `No integration named "${sanitizeForDisplay(only)}" is declared here.\n`;
+    return `No integration named "${sanitizeForDisplay(only)}" is declared here.\n${scanNote}`;
   }
-  return 'Nothing declared.\n';
+  return `Nothing declared.\n${scanNote}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -837,7 +937,7 @@ async function runList(
       allowPositionals: true,
     }));
   } catch (error) {
-    return { exitCode: 1, stdout: '', stderr: `${(error as Error).message}\n` };
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeArgError((error as Error).message)}\n` };
   }
   if (positionals.length > 0) {
     return { exitCode: 1, stdout: '', stderr: 'setup list takes no positional arguments.\n' };
@@ -874,7 +974,7 @@ async function runAdd(
       allowPositionals: true,
     }));
   } catch (error) {
-    return { exitCode: 1, stdout: '', stderr: `${(error as Error).message}\n` };
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeArgError((error as Error).message)}\n` };
   }
   if (positionals.length !== 1) {
     return {
@@ -932,7 +1032,9 @@ async function runAdd(
   const verb = outcome.outcome === 'dry-run' ? 'Would write' : 'Wrote';
   const preservedNote =
     outcome.preservedRejected.length > 0
-      ? ` (also preserved ${outcome.preservedRejected.length} rejected entr${outcome.preservedRejected.length === 1 ? 'y' : 'ies'}: ${outcome.preservedRejected.map(sanitizeForDisplay).join(', ')})`
+      ? ` (also preserved ${outcome.preservedRejected.length} rejected entr${outcome.preservedRejected.length === 1 ? 'y' : 'ies'}: ${outcome.preservedRejected
+          .map((p) => `${sanitizeForDisplay(p.id)} (${p.reason})`)
+          .join(', ')})`
       : '';
   return {
     exitCode: 0,
@@ -956,10 +1058,21 @@ async function runVerify(
       allowPositionals: true,
     }));
   } catch (error) {
-    return { exitCode: 1, stdout: '', stderr: `${(error as Error).message}\n` };
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeArgError((error as Error).message)}\n` };
   }
   if (positionals.length > 0) {
     return { exitCode: 1, stdout: '', stderr: 'setup verify takes no positional arguments.\n' };
+  }
+  // Rejected at the argument boundary, with its own message (RP-22 round 3
+  // advisory) — never forwarded into `verifyIntegrations`, where it would
+  // otherwise just fail to match any entry and read as an ordinary "nothing
+  // named that" rather than the malformed invocation it actually is.
+  if (values.only !== undefined && hasControlCharacter(values.only)) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: 'setup verify: --only contains a control or format character.\n',
+    };
   }
   const { payload, exitCode } = await verifyIntegrations({
     repoDir: cwd,

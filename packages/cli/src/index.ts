@@ -87,14 +87,19 @@ Also: create-agent-rig setup add <id> [--required] [--version <pin>] [--dry-run]
   in the committed declaration (.rig/integrations.json), through
   resolveWritableInside with sorted, stable bytes. Installs nothing. A flag
   left off an existing entry keeps its previously recorded value rather than
-  dropping it.
+  dropping it. An entry the CURRENT registry rejects is never pruned by a
+  later add for a different id — it is preserved byte-for-byte and named
+  (preservedRejected). No route adapter exists yet at this release (see
+  "setup verify" below), so marking an entry --required makes verify exit 1
+  until one lands, not because the entry is actually missing.
 
 Also: create-agent-rig setup verify [--only <id>] [--json]
   Read-only: classify every declared integration against what can currently
   be observed. No route adapter exists yet at this release, so every harness
-  reads "unverified" (no-sanctioned-probe) until a later release wires one up.
-  Exits 1 when any required integration is not installed on every harness it
-  applies to, or when the declaration itself does not parse; 0 otherwise,
+  reads "unverified" (no-sanctioned-probe) until a later release wires one up
+  — a --required entry therefore always exits 1 until then. Exits 1 when any
+  required integration is not installed on every harness it applies to, or
+  when the declaration itself does not parse; 0 otherwise,
   including when there is no declaration at all.
 
 Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]
@@ -1004,6 +1009,27 @@ async function main(): Promise<number> {
   process.stdout.write('\n' + renderSummary(projectName, dirArg, summary, palette));
   return 0;
 }
+
+/**
+ * A closed stdout/stderr — the read end of a pipe hung up (`| head -1`), a
+ * terminal that closed — must exit quietly, never with an `EPIPE` stack
+ * trace (RP-22 round 3 advisory): a write to a broken pipe surfaces as an
+ * `'error'` EVENT on the stream, not a thrown exception any `try`/`catch`
+ * here could catch, so it is handled once, at the process level, for both
+ * streams this bin ever writes to. Any OTHER stream error is not ours to
+ * swallow and is rethrown.
+ */
+function quietlyExitOnEpipe(stream: NodeJS.WritableStream): void {
+  stream.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EPIPE') {
+      process.exitCode = 0;
+      return;
+    }
+    throw error;
+  });
+}
+quietlyExitOnEpipe(process.stdout);
+quietlyExitOnEpipe(process.stderr);
 
 main()
   .then((code) => {

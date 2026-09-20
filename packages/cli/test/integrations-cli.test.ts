@@ -158,11 +158,24 @@ function validReceiptText(id: string, state: string): string {
 describe('setup list (RP-22 S4)', () => {
   it('lists every REGISTRY descriptor with id, capability, mode, license, source, stability and per-harness routes', () => {
     const entries = listRegistry();
-    // Strengthened (RP-22 round 2, weak-oracle advisory): the exact id set,
-    // not merely its length — REGISTRY holding one more entry with the same
-    // COUNT but a different id would still have passed the old assertion.
-    expect(entries.map((e) => e.id)).toEqual(['memory-custom-executable']);
-    const memory = entries[0]!;
+    // `toContain` + a shape check, not an exact-array pin (RP-22 round 3
+    // advisory: an exact id-array assertion breaks on every later slice that
+    // adds a real descriptor to REGISTRY, for a reason unrelated to this
+    // test's own claim).
+    expect(entries.map((e) => e.id)).toContain('memory-custom-executable');
+    for (const entry of entries) {
+      expect(typeof entry.id).toBe('string');
+      expect(typeof entry.displayName).toBe('string');
+      expect(['methodology', 'design', 'board', 'memory']).toContain(entry.capability);
+      expect([
+        'external-installer',
+        'native-plugin',
+        'hosted-service',
+        'external-executable',
+      ]).toContain(entry.mode);
+      expect(['supported', 'preview']).toContain(entry.stability);
+    }
+    const memory = entries.find((e) => e.id === 'memory-custom-executable')!;
     expect(memory).toMatchObject({
       capability: 'memory',
       mode: 'external-executable',
@@ -244,7 +257,13 @@ describe('setup add — preserves rejected entries verbatim (RP-22 round 2, bloc
     const outcome = await addIntegration({ repoDir: repo, id: 'memory-custom-executable' });
     expect(outcome.outcome).toBe('written');
     if (outcome.outcome === 'refused') throw new Error('narrowed above');
-    expect(outcome.preservedRejected).toEqual(['figma-mcp', 'spec-kit']);
+    // Each preserved id carries its OWN rejection reason (RP-22 round 3
+    // ruling) — both happen to be not-in-matrix here, against the real
+    // REGISTRY, which holds exactly one descriptor at this slice.
+    expect(outcome.preservedRejected).toEqual([
+      { id: 'figma-mcp', reason: 'not-in-matrix' },
+      { id: 'spec-kit', reason: 'not-in-matrix' },
+    ]);
 
     const after = await readFile(declarationPath(), 'utf8');
     // Literal expected bytes: preserved-rejected entries sort together with
@@ -276,7 +295,7 @@ describe('setup add — preserves rejected entries verbatim (RP-22 round 2, bloc
     expect(await readFile(declarationPath(), 'utf8')).toBe(before);
   });
 
-  it('preserving a rejected entry is reported in --json as preservedRejected, and in prose', async () => {
+  it('preserving a rejected entry is reported in --json as preservedRejected: [{id, reason}], and in prose with its reason', async () => {
     await writeDeclarationRaw(
       `${JSON.stringify({ schemaVersion: 1, integrations: [{ id: 'spec-kit' }] }, null, 2)}\n`,
     );
@@ -285,8 +304,10 @@ describe('setup add — preserves rejected entries verbatim (RP-22 round 2, bloc
       args: ['memory-custom-executable', '--json'],
       cwd: repo,
     });
-    const parsed = JSON.parse(jsonResult.stdout) as { preservedRejected: string[] };
-    expect(parsed.preservedRejected).toEqual(['spec-kit']);
+    const parsed = JSON.parse(jsonResult.stdout) as {
+      preservedRejected: { id: string; reason: string }[];
+    };
+    expect(parsed.preservedRejected).toEqual([{ id: 'spec-kit', reason: 'not-in-matrix' }]);
 
     await writeDeclarationRaw(
       `${JSON.stringify({ schemaVersion: 1, integrations: [{ id: 'spec-kit' }] }, null, 2)}\n`,
@@ -296,7 +317,61 @@ describe('setup add — preserves rejected entries verbatim (RP-22 round 2, bloc
       args: ['memory-custom-executable'],
       cwd: repo,
     });
-    expect(proseResult.stdout).toMatch(/preserved 1 rejected entry: spec-kit/);
+    expect(proseResult.stdout).toMatch(/preserved 1 rejected entry: spec-kit \(not-in-matrix\)/);
+  });
+
+  it('preserved entries are stable across a second, otherwise-identical add', async () => {
+    await writeDeclarationRaw(
+      `${JSON.stringify({ schemaVersion: 1, integrations: [{ id: 'spec-kit' }] }, null, 2)}\n`,
+    );
+    const first = await addIntegration({ repoDir: repo, id: 'memory-custom-executable' });
+    expect(first.outcome).toBe('written');
+    const firstBytes = await readFile(declarationPath(), 'utf8');
+    const second = await addIntegration({ repoDir: repo, id: 'memory-custom-executable' });
+    expect(second.outcome).toBe('written');
+    if (second.outcome === 'refused') throw new Error('narrowed above');
+    expect(second.changed).toBe(false);
+    expect(second.preservedRejected).toEqual([{ id: 'spec-kit', reason: 'not-in-matrix' }]);
+    expect(await readFile(declarationPath(), 'utf8')).toBe(firstBytes);
+  });
+});
+
+describe('setup add — preservation fidelity, and its documented limits (RP-22 round 3 advisory)', () => {
+  it('a huge number literal in a preserved entry is lossy (JS number precision) — 1e400 round-trips to null, stated as a limit', async () => {
+    // Written as raw JSON text, not a JS numeric literal (`1e400` in source
+    // would itself be flagged by `no-loss-of-precision` — the overflow it
+    // warns about at author time is exactly the behaviour this test pins at
+    // parse time).
+    await writeDeclarationRaw(
+      '{\n  "schemaVersion": 1,\n  "integrations": [\n    { "id": "spec-kit", "weight": 1e400 }\n  ]\n}\n',
+    );
+    const outcome = await addIntegration({ repoDir: repo, id: 'memory-custom-executable' });
+    expect(outcome.outcome).toBe('written');
+    const after = JSON.parse(await readFile(declarationPath(), 'utf8')) as {
+      integrations: { id: string; weight?: unknown }[];
+    };
+    const specKit = after.integrations.find((e) => e.id === 'spec-kit')!;
+    // JSON.stringify(Infinity) is "null" — value preservation, not byte
+    // preservation, is lossy here BY CONSTRUCTION (JS numbers have no
+    // Infinity representation in JSON), and this is exactly that case.
+    expect(specKit.weight).toBeNull();
+  });
+
+  it("duplicate keys in a preserved entry collapse to the LAST value (JSON.parse's own behaviour) — stated as a limit", async () => {
+    // A hand-built string, not JSON.stringify(...) — JSON.stringify can
+    // never PRODUCE a duplicate key, so this is the one case where the
+    // fixture cannot be built through the same JSON.stringify helper every
+    // other test in this file uses.
+    const before =
+      '{\n  "schemaVersion": 1,\n  "integrations": [\n    { "id": "spec-kit", "required": true, "required": false }\n  ]\n}\n';
+    await writeDeclarationRaw(before);
+    const outcome = await addIntegration({ repoDir: repo, id: 'memory-custom-executable' });
+    expect(outcome.outcome).toBe('written');
+    const after = JSON.parse(await readFile(declarationPath(), 'utf8')) as {
+      integrations: { id: string; required?: boolean }[];
+    };
+    const specKit = after.integrations.find((e) => e.id === 'spec-kit')!;
+    expect(specKit.required).toBe(false); // the LAST of the two duplicate keys wins
   });
 });
 
@@ -468,24 +543,61 @@ describe('bounded reads and the receipts-dir scan cap (RP-22 round 2 advisory)',
     }
     const { payload } = await verifyIntegrations({ repoDir: repo });
     expect(payload.orphanScan).toBe('truncated');
-    expect(payload.orphaned.length).toBeLessThanOrEqual(MAX_ORPHAN_CANDIDATES);
+    // Exact count, not merely "at most the cap" (RP-22 round 3 advisory: the
+    // old assertion would have passed on an empty array too, proving nothing
+    // about whether the cap actually applied). All `total` fixtures are
+    // VALID receipts, sorted deterministically, so exactly the cap's worth
+    // must survive.
+    expect(payload.orphaned.length).toBe(MAX_ORPHAN_CANDIDATES);
   }, 30_000);
 
-  it("an oversized declaration is refused the same way whether or not resolveReadableInside's own stat runs first", async () => {
+  it('an oversized declaration is refused at the boundary value, exactly 64 KiB vs 64 KiB + 1', async () => {
     // Not a 300 MB fixture (impractical in a unit test); this pins the
-    // boundary behaviour the stat-first code path must still produce —
-    // the memory-avoidance property itself is a code-shape fact, visible in
-    // the diff (`readDeclarationFile` calls `stat` before `readFile`), not
-    // something this test can observe directly.
-    const oversized = `${JSON.stringify({
+    // EXACT boundary the stat-first code path must still produce — the
+    // memory-avoidance property itself is a code-shape fact, visible in the
+    // diff (`readDeclarationFile` calls `stat` before `readFile`), which the
+    // companion timing test below gives an independent, if coarse, signal
+    // for. The padding lives on an ENTRY's own unknown key (rejected as
+    // "malformed", not fatal to the whole file) rather than a root key,
+    // which `declaration.ts`'s closed root-key set would refuse regardless
+    // of size — this test is about the byte cap specifically.
+    const atCap = `${JSON.stringify({
       schemaVersion: 1,
-      integrations: [],
-      padding: 'x'.repeat(70 * 1024),
+      integrations: [{ id: 'padded-entry', padding: 'x'.repeat(64 * 1024 - 150) }],
     })}\n`;
-    await writeDeclarationRaw(oversized);
-    const { payload, exitCode } = await verifyIntegrations({ repoDir: repo });
+    expect(Buffer.byteLength(atCap)).toBeLessThanOrEqual(64 * 1024);
+    await writeDeclarationRaw(atCap);
+    const ok = await verifyIntegrations({ repoDir: repo });
+    expect(ok.payload.declaration).toBe('ok');
+
+    const overCap = `${JSON.stringify({
+      schemaVersion: 1,
+      integrations: [{ id: 'padded-entry', padding: 'x'.repeat(64 * 1024) }],
+    })}\n`;
+    expect(Buffer.byteLength(overCap)).toBeGreaterThan(64 * 1024);
+    await writeDeclarationRaw(overCap);
+    const invalid = await verifyIntegrations({ repoDir: repo });
+    expect(invalid.payload.declaration).toBe('invalid');
+    expect(invalid.exitCode).toBe(1);
+  });
+
+  it('a multi-megabyte oversized declaration is refused quickly — a coarse signal that it is not read whole into memory', async () => {
+    const big = `${JSON.stringify({
+      schemaVersion: 1,
+      integrations: [{ id: 'padded-entry', padding: 'x'.repeat(8 * 1024 * 1024) }],
+    })}\n`;
+    await writeDeclarationRaw(big);
+    const start = Date.now();
+    const { payload } = await verifyIntegrations({ repoDir: repo });
+    const elapsedMs = Date.now() - start;
     expect(payload.declaration).toBe('invalid');
-    expect(exitCode).toBe(1);
+    // Coarse, not a proof: an 8 MB `readFile` is itself fast on any CI disk,
+    // so this cannot by itself distinguish "stat first" from "read then
+    // check" the way the review's own ad hoc 300 MB / 57 MB RSS measurement
+    // did. It is still real evidence, not none: a bound this generous would
+    // only be exceeded by an implementation that reads AND re-scans the
+    // whole buffer more than a small constant number of times.
+    expect(elapsedMs).toBeLessThan(2000);
   });
 });
 
@@ -538,32 +650,42 @@ describe('CLI-UX (RP-22 round 2 advisory)', () => {
 
   it('verify --only <miss> is worded differently from an absent declaration', async () => {
     await writeDeclaration([{ id: 'memory-custom-executable' }]);
-    const result = await runIntegrationsCommand({
+    const missResult = await runIntegrationsCommand({
       verb: 'verify',
       args: ['--only', 'does-not-exist'],
       cwd: repo,
     });
-    expect(result.stdout).not.toBe('Nothing declared.\n');
-    expect(result.stdout).toMatch(/does-not-exist/);
+    expect(missResult.stdout).toBe('No integration named "does-not-exist" is declared here.\n');
 
+    // Same repo, no --only at all: a DECLARED entry exists, so this is not
+    // "nothing declared" either — it is its own third case. Cleared and
+    // re-checked with a genuinely empty declaration for the actual
+    // three-way comparison this test is named for.
+    const withOnly = missResult.stdout;
+
+    await removeFixture(repo);
+    repo = await mkdtemp(path.join(tmpdir(), 'caf-integrations-cli-'));
     const absentResult = await runIntegrationsCommand({ verb: 'verify', args: [], cwd: repo });
-    // Different fixture (nothing declared at all) — distinct wording.
-    void absentResult;
+    expect(absentResult.stdout).toBe('No .rig/integrations.json in this repository.\n');
+    expect(absentResult.stdout).not.toBe(withOnly);
   });
 });
 
 describe('refusal branches (RP-22 round 2 advisory)', () => {
-  it('unpinnable-version is refused with that exact reason', async () => {
+  it('unpinnable-version is refused with that exact reason, and writes nothing', async () => {
+    const before = await readdir(repo);
     const outcome = await addIntegration({
       repoDir: repo,
       id: 'fixture-unpinnable',
       registry: FAKE_UNPINNABLE_REGISTRY,
     });
     expect(outcome).toMatchObject({ outcome: 'refused', reason: 'unpinnable-version' });
+    expect(await readdir(repo)).toEqual(before);
   });
 
-  it('an exclusive-group collateral conflict refuses the add and names the OTHER id', async () => {
+  it('an exclusive-group collateral conflict refuses the add, names the OTHER id, and leaves the declaration untouched', async () => {
     await writeDeclaration([{ id: 'fixture-method-a' }]);
+    const before = await readFile(declarationPath(), 'utf8');
     const outcome = await addIntegration({
       repoDir: repo,
       id: 'fixture-method-b',
@@ -573,6 +695,117 @@ describe('refusal branches (RP-22 round 2 advisory)', () => {
     if (outcome.outcome !== 'refused') throw new Error('narrowed above');
     expect(outcome.reason).toBe('exclusive-group-conflict');
     expect(outcome.message).toMatch(/fixture-method-a/);
+    expect(await readFile(declarationPath(), 'utf8')).toBe(before);
+  });
+});
+
+describe('reject a control character in <id>/--version/--only at the argument boundary (RP-22 round 3, advisory)', () => {
+  it('an id with a control character is refused with its own message, never reaching the generic declaration-invalid path', async () => {
+    const esc = String.fromCharCode(27);
+    const outcome = await addIntegration({ repoDir: repo, id: `bad${esc}id` });
+    expect(outcome).toMatchObject({
+      outcome: 'refused',
+      reason: 'malformed',
+      message: 'the id contains a control or format character',
+    });
+  });
+
+  it('a --version with a control character is refused with its own message', async () => {
+    const esc = String.fromCharCode(27);
+    const outcome = await addIntegration({
+      repoDir: repo,
+      id: 'memory-custom-executable',
+      version: `1.0${esc}`,
+    });
+    expect(outcome).toMatchObject({
+      outcome: 'refused',
+      reason: 'malformed',
+      message: 'the version pin contains a control or format character',
+    });
+  });
+
+  it('setup verify --only with a control character is a usage error, distinct from "not found"', async () => {
+    const esc = String.fromCharCode(27);
+    const result = await runIntegrationsCommand({
+      verb: 'verify',
+      args: ['--only', `x${esc}y`],
+      cwd: repo,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).not.toContain(esc);
+    expect(result.stderr).toMatch(/control or format character/);
+  });
+
+  it("the reparsed.status === 'invalid' branch IS reachable — a long, control-char-free <id> alone exceeds the 64 KiB file cap", async () => {
+    // What used to be marked `c8 ignore` as "unreachable" — closed for the
+    // CONTROL-CHARACTER cause by the boundary checks above, but a `<id>`
+    // this long has no length bound of its own and pushes the whole
+    // candidate declaration over the cap by itself.
+    const longId = 'a'.repeat(70 * 1024);
+    const outcome = await addIntegration({ repoDir: repo, id: longId });
+    expect(outcome).toMatchObject({ outcome: 'refused', reason: 'declaration-unreadable' });
+  });
+});
+
+/**
+ * `count` compact (no-whitespace) rejected entries — none is a real
+ * REGISTRY id, so every one is preserved verbatim by a later `add`.
+ * Compact JSON stays small; this format's canonical two-space, one-line-
+ * per-key re-indentation of the SAME entries is measurably larger (RP-22
+ * round 3, blocker 1 — a round-2 regression: gate cycle 2 measured a real
+ * 12,055-byte file becoming 66,153 bytes on rewrite). Measured directly for
+ * this fixture shape (not guessed): 1600 entries compact to 38,436 bytes and
+ * pretty-print to 67,249 bytes — comfortably on either side of the 65,536-byte
+ * (64 KiB) cap.
+ */
+function manyRejectedEntriesCompact(count: number): string {
+  const integrations = Array.from({ length: count }, (_, i) => ({
+    id: `rejected-${String(i).padStart(5, '0')}`,
+  }));
+  return JSON.stringify({ schemaVersion: 1, integrations });
+}
+
+describe('setup add — the rewritten declaration is size-checked BEFORE it is written (RP-22 round 3, blocker 1)', () => {
+  it('a rewrite that still fits is written, and verify can read it back', async () => {
+    const before = manyRejectedEntriesCompact(10);
+    expect(Buffer.byteLength(before)).toBeLessThan(64 * 1024);
+    await writeDeclarationRaw(before);
+    const outcome = await addIntegration({ repoDir: repo, id: 'memory-custom-executable' });
+    expect(outcome.outcome).toBe('written');
+    const { payload } = await verifyIntegrations({ repoDir: repo });
+    expect(payload.declaration).toBe('ok');
+  });
+
+  it('a rewrite that would exceed 64 KiB is refused with declaration-too-large, bytes unchanged (sha256), directory listing unchanged', async () => {
+    // Compact and comfortably under the cap AS COMMITTED — declaration.ts's
+    // own read-time check would happily accept this file. Pretty-printed
+    // (this format's canonical write shape) it comfortably exceeds the cap:
+    // the round-2 regression this blocker closes.
+    const before = manyRejectedEntriesCompact(1600);
+    expect(Buffer.byteLength(before)).toBeLessThan(64 * 1024);
+    await writeDeclarationRaw(before);
+    const beforeHash = createHash('sha256').update(before).digest('hex');
+    const dirBefore = await readdir(path.dirname(declarationPath()));
+
+    const outcome = await addIntegration({ repoDir: repo, id: 'memory-custom-executable' });
+    expect(outcome).toMatchObject({ outcome: 'refused', reason: 'declaration-too-large' });
+
+    const afterBytes = await readFile(declarationPath());
+    expect(createHash('sha256').update(afterBytes).digest('hex')).toBe(beforeHash);
+    expect(await readdir(path.dirname(declarationPath()))).toEqual(dirBefore);
+  });
+
+  it('--dry-run against the same oversized-after-rewrite fixture refuses identically, not a falsely clean preview', async () => {
+    const before = manyRejectedEntriesCompact(1600);
+    await writeDeclarationRaw(before);
+    const outcome = await addIntegration({
+      repoDir: repo,
+      id: 'memory-custom-executable',
+      dryRun: true,
+    });
+    expect(outcome).toMatchObject({ outcome: 'refused', reason: 'declaration-too-large' });
+    expect(await readFile(declarationPath(), 'utf8')).toBe(before);
   });
 });
 
@@ -703,6 +936,185 @@ describe('setup verify (RP-22 S4)', () => {
       only: 'fixture-optional',
     });
     expect(payload.integrations.map((e) => e.id)).toEqual(['fixture-optional']);
+  });
+});
+
+describe('setup verify — the success path and receipt mapping (RP-22 round 3, blocker 5)', () => {
+  it('a required entry reaches state "installed" on its one applicable harness, via a matching probe + receipt, and exits 0', async () => {
+    await writeDeclaration([{ id: 'fixture-required', required: true }]);
+    await mkdir(path.dirname(receiptPath('fixture-required')), { recursive: true });
+    // A receipt whose recorded version matches what the probe below reports,
+    // so classify() has a confirmed baseline.
+    await writeFile(
+      receiptPath('fixture-required'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: 'fixture-required',
+        mode: 'hosted-service',
+        source: {
+          kind: 'https',
+          locator: 'https://example.com/x',
+          official: true,
+          verifiedOn: '2026-01-01',
+        },
+        license: { kind: 'spdx', id: 'MIT' },
+        declared: { required: true },
+        rigVersion: '0.9.1',
+        acts: {
+          'claude-code': {
+            route: 'guided-manual',
+            automation: 'guided',
+            performedAt: '2026-01-01T00:00:00Z',
+            observedAfter: { state: 'installed', version: '1.0.0', evidence: ['fixture'] },
+            notObserved: [],
+          },
+        },
+      })}\n`,
+    );
+    const matchingProbe = async (): Promise<ObservedNow> => ({
+      present: true,
+      version: '1.0.0',
+      digest: null,
+    });
+    const { payload, exitCode } = await verifyIntegrations({
+      repoDir: repo,
+      registry: FAKE_REGISTRY,
+      probe: matchingProbe,
+    });
+    const entry = payload.integrations.find((e) => e.id === 'fixture-required');
+    expect(entry?.harnesses['claude-code']).toMatchObject({
+      state: 'installed',
+      receipt: 'present',
+    });
+    expect(exitCode).toBe(0);
+  });
+
+  it('a required id through the REAL registry, with the default probe, exits 1 (spawned CLI, no adapter exists yet)', async () => {
+    // This is the honest-by-default claim S4 makes: marking ANYTHING
+    // required, against the real REGISTRY, with no route adapter landed,
+    // can never read "installed" — verified end to end through the built
+    // binary, not just the in-process function.
+    const addResult = await runIntegrationsCommand({
+      verb: 'add',
+      args: ['memory-custom-executable', '--required', '--json'],
+      cwd: repo,
+    });
+    expect(JSON.parse(addResult.stdout).outcome).toBe('written');
+    const verifyResult = await runIntegrationsCommand({
+      verb: 'verify',
+      args: ['--json'],
+      cwd: repo,
+    });
+    expect(verifyResult.exitCode).toBe(1);
+    const payload = JSON.parse(verifyResult.stdout) as {
+      integrations: { harnesses: Record<string, { state: string }> }[];
+    };
+    expect(payload.integrations[0]!.harnesses['claude-code']!.state).toBe('unverified');
+  });
+
+  it('receipt: "present" when a valid receipt exists for that harness', async () => {
+    await writeDeclaration([{ id: 'fixture-required' }]);
+    await mkdir(path.dirname(receiptPath('fixture-required')), { recursive: true });
+    await writeFile(
+      receiptPath('fixture-required'),
+      validReceiptText('fixture-required', 'pending-user-action'),
+    );
+    const { payload } = await verifyIntegrations({ repoDir: repo, registry: FAKE_REGISTRY });
+    const entry = payload.integrations.find((e) => e.id === 'fixture-required');
+    expect(entry?.harnesses['claude-code']?.receipt).toBe('present');
+  });
+
+  it('receipt: "absent" when no receipt file exists for that id', async () => {
+    await writeDeclaration([{ id: 'fixture-required' }]);
+    const { payload } = await verifyIntegrations({ repoDir: repo, registry: FAKE_REGISTRY });
+    const entry = payload.integrations.find((e) => e.id === 'fixture-required');
+    expect(entry?.harnesses['claude-code']?.receipt).toBe('absent');
+  });
+
+  it('notObserved is taken from the receipt\'s own act, not the ["everything"] default, when a receipt exists', async () => {
+    await writeDeclaration([{ id: 'fixture-required' }]);
+    await mkdir(path.dirname(receiptPath('fixture-required')), { recursive: true });
+    await writeFile(
+      receiptPath('fixture-required'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: 'fixture-required',
+        mode: 'hosted-service',
+        source: {
+          kind: 'https',
+          locator: 'https://example.com/x',
+          official: true,
+          verifiedOn: '2026-01-01',
+        },
+        license: { kind: 'spdx', id: 'MIT' },
+        declared: { required: false },
+        rigVersion: '0.9.1',
+        acts: {
+          'claude-code': {
+            route: 'guided-manual',
+            automation: 'guided',
+            performedAt: '2026-01-01T00:00:00Z',
+            observedAfter: { state: 'pending-user-action', evidence: [] },
+            notObserved: ['authorization', 'connectivity'],
+          },
+        },
+      })}\n`,
+    );
+    const { payload } = await verifyIntegrations({ repoDir: repo, registry: FAKE_REGISTRY });
+    const entry = payload.integrations.find((e) => e.id === 'fixture-required');
+    expect(entry?.harnesses['claude-code']?.notObserved).toEqual(['authorization', 'connectivity']);
+  });
+
+  it('a receipt-recorded version against a probe reporting version: null reads "unverified" — derived from state.ts\'s own classify() rules', async () => {
+    // Derivation, not execution: state.ts's classify() computes
+    // `hasKnownVersionBaseline = declared.version !== undefined ||
+    // (receipt !== undefined && receipt.version !== null)` — true here,
+    // since the receipt recorded "1.0.0" — then
+    // `versionUnconfirmed = observed.version === null && hasKnownVersionBaseline`
+    // — true, since the probe reports version: null — and returns
+    // 'unverified' on that branch BEFORE any drift comparison runs. This is
+    // read from that module's own documented rule, not obtained by running
+    // this code and copying its answer.
+    await writeDeclaration([{ id: 'fixture-required' }]);
+    await mkdir(path.dirname(receiptPath('fixture-required')), { recursive: true });
+    await writeFile(
+      receiptPath('fixture-required'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: 'fixture-required',
+        mode: 'hosted-service',
+        source: {
+          kind: 'https',
+          locator: 'https://example.com/x',
+          official: true,
+          verifiedOn: '2026-01-01',
+        },
+        license: { kind: 'spdx', id: 'MIT' },
+        declared: { required: false },
+        rigVersion: '0.9.1',
+        acts: {
+          'claude-code': {
+            route: 'guided-manual',
+            automation: 'guided',
+            performedAt: '2026-01-01T00:00:00Z',
+            observedAfter: { state: 'installed', version: '1.0.0', evidence: [] },
+            notObserved: [],
+          },
+        },
+      })}\n`,
+    );
+    const probeWithNullVersion = async (): Promise<ObservedNow> => ({
+      present: true,
+      version: null,
+      digest: null,
+    });
+    const { payload } = await verifyIntegrations({
+      repoDir: repo,
+      registry: FAKE_REGISTRY,
+      probe: probeWithNullVersion,
+    });
+    const entry = payload.integrations.find((e) => e.id === 'fixture-required');
+    expect(entry?.harnesses['claude-code']?.state).toBe('unverified');
   });
 });
 

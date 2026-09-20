@@ -103,11 +103,18 @@ a template any generated rig receives.
   `verify [--only <id>] [--json]` is read-only and classifies every declared
   integration against what can currently be observed, exiting 1 when a
   required one is not installed (or the declaration itself does not parse)
-  and 0 otherwise. No route adapter exists yet at this release — every
-  harness of every declared integration reads `unverified` — so this is the
-  command surface and the declaration/receipt file formats, not yet a working
-  installer for any provider (`docs/command-contract.md`, "## setup
-  integrations (RP-22)").
+  and 0 otherwise. `add` never prunes a declaration entry the current
+  registry rejects — it is preserved byte-for-byte (same JSON value, not
+  necessarily the same original formatting), named together with its
+  rejection reason in both `--json` and prose, so declaring a provider ahead
+  of its own slice landing survives every later `add` for a different id.
+  Every filesystem read on this surface (the declaration, a receipt, the
+  receipts directory) is symlink-safe and size-bounded, and the receipts scan
+  is capped with an explicit signal when the cap is hit. No route adapter
+  exists yet at this release — every harness of every declared integration
+  reads `unverified` — so this is the command surface and the
+  declaration/receipt file formats, not yet a working installer for any
+  provider (`docs/command-contract.md`, "## setup integrations (RP-22)").
 - **`uninstall [dir] [--dry-run] [--yes] [--json]`** removes what a rig
   installed, file by file, against the evidence `.claude/.rig-manifest.json`
   carries and nothing else: a path is removed only when its bytes on disk
