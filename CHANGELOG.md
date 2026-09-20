@@ -104,8 +104,8 @@ a template any generated rig receives.
   integration against what can currently be observed, exiting 1 when a
   required one is not installed (or the declaration itself does not parse)
   and 0 otherwise. `add` never prunes a declaration entry the current
-  registry rejects — it is preserved byte-for-byte (same JSON value, not
-  necessarily the same original formatting), named together with its
+  registry rejects — it is preserved as the same JSON value (not necessarily
+  the same original formatting), named together with its
   rejection reason in both `--json` and prose, so declaring a provider ahead
   of its own slice landing survives every later `add` for a different id.
   Every filesystem read on this surface (the declaration, a receipt, the

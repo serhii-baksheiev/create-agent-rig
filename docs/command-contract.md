@@ -200,6 +200,13 @@ as an error, so a bin may add a field in a minor version without breaking a
 caller written against an earlier one. A foreign major is rejected outright: the
 consumer refuses to interpret the payload at all — that is what exit 4 is for.
 
+A closed stdout or stderr (a reader that hung up early) never turns into an
+`EPIPE` stack trace or a corrupted exit code: the rig bin swallows `EPIPE`
+without touching `process.exitCode`, so whatever verdict the run already
+reached survives (RP-22 round 4). Pinned in
+`packages/cli/test/integrations-cli.test.ts`'s `EPIPE on a closed stdout
+exits quietly, without corrupting the real exit code` describe block.
+
 ## The version handshake
 
 Every conforming bin answers `--version --json` with an object carrying at least
@@ -1271,46 +1278,72 @@ prints a reminder that the change is unstaged (`git add -A`, then commit) —
 and `setup verify [--only <id>] [--json]` are three new verbs alongside the
 existing `setup --memory-root …` (RP-147, unchanged). Dispatch on the first
 argument decides between them: `index.ts` reaches this surface only when
-`rawArgs[0]` is exactly `list`, `add` or `verify`; anything else — including
-no arguments at all — is the legacy path, byte for byte. Pinned in
+`rawArgs[0]` is exactly `list`, `add` or `verify`; anything else that LOOKS
+like a legacy flag (starts with `-`) or is simply absent is the legacy path,
+byte for byte. A bare word that is none of the three — a typo near them, such
+as `verifyy` — is its own usage error naming `list, add, verify` explicitly,
+rather than falling all the way through to the legacy `--memory-root` parser
+(whose own error names no verb at all). Pinned in
 `packages/cli/test/integrations-cli.test.ts` › "setup with no arguments still
-answers the legacy usage error" and › "legacy setup --memory-root behaves
-exactly as before — the new dispatch never intercepts it".
+answers the legacy usage error", › "legacy setup --memory-root behaves
+exactly as before — the new dispatch never intercepts it", and › "a typo
+near the three verbs (setup verifyy) is a usage error naming list/add/verify,
+not the legacy message".
 
 Like `uninstall`, this surface is not a member of the foundation verb set and
 does not use its five-code exit table: every one of the three verbs exits 0 or
 1 only (owner ruling D4, recorded on the RP-22 ticket, 2026-09-20) — a usage
 error, a refusal, and a required integration failing to verify all exit 1.
-Unlike `uninstall`'s own carved-out payload rule, none of these three payloads
-names a file path at all — not even the repository-relative
-`.rig/integrations.json` or `.rig/receipts/<id>.json` the verb reads or writes
-— so the general "no file paths" rule applies here unweakened. Recognised
+Unlike `uninstall`'s own carved-out payload rule, none of these three
+payloads names a file path at all (RP-22 round 4, blocker 5 — round 3's
+`write-refused` message named `.rig/integrations.json`, measured; fixed by
+REMOVING the constant from that message rather than narrowing this
+sentence, so the general "no file paths" rule stays unweakened for this
+surface) — not even the repository-relative `.rig/integrations.json` or
+`.rig/receipts/<id>.json` the verb reads or writes. `runAdd`'s PROSE
+rendering — never a `--json` payload — is still free to name
+`DECLARATION_REL` for a human reading a terminal; the rule binds the machine
+surface, as it does everywhere else in this document. Recognised
 structurally by `command: "setup"` plus `verb: "list" | "add" | "verify"`,
 distinct from the legacy `setup --memory-root` prose path (which carries no
 `--json` output at all) and from `uninstall`'s own `command: "uninstall"`
-shape.
+shape. Pinned: `packages/cli/test/integrations-cli.test.ts` › "no --json
+payload the spawn block produces carries a caller-supplied or absolute path
+shape in its error field (RP-22 round 4, blocker 5)".
 
-**What "exactly one JSON object … regardless" actually covers here (RP-22
-round 3, blocker 4 — the general `## Output` rule above is held verbatim by
-`test/template/command-contract.test.ts` and is not reworded; this scopes it
-for THIS surface instead).** The promise holds for every outcome reached
-AFTER argument parsing succeeds: a valid invocation always answers `--json`
-with one object, whatever it decides — `written`, `dry-run`, `refused`,
-every `declaration` value. It does NOT extend to a usage error — an unknown
-flag, a missing or extra positional, a malformed `--only`/`--version`/`<id>`
-caught at the argument boundary — which follows this repository's existing
-house convention for `create`/`init`/`upgrade`/`uninstall` alike: prose to
-stderr, empty stdout, exit 1, `--json` or not. A caller that always parses
-stdout as JSON on a non-zero exit is already wrong for every other command
-here; this surface does not invent a new exception, it follows the same one.
-Pinned per verb, spawning the built CLI:
+**What "exactly one JSON object … regardless" actually covers here, stated
+precisely (RP-22 round 4, blocker 2 — round 3's version of this paragraph
+misdescribed the machine-read surface; the general `## Output` rule above is
+held verbatim by `test/template/command-contract.test.ts` and is not
+reworded, this scopes it for THIS surface instead).** "Usage error" here
+means EXACTLY what argument PARSING itself rejects: an unknown flag, a
+missing or extra positional, and a malformed `--only` value (checked in the
+CLI dispatch, `runVerify`, purely an argument-parsing concern there) — every
+one of these is prose to stderr, empty stdout, exit 1, `--json` or not,
+following this repository's existing house convention for
+`create`/`init`/`upgrade`/`uninstall` alike. A malformed `<id>` or `--version`
+is DIFFERENT: both are checked one level down, inside `addIntegration`
+itself, and answered as an ordinary REFUSAL — one JSON object under
+`--json`, `reason: "malformed"` — exactly like `not-in-matrix` or
+`unpinnable-version` are. The dividing line is not "does this value look
+wrong" but "which layer catches it": argument parsing succeeding is what
+"after argument parsing succeeds" in the general rule means, and `<id>`/
+`--version` are always syntactically valid ARGUMENTS (parsing never
+objects to them) even when `addIntegration` goes on to refuse their
+CONTENT. A caller that always parses stdout as JSON on a non-zero exit is
+already wrong for every other command here for the usage-error case; it is
+NOT wrong for a malformed `<id>`/`--version` refusal, which is exactly why
+the two are told apart. Pinned per verb, spawning the built CLI:
 `packages/cli/test/integrations-cli.test.ts` › "an unknown flag on each verb
 is a usage error, exit 1, nothing on stdout", › "a refused setup add nope
 --json exits 1, one JSON object, empty stderr" (a REFUSAL, not a usage error
-— reaches the one-object promise), and › "setup verify --only with a control
+— reaches the one-object promise), › "setup verify --only with a control
 character is a usage error, distinct from \"not found\"" (a malformed
 `--only` value IS a usage error, caught before `verifyIntegrations` ever
-runs).
+runs), › "an id with a control character is refused with reason malformed,
+ONE JSON object, exit 1", and › "a --version with a control character is
+refused with reason malformed, ONE JSON object, exit 1" (both spawning the
+built binary, both REFUSALS, not usage errors).
 
 **The registry (`packages/cli/src/integrations/registry.ts`, RP-22 S1) is
 closed and release-owned.** `list` prints it read-only: `id`, `capability`,
@@ -1399,6 +1432,24 @@ the same oversized-after-rewrite fixture refuses identically, not a falsely
 clean preview", and › "a rewrite that still fits is written, and verify can
 read it back".
 
+⚠ **`add` re-validates the ACTUAL bytes it is about to write, not only the
+narrower candidate it built along the way (RP-22 round 4 advisory).**
+`candidateText` (validated to decide `ownRejection`/`collateralRejection`,
+above) is accepted entries plus the ONE new candidate — it never includes
+preserved-rejected entries, because those are merged in only when `finalText`
+is built. Once a real registry ships a populated `exclusiveGroup` (S5/S6), a
+preserved entry that conflicts with `options.id` only once both are read back
+TOGETHER could make `candidateText` see no conflict at all while the file
+`add` is about to write would, if read back independently, reject
+`options.id` anyway. `add` closes this by re-parsing `finalText` itself and
+refusing — with whichever reason that fresh parse gives, or
+`declaration-unreadable` if `options.id` is not named at all — unless
+`options.id` is confirmed still accepted in EXACTLY the bytes about to be
+written. Pinned: `packages/cli/test/integrations-cli.test.ts` › "re-validates
+the ACTUAL rewritten bytes, not just the narrower candidate: both
+exclusive-group members already declared, add M1 still refuses, bytes
+unchanged".
+
 **`verify` is read-only** — it never writes the declaration, a receipt, or
 anything else. It classifies every declared, accepted integration against
 what a probe currently observes (`../integrations/state.ts`'s `classify`,
@@ -1482,14 +1533,44 @@ reports that harness receipt: \"invalid\", never thrown", › "fails closed: an
 integration whose receipt could not be read is never reported installed", ›
 ".rig/integrations.json -> a valid declaration file OUTSIDE the repo is NOT
 honoured by verify — reported invalid, not read through", › "a symlinked
-receipt is never read for its content — reported receipt: \"invalid\"", ›
+receipt is never read for its content — reported receipt: \"invalid\"", and ›
 "an oversized declaration is refused at the boundary value, exactly 64 KiB
-vs 64 KiB + 1", and › "a multi-megabyte oversized declaration is refused
-quickly — a coarse signal that it is not read whole into memory". The shared
-per-segment walk itself (`resolveWritableInside` and `resolveReadableInside`
-both call one private `walkSegments` helper) is pinned directly, independent
-of this surface, in `packages/cli/test/safe-path.test.ts`'s
-`resolveReadableInside` describe block.
+vs 64 KiB + 1". The shared per-segment walk itself (`resolveWritableInside`
+and `resolveReadableInside` both call one private `walkSegments` helper) is
+pinned directly, independent of this surface, in
+`packages/cli/test/safe-path.test.ts`'s `resolveReadableInside` describe
+block. `realpath` stays inside the SAME `try` as `lstat` in that walk (RP-22
+round 4 advisory — a round-2 extraction had moved it outside, which would
+have surfaced an lstat-succeeds/realpath-throws race as an uncaught
+exception instead of the ordinary refusal every other error on this path
+gets); this specific race is not deterministically reproducible, so its
+restoration rests on reading master's original try/catch scope directly
+(both `lstat` and `realpath` inside one `try`), not on a reproduction — see
+the PR body for that reasoning in full.
+
+⚠ **An individual orphan CANDIDATE this scan could not read (a symlink, a
+FIFO, an oversized file) is never silently folded into "complete".** It is
+excluded from `orphaned` (it is neither confirmed present nor confirmed
+absent) and `orphanScan` reports `'unreadable'` — the SAME value the whole
+directory being unreadable already used, widened rather than given a fourth
+member, because both say the identical thing: "this answer is not
+complete". Pinned: `packages/cli/test/integrations-cli.test.ts` › "a
+symlinked receipt among orphan candidates is excluded from orphaned, and
+orphanScan reports it" and › "a FIFO among orphan candidates is excluded
+from orphaned, and orphanScan reports it, without hanging" (a FIFO is
+refused by `resolveReadableInside`'s own `'file'`-kind check before any
+`readFile` is ever attempted, so this is `'wrong-kind'`, not a blocking
+open).
+
+An `invalid` declaration (unparseable, oversized, a control character) still
+reports every matching receipt as `orphaned` — orphan detection does not
+depend on the declaration parsing at all, since it asks a question about
+`.rig/receipts/` that an unparseable `.rig/integrations.json` has no bearing
+on.
+
+`observed.evidence` is structurally always `[]` at this slice: no route
+adapter (S5–S8) exists yet to populate it, and `defaultProbe` never claims
+evidence for an observation it never made.
 
 The receipts-directory scan behind `orphaned` is capped at
 `MAX_ORPHAN_CANDIDATES` (500) candidates, with an explicit signal — never

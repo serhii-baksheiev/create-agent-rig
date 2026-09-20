@@ -103,14 +103,19 @@ function sanitizeForDisplay(value: string): string {
 }
 
 /**
- * `parseArgs`'s own thrown message, stripped of control characters but NOT
- * truncated — an unknown-flag or missing-value message can legitimately
- * embed the flag the caller typed, which `truncateForMessage`'s 64-character
- * cap would clip mid-sentence for no security reason (RP-22 round 3
- * advisory: gate cycle 2 measured a raw `0x1b` reaching stderr through this
- * exact path, `sanitizeForDisplay`'s truncation was never the gap).
+ * A whole SENTENCE — `parseArgs`'s own thrown message, or a refusal's
+ * `message` field — stripped of control characters but NOT truncated. Two
+ * call sites, one reason: an unknown-flag message legitimately embeds the
+ * flag the caller typed, and a refusal message already embeds an
+ * INDIVIDUALLY `sanitizeForDisplay`-truncated id or two of its own (built by
+ * the callers below) — re-truncating the WHOLE sentence on top of that, at
+ * `sanitizeForDisplay`'s 64-character cap, is what silently dropped the tail
+ * of messages such as `"…is not in the registry — see \`setup list\` for the
+ * supported ids"` (RP-22 round 4 advisory). Gate cycle 2 separately measured
+ * a raw `0x1b` reaching stderr through the `parseArgs` path — truncation was
+ * never the actual gap there either, stripping is.
  */
-function sanitizeArgError(message: string): string {
+function sanitizeMessage(message: string): string {
   return stripControlCharacters(message);
 }
 
@@ -335,14 +340,28 @@ async function scanOrphanedReceipts(
     .filter((id) => only === undefined || id === only)
     .sort();
 
-  const scan: OrphanScan = candidates.length > MAX_ORPHAN_CANDIDATES ? 'truncated' : 'complete';
+  const truncated = candidates.length > MAX_ORPHAN_CANDIDATES;
   const bounded = candidates.slice(0, MAX_ORPHAN_CANDIDATES);
 
   const orphaned: string[] = [];
+  // An individual candidate this loop could not read (a symlink, a FIFO, an
+  // oversized file) is NEITHER "orphaned" nor "not orphaned" — it is
+  // unknown, and reporting `scan: 'complete'` anyway would say "nothing was
+  // missed" about a candidate that was never actually examined (RP-22 round
+  // 4 advisory). `'unreadable'` already means exactly that for the
+  // directory itself; widened here to cover one candidate within it too,
+  // rather than adding a fourth `OrphanScan` member for the same claim.
+  let anyCandidateUnreadable = false;
   for (const id of bounded) {
     const result = await readReceiptFile(repoDir, id);
     if (result.status === 'present') orphaned.push(id);
+    else if (result.status === 'invalid') anyCandidateUnreadable = true;
   }
+  const scan: OrphanScan = anyCandidateUnreadable
+    ? 'unreadable'
+    : truncated
+      ? 'truncated'
+      : 'complete';
   return { orphaned, scan };
 }
 
@@ -430,6 +449,11 @@ function serializeWithPreservedRejected(
     integrations: Record<string, unknown>[];
   };
   const merged = [...canonical.integrations, ...preservedRaw].sort((a, b) => {
+    // Narrowing, not asserting, on both sides: `canonical.integrations` is
+    // this module's own `serializeDeclaration` output round-tripped through
+    // `JSON.parse` (always `{id: string, …}`), and `preservedRaw` entries
+    // are already proved to carry a unique string `id` — see the identical
+    // comment on `preservedRejected`'s own `as string` above.
     const aId = a.id as string;
     const bId = b.id as string;
     return aId < bId ? -1 : aId > bId ? 1 : 0;
@@ -516,6 +540,12 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
   // trusted from, or overwritten through, a symlinked declaration.
 
   const preservedRaw = previousRawEntries.filter(
+    // `entry.id as string`: narrowing, not asserting — every element of
+    // `previousRawEntries` came from `rawIntegrationEntries(read.raw)`, and
+    // `read.raw` already parsed with `status: 'ok'`, which guarantees every
+    // `integrations[]` element is a plain object carrying a unique string
+    // `id` (`parseDeclaration`'s own file-level check, before any per-entry
+    // validation runs at all).
     (entry) => entry.id !== options.id && previousRejectedById.has(entry.id as string),
   );
 
@@ -585,6 +615,12 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
   const changed = previousRaw !== finalText;
   const preservedRejected: PreservedRejectedEntry[] = preservedRaw
     .map((entry) => ({
+      // `Record<string, unknown>[]` erases the fact that this specific field
+      // is a string — `rawIntegrationEntries` only recovers it that far —
+      // but `previousRawEntries` (and therefore `preservedRaw`, a filter
+      // over it) only ever contains entries `readDeclarationFile` already
+      // proved carry a unique STRING `id` (`parseDeclaration`'s own
+      // file-level check on `read.raw`). Narrowing, not asserting.
       id: entry.id as string,
       // Non-null: every entry in `preservedRaw` was filtered FROM
       // `previousRejectedById`'s own keys, immediately above.
@@ -609,6 +645,36 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
     };
   }
 
+  // `candidateText`, validated above, excludes every PRESERVED raw entry —
+  // `finalText` is the first point any of them are merged back in. Once a
+  // registry ships a real `exclusiveGroup` (S5/S6), a preserved entry that
+  // is no longer rejected for the reason it was preserved under (or one
+  // that newly conflicts with `options.id` only once BOTH are read back
+  // together) could make the FILE reject `options.id` even though
+  // `candidateText` alone never saw a conflict (RP-22 round 4 advisory).
+  // Re-parsing the ACTUAL bytes about to be written, and requiring
+  // `options.id` to still be in ITS OWN accepted set, is the only way to
+  // catch that before it is ever written — never after.
+  const finalRecheck = parseDeclaration(finalText, registry);
+  /* c8 ignore start -- defensive: finalText is this module's own closed output shape, one call above `reparsed` already proved parses */
+  if (finalRecheck.status === 'invalid') {
+    return { outcome: 'refused', reason: 'declaration-unreadable', message: finalRecheck.error };
+  }
+  /* c8 ignore stop */
+  if (!finalRecheck.entries.some((entry) => entry.id === options.id)) {
+    const rejectionAfterMerge = finalRecheck.rejected.find(
+      (rejection) => rejection.id === options.id,
+    );
+    return {
+      outcome: 'refused',
+      reason: rejectionAfterMerge?.reason ?? 'declaration-unreadable',
+      message:
+        rejectionAfterMerge !== undefined
+          ? `the rewritten declaration, including preserved entries, rejects "${sanitizeForDisplay(options.id)}" (${rejectionAfterMerge.reason})`
+          : `"${sanitizeForDisplay(options.id)}" would not be accepted in the rewritten declaration`,
+    };
+  }
+
   // Containment is decided BEFORE anything is created (RP-22 round 2,
   // blocker 3): a `.rig` committed as a (possibly dangling) symlink must be
   // refused by `resolveWritableInside`'s own per-segment symlink check, not
@@ -621,7 +687,12 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
     return {
       outcome: 'refused',
       reason: 'write-refused',
-      message: `refusing to write ${DECLARATION_REL} through a symlink or outside the repository`,
+      // No path in the message (RP-22 round 4, blocker 5): this repository's
+      // own relative constant is still a path shape, and the contract says
+      // none of these three verbs' payloads carries one. `runAdd`'s prose
+      // rendering — never its `--json` payload — is free to name
+      // `DECLARATION_REL` for a human reading a terminal.
+      message: 'refusing to write the declaration through a symlink or outside the repository',
     };
   }
 
@@ -639,7 +710,7 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
     return {
       outcome: 'refused',
       reason: 'write-refused',
-      message: `refusing to write ${DECLARATION_REL} through a symlink or outside the repository`,
+      message: 'refusing to write the declaration through a symlink or outside the repository',
     };
   }
   await writeFile(checked, finalText);
@@ -892,7 +963,7 @@ function renderVerifyProse(payload: VerifyPayload, only: string | undefined): st
     return `No .rig/integrations.json in this repository.\n${scanNote}`;
   }
   if (payload.declaration === 'invalid') {
-    return `The declaration does not parse: ${sanitizeForDisplay(payload.error ?? '')}\n${scanNote}`;
+    return `The declaration does not parse: ${sanitizeMessage(payload.error ?? '')}\n${scanNote}`;
   }
   const lines: string[] = [];
   for (const entry of payload.integrations) {
@@ -937,7 +1008,7 @@ async function runList(
       allowPositionals: true,
     }));
   } catch (error) {
-    return { exitCode: 1, stdout: '', stderr: `${sanitizeArgError((error as Error).message)}\n` };
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeMessage((error as Error).message)}\n` };
   }
   if (positionals.length > 0) {
     return { exitCode: 1, stdout: '', stderr: 'setup list takes no positional arguments.\n' };
@@ -974,7 +1045,7 @@ async function runAdd(
       allowPositionals: true,
     }));
   } catch (error) {
-    return { exitCode: 1, stdout: '', stderr: `${sanitizeArgError((error as Error).message)}\n` };
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeMessage((error as Error).message)}\n` };
   }
   if (positionals.length !== 1) {
     return {
@@ -1025,7 +1096,7 @@ async function runAdd(
       stdout: '',
       stderr:
         `setup add: refused "${displayId}" (${outcome.reason})` +
-        (outcome.message !== undefined ? ` — ${sanitizeForDisplay(outcome.message)}` : '') +
+        (outcome.message !== undefined ? ` — ${sanitizeMessage(outcome.message)}` : '') +
         '\n',
     };
   }
@@ -1058,7 +1129,7 @@ async function runVerify(
       allowPositionals: true,
     }));
   } catch (error) {
-    return { exitCode: 1, stdout: '', stderr: `${sanitizeArgError((error as Error).message)}\n` };
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeMessage((error as Error).message)}\n` };
   }
   if (positionals.length > 0) {
     return { exitCode: 1, stdout: '', stderr: 'setup verify takes no positional arguments.\n' };

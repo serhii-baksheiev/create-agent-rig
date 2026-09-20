@@ -88,8 +88,9 @@ Also: create-agent-rig setup add <id> [--required] [--version <pin>] [--dry-run]
   resolveWritableInside with sorted, stable bytes. Installs nothing. A flag
   left off an existing entry keeps its previously recorded value rather than
   dropping it. An entry the CURRENT registry rejects is never pruned by a
-  later add for a different id — it is preserved byte-for-byte and named
-  (preservedRejected). No route adapter exists yet at this release (see
+  later add for a different id — it is preserved as the same JSON value (not
+  necessarily the same original formatting) and named, with its rejection
+  reason, in preservedRejected. No route adapter exists yet at this release (see
   "setup verify" below), so marking an entry --required makes verify exit 1
   until one lands, not because the entry is actually missing.
 
@@ -151,6 +152,20 @@ async function runSetup(rawArgs: string[]): Promise<number> {
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     return result.exitCode;
+  }
+  // A bare word that is not one of the three verbs — a typo near them
+  // (`verifyy`) — is caught here and named explicitly (RP-22 round 4
+  // advisory), rather than falling all the way through to the legacy
+  // `--memory-root` parser, whose own error names no verb at all. Anything
+  // that LOOKS like a legacy flag (starts with `-`) or is simply absent
+  // still falls through unchanged, exactly as before this slice — the typo
+  // is never echoed back, so this never becomes a second place `<id>`-style
+  // control-character handling would need to exist.
+  if (verb !== undefined && !verb.startsWith('-')) {
+    process.stderr.write(
+      `Unknown setup verb — expected one of: list, add, verify (or --memory-root for the legacy path).\n`,
+    );
+    return 1;
   }
 
   let values: {
@@ -1011,21 +1026,34 @@ async function main(): Promise<number> {
 }
 
 /**
- * A closed stdout/stderr — the read end of a pipe hung up (`| head -1`), a
- * terminal that closed — must exit quietly, never with an `EPIPE` stack
+ * A closed stdout/stderr — the read end of a pipe hung up (`| head -c 100`),
+ * a terminal that closed — must exit quietly, never with an `EPIPE` stack
  * trace (RP-22 round 3 advisory): a write to a broken pipe surfaces as an
  * `'error'` EVENT on the stream, not a thrown exception any `try`/`catch`
  * here could catch, so it is handled once, at the process level, for both
- * streams this bin ever writes to. Any OTHER stream error is not ours to
- * swallow and is rethrown.
+ * streams this bin ever writes to.
+ *
+ * **This handler NEVER touches `process.exitCode` on EPIPE (RP-22 round 4,
+ * blocker 1 — a round-3 regression, measured):** setting it to `0`
+ * unconditionally overwrote whatever real verdict `main()` had already
+ * assigned — `setup verify --json` on a required-but-not-installed
+ * integration exits 1 to a file and, through this handler's OLD code, a
+ * silently-successful 0 through a reader that closed early, on exactly the
+ * seam `doctor`/RP-24 read. A bare `return` on `EPIPE` leaves whatever
+ * `process.exitCode` already is untouched. A stream error that is NOT
+ * `EPIPE` is reported the only way this handler is allowed to — setting
+ * `process.exitCode` to `1` if nothing has claimed a verdict yet (`0` and
+ * `undefined` both count as "nothing has") — never by throwing INSIDE the
+ * stream's own `'error'` listener, which would just re-raise as an uncaught
+ * exception at the same severity an unhandled stream error always had, with
+ * a stack trace on stderr for a run that may otherwise have finished
+ * cleanly. Pinned in `packages/cli/test/integrations-cli.test.ts`'s EPIPE
+ * describe block.
  */
 function quietlyExitOnEpipe(stream: NodeJS.WritableStream): void {
   stream.on('error', (error: NodeJS.ErrnoException) => {
-    if (error.code === 'EPIPE') {
-      process.exitCode = 0;
-      return;
-    }
-    throw error;
+    if (error.code === 'EPIPE') return;
+    if (process.exitCode === undefined || process.exitCode === 0) process.exitCode = 1;
   });
 }
 quietlyExitOnEpipe(process.stdout);

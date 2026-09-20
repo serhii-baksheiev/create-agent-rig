@@ -15,7 +15,7 @@
 // RP-22 round 2 (gate cycle 1): every blocker and every advisory taken into
 // round 2 has a test here, named to match. See
 // packages/cli/src/commands/integrations.ts for the corresponding fix.
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -35,7 +35,7 @@ import { RECEIPTS_DIR_REL } from '../src/integrations/receipt.js';
 import type { ProviderDescriptor } from '../src/integrations/registry.js';
 import type { ObservedNow } from '../src/integrations/state.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
-import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
+import { fifosAvailable, skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -396,21 +396,26 @@ describe('setup add / verify — hostile filesystem shapes are total, never thro
     // RECEIPTS_DIR_REL is ".rig/receipts" — write a plain FILE at exactly that path.
     await mkdir(path.dirname(path.join(repo, ...RECEIPTS_DIR_REL.split('/'))), { recursive: true });
     await writeFile(path.join(repo, ...RECEIPTS_DIR_REL.split('/')), 'not a directory');
-    const { payload } = await verifyIntegrations({ repoDir: repo });
+    const { payload, exitCode } = await verifyIntegrations({ repoDir: repo });
     expect(payload.orphaned).toEqual([]);
     expect(payload.orphanScan).toBe('unreadable');
+    // No declaration at all, and an unreadable receipts dir does not itself
+    // fail verify (RP-22 round 4 advisory: exit codes pinned explicitly).
+    expect(exitCode).toBe(0);
   });
 
   it('verify: a directory sitting at one specific receipt path reports that harness receipt: "invalid", never thrown', async () => {
     await writeDeclaration([{ id: 'fixture-required' }]);
     await mkdir(receiptPath('fixture-required'), { recursive: true });
-    const { payload } = await verifyIntegrations({
+    const { payload, exitCode } = await verifyIntegrations({
       repoDir: repo,
       registry: FAKE_REGISTRY,
       probe: installedProbe,
     });
     const entry = payload.integrations.find((e) => e.id === 'fixture-required');
     expect(entry?.harnesses['claude-code']?.receipt).toBe('invalid');
+    // Not required, so the unreadable receipt does not fail the whole run.
+    expect(exitCode).toBe(0);
   });
 
   it('fails closed: an integration whose receipt could not be read is never reported installed', async () => {
@@ -543,12 +548,15 @@ describe('bounded reads and the receipts-dir scan cap (RP-22 round 2 advisory)',
     }
     const { payload } = await verifyIntegrations({ repoDir: repo });
     expect(payload.orphanScan).toBe('truncated');
-    // Exact count, not merely "at most the cap" (RP-22 round 3 advisory: the
-    // old assertion would have passed on an empty array too, proving nothing
-    // about whether the cap actually applied). All `total` fixtures are
-    // VALID receipts, sorted deterministically, so exactly the cap's worth
-    // must survive.
+    // Identity, not merely a count (RP-22 round 4 advisory: a count alone
+    // cannot tell "the first 500, sorted" apart from "any 500"). Ids are
+    // zero-padded and sorted lexicographically, so the FIRST candidate must
+    // survive and the one at exactly the cap's own index must not.
     expect(payload.orphaned.length).toBe(MAX_ORPHAN_CANDIDATES);
+    expect(payload.orphaned[0]).toBe('orphan-00000');
+    expect(payload.orphaned).not.toContain(
+      `orphan-${String(MAX_ORPHAN_CANDIDATES).padStart(5, '0')}`,
+    );
   }, 30_000);
 
   it('an oversized declaration is refused at the boundary value, exactly 64 KiB vs 64 KiB + 1', async () => {
@@ -580,24 +588,54 @@ describe('bounded reads and the receipts-dir scan cap (RP-22 round 2 advisory)',
     expect(invalid.payload.declaration).toBe('invalid');
     expect(invalid.exitCode).toBe(1);
   });
+});
 
-  it('a multi-megabyte oversized declaration is refused quickly — a coarse signal that it is not read whole into memory', async () => {
-    const big = `${JSON.stringify({
-      schemaVersion: 1,
-      integrations: [{ id: 'padded-entry', padding: 'x'.repeat(8 * 1024 * 1024) }],
-    })}\n`;
-    await writeDeclarationRaw(big);
-    const start = Date.now();
+describe('an unreadable individual orphan candidate is never silently "complete" (RP-22 round 4, advisory)', () => {
+  it('a symlinked receipt among orphan candidates is excluded from orphaned, and orphanScan reports it', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-integrations-orphan-outside-'));
+    try {
+      await mkdir(path.dirname(receiptPath('symlinked-orphan')), { recursive: true });
+      const outsideReceipt = path.join(outside, 'r.json');
+      await writeFile(outsideReceipt, validReceiptText('symlinked-orphan', 'installed'));
+      await symlink(outsideReceipt, receiptPath('symlinked-orphan'));
+      const { payload } = await verifyIntegrations({ repoDir: repo });
+      expect(payload.orphaned).not.toContain('symlinked-orphan');
+      expect(payload.orphanScan).toBe('unreadable');
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('a FIFO among orphan candidates is excluded from orphaned, and orphanScan reports it, without hanging', async (ctx) => {
+    skipUnless(ctx, fifosAvailable().ok, fifosAvailable().reason);
+    await mkdir(path.dirname(receiptPath('fifo-orphan')), { recursive: true });
+    execFileSync('mkfifo', [receiptPath('fifo-orphan')]);
     const { payload } = await verifyIntegrations({ repoDir: repo });
-    const elapsedMs = Date.now() - start;
-    expect(payload.declaration).toBe('invalid');
-    // Coarse, not a proof: an 8 MB `readFile` is itself fast on any CI disk,
-    // so this cannot by itself distinguish "stat first" from "read then
-    // check" the way the review's own ad hoc 300 MB / 57 MB RSS measurement
-    // did. It is still real evidence, not none: a bound this generous would
-    // only be exceeded by an implementation that reads AND re-scans the
-    // whole buffer more than a small constant number of times.
-    expect(elapsedMs).toBeLessThan(2000);
+    expect(payload.orphaned).not.toContain('fifo-orphan');
+    expect(payload.orphanScan).toBe('unreadable');
+  }, 10_000);
+});
+
+describe('renderVerifyProse prints the orphan-scan note in prose, not only in --json (RP-22 round 4, blocker 4)', () => {
+  it('prints the truncated note, with the exact cap number, when the scan hit MAX_ORPHAN_CANDIDATES', async () => {
+    await mkdir(path.join(repo, ...RECEIPTS_DIR_REL.split('/')), { recursive: true });
+    const total = MAX_ORPHAN_CANDIDATES + 5;
+    for (let i = 0; i < total; i += 1) {
+      const id = `orphan-${String(i).padStart(5, '0')}`;
+      await writeFile(receiptPath(id), validReceiptText(id, 'pending-user-action'));
+    }
+    const result = await runIntegrationsCommand({ verb: 'verify', args: [], cwd: repo });
+    expect(result.stdout).toContain(
+      `(orphan scan: truncated at ${MAX_ORPHAN_CANDIDATES} candidates — some receipts were not examined)\n`,
+    );
+  }, 30_000);
+
+  it('prints the unreadable note when a plain FILE sits where the receipts directory belongs', async () => {
+    await mkdir(path.dirname(path.join(repo, ...RECEIPTS_DIR_REL.split('/'))), { recursive: true });
+    await writeFile(path.join(repo, ...RECEIPTS_DIR_REL.split('/')), 'not a directory');
+    const result = await runIntegrationsCommand({ verb: 'verify', args: [], cwd: repo });
+    expect(result.stdout).toContain('(orphan scan: the receipts directory could not be read)\n');
   });
 });
 
@@ -695,6 +733,28 @@ describe('refusal branches (RP-22 round 2 advisory)', () => {
     if (outcome.outcome !== 'refused') throw new Error('narrowed above');
     expect(outcome.reason).toBe('exclusive-group-conflict');
     expect(outcome.message).toMatch(/fixture-method-a/);
+    expect(await readFile(declarationPath(), 'utf8')).toBe(before);
+  });
+
+  it('re-validates the ACTUAL rewritten bytes, not just the narrower candidate: both exclusive-group members already declared, add M1 still refuses, bytes unchanged', async () => {
+    // Both M1 and M2 are already declared — `readDeclarationFile` re-parses
+    // this FRESH against the current registry and finds BOTH rejected
+    // (exclusive-group-conflict), so NEITHER is in `previousEntries`.
+    // `candidateText` (M1 alone, since M2 isn't "accepted") sees no
+    // conflict and would accept M1 on its own — the gap this test closes:
+    // `finalText` merges M1 back in ALONGSIDE the preserved-raw M2, and
+    // re-parsing THAT (what is actually about to be written) finds the
+    // same conflict again (RP-22 round 4 advisory).
+    await writeDeclaration([{ id: 'fixture-method-a' }, { id: 'fixture-method-b' }]);
+    const before = await readFile(declarationPath(), 'utf8');
+    const outcome = await addIntegration({
+      repoDir: repo,
+      id: 'fixture-method-a',
+      registry: FAKE_METHOD_REGISTRY,
+    });
+    expect(outcome.outcome).toBe('refused');
+    if (outcome.outcome !== 'refused') throw new Error('narrowed above');
+    expect(outcome.reason).toBe('exclusive-group-conflict');
     expect(await readFile(declarationPath(), 'utf8')).toBe(before);
   });
 });
@@ -989,29 +1049,6 @@ describe('setup verify — the success path and receipt mapping (RP-22 round 3, 
     expect(exitCode).toBe(0);
   });
 
-  it('a required id through the REAL registry, with the default probe, exits 1 (spawned CLI, no adapter exists yet)', async () => {
-    // This is the honest-by-default claim S4 makes: marking ANYTHING
-    // required, against the real REGISTRY, with no route adapter landed,
-    // can never read "installed" — verified end to end through the built
-    // binary, not just the in-process function.
-    const addResult = await runIntegrationsCommand({
-      verb: 'add',
-      args: ['memory-custom-executable', '--required', '--json'],
-      cwd: repo,
-    });
-    expect(JSON.parse(addResult.stdout).outcome).toBe('written');
-    const verifyResult = await runIntegrationsCommand({
-      verb: 'verify',
-      args: ['--json'],
-      cwd: repo,
-    });
-    expect(verifyResult.exitCode).toBe(1);
-    const payload = JSON.parse(verifyResult.stdout) as {
-      integrations: { harnesses: Record<string, { state: string }> }[];
-    };
-    expect(payload.integrations[0]!.harnesses['claude-code']!.state).toBe('unverified');
-  });
-
   it('receipt: "present" when a valid receipt exists for that harness', async () => {
     await writeDeclaration([{ id: 'fixture-required' }]);
     await mkdir(path.dirname(receiptPath('fixture-required')), { recursive: true });
@@ -1115,6 +1152,56 @@ describe('setup verify — the success path and receipt mapping (RP-22 round 3, 
     });
     const entry = payload.integrations.find((e) => e.id === 'fixture-required');
     expect(entry?.harnesses['claude-code']?.state).toBe('unverified');
+  });
+
+  it('a receipt-recorded version against a DIFFERENT, non-null probe version reads "drifted" — derived from state.ts\'s own classify() rules', async () => {
+    // Derivation, not execution: `hasKnownVersionBaseline` is true (the
+    // receipt recorded "1.0.0"); `versionUnconfirmed` is false this time
+    // (the probe's version is NOT null); `declaredVersionDiffers` is false
+    // (no `--version` was declared); `receiptDiffers` is true —
+    // `receipt.version !== null && observed.version !== null &&
+    // receipt.version !== observed.version` — "1.0.0" !== "2.0.0" — so
+    // `classify` returns 'drifted' on that branch.
+    await writeDeclaration([{ id: 'fixture-required' }]);
+    await mkdir(path.dirname(receiptPath('fixture-required')), { recursive: true });
+    await writeFile(
+      receiptPath('fixture-required'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: 'fixture-required',
+        mode: 'hosted-service',
+        source: {
+          kind: 'https',
+          locator: 'https://example.com/x',
+          official: true,
+          verifiedOn: '2026-01-01',
+        },
+        license: { kind: 'spdx', id: 'MIT' },
+        declared: { required: false },
+        rigVersion: '0.9.1',
+        acts: {
+          'claude-code': {
+            route: 'guided-manual',
+            automation: 'guided',
+            performedAt: '2026-01-01T00:00:00Z',
+            observedAfter: { state: 'installed', version: '1.0.0', evidence: [] },
+            notObserved: [],
+          },
+        },
+      })}\n`,
+    );
+    const probeWithDifferentVersion = async (): Promise<ObservedNow> => ({
+      present: true,
+      version: '2.0.0',
+      digest: null,
+    });
+    const { payload } = await verifyIntegrations({
+      repoDir: repo,
+      registry: FAKE_REGISTRY,
+      probe: probeWithDifferentVersion,
+    });
+    const entry = payload.integrations.find((e) => e.id === 'fixture-required');
+    expect(entry?.harnesses['claude-code']?.state).toBe('drifted');
   });
 });
 
@@ -1273,5 +1360,177 @@ describe('setup: CLI wiring, spawning the actually-built binary (RP-22 S4 + roun
     expect(run.code).toBe(1);
     expect(run.stderr).toMatch(/^setup: /);
     expect(run.stderr).not.toMatch(/setup (add|list|verify)/);
+  });
+
+  it('a typo near the three verbs (setup verifyy) is a usage error naming list/add/verify, not the legacy message', async () => {
+    const run = await runCli(repo, ['setup', 'verifyy']);
+    expect(run.code).toBe(1);
+    expect(run.stdout).toBe('');
+    expect(run.stderr).toMatch(/list, add, verify/);
+    // Distinct from the LEGACY usage error specifically (`setup needs
+    // --memory-root <checkout>`) — mentioning `--memory-root` as a pointer
+    // to the legacy path alongside the three verbs is fine; repeating the
+    // legacy message VERBATIM would not be.
+    expect(run.stderr).not.toContain('setup needs --memory-root');
+  });
+
+  it('a required id through the REAL registry, with the default probe, exits 1 (spawned CLI, no adapter exists yet)', async () => {
+    // This is the honest-by-default claim S4 makes: marking ANYTHING
+    // required, against the real REGISTRY, with no route adapter landed,
+    // can never read "installed" — verified end to end through the ACTUAL
+    // BUILT BINARY (RP-22 round 4, blocker 3 — this used to call
+    // `runIntegrationsCommand` in-process, which is not what the name or
+    // the doc claimed).
+    const addRun = await runCli(repo, [
+      'setup',
+      'add',
+      'memory-custom-executable',
+      '--required',
+      '--json',
+    ]);
+    expect(addRun.code, addRun.stderr).toBe(0);
+    expect(assertOneJsonObject(addRun.stdout).outcome).toBe('written');
+
+    const verifyRun = await runCli(repo, ['setup', 'verify', '--json']);
+    expect(verifyRun.code).toBe(1);
+    const parsed = assertOneJsonObject(verifyRun.stdout) as {
+      integrations: { harnesses: Record<string, { state: string }> }[];
+    };
+    expect(parsed.integrations[0]!.harnesses['claude-code']!.state).toBe('unverified');
+    expect(parsed.integrations[0]!.harnesses['codex']!.state).toBe('unverified');
+  });
+
+  it('an id with a control character is refused with reason malformed, ONE JSON object, exit 1', async () => {
+    const esc = String.fromCharCode(27);
+    const run = await runCli(repo, ['setup', 'add', `bad${esc}id`, '--json']);
+    expect(run.code).toBe(1);
+    const parsed = assertOneJsonObject(run.stdout);
+    expect(parsed.outcome).toBe('refused');
+    expect(parsed.reason).toBe('malformed');
+    expect(run.stdout).not.toContain(esc);
+  });
+
+  it('a --version with a control character is refused with reason malformed, ONE JSON object, exit 1', async () => {
+    const esc = String.fromCharCode(27);
+    const run = await runCli(repo, [
+      'setup',
+      'add',
+      'memory-custom-executable',
+      '--version',
+      `1.0${esc}`,
+      '--json',
+    ]);
+    expect(run.code).toBe(1);
+    const parsed = assertOneJsonObject(run.stdout);
+    expect(parsed.outcome).toBe('refused');
+    expect(parsed.reason).toBe('malformed');
+    expect(run.stdout).not.toContain(esc);
+  });
+
+  it('verify --only with a control character is a USAGE error (empty stdout), not a one-object refusal', async () => {
+    const esc = String.fromCharCode(27);
+    const run = await runCli(repo, ['setup', 'verify', '--only', `x${esc}y`, '--json']);
+    expect(run.code).toBe(1);
+    expect(run.stdout).toBe('');
+    expect(run.stderr).not.toContain(esc);
+  });
+
+  it('an unknown flag carrying a raw escape is stripped before reaching stderr — prose invocation', async () => {
+    const esc = String.fromCharCode(27);
+    const run = await runCli(repo, ['setup', 'list', `--${esc}[31mbogus`]);
+    expect(run.code).toBe(1);
+    expect(run.stdout).toBe('');
+    expect(run.stderr).not.toContain(esc);
+  });
+
+  it('an unknown flag carrying a raw escape is stripped before reaching stderr — --json invocation', async () => {
+    const esc = String.fromCharCode(27);
+    const run = await runCli(repo, ['setup', 'add', `--${esc}[31mbogus`, '--json']);
+    expect(run.code).toBe(1);
+    expect(run.stdout).toBe(''); // a usage error, not a --json refusal (blocker 2)
+    expect(run.stderr).not.toContain(esc);
+  });
+
+  it('no --json payload the spawn block produces carries a caller-supplied or absolute path shape in its error field (RP-22 round 4, blocker 5)', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-integrations-path-scan-'));
+    try {
+      await symlink(outside, path.join(repo, '.rig'));
+      const run = await runCli(repo, ['setup', 'add', 'memory-custom-executable', '--json']);
+      expect(run.code).toBe(1);
+      const parsed = assertOneJsonObject(run.stdout) as { reason: string; error?: string };
+      expect(parsed.reason).toBe('write-refused');
+      expect(parsed.error).toBeDefined();
+      expect(parsed.error).not.toMatch(/[/\\]/);
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  describe('EPIPE on a closed stdout exits quietly, without corrupting the real exit code (RP-22 round 4, blocker 1)', () => {
+    // Deterministic, not a timing race: the payload is sized well past the
+    // platform pipe buffer (64 KiB on Linux), so destroying the read end
+    // after the FIRST chunk arrives is guaranteed to leave the child still
+    // trying to write when the pipe closes underneath it. Nested inside
+    // "CLI wiring" so it shares that describe's `cliBin` (the actually-built
+    // binary this whole block spawns).
+    async function spawnWithEarlyStdoutClose(
+      args: string[],
+      cwd: string,
+    ): Promise<{ code: number | null; stderr: string }> {
+      return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [cliBin, ...args], {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stderr = '';
+        let closedStdout = false;
+        child.stdout.on('data', () => {
+          if (!closedStdout) {
+            closedStdout = true;
+            child.stdout.destroy();
+          }
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString('utf8');
+        });
+        child.on('error', reject);
+        child.on('close', (code) => resolve({ code, stderr }));
+      });
+    }
+
+    it('a required-integration failure (exit 1) is not corrupted into exit 0 by a closed stdout', async (ctx) => {
+      // Windows pipe/EPIPE semantics are not verified here — see the PR body.
+      skipUnless(
+        ctx,
+        process.platform !== 'win32',
+        'EPIPE semantics on Windows pipes are unverified here',
+      );
+      await writeDeclaration([
+        { id: 'memory-custom-executable', required: true },
+        ...Array.from({ length: 1500 }, (_, i) => ({
+          id: `rejected-${String(i).padStart(5, '0')}`,
+        })),
+      ]);
+      const { code, stderr } = await spawnWithEarlyStdoutClose(['setup', 'verify', '--json'], repo);
+      expect(code).toBe(1);
+      expect(stderr).not.toContain('EPIPE');
+      expect(stderr).not.toContain('    at ');
+    }, 15_000);
+
+    it('a successful verify (exit 0) also survives a closed stdout', async (ctx) => {
+      skipUnless(
+        ctx,
+        process.platform !== 'win32',
+        'EPIPE semantics on Windows pipes are unverified here',
+      );
+      await writeDeclaration(
+        Array.from({ length: 1500 }, (_, i) => ({ id: `rejected-${String(i).padStart(5, '0')}` })),
+      );
+      const { code, stderr } = await spawnWithEarlyStdoutClose(['setup', 'verify', '--json'], repo);
+      expect(code).toBe(0);
+      expect(stderr).not.toContain('EPIPE');
+      expect(stderr).not.toContain('    at ');
+    }, 15_000);
   });
 });

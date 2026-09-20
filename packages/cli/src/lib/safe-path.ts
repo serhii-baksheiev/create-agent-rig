@@ -176,8 +176,21 @@ async function walkSegments(base: string, rel: string): Promise<SegmentWalkResul
   let finalEntry: Awaited<ReturnType<typeof lstat>> | undefined;
   for (const segment of rel.split('/')) {
     cursor = path.join(cursor, segment);
+    let resolved: string;
     try {
       finalEntry = await lstat(cursor);
+      if (finalEntry.isSymbolicLink()) return { outcome: 'refused', reason: 'symlink' };
+      // `realpath` stays INSIDE this same try (RP-22 round 4 advisory): the
+      // round-2 extraction of this walk from `resolveWritableInside` had
+      // moved it outside, so an lstat-succeeds/realpath-throws race (the
+      // entry existing for `lstat`, then vanishing or becoming unreadable
+      // before `realpath` runs) surfaced as an uncaught exception instead of
+      // the same `'refused'` outcome master's own try/catch always gave it.
+      // A genuine race is not deterministically testable, so this is
+      // restored on the strength of the diff — master's original
+      // try/catch scope, read directly — being provably narrower than
+      // round 2's, not on a reproduction; the PR body says so.
+      resolved = await realpath(cursor);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { outcome: 'stopped-missing' };
       return {
@@ -186,8 +199,6 @@ async function walkSegments(base: string, rel: string): Promise<SegmentWalkResul
         code: (error as NodeJS.ErrnoException).code,
       };
     }
-    if (finalEntry.isSymbolicLink()) return { outcome: 'refused', reason: 'symlink' };
-    const resolved = await realpath(cursor);
     if (resolved !== base && !resolved.startsWith(base + path.sep)) {
       return { outcome: 'refused', reason: 'escapes-root' };
     }
