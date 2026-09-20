@@ -29,9 +29,11 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
  * `docs/compatibility.md`'s evidence pointers resolve a citation by basename
  * (`test/template/compatibility-matrix.test.ts`). An ambiguous basename is
  * refused rather than silently resolved — `candidatesFor` returns every match
- * and the caller reports "… is ambiguous (…) — cite the path" (RP-179,
- * commit `090066e`) — but a refusal is still worse than not hitting it, so
- * this file's name stays unique in the repository.
+ * and the caller reports "… is ambiguous (…) — cite the path", pinned by
+ * `compatibility-matrix.test.ts` › "refuses a basename two tracked files
+ * share, and resolves the same pointer given as a path" — but a refusal is
+ * still worse than not hitting it, so this file's name stays unique in the
+ * repository.
  */
 
 let repo: string;

@@ -197,8 +197,9 @@ would overstate this spike's evidence, not merely its confidence.
 the docs simply do not name a non-interactive path. `unverified` is the
 word this spike actually earned: a non-interactive path may exist
 somewhere undocumented, but this spike ran neither it nor a check that
-would confirm its absence. This matches `docs/compatibility.md:99`'s own
-`UNVERIFIED` cell for the same capability — one word for one (here,
+would confirm its absence. This matches `docs/compatibility.md`'s own
+"Codex non-interactive, scriptable plugin installation" row, whose Codex
+cell is `UNVERIFIED` for the same capability — one word for one (here,
 unmeasured) capability, not two.
 
 ## Model (c) — hybrid: tracked security guards + plugin-delivered everything else
