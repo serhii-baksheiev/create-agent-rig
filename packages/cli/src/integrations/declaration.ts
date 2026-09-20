@@ -11,10 +11,12 @@
  * so is a root key outside `schemaVersion`/`integrations`.
  *
  * This module imports only its sibling `./registry.js` and `../lib/safe-text.js`.
- * Pinned by `packages/cli/test/integrations-registry.test.ts` › "registry.ts
- * and declaration.ts import only their declared relative modules, and never
- * require, dynamically import, fetch, createRequire, process.binding,
- * bare-import, or re-export".
+ * Pinned by `packages/cli/test/integrations-registry.test.ts` › "every
+ * integrations/ module imports only its declared relative modules, and never
+ * requires, dynamically imports, fetches, createRequires, process.bindings,
+ * bare-imports, or re-exports" and, more precisely for this file, › "each
+ * module imports EXACTLY its declared set — registry.ts and state.ts import
+ * nothing at all".
  *
  * `parseDeclaration` is TOTAL: no string input may make it throw. The one
  * property that would break that promise — an iterative-vs-recursive walk

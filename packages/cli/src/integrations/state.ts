@@ -3,7 +3,10 @@
  * to turn one integration's evidence into a doctor status (RP-22, plan §1.3).
  *
  * Both functions are pure: no clock, no I/O, no process spawn, no import
- * beyond this file. `classify` takes only what a caller already has in hand —
+ * beyond this file. Pinned by
+ * `packages/cli/test/integrations-registry.test.ts` › "each module imports
+ * EXACTLY its declared set — registry.ts and state.ts import nothing at
+ * all". `classify` takes only what a caller already has in hand —
  * whether the integration is declared (or was refused, or isn't declared at
  * all), the last recorded baseline from its receipt (if any), and what a
  * probe observed just now — and returns one of the nine closed
@@ -21,15 +24,25 @@
  * classifies as installed, for every non-present observation" (plan §1.4,
  * "What makes a receipt trustworthy", point 4).
  *
- * `receipt` is not attacker-controlled the way that name might suggest: it is
- * written only by `setup apply`/`setup remove` and travels through the same
- * PR review as any other committed file (plan §1.4). That is why its non-null
- * fields are treated as a baseline to CONFIRM rather than input to distrust
- * outright — and where the evidence is ambiguous, `classify` always resolves
- * toward MORE scrutiny (`unverified`/`drifted`) rather than less: a wrong
- * guess then costs one extra warning, never a missed real problem.
+ * A committed receipt is hand-editable by any PR author — it is not immune
+ * to being wrong, only slower to forge than a live probe result, and subject
+ * to the same review a hostile edit to any other committed file would be.
+ * Its non-null fields are therefore treated as a baseline to CONFIRM, never
+ * as input trusted outright, and where the evidence is ambiguous `classify`
+ * always resolves toward MORE scrutiny (`unverified`/`drifted`) rather than
+ * less — symmetrically on both baseline axes, version AND digest: an
+ * unreadable observed version against a known version baseline, or an
+ * unreadable observed digest against a known digest baseline, each read
+ * `unverified` rather than silently `installed`. A wrong guess then costs
+ * one extra warning, never a missed real problem.
  *
- * This module imports nothing.
+ * This module imports nothing. Pinned by
+ * `packages/cli/test/integrations-registry.test.ts` › "every integrations/
+ * module imports only its declared relative modules, and never requires,
+ * dynamically imports, fetches, createRequires, process.bindings,
+ * bare-imports, or re-exports" and, more precisely, › "each module imports
+ * EXACTLY its declared set — registry.ts and state.ts import nothing at
+ * all".
  */
 
 const INSTANCE_STATES_LIST = [
@@ -142,16 +155,21 @@ export function classify(
     }
   }
 
-  // A version baseline is known (a declared pin, or a receipt that itself
-  // recorded a version) but the CURRENT probe could not read one. Silently
-  // reporting `installed` here would be misplaced confidence — the one thing
-  // the baseline needs confirmed is unconfirmed. `unverified` (reason
-  // output-unparseable, recorded by the caller alongside this state) is the
-  // honest answer, and it is the same "more scrutiny, not less" direction
-  // this module's header commits to.
+  // A baseline is known on EITHER axis — a declared pin or a receipt-
+  // recorded version, or a receipt-recorded digest — but the CURRENT probe
+  // could not read the corresponding value. Silently reporting `installed`
+  // here would be misplaced confidence — the one thing the baseline needs
+  // confirmed is unconfirmed. `unverified` (reason output-unparseable,
+  // recorded by the caller alongside this state) is the honest answer on
+  // BOTH axes, symmetrically — this used to check only version, which let a
+  // known digest baseline against an unreadable observed digest read
+  // `installed` (RP-22 gate cycle 2, advisory (c)).
   const hasKnownVersionBaseline =
     declared.version !== undefined || (receipt !== undefined && receipt.version !== null);
-  if (observed.version === null && hasKnownVersionBaseline) return 'unverified';
+  const hasKnownDigestBaseline = receipt !== undefined && receipt.digest !== null;
+  const versionUnconfirmed = observed.version === null && hasKnownVersionBaseline;
+  const digestUnconfirmed = observed.digest === null && hasKnownDigestBaseline;
+  if (versionUnconfirmed || digestUnconfirmed) return 'unverified';
 
   const declaredVersionDiffers =
     declared.version !== undefined &&

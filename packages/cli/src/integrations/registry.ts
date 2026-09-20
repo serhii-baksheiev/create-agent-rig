@@ -11,11 +11,12 @@
  *
  * This module imports NOTHING — no `node:` builtin, no sibling, not even its
  * own `declaration.ts`. Pinned by
- * `packages/cli/test/integrations-registry.test.ts` › "registry.ts and
- * declaration.ts import only their declared relative modules, and never
- * require, dynamically import, fetch, createRequire, process.binding,
- * bare-import, or re-export" and, more precisely for this file, › "registry.ts
- * has no imports at all, and declaration.ts imports exactly its two siblings".
+ * `packages/cli/test/integrations-registry.test.ts` › "every integrations/
+ * module imports only its declared relative modules, and never requires,
+ * dynamically imports, fetches, createRequires, process.bindings,
+ * bare-imports, or re-exports" and, more precisely for this file, › "each
+ * module imports EXACTLY its declared set — registry.ts and state.ts import
+ * nothing at all".
  *
  * `isValidLocator`/`isValidSpdxExpression` are the one grammar a
  * `source.locator`/`license.id` must match, for a shipped descriptor here AND
@@ -222,13 +223,17 @@ export function validateDescriptor(descriptor: ProviderDescriptor): DescriptorVa
   }
   if (descriptor.source.official !== true) return { ok: false, reason: 'non-official-source' };
   if (!isHttpsUrl(descriptor.source.docsUrl)) return { ok: false, reason: 'non-official-source' };
-  if (descriptor.source.kind === 'https' && !isHttpsUrl(descriptor.source.locator)) {
+  // Both branches route through the SAME `isValidLocator` a committed
+  // receipt is checked against (RP-22 gate cycle 2, advisory (a): the https
+  // branch used to call `isHttpsUrl` directly, bypassing the query-string/
+  // fragment refusal `isValidLocator('https', …)` also applies — "one
+  // grammar, both callers" was false in this one branch). Only the REASON
+  // differs per kind, kept exactly as before: https keeps its pre-existing,
+  // tested `non-official-source`; the other four kinds had no locator-shape
+  // check at all before gate cycle 1, so a new failure there is `malformed`.
+  if (descriptor.source.kind === 'https' && !isValidLocator('https', descriptor.source.locator)) {
     return { ok: false, reason: 'non-official-source' };
   }
-  // The https branch above keeps its own (pre-existing, tested) reason for a
-  // non-URL locator; the other four kinds had NO locator-shape check at all
-  // before this, so a new failure here is reported as `malformed` rather than
-  // reusing `non-official-source`'s meaning by coincidence.
   if (
     descriptor.source.kind !== 'https' &&
     !isValidLocator(descriptor.source.kind, descriptor.source.locator)

@@ -410,6 +410,17 @@ describe('serializeReceipt — literal bytes (fixed key order, two-space indent,
     const serialized = serializeReceipt(parsed.receipt);
     expect(parseReceipt(serialized)).toEqual(parsed);
   });
+
+  it('serializes an spdx-licensed receipt to exactly {kind, id} key order (RP-22 gate cycle 2, advisory (f) — the only fixture using kind: "spdx" through the literal-bytes path)', () => {
+    const value = validReceiptValue();
+    value.license = { kind: 'spdx', id: 'MIT' };
+    const parsed = parseReceipt(JSON.stringify(value));
+    expect(parsed.status).toBe('ok');
+    if (parsed.status !== 'ok') return;
+    expect(serializeReceipt(parsed.receipt)).toContain(
+      '  "license": {\n    "kind": "spdx",\n    "id": "MIT"\n  },\n',
+    );
+  });
 });
 
 describe('serializeReceipt / serializeReceiptForComparison are input-key-order-invariant (RP-22 gate cycle 1, blocker 3)', () => {
@@ -767,6 +778,32 @@ describe('a receipt built from secret-shaped third-party output', () => {
       setAtPath(value, field.path, secretShapedToken);
       const result = parseReceipt(JSON.stringify(value));
       expect(result.status, field.path.join('.')).toBe('ok');
+    }
+  });
+
+  it('the honest gap: a PAT-shaped locator parses under the opaque kinds (npm, pypi, marketplace), the same undecidable class as the other two gaps', () => {
+    // RP-22 gate cycle 2, blocker 1: `github` and `https` refuse this token
+    // (it has no `/` at all, and it is not a URL); `npm`/`pypi`/`marketplace`
+    // treat any bounded alnum/dot/underscore/hyphen string as a legal
+    // package/extension name, and this token IS one — tightening the
+    // grammar to exclude it would also exclude real names shaped the same
+    // way, so the remedy is disclosure, exactly like the two gaps above.
+    const opaqueKinds = ['npm', 'pypi', 'marketplace'] as const;
+    for (const kind of opaqueKinds) {
+      const value = validReceiptValue();
+      value.source = { kind, locator: secretShapedToken, official: true, verifiedOn: '2026-09-21' };
+      const result = parseReceipt(JSON.stringify(value));
+      expect(result.status, kind).toBe('ok');
+    }
+  });
+
+  it('source.locator still refuses the same secret-shaped token for github and https (the non-opaque kinds)', () => {
+    const nonOpaqueKinds = ['github', 'https'] as const;
+    for (const kind of nonOpaqueKinds) {
+      const value = validReceiptValue();
+      value.source = { kind, locator: secretShapedToken, official: true, verifiedOn: '2026-09-21' };
+      const result = parseReceipt(JSON.stringify(value));
+      expect(result.status, kind).toBe('invalid');
     }
   });
 
@@ -1160,6 +1197,18 @@ const FILE_SHAPE_FIXTURES: readonly FileShapeFixture[] = [
     },
     () => '"installer.exitCode" must be an integer between 0 and 255',
   ),
+  // A fractional number within 0-255: json-schema-subset's `type: "integer"`
+  // already distinguishes "a whole number" from "a number" (RP-22 gate cycle
+  // 2, advisory (f)), so both layers refuse this — but only `Number.isInteger`
+  // is what actually enforces it on the parser side, and nothing pinned that
+  // check's own boundary before this.
+  ...perHarnessFixtures(
+    'act.installer.exitCode is a fractional number within 0-255',
+    (act) => {
+      (act.installer as Record<string, unknown>).exitCode = 1.5;
+    },
+    () => '"installer.exitCode" must be an integer between 0 and 255',
+  ),
   ...perHarnessFixtures(
     'act.observedAfter carrying an unrecognised key',
     (act) => {
@@ -1309,6 +1358,23 @@ const SCHEMA_ONLY_FIXTURES: readonly SchemaOnlyFixture[] = [
       return value;
     })(),
     errorEquals: 'acts["claude-code"].performedAt must be a real UTC timestamp',
+  },
+  {
+    name: 'source.verifiedOn shape-valid but calendar-invalid (30 Feb) — the schema subset has no way to check a real date beyond pattern',
+    value: (() => {
+      const value = validReceiptValue();
+      value.source = { ...(value.source as object), verifiedOn: '2026-02-30' };
+      return value;
+    })(),
+    errorEquals: '"source.verifiedOn" must be a real YYYY-MM-DD date',
+  },
+  {
+    name: "license.url exactly 129 characters — within the schema pattern's own 9-129 bound but past MAX_LOCATOR_LENGTH (128), which the schema subset cannot express as a length keyword",
+    value: {
+      ...validReceiptValue(),
+      license: { kind: 'terms', url: `https://${'a'.repeat(121)}` },
+    },
+    errorEquals: '"license.url" must be a valid https URL with no query string or fragment',
   },
 ];
 

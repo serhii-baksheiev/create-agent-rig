@@ -206,6 +206,28 @@ const CLASSIFY_TABLE: readonly ClassifyCase[] = [
     observed: { present: true, version: null, digest: 'abcdef1' },
     expected: 'installed',
   },
+  {
+    // The DIGEST twin of the version-unconfirmed rule above (RP-22 gate
+    // cycle 2, advisory (c)): the receipt itself recorded a known digest,
+    // but this probe could not read one from what it found present, and no
+    // version baseline exists anywhere. Before the digest axis was made
+    // symmetric with the version axis, this silently read `installed`.
+    name: 'accepted (no pin), receipt baseline has a known digest, present observed but digest unreadable (null), no version baseline: unverified',
+    declared: accepted,
+    receipt: { version: null, digest: 'abcdef1' },
+    observed: { present: true, version: null, digest: null },
+    expected: 'unverified',
+  },
+  {
+    // Both axes unconfirmed at once still resolves to the single
+    // `unverified` state (there is no "more unverified"), when both a
+    // version pin and a receipt digest baseline are known.
+    name: 'accepted with a version pin, receipt baseline has a known digest, present observed with BOTH version and digest unreadable: unverified',
+    declared: acceptedPinned,
+    receipt: { version: null, digest: 'abcdef1' },
+    observed: { present: true, version: null, digest: null },
+    expected: 'unverified',
+  },
 ];
 
 describe('classify — every declared × receipt × observed combination per the table', () => {

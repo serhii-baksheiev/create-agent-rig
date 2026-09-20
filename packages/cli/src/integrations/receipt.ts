@@ -19,10 +19,25 @@
  *
  * `source.locator` and `license.id` are validated against `registry.ts`'s
  * `isValidLocator`/`isValidSpdxExpression` — the SAME grammar a shipped
- * registry descriptor is held to, so a receipt cannot carry a file path, a
- * username or hostname, an arbitrary scheme, or third-party output in either
- * field (RP-22 gate cycle 1, blocker 1: these fields previously accepted any
- * non-empty string).
+ * registry descriptor is held to (RP-22 gate cycle 1, blocker 1: these fields
+ * previously accepted any non-empty string). Stated exactly, because gate
+ * cycle 2 found the wider claim false: the grammar refuses an absolute or
+ * traversal path, a drive letter, a backslash, a scheme, userinfo, and a
+ * query string or fragment, and it caps length — it does NOT refuse every
+ * token-shaped value. Under `source.kind` `npm`/`pypi`/`marketplace`, a
+ * `ghp_`-style token is also a syntactically legal package/extension name, so
+ * it parses (see `integrations-receipt.test.ts` › "the honest gap: a
+ * PAT-shaped locator parses under the opaque kinds (npm, pypi, marketplace),
+ * the same undecidable class as the other two gaps"). Catching that shape is
+ * the pre-commit secret sweep's job, not this parser's: `findSecretValues` (used
+ * as the oracle in this module's own tests) catches every DELIMITED token
+ * shape it knows about in every one of this schema's string fields once the
+ * receipt is serialized; the one shape no field here can ever refuse on its
+ * own is a bare lowercase-hex string, because that is structurally
+ * indistinguishable from a real digest or slug (see the same test file ›
+ * "the honest gap: digest/evidence/notObserved cannot distinguish a
+ * lowercase-hex-shaped secret from a real digest or slug, so they accept
+ * one").
  *
  * Deviation from the plan's receipt example, and why: the example shows
  * `"version": null` and `"digest": null` written out explicitly. The
@@ -676,21 +691,45 @@ type MaterialAct = {
  * The plan §1.4 material fields, and NOTHING else: `source` (whole object),
  * `mode`, and per act `route`, `installer.toolVersion` ("tool version"), and
  * `observedAfter`'s own `state`/`version`/`digest` triple. Everything else on
- * a {@link Receipt} — `id`, `rigVersion`, `declared`, `license`, an act's
- * `automation`, `installer.tool`/`exitCode`, `evidence`, `notObserved`, and
- * every act's `performedAt` — is explicitly NOT projected here, so a change
- * to any of THOSE fields alone can never flip {@link hasMaterialChange}.
+ * a {@link Receipt} is explicitly NOT projected here, so a change to any of
+ * THOSE fields alone can never flip {@link hasMaterialChange} — and each one
+ * left out has a named consequence, not just an omission:
  *
- * `license` in particular was considered and left out on purpose: it is
- * provenance about the source's legal terms, not a fact about whether the
- * integration is installed, matches, or drifted — the seven fields plan §1.4
- * names are all installation-state facts. If a future slice finds a reason
- * license changes should force a rewrite, that is a new decision to write
- * down here, not an oversight to quietly fix.
+ * - `id`, `rigVersion` — a receipt can go on recording the rig version that
+ *   performed the act long after a newer release runs again over an
+ *   unchanged install; the field goes stale until something else forces a
+ *   rewrite.
+ * - `declared` (the pin recorded at act time) — a re-run after the
+ *   DECLARATION changes, with the install itself unchanged, keeps the old
+ *   declared copy in the receipt rather than refreshing it.
+ * - `license` — considered and left out on purpose: it is provenance about
+ *   the source's legal terms, not a fact about whether the integration is
+ *   installed, matches, or drifted. A receipt can carry a stale license
+ *   record indefinitely. If a future slice finds a reason license changes
+ *   should force a rewrite, that is a new decision to write down here, not
+ *   an oversight to quietly fix.
+ * - an act's `automation` — a route that changes from guided to automatic
+ *   (or back) between runs leaves the OLD automation value on record.
+ * - `installer.tool`/`exitCode` — a different installer tool, or a
+ *   different exit code from the same tool, is not itself a reason to
+ *   rewrite; only a `toolVersion` change is.
+ * - `evidence`/`notObserved` — their CONTENT can change (a probe names a
+ *   different set of things it checked) with the receipt's evidence list
+ *   left describing an earlier run, as long as `state`/`version`/`digest`
+ *   agree.
+ * - every act's `performedAt` — see {@link serializeReceiptForComparison}.
+ *
+ * `source` is built through {@link serializeSource} — the SAME field-by-field
+ * builder `serializeReceipt` uses — rather than spread (`{ ...receipt.source
+ * }`), so two receipts differing only in `source`'s OWN input key order
+ * project identically here too (RP-22 gate cycle 2, blocker 2: a spread
+ * copies whatever order the input object already had, which is exactly the
+ * order-dependence `serializeReceipt`'s own nested objects were fixed to not
+ * have in gate cycle 1).
  */
 function materialProjection(receipt: Receipt): {
   mode: Mode;
-  source: ReceiptSource;
+  source: Record<string, unknown>;
   acts: Partial<Record<Harness, MaterialAct>>;
 } {
   const acts: Partial<Record<Harness, MaterialAct>> = {};
@@ -705,7 +744,7 @@ function materialProjection(receipt: Receipt): {
       digest: act.observedAfter.digest,
     };
   }
-  return { mode: receipt.mode, source: { ...receipt.source }, acts };
+  return { mode: receipt.mode, source: serializeSource(receipt.source), acts };
 }
 
 /**
