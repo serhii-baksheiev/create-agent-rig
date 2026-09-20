@@ -783,9 +783,18 @@ describe('boundedRun — cwd validation and default', () => {
     });
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
+    // `.native`, not the plain JS realpath, for the SAME reason as the
+    // repo-containment oracle above: the plain implementation does not
+    // expand an 8.3 short-name path component, and this module's own
+    // per-run cwd is built and passed through `.native` internally — a
+    // windows-smoke TEMP root spelled short (`RUNNER~1`) made a plain-realpath
+    // oracle disagree with the module's own (correctly long-form) answer
+    // (gate cycle 3: this is the same class of bug as gate cycle 2's fix to
+    // "never resolves a tool from inside the repository…", just not carried
+    // over to this test when the per-run cwd was introduced).
     const { realpathSync } = await import('node:fs');
-    expect(result.stdout).not.toBe(realpathSync(process.cwd()));
-    expect(result.stdout.startsWith(realpathSync(tmpdir()))).toBe(true);
+    expect(result.stdout).not.toBe(realpathSync.native(process.cwd()));
+    expect(result.stdout.startsWith(realpathSync.native(tmpdir()))).toBe(true);
   });
 
   it('the default cwd is a FRESH, per-run directory — not os.tmpdir() itself — and no longer exists once the run ends (gate cycle 2 advisory: os.tmpdir() is shared and world-writable)', async () => {
@@ -798,7 +807,7 @@ describe('boundedRun — cwd validation and default', () => {
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     const { realpathSync } = await import('node:fs');
-    expect(result.stdout).not.toBe(realpathSync(tmpdir()));
+    expect(result.stdout).not.toBe(realpathSync.native(tmpdir()));
     expect(existsSync(result.stdout)).toBe(false);
   });
 
