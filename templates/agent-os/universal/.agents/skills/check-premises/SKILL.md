@@ -28,7 +28,7 @@ same four steps with the diff as the code, and §4 carries what is different.
 
 **What "rulebook prose" means here is not a new list** — it is the set
 `.claude/rules/workflow.md` already uses for the `prose-reviewer` trigger: a rule
-file, a skill, an agent spec, a decision record, `CLAUDE.md`, the README. Where a
+file, a skill, an agent spec, a decision record, `CLAUDE.md`, `AGENTS.md`, the README. Where a
 rulebook file exists twice (a template source and a generated copy), check the
 **source**; the copy is composed from it. A comment in a test or a hook is in scope
 too when it asserts behaviour — the file it lives in does not change what a claim is.

@@ -4119,8 +4119,10 @@ describe('the ignore block the init doc tells a reader to paste', () => {
    * (the fuller) case, so it still proves every one of the five paths is
    * ignored once pasted.
    */
+  // RP-186: this fenced block lives in AGENTS.md now (the canonical
+  // rulebook) — CLAUDE.md is a short shim and carries none of it.
   const pastedBlock = async (): Promise<string> => {
-    const doc = await read(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md');
+    const doc = await read(repoRoot, 'templates', 'agent-os', 'universal', 'AGENTS.md');
     const fenced = [...doc.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
       .map((match) => match[1] ?? '')
       .filter(

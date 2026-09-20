@@ -91,17 +91,18 @@ describe('the elevated-path declaration is the single source', () => {
     expect(result.findings[0].actions).toContain('journal-line');
   });
 
-  it('the shipped CLAUDE.md declares a non-empty, commented block', async () => {
+  // RP-186: the block lives in AGENTS.md (the canonical rulebook) now.
+  it('the shipped AGENTS.md declares a non-empty, commented block', async () => {
     const { parseElevatedPaths } = await load('detect-missed-gate.mjs');
-    const claudeMd = await readFile(
-      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md'),
+    const agentsMd = await readFile(
+      path.join(repoRoot, 'templates', 'agent-os', 'universal', 'AGENTS.md'),
       'utf8',
     );
-    const declared = parseElevatedPaths(claudeMd) as string[] | null;
+    const declared = parseElevatedPaths(agentsMd) as string[] | null;
     expect(declared).not.toBeNull();
     expect(declared!.length).toBeGreaterThan(0);
     // and the reader is told it is theirs to extend, not a law they inherited
-    expect(claudeMd).toMatch(/extend|add the paths|yours/i);
+    expect(agentsMd).toMatch(/extend|add the paths|yours/i);
   });
 });
 

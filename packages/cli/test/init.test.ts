@@ -57,9 +57,13 @@ describe('initProject — the install', () => {
     expect(await readFile(path.join(repo, '.claude', 'rules', 'workflow.md'), 'utf8')).toContain(
       'TDD',
     );
-    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(
-      await readFile(path.join(repo, 'CLAUDE.md'), 'utf8'),
-    );
+    // RP-186: AGENTS.md is the canonical rulebook, CLAUDE.md a short shim
+    // that imports it — they are no longer byte-identical.
+    const agentsMdInstalled = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    const claudeMdInstalled = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    expect(agentsMdInstalled).toContain('## One operating system, two harnesses');
+    expect(claudeMdInstalled.trimStart().startsWith('@AGENTS.md')).toBe(true);
+    expect(claudeMdInstalled).not.toContain('## One operating system, two harnesses');
     await expect(
       readFile(path.join(repo, '.agents', 'skills', 'check-premises', 'SKILL.md'), 'utf8'),
     ).resolves.toBeTruthy();
@@ -81,6 +85,14 @@ describe('initProject — the install', () => {
     await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
     await expect(initProject(repo, {})).rejects.toThrow(InitError);
     expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# mine');
+  });
+
+  // PR #241 round 3 advisory: "already has an CLAUDE.md" is a grammar defect
+  // ("an" before a consonant), pinned here as its own assertion so a later
+  // rewrite of this message cannot silently reintroduce it.
+  it('says "a CLAUDE.md", not "an CLAUDE.md"', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
+    await expect(initProject(repo, {})).rejects.toThrow('already has a CLAUDE.md');
   });
 
   it('refuses to clobber an existing AGENTS.md', async () => {
@@ -190,36 +202,43 @@ describe('initProject — token substitution', () => {
 // generated monorepo's map into an arbitrary repo describes directories that
 // do not exist and links to rules that were deliberately not installed.
 describe('initProject — the map describes THIS repo, not the generated shape', () => {
+  // RP-186: AGENTS.md carries the rulebook text these assertions are about;
+  // CLAUDE.md is a short shim and never contains any of it.
   it('claims no monorepo layout', async () => {
     await initProject(repo, {});
-    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
     for (const ghost of ['packages/core/', 'packages/db/', 'apps/web/']) {
-      expect(claudeMd, ghost).not.toContain(ghost);
+      expect(agentsMd, ghost).not.toContain(ghost);
     }
   });
 
   it('links to no rule or hook that init does not install', async () => {
     await initProject(repo, {});
-    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).not.toContain('architecture.md');
-    expect(claudeMd).not.toContain('guard-core-purity');
-    expect(claudeMd).not.toContain('guard-web-boundary');
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).not.toContain('architecture.md');
+    expect(agentsMd).not.toContain('guard-core-purity');
+    expect(agentsMd).not.toContain('guard-web-boundary');
   });
 
   it('declares elevated paths that exist here, not in the generated shape', async () => {
     await initProject(repo, {});
-    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
-    const block = /```elevated-paths\n([\s\S]*?)```/.exec(claudeMd);
-    expect(block, 'CLAUDE.md must still declare an elevated-paths block').not.toBeNull();
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    const block = /```elevated-paths\n([\s\S]*?)```/.exec(agentsMd);
+    expect(block, 'AGENTS.md must still declare an elevated-paths block').not.toBeNull();
     const paths = (block?.[1] ?? '').trim().split('\n');
     expect(paths).toContain('.claude/');
     expect(paths.some((p) => p.startsWith('packages/'))).toBe(false);
+
+    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd, 'the shim must not carry its own elevated-paths block').not.toContain(
+      '```elevated-paths',
+    );
   });
 
   it('says the DoD stop gate is inert until the repo supplies its checks', async () => {
     await initProject(repo, {});
-    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('dod-checks.json');
+    const agentsMd = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('dod-checks.json');
   });
 
   it('does not claim runtime ignore entries remain after the project has added them', async () => {
@@ -236,15 +255,17 @@ describe('initProject — the map describes THIS repo, not the generated shape',
     );
     await initProject(repo, {});
 
-    for (const map of ['CLAUDE.md', 'AGENTS.md']) {
-      const content = await readFile(path.join(repo, map), 'utf8');
-      const finishList =
-        content.split('## Four things this install left for you to finish')[1] ?? '';
-      const ignoreSection = /\n3\. \*\*[\s\S]*?(?=\n4\. \*\*)/.exec(finishList)?.[0] ?? '';
-      expect(ignoreSection, `${map} must still explain the runtime ignore entries`).toBeTruthy();
-      expect(ignoreSection).toMatch(/if[^\n]{0,100}missing|add only[^\n]{0,80}missing/i);
-      expect(ignoreSection).not.toMatch(/Add all five/i);
-    }
+    // RP-186: only AGENTS.md (canonical) carries this section now; the
+    // CLAUDE.md shim imports it rather than repeating it.
+    const content = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    const finishList = content.split('## Four things this install left for you to finish')[1] ?? '';
+    const ignoreSection = /\n3\. \*\*[\s\S]*?(?=\n4\. \*\*)/.exec(finishList)?.[0] ?? '';
+    expect(ignoreSection, 'AGENTS.md must still explain the runtime ignore entries').toBeTruthy();
+    expect(ignoreSection).toMatch(/if[^\n]{0,100}missing|add only[^\n]{0,80}missing/i);
+    expect(ignoreSection).not.toMatch(/Add all five/i);
+
+    const claudeMd = await readFile(path.join(repo, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).not.toContain('## Four things this install left for you to finish');
   });
 });
 

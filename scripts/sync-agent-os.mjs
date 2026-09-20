@@ -71,6 +71,9 @@ const ELEVATED_PATHS = [
   '.agents/',
   '.codex/',
   'AGENTS.md',
+  // RP-186: CLAUDE.md is now a separately-authored shim, not a byte-identical
+  // copy of AGENTS.md — declared in its own right, same as AGENTS.md above.
+  'CLAUDE.md',
   // The rationale extracted out of those rules (AR-63). Declaring it is only
   // half of what it needs: `.md` is inert to the sweep unless the path counts
   // as rulebook, so `isDecisionRecord` in `detect-missed-gate.mjs` is the other
@@ -146,13 +149,20 @@ function compose() {
   addTree(universal);
   for (const overlay of overlays) addTree(overlay);
 
+  // AGENTS.md is canonical: it carries the full rulebook, the elevated-paths
+  // declaration and this repo's own addendum. CLAUDE.md is authored as a short,
+  // static shim in templates/agent-os/universal/CLAUDE.md (an `@AGENTS.md`
+  // import plus Claude-only notes) and needs no composition beyond the
+  // `__PROJECT_NAME__` substitution every template file already gets above —
+  // it carries no elevated-paths block and no addendum of its own, because the
+  // import is how both reach a Claude Code session.
   const addendum = readFileSync(path.join(repoRoot, '.claude', 'CLAUDE.addendum.md'), 'utf8');
-  const repositoryMap =
-    withElevatedPaths(substitute(readFileSync(path.join(universal, 'CLAUDE.md'), 'utf8'))) +
+  const canonicalRulebook =
+    withElevatedPaths(substitute(readFileSync(path.join(universal, 'AGENTS.md'), 'utf8'))) +
     '\n---\n\n' +
     addendum;
-  out.set('CLAUDE.md', repositoryMap);
-  out.set('AGENTS.md', repositoryMap);
+  out.set('AGENTS.md', canonicalRulebook);
+  out.set('CLAUDE.md', substitute(readFileSync(path.join(universal, 'CLAUDE.md'), 'utf8')));
 
   // Repo-specific override: this repo's `pnpm test` is the full e2e (minutes).
   // The DoD stop gate needs the cheap, deterministic loop instead.

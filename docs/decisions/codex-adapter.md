@@ -4,15 +4,20 @@ Status: accepted for AR-113; subagent routing extended for RP-166.
 
 ## Decision
 
-Claude-shaped files remain the authoring surface. The generator derives the
-Codex rulebook (`AGENTS.md`), skills (`.agents/`), custom agents and hook
-wiring (`.codex/`); the generated files are checked for drift in the generator
-repository and are materialised into a
-generated project as its local, versioned operating system. A generated
-project does not ship the generator's projector. Its Claude and Codex files are
-versioned snapshots: a downstream project that deliberately changes one side
-must either make the equivalent local change on the other side or take a newer
-generated release. There is no downstream automatic drift check.
+Claude-shaped files remain the authoring surface for skills, custom agents and
+hook wiring. The generator derives the Codex skills (`.agents/`), custom
+agents and hook wiring (`.codex/`) from them; the generated files are checked
+for drift in the generator repository and are materialised into a generated
+project as its local, versioned operating system. The rulebook itself is the
+one exception, since RP-186: `AGENTS.md` is the canonical, authored,
+provider-neutral source — not derived from `CLAUDE.md` — and `CLAUDE.md` is a
+short, separately authored compatibility shim (`@AGENTS.md` import plus
+Claude-Code-specific notes; see `docs/decisions/agents-md-canonical.md`). A
+generated project does not ship the generator's projector for the derived
+files. Its Claude and Codex files are versioned snapshots: a downstream
+project that deliberately changes one side must either make the equivalent
+local change on the other side or take a newer generated release. There is no
+downstream automatic drift check.
 
 ## Why
 

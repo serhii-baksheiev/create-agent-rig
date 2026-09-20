@@ -5,12 +5,18 @@
 
 ## One operating system, two harnesses
 
-This rulebook serves both Claude Code and Codex. The generator authors it as
-`CLAUDE.md` and publishes the same text as `AGENTS.md`, so neither harness gets
-a weaker policy. The `.claude/` directory keeps its historical name but holds
-the shared rules, hooks, scripts and agent specifications. Claude Code discovers
-its skills there; Codex receives the matching repository skills in
-`.agents/skills/` and its native agent and hook configuration in `.codex/`.
+This rulebook serves both Claude Code and Codex. `AGENTS.md` — this file — is
+the canonical, provider-neutral source: the generator authors the rulebook
+once, here. `CLAUDE.md` next to it is a short compatibility shim: an
+`@AGENTS.md` import plus anything genuinely specific to Claude Code. The shim
+exists because Claude Code's own native `AGENTS.md` reading is not always
+active — it depends on the Claude Code version and configuration in use, and
+is off in some sessions entirely — never because this file stopped being the
+source of truth (`docs/decisions/agents-md-canonical.md`). The `.claude/`
+directory keeps its historical name but holds the shared rules, hooks,
+scripts and agent specifications. Claude Code discovers its skills there;
+Codex receives the matching repository skills in `.agents/skills/` and its
+native agent and hook configuration in `.codex/`.
 
 This repository runs under an agent operating system. The important enforceable
 rules are handled by hooks at the tool layer; review gates are session-run checks
@@ -226,6 +232,7 @@ rule does not change with or without the script.
 .agents/
 .codex/
 AGENTS.md
+CLAUDE.md
 .github/workflows/
 ```
 

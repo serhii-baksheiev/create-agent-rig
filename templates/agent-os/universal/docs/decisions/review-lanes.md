@@ -32,7 +32,7 @@ test in the rig belongs there. The router's sets stay where they are, for the
 reason this whole record exists.
 
 **Neither row applies to a decision record, including this one.** Both
-predicates recognise `CLAUDE.md` anywhere, everything under `.claude/`, and —
+predicates recognise `CLAUDE.md` and `AGENTS.md` anywhere, everything under `.claude/`, and —
 since these records were extracted — everything under `docs/decisions/`, through
 the one shared `isDecisionRecord`. A change here escalates the sweep and takes
 the `model` lane, exactly as the rule it explains would. The router's call is

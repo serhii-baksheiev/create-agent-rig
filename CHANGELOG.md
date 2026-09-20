@@ -16,6 +16,80 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## Unreleased
 
+**`AGENTS.md` is now the canonical rulebook; `CLAUDE.md` is a short
+compatibility shim.** A new project gets the full rulebook text in
+`AGENTS.md` and a `CLAUDE.md` that is just an `@AGENTS.md` import (Claude
+Code's own import syntax) plus Claude-Code-specific notes — never a second
+copy of the rulebook. This is not a claim that Claude Code always reads
+`AGENTS.md` on its own: that support is version- and configuration-dependent,
+and the shim exists precisely for the sessions where it is not active (see
+`docs/decisions/agents-md-canonical.md` for what is verified and what is
+not). Provider-specific wiring (`.claude/settings.json`, `.claude/agents/`,
+`.codex/hooks.json`, `.codex/config.toml`) is unaffected.
+
+Migrating an existing rig: `upgrade` treats both files as the ordinary
+manifest-tracked paths they always were, with one deliberate coupling. An
+untouched pair is replaced with the new shim/canonical split. A `CLAUDE.md`
+or `AGENTS.md` the user edited is reported as a conflict and kept exactly as
+edited, never force-shimmed or overwritten — and if the kept CLAUDE.md is not
+already the `@AGENTS.md` shim, the reason also says it **shadows AGENTS.md**
+(by Claude Code's own default, a `CLAUDE.md` is read _instead of_ `AGENTS.md`,
+not alongside it) and names the fix. A file the user deleted stays deleted.
+**Security fix, content-based since round 5:** CLAUDE.md is held back —
+kept as its old, still-readable content, never replaced with the shim —
+only when the on-disk AGENTS.md genuinely cannot serve as the rulebook:
+absent, or present but carrying no non-empty `elevated-paths` block. A
+CUSTOMISED AGENTS.md that still carries a readable block lets the shim
+through — the shim then imports the user's own rulebook, which is the whole
+point of it — and AGENTS.md itself stays a perfectly ordinary, quiet
+conflict, because a customised `elevated-paths` block is this project's own
+designed steady state, not a broken rulebook (an earlier version of this
+rule keyed on AGENTS.md's verdict alone, which could not tell the two
+apart). Without the hold at all, an unreadable AGENTS.md combined with an
+untouched CLAUDE.md would silently install a shim over a rulebook that may
+carry no `elevated-paths` declaration at all. Holding CLAUDE.md back
+re-vouches it for its own current bytes — the same mechanism that lets a
+later `upgrade` resolve cleanly — which means a later `uninstall` reads it
+as rig-owned and unedited and **removes it**, not "leaves it in place" the
+way an ordinary, never-vouched conflict does; the decision record's
+uninstall column and a dedicated test cover this.
+
+The one always-reachable remedy for a genuinely unreadable AGENTS.md:
+`upgrade` WRITES the already-rendered content to a real sibling file,
+`AGENTS.md.rig-new` (never recorded in the manifest, and appearing ONLY in
+the genuinely held-back state — never for an ordinary, readable conflict),
+instead of printing it to stdout for a verbatim paste — measured (gate cycle
+3, round 3's own remedy) not to survive a real copy-paste byte-for-byte. Its
+status (`would-write` / `identical` / `differs` / `unsafe`) is decided
+entirely at plan time, so a dry run and a real run agree, and a symlink or
+directory at the path is refused BEFORE anything else is written. `mv
+AGENTS.md.rig-new AGENTS.md` is printed only for bytes this run wrote or
+verified — for a pre-existing, differing rescue file the remedy is `rm` (or
+restoring AGENTS.md some other way), never `mv`, since that file is not this
+run's bytes. The instruction is the short, delimited, LAST thing the run
+prints, not buried between the plan and the consent prompt. Once AGENTS.md
+resolves and the rig is no longer held back, a leftover matching rescue file
+is cleaned up and the run says so; unrelated clutter at the path (a stray
+directory or symlink) on an otherwise healthy rig is never touched and never
+mentioned. **Round 4, security disclosure:** `uninstall` removing CLAUDE.md
+or AGENTS.md while the other of the pair is not a clean removal now says so,
+naming which file stays and as what — a bare `- CLAUDE.md` line previously
+did not. See `docs/decisions/agents-md-canonical.md`, "The remedy that
+actually works", for what was measured and what did not work.
+
+Pinned by `packages/cli/test/upgrade.test.ts`'s describe block "RP-186:
+AGENTS.md becomes canonical, CLAUDE.md becomes its shim" (untouched pair,
+edited/deleted each side, the shadow-note cases, the held-back cases, the
+rescue-file state machine, the held-back uninstall case, and the re-derived
+4×3 pristine/edited-with-block/edited-without-block/deleted grid across both
+files), `packages/cli/test/uninstall.test.ts`'s pair-disclosure and
+rescue-file tests, `packages/cli/test/cli-report.test.ts`'s CLI-boundary
+tests for the rescue file (an independent oracle, never `plan.contents`) and
+for the quiet, customised-AGENTS.md conflict, and
+`test/e2e/agents-md-migration.test.ts` (the same migration, including the
+rescue-file remedy end to end and the customised-rulebook case, against a
+rig built from the actual pre-RP-186 payload).
+
 **Breaking: the application skeletons are removed, exactly as 0.9.0
 announced.** `create <dir>` no longer takes `--target` and no longer
 scaffolds `aws-serverless` or `node-service` — there is one payload, the same
