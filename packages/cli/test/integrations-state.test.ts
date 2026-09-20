@@ -27,14 +27,12 @@ const notObservedVariants: readonly Extract<ObservedNow, { present: false }>[] =
   { present: false, kind: 'missing' },
 ];
 
-describe('classify — a forged receipt claiming installed, with no observation, never classifies as installed', () => {
-  it.each(notObservedVariants.map((observed) => [observed.kind, observed] as const))(
-    'observed.present === false (kind: %s) never yields "installed", even against a receipt baseline',
-    (_kind, observed) => {
-      const result = classify(accepted, baseline, observed);
-      expect(result).not.toBe('installed');
-    },
-  );
+describe('classify', () => {
+  it('a forged receipt claiming installed, with no observation, never classifies as installed, for every non-present observation', () => {
+    for (const observed of notObservedVariants) {
+      expect(classify(accepted, baseline, observed), observed.kind).not.toBe('installed');
+    }
+  });
 });
 
 type ClassifyCase = {
@@ -66,6 +64,16 @@ const CLASSIFY_TABLE: readonly ClassifyCase[] = [
     declared: notDeclared,
     receipt: undefined,
     observed: { present: false, kind: 'missing' },
+    expected: 'not-applicable',
+  },
+  {
+    // Advisory: an incidental installation the repository never opted into
+    // (no declaration, no receipt) is out of scope entirely, not evidence of
+    // drift — a present observation cannot promote it into something more.
+    name: 'not declared, no receipt, present observation: still not-applicable',
+    declared: notDeclared,
+    receipt: undefined,
+    observed: { present: true, version: '1.0.0', digest: 'abcdef1' },
     expected: 'not-applicable',
   },
   {
@@ -164,6 +172,38 @@ const CLASSIFY_TABLE: readonly ClassifyCase[] = [
     declared: accepted,
     receipt: { version: null, digest: null },
     observed: { present: true, version: '1.0.0', digest: 'abcdef1' },
+    expected: 'installed',
+  },
+  {
+    // Advisory: a pin exists (a known baseline), but THIS probe could not
+    // read a version from what it found present. Reporting "installed" would
+    // be misplaced confidence, so this resolves to unverified instead of
+    // silently trusting the pin.
+    name: 'accepted with a version pin, present observed but version unreadable (null), no receipt: unverified',
+    declared: acceptedPinned,
+    receipt: undefined,
+    observed: { present: true, version: null, digest: null },
+    expected: 'unverified',
+  },
+  {
+    // Same reasoning, from the RECEIPT side: no declared pin, but the receipt
+    // itself recorded a known version baseline, and this probe cannot read
+    // one now.
+    name: 'accepted (no pin), receipt baseline has a known version, present observed but version unreadable (null): unverified',
+    declared: accepted,
+    receipt: { version: '1.0.0', digest: null },
+    observed: { present: true, version: null, digest: null },
+    expected: 'unverified',
+  },
+  {
+    // No version baseline anywhere (declared has no pin, receipt's version is
+    // null) — an unreadable observed version is not a confirmation failure
+    // here, because nothing needed confirming. Falls through to the ordinary
+    // digest-only comparison instead.
+    name: 'accepted (no pin), receipt has no version baseline (null), present observed with unreadable version but matching digest: installed',
+    declared: accepted,
+    receipt: { version: null, digest: 'abcdef1' },
+    observed: { present: true, version: null, digest: 'abcdef1' },
     expected: 'installed',
   },
 ];

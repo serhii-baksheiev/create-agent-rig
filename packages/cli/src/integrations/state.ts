@@ -18,8 +18,16 @@
  * `missing`, `unverified`, `pending-user-action` or `unsupported`, never as
  * `installed`. Pinned in `packages/cli/test/integrations-state.test.ts` ›
  * "a forged receipt claiming installed, with no observation, never
- * classifies as installed" (plan §1.4, "What makes a receipt trustworthy",
- * point 4).
+ * classifies as installed, for every non-present observation" (plan §1.4,
+ * "What makes a receipt trustworthy", point 4).
+ *
+ * `receipt` is not attacker-controlled the way that name might suggest: it is
+ * written only by `setup apply`/`setup remove` and travels through the same
+ * PR review as any other committed file (plan §1.4). That is why its non-null
+ * fields are treated as a baseline to CONFIRM rather than input to distrust
+ * outright — and where the evidence is ambiguous, `classify` always resolves
+ * toward MORE scrutiny (`unverified`/`drifted`) rather than less: a wrong
+ * guess then costs one extra warning, never a missed real problem.
  *
  * This module imports nothing.
  */
@@ -133,6 +141,17 @@ export function classify(
       }
     }
   }
+
+  // A version baseline is known (a declared pin, or a receipt that itself
+  // recorded a version) but the CURRENT probe could not read one. Silently
+  // reporting `installed` here would be misplaced confidence — the one thing
+  // the baseline needs confirmed is unconfirmed. `unverified` (reason
+  // output-unparseable, recorded by the caller alongside this state) is the
+  // honest answer, and it is the same "more scrutiny, not less" direction
+  // this module's header commits to.
+  const hasKnownVersionBaseline =
+    declared.version !== undefined || (receipt !== undefined && receipt.version !== null);
+  if (observed.version === null && hasKnownVersionBaseline) return 'unverified';
 
   const declaredVersionDiffers =
     declared.version !== undefined &&

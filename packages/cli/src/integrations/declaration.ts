@@ -20,9 +20,13 @@
  * property that would break that promise — an iterative-vs-recursive walk
  * over attacker-controlled JSON — is pinned by
  * `packages/cli/test/integrations-declaration.test.ts` › "a fuzz list of
- * hostile shapes never makes parseDeclaration throw".
+ * hostile shapes never makes parseDeclaration throw". The walk itself
+ * (`scanForDepthAndControlChars`) and the `isPlainObject` predicate live in
+ * `../lib/safe-text.js`, shared with `receipt.ts` rather than duplicated
+ * (RP-22 S2 gate finding — `.claude/rules/invariants.md`, "One mechanism, one
+ * implementation").
  */
-import { hasControlCharacter } from '../lib/safe-text.js';
+import { isPlainObject, scanForDepthAndControlChars } from '../lib/safe-text.js';
 import { validateDescriptor, type Harness, type ProviderDescriptor } from './registry.js';
 
 export const DECLARATION_REL = '.rig/integrations.json';
@@ -116,52 +120,6 @@ export function truncateForMessage(value: string): string {
   return value.length > MAX_ECHOED_ID_LENGTH ? `${value.slice(0, MAX_ECHOED_ID_LENGTH)}…` : value;
 }
 
-type DepthScan = { tooDeep: boolean; hasControlChar: boolean };
-
-/**
- * One iterative, explicit-worklist pass over the parsed JSON value that
- * answers two questions at once: does anything here carry a control or
- * Unicode-format character (as `manifest.ts` already refuses in its own
- * strings), and does the value nest deeper than {@link MAX_DECLARATION_DEPTH}.
- *
- * Iterative on purpose. A naive recursive walk over attacker-controlled JSON
- * stack-overflows well inside the 64 KiB size cap — `JSON.parse` itself
- * tolerates a depth of 30 000+ — so recursion here would be the one way this
- * module could stop being total (`invariants.md`, "no recursion over input").
- * Total work is bounded by the number of JSON tokens in `root`, which the
- * 64 KiB byte cap already bounds before this ever runs.
- */
-function scanParsedValue(root: unknown): DepthScan {
-  const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];
-  let hasControlChar = false;
-  while (stack.length > 0) {
-    const next = stack.pop();
-    if (next === undefined) break; // guarded by the loop condition; stated for the type checker
-    const { value, depth } = next;
-    if (depth > MAX_DECLARATION_DEPTH) return { tooDeep: true, hasControlChar };
-    if (typeof value === 'string') {
-      if (hasControlCharacter(value)) hasControlChar = true;
-      continue;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) stack.push({ value: item, depth: depth + 1 });
-      continue;
-    }
-    if (typeof value === 'object' && value !== null) {
-      for (const [key, child] of Object.entries(value)) {
-        if (hasControlCharacter(key)) hasControlChar = true;
-        stack.push({ value: child, depth: depth + 1 });
-      }
-    }
-  }
-  return { tooDeep: false, hasControlChar };
-}
-
-/** A type predicate, not a cast: narrows `unknown` to an indexable object without asserting anything. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function isHarness(value: string): value is Harness {
   return value === 'claude-code' || value === 'codex';
 }
@@ -248,7 +206,7 @@ export function parseDeclaration(
     return { status: 'invalid', error: 'the declaration is not valid JSON' };
   }
 
-  const scan = scanParsedValue(parsed);
+  const scan = scanForDepthAndControlChars(parsed, MAX_DECLARATION_DEPTH);
   if (scan.tooDeep) {
     return {
       status: 'invalid',

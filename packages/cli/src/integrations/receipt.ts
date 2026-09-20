@@ -5,17 +5,24 @@
  * A receipt is parsed exactly like `.rig/integrations.json`: committed,
  * therefore untrusted input, refused rather than silently trimmed on any
  * unrecognised shape. `parseReceipt` is TOTAL — no string input may make it
- * throw — using the same iterative, depth-bounded scan `declaration.ts`
- * uses, duplicated locally rather than factored out so this slice does not
- * touch `declaration.ts`'s own scan beyond its two carried-over review items.
- * Pinned by `packages/cli/test/integrations-receipt.test.ts` › "a fuzz list
- * of hostile shapes never makes parseReceipt throw".
+ * throw — using the same iterative, depth-bounded scan `declaration.ts` uses
+ * (`scanForDepthAndControlChars`, shared from `../lib/safe-text.js` — RP-22 S2
+ * gate finding: this used to be a private, duplicated copy). Pinned by
+ * `packages/cli/test/integrations-receipt.test.ts` › "a fuzz list of hostile
+ * shapes never makes parseReceipt throw".
  *
  * A receipt is never read as state (plan §1.4, "What makes a receipt
  * trustworthy", point 2): this module offers no function that turns a
  * receipt alone into an {@link InstanceState} — `./state.js`'s `classify`
  * takes a `ReceiptBaseline` only to compare against a *live* observation,
  * never to answer "is it installed" by itself.
+ *
+ * `source.locator` and `license.id` are validated against `registry.ts`'s
+ * `isValidLocator`/`isValidSpdxExpression` — the SAME grammar a shipped
+ * registry descriptor is held to, so a receipt cannot carry a file path, a
+ * username or hostname, an arbitrary scheme, or third-party output in either
+ * field (RP-22 gate cycle 1, blocker 1: these fields previously accepted any
+ * non-empty string).
  *
  * Deviation from the plan's receipt example, and why: the example shows
  * `"version": null` and `"digest": null` written out explicitly. The
@@ -29,14 +36,23 @@
  * schema-subset capability win over the plan's literal example here, per
  * this slice's brief.
  *
- * This module imports `../lib/safe-text.js`, `./registry.js` for the closed
- * `Mode`/`Route`/`Harness` vocabularies (one spelling of each, not a second
- * copy), `./declaration.js` for `VERSION_PATTERN` and `truncateForMessage`,
- * and `./state.js` for the closed `InstanceState` vocabulary.
+ * This module imports `../lib/safe-text.js` (the shared JSON-safety
+ * primitives), `./registry.js` for the closed `Mode`/`Route`/`Harness`
+ * vocabularies and the shared locator/SPDX/date grammar (one spelling of
+ * each, not a second copy), `./declaration.js` for `VERSION_PATTERN` and
+ * `truncateForMessage`, and `./state.js` for the closed `InstanceState`
+ * vocabulary.
  */
-import { hasControlCharacter } from '../lib/safe-text.js';
+import { isPlainObject, scanForDepthAndControlChars } from '../lib/safe-text.js';
 import { truncateForMessage, VERSION_PATTERN } from './declaration.js';
-import { isHttpsUrl, type Harness, type Mode, type Route } from './registry.js';
+import {
+  isRealDateString,
+  isValidLocator,
+  isValidSpdxExpression,
+  type Harness,
+  type Mode,
+  type Route,
+} from './registry.js';
 import { INSTANCE_STATES, type InstanceState } from './state.js';
 
 export { VERSION_PATTERN };
@@ -61,8 +77,36 @@ export const SLUG_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 /** A lowercase hex digest, 7 to 128 characters (short SHA through SHA-512). */
 export const DIGEST_PATTERN = /^[0-9a-f]{7,128}$/;
 
-/** A UTC timestamp with second precision, e.g. `2026-09-21T10:00:00Z`. */
-export const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+/**
+ * A UTC timestamp with second precision, e.g. `2026-09-21T10:00:00Z`. This is
+ * the SHAPE only — `9999-99-99T99:99:99Z` matches it. {@link isRealTimestampString}
+ * is the actual parser-side check; this pattern is exported only because the
+ * schema mirrors it (the schema subset cannot express the real-calendar
+ * check `isRealDateString` performs, only the shape).
+ */
+export const ISO_TIMESTAMP_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/;
+
+/**
+ * A real UTC timestamp: a real calendar date (leap years included, no rolled-
+ * over months) with hour/minute/second each in range. Deliberately NOT a
+ * "not in the future" check — that would make `parseReceipt`'s answer depend
+ * on the clock it runs on, which a pure, TOTAL parser must not do.
+ */
+function isRealTimestampString(value: string): boolean {
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+  if (match === null) return false;
+  const [, datePart, hourText, minuteText, secondText] = match;
+  if (!isRealDateString(datePart!)) return false;
+  return Number(hourText) <= 23 && Number(minuteText) <= 59 && Number(secondText) <= 59;
+}
+
+/**
+ * `evidence`/`notObserved` are short lists of tags, not open-ended logs — a
+ * real probe names a handful of things it did or did not check. Capped so a
+ * receipt cannot be inflated into an unbounded array of otherwise-valid slugs
+ * (the schema subset has no `maxItems`, so this bound is parser-only).
+ */
+const MAX_EVIDENCE_ITEMS = 16;
 
 const ROOT_KEYS_LIST = [
   'schemaVersion',
@@ -195,59 +239,6 @@ export type Receipt = {
 export type ParseReceiptResult =
   { status: 'ok'; receipt: Receipt } | { status: 'invalid'; error: string };
 
-/** A type predicate, not a cast: narrows `unknown` to an indexable object without asserting anything. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** A real calendar date in `YYYY-MM-DD` (mirrors `registry.ts`'s `isRealDateString`; not exported there). */
-function isRealDateString(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (match === null) return false;
-  const [, yearText, monthText, dayText] = match;
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-  );
-}
-
-type DepthScan = { tooDeep: boolean; hasControlChar: boolean };
-
-/**
- * One iterative, explicit-worklist pass over the parsed JSON value — see
- * `declaration.ts`'s `scanParsedValue` for the full rationale (no recursion
- * over attacker-controlled input; total work bounded by the 64 KiB byte cap
- * checked before this ever runs).
- */
-function scanParsedValue(root: unknown): DepthScan {
-  const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];
-  let hasControlChar = false;
-  while (stack.length > 0) {
-    const next = stack.pop();
-    if (next === undefined) break; // guarded by the loop condition; stated for the type checker
-    const { value, depth } = next;
-    if (depth > MAX_RECEIPT_DEPTH) return { tooDeep: true, hasControlChar };
-    if (typeof value === 'string') {
-      if (hasControlCharacter(value)) hasControlChar = true;
-      continue;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) stack.push({ value: item, depth: depth + 1 });
-      continue;
-    }
-    if (typeof value === 'object' && value !== null) {
-      for (const [key, child] of Object.entries(value)) {
-        if (hasControlCharacter(key)) hasControlChar = true;
-        stack.push({ value: child, depth: depth + 1 });
-      }
-    }
-  }
-  return { tooDeep: false, hasControlChar };
-}
-
 type FieldResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const okField = <T>(value: T): FieldResult<T> => ({ ok: true, value });
@@ -276,19 +267,17 @@ function parseSource(raw: unknown): FieldResult<ReceiptSource> {
     return failField('"source.kind" is not one of the known source kinds');
   }
   const locator = raw.locator;
-  if (typeof locator !== 'string' || locator === '') {
-    return failField('"source.locator" must be a non-empty string');
-  }
-  if (kind === 'https') {
-    if (!isHttpsUrl(locator)) {
-      return failField('"source.locator" must be a valid https URL when kind is "https"');
-    }
-    // No query string or fragment: a receipt never carries a token or header
-    // field (plan §1.4, "What a receipt never contains"), and a query string
-    // is exactly where a third-party tool's own output tends to smuggle one.
-    if (locator.includes('?') || locator.includes('#')) {
-      return failField('"source.locator" must not carry a query string or fragment');
-    }
+  // The cast is narrowing, not asserting: `kind` already passed the
+  // SOURCE_KIND_VALUES_SET membership check above, so it is one of
+  // ReceiptSource['kind']'s five literals here.
+  const knownKind = kind as ReceiptSource['kind'];
+  // isValidLocator is the SAME grammar registry.ts holds a shipped descriptor
+  // to (RP-22 gate cycle 1, blocker 1) — a github/npm/pypi/marketplace
+  // locator can no longer be an arbitrary path, hostname, token, or blob of
+  // third-party output; an https locator additionally may not carry a query
+  // string or fragment, folded into the one shared function.
+  if (typeof locator !== 'string' || !isValidLocator(knownKind, locator)) {
+    return failField(`"source.locator" is not a valid locator for kind "${knownKind}"`);
   }
   const official = raw.official;
   if (typeof official !== 'boolean') return failField('"source.official" must be a boolean');
@@ -297,7 +286,7 @@ function parseSource(raw: unknown): FieldResult<ReceiptSource> {
     return failField('"source.verifiedOn" must be a real YYYY-MM-DD date');
   }
   return okField({
-    kind: kind as ReceiptSource['kind'],
+    kind: knownKind,
     locator,
     official,
     verifiedOn,
@@ -315,18 +304,20 @@ function parseLicense(raw: unknown): FieldResult<ReceiptLicense> {
   if (kind === 'spdx') {
     if (Object.hasOwn(raw, 'url')) return failField('"license" of kind spdx must not carry "url"');
     const id = raw.id;
-    if (typeof id !== 'string' || id === '')
-      return failField('"license.id" must be a non-empty string');
+    // isValidSpdxExpression is the SAME grammar registry.ts holds a shipped
+    // descriptor's license id to (RP-22 gate cycle 1, blocker 1).
+    if (typeof id !== 'string' || !isValidSpdxExpression(id)) {
+      return failField('"license.id" is not a bounded SPDX-expression-shaped string');
+    }
     return okField({ kind: 'spdx', id });
   }
   if (Object.hasOwn(raw, 'id')) return failField('"license" of kind terms must not carry "id"');
   const url = raw.url;
-  if (typeof url !== 'string' || !isHttpsUrl(url)) {
-    return failField('"license.url" must be a valid https URL');
-  }
-  // Same reasoning as source.locator above: no query string or fragment.
-  if (url.includes('?') || url.includes('#')) {
-    return failField('"license.url" must not carry a query string or fragment');
+  // isValidLocator('https', …) applies the same https-URL-with-no-query-or-
+  // fragment rule this field always needed, now shared with source.locator's
+  // https branch instead of duplicated.
+  if (typeof url !== 'string' || !isValidLocator('https', url)) {
+    return failField('"license.url" must be a valid https URL with no query string or fragment');
   }
   return okField({ kind: 'terms', url });
 }
@@ -375,6 +366,9 @@ function parseInstaller(raw: unknown): FieldResult<ReceiptInstaller> {
 
 function parseEvidenceOrNotObserved(raw: unknown, label: string): FieldResult<string[]> {
   if (!Array.isArray(raw)) return failField(`"${label}" must be an array`);
+  if (raw.length > MAX_EVIDENCE_ITEMS) {
+    return failField(`"${label}" has more than ${MAX_EVIDENCE_ITEMS} entries`);
+  }
   const items: string[] = [];
   for (const item of raw) {
     if (typeof item !== 'string' || !SLUG_PATTERN.test(item)) {
@@ -398,7 +392,12 @@ function parseObservedAfter(raw: unknown): FieldResult<ReceiptObservedAfter> {
   const evidence = parseEvidenceOrNotObserved(raw.evidence, 'observedAfter.evidence');
   if (!evidence.ok) return evidence;
 
-  const result: ReceiptObservedAfter = { state: state as InstanceState, evidence: evidence.value };
+  // Narrowing, not asserting: `state` already passed the INSTANCE_STATES_SET
+  // membership check above.
+  const result: ReceiptObservedAfter = {
+    state: state as InstanceState,
+    evidence: evidence.value,
+  };
   if (Object.hasOwn(raw, 'version')) {
     const version = raw.version;
     if (typeof version !== 'string' || !VERSION_PATTERN.test(version)) {
@@ -430,8 +429,8 @@ function parseAct(raw: unknown, harness: string): FieldResult<ReceiptAct> {
     return failField(`acts["${harness}"].automation must be "automatic" or "guided"`);
   }
   const performedAt = raw.performedAt;
-  if (typeof performedAt !== 'string' || !ISO_TIMESTAMP_PATTERN.test(performedAt)) {
-    return failField(`acts["${harness}"].performedAt must be a UTC timestamp`);
+  if (typeof performedAt !== 'string' || !isRealTimestampString(performedAt)) {
+    return failField(`acts["${harness}"].performedAt must be a real UTC timestamp`);
   }
   if (!Object.hasOwn(raw, 'observedAfter')) {
     return failField(`acts["${harness}"] is missing "observedAfter"`);
@@ -444,6 +443,8 @@ function parseAct(raw: unknown, harness: string): FieldResult<ReceiptAct> {
   const notObserved = parseEvidenceOrNotObserved(raw.notObserved, `acts["${harness}"].notObserved`);
   if (!notObserved.ok) return notObserved;
 
+  // Both casts narrow, not assert: `route`/`automation` already passed their
+  // membership checks above.
   const act: ReceiptAct = {
     route: route as Route,
     automation: automation as 'automatic' | 'guided',
@@ -470,6 +471,8 @@ function parseActs(raw: unknown): FieldResult<Receipt['acts']> {
   for (const harness of keys) {
     const act = parseAct(raw[harness], harness);
     if (!act.ok) return act;
+    // Narrowing, not asserting: `keys` came from `raw` after `closedKeys`
+    // already refused any key outside HARNESS_VALUES_SET.
     acts[harness as Harness] = act.value;
   }
   return okField(acts);
@@ -497,7 +500,7 @@ export function parseReceipt(raw: string): ParseReceiptResult {
     return { status: 'invalid', error: 'the receipt is not valid JSON' };
   }
 
-  const scan = scanParsedValue(parsed);
+  const scan = scanForDepthAndControlChars(parsed, MAX_RECEIPT_DEPTH);
   if (scan.tooDeep) {
     return {
       status: 'invalid',
@@ -557,6 +560,7 @@ export function parseReceipt(raw: string): ParseReceiptResult {
     receipt: {
       schemaVersion: RECEIPT_SCHEMA_VERSION,
       id,
+      // Narrowing, not asserting: `mode` already passed MODE_VALUES_SET above.
       mode: mode as Mode,
       source: source.value,
       license: license.value,
@@ -567,18 +571,50 @@ export function parseReceipt(raw: string): ParseReceiptResult {
   };
 }
 
+/**
+ * Every nested object below is built FIELD BY FIELD, in a fixed order — never
+ * `{ ...someParsedObject }` — so the output key order depends only on THIS
+ * function, never on the order a caller happened to build (or a raw JSON
+ * document happened to list) its input fields in (RP-22 gate cycle 1,
+ * blocker 3: two receipts differing only in input key order used to
+ * serialize to different bytes, because spreading a nested object here
+ * copied whatever order it already had rather than re-fixing one).
+ */
+function serializeSource(source: ReceiptSource): Record<string, unknown> {
+  return {
+    kind: source.kind,
+    locator: source.locator,
+    official: source.official,
+    verifiedOn: source.verifiedOn,
+  };
+}
+
+function serializeLicense(license: ReceiptLicense): Record<string, unknown> {
+  return license.kind === 'spdx'
+    ? { kind: 'spdx', id: license.id }
+    : { kind: 'terms', url: license.url };
+}
+
+function serializeInstaller(installer: ReceiptInstaller): Record<string, unknown> {
+  return { tool: installer.tool, toolVersion: installer.toolVersion, exitCode: installer.exitCode };
+}
+
+function serializeObservedAfter(observedAfter: ReceiptObservedAfter): Record<string, unknown> {
+  const body: Record<string, unknown> = { state: observedAfter.state };
+  if (observedAfter.version !== undefined) body.version = observedAfter.version;
+  if (observedAfter.digest !== undefined) body.digest = observedAfter.digest;
+  body.evidence = [...observedAfter.evidence];
+  return body;
+}
+
 function serializeAct(act: ReceiptAct): Record<string, unknown> {
   const body: Record<string, unknown> = {
     route: act.route,
     automation: act.automation,
     performedAt: act.performedAt,
   };
-  if (act.installer !== undefined) body.installer = { ...act.installer };
-  const observedAfter: Record<string, unknown> = { state: act.observedAfter.state };
-  if (act.observedAfter.version !== undefined) observedAfter.version = act.observedAfter.version;
-  if (act.observedAfter.digest !== undefined) observedAfter.digest = act.observedAfter.digest;
-  observedAfter.evidence = [...act.observedAfter.evidence];
-  body.observedAfter = observedAfter;
+  if (act.installer !== undefined) body.installer = serializeInstaller(act.installer);
+  body.observedAfter = serializeObservedAfter(act.observedAfter);
   body.notObserved = [...act.notObserved];
   return body;
 }
@@ -597,8 +633,8 @@ export function serializeReceipt(receipt: Receipt): string {
     schemaVersion: receipt.schemaVersion,
     id: receipt.id,
     mode: receipt.mode,
-    source: { ...receipt.source },
-    license: { ...receipt.license },
+    source: serializeSource(receipt.source),
+    license: serializeLicense(receipt.license),
     declared,
     rigVersion: receipt.rigVersion,
     acts,
@@ -607,33 +643,81 @@ export function serializeReceipt(receipt: Receipt): string {
 }
 
 /**
- * The comparison form of a receipt used for the idempotent-write decision
- * (plan §1.4, "Idempotent bytes"): every act's `performedAt` is zeroed out,
- * so two receipts that differ ONLY in when an act was performed serialize to
- * the same bytes here. `serializeReceipt` above is unaffected — the real,
- * on-disk bytes always carry the true `performedAt`.
+ * The comparison form of a receipt used ONLY by the
+ * "differs only in performedAt" property below — every act's `performedAt`
+ * is zeroed out, so two receipts differing ONLY in when an act was performed
+ * serialize to the same bytes here. `serializeReceipt` above is unaffected —
+ * the real, on-disk bytes always carry the true `performedAt`.
+ *
+ * NOT used by {@link hasMaterialChange}: that function has its own, narrower
+ * notion of "differs" (plan §1.4's seven named fields), which this function's
+ * "everything except performedAt" is not the same claim as (RP-22 gate cycle
+ * 1, blocker 5 — the two used to be conflated).
  */
 export function serializeReceiptForComparison(receipt: Receipt): string {
-  const withoutPerformedAt: Receipt = {
-    ...receipt,
-    acts: Object.fromEntries(
-      Object.entries(receipt.acts).map(([harness, act]) => [
-        harness,
-        { ...(act as ReceiptAct), performedAt: '' },
-      ]),
-    ) as Receipt['acts'],
-  };
-  return serializeReceipt(withoutPerformedAt);
+  const acts: Receipt['acts'] = {};
+  for (const harness of HARNESS_VALUES) {
+    const act = receipt.acts[harness];
+    if (act !== undefined) acts[harness] = { ...act, performedAt: '' };
+  }
+  return serializeReceipt({ ...receipt, acts });
+}
+
+/** The plan §1.4 material fields, projected from one harness's act. */
+type MaterialAct = {
+  route: Route;
+  toolVersion: string | undefined;
+  state: InstanceState;
+  version: string | undefined;
+  digest: string | undefined;
+};
+
+/**
+ * The plan §1.4 material fields, and NOTHING else: `source` (whole object),
+ * `mode`, and per act `route`, `installer.toolVersion` ("tool version"), and
+ * `observedAfter`'s own `state`/`version`/`digest` triple. Everything else on
+ * a {@link Receipt} — `id`, `rigVersion`, `declared`, `license`, an act's
+ * `automation`, `installer.tool`/`exitCode`, `evidence`, `notObserved`, and
+ * every act's `performedAt` — is explicitly NOT projected here, so a change
+ * to any of THOSE fields alone can never flip {@link hasMaterialChange}.
+ *
+ * `license` in particular was considered and left out on purpose: it is
+ * provenance about the source's legal terms, not a fact about whether the
+ * integration is installed, matches, or drifted — the seven fields plan §1.4
+ * names are all installation-state facts. If a future slice finds a reason
+ * license changes should force a rewrite, that is a new decision to write
+ * down here, not an oversight to quietly fix.
+ */
+function materialProjection(receipt: Receipt): {
+  mode: Mode;
+  source: ReceiptSource;
+  acts: Partial<Record<Harness, MaterialAct>>;
+} {
+  const acts: Partial<Record<Harness, MaterialAct>> = {};
+  for (const harness of HARNESS_VALUES) {
+    const act = receipt.acts[harness];
+    if (act === undefined) continue;
+    acts[harness] = {
+      route: act.route,
+      toolVersion: act.installer?.toolVersion,
+      state: act.observedAfter.state,
+      version: act.observedAfter.version,
+      digest: act.observedAfter.digest,
+    };
+  }
+  return { mode: receipt.mode, source: { ...receipt.source }, acts };
 }
 
 /**
- * Whether `next` differs from `previous` in any MATERIAL field — source,
- * version, digest, mode, route, state, or tool version (plan §1.4) — so the
- * caller knows whether to write `next` at all, or keep `previous` (and its
- * `performedAt`) unchanged on a no-op re-run. `previous === undefined` (no
+ * Whether `next` differs from `previous` in any MATERIAL field — exactly
+ * {@link materialProjection}'s projection, which is plan §1.4's own list
+ * (source, version, digest, mode, route, state, tool version) and nothing
+ * more — so the caller knows whether to write `next` at all, or keep
+ * `previous` (and its `performedAt`, `rigVersion`, `evidence`/`notObserved`
+ * content, etc.) unchanged on a no-op re-run. `previous === undefined` (no
  * receipt exists yet) is always a material change.
  */
 export function hasMaterialChange(previous: Receipt | undefined, next: Receipt): boolean {
   if (previous === undefined) return true;
-  return serializeReceiptForComparison(previous) !== serializeReceiptForComparison(next);
+  return JSON.stringify(materialProjection(previous)) !== JSON.stringify(materialProjection(next));
 }
