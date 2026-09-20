@@ -561,7 +561,10 @@ export async function planUpgrade(
       // A `conflict` verdict already means "kept, never written"; without
       // this the reader has no way to learn that keeping it also means the
       // canonical AGENTS.md this release ships is not what gets read.
-      if (file.rel === 'CLAUDE.md' && !current.trimStart().startsWith('@AGENTS.md')) {
+      // The exact first line, not a prefix: `@AGENTS.mdEVIL` and
+      // `@AGENTS.md.bak` both satisfy `startsWith('@AGENTS.md')` while being
+      // neither Claude Code's import syntax nor anything it reads as one.
+      if (file.rel === 'CLAUDE.md' && current.split(/\r?\n/, 1)[0] !== '@AGENTS.md') {
         reason +=
           ' — this file is not the `@AGENTS.md` shim, so it shadows AGENTS.md: Claude Code ' +
           'reads it INSTEAD OF AGENTS.md by default. Adopt the shim by hand — replace this ' +
@@ -607,7 +610,10 @@ export async function planUpgrade(
     claudeAction.reason =
       `held back — AGENTS.md is ${agentsAction.verdict} (${agentsAction.reason ?? 'no reason recorded'}), ` +
       'so writing the `@AGENTS.md` shim now would leave the rulebook unreadable. Resolve ' +
-      'AGENTS.md by hand first (see its own reason above), then run `create-agent-rig ' +
+      "AGENTS.md first — paste the RENDERED copy this run prints below AGENTS.md's own " +
+      'conflict, never the raw file its "new version:" line points at (that one still ' +
+      'carries the literal `__PROJECT_NAME__` token, and is not recognised as a released ' +
+      'version until a later release actually ships it) — then run `create-agent-rig ' +
       'upgrade` again to finish adopting the shim.';
     const heldBytes = currentBytesByRel.get('CLAUDE.md');
     if (heldBytes !== undefined) nextFiles['CLAUDE.md'] = sha256(heldBytes);

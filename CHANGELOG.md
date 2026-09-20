@@ -42,11 +42,27 @@ names AGENTS.md's state and says to resolve it and run `upgrade` again.
 Without this, an edited or deleted AGENTS.md combined with an untouched
 CLAUDE.md would have silently installed a shim over a rulebook that might no
 longer be readable at all (including its `elevated-paths` declaration).
-`uninstall` follows the same generic per-file rule for both paths. Pinned by
-`packages/cli/test/upgrade.test.ts` › "RP-186: AGENTS.md becomes canonical,
-CLAUDE.md becomes its shim" (untouched pair, edited/deleted each side, the
-shadow-note cases, the held-back cases, and the full pristine/edited/deleted
-grid across both files).
+Holding CLAUDE.md back re-vouches it for its own current bytes — the same
+mechanism that lets a later `upgrade` resolve cleanly — which means a later
+`uninstall` reads it as rig-owned and unedited and **removes it**, not "leaves
+it in place" the way an ordinary, never-vouched conflict does; the decision
+record's uninstall column and a dedicated test cover this.
+
+The one always-reachable remedy for a broken AGENTS.md: pasting the
+already-rendered content `upgrade` now prints alongside the conflict (reusing
+the existing wiring hand-over mechanism — the raw template its "new version:"
+line points at still carries the literal `__PROJECT_NAME__` token and is not
+recognised as released until a future version actually publishes it).
+Measured against the real 0.9.1 release build; see
+`docs/decisions/agents-md-canonical.md`, "The remedy that actually works".
+
+Pinned by `packages/cli/test/upgrade.test.ts` › "RP-186: AGENTS.md becomes
+canonical, CLAUDE.md becomes its shim" (untouched pair, edited/deleted each
+side, the shadow-note cases, the held-back cases, the rendered-copy remedy,
+the raw-template latch, the held-back uninstall case, and the full
+pristine/edited/deleted grid across both files) and by
+`test/e2e/agents-md-migration.test.ts` (the same migration against a rig
+built from the actual pre-RP-186 payload).
 
 **Breaking: the application skeletons are removed, exactly as 0.9.0
 announced.** `create <dir>` no longer takes `--target` and no longer

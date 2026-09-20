@@ -254,6 +254,24 @@ describe('planUpgrade — what it would do, before it does anything', () => {
       expect(action?.reason).not.toMatch(/shadow/i);
     });
 
+    // PR #241 round 3 advisory: `startsWith('@AGENTS.md')` is true of a first
+    // line that only LOOKS like the import — `@AGENTS.mdEVIL` and
+    // `@AGENTS.md.bak` both satisfy it, and neither is Claude Code's own
+    // import syntax (which reads the token up to the line break). Either one
+    // suppressed the shadow notice under the old check.
+    it.each(['@AGENTS.mdEVIL\n', '@AGENTS.md.bak\n'])(
+      'a first line that only looks like the import (%s) still shadows AGENTS.md',
+      async (fakeFirstLine) => {
+        await installRig();
+        await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+        await write('CLAUDE.md', `${fakeFirstLine}## Claude Code\n\nnotes\n`);
+
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        const action = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+        expect(action?.reason).toMatch(/shadow/i);
+      },
+    );
+
     it('an AGENTS.md the user edited is kept, never overwritten with the canonical text', async () => {
       await installRig();
       await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
@@ -322,31 +340,109 @@ describe('planUpgrade — what it would do, before it does anything', () => {
       expect(readDeclaredPaths(repo)).not.toBeNull();
     });
 
-    // The way out the held-back reason has to name: fix AGENTS.md, run
-    // upgrade again. Proves the "how to finish by hand" claim is real rather
-    // than merely a sentence.
-    it('resolving AGENTS.md and re-running upgrade finishes the migration', async () => {
+    // PR #241 round 3, blocker 2 (code+security): held-back CLAUDE.md is
+    // re-vouched for its own current bytes (see the comment above the
+    // coupling in upgrade.ts) — which means `uninstall`, reading the SAME
+    // `manifest.files` every ordinary rig-owned path is read from, sees it as
+    // exactly that: rig-owned, unedited since, safe to remove. `uninstall`
+    // therefore REMOVES a held-back CLAUDE.md, same as it would any other
+    // untouched file — it does not "leave both in place", which is what an
+    // earlier draft of the decision record wrongly said.
+    it('uninstall removes a held-back CLAUDE.md — the re-vouch makes it rig-owned again', async () => {
       await installRig();
       await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
       await write('AGENTS.md', '# not the rulebook at all\n');
 
       const held = await planUpgrade(repo, { history: emptyHistory });
       await applyUpgrade(repo, held);
+      expect((await readManifest(repo))?.files['CLAUDE.md']).toBeDefined();
+
+      const uninstallPlan = await planUninstall(repo);
+      const claudeUninstallAction = uninstallPlan.actions.find((a) => a.rel === 'CLAUDE.md');
+      expect(claudeUninstallAction?.verdict).toBe('remove');
+
+      await applyUninstall(repo, uninstallPlan);
+      await expect(read('CLAUDE.md')).rejects.toThrow();
+      // AGENTS.md was never rig-owned in this state (still the user's own
+      // unrelated content) — uninstall leaves it exactly alone.
+      expect(await read('AGENTS.md')).toBe('# not the rulebook at all\n');
+    });
+
+    // The way out the held-back reason has to name: fix AGENTS.md, run
+    // upgrade again. Proves the "how to finish by hand" claim is real rather
+    // than merely a sentence.
+    // PR #241 round 3, blocker 1: the ONLY steps here are ones a real user can
+    // perform with the shipped CLI — a real `upgrade --yes` (`applyUpgrade` on
+    // a real `planUpgrade`), then pasting the RENDERED copy `plan.contents`
+    // already carries (the same mechanism `index.ts` prints alongside the
+    // conflict, reusing the wiring hand-over pattern — no new flag), then a
+    // second real `upgrade --yes`. `pretendInstalled` never appears in the
+    // resolution step: it pokes the manifest directly, which is not something
+    // a user can do, and using it here would have hidden exactly the defect
+    // this round's gate found.
+    it('resolving AGENTS.md and re-running upgrade finishes the migration', async () => {
+      await installRig();
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      await write('AGENTS.md', '# not the rulebook at all\n');
+
+      const held = await planUpgrade(repo, { history: emptyHistory });
+      const heldAgentsAction = held.actions.find((a) => a.rel === 'AGENTS.md');
+      expect(heldAgentsAction?.verdict).toBe('conflict');
+      await applyUpgrade(repo, held);
       expect((await read('CLAUDE.md')).trimStart().startsWith('@AGENTS.md')).toBe(false);
 
-      // The human resolves AGENTS.md by hand, exactly as the reason says to.
-      // `pretendInstalled` (not a bare `write`) because "resolved" has to mean
-      // restored to bytes the rig recognises as its own — the same released
-      // pre-RP-186 text — not merely present; an unrecognised AGENTS.md would
-      // legitimately stay `conflict` on the next run too.
-      await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+      // The one thing a real user has, that this fixture must use instead of
+      // `pretendInstalled`: the plan's own rendered content for the file —
+      // `plan.contents`, the same map `applyUpgrade` itself writes from, and
+      // the map `index.ts` prints back to the user for exactly this case.
+      const rendered = held.contents.get('AGENTS.md');
+      expect(rendered, 'fixture: the plan must carry rendered content for AGENTS.md').toBeTruthy();
+      await write('AGENTS.md', rendered!);
 
       const finished = await planUpgrade(repo, { history: emptyHistory });
-      expect(verdictFor(finished, 'AGENTS.md')).toBe('update');
+      // Byte-identical to what this release ships: `unchanged`, not `update`
+      // — recognised on sight, with no dependency on the release-hash
+      // history (which does not and cannot yet contain THIS release).
+      expect(verdictFor(finished, 'AGENTS.md')).toBe('unchanged');
       expect(verdictFor(finished, 'CLAUDE.md')).toBe('update');
       await applyUpgrade(repo, finished);
       expect((await read('CLAUDE.md')).trimStart().startsWith('@AGENTS.md')).toBe(true);
       expect(await read('AGENTS.md')).toContain('## One operating system, two harnesses');
+    });
+
+    // The negative space the reason text must never again overstate: pasting
+    // the RAW file the conflict's own "new version:" pointer names (still
+    // carrying the literal `__PROJECT_NAME__` token, since templates are
+    // substituted at install/upgrade time, not at rest) does NOT resolve
+    // anything — it is neither byte-identical to the rendered release nor a
+    // hash the release-history table has ever seen, so the conflict latches.
+    // Measured against the actual 0.9.1 release build in a temp worktree
+    // (not asserted here — see the PR body): restoring a rig's exact
+    // PREVIOUSLY-RELEASED bytes for AGENTS.md is recognised by
+    // `isReleasedVersion` (that hash IS in `templates/hash-history.json`),
+    // but the CURRENT, not-yet-released template's raw bytes are not, and
+    // will not be until a future release publishes and regenerates that
+    // table — which is precisely why the fix is the rendered copy, not the
+    // raw template pointer.
+    it('pasting the raw, unsubstituted template the conflict points at does NOT resolve it', async () => {
+      await installRig();
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      await write('AGENTS.md', '# not the rulebook at all\n');
+
+      const held = await planUpgrade(repo, { history: emptyHistory });
+      await applyUpgrade(repo, held);
+
+      const agentsConflict = held.actions.find((a) => a.rel === 'AGENTS.md');
+      expect(agentsConflict?.templatePath).toBeTruthy();
+      const rawTemplate = await readFile(agentsConflict!.templatePath!, 'utf8');
+      // The raw template still carries the literal token — proof this fixture
+      // is exercising the unsubstituted file, not accidentally the rendered one.
+      expect(rawTemplate).toContain('__PROJECT_NAME__');
+      await write('AGENTS.md', rawTemplate);
+
+      const stillHeld = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(stillHeld, 'AGENTS.md')).toBe('conflict');
+      expect(verdictFor(stillHeld, 'CLAUDE.md')).not.toBe('update');
     });
 
     // The full 3×3 grid, each axis independently pristine / edited / deleted,
@@ -399,17 +495,64 @@ describe('planUpgrade — what it would do, before it does anything', () => {
         if (claudeAxis === 'deleted') expect(claudeAction?.verdict).toBe('deleted');
         if (agentsAxis === 'deleted') expect(agentsAction?.verdict).toBe('deleted');
 
-        // The independent oracle: unless BOTH files were destroyed by the
-        // human, the real sweep must still find a block somewhere.
-        if (!(agentsAxis !== 'pristine' && claudeAxis === 'deleted')) {
-          const { readDeclaredPaths } = await loadDetectMissedGate();
-          const declared = readDeclaredPaths(repo);
-          if (agentsAxis === 'pristine' || claudeAxis === 'pristine') {
-            expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).not.toBeNull();
-          }
+        // The independent oracle, asserted for EVERY cell rather than only
+        // the ones expected to find something (PR #241 round 3 advisory: an
+        // oracle that only ever asserts `not.toBeNull()` never notices a cell
+        // that should have found nothing but didn't). A block survives this
+        // upgrade only through one of two carriers: AGENTS.md becomes the
+        // canonical text when it is `pristine` (recognised, replaced with
+        // this release's block-bearing content), or CLAUDE.md is held back
+        // with its own still-block-bearing pre-migration bytes when IT is
+        // `pristine` and AGENTS.md is not (the held-back branch above). An
+        // `edited` or `deleted` file never carries the block either way, so
+        // the label a cell needs is decided by the same two axes the fixture
+        // already varies — not a copy of `planUpgrade`'s own branching.
+        const { readDeclaredPaths } = await loadDetectMissedGate();
+        const declared = readDeclaredPaths(repo);
+        const expectDeclared = agentsAxis === 'pristine' || claudeAxis === 'pristine';
+        if (expectDeclared) {
+          expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).not.toBeNull();
+        } else {
+          expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).toBeNull();
         }
       },
     );
+
+    // PR #241 round 3 advisory: the 3×3 grid above exercises upgrading FROM
+    // a pre-RP-186 pair. This is the other axis entirely — a rig that has
+    // ALREADY finished the migration (CLAUDE.md is the shim, AGENTS.md is
+    // canonical), where AGENTS.md is THEN deleted on a later run. The
+    // held-back coupling only fires when CLAUDE.md's own verdict would
+    // otherwise become `update` (see the guard in `upgrade.ts`); an
+    // already-adopted shim's verdict is `unchanged`, so nothing re-triggers
+    // it here — this pins that the already-shimmed CLAUDE.md is left exactly
+    // alone rather than silently rewritten, resurrected, or held back a
+    // second time.
+    it('AGENTS.md deleted after the migration already finished: the already-adopted shim is left exactly alone', async () => {
+      await installRig();
+      await rm(abs('AGENTS.md'));
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(plan, 'AGENTS.md')).toBe('deleted');
+      expect(verdictFor(plan, 'CLAUDE.md')).toBe('unchanged');
+
+      const beforeClaudeMd = await read('CLAUDE.md');
+      await applyUpgrade(repo, plan);
+      expect(await read('CLAUDE.md')).toBe(beforeClaudeMd);
+      expect((await read('CLAUDE.md')).trimStart().startsWith('@AGENTS.md')).toBe(true);
+      await expect(read('AGENTS.md')).rejects.toThrow();
+
+      // The rest of the lifecycle the decision record's table also claims:
+      // an `uninstall` from here is the ORDINARY untouched-file path, not a
+      // new mechanism — CLAUDE.md's bytes still match what the manifest
+      // vouches for (it was never rewritten above), so it is removed like
+      // any other rig-owned file, same as it always would be.
+      const uninstallPlan = await planUninstall(repo);
+      expect(uninstallPlan.actions.find((a) => a.rel === 'CLAUDE.md')?.verdict).toBe('remove');
+      expect(uninstallPlan.actions.find((a) => a.rel === 'AGENTS.md')?.verdict).toBe('absent');
+      await applyUninstall(repo, uninstallPlan);
+      await expect(read('CLAUDE.md')).rejects.toThrow();
+    });
 
     it('a CLAUDE.md the user deleted stays deleted — never restored as the new shim', async () => {
       await installRig();

@@ -88,18 +88,78 @@ a security fix): CLAUDE.md's own verdict is never allowed to become `update`
 `deleted`, because AGENTS.md's content in that state is not what the release
 ships and may carry no rulebook (or `elevated-paths` block) at all. `upgrade`
 holds CLAUDE.md back instead: kept as its current bytes, verdict `conflict`,
-with a reason naming AGENTS.md's own state and the fix (resolve AGENTS.md,
-run `upgrade` again).
+with a reason naming AGENTS.md's own state and the fix (paste the RENDERED
+copy the run hands back for AGENTS.md — see "The remedy that actually works"
+below — then run `upgrade` again).
+
+**Held back re-vouches, and that has an `uninstall` consequence (PR #241
+round 3, blocker 2).** Holding CLAUDE.md back does not merely skip writing
+it — it also records `sha256` of its CURRENT bytes into the next manifest
+(`nextFiles['CLAUDE.md']`), the same way an ordinary `update` would record
+the new bytes. This is deliberate (see "The remedy" below: it is what lets a
+LATER `upgrade` resolve cleanly instead of falling through to "not a version
+this rig ever released" forever) — but it means `uninstall`, which reads
+`manifest.files` exactly like every other rig-owned path, now sees a
+held-back CLAUDE.md as rig-owned and unedited since, and **removes it**,
+precisely as it would any other untouched file. It does not "leave it in
+place" the way a genuine `conflict` (bytes the manifest never vouched for)
+does.
 
 | Case | Upgrade outcome | Uninstall outcome |
 | --- | --- | --- |
 | Both untouched since install | Both `update`: `CLAUDE.md` becomes the shim, `AGENTS.md` becomes canonical | Both removed (rig-owned, unedited) |
-| `CLAUDE.md` edited by the user, AGENTS.md untouched | `conflict`: kept exactly as the user left it, never force-shimmed; if the edited content is not already the `@AGENTS.md` shim, the reason also says it shadows AGENTS.md (Claude Code reads CLAUDE.md instead, by default) and names the fix; AGENTS.md upgrades independently | `CLAUDE.md` left in place (not rig-owned bytes) |
-| `AGENTS.md` edited by the user, CLAUDE.md untouched | AGENTS.md `conflict`: kept exactly as the user left it, never overwritten with the canonical text. CLAUDE.md is **held back**: verdict `conflict` (not `update`), kept as its current (old, still-readable) bytes, never written as the shim | Both left in place |
-| `AGENTS.md` deleted by the user, CLAUDE.md untouched | AGENTS.md `deleted`: stays deleted. CLAUDE.md is **held back** the same way, for the same reason (there is no rulebook file at all otherwise) | Both left absent/in place |
+| `CLAUDE.md` edited by the user, AGENTS.md untouched | `conflict`: kept exactly as the user left it, never force-shimmed; if the edited content is not already the `@AGENTS.md` shim, the reason also says it shadows AGENTS.md (Claude Code reads CLAUDE.md instead, by default) and names the fix; AGENTS.md upgrades independently | `CLAUDE.md` left in place (not rig-owned bytes — the manifest never vouches for an ordinary conflict) |
+| `AGENTS.md` edited by the user, CLAUDE.md untouched | AGENTS.md `conflict`: kept exactly as the user left it, never overwritten with the canonical text. CLAUDE.md is **held back**: verdict `conflict` (not `update`), kept as its current (old, still-readable) bytes, never written as the shim | AGENTS.md left in place (ordinary conflict, never vouched). **CLAUDE.md is REMOVED** — the hold re-vouches it, so it reads as rig-owned and unedited |
+| `AGENTS.md` deleted by the user, CLAUDE.md untouched | AGENTS.md `deleted`: stays deleted. CLAUDE.md is **held back** the same way, for the same reason (there is no rulebook file at all otherwise) | AGENTS.md stays absent. **CLAUDE.md is REMOVED**, for the same re-vouching reason as the row above |
 | `CLAUDE.md` deleted by the user | `deleted`: stays deleted, never restored as the new shim; unaffected by AGENTS.md's own state | already absent |
 | `AGENTS.md` deleted by the user, CLAUDE.md deleted too | Both `deleted`: stays deleted on both sides — there is nothing left to hold back | already absent |
+| The migration already finished (CLAUDE.md is already the shim), THEN AGENTS.md is deleted on a later run | AGENTS.md `deleted`: stays deleted. CLAUDE.md's own verdict is `unchanged` — the held-back coupling above only overrides a verdict that would otherwise become `update`, and an already-adopted shim's verdict never is, so it is left exactly as it is rather than resurrected, rewritten, or held back a second time | CLAUDE.md (the shim) removed like any other untouched file; AGENTS.md already absent. Pinned by `upgrade.test.ts`'s "AGENTS.md deleted after the migration already finished: the already-adopted shim is left exactly alone" |
 | A repo that had its own `CLAUDE.md` (or `AGENTS.md`) before `init` | `init` **refuses outright** (`InitError`, non-zero exit) rather than installing over it or recording it as `kept` — `MAPS` files are the one install-time exception to the generic "kept" path every other pre-existing process file gets. Pinned in the generator's own CLI test suite (absent in a generated rig — the same basename ambiguity noted above applies): `init.test.ts` under `packages/cli/test/`, cases "refuses to clobber an existing CLAUDE.md unless forced" and "refuses to clobber an existing AGENTS.md" | N/A — `init` never installed here, so there is nothing for `uninstall` to have owned |
+
+Pinned by `upgrade.test.ts`'s "uninstall removes a held-back CLAUDE.md — the
+re-vouch makes it rig-owned again".
+
+## The remedy that actually works — measured, not assumed (PR #241 round 3)
+
+AGENTS.md's own conflict names a fix, but two obvious readings of it do not
+work, and this project measured both rather than asserting either:
+
+- **Copying the file the conflict's own `new version:` line points at.**
+  That path is the RAW template — still carrying the unsubstituted
+  per-project placeholder (`substituteContent` replaces it by exact match;
+  see `packages/cli/src/lib/substitute.ts` — spelled out here would itself
+  be substituted away by this repo's own dogfood sync, which is exactly why
+  it is not), because templates are substituted at install/upgrade time,
+  not at rest. Pasting it verbatim gives Claude Code the wrong project name,
+  and it is not recognised as "a released version" on the next run either:
+  the release-hash table (`templates/hash-history.json`) is built from
+  PUBLISHED releases, and this one has not published yet.
+- **Restoring "the exact bytes the rig installed".** Once AGENTS.md is
+  already a conflict, the manifest no longer records what those bytes were
+  (the generic rule: "a conflict is not recorded" — deliberately unchanged
+  by this ticket, see the top of this section) — there is nothing left on
+  disk or in the manifest to restore TO.
+
+Measured against the actual 0.9.1 release build (`f5a771b`, built in a temp
+worktree): a rig's exact 0.9.1-installed AGENTS.md bytes, if the user still
+has them, DO match a hash already in `templates/hash-history.json` — so
+restoring truly historical bytes works. But that is not what a user reaches
+for from the CLI's own output, and it depends on them having a backup of a
+past release's exact bytes, which most won't.
+
+**The fix that is always reachable, with no dependency on release history at
+all:** `UpgradePlan.contents` already carries the fully rendered (substituted)
+content for every tracked file — the same map `applyUpgrade` itself writes
+from. `create-agent-rig upgrade`'s CLI now prints this rendered copy for an
+AGENTS.md conflict, the same way a handed-over wiring file's bytes are
+already printed for a human to merge by hand (`index.ts`, no new flag).
+Pasting it verbatim makes the next `planUpgrade` see bytes byte-identical to
+`releasedBytes` — `unchanged`, not `update`, decided on sight, before any
+manifest or history lookup runs at all. Pinned by `upgrade.test.ts`'s
+"resolving AGENTS.md and re-running upgrade finishes the migration" (the
+working path) and "pasting the raw, unsubstituted template the conflict
+points at does NOT resolve it" (the latch, pinned so the reason text can
+never again promise what does not happen).
 
 Pinned in the generator's own CLI test suite (absent in a generated rig —
 `packages/cli/test/` ships no test into the payload, so a pointer into it is

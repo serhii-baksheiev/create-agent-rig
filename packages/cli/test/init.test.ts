@@ -87,6 +87,14 @@ describe('initProject — the install', () => {
     expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# mine');
   });
 
+  // PR #241 round 3 advisory: "already has an CLAUDE.md" is a grammar defect
+  // ("an" before a consonant), pinned here as its own assertion so a later
+  // rewrite of this message cannot silently reintroduce it.
+  it('says "a CLAUDE.md", not "an CLAUDE.md"', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
+    await expect(initProject(repo, {})).rejects.toThrow('already has a CLAUDE.md');
+  });
+
   it('refuses to clobber an existing AGENTS.md', async () => {
     await writeFile(path.join(repo, 'AGENTS.md'), '# mine');
     await expect(initProject(repo, {})).rejects.toThrow(InitError);

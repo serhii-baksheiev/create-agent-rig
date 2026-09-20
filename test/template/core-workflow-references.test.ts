@@ -154,7 +154,7 @@ const ALLOWLIST: ReadonlyArray<{ file: string; contains: string; reason: string 
   },
   {
     file: 'AGENTS.md (dogfood copy)',
-    contains: '(`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and',
+    contains: '(`.agents/`, `.codex/`), **`journal/README.md`** and',
     reason:
       'this repository\'s own addendum ("Repo-specific rules", item 5), listing what ' +
       "sync-agent-os.mjs synchronises into THIS repo's own tree — again a statement about " +

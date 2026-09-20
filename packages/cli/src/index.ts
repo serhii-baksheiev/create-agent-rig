@@ -355,11 +355,24 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     .map(([verdict, phrase]) => [of(verdict).length, phrase] as const)
     .filter(([count]) => count > 0)
     .map(([count, phrase]) => phrase(count));
+  // RP-186 round 3 advisory: a held-back CLAUDE.md is `conflict` in name only
+  // — it is not the user's bytes kept aside, it is THIS release's own old
+  // content re-vouched pending a fix elsewhere (see the coupling in
+  // `upgrade.ts`), and counting it under "yours (kept)" tells the reader the
+  // opposite of what happened. Detected by its reason's own fixed prefix
+  // rather than a new verdict, so every other conflict-handling branch in
+  // this file is untouched.
+  const isHeldBack = (reason: string | undefined): boolean =>
+    reason !== undefined && reason.startsWith('held back');
+  const heldBack = of('conflict').filter((a) => isHeldBack(a.reason));
+  const keptConflicts = of('conflict').length - heldBack.length;
+  const heldBackPhrase =
+    heldBack.length > 0 ? [`${heldBack.length} held back (see reason above)`] : [];
   lines.push(
     '',
     `  ${of('update').length} to replace, ${of('new').length} new, ` +
-      `${of('conflict').length} yours (kept), ` +
-      [...extra, `${of('unchanged').length} already current`].join(', '),
+      `${keptConflicts} yours (kept), ` +
+      [...extra, ...heldBackPhrase, `${of('unchanged').length} already current`].join(', '),
   );
   return `${lines.join('\n')}\n`;
 }
@@ -402,6 +415,36 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
           `   without proof the rig wrote those exact bytes.\n` +
           `   This version wires it like this; merge in what is missing:\n\n` +
           wiring.replace(/^/gm, '   ') +
+          '\n',
+      );
+    }
+  }
+
+  // RP-186 round 3 (PR #241): AGENTS.md is the one conflict whose "new
+  // version:" pointer above names a RAW template file — it still carries the
+  // literal `__PROJECT_NAME__` token, because the template is substituted at
+  // install/upgrade time, not at rest. Pasting that raw file verbatim gives
+  // Claude Code the wrong project name and is not recognised by a later
+  // `upgrade` as this release's bytes either (the history table records
+  // released, not merely current, hashes — and this exact reason is why the
+  // held-back CLAUDE.md reason below points here instead of at its own
+  // "new version:" line). So the plan hands over the already-rendered
+  // content too, the same way a handed-over wiring file is: paste this
+  // verbatim and the NEXT `upgrade` sees byte-identical content and resolves
+  // it immediately, with no dependency on release history at all.
+  const agentsConflict = plan.actions.find(
+    (a) => a.rel === 'AGENTS.md' && a.verdict === 'conflict',
+  );
+  if (agentsConflict !== undefined) {
+    const rendered = plan.contents.get('AGENTS.md');
+    if (rendered !== undefined) {
+      process.stdout.write(
+        `\n!  AGENTS.md's conflict reason is above. Its "new version:" pointer is\n` +
+          `   a raw template — do not paste that file directly, it still carries\n` +
+          `   the unsubstituted \`__PROJECT_NAME__\` token. Paste this rendered\n` +
+          `   copy instead (already substituted for this project), then run\n` +
+          `   \`create-agent-rig upgrade\` again:\n\n` +
+          rendered.replace(/^/gm, '   ') +
           '\n',
       );
     }

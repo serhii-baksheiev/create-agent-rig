@@ -17,7 +17,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { initProject } from '../src/commands/init.js';
 import { planUpgrade } from '../src/commands/upgrade.js';
 import type { UpgradePlan } from '../src/commands/upgrade.js';
-import { MANIFEST_REL, readManifest } from '../src/lib/manifest.js';
+import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 // What this file is about: the CLI's *report* on its own work — the plan
@@ -96,6 +96,22 @@ async function editTheHookWiring(): Promise<void> {
 
 /** The plan the spawned CLI will compute for this repo, as ground truth. */
 const groundTruth = (): Promise<UpgradePlan> => planUpgrade(repo);
+
+/**
+ * Rewrites `rel` AND its manifest entry, so the rig "recognises" the new
+ * bytes as its own — the same fixture idiom `upgrade.test.ts`'s
+ * `pretendInstalled` uses, needed here to reach the RP-186 held-back
+ * scenario: a fresh `installRig()` from THIS build already installs the new
+ * shim/canonical split, so there is no other way to put CLAUDE.md back into
+ * the pre-RP-186, "would become `update`" state this test needs.
+ */
+async function pretendInstalled(rel: string, content: string): Promise<void> {
+  await writeFile(abs(rel), content);
+  const manifest = await readManifest(repo);
+  if (manifest === null) throw new Error('fixture: no manifest');
+  manifest.files[rel] = sha256(content);
+  await writeManifest(repo, manifest);
+}
 
 beforeAll(async () => {
   sandbox = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-build-'));
@@ -407,5 +423,36 @@ describe('the plan summary accounts for every file it planned', () => {
       /^ {2}\d+ to replace, \d+ new, \d+ yours \(kept\), \d+ already current$/,
     );
     expect(sum(numbersIn(summary ?? ''))).toBe(plan.actions.length);
+  });
+
+  // PR #241 round 3 advisory: a held-back CLAUDE.md is `conflict` in verdict
+  // name only — it is this release's OWN old content, re-vouched pending a
+  // fix to AGENTS.md, not the user's bytes kept aside. Counting it under
+  // "yours (kept)" would tell the reader the opposite of what happened.
+  it('counts a held-back CLAUDE.md separately from "yours (kept)"', async () => {
+    await installRig();
+    const preRp186Text = [
+      '# __PROJECT_NAME__',
+      '',
+      '## One operating system, two harnesses',
+      '',
+      'Old shared rulebook text.',
+      '',
+      '```elevated-paths',
+      '.claude/',
+      '```',
+      '',
+    ].join('\n');
+    await pretendInstalled('CLAUDE.md', preRp186Text);
+    await writeFile(abs('AGENTS.md'), '# not the rulebook at all\n');
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const summary = lineMatching(run.stdout, /to replace/);
+    expect(summary, 'the plan printed no summary line').toBeTruthy();
+    expect(summary).toMatch(/1 held back \(see reason above\)/);
+    // AGENTS.md's own conflict is the only ordinary "yours (kept)" here —
+    // CLAUDE.md must not inflate that count.
+    expect(summary).toMatch(/\b1 yours \(kept\)/);
   });
 });

@@ -210,8 +210,10 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     // One pass over the tracked markdown files: `git ls-files` never descends
     // into node_modules or .git, so the work is bounded by what is committed.
     // Only .md is scanned, because only a .md can be a declaration SOURCE the
-    // sweep reads: `readDeclaredPaths` parses CLAUDE.md and .claude/rules/*.md
-    // and nothing else. The one .mjs that matters is scripts/sync-agent-os.mjs,
+    // sweep reads: `readDeclaredPaths` parses AGENTS.md, CLAUDE.md (since
+    // RP-186 — a not-yet-migrated or held-back CLAUDE.md may still carry the
+    // block) and .claude/rules/*.md, and nothing else. The one .mjs that
+    // matters is scripts/sync-agent-os.mjs,
     // whose ELEVATED_PATHS is this repo's authoritative list — it is not scanned
     // here and does not need to be, because `scripts/` is itself declared. Move
     // that list elsewhere and this reasoning has to move with it.
