@@ -241,6 +241,7 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
       'hash-history.test.ts',
       'invariants.test.ts',
       'journal.test.ts',
+      'no-vendored-plugins.test.ts',
       'platform-skips.test.ts',
       'run-journal.test.ts',
     ]);
