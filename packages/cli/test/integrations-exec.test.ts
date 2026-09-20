@@ -85,11 +85,16 @@ describe('resolveTool — never from inside the repository', () => {
       if (result.status === 'ok') {
         // The independent oracle: the resolved path must not sit under the
         // repo's own realpath, computed here rather than trusted from the
-        // module under test.
+        // module under test. `.native` (not the plain JS realpath) is what
+        // makes this oracle agree with the module on win32: the plain JS
+        // implementation does not expand an 8.3 short-name path component
+        // (a real windows-smoke TEMP directory is spelled short, e.g.
+        // `RUNNER~1`), so a plain `realpathSync` oracle disagreed with this
+        // module's own (correctly long-form) answer.
         const { realpathSync } = await import('node:fs');
-        const repoReal = realpathSync(fakeRepo);
+        const repoReal = realpathSync.native(fakeRepo);
         expect(result.absFile.startsWith(repoReal + path.sep)).toBe(false);
-        expect(result.absFile).toBe(realpathSync(outsideFile));
+        expect(result.absFile).toBe(realpathSync.native(outsideFile));
       }
     } finally {
       await removeFixture(outside);
@@ -617,7 +622,7 @@ describe('boundedRun — environment allow-list', () => {
   });
 
   it.skipIf(!IS_WIN32)(
-    'on win32, the child env is exactly ALLOWED_ENV_VARS intersected with the parent env, PLUS HOMEDRIVE/HOMEPATH which the OS adds regardless of the filtered block this module builds (this test runs only on win32 — gate cycle 1, blocker 8: the prior wording claimed this was "observed" on CI with nothing in-tree asserting it)',
+    'on win32, HOMEDRIVE/HOMEPATH reach the child even though this module never allow-listed them for THIS call — but the OS adds strictly more than those two (measured on windows-smoke: LOGONSERVER also arrives), so this asserts presence/absence, never a closed set (this test runs only on win32 — gate cycle 1, blocker 8: the prior wording claimed this was "observed" on CI with nothing in-tree asserting it; gate cycle 2 fallout: an earlier version of this very test wrongly asserted the child env was EXACTLY ALLOWED_ENV_VARS plus those two keys, and LOGONSERVER promptly falsified it)',
     async () => {
       const candidateEnv: NodeJS.ProcessEnv = { ...process.env, SECRET_TOKEN: 'sekret-value' };
       const script = 'process.stdout.write(JSON.stringify(process.env));';
@@ -630,13 +635,11 @@ describe('boundedRun — environment allow-list', () => {
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') return;
       const childEnv = JSON.parse(result.stdout) as Record<string, string>;
-      for (const key of Object.keys(childEnv)) {
-        expect(ALLOWED_ENV_VARS.includes(key), `unexpected env key reached the child: ${key}`).toBe(
-          true,
-        );
-      }
       expect(Object.prototype.hasOwnProperty.call(childEnv, 'HOMEDRIVE')).toBe(true);
       expect(Object.prototype.hasOwnProperty.call(childEnv, 'HOMEPATH')).toBe(true);
+      // The actual security property, unaffected by whatever else the OS
+      // injects: nothing this module was HANDED and did not allow-list ever
+      // reaches the child.
       expect(Object.prototype.hasOwnProperty.call(childEnv, 'SECRET_TOKEN')).toBe(false);
     },
   );
@@ -769,9 +772,25 @@ describe('boundedRun — deadline', () => {
     "a child killed by an external signal (not by boundedRun's own deadline) is classified killed-by-signal, with its already-produced output kept (skipped on win32: POSIX signal semantics only — gate cycle 1, blocker 2)",
     async () => {
       const marker = path.join(workDir, 'pid.txt');
+      const ready = path.join(workDir, 'ready.txt');
+      // Writing the pid marker immediately after the stdout write is not
+      // enough on its own: the two statements are adjacent and synchronous
+      // in the CHILD, but that says nothing about when the bytes already
+      // sitting in the OS pipe become externally observable as "definitely
+      // delivered" — killing the child the instant this test's own poll
+      // notices the pid marker raced the pipe's own delivery once, under
+      // load, and lost the output (gate cycle 2 fallout: `result.stdout`
+      // came back `''`). The child instead waits a further 150ms of its own
+      // (a budget, not a proof — this is unavoidably a real-clock handshake
+      // for a real OS pipe) after the stdout write before writing a SECOND,
+      // separate marker; this test polls for THAT one, never a fixed sleep
+      // in its own control flow.
       const script = `
       require('fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));
       process.stdout.write('before-signal');
+      setTimeout(function(){
+        require('fs').writeFileSync(${JSON.stringify(ready)}, 'ready');
+      }, 150);
       setTimeout(function(){}, 60000);
     `;
       const resultPromise = boundedRun(process.execPath, ['-e', script], {
@@ -780,17 +799,11 @@ describe('boundedRun — deadline', () => {
         repoDir: repoRoot,
       });
 
-      // Poll for the marker rather than a fixed sleep — the child must have
-      // written its pid before it can be signaled.
-      let pidText = '';
-      await pollUntil(() => {
-        try {
-          pidText = readFileSync(marker, 'utf8');
-          return pidText.length > 0;
-        } catch {
-          return false;
-        }
-      }, 5000);
+      // Poll for the READY marker (written 150ms after the stdout write),
+      // never a fixed sleep in this test's own control flow.
+      const isReady = await pollUntil(() => existsSync(ready), 5000);
+      expect(isReady).toBe(true);
+      const pidText = readFileSync(marker, 'utf8');
       expect(pidText).not.toBe('');
 
       process.kill(Number(pidText), 'SIGTERM');

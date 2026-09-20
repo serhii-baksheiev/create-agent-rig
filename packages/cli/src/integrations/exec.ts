@@ -90,19 +90,25 @@
  *    forwards, not a ceiling the operating system enforces beneath it. On
  *    win32, a spawned child's `process.env` carries additional user-profile
  *    variables this module never put in the filtered block it passed to
- *    `execFile` — `HOMEDRIVE`, `HOMEPATH` — and that IS now measured on this
+ *    `execFile` — at minimum `HOMEDRIVE`, `HOMEPATH`, and, measured on
+ *    windows-smoke, `LOGONSERVER` too — and that IS now measured on this
  *    platform rather than merely observed on CI and reported in prose: see
- *    "on win32, the child env is exactly ALLOWED_ENV_VARS intersected with
- *    the parent env, PLUS HOMEDRIVE/HOMEPATH which the OS adds regardless of
- *    the filtered block this module builds (this test runs only on win32 —
- *    gate cycle 1, blocker 8: the prior wording claimed this was "observed"
- *    on CI with nothing in-tree asserting it)". The property this module
- *    actually guarantees, and the one its own test asserts on every
- *    platform, is negative: nothing this module was HANDED and did not
- *    allow-list (a secret, a stray variable, `NODE_OPTIONS`) is ever
- *    forwarded. The positive "the child's environment is exactly this set"
- *    check only holds where the platform adds nothing of its own — measured
- *    true on Linux, measured false (by exactly two extra keys) on win32.
+ *    "on win32, HOMEDRIVE/HOMEPATH reach the child even though this module
+ *    never allow-listed them for THIS call — but the OS adds strictly more
+ *    than those two (measured on windows-smoke: LOGONSERVER also arrives),
+ *    so this asserts presence/absence, never a closed set (this test runs
+ *    only on win32 — gate cycle 1, blocker 8: the prior wording claimed this
+ *    was "observed" on CI with nothing in-tree asserting it; gate cycle 2
+ *    fallout: an earlier version of this very test wrongly asserted the
+ *    child env was EXACTLY ALLOWED_ENV_VARS plus those two keys, and
+ *    LOGONSERVER promptly falsified it)". The property this module actually
+ *    guarantees, and the one its own test asserts on every platform, is
+ *    negative: nothing this module was HANDED and did not allow-list (a
+ *    secret, a stray variable, `NODE_OPTIONS`) is ever forwarded. The
+ *    positive "the child's environment is exactly this set" check only
+ *    holds where the platform adds nothing of its own — measured true on
+ *    Linux, measured false (by an UNENUMERATED, not merely two-key, margin)
+ *    on win32.
  * 5. Captured `stdout`/`stderr` are sanitized for control/format characters
  *    but NOT redacted for secrets — a token or credential a spawned tool
  *    prints is returned as-is. No caller of this module may persist a
@@ -289,6 +295,26 @@ export function classifyCandidates(
 }
 
 /**
+ * The path module for the DECLARED platform — the same pattern
+ * `../lib/subsystems.ts`'s own `pathFor` uses. `PATH`-string syntax (the
+ * delimiter, what counts as absolute, how two paths relate) is a property of
+ * the platform being modeled, not of the host actually running this process
+ * — {@link isInside} below uses it for exactly that reason, measured on
+ * windows-smoke: a pure comparison built from `path.relative`/`isAbsolute`
+ * (the host-bound module) gave the HOST's answer regardless of the
+ * `platform` argument, so declaring `platform: 'linux'` on a win32 CI
+ * runner silently ran win32 path semantics instead (gate cycle 2 fallout of
+ * blocker 3's own fix). The real filesystem calls elsewhere in this module
+ * (`readdirSync`, `realpathSync`, the final `path.join` building a candidate
+ * file) stay host-native regardless, because they touch the actual
+ * filesystem this process runs on, never a simulated one — there is no way
+ * to make those anything else.
+ */
+function pathFor(platform: NodeJS.Platform) {
+  return platform === 'win32' ? path.win32 : path.posix;
+}
+
+/**
  * `candidate` is `root` itself, or nested under it — compared as two
  * REALPATHS by the caller. Case-folds on win32/darwin (both have
  * case-insensitive-by-default filesystems), stays case-sensitive elsewhere.
@@ -296,16 +322,20 @@ export function classifyCandidates(
  * directory once path syntax is normalised (a trailing-slash or, after
  * case-folding, a case-only respelling of the root) — that is "inside", not
  * a mismatch (gate cycle 1, blocker 3: the previous `rel !== ''` condition
- * returned `false` for exactly this case).
+ * returned `false` for exactly this case). Uses {@link pathFor} for the
+ * relative/absolute computation itself — see that function's own comment —
+ * so the `platform` argument governs the answer on every host, not only the
+ * case-folding decision.
  */
 export function isInside(candidate: string, root: string, platform: NodeJS.Platform): boolean {
+  const p = pathFor(platform);
   const caseFold = platform === 'win32' || platform === 'darwin';
   const c = caseFold ? candidate.toLowerCase() : candidate;
   const r = caseFold ? root.toLowerCase() : root;
   if (c === r) return true;
-  const rel = path.relative(r, c);
+  const rel = p.relative(r, c);
   if (rel === '') return true;
-  return !rel.startsWith('..') && !path.isAbsolute(rel);
+  return !rel.startsWith('..') && !p.isAbsolute(rel);
 }
 
 /**
@@ -326,20 +356,6 @@ function realpathOrNull(target: string): string | null {
       return null;
     }
   }
-}
-
-/**
- * The path module for the DECLARED platform — the same pattern
- * `../lib/subsystems.ts`'s own `pathFor` uses. `PATH`-string syntax (the
- * delimiter, what counts as absolute) is a property of the platform being
- * modeled, not of the host actually running this process; the real
- * filesystem calls below (`readdirSync`, `realpathSync`, the final
- * `path.join` building a candidate file) stay host-native regardless,
- * because they touch the actual filesystem this process runs on, never a
- * simulated one — there is no way to make those anything else.
- */
-function pathFor(platform: NodeJS.Platform) {
-  return platform === 'win32' ? path.win32 : path.posix;
 }
 
 /**
