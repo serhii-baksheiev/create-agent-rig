@@ -126,6 +126,91 @@ export function resolveInside(root: string, rel: string): string | null {
 }
 
 /**
+ * What kind of thing a caller of {@link resolveReadableInside} expects to find
+ * at the end of `rel` — a plain file (a declaration, a receipt) or a
+ * directory (the receipts directory itself).
+ */
+export type ReadableKind = 'file' | 'directory';
+
+export type SafeReadResult =
+  | { status: 'ok'; path: string }
+  /** No component of `rel` exists yet — there is nothing to read, and that is not a refusal. */
+  | { status: 'absent' }
+  /**
+   * Something exists at (or along) `rel`, but reading it safely is refused:
+   * a symlink component (never followed, in either direction — RP-22 round
+   * 2), the final component being the wrong kind (a directory where a file
+   * was expected, or vice versa), the resolved path escaping `root`, or an
+   * I/O error other than "does not exist" (`code`, when one is available).
+   */
+  | {
+      status: 'unsafe';
+      reason: 'symlink' | 'wrong-kind' | 'escapes-root' | 'io-error';
+      code?: string;
+    };
+
+/**
+ * The read-side counterpart of {@link resolveWritableInside}: walk `rel`
+ * under `root` one segment at a time, exactly the same way, but for a
+ * caller that only intends to READ what is there — never write, never
+ * create. A symlink anywhere in the path is refused, never followed, in
+ * EITHER direction: a write-refused symlink that is nonetheless silently
+ * READ (a committed `.rig/integrations.json` pointing outside the
+ * repository, honoured as if it were the real declaration) is exactly as
+ * dangerous as one silently written through, because from S5 on this file's
+ * content decides what gets installed (RP-22 round 2 gate finding).
+ *
+ * Unlike {@link resolveWritableInside}, a missing component is `'absent'`,
+ * not a green light — there is nothing to read, and a caller building a
+ * fresh declaration from scratch is a different case from one whose read
+ * was refused. The final component is additionally required to be the
+ * `kind` the caller names, so a directory sitting where a file is expected
+ * (or the reverse) is `'unsafe'` rather than surfacing as a raw `EISDIR`/
+ * `ENOTDIR` from a subsequent `readFile`/`readdir` call.
+ */
+export async function resolveReadableInside(
+  root: string,
+  rel: string,
+  kind: ReadableKind,
+): Promise<SafeReadResult> {
+  let base: string;
+  try {
+    base = await realpath(root);
+    if (!(await lstat(base)).isDirectory()) return { status: 'absent' };
+  } catch {
+    return { status: 'absent' };
+  }
+
+  const dest = resolveInside(base, rel);
+  if (dest === null) return { status: 'unsafe', reason: 'escapes-root' };
+
+  let cursor = base;
+  const segments = rel.split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    cursor = path.join(cursor, segments[index]!);
+    let entry: Awaited<ReturnType<typeof lstat>>;
+    try {
+      entry = await lstat(cursor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'absent' };
+      return { status: 'unsafe', reason: 'io-error', code: (error as NodeJS.ErrnoException).code };
+    }
+    if (entry.isSymbolicLink()) return { status: 'unsafe', reason: 'symlink' };
+    const resolved = await realpath(cursor);
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+      return { status: 'unsafe', reason: 'escapes-root' };
+    }
+    const isLast = index === segments.length - 1;
+    if (isLast) {
+      const isRightKind = kind === 'file' ? entry.isFile() : entry.isDirectory();
+      if (!isRightKind) return { status: 'unsafe', reason: 'wrong-kind' };
+    }
+  }
+
+  return { status: 'ok', path: dest };
+}
+
+/**
  * Resolve a prospective write through the repository's real path and refuse
  * every symlink in the relative path that already exists.
  *

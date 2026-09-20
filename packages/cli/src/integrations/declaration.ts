@@ -34,7 +34,15 @@ import { validateDescriptor, type Harness, type ProviderDescriptor } from './reg
 export const DECLARATION_REL = '.rig/integrations.json';
 export const DECLARATION_SCHEMA_VERSION = 1;
 
-const MAX_DECLARATION_BYTES = 64 * 1024;
+/**
+ * Exported (RP-22 round 2) so a caller that wants to refuse an oversized file
+ * BEFORE reading it whole — `stat` the path, compare its size, only then
+ * `readFile` — has the same number `parseDeclaration` itself enforces after
+ * the fact, rather than a second, easily-drifting copy of `64 * 1024`
+ * (`.claude/rules/invariants.md`, "One mechanism, one implementation"). This
+ * export changes no behaviour here: the check below is unchanged.
+ */
+export const MAX_DECLARATION_BYTES = 64 * 1024;
 
 /**
  * The version pin pattern. Exported so a test can assert, byte for byte, that

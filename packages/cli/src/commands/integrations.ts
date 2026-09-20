@@ -16,19 +16,42 @@
 // OWN behaviour — declaration parsing, the exit-code rule, the payload shape,
 // upsert semantics on `add` — is fully testable without waiting on those
 // slices; a later slice widens the default, not this module's shape.
-// Pinned by packages/cli/test/integrations-cli.test.ts.
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+//
+// RP-22 round 2 (gate cycle 1 findings): `readDeclarationFile` is the ONE
+// place either verb reads `.rig/integrations.json`, with one failure policy;
+// every filesystem read on this module's paths (the declaration, one
+// receipt, the receipts directory) goes through `resolveReadableInside`
+// first, which refuses a symlink component in either direction — a
+// committed `.rig/integrations.json` pointing outside the repository is
+// never silently honoured for reading any more than `resolveWritableInside`
+// would silently write through it. `add` never prunes a declaration entry
+// the current registry rejects; it preserves it verbatim (see
+// `addIntegration`'s own doc comment) and names it. Every read is
+// size-bounded before the bytes are loaded (`stat` first), and the receipts
+// directory scan is bounded to `MAX_ORPHAN_CANDIDATES` with an explicit
+// `orphanScan` signal when the bound is hit or the directory could not be
+// read at all. Pinned by packages/cli/test/integrations-cli.test.ts.
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   DECLARATION_REL,
+  DECLARATION_SCHEMA_VERSION,
+  MAX_DECLARATION_BYTES,
+  VERSION_PATTERN,
   parseDeclaration,
   serializeDeclaration,
+  truncateForMessage,
   type DeclaredIntegration,
   type Rejection,
   type RejectionReason,
 } from '../integrations/declaration.js';
-import { parseReceipt, RECEIPTS_DIR_REL, type Receipt } from '../integrations/receipt.js';
+import {
+  MAX_RECEIPT_BYTES,
+  RECEIPTS_DIR_REL,
+  parseReceipt,
+  type Receipt,
+} from '../integrations/receipt.js';
 import {
   REGISTRY,
   type Harness,
@@ -46,9 +69,37 @@ import {
   type ObservedNow,
   type ReceiptBaseline,
 } from '../integrations/state.js';
-import { resolveWritableInside } from '../lib/safe-path.js';
+import { hasControlCharacter } from '../lib/safe-text.js';
+import {
+  resolveReadableInside,
+  resolveWritableInside,
+  type SafeReadResult,
+} from '../lib/safe-path.js';
 
 const HARNESSES: readonly Harness[] = ['claude-code', 'codex'];
+
+/**
+ * Bounded, cheap-to-check display sanitiser for a value that ORIGINATES
+ * outside this process — a CLI positional argument, a value read back from a
+ * committed file — before it is interpolated into human-facing PROSE
+ * (stdout/stderr text, never a `--json` payload: `JSON.stringify` already
+ * escapes every control/format character on its own, and truncating an
+ * actual data value there would misrepresent it). Truncates first
+ * (`truncateForMessage`, the same 64-character cap `declaration.ts` and
+ * `receipt.ts` already use — bounding the per-character pass below to at
+ * most 65 code points regardless of the input's real length), then replaces
+ * every character `hasControlCharacter` — the SAME predicate `declaration.ts`
+ * and `receipt.ts` scan committed input with — flags, with U+FFFD. Closes the
+ * gap gate cycle 1 measured: an OSC/CSI-shaped `<id>` on `setup add` forged a
+ * fake success line on a terminal that interprets escape sequences (RP-22
+ * round 2, advisory).
+ */
+function sanitizeForDisplay(value: string): string {
+  const truncated = truncateForMessage(value);
+  return [...truncated]
+    .map((character) => (hasControlCharacter(character) ? '�' : character))
+    .join('');
+}
 
 // ---------------------------------------------------------------------------
 // setup list
@@ -101,6 +152,188 @@ function renderListProse(entries: readonly ListEntry[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Shared, symlink-safe, bounded reads (RP-22 round 2, blocker 2)
+//
+// ONE function reads `.rig/integrations.json` for both `add` and `verify`,
+// with ONE failure policy, so the two can never quietly diverge on what
+// counts as "unreadable" the way gate cycle 1 found them doing (`verify`
+// rethrew a non-ENOENT errno as an uncaught exception; `add` already refused
+// it gracefully). Every read this module performs — the declaration, one
+// receipt, the receipts directory — walks through `resolveReadableInside`
+// first: a symlink component is refused, never followed, in either
+// direction, and a file/directory type mismatch (`EISDIR`/`ENOTDIR` waiting
+// to happen) is caught before any read is attempted. Size is checked with a
+// `stat` before the bytes are loaded, so an oversized file is refused
+// without ever being read whole into memory.
+// ---------------------------------------------------------------------------
+
+function ioErrorCode(error: unknown): string {
+  return (error as NodeJS.ErrnoException).code ?? 'unknown error';
+}
+
+function describeUnsafeRead(
+  resolved: Extract<SafeReadResult, { status: 'unsafe' }>,
+  label: string,
+): string {
+  switch (resolved.reason) {
+    case 'symlink':
+      return `${label} path contains a symlink component`;
+    case 'wrong-kind':
+      return `${label} path is not the expected kind of entry`;
+    case 'escapes-root':
+      return `${label} path resolves outside the repository`;
+    case 'io-error':
+      return `${label} could not be read (${resolved.code ?? 'unknown error'})`;
+    /* c8 ignore next 2 -- exhaustiveness guard: SafeReadResult's reason union is closed */
+    default: {
+      const exhaustive: never = resolved.reason;
+      return `${label} could not be read (${String(exhaustive)})`;
+    }
+  }
+}
+
+export type DeclarationRead =
+  | { status: 'absent' }
+  | { status: 'ok'; raw: string; entries: DeclaredIntegration[]; rejected: Rejection[] }
+  /**
+   * `symlink` distinguishes ONE sub-case a caller may treat differently:
+   * `add` proceeds as if there were nothing to preserve when the ONLY
+   * problem is a symlink (the write step below refuses the identical path
+   * anyway, so nothing is ever silently trusted or overwritten), but refuses
+   * outright, bytes untouched, for every OTHER invalid shape — bad JSON, an
+   * oversized file, a control character, a directory sitting at the path, a
+   * genuine I/O error — where retrying as a write would either repeat the
+   * same unreadable shape or throw a raw `EISDIR` out of `writeFile`.
+   * `verify` ignores this flag entirely: any `invalid` is reported the same
+   * way, because it never writes.
+   */
+  | { status: 'invalid'; error: string; symlink: boolean };
+
+async function readDeclarationFile(
+  repoDir: string,
+  registry: readonly ProviderDescriptor[],
+): Promise<DeclarationRead> {
+  const resolved = await resolveReadableInside(repoDir, DECLARATION_REL, 'file');
+  if (resolved.status === 'absent') return { status: 'absent' };
+  if (resolved.status === 'unsafe') {
+    return {
+      status: 'invalid',
+      error: describeUnsafeRead(resolved, 'the declaration'),
+      symlink: resolved.reason === 'symlink',
+    };
+  }
+
+  let size: number;
+  try {
+    size = (await stat(resolved.path)).size;
+  } catch (error) {
+    return {
+      status: 'invalid',
+      error: `the declaration could not be read (${ioErrorCode(error)})`,
+      symlink: false,
+    };
+  }
+  if (size > MAX_DECLARATION_BYTES) {
+    return { status: 'invalid', error: 'the declaration is larger than 64 KiB', symlink: false };
+  }
+
+  let raw: string;
+  try {
+    raw = await readFile(resolved.path, 'utf8');
+  } catch (error) {
+    return {
+      status: 'invalid',
+      error: `the declaration could not be read (${ioErrorCode(error)})`,
+      symlink: false,
+    };
+  }
+
+  const parsed = parseDeclaration(raw, registry);
+  if (parsed.status === 'invalid')
+    return { status: 'invalid', error: parsed.error, symlink: false };
+  return { status: 'ok', raw, entries: parsed.entries, rejected: parsed.rejected };
+}
+
+type ReceiptStatus = 'absent' | 'present' | 'invalid';
+
+async function readReceiptFile(
+  repoDir: string,
+  id: string,
+): Promise<{ status: ReceiptStatus; receipt?: Receipt }> {
+  const resolved = await resolveReadableInside(repoDir, `${RECEIPTS_DIR_REL}/${id}.json`, 'file');
+  if (resolved.status === 'absent') return { status: 'absent' };
+  if (resolved.status === 'unsafe') return { status: 'invalid' };
+
+  let size: number;
+  try {
+    size = (await stat(resolved.path)).size;
+  } catch {
+    return { status: 'invalid' };
+  }
+  if (size > MAX_RECEIPT_BYTES) return { status: 'invalid' };
+
+  let raw: string;
+  try {
+    raw = await readFile(resolved.path, 'utf8');
+  } catch {
+    return { status: 'invalid' };
+  }
+  const parsed = parseReceipt(raw);
+  if (parsed.status === 'invalid') return { status: 'invalid' };
+  return { status: 'present', receipt: parsed.receipt };
+}
+
+/**
+ * The most orphan CANDIDATES one `verify` run reads and parses. Sized well
+ * above any real project's integration count. The cost this bounds is the
+ * per-candidate file I/O (a symlink-safe walk plus a bounded read) inside
+ * the loop below, not the `readdir` call itself — so the cap applies to the
+ * CANDIDATE list (already filtered to `.json` names, already excluding
+ * accepted ids and any `--only` mismatch), never to the raw directory entry
+ * count. Measured (gate cycle 1): an unbounded scan over 30 000 files took
+ * 13.8 s.
+ */
+export const MAX_ORPHAN_CANDIDATES = 500;
+
+export type OrphanScan = 'complete' | 'truncated' | 'unreadable';
+
+async function scanOrphanedReceipts(
+  repoDir: string,
+  acceptedIds: ReadonlySet<string>,
+  only: string | undefined,
+): Promise<{ orphaned: string[]; scan: OrphanScan }> {
+  const resolved = await resolveReadableInside(repoDir, RECEIPTS_DIR_REL, 'directory');
+  if (resolved.status === 'absent') return { orphaned: [], scan: 'complete' };
+  // Unreadable is reported, not silenced into "no orphans": a directory
+  // that could not be read is not evidence of an empty one.
+  if (resolved.status === 'unsafe') return { orphaned: [], scan: 'unreadable' };
+
+  let names: string[];
+  try {
+    names = await readdir(resolved.path);
+  } catch {
+    return { orphaned: [], scan: 'unreadable' };
+  }
+
+  const candidates = names
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => name.slice(0, -'.json'.length))
+    .filter((id) => !acceptedIds.has(id))
+    .filter((id) => only === undefined || id === only)
+    .sort();
+
+  const scan: OrphanScan = candidates.length > MAX_ORPHAN_CANDIDATES ? 'truncated' : 'complete';
+  const bounded = candidates.slice(0, MAX_ORPHAN_CANDIDATES);
+
+  const orphaned: string[] = [];
+  for (const id of bounded) {
+    const result = await readReceiptFile(repoDir, id);
+    if (result.status === 'present') orphaned.push(id);
+  }
+  return { orphaned, scan };
+}
+
+// ---------------------------------------------------------------------------
 // setup add
 // ---------------------------------------------------------------------------
 
@@ -115,61 +348,126 @@ export type AddOptions = {
 
 export type AddRefusalReason =
   | RejectionReason
-  /** The on-disk declaration does not parse, so a safe upsert is impossible. */
+  /** The on-disk declaration does not parse (and is not merely a symlink), so a safe upsert is impossible. */
   | 'declaration-unreadable'
   /** `resolveWritableInside` refused the write (a symlink, or an escape). */
   | 'write-refused';
 
 export type AddOutcome =
-  | { outcome: 'written' | 'dry-run'; entry: DeclaredIntegration; changed: boolean }
+  | {
+      outcome: 'written' | 'dry-run';
+      entry: DeclaredIntegration;
+      changed: boolean;
+      /** Ids this call preserved verbatim because the CURRENT registry rejects them — never pruned silently. */
+      preservedRejected: string[];
+    }
   | { outcome: 'refused'; reason: AddRefusalReason; message?: string };
 
-async function readDeclarationEntries(
-  repoDir: string,
-  registry: readonly ProviderDescriptor[],
-): Promise<{ raw: string | undefined; entries: DeclaredIntegration[] } | { error: string }> {
-  let raw: string;
-  try {
-    raw = await readFile(path.join(repoDir, ...DECLARATION_REL.split('/')), 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { raw: undefined, entries: [] };
-    // Anything else — EISDIR from a symlink-to-directory planted at the
-    // declaration path, EACCES, … — is reported the same way a file that
-    // parses but is invalid is: refused, never thrown. `add` never follows a
-    // hostile shape at this path any further than learning it cannot read it.
-    return {
-      error: `the existing declaration could not be read (${(error as NodeJS.ErrnoException).code ?? 'unknown error'})`,
-    };
-  }
-  const parsed = parseDeclaration(raw, registry);
-  if (parsed.status === 'invalid') return { error: parsed.error };
-  return { raw, entries: parsed.entries };
+/**
+ * Re-parse the raw declaration text to recover each entry's ORIGINAL,
+ * unmodified JSON value. Safe to call only once `readDeclarationFile` has
+ * already returned `status: 'ok'` for this same `raw` — that already proved
+ * the whole file is well-formed JSON, within depth and control-character
+ * bounds, with `integrations` an array of plain objects each carrying a
+ * unique string `id` (`parseDeclaration`'s own file-level checks). This is
+ * the ONLY way to recover a REJECTED entry's original shape:
+ * `parseDeclaration`'s `rejected` array is evidence for a human (an id and a
+ * reason), never a value meant to round-trip.
+ */
+function rawIntegrationEntries(raw: string): Record<string, unknown>[] {
+  const root = JSON.parse(raw) as { integrations: Record<string, unknown>[] };
+  return root.integrations;
 }
 
 /**
- * Validate `id` (plus `required`/`version`) against `registry`, then create or
- * update its entry in `.rig/integrations.json`. Upsert, not replace: a field
- * the caller did not pass keeps the PREVIOUSLY recorded value (so a later
- * `add <id>` with no `--required` does not silently drop an earlier
+ * Byte-stable ordering, extended for preserved-rejected entries (RP-22
+ * round 2, blocker 1): accepted entries and verbatim preserved-rejected raw
+ * entries sort together, by `id`, in ONE list — the same key
+ * `serializeDeclaration` itself sorts accepted entries by, so the file's
+ * overall ordering rule does not fork into "accepted entries here, rejected
+ * ones somewhere else". A preserved entry's OWN fields are never rewritten
+ * or normalised: it is written back exactly as `JSON.parse` produced it
+ * (the same keys, in the same order — a JS object preserves string-key
+ * insertion order — the same values), never routed through
+ * `serializeDeclaration`'s per-entry canonical shape. "Verbatim" means the
+ * same JSON VALUE, not the same original file bytes: the file as a whole is
+ * still always re-serialized with the two-space-indent, trailing-newline
+ * convention this format always uses — there is no partial-file, leave-the-
+ * rest-untouched write mode here, any more than there is one for `upgrade`.
+ */
+function serializeWithPreservedRejected(
+  accepted: readonly DeclaredIntegration[],
+  preservedRaw: readonly Record<string, unknown>[],
+): string {
+  const canonical = JSON.parse(serializeDeclaration(accepted)) as {
+    integrations: Record<string, unknown>[];
+  };
+  const merged = [...canonical.integrations, ...preservedRaw].sort((a, b) => {
+    const aId = a.id as string;
+    const bId = b.id as string;
+    return aId < bId ? -1 : aId > bId ? 1 : 0;
+  });
+  return `${JSON.stringify(
+    { schemaVersion: DECLARATION_SCHEMA_VERSION, integrations: merged },
+    null,
+    2,
+  )}\n`;
+}
+
+/**
+ * Validate `id` (plus `required`/`version`) against `registry`, then create
+ * or update its entry in `.rig/integrations.json`. Upsert, not replace: a
+ * field the caller did not pass keeps the PREVIOUSLY recorded value (so a
+ * later `add <id>` with no `--required` does not silently drop an earlier
  * `--required`) — `harnesses` is likewise always carried over unchanged,
  * because this verb never sets it. Validation reuses `parseDeclaration`
  * itself (serialize the candidate whole-file shape, then re-parse it against
  * the same registry) rather than re-deriving the registry-membership,
  * version-pattern and exclusive-group rules a second time
  * (`.claude/rules/invariants.md`, "One mechanism, one implementation").
+ *
+ * **Every entry the CURRENT registry rejects is preserved verbatim**, never
+ * pruned (RP-22 round 2, blocker 1): a declaration naming a provider this
+ * release's registry does not (yet) know about — or one that fails a rule a
+ * later registry change tightened — is evidence someone wants that
+ * provider, and `add` has no business erasing it just because it was asked
+ * to write a DIFFERENT id. Their ids are returned in `preservedRejected`, so
+ * a caller (and the prose renderer) can say so.
  */
 export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
   const registry = options.registry ?? REGISTRY;
-  const existing = await readDeclarationEntries(options.repoDir, registry);
-  if ('error' in existing) {
+  const read = await readDeclarationFile(options.repoDir, registry);
+
+  let previousEntries: DeclaredIntegration[] = [];
+  let previousRaw: string | undefined;
+  let previousRawEntries: Record<string, unknown>[] = [];
+  let previousRejectedIds = new Set<string>();
+
+  if (read.status === 'ok') {
+    previousEntries = read.entries;
+    previousRaw = read.raw;
+    previousRawEntries = rawIntegrationEntries(read.raw);
+    previousRejectedIds = new Set(read.rejected.map((rejection) => rejection.id));
+  } else if (read.status === 'invalid' && !read.symlink) {
+    // Bytes on disk are left exactly as they are — this is a refusal, not an
+    // attempt that failed partway.
     return {
       outcome: 'refused',
       reason: 'declaration-unreadable',
-      message: `the existing declaration is invalid: ${existing.error}`,
+      message: `the existing declaration is invalid: ${read.error}`,
     };
   }
+  // Otherwise: `read.status === 'absent'`, or `'invalid'` for a symlink
+  // specifically — proceed with nothing to preserve. The write step below
+  // re-resolves the identical path and refuses the symlink case the same
+  // way `resolveWritableInside` always has, so nothing is ever silently
+  // trusted from, or overwritten through, a symlinked declaration.
 
-  const previous = existing.entries.find((entry) => entry.id === options.id);
+  const preservedRaw = previousRawEntries.filter(
+    (entry) => entry.id !== options.id && previousRejectedIds.has(entry.id as string),
+  );
+
+  const previous = previousEntries.find((entry) => entry.id === options.id);
   const required = options.required ?? previous?.required;
   const version = options.version ?? previous?.version;
   const candidate: DeclaredIntegration = {
@@ -179,18 +477,27 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
     ...(previous?.harnesses !== undefined ? { harnesses: previous.harnesses } : {}),
   };
 
-  const upserted = [...existing.entries.filter((entry) => entry.id !== options.id), candidate];
-  const candidateText = serializeDeclaration(upserted);
+  const upsertedAccepted = [
+    ...previousEntries.filter((entry) => entry.id !== options.id),
+    candidate,
+  ];
+  const candidateText = serializeDeclaration(upsertedAccepted);
   const reparsed = parseDeclaration(candidateText, registry);
+  /* c8 ignore start -- defensive: candidateText is `serializeDeclaration`'s own closed output shape */
   if (reparsed.status === 'invalid') {
-    // Cannot happen for a document `serializeDeclaration` itself produced —
-    // guarded rather than asserted, per the fail-closed rule for a state that
-    // "should never" occur.
     return { outcome: 'refused', reason: 'declaration-unreadable', message: reparsed.error };
   }
+  /* c8 ignore stop */
+
   const ownRejection = reparsed.rejected.find((rejection) => rejection.id === options.id);
   if (ownRejection !== undefined) {
-    return { outcome: 'refused', reason: ownRejection.reason, message: ownRejection.message };
+    let message = ownRejection.message;
+    if (ownRejection.reason === 'not-in-matrix') {
+      message = `"${sanitizeForDisplay(options.id)}" is not in the registry — see \`setup list\` for the supported ids`;
+    } else if (ownRejection.reason === 'malformed' && message === undefined) {
+      message = `the version pin does not match the accepted pattern ${VERSION_PATTERN.source}`;
+    }
+    return { outcome: 'refused', reason: ownRejection.reason, message };
   }
   const collateralRejection = reparsed.rejected[0];
   if (collateralRejection !== undefined) {
@@ -202,12 +509,13 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
       outcome: 'refused',
       reason: collateralRejection.reason,
       message:
-        `adding "${options.id}" would also reject "${collateralRejection.id}"` +
+        `adding "${sanitizeForDisplay(options.id)}" would also reject "${sanitizeForDisplay(collateralRejection.id)}"` +
         (collateralRejection.message !== undefined ? `: ${collateralRejection.message}` : ''),
     };
   }
 
   const finalEntry = reparsed.entries.find((entry) => entry.id === options.id);
+  /* c8 ignore start -- defensive: `options.id` is exactly the id `candidate` was built with, above */
   if (finalEntry === undefined) {
     return {
       outcome: 'refused',
@@ -215,15 +523,37 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
       message: 'the candidate entry vanished on re-parse',
     };
   }
-  const finalText = serializeDeclaration(reparsed.entries);
-  const changed = existing.raw !== finalText;
+  /* c8 ignore stop */
 
-  if (options.dryRun === true) {
-    return { outcome: 'dry-run', entry: finalEntry, changed };
+  const finalText = serializeWithPreservedRejected(reparsed.entries, preservedRaw);
+  const changed = previousRaw !== finalText;
+  const preservedRejected = preservedRaw.map((entry) => entry.id as string).sort();
+
+  // Containment is decided BEFORE anything is created (RP-22 round 2,
+  // blocker 3): a `.rig` committed as a (possibly dangling) symlink must be
+  // refused by `resolveWritableInside`'s own per-segment symlink check, not
+  // crash inside a naive `mkdir` that runs before that check ever sees it.
+  // This also makes `--dry-run` honest against the SAME shape a real run
+  // would refuse — a dry run against a symlinked declaration reports
+  // `refused`, not a falsely clean `dry-run` outcome.
+  const preflight = await resolveWritableInside(options.repoDir, DECLARATION_REL);
+  if (preflight === null) {
+    return {
+      outcome: 'refused',
+      reason: 'write-refused',
+      message: `refusing to write ${DECLARATION_REL} through a symlink or outside the repository`,
+    };
   }
 
-  const naiveDest = path.join(options.repoDir, ...DECLARATION_REL.split('/'));
-  await mkdir(path.dirname(naiveDest), { recursive: true });
+  if (options.dryRun === true) {
+    return { outcome: 'dry-run', entry: finalEntry, changed, preservedRejected };
+  }
+
+  // `resolveWritableInside`'s own contract: call once to check (tolerating a
+  // missing `.rig/`), create the directory, then call it again immediately
+  // before the write — the second call makes the newly created chain
+  // evidence too, closing the window between the first check and `mkdir`.
+  await mkdir(path.dirname(preflight), { recursive: true });
   const checked = await resolveWritableInside(options.repoDir, DECLARATION_REL);
   if (checked === null) {
     return {
@@ -233,7 +563,7 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
     };
   }
   await writeFile(checked, finalText);
-  return { outcome: 'written', entry: finalEntry, changed };
+  return { outcome: 'written', entry: finalEntry, changed, preservedRejected };
 }
 
 // ---------------------------------------------------------------------------
@@ -255,48 +585,6 @@ export const defaultProbe: Prober = async () => ({
   reason: 'no-sanctioned-probe',
 });
 
-type ReceiptStatus = 'absent' | 'present' | 'invalid';
-
-async function readReceiptFor(
-  repoDir: string,
-  id: string,
-): Promise<{ status: ReceiptStatus; receipt?: Receipt }> {
-  let raw: string;
-  try {
-    raw = await readFile(path.join(repoDir, ...RECEIPTS_DIR_REL.split('/'), `${id}.json`), 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'absent' };
-    throw error;
-  }
-  const parsed = parseReceipt(raw);
-  if (parsed.status === 'invalid') return { status: 'invalid' };
-  return { status: 'present', receipt: parsed.receipt };
-}
-
-async function orphanedReceiptIds(
-  repoDir: string,
-  acceptedIds: ReadonlySet<string>,
-  only: string | undefined,
-): Promise<string[]> {
-  let names: string[];
-  try {
-    names = await readdir(path.join(repoDir, ...RECEIPTS_DIR_REL.split('/')));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw error;
-  }
-  const ids: string[] = [];
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    const id = name.slice(0, -'.json'.length);
-    if (acceptedIds.has(id)) continue;
-    if (only !== undefined && id !== only) continue;
-    const result = await readReceiptFor(repoDir, id);
-    if (result.status === 'present') ids.push(id);
-  }
-  return ids.sort();
-}
-
 export type VerifyHarnessPayload = {
   route: Route;
   automation: 'automatic' | 'guided';
@@ -313,6 +601,16 @@ export type VerifyIntegrationPayload = {
   harnesses: Partial<Record<Harness, VerifyHarnessPayload>>;
 };
 
+/**
+ * The closed value domains this payload carries (RP-22 round 2 advisory —
+ * enumerated here so RP-21's doctor mapping, and `docs/command-contract.md`,
+ * have one place to read them from):
+ *
+ * - `declaration`: `absent | ok | invalid`.
+ * - per-harness `receipt`: `absent | present | invalid`.
+ * - `orphanScan`: `complete | truncated | unreadable`.
+ * - per-harness `state`: `InstanceState` (`../integrations/state.ts`).
+ */
 export type VerifyPayload = {
   schemaVersion: 1;
   command: 'setup';
@@ -322,6 +620,7 @@ export type VerifyPayload = {
   integrations: VerifyIntegrationPayload[];
   rejected: Rejection[];
   orphaned: string[];
+  orphanScan: OrphanScan;
 };
 
 export type VerifyOptions = {
@@ -347,6 +646,15 @@ export type VerifyOptions = {
  * affects the exit code on its own. This is the plan's own text taken
  * literally: "exits 1 when any required integration is not installed, and
  * also when the declaration is invalid" — nothing wider.
+ *
+ * **Fail closed on an unreadable receipt (RP-22 round 2, blocker 2).** A
+ * receipt that exists but could not be read (a symlink, an oversized file,
+ * a parse failure) never lets a harness read `installed` — the very record
+ * that would back that claim is exactly what could not be examined, so the
+ * state is downgraded to `unverified` instead. This applies whether or not
+ * the integration is `required`: an optional integration's `verify` output
+ * is read by a human too, and a silent "installed" behind an unreadable
+ * receipt is misplaced confidence either way.
  */
 export async function verifyIntegrations(
   options: VerifyOptions,
@@ -355,15 +663,10 @@ export async function verifyIntegrations(
   const probe = options.probe ?? defaultProbe;
   const registryById = new Map(registry.map((descriptor) => [descriptor.id, descriptor]));
 
-  let raw: string | undefined;
-  try {
-    raw = await readFile(path.join(options.repoDir, ...DECLARATION_REL.split('/')), 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
+  const read = await readDeclarationFile(options.repoDir, registry);
 
-  if (raw === undefined) {
-    const orphaned = await orphanedReceiptIds(options.repoDir, new Set(), options.only);
+  if (read.status === 'absent') {
+    const { orphaned, scan } = await scanOrphanedReceipts(options.repoDir, new Set(), options.only);
     return {
       payload: {
         schemaVersion: 1,
@@ -373,23 +676,28 @@ export async function verifyIntegrations(
         integrations: [],
         rejected: [],
         orphaned,
+        orphanScan: scan,
       },
       exitCode: 0,
     };
   }
 
-  const parsed = parseDeclaration(raw, registry);
-  if (parsed.status === 'invalid') {
+  if (read.status === 'invalid') {
+    // Orphan detection does not depend on the declaration parsing — an
+    // unparseable `.rig/integrations.json` says nothing about whether
+    // `.rig/receipts/` itself has anything worth reporting.
+    const { orphaned, scan } = await scanOrphanedReceipts(options.repoDir, new Set(), options.only);
     return {
       payload: {
         schemaVersion: 1,
         command: 'setup',
         verb: 'verify',
         declaration: 'invalid',
-        error: parsed.error,
+        error: read.error,
         integrations: [],
         rejected: [],
-        orphaned: [],
+        orphaned,
+        orphanScan: scan,
       },
       exitCode: 1,
     };
@@ -397,14 +705,14 @@ export async function verifyIntegrations(
 
   const scopedEntries =
     options.only !== undefined
-      ? parsed.entries.filter((entry) => entry.id === options.only)
-      : parsed.entries;
+      ? read.entries.filter((entry) => entry.id === options.only)
+      : read.entries;
   const scopedRejected =
     options.only !== undefined
-      ? parsed.rejected.filter((rejection) => rejection.id === options.only)
-      : parsed.rejected;
-  const acceptedIds = new Set(parsed.entries.map((entry) => entry.id));
-  const orphaned = await orphanedReceiptIds(options.repoDir, acceptedIds, options.only);
+      ? read.rejected.filter((rejection) => rejection.id === options.only)
+      : read.rejected;
+  const acceptedIds = new Set(read.entries.map((entry) => entry.id));
+  const { orphaned, scan } = await scanOrphanedReceipts(options.repoDir, acceptedIds, options.only);
 
   let anyRequiredNotInstalled = false;
   const integrations: VerifyIntegrationPayload[] = [];
@@ -417,7 +725,7 @@ export async function verifyIntegrations(
     // and `Object.keys` of a `Partial<Record<Harness, …>>` erases that at the
     // type level without changing it at runtime.
     const harnessNames = entry.harnesses ?? (Object.keys(descriptor.routes) as Harness[]);
-    const receiptResult = await readReceiptFor(options.repoDir, entry.id);
+    const receiptResult = await readReceiptFile(options.repoDir, entry.id);
 
     const harnesses: Partial<Record<Harness, VerifyHarnessPayload>> = {};
     let fullyInstalled = true;
@@ -434,8 +742,7 @@ export async function verifyIntegrations(
           : undefined;
       const observed = await probe(descriptor, harness);
       const declaredInput: DeclaredInput = { kind: 'accepted', version: entry.version };
-      const state = classify(declaredInput, baseline, observed);
-      if (state !== 'installed') fullyInstalled = false;
+      let state = classify(declaredInput, baseline, observed);
 
       const receiptStatusForHarness: ReceiptStatus =
         receiptResult.status === 'present'
@@ -443,6 +750,13 @@ export async function verifyIntegrations(
             ? 'present'
             : 'absent'
           : receiptResult.status;
+
+      // Fail closed: an unreadable receipt never counts as confirming
+      // `installed` (see the doc comment above).
+      if (receiptStatusForHarness === 'invalid' && state === 'installed') {
+        state = 'unverified';
+      }
+      if (state !== 'installed') fullyInstalled = false;
 
       harnesses[harness] = {
         route: routeInfo.route,
@@ -469,30 +783,38 @@ export async function verifyIntegrations(
       integrations,
       rejected: scopedRejected,
       orphaned,
+      orphanScan: scan,
     },
     exitCode: anyRequiredNotInstalled ? 1 : 0,
   };
 }
 
-function renderVerifyProse(payload: VerifyPayload): string {
+function renderVerifyProse(payload: VerifyPayload, only: string | undefined): string {
   if (payload.declaration === 'absent') return 'No .rig/integrations.json in this repository.\n';
   if (payload.declaration === 'invalid') {
-    return `The declaration does not parse: ${payload.error}\n`;
+    return `The declaration does not parse: ${sanitizeForDisplay(payload.error ?? '')}\n`;
   }
   const lines: string[] = [];
   for (const entry of payload.integrations) {
-    lines.push(`${entry.id}${entry.required ? ' (required)' : ''}`);
+    lines.push(`${sanitizeForDisplay(entry.id)}${entry.required ? ' (required)' : ''}`);
     for (const [harness, harnessPayload] of Object.entries(entry.harnesses)) {
       lines.push(`  ${harness}: ${harnessPayload.state} via ${harnessPayload.route}`);
     }
   }
   for (const rejection of payload.rejected) {
-    lines.push(`${rejection.id}: rejected (${rejection.reason})`);
+    lines.push(`${sanitizeForDisplay(rejection.id)}: rejected (${rejection.reason})`);
   }
   for (const id of payload.orphaned) {
-    lines.push(`${id}: orphaned receipt, no declaration`);
+    lines.push(`${sanitizeForDisplay(id)}: orphaned receipt, no declaration`);
   }
-  return lines.length > 0 ? `${lines.join('\n')}\n` : 'Nothing declared.\n';
+  if (lines.length > 0) return `${lines.join('\n')}\n`;
+  // Distinguish "nothing declared at all" from "--only named something not
+  // present here" (RP-22 round 2, CLI-UX advisory) — the two used to print
+  // the identical "Nothing declared." line.
+  if (only !== undefined) {
+    return `No integration named "${sanitizeForDisplay(only)}" is declared here.\n`;
+  }
+  return 'Nothing declared.\n';
 }
 
 // ---------------------------------------------------------------------------
@@ -587,6 +909,7 @@ async function runAdd(
     } else {
       payload.changed = outcome.changed;
       payload.entry = outcome.entry;
+      payload.preservedRejected = outcome.preservedRejected;
     }
     return {
       exitCode: outcome.outcome === 'refused' ? 1 : 0,
@@ -595,20 +918,25 @@ async function runAdd(
     };
   }
 
+  const displayId = sanitizeForDisplay(id);
   if (outcome.outcome === 'refused') {
     return {
       exitCode: 1,
       stdout: '',
       stderr:
-        `setup add: refused "${id}" (${outcome.reason})` +
-        (outcome.message !== undefined ? ` — ${outcome.message}` : '') +
+        `setup add: refused "${displayId}" (${outcome.reason})` +
+        (outcome.message !== undefined ? ` — ${sanitizeForDisplay(outcome.message)}` : '') +
         '\n',
     };
   }
   const verb = outcome.outcome === 'dry-run' ? 'Would write' : 'Wrote';
+  const preservedNote =
+    outcome.preservedRejected.length > 0
+      ? ` (also preserved ${outcome.preservedRejected.length} rejected entr${outcome.preservedRejected.length === 1 ? 'y' : 'ies'}: ${outcome.preservedRejected.map(sanitizeForDisplay).join(', ')})`
+      : '';
   return {
     exitCode: 0,
-    stdout: `${verb} ${DECLARATION_REL} — ${id}${outcome.changed ? '' : ' (unchanged)'}\n`,
+    stdout: `${verb} ${DECLARATION_REL} — ${displayId}${outcome.changed ? '' : ' (unchanged)'}${preservedNote}\n`,
     stderr: '',
   };
 }
@@ -642,7 +970,7 @@ async function runVerify(
   if (values.json === true) {
     return { exitCode, stdout: `${JSON.stringify(payload)}\n`, stderr: '' };
   }
-  return { exitCode, stdout: renderVerifyProse(payload), stderr: '' };
+  return { exitCode, stdout: renderVerifyProse(payload, values.only), stderr: '' };
 }
 
 export type IntegrationsCliOptions = {

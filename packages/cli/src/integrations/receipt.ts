@@ -75,7 +75,14 @@ export { VERSION_PATTERN };
 export const RECEIPT_SCHEMA_VERSION = 1;
 export const RECEIPTS_DIR_REL = '.rig/receipts';
 
-const MAX_RECEIPT_BYTES = 64 * 1024;
+/**
+ * Exported (RP-22 round 2) for the same reason `declaration.ts` exports its
+ * own copy of this number: a caller that wants to refuse an oversized file
+ * before reading it whole needs the same bound `parseReceipt` itself checks,
+ * not a second copy (`.claude/rules/invariants.md`, "One mechanism, one
+ * implementation"). No behaviour here changes.
+ */
+export const MAX_RECEIPT_BYTES = 64 * 1024;
 
 /**
  * Nothing this schema describes legitimately nests deeper than
