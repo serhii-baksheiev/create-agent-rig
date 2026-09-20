@@ -67,20 +67,30 @@ async function decisionRecords(): Promise<Record_[]> {
 }
 
 /**
- * The `docs/decisions/*.md` entries `init` actually ships, read from the one
+ * The `docs/decisions/*.md` entries `init` can ship, read from the one
  * manifest it reads (`packages/cli/src/commands/init.ts` loads
- * `layers.json`'s `process` array to decide what a generated rig receives).
- * A record can exist on disk and be cited by the rulebook — both checked
- * above — and still never reach a generated project if this list omits it,
- * which is exactly the gap RP-185 shipped: the hook cites
- * `session-start-wire-format.md`, the file exists here, and `layers.json`
- * never named it.
+ * `layers.json` — since RP-180, TWO arrays, `process` always installed and
+ * `workflow` an opt-in a rig requests with `--layer workflow` — to decide
+ * what a generated rig receives). A record can exist on disk and be cited by
+ * the rulebook — both checked above — and still never reach ANY generated
+ * project if neither array names it, which is exactly the gap RP-185
+ * shipped: the hook cites `session-start-wire-format.md`, the file exists
+ * here, and `layers.json` never named it. Reading the union of both arrays
+ * is deliberate: a decision record legitimately belongs to whichever layer
+ * cites it (`docs/decisions/workflow-layer-split.md`), and this check's own
+ * job is "shipped by some layer, not left as a dead file on disk" — never
+ * "shipped by Core specifically", which `test/template/layers-split.test.ts`
+ * pins for the one topic (the workflow set) that actually is a classification
+ * call.
  */
 async function layersDecisionEntries(): Promise<string[]> {
   const manifest = JSON.parse(await readFile(path.join(universalDir, 'layers.json'), 'utf8')) as {
     process: string[];
+    workflow: string[];
   };
-  return manifest.process.filter((entry) => entry.startsWith('docs/decisions/'));
+  return [...manifest.process, ...manifest.workflow].filter((entry) =>
+    entry.startsWith('docs/decisions/'),
+  );
 }
 
 type Citation = { from: string; target: string };
