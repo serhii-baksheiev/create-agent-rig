@@ -34,6 +34,32 @@ describe('vitest template project timeout', () => {
   });
 });
 
+// RP-191. ci.yml hands the unit lane 15 s on the command line, but e2e.yml's
+// windows-e2e runs the whole suite (`pnpm test --maxWorkers=2`) and cannot pass
+// --testTimeout without overriding the e2e project's own figure. So under the
+// full suite the unit project alone ran on vitest's 5 s default, and two of its
+// cases that install a rig timed out on the hosted Windows runner (run
+// 35528246325) — hidden on master behind the RP-190 failure. The unit project
+// declares the figure itself, the way the template project does.
+const unitProject = projects.find(
+  (p): p is { test: { name: string; testTimeout?: number } } =>
+    typeof p === 'object' &&
+    p !== null &&
+    (p as { test?: { name?: string } }).test?.name === 'unit',
+);
+
+describe('vitest unit project timeout', () => {
+  it('gives the unit project under the full suite the timeout ci.yml already runs it with', async () => {
+    expect(unitProject).toBeDefined();
+    expect(unitProject?.test.testTimeout).toBe(15_000);
+
+    const ci = await readFile(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const unitLane = ci.match(/pnpm test:unit --testTimeout=(\d+)/);
+    expect(unitLane).not.toBeNull();
+    expect(unitProject?.test.testTimeout).toBe(Number(unitLane?.[1]));
+  });
+});
+
 // RP-162. test/template/codex.test.ts has exactly one case that starts
 // powershell.exe. Measured on the hosted windows-unit runner, same code, four
 // runs: 817 ms, 3747 ms, 6794 ms and >15000 ms (timed out at the template
