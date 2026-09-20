@@ -447,6 +447,61 @@ const objectOf = (projectRoot, raw) =>
     stdio: ['pipe', 'pipe', 'ignore'],
   }).trim();
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * At `BEFORE_CLOSE`, `targetSha` is resolved right after this item's OWN PR
+ * merged and was fetched — so it almost always differs from the value the
+ * claim recorded at take-up, even when nothing else landed on the default
+ * branch. This asks a narrower question than "did the target move": did it
+ * move by EXACTLY the one commit that is this item's own squash merge?
+ *
+ * True only when `git log <fromSha>..<toSha>` is exactly one commit AND that
+ * commit's subject line contains the literal, parenthesised ticket id —
+ * `(RP-173)`, never a prefix or substring match, so ticket `AR-1` is never
+ * satisfied by a commit tagged for `AR-11`. Any other shape — zero commits,
+ * more than one, the right count but the wrong (or no) ticket id, or git
+ * itself failing to resolve the range — returns false, and the caller keeps
+ * treating the target movement as scope drift exactly as it did before this
+ * existed. The false side is the safe default: this function only ever makes
+ * `scopeMoved` MORE permissive, never less, and every path that cannot prove
+ * "this was my own merge" falls back to holding.
+ *
+ * Pinned in the generator's `test/template/revalidate.test.ts`
+ * — absent in a generated rig — › "the item's own squash merge, nothing
+ * foreign", › "a foreign change to the target, untagged", › "never lets a
+ * different ticket that merely shares this id as a prefix satisfy the
+ * exemption (AR-11 must not match AR-1)" and › "treats a two-commit range as
+ * foreign even when one of the two commits is the item's own merge".
+ */
+const isOwnMergeAdvance = (projectRoot, ticketId, fromSha, toSha) => {
+  if (
+    !GIT_OBJECT_ID.test(fromSha ?? '') ||
+    !GIT_OBJECT_ID.test(toSha ?? '') ||
+    fromSha === toSha
+  ) {
+    return false;
+  }
+  let subjects;
+  try {
+    subjects = execFileSync(
+      'git',
+      ['-C', projectRoot, 'log', '--format=%s', `${fromSha}..${toSha}`],
+      {
+        encoding: 'utf8',
+        env: withoutGitLocation(),
+        stdio: ['ignore', 'pipe', 'ignore'],
+        maxBuffer: 1024 * 1024,
+      },
+    );
+  } catch {
+    return false;
+  }
+  const lines = subjects.split('\n').filter((line) => line !== '');
+  if (lines.length !== 1) return false;
+  return new RegExp(`\\(${escapeRegExp(ticketId)}\\)`).test(lines[0]);
+};
+
 const readClaim = (projectRoot, path) => {
   const raw = readRepositoryFile(projectRoot, path, {
     label: 'claim record',
@@ -745,9 +800,24 @@ export const revalidateClaim = ({
     pairedFacts,
   });
 
-  const scopeMoved =
-    claim.fingerprints.scope.value !== current.scope.value ||
-    claim.fingerprints.scope.targetSha !== current.scope.targetSha;
+  const scopeContentMoved = claim.fingerprints.scope.value !== current.scope.value;
+  const scopeTargetMoved = claim.fingerprints.scope.targetSha !== current.scope.targetSha;
+  // The only widening this change makes: a target that moved by nothing but
+  // this item's own squash merge is not scope drift. Content drift and
+  // commentary drift (below) stay hold-authoritative no matter what moved the
+  // target, and this only ever runs at BEFORE_CLOSE — BEFORE_PR has no merge
+  // of its own yet to exempt.
+  const scopeTargetIsOwnMerge =
+    point === 'BEFORE_CLOSE' &&
+    scopeTargetMoved &&
+    !scopeContentMoved &&
+    isOwnMergeAdvance(
+      projectRoot,
+      ticketIdOf(ticket),
+      claim.fingerprints.scope.targetSha,
+      current.scope.targetSha,
+    );
+  const scopeMoved = scopeContentMoved || (scopeTargetMoved && !scopeTargetIsOwnMerge);
   const commentaryMoved = claim.fingerprints.commentary.value !== current.commentary.value;
   const movedFingerprintSet = [
     ...(scopeMoved ? ['scope'] : []),
@@ -763,6 +833,7 @@ export const revalidateClaim = ({
     evidence: {
       claim: pointer,
       ...(commentaryMoved && point !== 'BEFORE_CLOSE' ? { observedFingerprintSet: ['commentary'] } : {}),
+      ...(scopeTargetIsOwnMerge ? { ownMergeAdvance: current.scope.targetSha } : {}),
     },
     identity: fingerprintIdentity(current),
   });

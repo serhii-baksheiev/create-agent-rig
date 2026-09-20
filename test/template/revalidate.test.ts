@@ -629,6 +629,10 @@ interface CloseResult {
   state: { expected: 'in-progress'; actual: string | null };
   dependants: string[];
   dependantState: Record<string, string>;
+  // Carried straight through from `revalidateClaim` (AR-135); not yet named in
+  // this interface's original declaration, so it is widened here rather than
+  // read through a cast at every call site.
+  movedFingerprintSet?: string[];
 }
 
 const T3 = '2026-08-25T11:30:00.000Z';
@@ -700,6 +704,42 @@ const closeProject = async ({
     );
   }
   return { dir, configPath, runDir, env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir } };
+};
+
+/**
+ * Advances local `master` with one commit per subject (empty commits — content
+ * is irrelevant, only the subject line matters to the own-merge exemption),
+ * then returns to the feature branch `closeProject` leaves checked out, so the
+ * working tree `revalidate` reads is unchanged from every other BEFORE_CLOSE
+ * test in this file.
+ */
+const advanceMaster = async (dir: string, subjects: string[]): Promise<void> => {
+  await git(['checkout', '-q', 'master'], dir);
+  for (const subject of subjects) {
+    await git(['commit', '-q', '--allow-empty', '-m', subject], dir);
+  }
+  await git(['checkout', '-q', 'feat/revalidation-close'], dir);
+};
+
+/**
+ * Re-reads the ticket through the same offline seam `trackClaimBaseline` used,
+ * and calls `recordClaimTransition` again — the write the loop performs
+ * routinely on ordinary claim bookkeeping, independent of anything BEFORE_CLOSE
+ * decides. It must not disturb the own-merge exemption it lands on top of.
+ */
+const recordOwnClaimTransition = async (p: Pick<CloseProject, 'dir' | 'configPath'>) => {
+  const jira = (await loadQueue('jira.mjs')) as {
+    find: (id: string, options: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+  };
+  const claims = (await loadScript('lib/claim-records.mjs')) as {
+    recordClaimTransition: (input: Record<string, unknown>) => unknown;
+  };
+  const config = JSON.parse(await readFile(p.configPath, 'utf8')) as {
+    options: Record<string, unknown>;
+  };
+  const ticket = await jira.find('AR-1', config.options);
+  if (!ticket) throw new Error('fixture: could not re-resolve AR-1 for the claim transition');
+  claims.recordClaimTransition({ projectRoot: p.dir, ticket, claimedState: 'in-progress' });
 };
 
 const revalidateClose = (
@@ -857,6 +897,76 @@ describe('BEFORE_CLOSE — workflow state remains part of claim:scope', () => {
     const p = await closeProject();
     const { result } = await revalidateCloseJson(p);
     expect(result.state).toEqual({ expected: 'in-progress', actual: 'in-progress' });
+  });
+});
+
+// RP-175: at BEFORE_CLOSE, `targetSha` is resolved AFTER this item's own PR was
+// just squash-merged — so it almost always differs from what was recorded at
+// take-up even when nothing besides the item's own merge landed on `master`.
+// A `targetSha` move that is provably nothing but that one merge must not hold
+// on claim:scope; every other kind of target movement still must.
+describe('BEFORE_CLOSE — the item’s own squash merge advancing targetSha is not scope drift', () => {
+  const ownMergeSubject = 'feat: ship it (AR-1) (#1)';
+  const foreignSubject = 'chore: unrelated housekeeping';
+
+  const rows: Array<[string, string[], boolean, boolean]> = [
+    ["the item's own squash merge, nothing foreign", [ownMergeSubject], false, false],
+    ['a foreign change to the target, untagged', [foreignSubject], false, true],
+    [
+      "the own merge plus the loop's own routine claim-transition bookkeeping",
+      [ownMergeSubject],
+      true,
+      false,
+    ],
+  ];
+
+  it.each(rows)('%s', async (_name, subjects, recordTransitionAfter, expectHold) => {
+    const p = await closeProject();
+    await advanceMaster(p.dir, subjects);
+    if (recordTransitionAfter) {
+      await recordOwnClaimTransition(p);
+    }
+    const { code, result, out } = await revalidateCloseJson(p);
+    if (expectHold) {
+      expect(code, out).toBe(2);
+      expect(result.action).toBe('hold');
+      expect(result.source).toContain('claim:scope');
+    } else {
+      expect(code, out).toBe(0);
+      expect(result.action).toBe('continue');
+      expect(result.changed).toBe(false);
+      expect(result.source).not.toContain('claim:scope');
+      expect(result.movedFingerprintSet ?? []).not.toContain('scope');
+    }
+  });
+
+  it('still holds on claim:scope for a tracker-only scope change, with no git movement at all', async () => {
+    // Same fixture shape as "holds on claim:scope when the item was moved
+    // back to open" above — reused here so this new code path is proven not
+    // to have weakened that existing, unrelated mechanism.
+    const p = await closeProject({ status: TO_DO });
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('never lets a different ticket that merely shares this id as a prefix satisfy the exemption (AR-11 must not match AR-1)', async () => {
+    const p = await closeProject();
+    await advanceMaster(p.dir, ['feat: something else (AR-11) (#9)']);
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('treats a two-commit range as foreign even when one of the two commits is the item’s own merge', async () => {
+    const p = await closeProject();
+    await advanceMaster(p.dir, [ownMergeSubject, foreignSubject]);
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
   });
 });
 
