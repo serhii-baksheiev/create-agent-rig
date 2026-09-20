@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isSafeSegment, isSafeSubstitutionValue, resolveWritableInside } from './safe-path.js';
+import { hasControlCharacter } from './safe-text.js';
 
 /**
  * The install manifest: what this rig installed, at which version, and the
@@ -94,20 +95,6 @@ function isStringRecord(value: unknown): value is Record<string, string> {
     !Array.isArray(value) &&
     Object.values(value).every((v) => typeof v === 'string')
   );
-}
-
-function hasControlCharacter(value: string): boolean {
-  const formatCharacter = /\p{Cf}/u;
-  return [...value].some((character) => {
-    const code = character.charCodeAt(0);
-    return (
-      code <= 0x1f ||
-      (code >= 0x7f && code <= 0x9f) ||
-      code === 0x2028 ||
-      code === 0x2029 ||
-      formatCharacter.test(character)
-    );
-  });
 }
 
 /**

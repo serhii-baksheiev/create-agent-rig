@@ -96,6 +96,16 @@ const ELEVATED_PATHS = [
   // on the same ground as every other entry in this block: a declaration a
   // reader has to infer from a prefix is a declaration nobody checks.
   'scripts/dogfood/',
+  // RP-22: the integrations declaration/registry code. It is untrusted
+  // committed input and the closed set of routes Rig will spawn through in
+  // later slices, so it is reviewed like the rest of this elevated set from
+  // the day the pure S1 code lands, not only once a spawning slice ships. Its
+  // contract schema needs no entry of its own — `contracts/` below already
+  // covers every path under it, including `contracts/integrations/`, and a
+  // second, narrower entry would be a second spelling of the same fact
+  // (gate cycle 1 advisory (h); `.claude/rules/invariants.md`, "one spelling
+  // of a fact").
+  'packages/cli/src/integrations/',
   // The composed copy of the rulebook — what actually RUNS in this checkout.
   // Until AR-51 only the template sources above were declared, on the ground
   // that the drift test catches an edit to the synced copy. It does, at commit
