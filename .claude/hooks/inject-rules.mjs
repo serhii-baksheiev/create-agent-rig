@@ -28,6 +28,22 @@
 // the whole file pays for it twice. That is harness behaviour, observable but
 // not pinned here. Where it does not hold, this is a plain subtraction — which
 // is why every ambiguity resolves toward injecting more.
+//
+// The output on stdout is a single JSON object —
+// `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":…}}`
+// — not the plain text an earlier version of this hook wrote directly. Both
+// Claude Code and Codex document that shape as valid SessionStart output
+// (Claude Code: code.claude.com/docs/en/hooks; Codex:
+// learn.chatgpt.com/docs/hooks), and Codex additionally documents plain text
+// as accepted for `session_start` — this hook always emits the JSON form
+// anyway, so one code path satisfies both without guessing which harness is
+// asking. The change exists because Codex 0.154.0 on Windows was measured
+// reporting this hook's OLD plain-text banner as invalid SessionStart JSON,
+// so the rules refresh never reached the session; Claude Code was unaffected.
+// The mechanism Codex used to reach that verdict is not published — a leading
+// `[` is a plausible trigger, not a confirmed one. See
+// `docs/decisions/session-start-wire-format.md` for what was measured and
+// what each harness's own documentation says.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readHookInput } from './lib/hook-input.mjs';
@@ -190,12 +206,74 @@ function main() {
         'gate is swept from outside, how external work is reconciled, ' +
         'post-deploy verification, and the escalation format.\n\n';
 
+  const additionalContext =
+    `[agent-os] Autonomy rules refresh — in force regardless of compaction.\n${notice}${body}\n`;
+
+  // `hookSpecificOutput.additionalContext` is the JSON shape both harnesses'
+  // hooks documentation gives an example of for SessionStart output — see the
+  // file header and `docs/decisions/session-start-wire-format.md`. No leading
+  // or trailing byte outside the object, and no trailing newline: Claude Code's
+  // OWN documented detection reads "starts with `{` ends with `}`", literally
+  // (code.claude.com/docs/en/hooks) — Codex's JSON-vs-plain-text detection is
+  // not published, so this satisfies the one contract that IS written down
+  // rather than guessing at the one that is not.
+  // A reader that vanishes mid-write — a closed pipe, a harness that tears
+  // this process down before reading — turns the queued write into an EPIPE.
+  // That specific error is silenced: it means the reader is gone and there is
+  // nothing left to report to, so failing loudly would turn an absent reader
+  // into a noisy non-zero SessionStart exit for no one to read. Anything ELSE
+  // stdout can fail with (ENOSPC, EIO, a redirect to a full or broken device)
+  // is a real write failure with an actual reader still attached, and this
+  // file does not get to treat that as a healthy session: it is reported on
+  // stderr and the exit is marked non-zero, the same "say what happened"
+  // stance the excerpt path takes by injecting MORE rather than dropping
+  // content quietly. Measured (security review, RP-185 gate): a blanket
+  // handler here made a genuine stdout write failure (stdout redirected to
+  // /dev/full) exit 0 with nothing delivered and no diagnostic — exactly the
+  // silent-loss shape this whole file exists to avoid, just moved one write
+  // call over. Pinned in hooks.test.ts (absent in a generated rig) ›
+  // "silently exits 0 when the reader is gone before the write starts
+  // (EPIPE)" and › "reports a genuine stdout write failure on stderr and
+  // marks the exit non-zero, rather than looking like a healthy session".
+  process.stdout.on('error', (err) => {
+    if (err && err.code === 'EPIPE') return;
+    process.stderr.write(`inject-rules: stdout write failed: ${err}\n`);
+    process.exitCode = 1;
+  });
   process.stdout.write(
-    `[agent-os] Autonomy rules refresh — in force regardless of compaction.\n${notice}${body}\n`,
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext },
+    }),
   );
   return 0;
 }
 
 if (invokedDirectly()) {
-  process.exit(main());
+  // NOT process.exit(main()): exit() tears the process down without waiting
+  // for a queued stdout write to drain, and this hook's payload (the whole
+  // rules excerpt, wrapped in one JSON object) can be large enough to miss a
+  // pipe's buffer in one write. A write that process.exit() cuts off mid-object
+  // is not a short excerpt, the way the old plain-text form degraded — it is
+  // invalid JSON, which is exactly the failure this hook exists to avoid.
+  // Every path through main() returns 0, so setting exitCode changes nothing
+  // about the exit STATUS. What it does change is whether the process
+  // terminates AT ALL before the write finishes: exitCode lets the event
+  // loop drain naturally, and a reader that never drains at all no longer
+  // gets a fast, wrong exit 0 — it gets a hook that stays alive, waiting on
+  // the write, for as long as the harness lets it. A probe that refuses to
+  // read until the child would already have exited measurably DEADLOCKS this
+  // version where process.exit() would have terminated (truncated). Nothing
+  // in this file bounds that wait; the calling harness's own hook timeout
+  // does. Pinned in hooks.test.ts (absent in a generated rig) ›
+  // "delivers the whole envelope even when the reader does not drain until
+  // process.exit(main()) would already have torn the process down".
+  //
+  // That is the trade made on purpose — a loud hang, bounded by the
+  // harness's timeout, over a silent truncated "success" — and it is worth
+  // stating plainly rather than leaving to be discovered: not reachable at
+  // the size this hook ships today (a few KB, done in well under a second),
+  // but a real behaviour change on a project whose autonomy.md grows large
+  // enough, or whose harness stops reading a hook's stdout at all. See
+  // `docs/decisions/session-start-wire-format.md` for the fuller record.
+  process.exitCode = main();
 }

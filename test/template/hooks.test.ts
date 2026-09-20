@@ -1,9 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
+import { closeSync, openSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { skipUnless, symlinksAvailable } from '../helpers/env.js';
@@ -41,6 +42,25 @@ function runHookFull(
 }
 
 const runHook = runHookFull;
+
+/** For a SessionStart hook result: parse the RP-185 JSON envelope and
+ *  return `additionalContext` — see docs/decisions/session-start-wire-format.md.
+ *  Every assertion below about WHAT the hook injects reads through this, so a
+ *  wire-format detail (JSON wrapping, `\n`-escaping) never has to be
+ *  relearned by each test that cares about the injected TEXT rather than the
+ *  transport carrying it. */
+function additionalContextOf(result: HookResult): string {
+  const parsed = JSON.parse(result.stdout) as {
+    hookSpecificOutput?: { hookEventName?: unknown; additionalContext?: unknown };
+  };
+  if (parsed.hookSpecificOutput?.hookEventName !== 'SessionStart') {
+    throw new Error(`not a SessionStart envelope: ${result.stdout.slice(0, 200)}`);
+  }
+  if (typeof parsed.hookSpecificOutput.additionalContext !== 'string') {
+    throw new Error(`additionalContext missing or not a string: ${result.stdout.slice(0, 200)}`);
+  }
+  return parsed.hookSpecificOutput.additionalContext;
+}
 
 const bash = (command: string) => ({
   hook_event_name: 'PreToolUse',
@@ -834,7 +854,7 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       // Matched against whitespace-collapsed text: the sentence is wrapped
       // across two lines in the source, and where the wrap falls is not a
       // behaviour worth pinning.
-      const injected = result.stdout.replace(/\s+/g, ' ');
+      const injected = additionalContextOf(result).replace(/\s+/g, ' ');
       expect(injected, source).toContain('the highest tier wins');
       expect(injected, source).toContain('one tier higher than you think');
     }
@@ -899,9 +919,14 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       hook_event_name: 'SessionStart',
       source: 'compact',
     });
-    expect(result.stdout).not.toContain('## Post-deploy verification');
-    expect(result.stdout).not.toContain('## Escalation format');
-    expect(result.stdout.length).toBeLessThan(rules.length);
+    const context = additionalContextOf(result);
+    expect(context).not.toContain('## Post-deploy verification');
+    expect(context).not.toContain('## Escalation format');
+    // Compared against the injected TEXT, not the JSON envelope wrapping
+    // it — the envelope's own overhead (quoting, escaped newlines) is
+    // transport, and measuring it here would make this assertion track the
+    // wire format instead of the excerpt.
+    expect(context.length).toBeLessThan(rules.length);
   });
 
   // An excerpt that does not say it is an excerpt reads as the whole rule. A
@@ -1003,8 +1028,15 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       expect(result.code, source).toBe(0);
       // Matched against whitespace-collapsed text with emphasis stripped: the
       // rule wraps across lines in the source and carries markdown bold, and
-      // neither the wrap point nor the styling is a behaviour worth pinning.
-      const injected = result.stdout.replace(/[*`]/g, '').replace(/\s+/g, ' ').toLowerCase();
+      // neither the wrap point nor the styling is a behaviour worth pinning. Read
+      // through additionalContextOf(): a real newline in the source becomes a
+      // literal backslash-n escape sequence inside the JSON envelope, which
+      // `\s+` does not match, so collapsing whitespace on raw `result.stdout`
+      // would silently stop joining a line-wrapped sentence.
+      const injected = additionalContextOf(result)
+        .replace(/[*`]/g, '')
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
       expect(injected, source).toContain('revert first');
       expect(injected, source).toContain('diagnose second');
     }
@@ -1029,8 +1061,11 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       // Whitespace-collapsed: the rule wraps across lines in the source, and
       // where the wrap falls is not a behaviour worth pinning. Asserted on the
       // verdict word and the command that records it, so any wording carrying
-      // both stays green.
-      const injected = result.stdout.replace(/\s+/g, ' ');
+      // both stays green. Read through additionalContextOf() for the same reason
+      // as the revert-first case above: a real newline in the source is a literal
+      // backslash-n escape sequence inside the envelope, and `\s+` does not
+      // match that.
+      const injected = additionalContextOf(result).replace(/\s+/g, ' ');
       expect(injected, source).toContain('run-state.mjs');
       expect(injected, source).toContain('HEALTHY');
     }
@@ -1132,6 +1167,252 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     }
   }
 
+  /** Same planting as runAgainstPlantedRules, but stdout is held PAUSED for a
+   *  while before being allowed to flow — the shape a consumer that is not
+   *  draining yet actually has. execFile, and every other helper in this
+   *  file, attach a reader in the same tick the child is spawned and so
+   *  drain continuously; they cannot tell process.exitCode = main() apart
+   *  from process.exit(main()) because the payload never gets a chance to
+   *  outrun a reader that is already pulling data as fast as it arrives.
+   *
+   *  Construction, exactly, because getting this wrong makes the whole test
+   *  vacuous: attach the data listener in the SAME tick the child is
+   *  spawned, then call pause() in that same tick, before the child has had
+   *  any chance to write. A listener attached later (a delayed setTimeout,
+   *  for example) never sees this: Node has already torn the stream down. */
+  async function runAgainstPlantedRulesPausedReader(rules: string): Promise<HookResult> {
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-paused-reader-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks'), { recursive: true });
+      await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
+      await fsp.writeFile(path.join(planted, '.claude', 'rules', 'autonomy.md'), rules);
+
+      return await new Promise<HookResult>((resolve, reject) => {
+        const child = spawn(process.execPath, [hookPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+        if (!child.stdin || !child.stdout || !child.stderr) {
+          reject(new Error('missing a stdio stream'));
+          return;
+        }
+        let code = 0;
+        let stdout = '';
+        let stderr = '';
+        let ended = false;
+        const maybeResolve = () => {
+          if (ended) resolve({ code, stderr, stdout });
+        };
+        child.on('exit', (exitCode) => {
+          code = exitCode ?? 0;
+        });
+        child.on('error', reject);
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString('utf8');
+        });
+        // Paused in the SAME tick data is first wired up, before the child
+        // has had any chance to write — a reader that has arrived but is
+        // not draining yet, not one that never showed up at all.
+        child.stdout.pause();
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString('utf8');
+        });
+        child.stdout.on('end', () => {
+          ended = true;
+          maybeResolve();
+        });
+        // The delay is the whole point: a payload this size finishes well
+        // under 50ms once the reader drains, so 500ms is comfortably past
+        // the point where a reverted process.exit(main()) would already
+        // have torn the process down. Resuming lets the stream machinery
+        // flow whatever it already buffered while paused — truncated, on
+        // the reverted line — and, on this line, whatever the still-alive
+        // child goes on to finish writing.
+        setTimeout(() => child.stdout!.resume(), 500);
+        child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }));
+        child.stdin.end();
+      });
+    } finally {
+      await removeFixture(planted);
+    }
+  }
+
+  // RP-185 gate round 2 (Blocker 1): process.exit(main()) tears the process
+  // down without waiting for a queued stdout write to drain, which turns a
+  // rules file too large for one pipe write into an INVALID JSON envelope
+  // reported as exit 0 — the same class of silent failure the JSON wire
+  // format exists to fix, just re-armed at the flush boundary instead of the
+  // wire format. process.exitCode = main() (every path through main() returns
+  // 0, so the exit status is unchanged) lets the event loop drain the write
+  // naturally instead. This is the one test in this file that plants a rules
+  // file too large for a default pipe buffer and holds its reader paused
+  // past the point where the old code path would already have exited —
+  // every other test in this suite drains continuously and cannot see this
+  // class of defect at all.
+  //
+  // The payload is sized for a DETERMINISTIC kill, not merely a likely one: a
+  // smaller payload (measured down to roughly 300 KB) truncated on nearly
+  // every reversion run but not every one, on at least one host this was
+  // checked against — and a pin that lets the defect through occasionally is
+  // a pin that will eventually be green on a real revert. Re-verified at
+  // this size across repeated reversion runs with zero non-truncating
+  // outcomes before this test landed. The exact byte count a reversion
+  // truncates at is host-dependent (kernel pipe buffer size, scheduler
+  // timing) and is deliberately not asserted here — only that the whole
+  // envelope either arrives complete or the JSON does not parse.
+  //
+  // Windows limit, stated rather than assumed: Node documents pipe writes as
+  // SYNCHRONOUS on Windows and asynchronous on POSIX. A synchronous write
+  // cannot be interrupted by process.exit() mid-write the way an async one
+  // can, so this pin is expected to have real teeth on the Linux `ci` lane
+  // and to be near-vacuous on a Windows lane — not a defect in the test, but
+  // a platform difference a future reader should not mistake for
+  // cross-platform coverage.
+  it('delivers the whole envelope even when the reader does not drain until process.exit(main()) would already have torn the process down', async () => {
+    // Large enough for a deterministic kill on reversion (see above), with
+    // no skip markers, so excerptAutonomy() returns it whole.
+    const bigSize = 5_000_000;
+    const big = '# Big rules file\n\n' + 'x'.repeat(bigSize) + '\n';
+    const result = await runAgainstPlantedRulesPausedReader(big);
+
+    expect(result.code).toBe(0);
+    let parsed: unknown;
+    expect(() => {
+      parsed = JSON.parse(result.stdout);
+    }, `stdout must parse as JSON, got ${result.stdout.length} bytes`).not.toThrow();
+    const envelope = parsed as { hookSpecificOutput: { additionalContext: string } };
+    expect(envelope.hookSpecificOutput.additionalContext.length).toBeGreaterThan(bigSize);
+  });
+
+  // RP-185 gate round 3: `process.stdout.on('error', () => {})` was a
+  // blanket handler — it silenced EVERY stdout write failure, not only the
+  // abandoned-reader case (EPIPE) the comment argued for. Measured (security
+  // review): stdout redirected to `/dev/full` (a genuine write failure, not
+  // a reader walking away) exited 0 with nothing delivered and no
+  // diagnostic — the exact silent-loss shape this whole file exists to
+  // avoid, moved one write call over. These two cases pin the corrected,
+  // narrowed handler: EPIPE stays silent (nothing is left to report to),
+  // anything else is reported on stderr and marks the exit non-zero.
+  //
+  // Both plant their own tree rather than reusing `runAgainstPlantedRules`:
+  // the point of each is what happens to file descriptors AROUND the child,
+  // which the shared helper's `execFile`-based drain does not let a test
+  // control.
+  it('silently exits 0 when the reader is gone before the write starts (EPIPE)', async () => {
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-epipe-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
+      await fsp.writeFile(
+        path.join(planted, '.claude', 'rules', 'autonomy.md'),
+        '# rules\n\nTier 0\nStop rules\n',
+      );
+
+      const result = await new Promise<HookResult>((resolve, reject) => {
+        const child = spawn(process.execPath, [hookPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+        if (!child.stdin || !child.stdout || !child.stderr) {
+          reject(new Error('missing a stdio stream'));
+          return;
+        }
+        let code = 0;
+        let stderr = '';
+        child.on('exit', (exitCode) => {
+          code = exitCode ?? 0;
+        });
+        child.on('error', reject);
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString('utf8');
+        });
+        // Destroyed in the same tick, before the child has had any chance to
+        // write: the reader is gone from the very first byte, not one that
+        // walked away mid-stream.
+        child.stdout.destroy();
+        child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }));
+        child.stdin.end();
+        child.on('close', () => resolve({ code, stderr, stdout: '' }));
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+    } finally {
+      await removeFixture(planted);
+    }
+  });
+
+  /** `/dev/full` accepts every write and fails it with ENOSPC — a real,
+   *  reproducible stdout error with the reader still fully attached, unlike
+   *  EPIPE. Not available on Windows, where there is no character device to
+   *  redirect to for this. */
+  const devFullAvailable = (): { ok: boolean; reason: string } => ({
+    ok: process.platform !== 'win32',
+    reason: 'no /dev/full on Windows to force a non-EPIPE stdout write failure',
+  });
+
+  it('reports a genuine stdout write failure on stderr and marks the exit non-zero, rather than looking like a healthy session', async (ctx) => {
+    skipUnless(ctx, devFullAvailable().ok, devFullAvailable().reason);
+
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-devfull-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
+      await fsp.writeFile(
+        path.join(planted, '.claude', 'rules', 'autonomy.md'),
+        '# rules\n\nTier 0\nStop rules\n',
+      );
+
+      const devFullFd = openSync('/dev/full', 'w');
+      let result: HookResult;
+      try {
+        result = await new Promise<HookResult>((resolve, reject) => {
+          const child = spawn(process.execPath, [hookPath], {
+            stdio: ['pipe', devFullFd, 'pipe'],
+          });
+          if (!child.stdin || !child.stderr) {
+            reject(new Error('missing a stdio stream'));
+            return;
+          }
+          let code = 0;
+          let stderr = '';
+          child.on('exit', (exitCode) => {
+            code = exitCode ?? 0;
+          });
+          child.on('error', reject);
+          child.stderr.on('data', (chunk: Buffer) => {
+            stderr += chunk.toString('utf8');
+          });
+          child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }));
+          child.stdin.end();
+          child.on('close', () => resolve({ code, stderr, stdout: '' }));
+        });
+      } finally {
+        closeSync(devFullFd);
+      }
+
+      expect(result.code).toBe(1);
+      // the hook's own one-line diagnostic, not any mention of the file name:
+      // an UNHANDLED stream error prints a stack trace that names it too
+      expect(result.stderr).toContain('inject-rules: stdout write failed:');
+      expect(result.stderr).not.toContain('EPIPE');
+    } finally {
+      await removeFixture(planted);
+    }
+  });
   // The banner is printed unconditionally, but the excerpt is not: on malformed
   // markup `excerptAutonomy` hands the WHOLE file back. The session then reads a
   // banner telling it that post-deploy verification and the escalation format
@@ -1149,8 +1430,9 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     const result = await runAgainstPlantedRules(malformed);
     expect(result.code).toBe(0);
 
-    const banner = bannerOf(result.stdout, malformed);
-    const body = result.stdout.slice(banner.length);
+    const context = additionalContextOf(result);
+    const banner = bannerOf(context, malformed);
+    const body = context.slice(banner.length);
     // the premise: this really is the fallback, not an excerpt
     expect(body.trim(), 'malformed markup must inject the whole file').toBe(malformed.trim());
 
@@ -1190,8 +1472,9 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     const result = await runAgainstPlantedRules(markerless);
     expect(result.code).toBe(0);
 
-    const banner = bannerOf(result.stdout, markerless);
-    const body = result.stdout.slice(banner.length);
+    const context = additionalContextOf(result);
+    const banner = bannerOf(context, markerless);
+    const body = context.slice(banner.length);
     // the premise: with nothing marked, every line of the file is injected
     expect(body.trim(), 'a file marking nothing must be injected whole').toBe(markerless.trim());
 
@@ -1201,6 +1484,84 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       expect(body.toLowerCase(), `precondition: ${present} is in the body`).toContain(present);
       expect(claim, `banner must not report ${present} as removed`).not.toContain(present);
     }
+  });
+
+  // RP-185: both harnesses document the same `hookSpecificOutput.additionalContext`
+  // JSON shape for SessionStart output, so this hook emits exactly that,
+  // unconditionally. That is a preference, not something Codex requires —
+  // Codex's own docs say plain text on stdout is also accepted for
+  // `session_start`. What was measured is narrower: Codex reported this
+  // hook's OLD plain-text banner as invalid JSON rather than reading it as
+  // text. See docs/decisions/session-start-wire-format.md for what is
+  // measured and what each harness's own documentation says.
+  it('emits a JSON hookSpecificOutput envelope for SessionStart, on startup, resume and compact', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.code, source).toBe(0);
+      let parsed: unknown;
+      expect(
+        () => {
+          parsed = JSON.parse(result.stdout);
+        },
+        `${source}: stdout must parse as JSON, got: ${result.stdout.slice(0, 80)}`,
+      ).not.toThrow();
+      const envelope = parsed as {
+        hookSpecificOutput?: { hookEventName?: unknown; additionalContext?: unknown };
+      };
+      expect(envelope.hookSpecificOutput?.hookEventName, source).toBe('SessionStart');
+      expect(typeof envelope.hookSpecificOutput?.additionalContext, source).toBe('string');
+      const additionalContext = envelope.hookSpecificOutput?.additionalContext as string;
+      expect(additionalContext, source).toContain('Tier 0');
+      expect(additionalContext, source).toContain('Stop rules');
+    }
+  });
+
+  // RP-185 regression pin: the old banner started with the literal characters
+  // `[agent-os]`, written straight to stdout, and Codex reported it as invalid
+  // JSON. A leading `[` is a plausible trigger for that (see
+  // docs/decisions/session-start-wire-format.md for why this stays an
+  // inference, not a documented mechanism) — but this test does not depend
+  // on knowing why: it pins that the old raw-text shape can never quietly
+  // come back, and that stdout is exactly one JSON object with no byte
+  // outside it, not just that the new shape happens to work.
+  it('never regresses to the old bare [agent-os]-prefixed plain-text stdout', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.stdout.startsWith('[agent-os]'), source).toBe(false);
+      // Exact boundaries, not `trimStart()` + `JSON.parse` (both tolerate
+      // surrounding whitespace, so an appended trailing newline byte — the exact
+      // regression this hook was written to avoid, and precisely what Claude
+      // Code's documented "ends with `}`" detection reads — would leave this
+      // test green).
+      expect(result.stdout.startsWith('{'), source).toBe(true);
+      expect(result.stdout.endsWith('}'), source).toBe(true);
+      expect(result.stdout, source).toBe(result.stdout.trim());
+      expect(() => JSON.parse(result.stdout), source).not.toThrow();
+    }
+  });
+
+  // RP-185: pins the envelope to exactly the two fields both harnesses
+  // document for a SessionStart hook's JSON output — see
+  // docs/decisions/session-start-wire-format.md. A field nobody asked for
+  // (`systemMessage`, `continue`, …) is scope creep this test catches at the
+  // point it is added, not after something downstream starts depending on it.
+  it('the JSON envelope carries only hookEventName and additionalContext — the shape both Codex and Claude Code document', async () => {
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(Object.keys(parsed)).toEqual(['hookSpecificOutput']);
+    expect(Object.keys(parsed.hookSpecificOutput as Record<string, unknown>).sort()).toEqual([
+      'additionalContext',
+      'hookEventName',
+    ]);
   });
 });
 
