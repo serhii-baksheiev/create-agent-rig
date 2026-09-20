@@ -1543,6 +1543,57 @@ describe('applyUninstall — a file that changed after planning', () => {
     },
   );
 
+  // Cycle-9 review (code, security and UX lenses, independently): the wording
+  // a directly wired hook gets must not depend on WHERE the unreadable seed
+  // sits in the wiring file's text order. Clearing the precaution mark only
+  // when a path is popped closed one direction (sweep first, seed later);
+  // with the unreadable seed anywhere but first, its sweep re-marked every
+  // hook an earlier seed call had already read. One case per position, and
+  // the list of hooks is spelled out here rather than read from the template
+  // or from production, so a position nobody thought of cannot go missing.
+  const WIRED_HOOKS = [
+    '.claude/hooks/guard-secret-file.mjs',
+    '.claude/hooks/guard-rulebook.mjs',
+    '.claude/hooks/block-no-verify.mjs',
+    '.claude/hooks/guard-bash.mjs',
+    '.claude/hooks/guard-subagent-model.mjs',
+    '.claude/hooks/gate-stop-dod.mjs',
+    '.claude/hooks/inject-rules.mjs',
+    '.claude/hooks/warn-subagent-routing.mjs',
+  ];
+  for (const unreadable of WIRED_HOOKS) {
+    onlyWhereSymlinksExist(
+      `gives every other directly wired hook the direct wording when ${path.posix.basename(unreadable)} is the unreadable one`,
+      async () => {
+        await installRig();
+        const settings = await read(SETTINGS);
+        // the list above is the whole of what the shipped wiring names
+        const named = [...settings.matchAll(/\.claude\/hooks\/[\w-]+\.mjs/g)].map((m) => m[0]);
+        expect([...new Set(named)].sort()).toEqual([...WIRED_HOOKS].sort());
+        await write(SETTINGS, settings.replace('"hooks"', '"myOwnKey": true, "hooks"'));
+
+        const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+        try {
+          const target = path.join(outside, 'external.mjs');
+          await writeFile(target, await read(unreadable));
+          await rm(abs(unreadable));
+          await symlink(target, abs(unreadable));
+
+          const plan = await planUninstall(repo);
+          for (const hook of WIRED_HOOKS.filter((h) => h !== unreadable)) {
+            const reason = actionFor(plan, hook)?.reason ?? '';
+            expect(reason, hook).toContain(
+              `still referenced by ${SETTINGS}, which was preserved as edited`,
+            );
+            expect(reason, hook).not.toContain('protected because');
+          }
+        } finally {
+          await removeFixture(outside);
+        }
+      },
+    );
+  }
+
   // Security-lens review, RP-181: the exact exploit the docblock's earlier,
   // now-deleted "defensible in the shipped tree today" claim was wrong
   // about. `.claude/scripts/lib/secrets.mjs` has exactly ONE seeder in the
@@ -1583,10 +1634,8 @@ describe('applyUninstall — a file that changed after planning', () => {
         // hookFilesReferencedIn's text order — sweeping them into
         // "unverified" before their own, later turn in the queue could ever
         // confirm and clear it. Every one of them must carry the DIRECT
-        // wording here, not the precaution one, proving the fix (clearing
-        // `unverified` the moment a path is popped and confirmed readable,
-        // not only on a genuine import edge) actually applies to a SEED,
-        // not only to an imported dependency.
+        // wording here, not the precaution one: a path the walk reaches as
+        // a SEED is traced exactly as one it reaches through an import.
         for (const hook of [
           '.claude/hooks/block-no-verify.mjs',
           '.claude/hooks/gate-stop-dod.mjs',

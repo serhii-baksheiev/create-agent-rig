@@ -728,6 +728,17 @@ async function protectHookAndDeps(
     const [rel, parent] = queue.pop()!;
     if (visited.has(rel)) continue;
     visited.add(rel);
+    // `rel` was REACHED — named by a wiring file, or resolved from another
+    // file's import — so it is traced, whatever its own status turns out to
+    // be, and is never merely "unverified". Together with the sweep's own
+    // `!visited.has(owned)` below this makes the wording independent of the
+    // order the seeds arrive in: a sweep that ran BEFORE `rel`'s turn is
+    // undone here, and one that runs AFTER it never marks `rel` at all.
+    // Clearing only on a readable pop (the cycle-8 fix) closed the first
+    // half alone — an unreadable seed anywhere but first in the wiring
+    // file's text order still re-marked every hook already confirmed
+    // (code-, security- and UX-lens review, RP-181, cycle 9).
+    unverified.delete(rel);
     if (!protectedHooks.has(rel)) protectedHooks.set(rel, wiringRel);
     if (parent !== undefined && !importedBy.has(rel)) importedBy.set(rel, parent);
     const status = await regularFileStatus(repoDir, rel);
@@ -741,33 +752,14 @@ async function protectHookAndDeps(
         if (!owned.endsWith('.mjs')) continue;
         if (!protectedHooks.has(owned)) protectedHooks.set(owned, wiringRel);
         // First unreadable file to sweep a given path names the reason;
-        // never overwritten by a later sweep, and cleared entirely the
-        // moment any walk finds a genuine import trace to it (above).
-        if (!importedBy.has(owned) && !unverified.has(owned)) {
+        // never overwritten by a later sweep, never planted on a path some
+        // walk already reached, and cleared the moment one does (above).
+        if (!visited.has(owned) && !importedBy.has(owned) && !unverified.has(owned)) {
           unverified.set(owned, rel);
         }
       }
       continue;
     }
-    // `status === 'ok'`: `rel` is a real, plain file inside the repository —
-    // confirmed, whether `rel` arrived here as a SEED a wiring file names
-    // directly (`parent === undefined`) or as an import target resolved
-    // from another file's content (`parent !== undefined`). Either way this
-    // clears any earlier, merely-precautionary `unverified` mark a
-    // DIFFERENT unreadable seed's sweep may have planted for this exact
-    // path before `rel` got its own turn in the queue — which is exactly
-    // what happens whenever an unreadable seed sorts ahead of the others in
-    // `hookFilesReferencedIn`'s iteration order (`guard-secret-file.mjs` is
-    // first in the shipped template): its sweep used to run, and reach
-    // paths, before those paths' OWN seed calls had a chance to confirm
-    // them, so a genuinely wiring-named hook was reported as swept-in
-    // caution rather than a direct reference — the sweep fired first and
-    // nothing ever cleared it (UX-lens and security-lens review, RP-181,
-    // cycle 8). A confirmed import trace was already the strongest
-    // evidence this walk has; a confirmed DIRECT SEED is exactly as strong
-    // — the wiring file was read and really does name it — and previously
-    // had no way to say so.
-    unverified.delete(rel);
     let text: string;
     try {
       text = await readFile(onDisk(repoDir, rel), 'utf8');
@@ -1302,7 +1294,7 @@ export async function applyUninstall(
       // ⚠ A second, sibling gap, this one for an EDITED (not `kept`) wiring
       // file specifically (security-lens review, RP-181, cycle 8): if a
       // hook a preserved-as-edited wiring file names is genuinely ABSENT at
-      // plan time, its dependency is never swept (correctly — an absent
+      // plan time, its single-seeded dependency is never swept (correctly — an absent
       // file has nothing to protect a dependency on behalf of), and that
       // dependency gets an ordinary `remove` verdict. If the hook then
       // REAPPEARS — as a symlink, or as a legitimate working file that
@@ -1318,7 +1310,10 @@ export async function applyUninstall(
       // than grown into this change: closing it would mean re-deriving
       // apply-time protection for every wiring path unconditionally, not
       // only ones already known to be plan-time `remove` verdicts, which is
-      // a wider change than this cycle's fix earns.
+      // a wider change than this cycle's fix earns. The same end state also
+      // needs no window at all — hand-delete the hook, uninstall, restore the
+      // hook from git — and `docs/command-contract.md` says so beside this
+      // limitation rather than letting "needs write access" read as its bound.
       const importer = applyTimeImportedBy.get(rel);
       const unverifiedBecause = applyTimeUnverified.get(rel);
       protectedHooksAtApply.push({

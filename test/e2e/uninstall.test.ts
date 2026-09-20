@@ -410,9 +410,7 @@ describe('create-agent-rig uninstall', () => {
   // is exactly why a precedence bug (an unreadable seed's sweep retroactively
   // marking six OTHER, already-wiring-named hooks as merely "unverified",
   // because nothing cleared the mark when they were later read and traced
-  // as their own seed) shipped and still passed. Fixed by clearing
-  // `unverified` the moment a path is popped and confirmed readable, whether
-  // reached as a seed or an import; this test now pins the EXACT numbers
+  // as their own seed) shipped and still passed. This test now pins the EXACT numbers
   // security measured against the built CLI (15 genuinely referenced or
   // imported — 7 direct hooks + 6 real imports + the two non-dependency
   // entries `settings.json` and `guard-secret-file.mjs` themselves, neither
@@ -456,6 +454,60 @@ describe('create-agent-rig uninstall', () => {
       await expect(
         readFile(path.join(repo, '.claude', 'scripts', 'lib', 'secrets.mjs')),
       ).resolves.toBeTruthy();
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  // Cycle-9 review (code, security and UX lenses independently): the test
+  // above pins the ONE position the cycle-8 fix handled — the unreadable
+  // seed first in `.claude/settings.json`'s text order. With it LAST, all
+  // seven other wired hooks went back to the precaution wording and the
+  // roll-up printed 9/35. The roll-up is checked here against a count made
+  // from the report's own per-path lines, not against a number production
+  // computed: the two are printed by different code, and they must agree.
+  it('the roll-up matches the per-path reasons when the unreadable hook is the LAST one the wiring names', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const settingsPath = path.join(repo, '.claude', 'settings.json');
+    const settings = await readFile(settingsPath, 'utf8');
+    await writeFile(settingsPath, settings.replace('"hooks"', '"mine": true, "hooks"'));
+    const wired = [...settings.matchAll(/\.claude\/hooks\/([\w-]+)\.mjs/g)].map((m) => m[1]!);
+    const last = wired.at(-1)!;
+    const others = [...new Set(wired)].filter((name) => name !== last);
+    expect(others.length).toBeGreaterThanOrEqual(6);
+
+    const lastHook = path.join(repo, '.claude', 'hooks', `${last}.mjs`);
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-e2e-outside-'));
+    try {
+      const target = path.join(outside, 'external.mjs');
+      await writeFile(target, await readFile(lastHook, 'utf8'));
+      await rm(lastHook);
+      await symlink(target, lastHook);
+
+      const result = await runCli(['uninstall', '--yes']);
+      expect(result.code, result.stderr).toBe(0);
+      for (const name of others) {
+        expect(result.stdout).toContain(
+          `! .claude/hooks/${name}.mjs — still referenced by .claude/settings.json, which was preserved as edited`,
+        );
+      }
+      // the report lists the preserved paths twice — once in the plan, once
+      // in the result — so count each PATH once
+      const reasonByPath = new Map<string, string>();
+      for (const line of result.stdout.split('\n')) {
+        const entry = /^\s*! (\S+)\s+— (.*)$/.exec(line);
+        if (entry) reasonByPath.set(entry[1]!, entry[2]!);
+      }
+      const precaution = [...reasonByPath.values()].filter((reason) =>
+        reason.startsWith('protected because'),
+      );
+      expect(precaution.length).toBeGreaterThan(0);
+      expect(result.stdout).toContain(
+        `(${reasonByPath.size - precaution.length} genuinely referenced or imported; ${precaution.length} kept only as a precaution`,
+      );
     } finally {
       await removeFixture(outside);
     }

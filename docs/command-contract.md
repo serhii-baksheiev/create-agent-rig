@@ -1123,6 +1123,17 @@ protection for every wiring path unconditionally rather than only ones
 already known to be plan-time `remove` verdicts — a wider change than this
 cycle's fix earns.
 
+The same END STATE needs no window and no second writer, and the comparison
+above does not bound it: delete a wired hook by hand, run `uninstall --yes`
+(the hook's single-seeded dependency is removed, correctly, since the hook
+that needed it is gone), then restore the hook from git. The restored hook
+fails at module resolution and exits 1, which a `PreToolUse` hook's caller
+reads as non-blocking, while the preserved wiring still names it. The run
+reports the hook under the wiring file's `still referenced:` list and under
+`absent`, and its dependency under `removed`; nothing in the report connects
+the three. Restoring a hook after an uninstall means restoring what it
+imports too.
+
 A hook is reported in `--json`'s `preserved` array with one of FIVE reason
 wordings, decided by `protectedFileReason` from whichever evidence for its
 protection actually exists — a genuine import trace beats mere caution

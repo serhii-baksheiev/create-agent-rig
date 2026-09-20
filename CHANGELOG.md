@@ -174,23 +174,11 @@ a template any generated rig receives.
   ("protected because `<file>` could not be read…"), and the plain-text
   summary adds a one-line roll-up — how many `preserved` paths were
   genuinely traced versus kept only as a precaution — once any are.
-  **That fifth wording shipped with its own precedence bug, closed the
-  same cycle it landed**: a path already popped and read as a genuine
-  direct seed could still be retroactively marked "unverified" by a
-  DIFFERENT, unreadable seed's later sweep, because nothing cleared the
-  mark for a seed the way it already did for a traced import. Reproduced:
-  every one of the seven hooks `.claude/settings.json` wires directly
-  reported the caution wording instead of the direct one, and the roll-up
-  printed `8 genuinely referenced or imported; 36 kept only as a precaution`
-  where the true split was `15 / 29`. Fixed by clearing the
-  mark the moment ANY path is popped and confirmed readable — seed or
-  import alike, not only an import. Also fixed the exhaustiveness switch
-  from the same round: a pre-switch runtime guard narrowed the checked
-  value enough that a fourth `WiringPreservedKind` member compiled clean
-  instead of failing typecheck, silently reintroducing the exact gap the
-  switch exists to close. Replaced with a `default` case using
-  `satisfies never`, which fails typecheck on a fourth member and returns
-  a named fallback string rather than throwing. The sweep itself is also
+  Which wording a hook gets does not depend on where the unreadable file
+  sits in the wiring file's own order: a hook the wiring names, or one a
+  readable file imports, is reported as referenced or imported whether the
+  precaution sweep ran before or after the command reached it. The sweep
+  itself is also
   now narrower: it fires on a file that could not be SAFELY READ, never on one that is simply gone. Sweeping on absence bought
   nothing (an absent file has no imports that can fail to resolve, because
   the module that would make them is itself gone) and cost a real one: an
