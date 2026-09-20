@@ -23,6 +23,12 @@ export default defineConfig({
           name: 'unit',
           include: ['packages/*/test/**/*.test.ts'],
           setupFiles: ['test/setup-env.ts'],
+          // The figure ci.yml passes this lane as --testTimeout. The full
+          // `pnpm test` of e2e.yml cannot pass that flag (it would override the
+          // e2e project's figure below), so without this the unit project alone
+          // ran on vitest's 5 s default there (RP-191) — pinned by
+          // test/template/vitest-timeouts.test.ts.
+          testTimeout: 15_000,
         },
       },
       {
