@@ -1038,6 +1038,27 @@ rather than only the file itself. Pinned by
 seeder even when that exact seeder is symlinked — the credential guard's own
 import" and its `guard-rulebook.mjs`/`unattended-flag.mjs` sibling.
 
+⚠ **The sweep triggers on `regularFileStatus` returning `'unsafe'`
+specifically — never on `'absent'`, and that distinction is load-bearing.**
+An earlier version swept on any non-`'ok'` status, absence included:
+measured cost, deleting one ordinary hook file by hand (`block-no-verify.mjs`,
+with the wiring still naming it and that wiring itself preserved) turned 83
+planned removals into 40 planned / 43 preserved — an operator who simply
+turned a hook off, or whose `kept` `.claude/settings.json` names a hook from
+other tooling entirely (an ordinary thing for a file they own), could no
+longer complete a plain `uninstall` without `--detach` (code-lens and
+security-lens review, RP-181). Nothing is gained by sweeping on absence
+either: a file that is not there has no imports that can fail to resolve,
+because the module that would make them is itself gone — the sweep's whole
+justification (a file we cannot READ might import something we cannot
+discover) does not apply to a file that does not exist. Pinned by
+`packages/cli/test/uninstall.test.ts` › "deleting a hook file (not symlinking
+it) never triggers the superset sweep — an ordinary \"turned this hook off\"
+leaves the rest of the plan alone".
+
+⚠ **A file the sweep catches is reported honestly as unconfirmed, not as a
+traced reference.** See the fifth wording below.
+
 Bounded, but precisely: every REAL read happens at most once per owned path
 — a visited set is checked before reading, and only an import target already
 among the ~80 paths this release installs is ever opened, so a path this
@@ -1082,12 +1103,14 @@ change: every real `init`/`upgrade` run always records a wiring path in one
 of the two, so reaching this requires a manifest already missing an entry a
 real run never omits.
 
-A hook is reported in `--json`'s `preserved` array with one of FOUR reason
-wordings, depending on how the walk reached it and, for a directly-named
-hook, WHY the wiring file protecting it is itself preserved (its
-`WiringPreservedKind` — `'edited'`, `'kept'`, or `'unsafe'`, decided once per
-wiring path from the exact same distinction `planUninstall`/`applyUninstall`
-already compute, never assumed):
+A hook is reported in `--json`'s `preserved` array with one of FIVE reason
+wordings, decided by `protectedFileReason` from whichever evidence for its
+protection actually exists — a genuine import trace beats mere caution
+beats a bare direct reference — and, for a directly-named hook, WHY the
+wiring file protecting it is itself preserved (its `WiringPreservedKind` —
+`'edited'`, `'kept'`, or `'unsafe'`, decided once per wiring path from the
+exact same distinction `planUninstall`/`applyUninstall` already compute,
+never assumed):
 
 - **Edited** — a `files`-tracked wiring file whose current bytes no longer
   match the recorded hash: `still referenced by <wiring path>, which was
@@ -1107,23 +1130,44 @@ pointing at nothing`.
   import, regardless of that file's own `WiringPreservedKind` —
   `.claude/scripts/lib/secrets.mjs` is never mentioned by
   `.claude/settings.json` at ALL, only `.claude/hooks/guard-secret-file.mjs`
-  is — gets a wording that names the immediate importer instead: `imported
-by <importer>, itself needed — directly or through further imports — by
-the still-preserved <wiring path>, which is why it survives too`, so an
+  is — gets a wording that names the immediate importer instead:
+  `imported by <importer>, itself needed — directly or through further
+imports — by the still-preserved <wiring path>, which is why it survives
+too. Removing this file would leave <importer> unable to load`, so an
   operator grepping the wiring file for the path they actually care about is
   not left empty-handed.
+- **Unverified** — a path the conservative superset sweep protected without
+  ever tracing it, because SOME other file the walk needed to read to keep
+  tracing could not be read at all: `protected because <unreadable file>
+could not be read, so every file this release installs is being kept rather
+than risk removing one it needs`. Deliberately its own wording rather than
+  reusing Edited/Kept/Unsafe's "still referenced by" sentence — that sentence
+  claims a specific, confirmed connection this file does not have. Reusing
+  it made the wording that sounds MOST certain describe the files the
+  command is LEAST sure about: in one reproduced run, of 84 owned paths
+  under one preserved wiring file, roughly 7 were genuinely referenced by it
+  and roughly 30 were swept in by this precaution alone — including a TEST
+  FIXTURE
+  (`.agents/skills/new-invariant/guard-invariant.example.test.mjs`) no hook
+  could ever import — all reported with the identical, fully-confident
+  "still referenced by … edited" sentence (UX-lens and code-lens review,
+  RP-181).
 
 The first three exist because reusing the "edited" wording for a `kept` or
 `unsafe` wiring file told two contradictory stories about the same
 repository state in one report — `.claude/settings.json` → "user-owned (kept
 by init)", two lines away `guard-bash.mjs` → "preserved as **edited**",
-about a file nobody edited. None of the four wordings claims the immediate
+about a file nobody edited. None of the five wordings claims the immediate
 importer is itself directly named by the wiring file — only that the wiring
 file needs it, directly or transitively — which stays true at any import
 depth, including a dependency reached three hops down
 (`.claude/hooks/lib/edit-input.mjs` imports `.claude/scripts/git-env.mjs`,
 and neither is named in `.claude/settings.json` at all). A reader who needs
-the next hop finds it on the importer's OWN `preserved` entry.
+the next hop finds it on the importer's OWN `preserved` entry. And the
+Unverified wording never claims a connection at all — it names the file
+whose own unreadability triggered the sweep, not a file this one supposedly
+needs, which is the one honest thing left to say about a path the walk
+never actually traced.
 
 **`--detach`** performs the identical safe cleanup — every check on this page
 applies exactly the same, including the two manifest-digest checkpoints and

@@ -127,13 +127,17 @@ export interface ApplyUninstallResult {
    * {@link WiringPreservedKind} and {@link hookStillReferencedReason} — and
    * is never `'kept'` here specifically (a `kept` wiring path is never a
    * plan-time `remove` verdict, which is what this apply-time re-check keys
-   * off of).
+   * off of). `unverifiedBecause` is present when `rel` was protected by the
+   * conservative superset sweep rather than traced — see
+   * {@link hookUnverifiedReason} — and takes precedence over `wiringKind`'s
+   * wording exactly the way {@link protectedFileReason} decides it.
    */
   protectedHooksAtApply?: Array<{
     rel: string;
     wiringRel: string;
     wiringKind: WiringPreservedKind;
     importedBy?: string;
+    unverifiedBecause?: string;
   }>;
   /**
    * Which of the three {@link UninstallOutcome}s this run reached — present
@@ -473,6 +477,20 @@ export type WiringPreservedKind = 'edited' | 'kept' | 'unsafe';
  * (which records it under `kept`, never `files`), then `uninstall --yes`.
  */
 export function hookStillReferencedReason(wiringRel: string, kind: WiringPreservedKind): string {
+  // A value TypeScript's own types already rule out at every real call
+  // site, kept here purely as a runtime safety net (a caller that ignores
+  // types, or a future member this exact build predates) — checked BEFORE
+  // the exhaustive switch below, not as its `default`, so the switch itself
+  // keeps its compile-time-only exhaustiveness guarantee untouched: without
+  // this guard, an unexpected `kind` reaching the switch would interpolate
+  // a literal `undefined` into the sentence rather than this named fallback
+  // (security-lens review, RP-181).
+  if (kind !== 'edited' && kind !== 'kept' && kind !== 'unsafe') {
+    return (
+      `still referenced by ${wiringRel}, for a reason this version does not name — removing ` +
+      'this file would leave it pointing at nothing'
+    );
+  }
   // Exhaustiveness is enforced at COMPILE time only, deliberately with no
   // `default` branch and no runtime throw: `why`'s definite-assignment check
   // fails typecheck the moment `WiringPreservedKind` grows a fourth member
@@ -528,10 +546,86 @@ export function hookImportedByReason(importedByRel: string, wiringRel: string): 
 }
 
 /**
+ * Reason named when a file was protected not because it was traced — as a
+ * direct reference or as a genuine import — but because SOME OTHER file the
+ * walk needed to read in order to keep tracing could not be read at all.
+ * `unreadableRel` names that file, not `rel` itself: this file's own need
+ * was never confirmed one way or the other, so it is kept purely as a
+ * precaution.
+ *
+ * Deliberately its own, fifth wording rather than reusing
+ * {@link hookStillReferencedReason}'s "still referenced by … which was
+ * preserved as edited" — that sentence claims a specific, confirmed
+ * connection this file does not have. Reusing it made the wording that
+ * sounds MOST certain describe the files the command is LEAST sure about: in
+ * one reproduced run, 84 owned paths in one preserved-wiring scenario, ~7
+ * genuinely referenced by the wiring file (which the command HAD read and
+ * could enumerate exactly), ~30 swept in by this precaution and reported
+ * with the identical unqualified "still referenced by" sentence — including
+ * a TEST FIXTURE (`.agents/skills/new-invariant/guard-invariant.example.test.mjs`)
+ * no hook could ever import (UX-lens review, RP-181).
+ */
+/**
+ * The one fixed prefix every {@link hookUnverifiedReason} string starts
+ * with — exported so a caller building a roll-up summary (how many
+ * `preserved` paths are genuinely traced versus kept only as a precaution)
+ * can tell the two apart from the rendered reason text without a second,
+ * independent guess at the wording. One string, defined once; both this
+ * module and {@link isUnverifiedReason} read the SAME constant, so they
+ * cannot drift apart the way two copies of a fact always eventually do.
+ */
+const UNVERIFIED_REASON_PREFIX = 'protected because ';
+
+export function hookUnverifiedReason(unreadableRel: string): string {
+  return (
+    `${UNVERIFIED_REASON_PREFIX}${unreadableRel} could not be read, so every file this release ` +
+    'installs is being kept rather than risk removing one it needs'
+  );
+}
+
+/**
+ * True when `reason` is exactly the shape {@link hookUnverifiedReason}
+ * produces — used only to build a roll-up summary in the CLI (how many
+ * `preserved` paths were genuinely traced versus kept only as a
+ * precaution), never to decide protection itself, which has already
+ * happened by the time anything calls this.
+ */
+export function isUnverifiedReason(reason: string): boolean {
+  return reason.startsWith(UNVERIFIED_REASON_PREFIX);
+}
+
+/**
+ * The ONE reason a protected hook or dependency reports, decided by which
+ * evidence for its protection actually exists — centralised so
+ * `planUninstall` and the apply-time re-check (through `index.ts`, which
+ * carries the same three pieces of evidence across the process boundary in
+ * `ApplyUninstallResult.protectedHooksAtApply`) cannot describe the same
+ * fact two different ways. Precedence, strongest evidence first: a genuine
+ * import trace (`importedByRel`) beats mere caution (`unverifiedBecause`)
+ * beats a bare direct reference — a file can end up with more than one kind
+ * of evidence over the life of a walk (a precaution sweep can catch a path
+ * before a LATER, genuine import trace reaches the same one), and the
+ * strongest one is what gets reported.
+ */
+export function protectedFileReason(
+  wiringRel: string,
+  wiringKind: WiringPreservedKind,
+  importedByRel: string | undefined,
+  unverifiedBecause: string | undefined,
+): string {
+  if (importedByRel !== undefined) return hookImportedByReason(importedByRel, wiringRel);
+  if (unverifiedBecause !== undefined) return hookUnverifiedReason(unverifiedBecause);
+  return hookStillReferencedReason(wiringRel, wiringKind);
+}
+
+/**
  * `seedRel` plus everything it (transitively) imports that is itself one of
  * `ownedPaths` — each one added to `protectedHooks` under `wiringRel`, and
  * (for everything except `seedRel` itself) to `importedBy` under whichever
- * file's import target resolved to it, mutating all three maps in place.
+ * file's import target resolved to it, mutating all four maps in place.
+ * `unverified` maps a path this pass protected WITHOUT tracing it — see
+ * {@link hookUnverifiedReason} — to the file whose own unreadability
+ * triggered the sweep that caught it.
  *
  * A directly-wired hook file (`.claude/hooks/guard-bash.mjs`) is not
  * self-contained: it imports `.claude/hooks/lib/hook-input.mjs`,
@@ -556,25 +650,42 @@ export function hookImportedByReason(importedByRel: string, wiringRel: string): 
  * itself hang or exhaust the heap — reachable from a hostile committed
  * manifest through nothing worse than `git clone`, before consent, and
  * fatal to the "`--json` prints exactly one object" promise either way.
- * `regularFileStatus !== 'ok'` skips the read entirely; `protectedHooks.set`
- * already ran for `rel` a line above, so THAT file stays protected. What it
- * cannot do is discover what an unreadable `rel` itself imports — `visited`
- * has already been marked, so nothing else in the walk will try again
- * either. An earlier version of this function stopped there, on the
- * reasoning that every `.claude/scripts/` dependency the walk needs to reach
- * is also imported by at least one OTHER, ordinarily-readable hook. That
- * reasoning was checked against the shipped import graph and found false:
- * `.claude/scripts/lib/secrets.mjs` has exactly ONE seeder
+ * `protectedHooks.set` already ran for `rel` a line above, so THAT file
+ * stays protected regardless of its own status. What that alone cannot do
+ * is discover what an unreadable `rel` itself imports — `visited` has
+ * already been marked, so nothing else in the walk will try again either.
+ *
+ * ⚠ **Only `status === 'unsafe'` triggers the superset sweep below —
+ * `'absent'` does not, and that distinction is load-bearing, not an
+ * oversight.** An earlier version of this function swept on ANY
+ * `!== 'ok'` status, `'absent'` included — measured cost: deleting one
+ * ordinary, already-uninstalled-by-hand hook file (`block-no-verify.mjs`),
+ * with the wiring referencing it preserved, turned 83 planned removals into
+ * 40 planned / 43 preserved, on a repository that had done nothing more
+ * hostile than turn a hook off. And nothing is bought by sweeping on
+ * absence: a file that is not there cannot fail module resolution over an
+ * import it cannot make, because the module that would need that import is
+ * itself gone. The whole justification for the sweep — a file we cannot
+ * READ might import something we cannot discover — simply does not apply to
+ * a file that does not exist (code-lens review, RP-181).
+ *
+ * An earlier version of the `'unsafe'` branch stopped at protecting `rel`
+ * alone, on the reasoning that every `.claude/scripts/` dependency the walk
+ * needs to reach is also imported by at least one OTHER, ordinarily-readable
+ * hook. That reasoning was checked against the shipped import graph and
+ * found false: `.claude/scripts/lib/secrets.mjs` has exactly ONE seeder
  * (`guard-secret-file.mjs`), and `.claude/scripts/unattended-flag.mjs` has
  * exactly one (`guard-rulebook.mjs`) — reproduced end to end through a real
  * `git commit` (mode `120000`) and a fresh `git clone`: symlink the sole
  * seeder, preserve the wiring that references it, and `secrets.mjs` survived
  * the uninstall while its only importer died at module resolution, silently
- * inert (security-lens review, RP-181). So the branch below does not stop
- * at `rel` alone: it protects the conservative superset — every owned
- * `.mjs` path — the same move `protectedHooksFor` already makes one level up
- * for an unreadable WIRING file. "Protecting too many is the safe direction"
- * is the same doctrine either way; only where it gets applied changed.
+ * inert (security-lens review, RP-181). So the `'unsafe'` branch below does
+ * not stop at `rel` alone: it protects the conservative superset — every
+ * owned `.mjs` path — the same move `protectedHooksFor` already makes one
+ * level up for an unreadable WIRING file, recording each newly-swept path
+ * into `unverified` rather than claiming it as confirmed. "Protecting too
+ * many is the safe direction" is the same doctrine either way; only where
+ * it gets applied, and how honestly it gets reported, changed.
  *
  * Bounded, per `.claude/rules/invariants.md`'s fail-open rule, but precisely:
  * no recursion, and every REAL read happens at most once per owned path —
@@ -597,6 +708,7 @@ async function protectHookAndDeps(
   protectedHooks: Map<string, string>,
   visited: Set<string>,
   importedBy: Map<string, string>,
+  unverified: Map<string, string>,
 ): Promise<void> {
   // `[rel, parent]` — `parent` is the file whose import target resolved to
   // `rel`, or `undefined` for `seedRel` itself (a wiring file names it
@@ -611,23 +723,28 @@ async function protectHookAndDeps(
     if (visited.has(rel)) continue;
     visited.add(rel);
     if (!protectedHooks.has(rel)) protectedHooks.set(rel, wiringRel);
-    if (parent !== undefined && !importedBy.has(rel)) importedBy.set(rel, parent);
-    if ((await regularFileStatus(repoDir, rel)) !== 'ok') {
-      // Cannot read `rel` to discover what IT imports (security-lens review,
-      // RP-181 — blocker 1: `.claude/scripts/lib/secrets.mjs` has exactly
-      // ONE seeder in the shipped tree, `guard-secret-file.mjs`; symlinking
-      // that one seeder — with the wiring referencing it ALSO preserved —
-      // dropped secrets.mjs's protection even though nothing else in the
-      // walk would ever reach it. Same move `protectedHooksFor` already
-      // makes one level up for an unreadable WIRING file: protect every
-      // owned `.mjs` path outright rather than only the imports `rel`
-      // happened to make when it was last readable. Not narrowed to
-      // `HOOK_REL_PATTERN` — that only reaches `.claude/hooks/`, and this
-      // exists precisely because a dependency can sit in `.claude/scripts/`
-      // instead.
+    // A genuine import trace is the strongest evidence this walk ever has —
+    // it means SOME readable file really does need `rel` — so it clears any
+    // earlier, merely-precautionary `unverified` entry for the same path.
+    if (parent !== undefined) {
+      if (!importedBy.has(rel)) importedBy.set(rel, parent);
+      unverified.delete(rel);
+    }
+    const status = await regularFileStatus(repoDir, rel);
+    // `'absent'` buys the sweep below nothing: a file that is not there has
+    // no imports that can fail to resolve, because the module that would
+    // make them is itself gone (code-lens review, RP-181). Only `'unsafe'`
+    // — unreadable, not merely missing — triggers it.
+    if (status === 'absent') continue;
+    if (status === 'unsafe') {
       for (const owned of ownedPaths) {
-        if (owned.endsWith('.mjs') && !protectedHooks.has(owned)) {
-          protectedHooks.set(owned, wiringRel);
+        if (!owned.endsWith('.mjs')) continue;
+        if (!protectedHooks.has(owned)) protectedHooks.set(owned, wiringRel);
+        // First unreadable file to sweep a given path names the reason;
+        // never overwritten by a later sweep, and cleared entirely the
+        // moment any walk finds a genuine import trace to it (above).
+        if (!importedBy.has(owned) && !unverified.has(owned)) {
+          unverified.set(owned, rel);
         }
       }
       continue;
@@ -715,12 +832,15 @@ async function protectedHooksFor(
   protectedHooks: Map<string, string>;
   /** The immediate importer of a transitively-protected path — absent for a path a wiring file names directly. See {@link hookImportedByReason}. */
   importedBy: Map<string, string>;
+  /** A path protected without being traced, mapped to the file whose own unreadability triggered the sweep that caught it. See {@link hookUnverifiedReason}. */
+  unverified: Map<string, string>;
   /** Why the wiring path named in `protectedHooks` is itself preserved, keyed by the WIRING path (not the protected hook). See {@link WiringPreservedKind}. */
   wiringKind: Map<string, WiringPreservedKind>;
   wiringBytes: Map<string, Buffer>;
 }> {
   const protectedHooks = new Map<string, string>();
   const importedBy = new Map<string, string>();
+  const unverified = new Map<string, string>();
   const wiringKind = new Map<string, WiringPreservedKind>();
   const wiringBytes = new Map<string, Buffer>();
   const visited = new Set<string>();
@@ -741,6 +861,7 @@ async function protectedHooksFor(
             protectedHooks,
             visited,
             importedBy,
+            unverified,
           );
         }
       }
@@ -763,10 +884,11 @@ async function protectedHooksFor(
         protectedHooks,
         visited,
         importedBy,
+        unverified,
       );
     }
   }
-  return { protectedHooks, importedBy, wiringKind, wiringBytes };
+  return { protectedHooks, importedBy, unverified, wiringKind, wiringBytes };
 }
 
 /**
@@ -806,11 +928,8 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       ? { tracked: false }
       : { tracked: true, alwaysPreserved: false, recordedHash };
   };
-  const { protectedHooks, importedBy, wiringKind, wiringBytes } = await protectedHooksFor(
-    repoDir,
-    ownedPaths,
-    trackingFor,
-  );
+  const { protectedHooks, importedBy, unverified, wiringKind, wiringBytes } =
+    await protectedHooksFor(repoDir, ownedPaths, trackingFor);
 
   const actions: UninstallAction[] = [];
   for (const rel of Object.keys(manifest.files).sort()) {
@@ -884,19 +1003,20 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
 
     const protectingWiring = protectedHooks.get(rel);
     if (protectingWiring !== undefined) {
-      const importer = importedBy.get(rel);
       actions.push({
         rel,
         verdict: 'preserved',
-        reason:
-          importer === undefined
-            ? // `wiringKind` is set for `protectingWiring` in the SAME
-              // iteration of `protectedHooksFor` that populated
-              // `protectedHooks` with `rel` — never independently, so this
-              // can only be `undefined` if the two maps disagreed with each
-              // other, which would itself be the bug to fix.
-              hookStillReferencedReason(protectingWiring, wiringKind.get(protectingWiring)!)
-            : hookImportedByReason(importer, protectingWiring),
+        // `wiringKind` is set for `protectingWiring` in the SAME iteration
+        // of `protectedHooksFor` that populated `protectedHooks` with
+        // `rel` — never independently, so this can only be `undefined` if
+        // the two maps disagreed with each other, which would itself be
+        // the bug to fix.
+        reason: protectedFileReason(
+          protectingWiring,
+          wiringKind.get(protectingWiring)!,
+          importedBy.get(rel),
+          unverified.get(rel),
+        ),
       });
       continue;
     }
@@ -1112,6 +1232,7 @@ export async function applyUninstall(
   const {
     protectedHooks: applyTimeProtectedHooks,
     importedBy: applyTimeImportedBy,
+    unverified: applyTimeUnverified,
     wiringKind: applyTimeWiringKind,
   } = await protectedHooksFor(repoDir, ownedPaths, applyTimeTrackingFor);
 
@@ -1133,6 +1254,7 @@ export async function applyUninstall(
     wiringRel: string;
     wiringKind: WiringPreservedKind;
     importedBy?: string;
+    unverifiedBecause?: string;
   }> = [];
   for (let i = 0; i < toRemove.length; i++) {
     const { rel, recordedHash } = toRemove[i]!;
@@ -1158,6 +1280,7 @@ export async function applyUninstall(
       // stays exactly as absent-or-present as it already was), but stated
       // here rather than left implied.
       const importer = applyTimeImportedBy.get(rel);
+      const unverifiedBecause = applyTimeUnverified.get(rel);
       protectedHooksAtApply.push({
         rel,
         wiringRel: protectingWiring,
@@ -1169,6 +1292,7 @@ export async function applyUninstall(
         // as the plan-time assertion above).
         wiringKind: applyTimeWiringKind.get(protectingWiring)!,
         ...(importer !== undefined ? { importedBy: importer } : {}),
+        ...(unverifiedBecause !== undefined ? { unverifiedBecause } : {}),
       });
       continue;
     }

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
-import { modeBitsDeny, skipUnless } from '../helpers/env.js';
+import { modeBitsDeny, skipUnless, symlinksAvailable } from '../helpers/env.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -395,6 +395,45 @@ describe('create-agent-rig uninstall', () => {
     const occurrences = result.stdout.split('.claude/rules/workflow.md').length - 1;
     expect(occurrences, result.stdout).toBeGreaterThanOrEqual(2);
     expect(result.stdout).toMatch(/!\s*\.claude\/rules\/workflow\.md — modified/);
+  });
+
+  // UX/code-lens review, RP-181, cycle 7: a superset-caught dependency now
+  // gets its own ("unverified") reason, and the plain-text summary rolls up
+  // how many `preserved` paths were genuinely traced versus kept only as a
+  // precaution. `guard-secret-file.mjs` symlinked, with `.claude/settings.json`
+  // also preserved as edited, is the exact scenario that produces a large
+  // unverified sweep — real, on the built CLI, not only in the unit suite.
+  it('a run with a symlinked, single-seeded hook dependency rolls up genuinely-traced versus precaution-only preserved counts', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const settingsPath = path.join(repo, '.claude', 'settings.json');
+    const settings = await readFile(settingsPath, 'utf8');
+    await writeFile(settingsPath, settings.replace('"hooks"', '"mine": true, "hooks"'));
+
+    const guardSecretFile = path.join(repo, '.claude', 'hooks', 'guard-secret-file.mjs');
+    const original = await readFile(guardSecretFile, 'utf8');
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-e2e-outside-'));
+    try {
+      const target = path.join(outside, 'external-guard-secret-file.mjs');
+      await writeFile(target, original);
+      await rm(guardSecretFile);
+      await symlink(target, guardSecretFile);
+
+      const result = await runCli(['uninstall', '--yes']);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/genuinely referenced or imported/);
+      expect(result.stdout).toMatch(/kept only as a precaution/);
+      expect(result.stdout).toContain(
+        'protected because .claude/hooks/guard-secret-file.mjs could not be read',
+      );
+      await expect(
+        readFile(path.join(repo, '.claude', 'scripts', 'lib', 'secrets.mjs')),
+      ).resolves.toBeTruthy();
+    } finally {
+      await removeFixture(outside);
+    }
   });
 
   describe('--detach', () => {

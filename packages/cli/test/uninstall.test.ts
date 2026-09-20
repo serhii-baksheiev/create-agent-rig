@@ -22,6 +22,7 @@ import {
   applyUninstall,
   hookImportedByReason,
   hookStillReferencedReason,
+  hookUnverifiedReason,
   planUninstall,
 } from '../src/commands/uninstall.js';
 import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.js';
@@ -1519,11 +1520,18 @@ describe('applyUninstall — a file that changed after planning', () => {
         // ordinary "not a regular file" verdict its own manifest entry gets
         expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
         // the canary: protected too now (the safe superset), but its EXACT
-        // reason proves this is the superset, not the spoofed import
+        // reason — the fifth, "unverified" wording naming `guardBash` as the
+        // unreadable file that triggered the sweep — proves this is the
+        // superset catching it out of caution, never the spoofed import
+        // being believed. A regression to the DIRECT wording here (cycle-7
+        // review, UX/code lenses: reusing "still referenced by ... edited"
+        // for a superset-caught file made the tool sound most certain about
+        // exactly the files it was least sure of) would also pass a bare
+        // `.toContain(guardBash)` check, which is why this asserts the
+        // exact string instead.
         const canaryAction = actionFor(plan, CANARY);
         expect(canaryAction?.verdict).toBe('preserved');
-        expect(canaryAction?.reason).toBe(hookStillReferencedReason(SETTINGS, 'edited'));
-        expect(canaryAction?.reason).not.toContain(guardBash);
+        expect(canaryAction?.reason).toBe(hookUnverifiedReason(guardBash));
 
         await applyUninstall(repo, plan);
         const info = await lstat(abs(guardBash));
@@ -1613,6 +1621,43 @@ describe('applyUninstall — a file that changed after planning', () => {
       }
     },
   );
+
+  // Code-lens review, RP-181: the superset sweep must trigger on `'unsafe'`
+  // ONLY, never on `'absent'`. An earlier version fired on any
+  // `!== 'ok'` status, so an ordinary "I turned this hook off by hand"
+  // move — deleting a seed the wiring still names, with that wiring itself
+  // preserved as edited — swept every owned `.mjs` path into `preserved`
+  // for no benefit: an absent file has no imports that can fail to resolve,
+  // because the module that would make them is itself gone. Measured on the
+  // pre-fix code: 83 planned removals became 40 planned / 43 preserved from
+  // one deleted hook alone. This asserts the opposite — deleting a seed
+  // does not touch the rest of the plan.
+  it('deleting a hook file (not symlinking it) never triggers the superset sweep — an ordinary "turned this hook off" leaves the rest of the plan alone', async () => {
+    await installRig();
+    const blockNoVerify = '.claude/hooks/block-no-verify.mjs';
+    const original = await read(SETTINGS);
+    const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+    await write(SETTINGS, edited);
+    await rm(abs(blockNoVerify));
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, blockNoVerify)?.verdict).toBe('absent');
+
+    const removable = plan.actions.filter((a) => a.verdict === 'remove');
+    const preserved = plan.actions.filter((a) => a.verdict === 'preserved');
+    // Loose bounds, not exact counts, so this does not itself become a
+    // hand-maintained list that drifts with the shipped tree — the point is
+    // the SHAPE: most of the plan stays removable, nowhere near an
+    // even split with "preserved".
+    expect(removable.length).toBeGreaterThan(preserved.length * 3);
+
+    // A path with no plausible connection to the deleted hook — not a hook,
+    // not a dependency of one, an ordinary shipped script — must still be
+    // removable. This is exactly what the pre-fix sweep would have caught.
+    const unrelated = '.claude/scripts/doctor.mjs';
+    expect(await exists(unrelated)).toBe(true);
+    expect(actionFor(plan, unrelated)?.verdict).toBe('remove');
+  });
 });
 
 // The manifest's own bytes are the evidence the whole plan rests on — a

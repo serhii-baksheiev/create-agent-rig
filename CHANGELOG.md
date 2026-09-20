@@ -157,11 +157,30 @@ a template any generated rig receives.
   ONE hook that imports them — `.claude/scripts/lib/secrets.mjs` (only
   `guard-secret-file.mjs`) and `.claude/scripts/unattended-flag.mjs` (only
   `guard-rulebook.mjs`) — so symlinking that one seeder used to drop the
-  dependency's protection entirely: measured end to end through a real `git
-commit` and a fresh `git clone`, the credential guard went from blocking a
-  credential write (exit 2) to dying at module resolution (exit 1,
+  dependency's protection entirely: measured end to end through a real
+  `git commit` and a fresh `git clone`, the credential guard went from
+  blocking a credential write (exit 2) to dying at module resolution (exit 1,
   non-blocking for `PreToolUse`) once its own import was gone, wiring still
-  in place and still claiming to enforce it. Two other
+  in place and still claiming to enforce it. **The sweep that protects a
+  dependency it could not trace now says so, instead of claiming it as a
+  confirmed reference.** Reusing the "still referenced by … which was
+  preserved as edited" wording for a swept-in path made the sentence that
+  sounds most certain describe the files the command was least sure about:
+  in one reproduced run, of 84 owned paths under one preserved wiring file,
+  only ~7 were genuinely referenced by it, and ~30 were swept in by caution
+  alone — including a test fixture no hook could ever import — all reported
+  with the identical, fully-confident wording. A fifth reason string now
+  names the file whose own unreadability triggered the sweep instead
+  ("protected because `<file>` could not be read…"), and the plain-text
+  summary adds a one-line roll-up — how many `preserved` paths were
+  genuinely traced versus kept only as a precaution — once any are. The
+  sweep itself is also now narrower: it fires on a file that could not be
+  SAFELY READ, never on one that is simply gone. Sweeping on absence bought
+  nothing (an absent file has no imports that can fail to resolve, because
+  the module that would make them is itself gone) and cost a real one: an
+  ordinary "I turned this hook off by hand" deletion, with the wiring still
+  naming it, used to turn 83 planned removals into 40 planned / 43
+  preserved on a repository that had done nothing hostile at all. Two other
   apply-time-only fixes in the same area: the removal loop now re-reads a
   wiring file's bytes fresh, immediately before that file's own removal,
   instead of reusing a copy `protectedHooksFor` read before the loop even

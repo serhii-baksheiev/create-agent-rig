@@ -11,9 +11,9 @@ import {
   CHANGED_SINCE_PLANNING_REASON,
   UninstallError,
   applyUninstall,
-  hookImportedByReason,
-  hookStillReferencedReason,
+  isUnverifiedReason,
   planUninstall,
+  protectedFileReason,
 } from './commands/uninstall.js';
 import type {
   ApplyUninstallResult,
@@ -435,16 +435,19 @@ interface UninstallPayload {
  *
  * `changedSincePlanning` and `protectedHooksAtApply` paths are both folded
  * into `preserved` — the first with reason
- * {@link CHANGED_SINCE_PLANNING_REASON}, the second with
- * {@link hookStillReferencedReason} (a path a wiring file names directly —
- * passed `entry.wiringKind`, since a hook a `kept` wiring file references was
- * never "preserved as edited", and reusing that wording for it told two
- * contradictory stories about the same file) or {@link hookImportedByReason}
- * (a path reached only through another protected file's own import —
- * `entry.importedBy` says which), the same two functions `planUninstall`
- * itself calls to word a hook it protects at PLAN time, so a reader cannot
- * tell which pass discovered the protection from the wording alone. Neither
- * `changedSincePlanning` nor
+ * {@link CHANGED_SINCE_PLANNING_REASON}, the second worded by
+ * {@link protectedFileReason} — the SAME function `planUninstall` itself
+ * calls to word a hook it protects at PLAN time, so a reader cannot tell
+ * which pass discovered the protection from the wording alone, and picking
+ * the right one of the four underlying strings never happens twice: a
+ * directly-named hook's wording depends on `entry.wiringKind` (a `kept`
+ * wiring file's hook was never "preserved as edited", and reusing that
+ * wording told two contradictory stories about the same file), a
+ * transitively-imported one on `entry.importedBy`, and one protected only by
+ * the conservative superset sweep — never traced at all — on
+ * `entry.unverifiedBecause`, which names the file whose own unreadability
+ * triggered the sweep rather than claiming a connection this command never
+ * confirmed. Neither `changedSincePlanning` nor
  * `protectedHooksAtApply` is in `plan.actions` (both were `remove` at plan
  * time and only discovered otherwise at apply time), but both are exactly as
  * un-removed as any other preserved path, and a caller reading `preserved`
@@ -470,6 +473,7 @@ function uninstallPayload(
       wiringRel: string;
       wiringKind: WiringPreservedKind;
       importedBy?: string;
+      unverifiedBecause?: string;
     }>;
     outcome?: UninstallOutcome;
   },
@@ -492,12 +496,9 @@ function uninstallPayload(
         reason: CHANGED_SINCE_PLANNING_REASON,
       })),
       ...(applied?.protectedHooksAtApply ?? []).map(
-        ({ rel, wiringRel, wiringKind, importedBy }) => ({
+        ({ rel, wiringRel, wiringKind, importedBy, unverifiedBecause }) => ({
           path: rel,
-          reason:
-            importedBy === undefined
-              ? hookStillReferencedReason(wiringRel, wiringKind)
-              : hookImportedByReason(importedBy, wiringRel),
+          reason: protectedFileReason(wiringRel, wiringKind, importedBy, unverifiedBecause),
         }),
       ),
     ],
@@ -765,11 +766,25 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
   });
   const preservedList = (): string =>
     preserved.map(({ path, reason }) => `  ! ${path}${reason ? ` — ${reason}` : ''}`).join('\n');
+  // A roll-up, on top of the per-line reasons, distinguishing what the
+  // command actually traced from what it kept only as a precaution — at
+  // the scale a symlinked, single-seeded hook dependency can now produce
+  // (dozens of paths swept in by caution alone), one line naming the split
+  // does more for an operator than reading every reason individually
+  // (UX-lens review, RP-181, carried since cycle 5 as the roll-up advisory).
+  const unverifiedCount = preserved.filter((p) => isUnverifiedReason(p.reason)).length;
+  const rollup =
+    unverifiedCount > 0
+      ? `  (${preserved.length - unverifiedCount} genuinely referenced or imported; ` +
+        `${unverifiedCount} kept only as a precaution — something needed to verify them ` +
+        `could not be read)\n`
+      : '';
   if (result.outcome === 'detached') {
     process.stdout.write(
       `\nDetached: removed ${result.removed.length} files and the manifest.\n` +
         (preserved.length > 0
           ? `${preserved.length} file(s) left behind — they are yours now, uninstall no longer owns them:\n` +
+            rollup +
             `${preservedList()}\n`
           : ''),
     );
@@ -785,7 +800,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
     // output, without re-running `--json` just to learn what survived.
     process.stdout.write(
       `\nRemoved ${result.removed.length} files. ${preserved.length} preserved — the manifest ` +
-        `was kept: the rig is still installed.\n${preservedList()}\n`,
+        `was kept: the rig is still installed.\n${rollup}${preservedList()}\n`,
     );
   }
   // A removal is a working-tree change, not a commit — uninstall never
