@@ -25,7 +25,7 @@ import {
   hookUnverifiedReason,
   planUninstall,
 } from '../src/commands/uninstall.js';
-import { AGENTS_MD_RESCUE } from '../src/commands/upgrade.js';
+import { AGENTS_MD_RESCUE, applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.js';
 import { hookFilesReferencedIn } from '../src/lib/init-settings.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
@@ -1987,6 +1987,38 @@ describe('planUninstall — the CLAUDE.md/AGENTS.md pair disclosure (round 4, bl
       "this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which exists and is yours (untracked by this rig), as the only rulebook copy",
     );
     expect(claude?.note).not.toMatch(/is already gone/);
+  });
+
+  // Round 7 (gate cycle 6, prose HOLD on one citation): `siblingState`
+  // (uninstall.ts) is ONE function called symmetrically for both
+  // directions — the test above proves the CLAUDE.md-removed /
+  // AGENTS.md-untracked-sibling branch; this is the mirror, and it is the
+  // one the case table's row 1 actually describes: not a bare fixture that
+  // edits the manifest by hand, but a CLAUDE.md a real `upgrade` already
+  // turned into an ordinary, never-recorded `conflict`, leaving AGENTS.md
+  // as the sole rig-owned, freshly-rewritten file.
+  it('when CLAUDE.md is the untracked sibling after a real upgrade dropped its conflict verdict from the manifest, the AGENTS.md removal note says it EXISTS — never "absent" (mirror direction)', async () => {
+    await installRig();
+    await write('CLAUDE.md', '# my own notes\n');
+
+    const upgradePlan = await planUpgrade(repo);
+    await applyUpgrade(repo, upgradePlan);
+    // Fixture sanity: the upgrade really did drop CLAUDE.md from the
+    // manifest (an ordinary `conflict` verdict is deliberately never
+    // recorded in `files`) and really did re-record AGENTS.md as rig-owned.
+    const manifestAfterUpgrade = await readManifest(repo);
+    expect(manifestAfterUpgrade?.files['CLAUDE.md']).toBeUndefined();
+    expect(manifestAfterUpgrade?.files['AGENTS.md']).toBeDefined();
+
+    const plan = await planUninstall(repo);
+    const claude = actionFor(plan, 'CLAUDE.md');
+    const agents = actionFor(plan, 'AGENTS.md');
+    expect(claude).toBeUndefined();
+    expect(agents?.verdict).toBe('remove');
+    expect(agents?.note).toBe(
+      "this is the rig's own AGENTS.md — removing it leaves CLAUDE.md, which exists and is yours (untracked by this rig), as the only rulebook copy",
+    );
+    expect(agents?.note).not.toMatch(/is already gone/);
   });
 });
 
