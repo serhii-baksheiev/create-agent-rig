@@ -6,6 +6,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
+import { onlyOnWindows, posixShellAvailable, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 const exec = promisify(execFile);
@@ -145,6 +147,122 @@ describe('create-agent-rig init (into an existing repo)', () => {
     expect(result.stderr).toMatch(/CLAUDE\.md/);
     expect(result.stderr).not.toMatch(/at .*init\.js/);
     expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules');
+  });
+});
+
+// RP-185: the wired `.codex/hooks.json` SessionStart command is the thing a
+// real Codex session actually invokes — not a reimplementation of it. This
+// runs the ACTUAL generated command (POSIX form, and its Windows
+// `-EncodedCommand` counterpart) against a freshly `init`-ed project, so a
+// change to inject-rules.mjs's stdout shape is caught here even if it never
+// touches the string built into hooks.json. See
+// docs/decisions/session-start-wire-format.md for the envelope both harnesses
+// document.
+describe('create-agent-rig init (the wired Codex SessionStart hook, end to end)', () => {
+  /** Run an arbitrary shell command string with a stdin payload — the same
+   *  shape Codex itself invokes a hook with, over the real wired command
+   *  rather than a hand-rolled stand-in for it. */
+  function runShellCommand(
+    command: string,
+    cwd: string,
+    stdinPayload: string,
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = execFile(
+        '/bin/sh',
+        ['-c', command],
+        { cwd, env: gitEnv() },
+        (error, stdout, stderr) => {
+          const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+          resolve({ code, stdout, stderr });
+        },
+      );
+      if (!child.stdin) return reject(new Error('no stdin'));
+      child.stdin.write(stdinPayload);
+      child.stdin.end();
+    });
+  }
+
+  it('the wired .codex/hooks.json SessionStart command emits a JSON envelope on a freshly installed project', async (ctx) => {
+    skipUnless(ctx, posixShellAvailable().ok, posixShellAvailable().reason);
+
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runInit([])).code).toBe(0);
+    // The wired command's first step is `git rev-parse --show-toplevel`, so
+    // the installed project has to actually be a git repo for it to resolve.
+    await exec('git', ['init', '-q'], { cwd: repo, env: gitEnv() });
+
+    const config = JSON.parse(await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8')) as {
+      hooks: {
+        SessionStart: Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>;
+      };
+    };
+    const sessionStartHooks = config.hooks.SessionStart.flatMap((group) => group.hooks);
+    expect(sessionStartHooks).toHaveLength(1);
+    const command = sessionStartHooks[0]!.command;
+
+    for (const source of ['startup', 'resume', 'compact']) {
+      const result = await runShellCommand(
+        command,
+        repo,
+        JSON.stringify({ hook_event_name: 'SessionStart', source }),
+      );
+      expect(result.code, `${source}: ${result.stderr}`).toBe(0);
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { hookEventName?: unknown; additionalContext?: unknown };
+      };
+      expect(parsed.hookSpecificOutput?.hookEventName, source).toBe('SessionStart');
+      expect(parsed.hookSpecificOutput?.additionalContext, source).toContain('Tier 0');
+    }
+  });
+
+  it('the Windows form of the wired SessionStart command emits the same JSON envelope', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runInit([])).code).toBe(0);
+    await exec('git', ['init', '-q'], { cwd: repo, env: gitEnv() });
+
+    const config = JSON.parse(await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8')) as {
+      hooks: {
+        SessionStart: Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>;
+      };
+    };
+    const sessionStartHooks = config.hooks.SessionStart.flatMap((group) => group.hooks);
+    expect(sessionStartHooks).toHaveLength(1);
+    const commandWindows = sessionStartHooks[0]!.commandWindows;
+    const encoded = commandWindows?.match(
+      /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+    )?.[1];
+    expect(
+      encoded,
+      `commandWindows did not match the expected shape: ${commandWindows}`,
+    ).toBeDefined();
+
+    for (const source of ['startup', 'resume', 'compact']) {
+      const result = await new Promise<{ code: number; stdout: string; stderr: string }>(
+        (resolve, reject) => {
+          const child = execFile(
+            'powershell.exe',
+            ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+            { cwd: repo, env: gitEnv() },
+            (error, stdout, stderr) => {
+              const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+              resolve({ code, stdout, stderr });
+            },
+          );
+          if (!child.stdin) return reject(new Error('no stdin'));
+          child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source }));
+          child.stdin.end();
+        },
+      );
+      expect(result.code, `${source}: ${result.stderr}`).toBe(0);
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { hookEventName?: unknown; additionalContext?: unknown };
+      };
+      expect(parsed.hookSpecificOutput?.hookEventName, source).toBe('SessionStart');
+      expect(parsed.hookSpecificOutput?.additionalContext, source).toContain('Tier 0');
+    }
   });
 });
 

@@ -42,6 +42,25 @@ function runHookFull(
 
 const runHook = runHookFull;
 
+/** For a SessionStart hook result: parse the RP-185 JSON envelope and
+ *  return `additionalContext` — see docs/decisions/session-start-wire-format.md.
+ *  Every assertion below about WHAT the hook injects reads through this, so a
+ *  wire-format detail (JSON wrapping, `\n`-escaping) never has to be
+ *  relearned by each test that cares about the injected TEXT rather than the
+ *  transport carrying it. */
+function additionalContextOf(result: HookResult): string {
+  const parsed = JSON.parse(result.stdout) as {
+    hookSpecificOutput?: { hookEventName?: unknown; additionalContext?: unknown };
+  };
+  if (parsed.hookSpecificOutput?.hookEventName !== 'SessionStart') {
+    throw new Error(`not a SessionStart envelope: ${result.stdout.slice(0, 200)}`);
+  }
+  if (typeof parsed.hookSpecificOutput.additionalContext !== 'string') {
+    throw new Error(`additionalContext missing or not a string: ${result.stdout.slice(0, 200)}`);
+  }
+  return parsed.hookSpecificOutput.additionalContext;
+}
+
 const bash = (command: string) => ({
   hook_event_name: 'PreToolUse',
   tool_name: 'Bash',
@@ -834,7 +853,7 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       // Matched against whitespace-collapsed text: the sentence is wrapped
       // across two lines in the source, and where the wrap falls is not a
       // behaviour worth pinning.
-      const injected = result.stdout.replace(/\s+/g, ' ');
+      const injected = additionalContextOf(result).replace(/\s+/g, ' ');
       expect(injected, source).toContain('the highest tier wins');
       expect(injected, source).toContain('one tier higher than you think');
     }
@@ -1149,8 +1168,9 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     const result = await runAgainstPlantedRules(malformed);
     expect(result.code).toBe(0);
 
-    const banner = bannerOf(result.stdout, malformed);
-    const body = result.stdout.slice(banner.length);
+    const context = additionalContextOf(result);
+    const banner = bannerOf(context, malformed);
+    const body = context.slice(banner.length);
     // the premise: this really is the fallback, not an excerpt
     expect(body.trim(), 'malformed markup must inject the whole file').toBe(malformed.trim());
 
@@ -1190,8 +1210,9 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     const result = await runAgainstPlantedRules(markerless);
     expect(result.code).toBe(0);
 
-    const banner = bannerOf(result.stdout, markerless);
-    const body = result.stdout.slice(banner.length);
+    const context = additionalContextOf(result);
+    const banner = bannerOf(context, markerless);
+    const body = context.slice(banner.length);
     // the premise: with nothing marked, every line of the file is injected
     expect(body.trim(), 'a file marking nothing must be injected whole').toBe(markerless.trim());
 
@@ -1201,6 +1222,70 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       expect(body.toLowerCase(), `precondition: ${present} is in the body`).toContain(present);
       expect(claim, `banner must not report ${present} as removed`).not.toContain(present);
     }
+  });
+
+  // RP-185: both harnesses' documented SessionStart contract is JSON on
+  // stdout — `hookSpecificOutput.additionalContext` — not raw text, and Codex
+  // was observed treating this hook's plain-text banner as invalid JSON
+  // because stdout began with `[`. See docs/decisions/session-start-wire-format.md
+  // for why the fix is the envelope rather than a Codex-side carve-out.
+  it('emits a JSON hookSpecificOutput envelope for SessionStart, on startup, resume and compact', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.code, source).toBe(0);
+      let parsed: unknown;
+      expect(
+        () => {
+          parsed = JSON.parse(result.stdout);
+        },
+        `${source}: stdout must parse as JSON, got: ${result.stdout.slice(0, 80)}`,
+      ).not.toThrow();
+      const envelope = parsed as {
+        hookSpecificOutput?: { hookEventName?: unknown; additionalContext?: unknown };
+      };
+      expect(envelope.hookSpecificOutput?.hookEventName, source).toBe('SessionStart');
+      expect(typeof envelope.hookSpecificOutput?.additionalContext, source).toBe('string');
+      const additionalContext = envelope.hookSpecificOutput?.additionalContext as string;
+      expect(additionalContext, source).toContain('Tier 0');
+      expect(additionalContext, source).toContain('Stop rules');
+    }
+  });
+
+  // RP-185 regression pin: the old banner started with the literal characters
+  // `[agent-os]`, written straight to stdout. That leading `[` is exactly what
+  // made Codex misdetect the output as JSON and reject it — so this asserts the
+  // old shape can never quietly come back, not just that the new shape works.
+  it('never regresses to the old bare [agent-os]-prefixed plain-text stdout', async () => {
+    for (const source of sessionStartSources) {
+      const result = await runHookFull('inject-rules.mjs', {
+        hook_event_name: 'SessionStart',
+        source,
+      });
+      expect(result.stdout.startsWith('[agent-os]'), source).toBe(false);
+      expect(result.stdout.trimStart().startsWith('{'), source).toBe(true);
+      expect(() => JSON.parse(result.stdout), source).not.toThrow();
+    }
+  });
+
+  // RP-185: pins the envelope to exactly the two fields both harnesses
+  // document for a SessionStart hook's JSON output — see
+  // docs/decisions/session-start-wire-format.md. A field nobody asked for
+  // (`systemMessage`, `continue`, …) is scope creep this test catches at the
+  // point it is added, not after something downstream starts depending on it.
+  it('the JSON envelope carries only hookEventName and additionalContext — the shape both Codex and Claude Code document', async () => {
+    const result = await runHookFull('inject-rules.mjs', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(Object.keys(parsed)).toEqual(['hookSpecificOutput']);
+    expect(Object.keys(parsed.hookSpecificOutput as Record<string, unknown>).sort()).toEqual([
+      'additionalContext',
+      'hookEventName',
+    ]);
   });
 });
 

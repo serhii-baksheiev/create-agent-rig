@@ -190,8 +190,19 @@ function main() {
         'gate is swept from outside, how external work is reconciled, ' +
         'post-deploy verification, and the escalation format.\n\n';
 
+  const additionalContext =
+    `[agent-os] Autonomy rules refresh — in force regardless of compaction.\n${notice}${body}\n`;
+
+  // `hookSpecificOutput.additionalContext` is the one shape both harnesses'
+  // hooks documentation gives for SessionStart output (Claude Code:
+  // code.claude.com/docs/en/hooks; Codex: learn.chatgpt.com/docs/hooks) — see
+  // the file header and `docs/decisions/session-start-wire-format.md`. No
+  // trailing newline: both harnesses' documented detection is "starts with `{`
+  // ends with `}`", and appending one would cost that without buying anything.
   process.stdout.write(
-    `[agent-os] Autonomy rules refresh — in force regardless of compaction.\n${notice}${body}\n`,
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext },
+    }),
   );
   return 0;
 }
