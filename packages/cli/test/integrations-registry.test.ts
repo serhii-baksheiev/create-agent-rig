@@ -286,6 +286,23 @@ describe('validateDescriptor', () => {
     ).toEqual({ ok: false, reason: 'non-official-source' });
   });
 
+  // RP-22 gate cycle 3, cheap survivor (a): pins that the https branch of
+  // validateDescriptor routes through isValidLocator('https', …), not a bare
+  // isHttpsUrl(…) — reverting that branch to isHttpsUrl alone leaves both of
+  // these green, since isHttpsUrl does not look at the query string or
+  // fragment at all.
+  it.each([
+    ['a query string', 'https://fixture.example/mcp?x=1'],
+    ['a fragment', 'https://fixture.example/mcp#f'],
+  ])('refuses an https locator carrying %s, as non-official-source', (_label, locator) => {
+    expect(
+      validateDescriptor({
+        ...baseDescriptor,
+        source: { ...baseDescriptor.source, kind: 'https', locator },
+      }),
+    ).toEqual({ ok: false, reason: 'non-official-source' });
+  });
+
   it('tolerates a non-https locator when source.kind is not https', () => {
     expect(
       validateDescriptor({

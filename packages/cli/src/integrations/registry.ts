@@ -222,6 +222,10 @@ export function validateDescriptor(descriptor: ProviderDescriptor): DescriptorVa
     return { ok: false, reason: 'malformed' };
   }
   if (descriptor.source.official !== true) return { ok: false, reason: 'non-official-source' };
+  // `docsUrl` deliberately stays on the plain `isHttpsUrl` check, not
+  // `isValidLocator` — it is a documentation link a maintainer reads, never
+  // a fetch or spawn target, so a query string on it (`?tab=readme`) is
+  // ordinary and is not the same risk a `source.locator`'s query string is.
   if (!isHttpsUrl(descriptor.source.docsUrl)) return { ok: false, reason: 'non-official-source' };
   // Both branches route through the SAME `isValidLocator` a committed
   // receipt is checked against (RP-22 gate cycle 2, advisory (a): the https
@@ -231,6 +235,8 @@ export function validateDescriptor(descriptor: ProviderDescriptor): DescriptorVa
   // differs per kind, kept exactly as before: https keeps its pre-existing,
   // tested `non-official-source`; the other four kinds had no locator-shape
   // check at all before gate cycle 1, so a new failure there is `malformed`.
+  // MAX_LOCATOR_LENGTH (128) applies here too — a shipped descriptor's
+  // locator is capped exactly like a committed receipt's.
   if (descriptor.source.kind === 'https' && !isValidLocator('https', descriptor.source.locator)) {
     return { ok: false, reason: 'non-official-source' };
   }

@@ -18,7 +18,7 @@ import {
   serializeReceiptForComparison,
   type Receipt,
 } from '../src/integrations/receipt.js';
-import { SPDX_EXPRESSION_PATTERN } from '../src/integrations/registry.js';
+import { SPDX_EXPRESSION_PATTERN, isValidLocator } from '../src/integrations/registry.js';
 import { INSTANCE_STATES } from '../src/integrations/state.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -287,6 +287,27 @@ describe('parseReceipt — refuses a control character, an absolute path, or an 
     }
   });
 
+  // RP-22 gate cycle 3, cheap survivor (c): a control character can only
+  // ever land in a KEY that is also, on its own, unrecognised — no known key
+  // in this schema contains one. The two checks therefore both refuse this
+  // fixture, but the DEPTH+CONTROL SCAN runs first (before any closedKeys
+  // call), so its message is the one this test pins; deleting the scan
+  // alone (leaving closedKeys in place) turns this specific message into
+  // "... has an unrecognised key ...", which is exactly how the mutation
+  // table's "depth+control scan" row is killed by this fixture rather than
+  // by the rigVersion one above alone.
+  it('refuses a control character inside a KEY name specifically, ahead of the unrecognised-key check', () => {
+    const value = validReceiptValue();
+    const source = value.source as Record<string, unknown>;
+    delete source.official;
+    source['official\u0007'] = true;
+    const result = parseReceipt(JSON.stringify(value));
+    expect(result.status).toBe('invalid');
+    if (result.status === 'invalid') {
+      expect(result.error).toBe('the receipt carries a control or format character');
+    }
+  });
+
   it.each([
     ['installer.tool', '/etc/passwd'],
     ['installer.tool', 'C:\\Users\\evil\\tool.exe'],
@@ -456,7 +477,18 @@ describe('serializeReceipt / serializeReceiptForComparison are input-key-order-i
     expect(hasMaterialChange(parsedCanonical.receipt, parsedReordered.receipt)).toBe(false);
   });
 
-  it('a hand-built Receipt value whose nested objects were constructed in a different field order serializes identically to the canonical order', () => {
+  it('a hand-built Receipt value whose nested objects were constructed in a different field order serializes identically to the canonical order, and hasMaterialChange agrees in both argument orders', () => {
+    // RP-22 gate cycle 3, blocker: this is the ONLY test that can catch
+    // `materialProjection` reverting to `source: { ...receipt.source }` —
+    // the sibling test above feeds both receipts through `parseReceipt`
+    // first, which already normalises key order regardless of what
+    // `materialProjection` does with it, so its own `hasMaterialChange`
+    // assertion cannot fail on this. This test hand-builds a `Receipt`
+    // value directly (never through `parseReceipt`), so the fields really
+    // do carry a different in-memory key order, on `source` AND on one
+    // act's `installer`/`observedAfter`, and asserts `hasMaterialChange`
+    // itself — not just `serializeReceipt` — is blind to that order, in
+    // BOTH argument orders.
     const parsed = parseReceipt(validReceiptRaw());
     expect(parsed.status).toBe('ok');
     if (parsed.status !== 'ok') return;
@@ -466,8 +498,33 @@ describe('serializeReceipt / serializeReceiptForComparison are input-key-order-i
       locator: parsed.receipt.source.locator,
       kind: parsed.receipt.source.kind,
     };
-    const reordered: Receipt = { ...parsed.receipt, source: reorderedSource };
+    const canonicalAct = parsed.receipt.acts['claude-code'] as NonNullable<
+      Receipt['acts']['claude-code']
+    >;
+    const reorderedAct: Receipt['acts']['claude-code'] = {
+      ...canonicalAct,
+      installer: canonicalAct.installer
+        ? {
+            exitCode: canonicalAct.installer.exitCode,
+            toolVersion: canonicalAct.installer.toolVersion,
+            tool: canonicalAct.installer.tool,
+          }
+        : undefined,
+      observedAfter: {
+        evidence: [...canonicalAct.observedAfter.evidence],
+        digest: canonicalAct.observedAfter.digest,
+        version: canonicalAct.observedAfter.version,
+        state: canonicalAct.observedAfter.state,
+      },
+    };
+    const reordered: Receipt = {
+      ...parsed.receipt,
+      source: reorderedSource,
+      acts: { ...parsed.receipt.acts, 'claude-code': reorderedAct },
+    };
     expect(serializeReceipt(reordered)).toBe(serializeReceipt(parsed.receipt));
+    expect(hasMaterialChange(parsed.receipt, reordered)).toBe(false);
+    expect(hasMaterialChange(reordered, parsed.receipt)).toBe(false);
   });
 });
 
@@ -1534,6 +1591,92 @@ describe('license.id and SPDX_EXPRESSION_PATTERN have one spelling', () => {
       schema as { properties: { license: { properties: { id: { pattern: string } } } } }
     ).properties.license.properties.id;
     expect(SPDX_EXPRESSION_PATTERN.source).toBe(licenseSchema.pattern);
+  });
+});
+
+/**
+ * `license.url` has no single shared pattern string the way `license.id`
+ * does — the schema's `^https://[^\s?#]{1,121}$` and the parser's
+ * `isValidLocator('https', …)` are two different expressions of the same
+ * intended rule (a real https URL, no query string or fragment) because the
+ * parser ALSO calls the real `URL` constructor, which no regex here
+ * re-implements. A shared fixture list run through both is the
+ * correspondence check instead (RP-22 gate cycle 3, cheap survivor (b)) —
+ * with the three KNOWN divergences named rather than silently matched by
+ * accident (found while writing this very test; only "length" was expected
+ * going in):
+ *
+ * 1. Length: the schema's own bound is 9-129 characters, `isValidLocator`'s
+ *    is 128, so a value of EXACTLY 129 characters is a fixture the two
+ *    layers legitimately disagree on (already pinned as a
+ *    SCHEMA_ONLY_FIXTURES entry above — restated directly here, without
+ *    going through `parseReceipt`).
+ * 2. Userinfo: the schema's character class `[^\s?#]` has nothing that
+ *    excludes `user:pass@`, so a userinfo-bearing URL matches the SHAPE
+ *    pattern; only `isValidLocator`'s real `URL` parse (via `isHttpsUrl`)
+ *    refuses it. This is the same "schema checks shape, parser checks
+ *    reality" split every other real-value check in this module has
+ *    (`isRealDateString`, `isRealTimestampString`) — restated here because
+ *    it was not named before this fixture list surfaced it.
+ * 3. A raw space: the schema's `\s` exclusion refuses it outright, but the
+ *    WHATWG `URL` constructor `isHttpsUrl` calls percent-encodes a bare
+ *    space in the path rather than throwing, and `isValidLocator`'s own
+ *    query/fragment check only looks for literal `?`/`#` characters — so a
+ *    locator carrying a raw space parses. Named here as a found, disclosed
+ *    gap rather than fixed, matching this module's established posture
+ *    toward `source.locator`'s own undecidable shapes (a real fix would be
+ *    a new `isValidLocator` check for a schema-caller mismatch, which is
+ *    out of scope for a "pin the two-mutant divergence" round).
+ */
+describe('license.url: the schema pattern and isValidLocator agree, except at the three named divergences (length, userinfo, whitespace)', () => {
+  const LICENSE_URL_FIXTURES: readonly { name: string; url: string; accepted: boolean }[] = [
+    { name: 'a plain https URL', url: 'https://mcp.figma.com/terms', accepted: true },
+    { name: 'a query string', url: 'https://mcp.figma.com/terms?x=1', accepted: false },
+    { name: 'a fragment', url: 'https://mcp.figma.com/terms#f', accepted: false },
+    { name: 'a non-https scheme', url: 'http://mcp.figma.com/terms', accepted: false },
+  ];
+
+  it.each(LICENSE_URL_FIXTURES)(
+    '$name: the schema pattern and isValidLocator agree',
+    async ({ url, accepted }) => {
+      const schema = await loadSchema();
+      const pattern = (
+        schema as { properties: { license: { properties: { url: { pattern: string } } } } }
+      ).properties.license.properties.url.pattern;
+      expect(new RegExp(pattern).test(url)).toBe(accepted);
+      expect(isValidLocator('https', url)).toBe(accepted);
+    },
+  );
+
+  it("named divergence 1 (length): a URL of exactly 129 characters passes the schema pattern's own 9-129 bound but fails isValidLocator's 128-character MAX_LOCATOR_LENGTH", async () => {
+    const url = `https://${'a'.repeat(121)}`; // 8 + 121 = 129 characters total
+    expect(url).toHaveLength(129);
+    const schema = await loadSchema();
+    const pattern = (
+      schema as { properties: { license: { properties: { url: { pattern: string } } } } }
+    ).properties.license.properties.url.pattern;
+    expect(new RegExp(pattern).test(url)).toBe(true);
+    expect(isValidLocator('https', url)).toBe(false);
+  });
+
+  it("named divergence 2 (userinfo): a userinfo-bearing URL passes the schema's character-class pattern but fails isValidLocator's real URL parse", async () => {
+    const url = 'https://user:pass@mcp.figma.com/terms';
+    const schema = await loadSchema();
+    const pattern = (
+      schema as { properties: { license: { properties: { url: { pattern: string } } } } }
+    ).properties.license.properties.url.pattern;
+    expect(new RegExp(pattern).test(url)).toBe(true);
+    expect(isValidLocator('https', url)).toBe(false);
+  });
+
+  it("named divergence 3 (whitespace): a raw space in the path fails the schema's \\s-excluding pattern but isValidLocator accepts it, because the real URL parse percent-encodes a space rather than throwing", async () => {
+    const url = 'https://mcp.figma.com/te rms';
+    const schema = await loadSchema();
+    const pattern = (
+      schema as { properties: { license: { properties: { url: { pattern: string } } } } }
+    ).properties.license.properties.url.pattern;
+    expect(new RegExp(pattern).test(url)).toBe(false);
+    expect(isValidLocator('https', url)).toBe(true);
   });
 });
 

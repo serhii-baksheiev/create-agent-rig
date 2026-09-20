@@ -164,6 +164,13 @@ export function classify(
   // BOTH axes, symmetrically — this used to check only version, which let a
   // known digest baseline against an unreadable observed digest read
   // `installed` (RP-22 gate cycle 2, advisory (c)).
+  //
+  // Its sticky case, stated so S3 meets it as a decision rather than a
+  // surprise: a receipt that once recorded a digest (or version), probed
+  // afterward by a route that structurally cannot produce that value (a
+  // guided step with no digest-capable probe, say), reads `unverified` on
+  // EVERY subsequent run — not once — until the receipt itself is rewritten
+  // with a baseline the route's probe can actually confirm.
   const hasKnownVersionBaseline =
     declared.version !== undefined || (receipt !== undefined && receipt.version !== null);
   const hasKnownDigestBaseline = receipt !== undefined && receipt.digest !== null;
