@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/serhii-baksheiev/create-agent-rig/contracts/integrations/v1/receipt.schema.json",
+  "title": "Rig integration receipt",
+  "description": "The accepted shape of .rig/receipts/<id>.json (RP-22 S2). Validated with the dependency-free subset in scripts/lib/json-schema-subset.mjs — no $ref, no oneOf, no null type, no patternProperties. license.kind's id/url correlation, exitCode's 0-255 bound and 'acts must record at least one harness' are enforced by receipt.ts's parser, not by this schema — the same documented pattern declaration.schema.json uses for harnesses uniqueItems. The claude-code and codex act shapes below are the same object literal, duplicated, because this subset has no patternProperties/$ref to express 'this shape, for either of these two keys' once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "mode",
+    "source",
+    "license",
+    "declared",
+    "rigVersion",
+    "acts"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+    "mode": {
+      "type": "string",
+      "enum": ["external-installer", "native-plugin", "hosted-service", "external-executable"]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "locator", "official", "verifiedOn"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["github", "npm", "pypi", "https", "marketplace"] },
+        "locator": { "type": "string", "minLength": 1 },
+        "official": { "type": "boolean" },
+        "verifiedOn": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+      }
+    },
+    "license": {
+      "description": "kind:spdx carries id and never url; kind:terms carries url and never id — that correlation is enforced by receipt.ts, not expressible in this schema subset (no oneOf).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["spdx", "terms"] },
+        "id": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "minLength": 1 }
+      }
+    },
+    "declared": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }
+      }
+    },
+    "rigVersion": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "acts": {
+      "description": "At least one of claude-code/codex must be present — enforced by receipt.ts, not expressible as this schema subset has no minProperties.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude-code": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["route", "automation", "performedAt", "observedAfter", "notObserved"],
+          "properties": {
+            "route": {
+              "type": "string",
+              "enum": [
+                "claude-plugin-cli",
+                "mcp-config",
+                "external-installer",
+                "codex-plugin-guided",
+                "guided-manual",
+                "subsystem-manifest"
+              ]
+            },
+            "automation": { "type": "string", "enum": ["automatic", "guided"] },
+            "performedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+            },
+            "installer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["tool", "toolVersion", "exitCode"],
+              "properties": {
+                "tool": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+                "toolVersion": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+                "exitCode": { "type": "integer" }
+              }
+            },
+            "observedAfter": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "evidence"],
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "installed",
+                    "drifted",
+                    "missing",
+                    "pending-user-action",
+                    "unverified",
+                    "unsupported",
+                    "not-applicable",
+                    "rejected",
+                    "orphaned"
+                  ]
+                },
+                "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+                "digest": { "type": "string", "pattern": "^[0-9a-f]{7,128}$" },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+                }
+              }
+            },
+            "notObserved": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+            }
+          }
+        },
+        "codex": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["route", "automation", "performedAt", "observedAfter", "notObserved"],
+          "properties": {
+            "route": {
+              "type": "string",
+              "enum": [
+                "claude-plugin-cli",
+                "mcp-config",
+                "external-installer",
+                "codex-plugin-guided",
+                "guided-manual",
+                "subsystem-manifest"
+              ]
+            },
+            "automation": { "type": "string", "enum": ["automatic", "guided"] },
+            "performedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+            },
+            "installer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["tool", "toolVersion", "exitCode"],
+              "properties": {
+                "tool": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+                "toolVersion": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+                "exitCode": { "type": "integer" }
+              }
+            },
+            "observedAfter": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "evidence"],
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "installed",
+                    "drifted",
+                    "missing",
+                    "pending-user-action",
+                    "unverified",
+                    "unsupported",
+                    "not-applicable",
+                    "rejected",
+                    "orphaned"
+                  ]
+                },
+                "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+                "digest": { "type": "string", "pattern": "^[0-9a-f]{7,128}$" },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+                }
+              }
+            },
+            "notObserved": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
