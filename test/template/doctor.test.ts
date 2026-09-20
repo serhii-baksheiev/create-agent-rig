@@ -152,12 +152,13 @@ describe('the CLI audits a rig on disk', () => {
       );
     });
 
-  const manifest = (files: Record<string, string>) =>
+  const manifest = (files: Record<string, string>, layers?: string[]) =>
     JSON.stringify({
       version: '0.5.0',
       kind: 'init',
       project: { name: 'rig', scope: 'rig', region: '' },
       stacks: [],
+      ...(layers !== undefined ? { layers } : {}),
       files,
     });
 
@@ -221,6 +222,88 @@ describe('the CLI audits a rig on disk', () => {
     expect(stdout).toMatch(/- unknown · \.claude\/hooks\/guard-a\.mjs/);
     expect(stdout).toMatch(/- unknown · \.husky\/pre-commit/);
     expect(stdout).not.toMatch(/verdict: GO/);
+  });
+
+  // RP-180 round 2: doctor names which `layers.json` layer(s) this rig
+  // recorded, so a Core-only rig and one that opted into the experimental
+  // workflow layer read differently in the report — and never describes
+  // cooperative board assignment as anything transactional (Jira acceptance).
+  it('a manifest with `layers: ["process"]` reports Core only, workflow absent', async () => {
+    const dir = await rig();
+    await writeFile(
+      path.join(dir, '.claude', '.rig-manifest.json'),
+      manifest(
+        {
+          '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+          '.claude/hooks/guard-b.mjs': sha256('something else'),
+        },
+        ['process'],
+      ),
+    );
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/\*\*layers:\*\* process/);
+    expect(stdout).not.toMatch(/workflow/);
+  });
+
+  it('a manifest with `layers: ["process", "workflow"]` reports workflow as experimental', async () => {
+    const dir = await rig();
+    await writeFile(
+      path.join(dir, '.claude', '.rig-manifest.json'),
+      manifest(
+        {
+          '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+          '.claude/hooks/guard-b.mjs': sha256('something else'),
+        },
+        ['process', 'workflow'],
+      ),
+    );
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/\*\*layers:\*\* process, workflow \(experimental\)/);
+  });
+
+  it('a manifest with no `layers` key (every pre-RP-180 release) reports both layers, workflow experimental', async () => {
+    const dir = await rig(); // rig()'s own manifest() call omits `layers` entirely
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).toMatch(/\*\*layers:\*\* process, workflow \(experimental\)/);
+  });
+
+  it('with no manifest at all, prints nothing about layers rather than guessing', async () => {
+    const dir = await rig();
+    await rm(path.join(dir, '.claude', '.rig-manifest.json'));
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).not.toMatch(/\*\*layers:\*\*/);
+  });
+
+  it('never describes cooperative board assignment as a transactional lock', async () => {
+    const dir = await rig();
+    const { stdout } = await run(['--root', dir]);
+    expect(stdout).not.toMatch(/transactional/i);
+    expect(stdout).not.toMatch(/board assignment/i);
+  });
+
+  it('--json carries the layers array alongside the verdict', async () => {
+    const dir = await rig();
+    await writeFile(
+      path.join(dir, '.claude', '.rig-manifest.json'),
+      manifest(
+        {
+          '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+          '.claude/hooks/guard-b.mjs': sha256('something else'),
+        },
+        ['process'],
+      ),
+    );
+    const { stdout } = await run(['--root', dir, '--json']);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.layers).toEqual(['process']);
+  });
+
+  it('--json carries `layers: null` when there is no manifest to read', async () => {
+    const dir = await rig();
+    await rm(path.join(dir, '.claude', '.rig-manifest.json'));
+    const { stdout } = await run(['--root', dir, '--json']);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.layers).toBeNull();
   });
 
   it('--json carries the same verdict, the hooks array and the unchecked list', async () => {

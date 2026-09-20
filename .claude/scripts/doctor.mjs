@@ -209,6 +209,30 @@ export const manifestFilesOf = (root) => {
 };
 
 /**
+ * Which `layers.json` layer(s) this rig recorded installing (RP-180), or
+ * `null` when there is no manifest to read at all — a third answer, not a
+ * guess: `report()` prints nothing about layers in that case rather than
+ * claiming either "Core only" or "every layer".
+ *
+ * A manifest with no `layers` key (every release before RP-180) means "every
+ * layer" — the CLI's own default (`packages/cli/src/lib/manifest.ts`,
+ * `LEGACY_LAYERS`), restated here rather than imported: this script ships
+ * standalone into a generated rig and has no access to the CLI package.
+ */
+export const layersOf = (root) => {
+  const parsed = readJson(path.join(root, ...MANIFEST_REL.split('/')));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const { layers } = parsed;
+  if (Array.isArray(layers) && layers.every((entry) => typeof entry === 'string')) {
+    return layers;
+  }
+  return ['process', 'workflow'];
+};
+
+/** `workflow` reads as experimental everywhere doctor names it; every other layer is plain. */
+const layerLabel = (layer) => (layer === 'workflow' ? `${layer} (experimental)` : layer);
+
+/**
  * The files directly in `dir`: `{ names, unreadable }`, or `null` when the
  * directory itself cannot be listed. One entry that cannot be stat'ed (a dangling
  * symlink) is reported by name, never allowed to null the whole listing.
@@ -307,9 +331,11 @@ export const report = (root) => {
   const all = [...problems, ...audited.hooks];
   const audit = { verdict: verdictOf(all.map((r) => r.mark)), hooks: all };
   const absent = scopes.filter((scope) => !scope.present && scope.dir !== HOOKS_DIR).map((scope) => scope.dir);
+  const layers = layersOf(root);
   const lines = [
     `**doctor** — verdict: ${audit.verdict}`,
     '',
+    ...(layers !== null ? [`**layers:** ${layers.map(layerLabel).join(', ')}`, ''] : []),
     // Names come from the file system, reasons from a repo file; both are
     // stripped of control bytes here, once, where they reach the terminal.
     ...audit.hooks.map((hook) => `- ${hook.mark} · ${printable(hook.rel)} — ${printable(hook.detail)}`),
@@ -320,7 +346,7 @@ export const report = (root) => {
     `_Not checked by this script — still yours (${UNCHECKED.length}):_`,
     ...UNCHECKED.map((item) => `- ${item}`),
   ];
-  return { ...audit, scopes, unchecked: UNCHECKED, rendered: lines.join('\n') };
+  return { ...audit, scopes, layers, unchecked: UNCHECKED, rendered: lines.join('\n') };
 };
 
 const invokedDirectly = () => {
@@ -347,7 +373,7 @@ if (invokedDirectly()) {
   const result = report(root);
   process.stdout.write(
     args.includes('--json')
-      ? `${JSON.stringify({ verdict: result.verdict, hooks: result.hooks, scopes: result.scopes, unchecked: result.unchecked }, null, 2)}\n`
+      ? `${JSON.stringify({ verdict: result.verdict, hooks: result.hooks, scopes: result.scopes, layers: result.layers, unchecked: result.unchecked }, null, 2)}\n`
       : `${result.rendered}\n`,
   );
   process.exit(result.verdict === 'STOP' ? 1 : 0);
