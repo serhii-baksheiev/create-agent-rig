@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { initInstallSet, layerOnlyPaths, projectNameFor } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
@@ -108,6 +108,24 @@ async function exists(p: string): Promise<boolean> {
 }
 
 /**
+ * Whether `p` is a REGULAR file — `lstat`, never `access`, and never
+ * following a symlink. Quorum evidence (`detectLayersOnDisk`) uses this
+ * rather than `exists`: a directory or a symlink sitting at a workflow-layer
+ * path is not a file this release ever installed there, and counting it
+ * toward the quorum would let something that is not actually one of the
+ * layer's files push an unrelated layer over the threshold. `lstat` (not
+ * `stat`) so a symlink itself is correctly seen as "not a regular file"
+ * rather than resolved through to whatever it points at.
+ */
+async function isRegularFile(p: string): Promise<boolean> {
+  try {
+    return (await lstat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What was measured for one non-Core layer while bootstrapping — surfaced on
  * `UpgradePlan.layerInference` so the plan text and summary can say why a
  * layer was (or was not) adopted, rather than silently deciding.
@@ -177,7 +195,7 @@ export async function detectLayersOnDisk(
     const paths = await layerOnlyPaths(layer);
     let present = 0;
     for (const rel of paths) {
-      if (await exists(onDisk(repoDir, rel))) present += 1;
+      if (await isRegularFile(onDisk(repoDir, rel))) present += 1;
     }
     const isAdopted = present > paths.length * LAYER_ADOPTION_QUORUM;
     notes.push({ layer, present, total: paths.length, adopted: isAdopted });
@@ -381,29 +399,36 @@ export async function planUpgrade(
   // release that shipped a layer this one renamed) falls out of `files`
   // below exactly like a path RP-177 retired outright: never written, never
   // deleted, simply no longer this plan's to manage.
-  let files = await initInstallSet(repoDir, project, layers);
-  // Blocker A's second half: even an ADOPTED bootstrapped opt-in layer must
-  // never manufacture a file it did not find. Present files of an adopted
-  // layer still flow through the ordinary per-file logic below (refreshed or
-  // reported exactly as any other owned path); an ABSENT one is dropped from
-  // the plan entirely here, before that loop ever sees it, so it can never
-  // become a `new` verdict — inferring a layer from partial disk evidence is
-  // not licence to fill in the rest of it.
+  const files = await initInstallSet(repoDir, project, layers);
+  // Blocker A's second half, and round 5's correction to it: even an
+  // ADOPTED bootstrapped opt-in layer must never manufacture a file it did
+  // not find, but "does not create it" is not the same thing as "forgets it
+  // existed". Round 4 dropped an absent adopted-layer path from the plan
+  // ENTIRELY, which left the rebuilt manifest with no memory of it at all —
+  // the very next ORDINARY upgrade (a readable manifest now) then read the
+  // absence as "never installed" and proposed `new`, silently reinstating an
+  // operator's deliberate deletion with no note that that is what it was
+  // doing. An intact manifest never has this problem: a `files` entry naming
+  // a path that is now absent already gets the `deleted` verdict, reason
+  // "installed by the rig, removed since — not restored", and carries the
+  // path's hash forward into the next manifest so this stays true on every
+  // later run too.
+  //
+  // The fix reuses exactly that path rather than inventing a new manifest
+  // field: for an absent file of an ADOPTED bootstrapped opt-in layer,
+  // `recorded` below is treated as the hash THIS RELEASE would have
+  // installed — the same value a normal install would have recorded for it
+  // — instead of `undefined`. That is the one piece of information the
+  // per-file logic needs to take the identical `deleted`/"not restored"
+  // branch an intact manifest takes; nothing else about that branch changes.
+  // A file that IS present is untouched by this: `recorded` stays whatever
+  // the (bootstrapped, so absent) manifest says, `undefined`, and the
+  // existing present-file logic decides its verdict exactly as before.
+  const inferredOptInPaths = new Set<string>();
   if (inference !== null) {
-    const inferredOptInPaths = new Set<string>();
     for (const layer of inference.layers) {
       if (layer === 'process') continue;
       for (const rel of await layerOnlyPaths(layer)) inferredOptInPaths.add(rel);
-    }
-    if (inferredOptInPaths.size > 0) {
-      const survivors = [];
-      for (const file of files) {
-        if (inferredOptInPaths.has(file.rel) && !(await exists(onDisk(repoDir, file.rel)))) {
-          continue;
-        }
-        survivors.push(file);
-      }
-      files = survivors;
     }
   }
 
@@ -415,7 +440,11 @@ export async function planUpgrade(
 
   for (const file of files) {
     const currentBytes = await readIfPresent(repoDir, file.rel);
-    const recorded = manifest?.files[file.rel];
+    const recordedInManifest = manifest?.files[file.rel];
+    const recorded =
+      recordedInManifest === undefined && currentBytes === null && inferredOptInPaths.has(file.rel)
+        ? sha256(file.content)
+        : recordedInManifest;
     contents.set(file.rel, file.content);
 
     if (currentBytes === null) {

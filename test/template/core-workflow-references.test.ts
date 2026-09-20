@@ -14,6 +14,14 @@
 // states the STRICT qualifying phrase, or be on the explicit, reasoned
 // allow-list below.
 //
+// Coverage is PARAGRAPH-level, not sentence-level: an unrelated sentence
+// that happens to state the strict phrase in the SAME paragraph as a
+// workflow-layer mention counts as covering it, even though it qualifies
+// nothing about that specific mention. This is a deliberate looseness — a
+// drift guard against a caveat silently disappearing from a paragraph that
+// used to have one, not a defence against someone deliberately padding a
+// paragraph with the phrase to sneak an unqualified mention past this check.
+//
 // The strict phrase — `/opt-in workflow layer|--layer workflow|workflow
 // layer/` — is deliberately narrower than the bare word "workflow" (round
 // 3's predicate). The bare word passed on an incidental citation of
@@ -36,11 +44,12 @@
 // everywhere it names a skill on purpose).
 //
 // What is scanned, and why the composed root copy is separate from the
-// rig-facing one: `templates/agent-os/universal/CLAUDE.md` is what a
-// GENERATED RIG actually receives — this is the check that matters for the
-// ticket's own acceptance ("Core rulebook must be true for a Core-only
-// rig"). The composed root `CLAUDE.md`/`AGENTS.md` (universal plus this
-// repository's own addendum) is scanned too, labelled as what it is: this
+// rig-facing one: `templates/agent-os/universal/CLAUDE.md` (and `AGENTS.md`)
+// ARE scanned directly, by their real path — this is what a GENERATED RIG
+// actually receives, and the check that matters for the ticket's own
+// acceptance ("Core rulebook must be true for a Core-only rig"). The
+// composed root `CLAUDE.md`/`AGENTS.md` (universal plus this repository's
+// own addendum) is ALSO scanned, separately, labelled as what it is: this
 // repository's OWN dogfood copy, which can introduce its own additional
 // mentions the universal source does not have.
 import { readFile } from 'node:fs/promises';
@@ -71,16 +80,21 @@ interface CoreDoc {
 
 /**
  * Every Core document worth scanning: the process array's own .md/.toml
- * entries (the RIG-FACING set — what a generated Core-only rig actually
- * receives), plus the two composed maps at the repo root, labelled as this
- * repository's own dogfood copy (never in the array — `init.ts`'s `MAPS`
- * applies them outside the per-layer loop, and the root copy also carries
- * this repo's addendum, which the universal source does not).
+ * entries PLUS the two maps, all read from `templates/agent-os/universal/`
+ * (the RIG-FACING set — what a generated Core-only rig actually receives;
+ * `CLAUDE.md`/`AGENTS.md` are never IN the `process` array — `init.ts`'s
+ * `MAPS` applies them outside the per-layer loop — so they are added here by
+ * name, read from the template source directly, labelled by their real
+ * path), plus the two COMPOSED maps at the repo root, labelled as this
+ * repository's own dogfood copy (universal plus this repo's own addendum,
+ * which the universal source alone does not carry).
  */
 async function coreDocuments(): Promise<CoreDoc[]> {
   const manifest = await layers();
   const rigFacingRels = [
     ...new Set(manifest.process.filter((rel) => rel.endsWith('.md') || rel.endsWith('.toml'))),
+    'CLAUDE.md',
+    'AGENTS.md',
   ];
   const docs: CoreDoc[] = [];
   for (const rel of rigFacingRels) {
@@ -346,17 +360,24 @@ describe('Core-layer documents never presuppose the opt-in workflow layer silent
       expect(uncovered.length, 'mutation must be caught').toBeGreaterThan(0);
     });
 
-    it("CLAUDE.md: deleting the whole opt-in workflow layer section is caught (the section's own paths still cited elsewhere)", async () => {
+    it('CLAUDE.md: stripping every workflow-layer caveat is caught (the paths and skill names stay, cited elsewhere in the file)', async () => {
       const docs = await coreDocuments();
-      const doc = docs.find((d) => d.label === 'CLAUDE.md (dogfood copy)');
+      // The rig-facing template source, not the dogfood copy — this is the
+      // file a generated rig actually receives, and the one the mutation
+      // matters for.
+      const doc = docs.find((d) => d.label === 'CLAUDE.md');
       if (!doc) throw new Error('fixture: CLAUDE.md not found');
-      const start = doc.content.indexOf('## The opt-in workflow layer');
-      expect(start, 'fixture: the section must exist').toBeGreaterThan(-1);
-      const nextHeading = doc.content.indexOf('\n## ', start + 1);
-      const mutated =
-        doc.content.slice(0, start) +
-        doc.content.slice(nextHeading === -1 ? doc.content.length : nextHeading + 1);
-      expect(mutated).not.toContain('## The opt-in workflow layer');
+      // A single "delete the opt-in workflow layer section" mutation is not
+      // enough here: CLAUDE.md has SEVERAL independently-qualified mentions
+      // (the "Four things"/gitignore item, the elevated-paths intro) whose
+      // OWN caveat sits outside that one section, so deleting only that
+      // section leaves every remaining mention still covered by its own
+      // nearby text — a true negative, not a broken mutation. Stripping
+      // every strict-phrase-bearing line, the same general mutation the
+      // other two documents use, removes ALL of them at once.
+      const mutated = stripEveryStrictPhraseLine(doc.content);
+      expect(mutated, 'fixture: the mutation must change the text').not.toBe(doc.content);
+      expect(mutated).toContain('.claude/queue.json');
       const uncovered = await scanMutated(doc.label, mutated);
       expect(uncovered.length, 'mutation must be caught').toBeGreaterThan(0);
     });

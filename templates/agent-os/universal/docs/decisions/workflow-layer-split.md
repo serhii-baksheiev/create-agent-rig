@@ -177,6 +177,17 @@ pins the `retired` verdict and the orphaning it causes in "hand-editing
 `layers` down to `["process"]` on a rig that already has the workflow
 layer retires every workflow file — on disk, unowned, never deleted".
 
+**The mirror hand-edit — `layers: ["workflow"]` alone, dropping `process` —
+does the identical thing in the other direction, on a still-readable
+manifest.** `initInstallSet` reads exactly the array it is given; a `layers`
+that never names `process` un-owns every Core file the same way dropping
+`workflow` un-owns every workflow file: the next `upgrade` retires them from
+the plan and drops them from `files`, silently, files untouched on disk.
+(This is not the bootstrapped path's own normalisation — `detectLayersOnDisk`
+always forces `process` into a layer set it INFERS from disk; a READABLE
+manifest is trusted as written, `process` included, and nothing here
+prevents an operator from writing one that omits it.)
+
 ## The exact opt-out procedure, measured (RP-180 round 4, blocker B)
 
 `uninstall --yes` followed by a fresh `init` (no `--layer` flag) reaches

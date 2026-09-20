@@ -356,6 +356,39 @@ describe('the plan summary accounts for every file it planned', () => {
     expect(sum(numbersIn(summary ?? ''))).toBe(plan.actions.length);
   });
 
+  // RP-180 round 5: run 1 (bootstrapped) declines to recreate 5 hand-deleted
+  // workflow files and now RECORDS them as deleted; run 2 (an entirely
+  // ordinary upgrade against the manifest run 1 just wrote) must report
+  // ZERO new files and count all 5 as "you removed (left removed)" — never
+  // silently proposing to restore an operator's deliberate deletion.
+  it('a second, ordinary upgrade after a bootstrapped adoption reports 0 new and counts the hand-deleted files as removed', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const handDeleted = [
+      '.claude/scripts/queue/as-of.mjs',
+      '.claude/scripts/queue/checkout.mjs',
+      '.claude/scripts/revalidation-report.mjs',
+      '.agents/skills/pr-ship/SKILL.md',
+      '.claude/scripts/preflight.mjs',
+    ];
+    for (const rel of handDeleted) await rm(abs(rel));
+    await rm(abs(MANIFEST_REL));
+
+    const run1 = await runCli(repo, ['upgrade', '--yes']);
+    expect(run1.code, run1.stderr).toBe(0);
+
+    const run2 = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run2.code, run2.stderr).toBe(0);
+    for (const rel of handDeleted) {
+      expect(run2.stdout, rel).toContain(rel);
+      const line = lineMatching(run2.stdout, new RegExp(rel.replace(/[.]/g, '\\.')));
+      expect(line, rel).toContain('installed by the rig, removed since — not restored');
+    }
+    const summary = lineMatching(run2.stdout, /to replace/);
+    expect(summary, 'the plan printed no summary line').toBeTruthy();
+    expect(summary).toMatch(/\b0 new\b/);
+    expect(summary).toMatch(/5 you removed \(left removed\)/);
+  });
+
   it('renders a plan with no wiring action exactly as it does today', async () => {
     await installRig();
 

@@ -235,6 +235,15 @@ const KNOWN_LAYERS = ['process', 'workflow'];
  * result can never hold more than {@link KNOWN_LAYERS}'s own two entries, so
  * a manifest naming the same layer 100,000 times costs no more render-time
  * output than naming it once.
+ *
+ * ⚠ **Exported for this file's own tests only — not a stable contract.**
+ * Round 4 changed this function's own return shape (`string[] | null` to
+ * `{ known, unrecognisedCount }`) to carry the unrecognised count out to
+ * `report()`; a caller outside this module that had come to depend on the
+ * OLD shape would have broken silently. `report()`'s own return value
+ * (`layers: string[] | null`, `layersUnrecognisedCount: number`) is the
+ * stable, documented surface — read that, or the rendered/`--json` output,
+ * never this function's return value directly.
  */
 export const layersOf = (root) => {
   const parsed = readJson(path.join(root, ...MANIFEST_REL.split('/')));
