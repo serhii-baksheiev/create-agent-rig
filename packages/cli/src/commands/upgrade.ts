@@ -1,10 +1,17 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { initInstallSet, projectNameFor } from './init.js';
+import { initInstallSet, layerOnlyPaths, projectNameFor } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
-import { ALL_LAYERS, MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
+import {
+  ALL_LAYERS,
+  DEFAULT_LAYERS,
+  MANIFEST_REL,
+  readManifest,
+  sha256,
+  writeManifest,
+} from '../lib/manifest.js';
 import type { Layer, RigManifest, RigProject } from '../lib/manifest.js';
 import { isSafeSubstitutionValue, resolveInside, resolveWritableInside } from '../lib/safe-path.js';
 import { packageVersion } from '../lib/version.js';
@@ -98,6 +105,59 @@ async function exists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Which layer(s) to treat as installed when there is no manifest to read at
+ * all — `readManifest` returns `null` both for a genuinely missing file and
+ * for one `parseManifest` voided over ANY invalid field (a corrupt `layers`,
+ * an unsafe `version`, a non-array `stacks`, …), so this path is reached far
+ * more often than "this rig predates the manifest" alone (RP-180 round 3,
+ * security blocker S1).
+ *
+ * The previous fallback was `ALL_LAYERS` unconditionally, on the claim that
+ * `presentInEveryRelease` below would catch a workflow file that turns out
+ * absent and report it `deleted` rather than `new`. Measured against the
+ * actual workflow file set, that guard only covers paths this release's hash
+ * history already knows about — a file the workflow layer adds for the
+ * FIRST time has no history entry to check, so it fell through to `new` and
+ * was written regardless of whether the rig had ever asked for the layer.
+ * The result: any manifest corruption — including ones with nothing to do
+ * with `layers` at all — silently installed the opt-in workflow layer (the
+ * queue adapter and its outbound Jira/GitHub calls included) into a
+ * Core-only rig, and then recorded `layers` as both, making the opt-in
+ * permanent.
+ *
+ * The fix reads the disk instead of guessing: a layer is a bootstrap
+ * candidate only when at least one of its OWN files is already there. A
+ * Core-only rig whose manifest just became unreadable keeps reading as
+ * Core-only (none of the workflow layer's files exist to detect); a
+ * workflow rig whose manifest was deleted or corrupted keeps its workflow
+ * files owned and refreshed, because they are still on disk. `process`
+ * itself is not a guess either — the same disk check applies to it, and
+ * `DEFAULT_LAYERS` is the floor when literally nothing this release installs
+ * is present (not a rig this command would otherwise proceed against, but
+ * never an empty layer set to divide by).
+ */
+async function detectLayersOnDisk(repoDir: string): Promise<Layer[]> {
+  const present: Layer[] = [];
+  for (const layer of ALL_LAYERS) {
+    // `layerOnlyPaths`, never `initManifest([layer])`: the latter always adds
+    // `.claude/settings.json`, `.codex/hooks.json`, `.codex/config.toml`,
+    // `CLAUDE.md` and `AGENTS.md` regardless of which layer was asked for —
+    // every rig at all, Core-only included, has those on disk, which would
+    // make every layer read as "present" unconditionally.
+    const paths = await layerOnlyPaths(layer);
+    let found = false;
+    for (const rel of paths) {
+      if (await exists(onDisk(repoDir, rel))) {
+        found = true;
+        break;
+      }
+    }
+    if (found) present.push(layer);
+  }
+  return present.length > 0 ? present : [...DEFAULT_LAYERS];
 }
 
 /**
@@ -279,13 +339,18 @@ export async function planUpgrade(
   //   before RP-180 shipped one payload, so an old manifest with no such
   //   field installed everything) — so `manifest.layers` is never actually
   //   `undefined` here.
-  // - No manifest at all (`bootstrapped`) is the same "could be anything
-  //   pre-0.10" uncertainty `detectInstall` already carries for `kind` and
-  //   `stacks`: the candidate set is every layer, and a workflow file that
-  //   turns out to be genuinely absent is read as `deleted` (it shipped in
-  //   every release the hash history knows), never as `new` — the existing
-  //   `presentInEveryRelease` guard, unchanged, does that work.
-  const layers: Layer[] = manifest?.layers ?? [...ALL_LAYERS];
+  // - No manifest at all (`bootstrapped` — `manifest === null`, which covers
+  //   a genuinely missing file AND one `parseManifest` voided over ANY
+  //   invalid field, not only a missing `layers` key) is NOT read as "every
+  //   layer" unconditionally (round 3, security blocker S1: it was, and
+  //   `presentInEveryRelease` below does not save it — that guard only
+  //   covers paths the hash history already has an entry for, and measured
+  //   against the actual workflow set it caught 2 of 33 paths, so a
+  //   Core-only rig's manifest becoming unreadable for ANY reason silently
+  //   installed the opt-in workflow layer and made it permanent). Instead
+  //   the candidate set is read off the disk itself — see
+  //   {@link detectLayersOnDisk}.
+  const layers: Layer[] = manifest?.layers ?? (await detectLayersOnDisk(repoDir));
   // A path an OLDER manifest still names but this rig's OWN recorded layers
   // no longer cover (a manifest hand-edited to drop a layer, or one from a
   // release that shipped a layer this one renamed) falls out of `files`

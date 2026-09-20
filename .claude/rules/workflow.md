@@ -34,9 +34,14 @@ that reproduces the bug.
 The session that wrote the code is measurably worse at reviewing it: it
 carries its own reasoning in context and will not challenge its own decisions
 the way a cold reader does. That is *why* `code-reviewer` is a separate
-subagent with a fresh context, and why the `pr-ship` gate fans reviewers out
-instead of self-checking. This isolation is load-bearing, not ceremony — do
-not "optimise" it away by reviewing in the authoring session.
+subagent with a fresh context. **The `pr-ship` skill, which fans reviewers
+out automatically, ships only with the opt-in workflow layer** (`init
+--layer workflow`; `CLAUDE.md`'s "The opt-in workflow layer" section) —
+without it, the session itself dispatches `code-reviewer` (and
+`security-scanner`/`prose-reviewer` when their triggers fire) directly,
+before opening or merging a PR. Either way, this isolation is load-bearing,
+not ceremony — do not "optimise" it away by reviewing in the authoring
+session.
 
 A reviewer whose definition pins its model is never dispatched with a call-site
 `model`: which model reads a change is the routing policy's decision, not the
@@ -109,13 +114,23 @@ travels one path to merge, in this order:
    - any additional review a repository rule explicitly names for the touched
      surface.
 
-   The `pr-ship` skill drives this fan-out and returns a SHIP / HOLD verdict
-   with named blockers; blocking findings are resolved, not argued with.
+   **The `pr-ship` skill ships only with the opt-in workflow layer**
+   (`init --layer workflow`) and, where installed, drives this fan-out and
+   returns a SHIP / HOLD verdict with named blockers. **Without the layer,
+   the session itself drives the same fan-out** — dispatch each reviewer the
+   table and the triggers above name, read every verdict, and resolve every
+   blocking finding the same way `pr-ship` would; nothing about the review
+   floor changes with or without the skill. Blocking findings are resolved,
+   not argued with, either way.
 
    **A verdict is a block, not a sentence.** Every gate ends its report with one
-   fenced `json` block of the shape `.claude/scripts/lib/verdict.mjs` defines,
-   and `pr-ship` runs `node .claude/scripts/verdict.mjs check` on each answer
-   **before** it decides anything from it. A report that does not parse — no
+   fenced `json` block of the shape `.claude/scripts/lib/verdict.mjs` defines
+   (Core — `verdict.mjs` and its two dependencies ship unconditionally,
+   `docs/decisions/workflow-layer-split.md` explains why), and `node
+   .claude/scripts/verdict.mjs check` runs on each answer **before** anything
+   is decided from it — `pr-ship` runs it when the layer is installed; the
+   session runs the same command by hand otherwise. A report that does not
+   parse — no
    block, a word no gate returns, a blocker naming no rule, a stop naming no
    blocker — is `incomplete`: the reviewer did not answer, which is neither a
    pass nor a stop. Reading it as a pass is the failure the check exists to

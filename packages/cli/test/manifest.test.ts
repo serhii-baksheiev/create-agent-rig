@@ -272,7 +272,7 @@ describe('layers — which install-time layer(s) this manifest recorded (RP-180)
     expect(parsed?.layers).toEqual(['process', 'workflow']);
   });
 
-  // The other direction, and the one a FRESH `init` (no --with-workflow) now
+  // The other direction, and the one a FRESH `init` (no --layer workflow) now
   // produces: an explicit, narrower `layers` value round-trips exactly —
   // it is never silently widened back to "everything".
   it('a freshly written manifest naming only the core layer round-trips exactly', () => {
@@ -288,5 +288,27 @@ describe('layers — which install-time layer(s) this manifest recorded (RP-180)
     expect(hostile(['process', 'nonsense'])).toBeNull();
     expect(hostile([1, 2])).toBeNull();
     expect(hostile({})).toBeNull();
+  });
+
+  // RP-180 round 3, security blocker S2: `layers` was accepted as an
+  // ARBITRARY-length array of `'process' | 'workflow'` values, never
+  // deduplicated. The closed set has exactly two members, so nothing about a
+  // valid manifest ever needs more than two entries — but nothing stopped a
+  // committed manifest from repeating one thousands of times, and every
+  // caller of `RigManifest.layers` (this file's own `[...m.layers]`,
+  // `upgrade.ts`'s `initInstallSet`, `doctor.mjs`'s `layersOf`) then does
+  // O(n) or worse work per entry. Deduped at parse, once, so no downstream
+  // reader has to defend itself.
+  it('dedupes `layers` at parse — a manifest with 2000 duplicate entries parses to the 2-member list', () => {
+    const massive = Array.from({ length: 2000 }, (_, i) => (i % 2 === 0 ? 'process' : 'workflow'));
+    const start = Date.now();
+    const parsed = parseManifest(JSON.stringify({ ...sample(), layers: massive }));
+    const elapsed = Date.now() - start;
+    expect(parsed?.layers.sort()).toEqual(['process', 'workflow']);
+    expect(parsed?.layers.length).toBe(2);
+    // Bounded work, not just a fast wall-clock: parsing 2000 duplicate
+    // entries into a 2-member set must not scale with the input size in any
+    // way a reader would notice.
+    expect(elapsed).toBeLessThan(200);
   });
 });

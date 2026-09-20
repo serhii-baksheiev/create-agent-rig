@@ -128,3 +128,35 @@ in", › "a workflow-layer file never installed here (Core-only rig) is simply
 absent from the manifest, never reported \"not a path this release installs\"",
 and › "an inherited pre-layers manifest (no `layers` key) still owns its
 workflow files, exactly like any other installed path".
+
+## There is no opt-out short of `uninstall`
+
+Once a rig has the workflow layer — `init --layer workflow`, or inherited
+from before RP-180 — nothing in `init` or `upgrade` ever DROPS a layer a
+manifest already recorded; `effectiveLayers`/`detectLayersOnDisk` are both
+additive by construction. The only supported way back to Core-only is
+`uninstall` (removing the workflow files this rig owns) followed by a fresh
+`init` with no `--layer` flag.
+
+**Hand-editing `layers` in `.claude/.rig-manifest.json` down to `["process"]`
+is not that opt-out, and it does not do what it looks like it does.** The
+files themselves are untouched by the edit itself — nothing deletes them —
+but the next `upgrade` reads the manifest's `layers` as authoritative
+(`upgrade.ts`'s `initInstallSet(repoDir, project, layers)`), so every
+workflow path drops out of that plan's own install set and is reported
+`retired`, reason `"no longer shipped by this release — the rig no longer
+manages it; it is now yours"` — the same verdict RP-177 gave a deleted stack
+overlay, applied here to files that are simply no longer read as this rig's
+layer. `applyUpgrade` then writes a manifest whose `files` map has no entry
+for any of the roughly three dozen workflow paths at all (measured: a
+workflow rig's manifest went from 86 file entries to 53 across exactly this
+edit + upgrade). The files stay on disk, silently un-hashed and unowned —
+and a LATER `uninstall`, reading the same manifest, has nothing there to
+recognise them by: they read as an ordinary foreign/untracked path, not as
+something this release ever installed, and are left alone. The manifest
+itself does not warn about this because it has no opinion on why `layers`
+changed; the tool trusts its own evidence file. This is measured behaviour,
+not a guess: `packages/cli/test/upgrade.test.ts` (absent in a generated rig)
+pins the `retired` verdict and the orphaning it causes in "hand-editing
+`layers` down to `[\"process\"]` on a rig that already has the workflow
+layer retires every workflow file — on disk, unowned, never deleted".

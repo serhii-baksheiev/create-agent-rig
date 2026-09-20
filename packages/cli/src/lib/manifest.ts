@@ -206,7 +206,14 @@ export function parseManifest(raw: string): RigManifest | null {
     kind: m.kind,
     project: { name: project.name, scope: project.scope, region: project.region },
     stacks: [...m.stacks],
-    layers: m.layers !== undefined ? [...(m.layers as Layer[])] : [...LEGACY_LAYERS],
+    // Deduplicated here, once (RP-180 round 3, security blocker S2): the
+    // closed set has exactly two members, so a valid manifest never needs
+    // more than two entries, but nothing upstream of this reader bounds the
+    // array's length — a committed manifest could otherwise repeat one name
+    // thousands of times and make every downstream reader of `.layers` (this
+    // module's own callers, `upgrade.ts`, `doctor.mjs`) do unbounded work per
+    // entry for no reason.
+    layers: m.layers !== undefined ? [...new Set(m.layers as Layer[])] : [...LEGACY_LAYERS],
     files: { ...m.files },
     ...(m.kept !== undefined ? { kept: { ...m.kept } } : {}),
   };

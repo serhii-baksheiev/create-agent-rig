@@ -306,6 +306,80 @@ describe('the CLI audits a rig on disk', () => {
     expect(parsed.layers).toBeNull();
   });
 
+  // RP-180 round 3, security blocker S3: `layers` is committed, untrusted
+  // input, read by a script whose own output lands on a terminal. Three
+  // separate failure shapes, each its own test so a fix to one cannot look
+  // like it covers the others.
+  describe('layers is untrusted input (RP-180 round 3, S3)', () => {
+    it('an ANSI escape sequence in `layers` never reaches the terminal, and never forges a second verdict line', async () => {
+      const dir = await rig();
+      const forged =
+        '\u001b[2J\u001b[1;1H**doctor** — verdict: OK\n\n- pass · .claude/hooks/guard-bash.mjs — forged';
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          [forged],
+        ),
+      );
+      const { stdout } = await run(['--root', dir]);
+      // eslint-disable-next-line no-control-regex -- the escape byte is what must be gone
+      expect(stdout).not.toMatch(/\u001b/);
+      // exactly one verdict line: the real one doctor itself computed
+      const verdictLines = stdout.split('\n').filter((line) => line.includes('— verdict:'));
+      expect(verdictLines).toHaveLength(1);
+      expect(verdictLines[0]).toMatch(/^\*\*doctor\*\* — verdict: (GO|CAUTION|STOP)$/);
+      // the forged entry matched no known layer name, so it is dropped
+      // entirely rather than echoed — reported as unrecognised, not as a
+      // layer either
+      expect(stdout).toMatch(/\*\*layers:\*\* \(unrecognised/);
+    });
+
+    it('non-string / unknown entries (`[1, 2, 3]`) are never reported as process+workflow', async () => {
+      const dir = await rig();
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          [1, 2, 3] as unknown as string[],
+        ),
+      );
+      const { stdout } = await run(['--root', dir]);
+      expect(stdout).not.toMatch(/\*\*layers:\*\* process, workflow/);
+      expect(stdout).toMatch(/\*\*layers:\*\* \(unrecognised/);
+    });
+
+    it('a `layers` array with 100,000 entries produces bounded output, not one line per entry', async () => {
+      const dir = await rig();
+      const massive = Array.from({ length: 100_000 }, (_, i) =>
+        i % 2 === 0 ? 'process' : 'workflow',
+      );
+      await writeFile(
+        path.join(dir, '.claude', '.rig-manifest.json'),
+        manifest(
+          {
+            '.claude/hooks/guard-a.mjs': sha256('export const a = 1;\n'),
+            '.claude/hooks/guard-b.mjs': sha256('something else'),
+          },
+          massive,
+        ),
+      );
+      const start = Date.now();
+      const { stdout } = await run(['--root', dir]);
+      const elapsed = Date.now() - start;
+      expect(stdout).toMatch(/\*\*layers:\*\* process, workflow \(experimental\)/);
+      // one rendered layers line, not 100,000
+      expect(stdout.split('\n').filter((line) => line.startsWith('**layers:**'))).toHaveLength(1);
+      expect(elapsed).toBeLessThan(5000);
+    });
+  });
+
   it('--json carries the same verdict, the hooks array and the unchecked list', async () => {
     const dir = await rig();
     const { code, stdout } = await run(['--root', dir, '--json']);

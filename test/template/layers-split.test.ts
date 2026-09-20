@@ -17,7 +17,7 @@
 // states for the same reason: only `from '…'` and `import('…')` naming a
 // relative `.mjs` path are read. A dynamically assembled specifier is
 // invisible to it, and always has been to every sibling check of this shape.
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -122,5 +122,57 @@ describe('layers.json — the core/workflow split (RP-180)', () => {
       }
     }
     expect(offenders, 'a core script importing a workflow-layer file').toEqual([]);
+  });
+
+  // Advisory (RP-180 round 3): the two arrays are the ONLY thing that decides
+  // what a rig receives, so a file added under `templates/agent-os/universal/`
+  // and forgotten in both arrays is a file no `init`/`create` ever installs —
+  // silently, since nothing else here would notice. The reverse (a stale
+  // entry naming a file that no longer exists) is caught by `initManifest`
+  // itself failing to read it at install time, but nothing previously checked
+  // the FORWARD direction independently of `layers.json`'s own two lists.
+  //
+  // Independently derived: this walks the actual directory tree on disk,
+  // never the arrays under test, and excludes only the small, named set of
+  // paths `packages/cli/src/commands/init.ts` is documented to handle
+  // OUTSIDE the per-layer arrays — `CLAUDE.md`/`AGENTS.md` (`MAPS`, applied
+  // unconditionally), `.codex/config.toml` (`STATIC_EXTRAS`, unconditional),
+  // `.claude/settings.json`/`.codex/hooks.json` (generated wiring — read as a
+  // source template and filtered by which hooks were actually installed,
+  // never copied verbatim per layer), and `layers.json` itself (the manifest
+  // being tested, not a payload file).
+  it('the union of `process` and `workflow` is exactly every payload file on disk `init` can install', async () => {
+    const NOT_PER_LAYER = new Set([
+      'CLAUDE.md',
+      'AGENTS.md',
+      '.codex/config.toml',
+      '.claude/settings.json',
+      '.codex/hooks.json',
+      'layers.json',
+    ]);
+
+    async function walk(dir: string): Promise<string[]> {
+      const entries = await readdir(dir, { withFileTypes: true });
+      const files = await Promise.all(
+        entries.map(async (entry) => {
+          const abs = path.join(dir, entry.name);
+          if (entry.isDirectory()) return walk(abs);
+          const rel = path.relative(universalDir, abs).split(path.sep).join('/');
+          return [rel];
+        }),
+      );
+      return files.flat();
+    }
+
+    const onDisk = new Set((await walk(universalDir)).filter((rel) => !NOT_PER_LAYER.has(rel)));
+    const manifest = await layers();
+    const union = new Set([...(manifest.process ?? []), ...(manifest.workflow ?? [])]);
+
+    const missingFromLayers = [...onDisk].filter((rel) => !union.has(rel)).sort();
+    const missingFromDisk = [...union].filter((rel) => !onDisk.has(rel)).sort();
+    expect({ missingFromLayers, missingFromDisk }).toEqual({
+      missingFromLayers: [],
+      missingFromDisk: [],
+    });
   });
 });

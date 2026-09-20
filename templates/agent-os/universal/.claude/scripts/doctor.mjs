@@ -208,6 +208,9 @@ export const manifestFilesOf = (root) => {
   return files;
 };
 
+/** The closed set `layers.json` names today — the only strings `layersOf` ever echoes back. */
+const KNOWN_LAYERS = ['process', 'workflow'];
+
 /**
  * Which `layers.json` layer(s) this rig recorded installing (RP-180), or
  * `null` when there is no manifest to read at all — a third answer, not a
@@ -218,15 +221,29 @@ export const manifestFilesOf = (root) => {
  * layer" — the CLI's own default (`packages/cli/src/lib/manifest.ts`,
  * `LEGACY_LAYERS`), restated here rather than imported: this script ships
  * standalone into a generated rig and has no access to the CLI package.
+ *
+ * RP-180 round 3 security review: a PRESENT `layers` is filtered down to
+ * {@link KNOWN_LAYERS} and deduplicated — never echoed as typed, and never
+ * widened to "every layer" just because it failed to parse as a clean array.
+ * A committed manifest is untrusted input read by a script whose own output
+ * lands on a terminal: an unknown or non-string entry is dropped rather than
+ * printed, and a `layers` field that is present but not a usable array (the
+ * wrong type, or an array with nothing recognisable in it) reports as
+ * `[]` — the caller's own "nothing to say" — never silently promoted back to
+ * "every layer", which is reserved for the field's TRUE ABSENCE. Bounded
+ * work regardless of the array's length: filter + `Set` is one pass, and the
+ * result can never hold more than {@link KNOWN_LAYERS}'s own two entries, so
+ * a manifest naming the same layer 100,000 times costs no more render-time
+ * output than naming it once.
  */
 export const layersOf = (root) => {
   const parsed = readJson(path.join(root, ...MANIFEST_REL.split('/')));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (!Object.prototype.hasOwnProperty.call(parsed, 'layers')) return [...KNOWN_LAYERS];
   const { layers } = parsed;
-  if (Array.isArray(layers) && layers.every((entry) => typeof entry === 'string')) {
-    return layers;
-  }
-  return ['process', 'workflow'];
+  if (!Array.isArray(layers)) return [];
+  const known = layers.filter((entry) => typeof entry === 'string' && KNOWN_LAYERS.includes(entry));
+  return [...new Set(known)];
 };
 
 /** `workflow` reads as experimental everywhere doctor names it; every other layer is plain. */
@@ -332,10 +349,21 @@ export const report = (root) => {
   const audit = { verdict: verdictOf(all.map((r) => r.mark)), hooks: all };
   const absent = scopes.filter((scope) => !scope.present && scope.dir !== HOOKS_DIR).map((scope) => scope.dir);
   const layers = layersOf(root);
+  // `layers` is untrusted committed input, exactly like an exemption reason
+  // or a hook's own relative path elsewhere in this report — printed only
+  // through `printable`, never raw. An empty (but non-null) result means the
+  // field was PRESENT and malformed rather than absent, which reads
+  // differently from "nothing to say" and is worth its own line.
+  const layersLine =
+    layers === null
+      ? null
+      : layers.length > 0
+        ? `**layers:** ${printable(layers.map(layerLabel).join(', '))}`
+        : `**layers:** (unrecognised — see ${MANIFEST_REL})`;
   const lines = [
     `**doctor** — verdict: ${audit.verdict}`,
     '',
-    ...(layers !== null ? [`**layers:** ${layers.map(layerLabel).join(', ')}`, ''] : []),
+    ...(layersLine !== null ? [layersLine, ''] : []),
     // Names come from the file system, reasons from a repo file; both are
     // stripped of control bytes here, once, where they reach the terminal.
     ...audit.hooks.map((hook) => `- ${hook.mark} · ${printable(hook.rel)} — ${printable(hook.detail)}`),

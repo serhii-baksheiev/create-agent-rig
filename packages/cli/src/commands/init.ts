@@ -118,6 +118,21 @@ async function loadManifest(): Promise<Manifest> {
   return JSON.parse(raw) as Manifest;
 }
 
+/**
+ * Exactly `layers.json`'s own array for one layer — never the always-added
+ * extras (`SETTINGS`, `CODEX_HOOKS`, `STATIC_EXTRAS`, `MAPS`) `initManifest`
+ * appends to every layer regardless of which one was asked for. A caller
+ * that wants to know whether a SPECIFIC layer's own files are on disk (RP-180
+ * round 3, `commands/upgrade.ts`'s `detectLayersOnDisk`) needs this
+ * distinction: those extras exist for any rig at all, Core-only included, so
+ * checking `initManifest([layer])`'s full output against disk would report
+ * every layer as "present" always.
+ */
+export async function layerOnlyPaths(layer: Layer): Promise<string[]> {
+  const manifest = await loadManifest();
+  return manifest[layer];
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await access(p);

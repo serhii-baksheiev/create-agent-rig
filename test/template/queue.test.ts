@@ -4109,18 +4109,32 @@ describe("the queue's own state is per-checkout, so it is never committed", () =
 // pattern. Reproduced with the block as written — `git check-ignore -q
 // .claude/queue.state.json` exits 1, and `git status --short` shows `?? .claude/`.
 describe('the ignore block the init doc tells a reader to paste', () => {
-  /** The block, dedented exactly as pasting it out of the fence would give it. */
+  /**
+   * The block(s), dedented exactly as pasting each fence out would give it,
+   * concatenated. RP-180 round 3 split "Four things" item 3 into two fences
+   * — one Core path (`.claude/worktrees/`, always relevant) and one for the
+   * four paths that exist only with the opt-in workflow layer — since a
+   * Core-only reader has no use for the workflow-only paths. A reader who
+   * DOES have the workflow layer pastes both; this test reproduces that
+   * (the fuller) case, so it still proves every one of the five paths is
+   * ignored once pasted.
+   */
   const pastedBlock = async (): Promise<string> => {
     const doc = await read(repoRoot, 'templates', 'agent-os', 'universal', 'CLAUDE.md');
     const fenced = [...doc.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
       .map((match) => match[1] ?? '')
-      .filter((body) => body.includes('.claude/queue.state.json'));
-    expect(fenced, 'the doc must still show the reader one block to paste').toHaveLength(1);
-    const lines = (fenced[0] ?? '').replace(/\n$/, '').split('\n');
-    const indent = lines
-      .filter((line) => line.trim())
-      .reduce((least, line) => Math.min(least, line.length - line.trimStart().length), Infinity);
-    return lines.map((line) => line.slice(indent)).join('\n');
+      .filter(
+        (body) => body.includes('.claude/queue.state.json') || body.includes('.claude/worktrees/'),
+      );
+    expect(fenced, 'the doc must still show the reader the blocks to paste').toHaveLength(2);
+    const dedent = (block: string): string => {
+      const lines = block.replace(/\n$/, '').split('\n');
+      const indent = lines
+        .filter((line) => line.trim())
+        .reduce((least, line) => Math.min(least, line.length - line.trimStart().length), Infinity);
+      return lines.map((line) => line.slice(indent)).join('\n');
+    };
+    return fenced.map(dedent).join('\n');
   };
 
   const git = (args: string[], cwd: string): Promise<number> =>

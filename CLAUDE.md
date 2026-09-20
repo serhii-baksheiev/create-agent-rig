@@ -164,9 +164,18 @@ All four are one-liners, and all four are inert until you do them.
    no-op, and the Definition of Done is back to being a wish.
 2. **The elevated-path list below is a seed, not a survey.** It names only what
    every repo has. Everything else is yours to add.
-3. **Five runtime paths need a `.gitignore` line each**, and `init` cannot add
-   them — it installs into your repository and does not edit files it did not
-   bring. If any are missing, add only the missing entries:
+3. **One runtime path needs a `.gitignore` line always; four more only when
+   the opt-in workflow layer is installed** (`init --layer workflow`), and
+   `init`/`init --layer workflow` cannot add any of them — they install into
+   your repository and do not edit files they did not bring. If any are
+   missing, add only the missing entries:
+
+   ```
+   # task worktrees (Core — the worktree-task skill)
+   .claude/worktrees/
+   ```
+
+   With the workflow layer, also add:
 
    ```
    # the tier the last close recorded
@@ -175,8 +184,6 @@ All four are one-liners, and all four are inert until you do them.
    .claude/queue.board
    # gate rounds, one count per branch
    .claude/gate-rounds.json
-   # task worktrees
-   .claude/worktrees/
    # the run journal's per-run trace
    .claude/runs/
    ```
@@ -185,14 +192,15 @@ All four are one-liners, and all four are inert until you do them.
    pattern and the line then ignores nothing. It fails silently — you find out
    when the file lands in a commit.
 
-   The first one matters more than it looks. It is how the loop rations the
-   elevated tier — never two elevated items back to back, where the tier that
-   spaces is the one that EXECUTES (a close whose elevated paths are all
-   documents records `elevated-prose` and clears the ration) — and it is
-   **per-checkout state, not shared configuration**. Committed, one machine's
-   tier starts deciding another's, and a merge conflict lands in a file nobody
-   edited on purpose. `.claude/queue.json` is the opposite: that one is
-   configuration and belongs in the repository.
+   **`.claude/queue.state.json` (workflow layer only) matters more than it
+   looks.** It is how the `loop` skill rations the elevated tier — never two
+   elevated items back to back, where the tier that spaces is the one that
+   EXECUTES (a close whose elevated paths are all documents records
+   `elevated-prose` and clears the ration) — and it is **per-checkout state,
+   not shared configuration**. Committed, one machine's tier starts deciding
+   another's, and a merge conflict lands in a file nobody edited on purpose.
+   `.claude/queue.json` is the opposite: that one is configuration, ships only
+   with the workflow layer too, and belongs in the repository.
 
 4. **`doctor` reads two files this install does not ship.**
    `node .claude/scripts/doctor.mjs` decides who owns each hook from
@@ -206,9 +214,12 @@ All four are one-liners, and all four are inert until you do them.
 ## The elevated paths of this project
 
 Tier 2 in `.claude/rules/autonomy.md` names *kinds* of change. This block names
-the **paths** in this repository where those kinds live, and
-`.claude/scripts/detect-missed-gate.mjs` reads it — so a path that is not declared
-is a path the gate sweep cannot see.
+the **paths** in this repository where those kinds live. **Where the opt-in
+workflow layer is installed** (`init --layer workflow`),
+`.claude/scripts/detect-missed-gate.mjs` reads it — so a path that is not
+declared is a path the gate sweep cannot see; without that layer, this list
+is what a human (or a session asked to check) applies by hand instead — the
+rule does not change with or without the script.
 
 ```elevated-paths
 .github/workflows/

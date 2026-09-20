@@ -1772,7 +1772,9 @@ describe('applyUninstall — a file that changed after planning', () => {
     // installRig() here takes no `--layer workflow`) is smaller, so the fixed
     // superset-sweep footprint (the hooks `settings.json` still wires, and
     // their own shared dependencies) is a bigger share of a smaller whole —
-    // measured at removable=36 / preserved=15 (2.4x) on the current Core set.
+    // measured at removable=37 / preserved=15 (2.47x) on the current Core set
+    // (37, not 36: `docs/decisions/session-start-wire-format.md` joined Core
+    // in RP-185/#237 after this bound was first measured).
     expect(removable.length).toBeGreaterThan(preserved.length * 2);
 
     // A path with no plausible connection to the deleted hook — not a hook,

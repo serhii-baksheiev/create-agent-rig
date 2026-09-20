@@ -386,7 +386,14 @@ cleanly must not mean losing work.
 **The opt-in workflow layer** (`init --layer workflow`) adds autonomous,
 cooperative multi-session workflow governance — experimental, and not part of
 Lean Core. It brings the two sweeps below, the queue adapter, and the `loop`
-and `pr-ship` skills.
+and `pr-ship` skills. **There is no supported opt-out short of `uninstall`**
+(remove the owned workflow files, then re-`init` with no `--layer` flag):
+hand-editing `layers` back down to `["process"]` in
+`.claude/.rig-manifest.json` is not that opt-out — the next `upgrade` retires
+every workflow file from the manifest (on disk, unowned, never deleted) but
+does not remove anything, so the files just sit there unrecognised. See
+`docs/decisions/workflow-layer-split.md`, "There is no opt-out short of
+`uninstall`".
 
 **Two sweeps meant to run outside any session** — nothing schedules them for you;
 that is deliberate, because a check a run performs on itself is one a hurried run

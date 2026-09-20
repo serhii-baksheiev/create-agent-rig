@@ -159,16 +159,21 @@ these lines is the failure mode:
   stop, write a short summary of state and intent, and **start fresh** from
   the summary. Resuming a stale session is how agents edit files that are not
   there anymore.
-- **A deploy that regressed.** A green pipeline is not a healthy runtime, so
-  every deploy ends in a verdict and **both words get recorded**:
+- **A deploy that regressed.** A green pipeline is not a healthy runtime:
+  verify runtime health after every deploy, and on a regression, **revert
+  first, diagnose second** — never fix-forward blind on a broken runtime.
+  **With the opt-in workflow layer installed** (`init --layer workflow`;
+  `run-state.mjs` ships only with it — a Core-only rig has no such file),
+  both words also get recorded as a mechanical verdict:
   `node .claude/scripts/run-state.mjs deploy HEALTHY` or `… deploy REGRESSION`.
-  On a regression, **revert first, diagnose second**. `REGRESSION` is what
-  makes the next selection refuse to build on it, and `HEALTHY` is the only
-  thing that clears one — a run that reverts, redeploys, verifies and then
-  stops at "healthy → done" has left the refusal latched behind it. The
-  procedure behind the verdict is further down this file; the verdict is here
-  because a compacted run has to carry it at the moment it is under the most
-  pressure.
+  `REGRESSION` is what makes the next selection refuse to build on it, and
+  `HEALTHY` is the only thing that clears one — a run that reverts, redeploys,
+  verifies and then stops at "healthy → done" has left the refusal latched
+  behind it. Without the layer, there is no automated selection to gate: the
+  verify-then-revert rule still applies, and the record of it is the human
+  one (the journal), not a file `queue/index.mjs next` reads. The procedure
+  behind the verdict is further down this file; the verdict is here because a
+  compacted run has to carry it at the moment it is under the most pressure.
 
 <!-- inject:skip -->
 <!-- Not carried into a session's context (see the note on the first marked
