@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   REGISTRY,
+  isHttpsUrl,
   validateDescriptor,
   type ProviderDescriptor,
 } from '../src/integrations/registry.js';
@@ -29,6 +30,35 @@ const baseDescriptor: ProviderDescriptor = {
   stability: 'supported',
 };
 
+describe('isHttpsUrl', () => {
+  it('accepts a plain https URL', () => {
+    expect(isHttpsUrl('https://example.com/docs')).toBe(true);
+  });
+
+  it('accepts any casing of the scheme, because URL itself lower-cases it', () => {
+    expect(isHttpsUrl('HTTPS://example.com')).toBe(true);
+  });
+
+  it('refuses a URL carrying userinfo (a credential-shaped value has no business in a docs/license link)', () => {
+    expect(isHttpsUrl('https://user:pass@example.com')).toBe(false);
+    expect(isHttpsUrl('https://user@example.com')).toBe(false);
+  });
+
+  it('refuses a bare "https://" with no host', () => {
+    expect(isHttpsUrl('https://')).toBe(false);
+  });
+
+  it('refuses a non-https scheme', () => {
+    expect(isHttpsUrl('http://example.com')).toBe(false);
+    expect(isHttpsUrl('ftp://example.com')).toBe(false);
+  });
+
+  it('refuses a value that is not a URL at all', () => {
+    expect(isHttpsUrl('not a url')).toBe(false);
+    expect(isHttpsUrl('')).toBe(false);
+  });
+});
+
 describe('validateDescriptor', () => {
   it('accepts a well-formed descriptor', () => {
     expect(validateDescriptor(baseDescriptor)).toEqual({ ok: true });
@@ -39,6 +69,24 @@ describe('validateDescriptor', () => {
       ok: false,
       reason: 'unknown-license',
     });
+  });
+
+  it('refuses a terms license whose url is not https, as unknown-license', () => {
+    expect(
+      validateDescriptor({
+        ...baseDescriptor,
+        license: { kind: 'terms', url: 'http://fixture.example/terms' },
+      }),
+    ).toEqual({ ok: false, reason: 'unknown-license' });
+  });
+
+  it('accepts a terms license whose url is https', () => {
+    expect(
+      validateDescriptor({
+        ...baseDescriptor,
+        license: { kind: 'terms', url: 'https://fixture.example/terms' },
+      }),
+    ).toEqual({ ok: true });
   });
 
   it('refuses source.official !== true as non-official-source', () => {
@@ -77,6 +125,25 @@ describe('validateDescriptor', () => {
     ).toEqual({ ok: true });
   });
 
+  it.each([
+    ['not a date at all', 'not-a-date'],
+    ['a real-looking but non-existent date (30 Feb)', '2026-02-30'],
+    ['the wrong number of digits', '2026-1-1'],
+  ])('refuses a verifiedOn that is %s, as malformed', (_label, verifiedOn) => {
+    expect(
+      validateDescriptor({ ...baseDescriptor, source: { ...baseDescriptor.source, verifiedOn } }),
+    ).toEqual({ ok: false, reason: 'malformed' });
+  });
+
+  it('accepts a real verifiedOn date, including a leap-day', () => {
+    expect(
+      validateDescriptor({
+        ...baseDescriptor,
+        source: { ...baseDescriptor.source, verifiedOn: '2024-02-29' },
+      }),
+    ).toEqual({ ok: true });
+  });
+
   it('refuses external-installer mode with a floating version policy, as unpinnable-version', () => {
     expect(
       validateDescriptor({
@@ -103,10 +170,10 @@ describe('REGISTRY', () => {
     expect(REGISTRY.map((descriptor) => descriptor.id)).toEqual(['memory-custom-executable']);
   });
 
-  it('every shipped descriptor passes validateDescriptor, has an https docsUrl and a verifiedOn date', () => {
+  it('every shipped descriptor passes validateDescriptor, has an https docsUrl and a real verifiedOn date', () => {
     for (const descriptor of REGISTRY) {
       expect(validateDescriptor(descriptor), descriptor.id).toEqual({ ok: true });
-      expect(descriptor.source.docsUrl.startsWith('https://'), descriptor.id).toBe(true);
+      expect(isHttpsUrl(descriptor.source.docsUrl), descriptor.id).toBe(true);
       expect(descriptor.source.verifiedOn, descriptor.id).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     }
   });
@@ -127,20 +194,74 @@ describe('REGISTRY', () => {
       reason: 'compatibility is the handshake, not a range',
     });
   });
+
+  it('is deeply frozen: mutating the array, an entry, or a nested object throws in strict mode', () => {
+    expect(() => {
+      (REGISTRY as ProviderDescriptor[]).push(REGISTRY[0]!);
+    }).toThrow();
+    expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- proving a frozen-object write throws
+      (REGISTRY[0] as any).id = 'mutated';
+    }).toThrow();
+    expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- proving a frozen nested object write throws
+      (REGISTRY[0]!.source as any).official = false;
+    }).toThrow();
+    expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- proving a frozen nested-of-nested object write throws
+      (REGISTRY[0]!.routes as any)['claude-code'].automation = 'guided';
+    }).toThrow();
+  });
 });
 
-describe('structural: no process spawn, no network', () => {
-  it('registry.ts and declaration.ts import neither child_process nor any net module', async () => {
+describe('structural: what registry.ts and declaration.ts may import', () => {
+  // Text scan, not a parser: `stripComments` and this regex are blind to a
+  // specifier assembled at runtime (a template literal, string
+  // concatenation, `["node:" + "fs"]`) — see test/template/lib/source-scan.ts's
+  // own header. Good enough here because both files are hand-authored,
+  // reviewed source, not a code-generation target.
+  const ALLOWED_IMPORT_SPECIFIERS = new Set(['../lib/safe-text.js', './registry.js']);
+
+  it('registry.ts and declaration.ts import only their declared relative modules, and never require, dynamically import, fetch, or createRequire', async () => {
     const files = [
       path.join(repoRoot, 'packages', 'cli', 'src', 'integrations', 'registry.ts'),
       path.join(repoRoot, 'packages', 'cli', 'src', 'integrations', 'declaration.ts'),
     ];
     for (const file of files) {
       const code = stripComments(await readFile(file, 'utf8'));
-      expect(code, file).not.toMatch(/child_process/);
-      expect(code, file).not.toMatch(/(?:^|[^-\w])net['"]/);
-      expect(code, file).not.toMatch(/\bnode:net\b/);
-      expect(code, file).not.toMatch(/\bexecFile\b|\bspawn\b|\bexec\(/);
+      const specifiers = [...code.matchAll(/\bimport\s+[^;]*?\bfrom\s+['"]([^'"]+)['"]/g)].map(
+        (match) => match[1],
+      );
+      for (const specifier of specifiers) {
+        expect(ALLOWED_IMPORT_SPECIFIERS.has(specifier!), `${file} imports "${specifier}"`).toBe(
+          true,
+        );
+      }
+      expect(code, file).not.toMatch(/\brequire\s*\(/);
+      expect(code, file).not.toMatch(/\bimport\s*\(/);
+      expect(code, file).not.toMatch(/\bfetch\s*\(/);
+      expect(code, file).not.toMatch(/\bcreateRequire\b/);
     }
+  });
+
+  it('registry.ts has no imports at all, and declaration.ts imports exactly its two siblings', async () => {
+    const registryCode = stripComments(
+      await readFile(
+        path.join(repoRoot, 'packages', 'cli', 'src', 'integrations', 'registry.ts'),
+        'utf8',
+      ),
+    );
+    expect([...registryCode.matchAll(/\bimport\b/g)]).toHaveLength(0);
+
+    const declarationCode = stripComments(
+      await readFile(
+        path.join(repoRoot, 'packages', 'cli', 'src', 'integrations', 'declaration.ts'),
+        'utf8',
+      ),
+    );
+    const specifiers = [
+      ...declarationCode.matchAll(/\bimport\s+[^;]*?\bfrom\s+['"]([^'"]+)['"]/g),
+    ].map((match) => match[1]);
+    expect(new Set(specifiers)).toEqual(ALLOWED_IMPORT_SPECIFIERS);
   });
 });

@@ -191,7 +191,6 @@ docs/decisions/
 contracts/
 scripts/dogfood/
 packages/cli/src/integrations/
-contracts/integrations/
 .claude/
 ```
 

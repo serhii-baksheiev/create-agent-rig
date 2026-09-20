@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DECLARATION_REL,
   DECLARATION_SCHEMA_VERSION,
+  VERSION_PATTERN,
   parseDeclaration,
   serializeDeclaration,
   type DeclaredIntegration,
@@ -23,13 +24,19 @@ type Validate = (schema: unknown, value: unknown) => ValidationResult;
 const loadValidate = async (): Promise<Validate> =>
   ((await import(pathToFileURL(schemaSubsetPath).href)) as { validate: Validate }).validate;
 
-const loadSchema = async (): Promise<unknown> =>
+interface DeclarationSchema {
+  properties: {
+    integrations: { items: { properties: { version: { pattern: string } } } };
+  };
+}
+
+const loadSchema = async (): Promise<DeclarationSchema> =>
   JSON.parse(
     await readFile(
       path.join(repoRoot, 'contracts', 'integrations', 'v1', 'declaration.schema.json'),
       'utf8',
     ),
-  ) as unknown;
+  ) as DeclarationSchema;
 
 // An injected registry, independent of REGISTRY, so the parser's rules are
 // pinned without depending on what the shipped matrix happens to contain.
@@ -125,6 +132,17 @@ describe('parseDeclaration — acceptance', () => {
       rejected: [{ id: 'not-a-real-provider', reason: 'not-in-matrix' }],
     });
   });
+
+  it('accepts a harnesses value at exactly the deepest legitimate nesting (a string inside harnesses[])', () => {
+    // root(0) -> integrations[](1) -> entry{}(2) -> harnesses[](3) -> "claude-code"(4):
+    // exactly MAX_DECLARATION_DEPTH, the boundary the depth-bound tests below probe from the other side.
+    const raw = file([{ id: 'gamma-board', harnesses: ['claude-code'] }]);
+    expect(parseDeclaration(raw, testRegistry)).toEqual({
+      status: 'ok',
+      entries: [{ id: 'gamma-board', harnesses: ['claude-code'] }],
+      rejected: [],
+    });
+  });
 });
 
 describe('parseDeclaration — refused keys', () => {
@@ -154,6 +172,44 @@ describe('parseDeclaration — refused keys', () => {
       status: 'ok',
       entries: [],
       rejected: [{ id: 'gamma-board', reason: 'malformed' }],
+    });
+  });
+
+  // RP-22 gate cycle 1 advisory (a): the reason must not depend on JSON key
+  // order, and the most severe reason present wins.
+  it.each([
+    ['command listed before headers', { command: 'x', headers: {} }],
+    ['headers listed before command', { headers: {}, command: 'x' }],
+  ])('reports the most severe refused key regardless of order (%s)', (_label, extra) => {
+    const raw = file([{ id: 'gamma-board', ...extra }]);
+    expect(parseDeclaration(raw, testRegistry)).toEqual({
+      status: 'ok',
+      entries: [],
+      rejected: [{ id: 'gamma-board', reason: 'arbitrary-command-refused' }],
+    });
+  });
+
+  it.each([
+    ['headers listed before an unrecognised key', { headers: {}, unexpectedField: true }],
+    ['an unrecognised key listed before headers', { unexpectedField: true, headers: {} }],
+  ])('non-official-source outranks malformed regardless of order (%s)', (_label, extra) => {
+    const raw = file([{ id: 'gamma-board', ...extra }]);
+    expect(parseDeclaration(raw, testRegistry)).toEqual({
+      status: 'ok',
+      entries: [],
+      rejected: [{ id: 'gamma-board', reason: 'non-official-source' }],
+    });
+  });
+
+  // advisory (a), second half: a refused key is reported as itself even when
+  // the id is ALSO outside the registry — a typo'd id must never mask a
+  // smuggling attempt by demoting it to the merely-unrecognised "not-in-matrix".
+  it("a refused key wins over not-in-matrix, so a smuggled command is never hidden behind a typo'd id", () => {
+    const raw = file([{ id: 'totally-not-a-real-provider', command: 'rm -rf /' }]);
+    expect(parseDeclaration(raw, testRegistry)).toEqual({
+      status: 'ok',
+      entries: [],
+      rejected: [{ id: 'totally-not-a-real-provider', reason: 'arbitrary-command-refused' }],
     });
   });
 });
@@ -213,6 +269,17 @@ describe('parseDeclaration — malformed scalars', () => {
       status: 'ok',
       entries: [{ id: 'gamma-board', harnesses: ['codex'] }],
       rejected: [],
+    });
+  });
+
+  // advisory (e), parser half: the schema cannot express uniqueItems (see the
+  // shared file-shape fixtures below), so the parser refuses duplicates itself.
+  it('refuses a harnesses array carrying a duplicate entry, as malformed', () => {
+    const raw = file([{ id: 'gamma-board', harnesses: ['codex', 'codex'] }]);
+    expect(parseDeclaration(raw, testRegistry)).toEqual({
+      status: 'ok',
+      entries: [],
+      rejected: [{ id: 'gamma-board', reason: 'malformed' }],
     });
   });
 });
@@ -278,6 +345,17 @@ describe('parseDeclaration — whole file invalid', () => {
     expect(parseDeclaration(raw, testRegistry).status).toBe('invalid');
   });
 
+  it('caps the echoed id in the duplicate-id error message (advisory (f))', () => {
+    const longId = 'x'.repeat(200);
+    const raw = file([{ id: longId }, { id: longId }]);
+    const result = parseDeclaration(raw, testRegistry);
+    expect(result.status).toBe('invalid');
+    if (result.status === 'invalid') {
+      expect(result.error).toContain(`${'x'.repeat(64)}…`);
+      expect(result.error).not.toContain('x'.repeat(65));
+    }
+  });
+
   it('voids the whole file on a control character anywhere in the JSON', () => {
     const raw = file([{ id: 'gamma-board', version: '1.0.0\u0007' }]);
     expect(parseDeclaration(raw, testRegistry).status).toBe('invalid');
@@ -287,37 +365,141 @@ describe('parseDeclaration — whole file invalid', () => {
     const raw = file([{ id: 'gamma-board' }]).slice(0, -2) + ' '.repeat(70 * 1024) + ']}';
     expect(parseDeclaration(raw, testRegistry).status).toBe('invalid');
   });
+
+  // RP-22 gate cycle 1, blocker 2: a root key outside {schemaVersion,
+  // integrations} used to be silently ignored while the shipped schema
+  // refused it. The error names the allowed key CLASS, never the offending
+  // key's own (attacker-controlled, unbounded) text.
+  it('voids the whole file on a root key outside {schemaVersion, integrations}, without echoing it', () => {
+    const raw = JSON.stringify({ schemaVersion: 1, integrations: [], command: 'rm -rf /' });
+    const result = parseDeclaration(raw, testRegistry);
+    expect(result.status).toBe('invalid');
+    if (result.status === 'invalid') {
+      expect(result.error).toMatch(/root key/);
+      expect(result.error).not.toContain('rm -rf');
+    }
+  });
 });
 
-describe('the declaration.schema.json oracle (RP-22 S1)', () => {
-  it('every accepted fixture validates, and the two schema-shape-invalid fixtures do not', async () => {
+// RP-22 gate cycle 1, blocker 1: `hasControlCharacterDeep` used to recurse
+// over the parsed value with no depth bound, ahead of every shape check, and
+// threw RangeError on a hostile but small (well under 64 KiB) deeply nested
+// value. `parseDeclaration` must be TOTAL — every one of these returns a
+// ParseResult, never a throw.
+describe('parseDeclaration is total — depth-bounded, never throws', () => {
+  const nestedArray = (levels: number, leaf: unknown): string =>
+    '['.repeat(levels) + JSON.stringify(leaf) + ']'.repeat(levels);
+
+  it('voids a declaration nesting ~6000 levels inside a harnesses value (the gate-1 regression), instead of throwing', () => {
+    const hostileHarnesses = nestedArray(6000, 'claude-code');
+    const raw = `{"schemaVersion":1,"integrations":[{"id":"gamma-board","harnesses":${hostileHarnesses}}]}`;
+    // ~12 KiB, well under the 64 KiB cap — the cap alone does not bound this.
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThan(64 * 1024);
+
+    let result: ReturnType<typeof parseDeclaration> | undefined;
+    expect(() => {
+      result = parseDeclaration(raw, testRegistry);
+    }).not.toThrow();
+    expect(result?.status).toBe('invalid');
+    if (result?.status === 'invalid') {
+      expect(result.error).toMatch(/nests deeper than 4/);
+    }
+  });
+
+  it('a fuzz list of hostile shapes never makes parseDeclaration throw', () => {
+    const hostileShapes: Record<string, string> = {
+      'deeply nested arrays (6000 levels)': nestedArray(6000, 0),
+      'deeply nested objects (6000 levels)': `${'{"a":'.repeat(6000)}0${'}'.repeat(6000)}`,
+      // ~28,000 single-digit array elements: breadth, not depth, and sized to
+      // stay under the 64 KiB cap so it actually reaches the depth/control
+      // walk instead of being turned away by the size check first (2 bytes
+      // per element, comma included, keeps ~28,000 comfortably under 65,536).
+      'many shallow array elements within the byte cap': `[${new Array(28_000).fill('0').join(',')}]`,
+      'a 60 KiB top-level string': JSON.stringify('x'.repeat(60 * 1024)),
+      'a non-JSON string with embedded control bytes': 'not json at all \u0000 ￿',
+      'an empty string': '',
+    };
+
+    for (const [name, raw] of Object.entries(hostileShapes)) {
+      let result: ReturnType<typeof parseDeclaration> | undefined;
+      expect(() => {
+        result = parseDeclaration(raw, testRegistry);
+      }, name).not.toThrow();
+      expect(result, name).toBeDefined();
+      expect(['ok', 'invalid'], name).toContain(result?.status);
+    }
+  });
+});
+
+type FileShapeFixture = { name: string; value: unknown; accepted: boolean };
+
+/**
+ * Shared between `parseDeclaration` and the schema oracle, so the two
+ * enforcement layers cannot silently drift apart the way they did in gate
+ * cycle 1 (blocker 2: the schema refused a root key `parseDeclaration`
+ * ignored). Every fixture here runs through BOTH.
+ *
+ * What is deliberately absent: a duplicate id. `scripts/lib/json-schema-subset.mjs`'s
+ * supported keyword set (`type`, `properties`, `required`,
+ * `additionalProperties`, `enum`, `const`, `items`, `pattern`, `minLength`)
+ * has nothing equivalent to `uniqueItems` across a whole array, so a
+ * duplicate id cannot be expressed as a schema-shape violation at all — it is
+ * pinned on the parser side alone, by "whole file invalid" above.
+ */
+const FILE_SHAPE_FIXTURES: readonly FileShapeFixture[] = [
+  {
+    name: 'an empty integrations array',
+    value: { schemaVersion: 1, integrations: [] },
+    accepted: true,
+  },
+  {
+    name: 'one well-formed entry with every optional field',
+    value: {
+      schemaVersion: 1,
+      integrations: [
+        {
+          id: 'gamma-board',
+          required: true,
+          version: '1.2.3',
+          harnesses: ['claude-code', 'codex'],
+        },
+      ],
+    },
+    accepted: true,
+  },
+  { name: 'a wrong schemaVersion', value: { schemaVersion: 2, integrations: [] }, accepted: false },
+  {
+    name: 'integrations that is not an array',
+    value: { schemaVersion: 1, integrations: { id: 'gamma-board' } },
+    accepted: false,
+  },
+  {
+    name: 'an unrecognised root key',
+    value: { schemaVersion: 1, integrations: [], command: 'rm -rf /' },
+    accepted: false,
+  },
+];
+
+describe('file-level shape: parseDeclaration and the schema oracle agree on one shared fixture list', () => {
+  it.each(FILE_SHAPE_FIXTURES)('$name', async ({ value, accepted }) => {
     const validate = await loadValidate();
     const schema = await loadSchema();
+    const raw = JSON.stringify(value);
 
-    const acceptedFixtures = [
-      { schemaVersion: 1, integrations: [] },
-      { schemaVersion: 1, integrations: [{ id: 'gamma-board' }] },
-      {
-        schemaVersion: 1,
-        integrations: [
-          { id: 'gamma-board', required: true, version: '1.2.3', harnesses: ['claude-code'] },
-        ],
-      },
-    ];
-    for (const fixture of acceptedFixtures) {
-      expect(validate(schema, fixture), JSON.stringify(fixture)).toEqual({ ok: true, errors: [] });
-    }
+    const parsed = parseDeclaration(raw, testRegistry);
+    expect(parsed.status).toBe(accepted ? 'ok' : 'invalid');
+    if (parsed.status === 'ok') expect(parsed.rejected).toEqual([]);
 
-    // Duplicate ids and control characters are semantic, not shape, so they
-    // are pinned by "whole file invalid" above, not by this shape oracle.
-    const shapeInvalidFixtures: unknown[] = [
-      { schemaVersion: 2, integrations: [] },
-      { schemaVersion: 1, integrations: { id: 'gamma-board' } },
-      { schemaVersion: 1, integrations: [{ id: 'gamma-board', command: 'rm -rf /' }] },
-    ];
-    for (const fixture of shapeInvalidFixtures) {
-      expect(validate(schema, fixture).ok, JSON.stringify(fixture)).toBe(false);
-    }
+    expect(validate(schema, value).ok).toBe(accepted);
+  });
+});
+
+describe('the version pin pattern has one spelling (advisory (e))', () => {
+  it('declaration.ts VERSION_PATTERN and declaration.schema.json carry the identical pattern string', async () => {
+    const schema = await loadSchema();
+    expect(VERSION_PATTERN.source).toBe(
+      schema.properties.integrations.items.properties.version.pattern,
+    );
   });
 });
 

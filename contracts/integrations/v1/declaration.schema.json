@@ -29,6 +29,7 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
           },
           "harnesses": {
+            "description": "Non-empty and duplicate-free — enforced by declaration.ts's parser, not by this schema: scripts/lib/json-schema-subset.mjs's supported keyword set has no minItems or uniqueItems (RP-22 gate cycle 1, advisory (e)). Extending that shared validator is out of scope for this PR.",
             "type": "array",
             "items": {
               "type": "string",
