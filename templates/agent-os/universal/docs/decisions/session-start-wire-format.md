@@ -111,8 +111,17 @@ and a plain file redirect): every case delivered the complete envelope and
 parsed. Pinned in the generator's `hooks.test.ts` (absent in a generated rig)
 › "delivers the whole envelope even when the reader does not drain until
 process.exit(main()) would already have torn the process down", which goes
-red (`Unterminated string` at 146174 of a 300000-byte payload) if the single
-line is reverted.
+red (`Unterminated string`, at a byte count that is host-dependent — kernel
+pipe buffer size and scheduler timing both vary) if the single line is
+reverted. The pinned payload is sized for a deterministic kill rather than a
+merely likely one: a smaller payload truncated on nearly every reversion run
+on every host checked, but not every one, and a pin the defect can slip
+through occasionally is a pin that will eventually be green on a real
+revert. That pin's coverage is Linux-shaped: Node documents pipe writes as
+synchronous on Windows and asynchronous on POSIX, so the same reversion is
+expected to have little or nothing to catch on a Windows lane — the test's
+own comment says so, so a future reader does not mistake a Linux-only kill
+for cross-platform cover.
 
 **What this trades away, stated plainly rather than left to be discovered:**
 `process.exit()` also GUARANTEED teardown, and `exitCode` does not. A consumer
@@ -134,15 +143,28 @@ A second, smaller consequence of the same change: a reader that vanishes
 MID-write (a closed pipe, a harness that kills this process before reading)
 now surfaces as an unhandled `error` event on `process.stdout` — exit 1 with
 a Node stack trace on stderr, where the old `process.exit()` path exited 0
-silently in the same situation. `process.stdout.on('error', () => {})` before
-the write restores the silent-failure stance the rest of this file takes.
+silently in the same situation. The handler is narrow rather than blanket,
+and the difference is measured, not theoretical: an earlier draft of this
+fix silenced every stdout error unconditionally, and security review found
+that with stdout redirected to `/dev/full` — a genuine write failure
+(ENOSPC), with the reader still fully attached — that blanket form exited 0
+with nothing delivered and no diagnostic, the exact silent-loss shape this
+whole file exists to avoid, moved one write call over. The handler now
+distinguishes the two: EPIPE (the reader is gone; there is nothing left to
+report to) stays silent, and anything else is written to stderr and marks
+the exit non-zero. Pinned in the generator's `hooks.test.ts` (absent in a
+generated rig) › "silently exits 0 when the reader is gone before the write
+starts (EPIPE)" and › "reports a genuine stdout write failure on stderr and
+marks the exit non-zero, rather than looking like a healthy session".
 
 **Left for a separate decision, not for this one:** seven sibling hooks in
-this same directory still end `process.exit(main())` —
-`block-no-verify.mjs`, `guard-rulebook.mjs`, `guard-subagent-model.mjs`,
-`guard-bash.mjs`, `guard-secret-file.mjs`, `gate-stop-dod.mjs` and
-`warn-subagent-routing.mjs`. Their payloads are short (a refusal message, not
-a whole rules file), so the exposure is far smaller, but the reasoning above
+this same directory still end in `process.exit(…)` with no wait for a
+pending write — `block-no-verify.mjs`, `guard-rulebook.mjs`,
+`guard-subagent-model.mjs`, `guard-bash.mjs`, `guard-secret-file.mjs`
+(`process.exit(status)`), `gate-stop-dod.mjs` (`process.exit(code)`) and
+`warn-subagent-routing.mjs` (the first four and the last end
+`process.exit(main())`). Their payloads are short (a refusal message, not a
+whole rules file), so the exposure is far smaller, but the reasoning above
 now lives in one hook's comments only — `invariants.md`'s "one mechanism,
 one implementation" would ask for the same pattern everywhere it applies.
 This change deliberately does not touch the other seven: changing every

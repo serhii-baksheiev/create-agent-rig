@@ -218,13 +218,25 @@ function main() {
   // not published, so this satisfies the one contract that IS written down
   // rather than guessing at the one that is not.
   // A reader that vanishes mid-write — a closed pipe, a harness that tears
-  // this process down before reading — turns the queued write into an EPIPE
-  // the runtime reports as an unhandled 'error' event: exit 1, a Node stack
-  // trace on stderr, for a stream failure this hook cannot do anything about
-  // and the reader has already abandoned. Silence it the way every other
-  // failure in this file resolves: quietly, never turning an absent reader
-  // into a noisy non-zero SessionStart exit.
-  process.stdout.on('error', () => {});
+  // this process down before reading — turns the queued write into an EPIPE.
+  // That specific error is silenced: it means the reader is gone and there is
+  // nothing left to report to, so failing loudly would turn an absent reader
+  // into a noisy non-zero SessionStart exit for no one to read. Anything ELSE
+  // stdout can fail with (ENOSPC, EIO, a redirect to a full or broken device)
+  // is a real write failure with an actual reader still attached, and this
+  // file does not get to treat that as a healthy session: it is reported on
+  // stderr and the exit is marked non-zero, the same "say what happened"
+  // stance the excerpt path takes by injecting MORE rather than dropping
+  // content quietly. Measured (security review, RP-185 gate): a blanket
+  // handler here made a genuine stdout write failure (stdout redirected to
+  // /dev/full) exit 0 with nothing delivered and no diagnostic — exactly the
+  // silent-loss shape this whole file exists to avoid, just moved one write
+  // call over. Pinned in hooks.test.ts (absent in a generated rig).
+  process.stdout.on('error', (err) => {
+    if (err && err.code === 'EPIPE') return;
+    process.stderr.write(`inject-rules: stdout write failed: ${err}\n`);
+    process.exitCode = 1;
+  });
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext },

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
+import { closeSync, openSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { skipUnless, symlinksAvailable } from '../helpers/env.js';
@@ -1174,13 +1175,11 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
    *  from process.exit(main()) because the payload never gets a chance to
    *  outrun a reader that is already pulling data as fast as it arrives.
    *
-   *  The data listener is attached immediately — never leaving the stream
-   *  in the state Node treats as "nobody is listening at all", which gets
-   *  torn down and destroyed the moment the child exits, discarding
-   *  anything unread and making the truncation this test needs to observe
-   *  unobservable (verified by hand against this exact helper before it
-   *  landed here) — and then paused in the same tick, so the stream is
-   *  actively held rather than ignored. */
+   *  Construction, exactly, because getting this wrong makes the whole test
+   *  vacuous: attach the data listener in the SAME tick the child is
+   *  spawned, then call pause() in that same tick, before the child has had
+   *  any chance to write. A listener attached later (a delayed setTimeout,
+   *  for example) never sees this: Node has already torn the stream down. */
   async function runAgainstPlantedRulesPausedReader(rules: string): Promise<HookResult> {
     const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-paused-reader-'));
     try {
@@ -1226,13 +1225,13 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
           ended = true;
           maybeResolve();
         });
-        // The delay is the whole point: a 7 KB payload finishes in well
-        // under 50ms, so 500ms is comfortably past the point where a
-        // reverted process.exit(main()) would already have torn the process
-        // down. Resuming lets the stream machinery flow whatever it already
-        // buffered while paused — truncated, on the reverted line — and, on
-        // this line, whatever the still-alive child goes on to finish
-        // writing.
+        // The delay is the whole point: a payload this size finishes well
+        // under 50ms once the reader drains, so 500ms is comfortably past
+        // the point where a reverted process.exit(main()) would already
+        // have torn the process down. Resuming lets the stream machinery
+        // flow whatever it already buffered while paused — truncated, on
+        // the reverted line — and, on this line, whatever the still-alive
+        // child goes on to finish writing.
         setTimeout(() => child.stdout!.resume(), 500);
         child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }));
         child.stdin.end();
@@ -1253,13 +1252,31 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
   // file too large for a default pipe buffer and holds its reader paused
   // past the point where the old code path would already have exited —
   // every other test in this suite drains continuously and cannot see this
-  // class of defect at all. Measured red on reversion: 146176 bytes of a
-  // larger payload delivered, additionalContext shorter than the source
-  // rules file it is supposed to carry whole.
+  // class of defect at all.
+  //
+  // The payload is sized for a DETERMINISTIC kill, not merely a likely one: a
+  // smaller payload (measured down to roughly 300 KB) truncated on nearly
+  // every reversion run but not every one, on at least one host this was
+  // checked against — and a pin that lets the defect through occasionally is
+  // a pin that will eventually be green on a real revert. Re-verified at
+  // this size across repeated reversion runs with zero non-truncating
+  // outcomes before this test landed. The exact byte count a reversion
+  // truncates at is host-dependent (kernel pipe buffer size, scheduler
+  // timing) and is deliberately not asserted here — only that the whole
+  // envelope either arrives complete or the JSON does not parse.
+  //
+  // Windows limit, stated rather than assumed: Node documents pipe writes as
+  // SYNCHRONOUS on Windows and asynchronous on POSIX. A synchronous write
+  // cannot be interrupted by process.exit() mid-write the way an async one
+  // can, so this pin is expected to have real teeth on the Linux `ci` lane
+  // and to be near-vacuous on a Windows lane — not a defect in the test, but
+  // a platform difference a future reader should not mistake for
+  // cross-platform coverage.
   it('delivers the whole envelope even when the reader does not drain until process.exit(main()) would already have torn the process down', async () => {
-    // Comfortably past a typical 64 KiB default pipe buffer, with no skip
-    // markers, so excerptAutonomy() returns it whole.
-    const big = '# Big rules file\n\n' + 'x'.repeat(300_000) + '\n';
+    // Large enough for a deterministic kill on reversion (see above), with
+    // no skip markers, so excerptAutonomy() returns it whole.
+    const bigSize = 5_000_000;
+    const big = '# Big rules file\n\n' + 'x'.repeat(bigSize) + '\n';
     const result = await runAgainstPlantedRulesPausedReader(big);
 
     expect(result.code).toBe(0);
@@ -1268,9 +1285,132 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       parsed = JSON.parse(result.stdout);
     }, `stdout must parse as JSON, got ${result.stdout.length} bytes`).not.toThrow();
     const envelope = parsed as { hookSpecificOutput: { additionalContext: string } };
-    expect(envelope.hookSpecificOutput.additionalContext.length).toBeGreaterThan(300_000);
+    expect(envelope.hookSpecificOutput.additionalContext.length).toBeGreaterThan(bigSize);
   });
 
+  // RP-185 gate round 3: `process.stdout.on('error', () => {})` was a
+  // blanket handler — it silenced EVERY stdout write failure, not only the
+  // abandoned-reader case (EPIPE) the comment argued for. Measured (security
+  // review): stdout redirected to `/dev/full` (a genuine write failure, not
+  // a reader walking away) exited 0 with nothing delivered and no
+  // diagnostic — the exact silent-loss shape this whole file exists to
+  // avoid, moved one write call over. These two cases pin the corrected,
+  // narrowed handler: EPIPE stays silent (nothing is left to report to),
+  // anything else is reported on stderr and marks the exit non-zero.
+  //
+  // Both plant their own tree rather than reusing `runAgainstPlantedRules`:
+  // the point of each is what happens to file descriptors AROUND the child,
+  // which the shared helper's `execFile`-based drain does not let a test
+  // control.
+  it('silently exits 0 when the reader is gone before the write starts (EPIPE)', async () => {
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-epipe-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
+      await fsp.writeFile(
+        path.join(planted, '.claude', 'rules', 'autonomy.md'),
+        '# rules\n\nTier 0\nStop rules\n',
+      );
+
+      const result = await new Promise<HookResult>((resolve, reject) => {
+        const child = spawn(process.execPath, [hookPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+        if (!child.stdin || !child.stdout || !child.stderr) {
+          reject(new Error('missing a stdio stream'));
+          return;
+        }
+        let code = 0;
+        let stderr = '';
+        child.on('exit', (exitCode) => {
+          code = exitCode ?? 0;
+        });
+        child.on('error', reject);
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString('utf8');
+        });
+        // Destroyed in the same tick, before the child has had any chance to
+        // write: the reader is gone from the very first byte, not one that
+        // walked away mid-stream.
+        child.stdout.destroy();
+        child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }));
+        child.stdin.end();
+        child.on('close', () => resolve({ code, stderr, stdout: '' }));
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+    } finally {
+      await removeFixture(planted);
+    }
+  });
+
+  /** `/dev/full` accepts every write and fails it with ENOSPC — a real,
+   *  reproducible stdout error with the reader still fully attached, unlike
+   *  EPIPE. Not available on Windows, where there is no character device to
+   *  redirect to for this. */
+  const devFullAvailable = (): { ok: boolean; reason: string } => ({
+    ok: process.platform !== 'win32',
+    reason: 'no /dev/full on Windows to force a non-EPIPE stdout write failure',
+  });
+
+  it('reports a genuine stdout write failure on stderr and marks the exit non-zero, rather than looking like a healthy session', async (ctx) => {
+    skipUnless(ctx, devFullAvailable().ok, devFullAvailable().reason);
+
+    const planted = await fsp.mkdtemp(path.join(tmpdir(), 'inject-rules-devfull-'));
+    try {
+      await fsp.mkdir(path.join(planted, '.claude', 'hooks', 'lib'), { recursive: true });
+      await fsp.mkdir(path.join(planted, '.claude', 'rules'), { recursive: true });
+      const hookPath = path.join(planted, '.claude', 'hooks', 'inject-rules.mjs');
+      await fsp.copyFile(path.join(hooksDir, 'inject-rules.mjs'), hookPath);
+      await fsp.copyFile(
+        path.join(hooksDir, 'lib', 'hook-input.mjs'),
+        path.join(planted, '.claude', 'hooks', 'lib', 'hook-input.mjs'),
+      );
+      await fsp.writeFile(
+        path.join(planted, '.claude', 'rules', 'autonomy.md'),
+        '# rules\n\nTier 0\nStop rules\n',
+      );
+
+      const devFullFd = openSync('/dev/full', 'w');
+      let result: HookResult;
+      try {
+        result = await new Promise<HookResult>((resolve, reject) => {
+          const child = spawn(process.execPath, [hookPath], {
+            stdio: ['pipe', devFullFd, 'pipe'],
+          });
+          if (!child.stdin || !child.stderr) {
+            reject(new Error('missing a stdio stream'));
+            return;
+          }
+          let code = 0;
+          let stderr = '';
+          child.on('exit', (exitCode) => {
+            code = exitCode ?? 0;
+          });
+          child.on('error', reject);
+          child.stderr.on('data', (chunk: Buffer) => {
+            stderr += chunk.toString('utf8');
+          });
+          child.stdin.write(JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }));
+          child.stdin.end();
+          child.on('close', () => resolve({ code, stderr, stdout: '' }));
+        });
+      } finally {
+        closeSync(devFullFd);
+      }
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('inject-rules');
+      expect(result.stderr).not.toContain('EPIPE');
+    } finally {
+      await removeFixture(planted);
+    }
+  });
   // The banner is printed unconditionally, but the excerpt is not: on malformed
   // markup `excerptAutonomy` hands the WHOLE file back. The session then reads a
   // banner telling it that post-deploy verification and the escalation format
