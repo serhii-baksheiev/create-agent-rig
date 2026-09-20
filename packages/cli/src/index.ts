@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
+import { INTEGRATIONS_VERBS, runIntegrationsCommand } from './commands/integrations.js';
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
@@ -76,6 +77,26 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
   one declared root. Performs the --version --json handshake first and refuses
   a foreign contract major with exit 4 before writing anything.
 
+Also: create-agent-rig setup list [--json]
+  Print the release-owned integrations registry (RP-22): id, capability,
+  mode, licence or terms, source, per-harness route and automation, and
+  stability. Read-only.
+
+Also: create-agent-rig setup add <id> [--required] [--version <pin>] [--dry-run] [--json]
+  Validate <id> against that same registry, then create or update its entry
+  in the committed declaration (.rig/integrations.json), through
+  resolveWritableInside with sorted, stable bytes. Installs nothing. A flag
+  left off an existing entry keeps its previously recorded value rather than
+  dropping it.
+
+Also: create-agent-rig setup verify [--only <id>] [--json]
+  Read-only: classify every declared integration against what can currently
+  be observed. No route adapter exists yet at this release, so every harness
+  reads "unverified" (no-sanctioned-probe) until a later release wires one up.
+  Exits 1 when any required integration is not installed on every harness it
+  applies to, or when the declaration itself does not parse; 0 otherwise,
+  including when there is no declaration at all.
+
 Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]
   Remove what a rig installed from [dir] (default: the current directory) —
   only files whose bytes on disk still match what the manifest recorded, are
@@ -110,6 +131,23 @@ Also: create-agent-rig memory <doctor|load> [args…]
   invocation exits 2.`;
 
 async function runSetup(rawArgs: string[]): Promise<number> {
+  // RP-22 S4: dispatch to the new read-only verbs (plus the declaration
+  // write) only when the FIRST argument is one of them. Any other first
+  // argument — including none at all — falls through to the legacy
+  // `--memory-root` path unchanged, so `setup --memory-root …` and a bare
+  // `setup` keep answering exactly as they did before this slice.
+  const verb = rawArgs[0];
+  if ((INTEGRATIONS_VERBS as readonly string[]).includes(verb ?? '')) {
+    const result = await runIntegrationsCommand({
+      verb: verb!,
+      args: rawArgs.slice(1),
+      cwd: process.cwd(),
+    });
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
+
   let values: {
     'memory-root'?: string;
     'memory-ref'?: string;

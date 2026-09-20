@@ -1265,6 +1265,100 @@ prints a reminder that the change is unstaged (`git add -A`, then commit) —
 `uninstall` itself never touches git history. Pinned in
 `packages/cli/test/uninstall.test.ts` and `test/e2e/uninstall.test.ts`.
 
+## setup integrations (RP-22)
+
+`setup list [--json]`, `setup add <id> [--required] [--version <pin>] [--dry-run] [--json]`
+and `setup verify [--only <id>] [--json]` are three new verbs alongside the
+existing `setup --memory-root …` (RP-147, unchanged). Dispatch on the first
+argument decides between them: `index.ts` reaches this surface only when
+`rawArgs[0]` is exactly `list`, `add` or `verify`; anything else — including
+no arguments at all — is the legacy path, byte for byte. Pinned in
+`packages/cli/test/integrations-cli.test.ts` › "setup with no arguments still
+answers the legacy usage error" and › "legacy setup --memory-root behaves
+exactly as before — the new dispatch never intercepts it".
+
+Like `uninstall`, this surface is not a member of the foundation verb set and
+does not use its five-code exit table: every one of the three verbs exits 0 or
+1 only (owner ruling D4, recorded on the RP-22 ticket, 2026-09-20) — a usage
+error, a refusal, and a required integration failing to verify all exit 1.
+`--json` keeps the general contract's promise regardless: exactly one JSON
+object on stdout, `schemaVersion` at the top level, additive evolution, human
+rendering on stderr never on stdout for an error path. Unlike `uninstall`'s
+own carved-out payload rule, none of these three payloads names a file path at
+all — not even the repository-relative `.rig/integrations.json` or
+`.rig/receipts/<id>.json` the verb reads or writes — so the general "no file
+paths" rule applies here unweakened. Recognised structurally by
+`command: "setup"` plus `verb: "list" | "add" | "verify"`, distinct from the
+legacy `setup --memory-root` prose path (which carries no `--json` output at
+all) and from `uninstall`'s own `command: "uninstall"` shape.
+
+**The registry (`packages/cli/src/integrations/registry.ts`, RP-22 S1) is
+closed and release-owned.** `list` prints it read-only: `id`, `capability`,
+`mode`, `license` (an SPDX id or a terms URL), `source`, `stability`, and the
+route/automation pair for each harness the descriptor supports. Nothing here
+installs anything.
+
+**`add` validates `<id>` against the registry and then upserts its entry** in
+the committed declaration, `.rig/integrations.json` (`../integrations/declaration.ts`,
+RP-22 S1) — through `resolveWritableInside`, so a symlink planted at that path
+is refused rather than followed, and with the declaration module's own sorted,
+stable bytes. Validation is not re-derived here: the candidate whole-file
+shape is built and handed to the SAME `parseDeclaration` the file format
+already owns, so registry membership, the version-pin pattern and an
+exclusive-group conflict are refused exactly the way a hand-edited declaration
+would be. **Upsert, not replace**: a flag the caller did not pass on a later
+call keeps the value an earlier call recorded, rather than dropping it — so
+`setup add memory-custom-executable --required` followed by
+`setup add memory-custom-executable` (no flags) still reports `required` on
+the entry afterwards. `add` installs nothing; only the declaration file is
+written, and `--dry-run` performs no write. Pinned in
+`packages/cli/test/integrations-cli.test.ts` › "refuses an id outside the
+registry and writes nothing", › "is idempotent: a second identical add leaves
+the bytes unchanged", › "upserts: a later add without --required keeps the
+previously recorded required flag", › "a dry run performs no write", and ›
+"refuses to write through a pre-existing symlink at the declaration path".
+
+**`verify` is read-only** — it never writes the declaration, a receipt, or
+anything else. It classifies every declared, accepted integration against
+what a probe currently observes (`../integrations/state.ts`'s `classify`,
+RP-22 S2), on every harness that integration applies to, and reports a
+`state` from that module's closed instance-axis vocabulary. It exits 1 when
+the declaration itself does not parse, or when a REQUIRED integration is not
+`installed` on every applicable harness; 0 otherwise — including "no
+declaration at all", which is success with empty arrays, because emptiness is
+a field and not a distinct exit code (see `## Exit codes` above). A rejected
+declaration entry (bad key, an id outside the registry, a malformed scalar, an
+exclusive-group conflict) is surfaced in the payload's `rejected` array and
+never affects the exit code on its own: the declaration parser does not carry
+a `required` flag through to a `Rejection`, so this verb has nothing to judge
+that entry's "required" status by. A `.rig/receipts/<id>.json` (RP-22 S2) with
+no matching declaration entry is reported in `orphaned`. Pinned in
+`packages/cli/test/integrations-cli.test.ts` › "exits 0 with declaration
+absent and empty arrays", › "exits 1 when the declaration itself does not
+parse", › "exits 1 when a required integration is missing, and 0 when only an
+optional one is", › "surfaces a rejected declaration entry in \"rejected\",
+not in \"integrations\"", and › "treats a receipt with no matching declaration
+entry as orphaned".
+
+⚠ **No route adapter exists yet at this release.** `mcp-config` (S5),
+`claude-plugin-cli` (S6), the guided routes (S7) and the mapping from the
+existing Memory `handshake()` onto this verb's payload (S8) are later slices
+of the same ticket. Until one of them lands, `verify`'s built-in probe
+(`defaultProbe`) answers `unverified` with reason `no-sanctioned-probe` for
+every harness of every declared integration — never `installed`, and never
+`missing` (which would claim a probe ran and found nothing, which is not what
+happened). This is a measured statement about THIS release, not a permanent
+property of the verb: pinned in `packages/cli/test/integrations-cli.test.ts` ›
+"reports every route as unverified/no-sanctioned-probe by default — no route
+adapter has landed yet", and the same file's tests that exercise `missing`
+and required-vs-optional exit behaviour do so only by injecting a fake probe
+and a fake registry, never against a real route.
+
+Implementation: `packages/cli/src/commands/integrations.ts`
+(`listRegistry`, `addIntegration`, `verifyIntegrations`,
+`runIntegrationsCommand`), wired in `packages/cli/src/index.ts`. Pinned in
+`packages/cli/test/integrations-cli.test.ts`.
+
 ## Fixtures
 
 Examples, one per shape the contract names. They are illustrative payloads, not
