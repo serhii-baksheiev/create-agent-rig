@@ -179,6 +179,7 @@ const parseArgs = (argv) => {
     json: false,
     actionChanged: null,
     note: null,
+    mergeCommit: null,
     bad: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -201,6 +202,15 @@ const parseArgs = (argv) => {
       const value = revisionOrNull(argv[++i]);
       if (value === null) args.bad = arg;
       else args.base = value;
+    }
+    else if (arg === '--merge-commit') {
+      // Read only at BEFORE_CLOSE (below); ignored elsewhere, the same way
+      // BEFORE_CLOSE ignores --base. A value starting with '-' would be read
+      // as another option, so it is rejected the same defensive way --ticket
+      // and --base already are.
+      const value = revisionOrNull(argv[++i]);
+      if (value === null) args.bad = arg;
+      else args.mergeCommit = value;
     } else if (args.bad === null) args.bad = arg;
   }
   return args;
@@ -806,6 +816,12 @@ if (invokedDirectly()) {
       // target SELECT pinned, so a missing `origin/master` cannot turn an
       // otherwise current local rig into claim:scope drift.
       targetSha: targetShaOf(claimRoot),
+      // Optional (RP-175): the SHA the caller resolved, from the tracker's own
+      // PR metadata, as THIS item's own merge commit. Omit it and a target
+      // that moved for any reason still holds, exactly as before this
+      // existed — see claim-records.mjs's isOwnMergeAdvance for what this
+      // does and does not prove.
+      mergeCommit: args.mergeCommit,
     });
     const result = {
       ...claim,

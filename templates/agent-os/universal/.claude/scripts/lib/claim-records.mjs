@@ -447,6 +447,196 @@ const objectOf = (projectRoot, raw) =>
     stdio: ['pipe', 'pipe', 'ignore'],
   }).trim();
 
+/**
+ * At `BEFORE_CLOSE`, `targetSha` is resolved right after this item's OWN PR
+ * merged and was fetched — so it almost always differs from the value the
+ * claim recorded at take-up, even when nothing else landed on the default
+ * branch. This asks a narrower question than "did the target move": did it
+ * move by EXACTLY the one commit that IS `mergeCommit` — the SHA the CALLER
+ * vouches for as this item's own merge (resolved from the tracker's own PR
+ * metadata, e.g. `gh pr view <pr> --json mergeCommit -q .mergeCommit.oid`,
+ * never guessed from anything inside this function) — AND that this exact
+ * checkout's own tree is what that merge commit actually shipped.
+ *
+ * This decides identity, never text. An earlier version matched the moved
+ * commit's SUBJECT LINE against the ticket id in parentheses; a review gate
+ * found that unsound on two counts — an empty commit message silently
+ * disappeared from a naive `git log` line count, and ANY commit merely
+ * mentioning the ticket (a stray doc commit, a revert of the real merge)
+ * satisfied a text match without having merged anything. Nothing here reads a
+ * commit message any more.
+ *
+ * A LATER review gate found the SHA-identity version still unsound:
+ * `mergeCommit` is pure caller attestation — the only check tying it to
+ * anything was `toSha === mergeCommit`, which a lazy or hostile
+ * `--merge-commit "$(git rev-parse origin/master)"` satisfies trivially, no
+ * matter what actually advanced the target. Conditions 5, 6 and 7 below are
+ * the fix: a LOCAL binding to `HEAD` in `projectRoot` that nothing but the
+ * actual checkout can satisfy. Condition 2 stays load-bearing on its own —
+ * it is the only place `mergeCommit` is ever compared against the REAL
+ * target advance (`toSha`); conditions 3 and 4 check `fromSha`/`toSha`
+ * without reading `mergeCommit` at all, so a caller could otherwise name a
+ * commit that is not the target's tip yet still shares HEAD's tree, and
+ * nothing past condition 2 would catch it.
+ *
+ * True only when ALL of:
+ * 1. `fromSha`, `toSha` and `mergeCommit` are each a syntactically valid git
+ *    object id, and `fromSha !== toSha`;
+ * 2. `toSha === mergeCommit` — the target's current tip literally IS the SHA
+ *    the caller named, not merely a commit somewhere in the range that
+ *    mentions the item;
+ * 3. `fromSha` is a git-ancestor of `toSha` (`merge-base --is-ancestor`) — a
+ *    target that moved BACKWARDS (a rewind, a force-push) is never exempted,
+ *    no matter what `mergeCommit` claims;
+ * 4. `git rev-list --count fromSha..toSha` is exactly `1` — counting commits,
+ *    not lines of text, so a foreign commit sharing the window with the real
+ *    merge (whether or not IT carries an empty message) still holds;
+ * 5. `mergeCommit` is neither `HEAD` nor an ancestor of it, in `projectRoot`
+ *    — `HEAD` must still be the genuine PRE-merge checkout (the loop's own
+ *    task branch, not yet fast-forwarded onto the merge). Without this, a
+ *    checkout already sitting on the merge would compare its tree against
+ *    itself and pass vacuously;
+ * 6. `fromSha` IS an ancestor of `HEAD` — `HEAD`'s own history must descend
+ *    from the same baseline the target advanced from, so a tree match can
+ *    only mean "this checkout's work is what the merge shipped", never a
+ *    coincidence from an unrelated checkout that happens to hold the same
+ *    files;
+ * 7. `git rev-parse mergeCommit^{tree}` equals `git rev-parse HEAD^{tree}` —
+ *    the exempted commit's TREE is byte-identical to this checkout's own
+ *    tree. A foreign commit whose tree DIFFERS is refused by this condition;
+ *    a stale squash (the target moved before it landed) carries that extra
+ *    content and is refused the same way. This condition judges CONTENT,
+ *    never provenance: a commit built by any other route that happens to
+ *    carry the exact byte-identical tree — meaning the target's content
+ *    really is exactly what this run's own merge would have produced — is
+ *    indistinguishable from a genuine squash merge and IS exempted. That is
+ *    judged correct, not a gap: what is being protected is the target's
+ *    content, not the mechanism that produced it.
+ *
+ * Any other shape — no `mergeCommit` supplied, a mismatch, a non-ancestor
+ * `fromSha`, more than one commit in range, `HEAD` already at or past the
+ * merge, `HEAD` not descended from `fromSha`, a tree mismatch, or git itself
+ * failing to resolve any of the above — returns false, and the caller keeps
+ * treating the target movement as scope drift exactly as it did before this
+ * existed. The false side is the safe default: this function only ever makes
+ * `scopeMoved` MORE permissive, never less, and every path that cannot prove
+ * "this SHA is my own merge, and this checkout IS the work it merged" falls
+ * back to holding.
+ *
+ * ⚠ What this function still CANNOT prove: it stops a LAZY or MISTAKEN
+ * `--merge-commit`, not an adversary who controls the run. `HEAD` is this
+ * run's own checkout — a hostile run can move it (`git checkout`,
+ * `git reset`) to whatever it likes before calling this, and `targetShaOf`
+ * (below) reads a local ref (`origin/HEAD`/`master`/`main`) a hostile run has
+ * already had every opportunity to rewrite. Every input here is something the
+ * SAME process that calls this function could have fabricated; the binding
+ * only raises the cost of an honest mistake, it does not authenticate the
+ * caller.
+ *
+ * Pinned in the generator's `test/template/revalidate.test.ts`
+ * — absent in a generated rig — › "the item's own REAL squash merge (actual
+ * file content, not an empty commit), nothing foreign, correctly named by
+ * --merge-commit", › "no --merge-commit supplied at all, even though the
+ * target moved by exactly one commit that would otherwise exempt it", › "a
+ * --merge-commit that does not match the target's new tip (the old recorded
+ * baseline sha)", › "a foreign commit plus the real merge in the same range,
+ * --merge-commit correctly naming the real one", › "an empty-message commit
+ * landing before the real merge, --merge-commit correctly naming the real
+ * one (a commit COUNT still catches it even though its subject line is
+ * blank)", › "a foreign EMPTY commit ahead of the genuine squash still holds
+ * — only the commit COUNT refuses it (conditions 2, 3, 5, 6 and 7 all pass
+ * on their own)", › "holds when content also drifted even though --merge-commit
+ * correctly identifies the target advance", › "rejects a target that moved
+ * backward off the recorded baseline, even though the final commit alone
+ * would look like a correct single-commit identity match", › "only exempts
+ * at BEFORE_CLOSE — the identical own-merge shape still holds on claim:scope
+ * at BEFORE_PR", › "a single FOREIGN commit named as --merge-commit does not
+ * exempt it — reproduces the gate-hold attack and proves it now holds", ›
+ * "a FABRICATED --merge-commit sharing HEAD's tree, correctly rooted at the
+ * baseline, but naming a commit the target never actually advanced to,
+ * still holds (condition 2 is load-bearing on its own)", › "HEAD already at
+ * the merge commit is vacuous, and still holds (a fast-forwarded checkout
+ * must not self-satisfy the exemption)", › "a squash merge of a branch that
+ * was NOT up to date still holds, even with a correctly-named
+ * --merge-commit (acceptable: the safe side)", › "a tree that matches by
+ * coincidence but shares no ancestry with the recorded baseline still holds
+ * (lineage, not just content)", › "a --merge-commit that is well-formed but
+ * names no object this repository has holds (git failure is the safe side,
+ * not a crash)", › "a foreign commit landed by another route is exempted
+ * when its tree is byte-identical to HEAD's (condition 7 judges content,
+ * not provenance)", › "pins evidence.ownMergeAdvance on the genuine
+ * own-merge case" and › "carries no evidence.ownMergeAdvance when content
+ * also drifted (the `!scopeContentMoved &&` conjunct only ever governs
+ * whether this evidence is emitted, never the verdict — content drift
+ * already holds on its own)".
+ */
+const isAncestorOf = (projectRoot, ancestor, descendant) => {
+  try {
+    execFileSync('git', ['-C', projectRoot, 'merge-base', '--is-ancestor', ancestor, descendant], {
+      env: withoutGitLocation(),
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const revParseOrNull = (projectRoot, revision) => {
+  try {
+    return execFileSync('git', ['-C', projectRoot, 'rev-parse', '--verify', revision], {
+      encoding: 'utf8',
+      env: withoutGitLocation(),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
+const isOwnMergeAdvance = (projectRoot, fromSha, toSha, mergeCommit) => {
+  if (
+    !GIT_OBJECT_ID.test(fromSha ?? '') ||
+    !GIT_OBJECT_ID.test(toSha ?? '') ||
+    !GIT_OBJECT_ID.test(mergeCommit ?? '') ||
+    fromSha === toSha ||
+    toSha !== mergeCommit
+  ) {
+    return false;
+  }
+  if (!isAncestorOf(projectRoot, fromSha, toSha)) return false;
+  let count;
+  try {
+    count = execFileSync(
+      'git',
+      ['-C', projectRoot, 'rev-list', '--count', `${fromSha}..${toSha}`],
+      {
+        encoding: 'utf8',
+        env: withoutGitLocation(),
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    ).trim();
+  } catch {
+    return false;
+  }
+  if (count !== '1') return false;
+
+  // The non-attestable part: bind the exempted commit to THIS checkout, not
+  // merely to the caller's say-so. See the doc comment above for what
+  // conditions 5-7 prove and what they still cannot.
+  const head = revParseOrNull(projectRoot, 'HEAD');
+  if (head === null) return false;
+  // 5. Vacuity guard — HEAD must be the genuine pre-merge checkout.
+  if (head === mergeCommit || isAncestorOf(projectRoot, mergeCommit, head)) return false;
+  // 6. Lineage guard — HEAD must descend from the same recorded baseline.
+  if (!isAncestorOf(projectRoot, fromSha, head)) return false;
+  // 7. The actual content binding.
+  const mergeTree = revParseOrNull(projectRoot, `${mergeCommit}^{tree}`);
+  const headTree = revParseOrNull(projectRoot, `${head}^{tree}`);
+  if (mergeTree === null || headTree === null) return false;
+  return mergeTree === headTree;
+};
+
 const readClaim = (projectRoot, path) => {
   const raw = readRepositoryFile(projectRoot, path, {
     label: 'claim record',
@@ -586,6 +776,7 @@ export const revalidateClaim = ({
   point,
   claimedState = 'in-progress',
   targetSha,
+  mergeCommit = null,
   allowCreate = false,
   isResume = false,
 }) => {
@@ -745,9 +936,24 @@ export const revalidateClaim = ({
     pairedFacts,
   });
 
-  const scopeMoved =
-    claim.fingerprints.scope.value !== current.scope.value ||
-    claim.fingerprints.scope.targetSha !== current.scope.targetSha;
+  const scopeContentMoved = claim.fingerprints.scope.value !== current.scope.value;
+  const scopeTargetMoved = claim.fingerprints.scope.targetSha !== current.scope.targetSha;
+  // The only widening this change makes: a target that moved by nothing but
+  // this item's own squash merge is not scope drift. Content drift and
+  // commentary drift (below) stay hold-authoritative no matter what moved the
+  // target, and this only ever runs at BEFORE_CLOSE — BEFORE_PR has no merge
+  // of its own yet to exempt.
+  const scopeTargetIsOwnMerge =
+    point === 'BEFORE_CLOSE' &&
+    scopeTargetMoved &&
+    !scopeContentMoved &&
+    isOwnMergeAdvance(
+      projectRoot,
+      claim.fingerprints.scope.targetSha,
+      current.scope.targetSha,
+      mergeCommit,
+    );
+  const scopeMoved = scopeContentMoved || (scopeTargetMoved && !scopeTargetIsOwnMerge);
   const commentaryMoved = claim.fingerprints.commentary.value !== current.commentary.value;
   const movedFingerprintSet = [
     ...(scopeMoved ? ['scope'] : []),
@@ -763,6 +969,9 @@ export const revalidateClaim = ({
     evidence: {
       claim: pointer,
       ...(commentaryMoved && point !== 'BEFORE_CLOSE' ? { observedFingerprintSet: ['commentary'] } : {}),
+      ...(scopeTargetIsOwnMerge
+        ? { ownMergeAdvance: { from: claim.fingerprints.scope.targetSha, to: current.scope.targetSha } }
+        : {}),
     },
     identity: fingerprintIdentity(current),
   });
