@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -201,7 +201,16 @@ describe('resolveReadableInside — the read-side counterpart of resolveWritable
   });
 
   it('reports "ok" with the resolved path once every segment checks out', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'caf-safe-path-'));
+    // Windows CI measured (RP-22 round 3): `mkdtemp` under `os.tmpdir()` can
+    // return a path through a short (8.3) alias — `C:\Users\RUNNER~1\...` —
+    // while `resolveReadableInside` itself calls `realpath` on `root` before
+    // building its answer and therefore returns the LONG form
+    // (`C:\Users\runneradmin\...`). `realpath`-ing `root` here first, the
+    // same fixture fix `cli-version.test.ts` already applies for its own
+    // `repo` variable, makes this test's own expectation and the function's
+    // real behaviour agree on which spelling is canonical — a test-fixture
+    // fix, not a product change.
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'caf-safe-path-')));
     try {
       await mkdir(path.join(root, 'a', 'b'), { recursive: true });
       await writeFile(path.join(root, 'a', 'b', 'c.json'), '{}');
