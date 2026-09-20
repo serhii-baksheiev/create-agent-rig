@@ -1303,6 +1303,63 @@ describe("BEFORE_CLOSE — the own-merge exemption also binds to the checkout's 
   });
 });
 
+// RP-190: `windows-e2e` was red on every master push since RP-175 landed. The
+// tracked claim record's committed blob is LF (Node writes it with `\n`), but
+// a Windows checkout with the platform's default `core.autocrlf=true` smudges
+// it back to CRLF in the working tree on any checkout that re-materializes the
+// file — a branch switch away and back is enough, and `advanceMaster` /
+// `squashMergeOwnWork` do exactly that. `readClaim`'s integrity check hashed
+// the raw worktree bytes with a bare `git hash-object --stdin`, which applies
+// no filter, so the CRLF bytes hashed to a different object than the LF blob
+// `HEAD:<path>` names — reported as "tracked claim worktree content diverges
+// from its committed Git version" even though nothing about the claim's
+// CONTENT changed. This is reproducible on Linux by setting
+// `core.autocrlf=true` directly; the defect is in the comparison, not the
+// platform.
+describe('claim record integrity survives a CRLF-converting checkout (RP-190, Windows core.autocrlf=true)', () => {
+  it('does not report UNVERIFIABLE when a checkout re-materializes the tracked claim as CRLF', async () => {
+    const p = await closeProject();
+    await git(['config', 'core.autocrlf', 'true'], p.dir);
+    // Round-trip through master (which never carries .rig/claims/AR-1.json)
+    // and back — the same shape advanceMaster/squashMergeOwnWork produce —
+    // so git re-materializes the claim file from its LF blob under autocrlf.
+    await git(['checkout', '-q', 'master'], p.dir);
+    await git(['checkout', '-q', '-f', 'feat/revalidation-close'], p.dir);
+    const claimPath = path.join(p.dir, '.rig', 'claims', 'AR-1.json');
+    const materialized = await readFile(claimPath);
+    expect(materialized.includes('\r\n'), 'fixture did not reproduce a CRLF-smudged checkout').toBe(
+      true,
+    );
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(0);
+    expect(result.action).toBe('continue');
+    expect(result.changed).toBe(false);
+  });
+
+  it('still holds on a genuine content change to the tracked claim under core.autocrlf=true', async () => {
+    const p = await closeProject();
+    await git(['config', 'core.autocrlf', 'true'], p.dir);
+    await git(['checkout', '-q', 'master'], p.dir);
+    await git(['checkout', '-q', '-f', 'feat/revalidation-close'], p.dir);
+    const claimPath = path.join(p.dir, '.rig', 'claims', 'AR-1.json');
+    const original = await readFile(claimPath, 'utf8');
+    expect(original.includes('\r\n'), 'fixture did not reproduce a CRLF-smudged checkout').toBe(
+      true,
+    );
+    // The edit keeps the record a VALID claim that parses to the same object —
+    // one added space — so only the blob comparison can refuse it; a tamper
+    // that broke the shape would be refused by the parser and prove nothing
+    // about the integrity check this fix touched.
+    const edited = original.replace('{', '{ ');
+    expect(JSON.parse(edited)).toEqual(JSON.parse(original));
+    await writeFile(claimPath, edited);
+    const { code, result, out } = await revalidateCloseJson(p);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('unverifiable');
+    expect(out).toContain('diverges from its committed Git version');
+  });
+});
+
 describe('BEFORE_CLOSE — the dependants the close would release', () => {
   it('lists the keys this item blocks', async () => {
     const p = await closeProject({ issuelinks: [blocksLink('AR-7'), blocksLink('AR-9')] });
