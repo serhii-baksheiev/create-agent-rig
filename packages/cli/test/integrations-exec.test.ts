@@ -11,10 +11,12 @@ import {
   TOOL_NAME_PATTERN,
   boundedRun,
   classifyCandidates,
+  identityContainment,
   isInside,
   isValidToolName,
   resolveTool,
   splitPathVar,
+  type StatIdentity,
 } from '../src/integrations/exec.js';
 import { stripComments } from '../../../test/template/lib/source-scan.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -178,49 +180,178 @@ describe('resolveTool — never from inside the repository', () => {
 });
 
 describe('resolveTool — containment is checked against the HOST platform, never the declared one', () => {
-  it("refuses a repo-planted tool even when options.platform names a platform OTHER than the host actually running this process (gate cycle 2, blocker 1: the previous fix compared realpaths using options.platform, which fails open when it disagrees with the host) — this scenario only DISCRIMINATES on win32: the host's own realpath is backslash-separated there, and POSIX's path.relative() cannot find a shared prefix between two such strings at all, so declaring any non-win32 platform made an in-repo PATH entry look 'outside'; on a forward-slash-native host (this one, unless it happens to be win32), path.win32's own relative() still understands '/', so the SAME declared-platform mismatch does not reproduce the escape — the assertion below is still exercised, and still must hold, on every host", async (ctx) => {
+  it("refuses a repo-planted tool even when options.platform names a platform OTHER than the host actually running this process (gate cycle 2, blocker 1: the previous fix compared realpaths using options.platform, which fails open when it disagrees with the host; gate cycle 3, blocker 3: the previous version of THIS test planted a file named only for the HOST platform, so classifyCandidates answered 'absent' regardless of the declared platform and the fixture never reached the containment logic at all — both claude and claude.exe are planted now, for every host) — this scenario only DISCRIMINATES on win32: the host's own realpath is backslash-separated there, and POSIX's path.relative() cannot find a shared prefix between two such strings at all (the code-reviewer lens observed the mutant escape directly on win32 with PATH:'/Users/…/repo/bin'), so declaring any non-win32 platform made an in-repo PATH entry look 'outside'; on a forward-slash-native host (this one, unless it happens to be win32), path.win32's own relative() still understands '/', so the SAME declared-platform mismatch does not reproduce the escape — the assertion below is still exercised, and still must hold, on every host", async (ctx) => {
     const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-platformmismatch-repo-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-platformmismatch-outside-'));
+    const originalCwd = process.cwd();
     try {
       const bin = path.join(fakeRepo, 'bin');
       await mkdir(bin, { recursive: true });
-      await writeFile(
-        path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'),
-        'hostile',
-      );
+      // Plant BOTH spellings, regardless of host or declared platform — a
+      // fixture named only for the host used to make classifyCandidates
+      // answer 'absent' whenever the DECLARED platform differed, which is
+      // exactly why the previous version of this test could never reach the
+      // containment logic on either host (gate cycle 3, blocker 3).
+      await writeFile(path.join(bin, 'claude'), 'hostile');
+      await writeFile(path.join(bin, 'claude.exe'), 'hostile');
       const nonHostPlatform: NodeJS.Platform = process.platform === 'win32' ? 'linux' : 'win32';
 
       // On win32, a plain drive-letter PATH entry (`C:\...\bin`) would be
       // rejected outright by the DECLARED (non-win32) platform's own
       // isAbsolute check before ever reaching the containment logic this
       // test targets — exactly the shape the original report used a
-      // leading-slash entry to route around. Reconstruct that shape here,
-      // and VERIFY — rather than assume — that it actually reaches the
-      // same real directory before trusting the rest of the assertion.
+      // leading-slash entry to route around. Reconstruct that shape here.
+      // `process.chdir` to the temp directory's OWN drive root (in
+      // try/finally, the same pattern the empty-PATH-entry test above
+      // already uses) makes a leading-slash entry resolve against THAT
+      // drive rather than the checkout's — the previous version resolved
+      // it against `process.cwd()`'s drive instead, which is why gate
+      // cycle 3 found this test skipped on the hosted Windows runner
+      // (checkout on `D:`, TEMP on `C:`).
       let pathEntry = bin;
+      let outsidePathEntry = outside;
       if (process.platform === 'win32') {
-        const withoutDrive = `/${bin
-          .replace(/^[A-Za-z]:\\/, '')
-          .split(path.sep)
-          .join('/')}`;
+        process.chdir(path.parse(bin).root);
+        const toPosixLeadingSlash = (p: string) =>
+          `/${p
+            .replace(/^[A-Za-z]:\\/, '')
+            .split(path.sep)
+            .join('/')}`;
+        pathEntry = toPosixLeadingSlash(bin);
+        outsidePathEntry = toPosixLeadingSlash(outside);
         const { realpathSync } = await import('node:fs');
         let reachesBin = false;
         try {
-          reachesBin = realpathSync.native(withoutDrive) === realpathSync.native(bin);
+          reachesBin = realpathSync.native(pathEntry) === realpathSync.native(bin);
         } catch {
           reachesBin = false;
         }
         if (!reachesBin) {
           ctx.skip(
-            "this host's current drive does not match the temp directory's drive, so a leading-slash PATH entry cannot reach it — the win32-only discriminating shape for this test is unreachable here",
+            "process.chdir to the temp directory's own drive root did not make a leading-slash PATH entry reach it — the win32-only discriminating shape for this test is unreachable here",
           );
           return;
         }
-        pathEntry = withoutDrive;
       }
 
-      const env = { PATH: pathEntry };
-      const result = resolveTool('claude', { env, platform: nonHostPlatform, repoDir: fakeRepo });
+      const result = resolveTool('claude', {
+        env: { PATH: pathEntry },
+        platform: nonHostPlatform,
+        repoDir: fakeRepo,
+      });
       expect(result.status).toBe('tool-not-found');
+
+      // The positive control: the SAME PATH-entry shape, SAME declared
+      // (non-host) platform, but a directory genuinely OUTSIDE the
+      // repository — this must resolve `ok`, proving the fixture shape
+      // itself is capable of a positive result and that the negative
+      // result above is not an artifact of some unrelated defect (like the
+      // extension-mismatch bug gate cycle 3 found in the previous version).
+      await writeFile(path.join(outside, 'claude'), 'legitimate');
+      await writeFile(path.join(outside, 'claude.exe'), 'legitimate');
+      const control = resolveTool('claude', {
+        env: { PATH: outsidePathEntry },
+        platform: nonHostPlatform,
+        repoDir: fakeRepo,
+      });
+      expect(control.status).toBe('ok');
+    } finally {
+      process.chdir(originalCwd);
+      await removeFixture(fakeRepo);
+      await removeFixture(outside);
+    }
+  });
+});
+
+describe('identityContainment — the IDENTITY half of containment (gate cycle 3, blocker 2)', () => {
+  const idA: StatIdentity = { dev: 1n, ino: 42n };
+  const idB: StatIdentity = { dev: 1n, ino: 99n };
+  const idUnavailable: StatIdentity = { dev: 0n, ino: 0n };
+
+  it('reports "inside" when the candidate itself shares device+inode identity with root, even though the two STRINGS are completely unrelated — exactly the UNC-vs-drive-letter case realpath cannot canonicalise', () => {
+    const stat = (target: string) =>
+      target === '\\\\localhost\\C$\\repo' || target === 'C:\\repo' ? idA : null;
+    expect(identityContainment('\\\\localhost\\C$\\repo', 'C:\\repo', stat)).toBe('inside');
+  });
+
+  it('walks UPWARD from the candidate: a file three levels under a UNC-spelled root still matches by identity at the root level', () => {
+    const stat = (target: string): StatIdentity | null => {
+      if (target === '\\\\localhost\\C$\\repo\\a\\b\\file.exe') return idB;
+      if (target === '\\\\localhost\\C$\\repo\\a\\b') return idB;
+      if (target === '\\\\localhost\\C$\\repo\\a') return idB;
+      if (target === '\\\\localhost\\C$\\repo') return idA; // matches root's identity
+      if (target === 'C:\\repo') return idA;
+      return null;
+    };
+    expect(identityContainment('\\\\localhost\\C$\\repo\\a\\b\\file.exe', 'C:\\repo', stat)).toBe(
+      'inside',
+    );
+  });
+
+  it('reports "outside" for a genuinely disjoint directory tree, regardless of string similarity', () => {
+    // Deliberately NOT nested under root's own path string — a candidate
+    // whose path literally passes through root's own string would trivially
+    // "match" root's identity on any real filesystem, since it IS root;
+    // that proves nothing about the identity check specifically.
+    const stat = (target: string) =>
+      target === '/other/bin' || target === '/other' ? idB : target === '/repo' ? idA : null;
+    expect(identityContainment('/other/bin', '/repo', stat)).toBe('outside');
+  });
+
+  it('reports "unknown" — deferring to the string check — when root\'s own identity is unavailable (ino: 0n)', () => {
+    const stat = (target: string) => (target === '/repo' ? idUnavailable : idB);
+    expect(identityContainment('/repo/bin', '/repo', stat)).toBe('unknown');
+  });
+
+  it('reports "unknown" when the candidate\'s own identity is unavailable (stat returns null)', () => {
+    const stat = (target: string) => (target === '/repo' ? idA : null);
+    expect(identityContainment('/repo/bin', '/repo', stat)).toBe('unknown');
+  });
+
+  it("never loops: the walk is bounded by the candidate's own path-segment count, even if every stat call returns a fresh non-matching identity", () => {
+    let calls = 0;
+    const stat = (target: string): StatIdentity | null => {
+      calls += 1;
+      if (target === '/repo') return idA;
+      return { dev: 2n, ino: BigInt(calls) }; // never matches idA, never repeats
+    };
+    expect(identityContainment('/a/b/c/d/e/f', '/repo', stat)).toBe('outside');
+    expect(calls).toBeLessThan(20); // a handful of path segments, not unbounded
+  });
+});
+
+describe('resolveTool/boundedRun — UNC vs drive-letter is the SAME repository (gate cycle 3, blocker 2)', () => {
+  it("a UNC admin-share spelling and its drive-letter equivalent are treated as the SAME repository, in both orientations — the identity check catches what realpath's string form cannot", async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-unc-repo-'));
+    try {
+      const driveLetter = fakeRepo.slice(0, 1);
+      const toUnc = (p: string) => `\\\\localhost\\${driveLetter}$${p.slice(2)}`;
+      const uncRepo = toUnc(fakeRepo);
+      if (!existsSync(uncRepo)) {
+        ctx.skip('the admin-share (UNC) spelling of this drive is not reachable on this runner');
+        return;
+      }
+
+      const bin = path.join(fakeRepo, 'bin');
+      await mkdir(bin, { recursive: true });
+      await writeFile(path.join(bin, 'claude.exe'), 'hostile');
+
+      // Orientation 1: repoDir given as UNC, PATH entry given as drive-letter.
+      const result1 = resolveTool('claude', {
+        env: { PATH: bin },
+        platform: 'win32',
+        repoDir: uncRepo,
+      });
+      expect(result1.status).toBe('tool-not-found');
+
+      // Orientation 2: repoDir given as drive-letter, PATH entry given as UNC.
+      const result2 = resolveTool('claude', {
+        env: { PATH: toUnc(bin) },
+        platform: 'win32',
+        repoDir: fakeRepo,
+      });
+      expect(result2.status).toBe('tool-not-found');
     } finally {
       await removeFixture(fakeRepo);
     }
@@ -228,7 +359,7 @@ describe('resolveTool — containment is checked against the HOST platform, neve
 });
 
 describe('resolveTool — the injected realpath canonicaliser is what containment actually consults', () => {
-  it('resolveTool consults the injected realpath function for BOTH the directory and the candidate file (a host-independent pin for gate cycle 2, blocker 2 — no win32 runner is available in this suite, so this proves the same call sites the 8.3 fix depends on are genuinely reachable and load-bearing, without needing an actual short name)', async () => {
+  it('resolveTool consults the injected realpath function for BOTH the directory and the candidate file (a host-independent pin for gate cycle 2, blocker 2 — proving the same call sites the 8.3 fix depends on are genuinely reachable and load-bearing on ANY host, including one without a short name to construct)', async () => {
     const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-inject-repo-'));
     const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-inject-outside-'));
     try {
@@ -274,6 +405,46 @@ describe('resolveTool — the injected realpath canonicaliser is what containmen
     } finally {
       await removeFixture(fakeRepo);
       await removeFixture(outside);
+    }
+  });
+
+  it('LIMIT 8, now demonstrated via the injected realpath: a canonicaliser that resolves repoDir to an UNRELATED-LOOKING string — exactly what a short-name-blind realpath can do for two different spellings of the same directory — lets an in-repo tool resolve ok', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-limit8-repo-'));
+    try {
+      const bin = path.join(fakeRepo, 'bin');
+      await mkdir(bin, { recursive: true });
+      const toolFile = process.platform === 'win32' ? 'claude.exe' : 'claude';
+      await writeFile(path.join(bin, toolFile), 'hostile');
+
+      const { realpathSync } = await import('node:fs');
+      // Resolves the PATH entry's directory normally (matching what is
+      // really on disk), but answers a totally unrelated string for
+      // repoDir itself — simulating a canonicaliser that failed to
+      // recognise a short-name/case respelling as the SAME directory a
+      // subdirectory of it genuinely lives under.
+      const blindRealpath = (target: string): string | null => {
+        if (target === fakeRepo) return 'SHORT~1-UNRELATED-FORM';
+        try {
+          return realpathSync.native(target);
+        } catch {
+          return null;
+        }
+      };
+
+      const result = resolveTool('claude', {
+        env: { PATH: bin },
+        platform: process.platform,
+        repoDir: fakeRepo,
+        realpath: blindRealpath,
+      });
+      // The identity check (blocker 2) does NOT save this case either: the
+      // stub never claimed dev/ino identity for 'SHORT~1-UNRELATED-FORM',
+      // so `stat('SHORT~1-UNRELATED-FORM')` fails and identityContainment
+      // reports 'unknown', deferring entirely to the (defeated) string
+      // check — exactly limit 11's own stated scope.
+      expect(result.status).toBe('ok');
+    } finally {
+      await removeFixture(fakeRepo);
     }
   });
 });
@@ -701,10 +872,18 @@ describe('boundedRun — refuses an invalid deadline or output cap before any sp
     ['a negative timeoutMs', { timeoutMs: -1, maxBuffer: 1024 }],
     ['a NaN timeoutMs', { timeoutMs: NaN, maxBuffer: 1024 }],
     ['an infinite timeoutMs', { timeoutMs: Infinity, maxBuffer: 1024 }],
+    [
+      "a timeoutMs beyond Node's own setTimeout ceiling (2^31 - 1)",
+      { timeoutMs: 2_147_483_648, maxBuffer: 1024 },
+    ],
     ['maxBuffer of 0', { timeoutMs: 5000, maxBuffer: 0 }],
     ['a negative maxBuffer', { timeoutMs: 5000, maxBuffer: -1 }],
     ['a NaN maxBuffer', { timeoutMs: 5000, maxBuffer: NaN }],
     ['an infinite maxBuffer', { timeoutMs: 5000, maxBuffer: Infinity }],
+    [
+      'a maxBuffer beyond the 1 GiB sanity ceiling',
+      { timeoutMs: 5000, maxBuffer: 1024 * 1024 * 1024 + 1 },
+    ],
   ])(
     'refuses %s with a fixed spawn-error message and code, before any spawn attempt',
     async (_label, bounds) => {
@@ -715,9 +894,20 @@ describe('boundedRun — refuses an invalid deadline or output cap before any sp
       expect(result.status).toBe('spawn-error');
       if (result.status !== 'spawn-error') return;
       expect(result.code).toBe('ERR_INVALID_ARG_VALUE');
-      expect(result.message).toBe('boundedRun requires a positive, finite timeoutMs and maxBuffer');
+      expect(result.message).toBe(
+        'boundedRun requires a positive, finite, bounded timeoutMs and maxBuffer',
+      );
     },
   );
+
+  it("accepts a maxBuffer exactly at the 1 GiB sanity ceiling and a timeoutMs exactly at Node's own setTimeout ceiling — the boundary itself is valid, only what is STRICTLY beyond it is refused", async () => {
+    const result = await boundedRun(process.execPath, ['--version'], {
+      timeoutMs: 2_147_483_647,
+      maxBuffer: 1024 * 1024 * 1024,
+      repoDir: repoRoot,
+    });
+    expect(result.status).toBe('ok');
+  });
 });
 
 describe('boundedRun — synchronous spawn failures never reject the promise', () => {
@@ -881,6 +1071,121 @@ describe('boundedRun — cwd validation and default', () => {
   });
 });
 
+describe('boundedRun — is TOTAL end to end, even when owning and cleaning up its own per-run cwd (gate cycle 3, blocker 1)', () => {
+  it('a non-existent tempRoot resolves spawn-error rather than rejecting — on every platform (mkdtemp used to sit outside any try/catch)', async () => {
+    const bogusRoot = path.join(
+      tmpdir(),
+      `rig-exec-bogus-root-does-not-exist-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const result = await boundedRun(process.execPath, ['--version'], {
+      timeoutMs: 5000,
+      maxBuffer: 1024,
+      repoDir: repoRoot,
+      tempRoot: bogusRoot,
+    });
+    expect(result.status).toBe('spawn-error');
+  });
+
+  it('the default per-run cwd is created with mode 0700, verified from INSIDE the child process (POSIX)', async (ctx) => {
+    skipUnless(ctx, process.platform !== 'win32', 'POSIX mode bits only');
+    const script =
+      'process.stdout.write(String(require("fs").statSync(process.cwd()).mode & 0o777));';
+    const result = await boundedRun(process.execPath, ['-e', script], {
+      timeoutMs: 5000,
+      maxBuffer: 1024 * 1024,
+      repoDir: repoRoot,
+    });
+    expect(result.status).toBe('ok');
+    if (result.status === 'ok') expect(Number(result.stdout)).toBe(0o700);
+  });
+
+  it('the per-run cwd is removed even when the run times out', async () => {
+    const script = 'process.stdout.write(process.cwd()); setTimeout(() => {}, 60000);';
+    const result = await boundedRun(process.execPath, ['-e', script], {
+      timeoutMs: 2000,
+      maxBuffer: 1024 * 1024,
+      repoDir: repoRoot,
+    });
+    expect(result.status).toBe('timeout');
+    if (result.status === 'timeout') {
+      expect(existsSync(result.stdout)).toBe(false);
+      expect(result.cwdCleanup).toBeUndefined();
+    }
+  });
+
+  it("on win32, a detached grandchild left holding the per-run cwd as ITS OWN cwd makes cleanup fail, and boundedRun still RESOLVES ok with cwdCleanup: 'left-behind' — never a rejection, never a path in the result", async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const script = `
+      const { spawn } = require('node:child_process');
+      const gc = spawn(process.execPath, ['-e', 'setTimeout(function(){}, 120000);'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      gc.unref();
+      process.stdout.write(gc.pid + '\\n' + process.cwd());
+      process.exit(0);
+    `;
+    const result = await boundedRun(process.execPath, ['-e', script], {
+      timeoutMs: 5000,
+      maxBuffer: 1024 * 1024,
+      repoDir: repoRoot,
+    });
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    const [pidText, dir] = result.stdout.split('\n');
+    expect(pidText).toBeDefined();
+    expect(dir).toBeDefined();
+    if (pidText === undefined || dir === undefined) return;
+    try {
+      expect(result.cwdCleanup).toBe('left-behind');
+      expect(existsSync(dir)).toBe(true);
+      expect(JSON.stringify(result)).not.toContain(dir); // no path anywhere in the result
+    } finally {
+      try {
+        process.kill(Number(pidText));
+      } catch {
+        // best effort — this is test cleanup, not the module under test
+      }
+      await removeFixture(dir);
+    }
+  });
+
+  it('on POSIX, the same "detached grandchild inherits the per-run cwd as its own cwd" scenario still results in successful removal — POSIX does not lock a directory a live process merely has as cwd, unlike win32 (contrasts with the win32-only test above)', async (ctx) => {
+    skipUnless(ctx, process.platform !== 'win32', 'this contrasts with the win32-only test above');
+    const script = `
+      const { spawn } = require('node:child_process');
+      const gc = spawn(process.execPath, ['-e', 'setTimeout(function(){}, 5000);'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      gc.unref();
+      process.stdout.write(gc.pid + '\\n' + process.cwd());
+      process.exit(0);
+    `;
+    const result = await boundedRun(process.execPath, ['-e', script], {
+      timeoutMs: 5000,
+      maxBuffer: 1024 * 1024,
+      repoDir: repoRoot,
+    });
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    const [pidText, dir] = result.stdout.split('\n');
+    expect(pidText).toBeDefined();
+    expect(dir).toBeDefined();
+    if (pidText === undefined || dir === undefined) return;
+    try {
+      expect(result.cwdCleanup).toBeUndefined();
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      try {
+        process.kill(Number(pidText));
+      } catch {
+        // already gone, or never really needed killing on this platform
+      }
+    }
+  });
+});
+
 describe('boundedRun — environment allow-list', () => {
   it('passes only allow-listed environment to the child', async () => {
     // Independent oracle: this literal list is NOT imported from the module
@@ -947,18 +1252,33 @@ describe('boundedRun — environment allow-list', () => {
     }
   });
 
-  it('boundedRun called with no env option at all hands the child NOTHING — default-deny, never an accidental inherit (gate cycle 2 advisory)', async () => {
-    const script = 'process.stdout.write(JSON.stringify(process.env));';
-    const result = await boundedRun(process.execPath, ['-e', script], {
-      timeoutMs: 5000,
-      maxBuffer: 1024 * 1024,
-      repoDir: repoRoot,
-    });
-    expect(result.status).toBe('ok');
-    if (result.status !== 'ok') return;
-    const childEnv = JSON.parse(result.stdout) as Record<string, string>;
-    if (process.platform !== 'win32') {
-      expect(Object.keys(childEnv)).toEqual([]);
+  it('boundedRun called with no env option at all hands the child NOTHING — default-deny, never an accidental inherit (gate cycle 2 advisory; gate cycle 3, blocker 4: the only assertion here used to sit inside an `if (platform !== win32)` guard, so this test reported PASS on win32 with nothing checked at all — the shape platform-skips.test.ts exists to refuse)', async () => {
+    // A sentinel set on THIS process's own env — boundedRun with no `env`
+    // option never reads `process.env` at all today (it defaults to `{}`),
+    // so this sentinel proves nothing UNLESS a future change regresses that
+    // default to `options.env ?? process.env` — exactly the regression this
+    // test guards against, on every platform, not only where the stricter
+    // empty-keys check below also happens to apply.
+    const sentinelKey = 'RIG_EXEC_TEST_SENTINEL_DEFAULT_DENY';
+    const previous = process.env[sentinelKey];
+    process.env[sentinelKey] = 'must-not-leak-into-the-child';
+    try {
+      const script = 'process.stdout.write(JSON.stringify(process.env));';
+      const result = await boundedRun(process.execPath, ['-e', script], {
+        timeoutMs: 5000,
+        maxBuffer: 1024 * 1024,
+        repoDir: repoRoot,
+      });
+      expect(result.status).toBe('ok');
+      if (result.status !== 'ok') return;
+      const childEnv = JSON.parse(result.stdout) as Record<string, string>;
+      expect(Object.prototype.hasOwnProperty.call(childEnv, sentinelKey)).toBe(false);
+      if (process.platform !== 'win32') {
+        expect(Object.keys(childEnv)).toEqual([]);
+      }
+    } finally {
+      if (previous === undefined) delete process.env[sentinelKey];
+      else process.env[sentinelKey] = previous;
     }
   });
 
@@ -983,9 +1303,11 @@ describe('boundedRun — environment allow-list', () => {
     expect(Object.prototype.hasOwnProperty.call(childEnv, 'SECRET_TOKEN')).toBe(false);
   });
 
-  it('on win32, the child can see a non-empty PATH even when the caller\'s env spelled it "Path" (gate cycle 2, blocker 6)', async (ctx) => {
+  it('on win32, the child sees EXACTLY the PATH value the caller supplied under "Path" (gate cycle 2, blocker 6; gate cycle 3 advisory: this used to assert only length > 0, which a mutation truncating or corrupting the forwarded value would not catch)', async (ctx) => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
-    const candidateEnv: NodeJS.ProcessEnv = { Path: process.env.PATH ?? process.env.Path };
+    const sourcePath = process.env.PATH ?? process.env.Path ?? '';
+    expect(sourcePath.length).toBeGreaterThan(0); // the fixture's own precondition
+    const candidateEnv: NodeJS.ProcessEnv = { Path: sourcePath };
     const script = 'process.stdout.write(process.env.PATH || "");';
     const result = await boundedRun(process.execPath, ['-e', script], {
       timeoutMs: 5000,
@@ -994,7 +1316,7 @@ describe('boundedRun — environment allow-list', () => {
       repoDir: repoRoot,
     });
     expect(result.status).toBe('ok');
-    if (result.status === 'ok') expect(result.stdout.length).toBeGreaterThan(0);
+    if (result.status === 'ok') expect(result.stdout).toBe(sourcePath);
   });
 });
 
@@ -1238,8 +1560,8 @@ describe('boundedRun — output sanitization', () => {
     expect(result.stdout).toBe('abc');
   });
 
-  it('strips DEL (0x7f) and the full C1 control range (0x7f-0x9f), including U+009B — a terminal-injection-shaped case (gate cycle 2, blocker 5: this range was implemented but never asserted)', async () => {
-    const script = "process.stdout.write('a\\u007fb\\u009bc\\u001bd');";
+  it('strips DEL (0x7f), the full C1 control range (0x7f-0x9f) including U+009B — a terminal-injection-shaped case — and the low-range controls \\x05 and \\x1f (gate cycle 2, blocker 5: this range was implemented but never asserted; gate cycle 3 advisory: widened to include \\^E/\\^_)', async () => {
+    const script = "process.stdout.write('a\\u007fb\\u009bc\\u001bd\\u0005e\\u001ff');";
     const result = await boundedRun(process.execPath, ['-e', script], {
       timeoutMs: 5000,
       maxBuffer: 1024 * 1024,
@@ -1247,7 +1569,44 @@ describe('boundedRun — output sanitization', () => {
     });
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
-    expect(result.stdout).toBe('abcd');
+    expect(result.stdout).toBe('abcdef');
+  });
+
+  it('never splits a surrogate pair when capping the stderr tail, even if the result ends up one code unit shorter than the cap (gate cycle 3 advisory)', async () => {
+    const prefix = 'a'.repeat(10);
+    const astral = '\u{1F600}'; // one astral code point = a surrogate pair (2 UTF-16 code units)
+    const suffix = 'b'.repeat(MAX_STDERR_TAIL_CHARS - 1);
+    const payload = prefix + astral + suffix; // the cap boundary lands exactly on the low surrogate
+    const script = `process.stderr.write(${JSON.stringify(payload)});`;
+    const result = await boundedRun(process.execPath, ['-e', script], {
+      timeoutMs: 5000,
+      maxBuffer: 1024 * 1024,
+      repoDir: repoRoot,
+    });
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    const firstCode = result.stderr.charCodeAt(0);
+    expect(firstCode >= 0xdc00 && firstCode <= 0xdfff).toBe(false);
+    expect(result.stderr).toBe(suffix);
+  });
+
+  it('LIMIT: argv elements are passed through completely unvalidated — a caller must not rely on this module to sanitize its own arguments (gate cycle 3 advisory)', async () => {
+    // `node -e <script> <extra…>` puts the extra arguments starting at
+    // `process.argv[1]` — there is no script FILE path to occupy that slot
+    // the way an ordinary `node file.js arg` invocation would. The fixture
+    // avoids a LEADING `--`, which node -e's own CLI parser tries to
+    // interpret as a node option (measured: `node -e script --foo` fails
+    // with "bad option", never even reaching the script) — an unrelated
+    // Node quirk, not what this limit is about.
+    const script = 'process.stdout.write(process.argv[1]);';
+    const weird = '; rm -rf / # shell-metacharacter-shaped, never interpreted by a shell here';
+    const result = await boundedRun(process.execPath, ['-e', script, weird], {
+      timeoutMs: 5000,
+      maxBuffer: 1024 * 1024,
+      repoDir: repoRoot,
+    });
+    expect(result.status).toBe('ok');
+    if (result.status === 'ok') expect(result.stdout).toBe(weird);
   });
 
   it('caps the stderr tail to MAX_STDERR_TAIL_CHARS, keeping the END of the stream and dropping the head (gate cycle 1, blocker 6: the previous fixture was 13 characters against a 4096 cap and never reached it)', async () => {
@@ -1341,7 +1700,7 @@ describe('declared limit: captured output is not redacted for secrets', () => {
 });
 
 describe('structural: integrations/ contains no shell option and no exec( call', () => {
-  it('no file under src/integrations/ sets shell: true or calls a bare exec(', async () => {
+  it('no file under src/integrations/ sets shell to anything but false, calls a bare exec( or execSync(, or does a recursive readdir (gate cycle 3 advisory: widened from a literal shell: true / bare exec( check)', async () => {
     const dir = path.join(repoRoot, 'packages', 'cli', 'src', 'integrations');
     const { readdir } = await import('node:fs/promises');
     const files = (await readdir(dir)).filter((f) => f.endsWith('.ts'));
@@ -1349,13 +1708,18 @@ describe('structural: integrations/ contains no shell option and no exec( call',
     // A negative lookbehind for the dot excludes `something.exec(` (a
     // RegExp/String method call, e.g. `ISO_TIMESTAMP_PATTERN.exec(value)`,
     // legitimately used in receipt.ts/registry.ts) while still catching a
-    // bare `exec(` call — the shape `child_process.exec(...)` would take —
-    // and `require('node:child_process').exec(`.
-    const BARE_EXEC = /(?<!\.)\bexec\s*\(/;
+    // bare `exec(`/`execSync(` call — the shape `child_process.exec(...)`
+    // would take — and `require('node:child_process').exec(`.
+    const BARE_EXEC = /(?<!\.)\bexec(Sync)?\s*\(/;
+    // Anything assigned to `shell:` OTHER than the literal `false` — not
+    // just the literal `true` this used to check for alone.
+    const SHELL_NOT_FALSE = /shell\s*:\s*(?!false\b)\S/;
+    const RECURSIVE_READDIR = /readdir(Sync)?\s*\([^)]*recursive/s;
     for (const file of files) {
       const code = stripComments(await readFile(path.join(dir, file), 'utf8'));
-      expect(code, file).not.toMatch(/shell\s*:\s*true/);
+      expect(code, file).not.toMatch(SHELL_NOT_FALSE);
       expect(code, file).not.toMatch(BARE_EXEC);
+      expect(code, file).not.toMatch(RECURSIVE_READDIR);
     }
   });
 });

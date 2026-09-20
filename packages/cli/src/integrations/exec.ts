@@ -11,73 +11,78 @@
  * `PATH` entry (or a symlink a `PATH` entry resolves through) points there —
  * a hostile PR can commit a `claude`/`claude.exe` at the repo root and a CI
  * runner can plausibly have the checkout on `PATH` ahead of the real tool;
- * this module refuses to be the thing that resolves to it. It does this by
- * comparing REALPATHS on both sides (the candidate directory/file and the
- * repo root), using the operating system's own realpath
- * (`fs.realpathSync.native`, falling back to the plain JS implementation only
- * if the native call itself throws) — the JS implementation does not expand
- * an 8.3 short-name component (`MYCHEC~1`) or canonicalise case on win32, so
- * a PATH entry spelled through its short name used to defeat this check
- * entirely (gate cycle 1, blocker 3). The containment check itself always
- * compares against `process.platform` — the HOST actually running this
- * process — never `options.platform`: `options.platform` still governs
- * `PATH`-string syntax (the delimiter, what counts as absolute) and the
- * win32 extension policy, because those genuinely describe the platform
- * being modeled, but two REALPATHS are host filesystem facts, and comparing
- * them with a declared-but-wrong platform's path module fails OPEN (gate
- * cycle 2, blocker 1 — a regression introduced when blocker 3 above was
- * fixed): on win32, real paths are backslash-separated, and
- * `path.posix.relative` cannot find a shared prefix between two such strings
- * at all, so declaring any non-win32 platform made an in-repo `PATH` entry
- * look "outside" on that host.
+ * this module refuses to be the thing that resolves to it. It does this with
+ * TWO independent containment checks, failing closed if EITHER says inside
+ * (gate cycle 3, blocker 2): a STRING comparison of two REALPATHS (via
+ * `fs.realpathSync.native`, falling back to the plain JS implementation only
+ * if the native call itself throws — the JS implementation does not expand
+ * an 8.3 short-name component or canonicalise case on win32, gate cycle 1
+ * blocker 3), and an IDENTITY comparison (`fs.statSync(…, {bigint:true})`
+ * `dev`+`ino`, walked upward from the candidate, bounded by its own
+ * path-segment count) that catches what no string form can: a UNC spelling
+ * (`\\localhost\C$\…`) and its drive-letter equivalent name the SAME
+ * directory but `realpathSync.native` does not map one to the other. The
+ * containment check itself always compares against `process.platform` — the
+ * HOST actually running this process — never `options.platform`:
+ * `options.platform` still governs `PATH`-string syntax (the delimiter, what
+ * counts as absolute) and the win32 extension policy, because those
+ * genuinely describe the platform being modeled, but two REALPATHS are host
+ * filesystem facts, and comparing them with a declared-but-wrong platform's
+ * path module fails OPEN (gate cycle 2, blocker 1).
  *
  * `boundedRun` never shells out (`child_process.exec` is never called and
- * `shell: true` is never passed — see `integrations-exec.test.ts` › "no file
- * under src/integrations/ sets shell: true or calls a bare exec("): it uses
- * `execFile` with an absolute file and an argv array only, and refuses a
- * non-absolute file before it ever reaches `execFile`. It refuses a
- * non-positive or non-finite `timeoutMs`/`maxBuffer` outright, before any
- * spawn attempt — an unvalidated `0` or `NaN` would otherwise silently
- * disarm the very bound this module exists to enforce. The `execFile` call
- * itself is wrapped in `try`/`catch` — a synchronous spawn failure (a NUL
- * byte in an argv element, an invalid option, a win32 `.cmd` spawned with
- * `shell: false`, measured to throw `EINVAL` on Node 24 rather than deliver
- * an async error — gate cycle 1, blocker 1) used to reject the returned
- * promise instead of resolving the closed union below. It filters the
- * environment down to {@link ALLOWED_ENV_VARS} before spawning — a caller
- * that hands it its own `process.env` still only leaks that fixed set to the
- * child, and the child always receives the result under the key `PATH`
- * (case-EXACT) regardless of whether the caller's own `env` spelled it
- * `Path` — win32's own environment block is case-insensitive, but a JS
- * object's keys are not (gate cycle 2, blocker 6) — and refuses a `cwd` that
- * resolves inside `repoDir` (gate cycle 1, blocker 4). Omitted, the child's
- * `cwd` defaults to a FRESH, PER-RUN temporary directory created under
- * `os.tmpdir()` (mode `0700`, removed once the run ends, on every exit path)
- * rather than `os.tmpdir()` itself — that shared, world-writable directory
- * is not a safe default cwd on its own (gate cycle 2 advisory: a spawned
- * tool that consults `cwd`-relative configuration, e.g. an `.npmrc` beside a
- * `package.json`, would read whatever another process left sitting in the
- * shared temp root) — and never the inherited `process.cwd()`, which during
- * this project's own tests (and plausibly during a real run) IS the
- * untrusted repository being acted on.
+ * `shell` is never set to anything but its own default `false` — see
+ * `integrations-exec.test.ts` › "no file under src/integrations/ sets shell
+ * to anything but false, calls a bare exec( or execSync(, or does a
+ * recursive readdir"): it uses `execFile` with an absolute file and an argv
+ * array only, and refuses a non-absolute file before it ever reaches
+ * `execFile`. `argv` ELEMENTS THEMSELVES are passed through completely
+ * unvalidated — this module bounds the PROCESS (deadline, output, cwd,
+ * env), never the caller's own arguments. It refuses a non-positive,
+ * non-finite, or absurdly large `timeoutMs`/`maxBuffer` outright, before any
+ * spawn attempt. The `execFile` call itself is wrapped in `try`/`catch` — a
+ * synchronous spawn failure (a NUL byte in an argv element, an invalid
+ * option, a win32 `.cmd` spawned with `shell: false`, measured to throw
+ * `EINVAL` on Node 24 — gate cycle 1, blocker 1) used to reject the returned
+ * promise instead of resolving the closed union below, and THIS FUNCTION IS
+ * NOW TOTAL end to end (gate cycle 3, blocker 1): creating the per-run `cwd`
+ * (`mkdtemp`/`chmod`) is also wrapped, and removing it afterward can never
+ * reject or replace the already-computed result — see `cwdCleanup` below and
+ * limit 10. It filters the environment down to {@link ALLOWED_ENV_VARS}
+ * before spawning — a caller that hands it its own `process.env` still only
+ * leaks that fixed set to the child, and the child always receives the
+ * result under the key `PATH` (case-EXACT) regardless of whether the
+ * caller's own `env` spelled it `Path` (gate cycle 2, blocker 6) — and
+ * refuses a `cwd` that resolves inside `repoDir` (gate cycle 1, blocker 4).
+ * Omitted, the child's `cwd` defaults to a FRESH, PER-RUN temporary
+ * directory created under `os.tmpdir()` (or an injectable `tempRoot`) with
+ * mode `0700`, removed once the run ends on every exit path — rather than
+ * `os.tmpdir()` itself, a shared, world-writable directory a spawned tool's
+ * own `cwd`-relative configuration lookup (an `.npmrc` beside a
+ * `package.json`) could otherwise be poisoned through (gate cycle 2
+ * advisory) — and never the inherited `process.cwd()`, which during this
+ * project's own tests (and plausibly during a real run) IS the untrusted
+ * repository being acted on.
  *
  * The result is a closed union: `ok`, `nonzero-exit`, `timeout`,
- * `killed-by-signal`, `output-exceeded`, or `spawn-error`.
- * `killed-by-signal` is distinct from `timeout`: `execFile` sets `.killed`
- * to `true` only when IT killed the process (the deadline or `maxBuffer`);
- * a child terminated by a signal from anywhere else (a test harness, an
- * operator, another process) arrives with `.killed === false` and a
- * `.signal` set, and used to be misclassified as `spawn-error` with its
- * captured output silently dropped (gate cycle 1, blocker 2) — the branch
- * comment claiming "the process never ran" was simply wrong for this case.
- * Output is sanitized (control characters, Unicode format/bidi characters,
- * and the two Unicode line separators are stripped — see
- * {@link stripControlCharacters}) and stderr's tail is capped to
- * {@link MAX_STDERR_TAIL_CHARS} so a maintainer-facing report never carries a
- * terminal escape sequence, a bidi override, or an unbounded blob. A
- * `spawn-error`'s `message` is always a fixed string, never the raw error
- * Node produced — that raw text carries the absolute path this module just
- * finished refusing to leak (gate cycle 1 advisory).
+ * `killed-by-signal`, `output-exceeded`, or `spawn-error`. Every member
+ * except the two earliest validation failures may additionally carry
+ * `cwdCleanup: 'left-behind'` (see limit 10). `killed-by-signal` is distinct
+ * from `timeout`: `execFile` sets `.killed` to `true` only when IT killed
+ * the process (the deadline or `maxBuffer`); a child terminated by a signal
+ * from anywhere else arrives with `.killed === false` and a `.signal` set,
+ * and used to be misclassified as `spawn-error` with its captured output
+ * silently dropped (gate cycle 1, blocker 2). Output is sanitized (control
+ * characters, Unicode format/bidi characters, and the two Unicode line
+ * separators are stripped — see {@link stripControlCharacters}) and
+ * stderr's tail is capped to {@link MAX_STDERR_TAIL_CHARS}, keeping the end
+ * of the stream WITHOUT ever splitting a surrogate pair (the cap can land
+ * one code unit short of {@link MAX_STDERR_TAIL_CHARS} rather than emit an
+ * invalid lone low surrogate). A `spawn-error`'s `message` is always a fixed
+ * string, never the raw error Node produced — that raw text carries the
+ * absolute path this module just finished refusing to leak (gate cycle 1
+ * advisory), and the same rule now applies to a `cwd`-creation failure and a
+ * `cwd`-cleanup failure (gate cycle 3, blocker 1).
  *
  * Stated limits (`.claude/rules/invariants.md`, "State the limits — and test
  * them"):
@@ -106,11 +111,10 @@
  *    deadline has already fired (skipped on win32: a separate, weaker claim
  *    holds there — see this module's header comment)") — the grandchild's
  *    marker file appears after the parent has already been reported
- *    `timeout`. On win32 this is not measured here (no CI runner in this
- *    suite exercises it): Node's `ChildProcess.kill()` on Windows calls
- *    `TerminateProcess` on the named PID only, so the same failure mode is
- *    *expected* to hold, but that is a claim, not a measurement, until a
- *    win32 run proves it.
+ *    `timeout`. On win32 this is not measured for THIS scenario (Node's
+ *    `ChildProcess.kill()` there calls `TerminateProcess` on the named PID
+ *    only, so the same failure mode is *expected*), but see limit 10 for a
+ *    related case that IS now measured on win32.
  * 4. {@link ALLOWED_ENV_VARS} is a floor for what THIS MODULE deliberately
  *    forwards, not a ceiling the operating system enforces beneath it. On
  *    win32, a spawned child's `process.env` carries additional user-profile
@@ -170,11 +174,13 @@
  * 8. `realpathOrNull`'s fallback to the plain JS `realpathSync` (when the
  *    native call itself throws — a platform or filesystem that does not
  *    support it) is short-name- and case-blind on win32, the exact gap
- *    blocker 3 (gate cycle 1) closed by preferring `.native`. The fallback
- *    exists only so a native-realpath failure fails toward "treat the path
- *    as unresolved" rather than crashing; it is not itself tested, because
- *    provoking `.native` to throw while the plain implementation succeeds
- *    is not a condition this suite can construct on a real filesystem.
+ *    blocker 3 (gate cycle 1) closed by preferring `.native`. Now
+ *    demonstrated (gate cycle 3 advisory), not merely asserted, via the
+ *    injectable `realpath` option: see "LIMIT 8, now demonstrated via the
+ *    injected realpath: a canonicaliser that resolves repoDir to an
+ *    UNRELATED-LOOKING string — exactly what a short-name-blind realpath
+ *    can do for two different spellings of the same directory — lets an
+ *    in-repo tool resolve ok".
  * 9. `boundedRun` applies NO containment check to `absFile` itself — only to
  *    `cwd`. A caller that resolves a tool via {@link resolveTool} gets that
  *    guarantee from `resolveTool`'s own return value; a caller that builds
@@ -184,16 +190,45 @@
  *    cwd — an absolute file path genuinely INSIDE repoDir runs anyway when
  *    handed directly to boundedRun (bypassing resolveTool, which is what
  *    actually provides that guarantee)". `resolveTool`'s own check is what
- *    this function deliberately does not re-implement (see this module's
- *    own comment on `boundedRun` above) — but that means the property is
- *    `resolveTool`'s, never `boundedRun`'s, and a future caller passing an
- *    unvalidated `absFile` straight to `boundedRun` would get none of it.
+ *    this function deliberately does not re-implement — but that means the
+ *    property is `resolveTool`'s, never `boundedRun`'s.
+ * 10. Removing `boundedRun`'s own per-run `cwd` can fail — measured on
+ *    win32: a detached grandchild that inherits the per-run directory as ITS
+ *    OWN cwd and stays alive (what an installer starting a daemon does)
+ *    holds an OS-level lock Windows enforces on a directory any live
+ *    process has as cwd, and `rm` fails even after one bounded retry. This
+ *    module never lets that failure reject the promise or replace the
+ *    already-computed result (gate cycle 3, blocker 1): the result instead
+ *    carries `cwdCleanup: 'left-behind'`, with NO PATH in it — see "on
+ *    win32, a detached grandchild left holding the per-run cwd as ITS OWN
+ *    cwd makes cleanup fail, and boundedRun still RESOLVES ok with
+ *    cwdCleanup: 'left-behind' — never a rejection, never a path in the
+ *    result". POSIX does not lock a directory this way — see "on POSIX, the
+ *    same "detached grandchild inherits the per-run cwd as its own cwd"
+ *    scenario still results in successful removal — POSIX does not lock a
+ *    directory a live process merely has as cwd, unlike win32 (contrasts
+ *    with the win32-only test above)" — so this is a win32-specific,
+ *    measured gap, not a cross-platform one.
+ * 11. The identity-based half of containment (see this module's header)
+ *    returns `'unknown'` — deferring entirely to the string-based check —
+ *    when either side's `stat` call fails or reports `ino: 0n` (a
+ *    filesystem, or a synthetic path, that exposes no meaningful inode).
+ *    This is not tested against a real such filesystem (none is available
+ *    in this suite); the pure `identityContainment` unit tests exercise the
+ *    `'unknown'` branch directly via an injected `stat` function instead.
+ * 12. `argv` elements passed to `boundedRun` are NOT validated or sanitized
+ *    in any way — see "LIMIT: argv elements are passed through completely
+ *    unvalidated — a caller must not rely on this module to sanitize its
+ *    own arguments". This module's own guarantees are about the PROCESS
+ *    (deadline, output cap, cwd, env), never about the caller's own
+ *    arguments.
  */
 import { execFile } from 'node:child_process';
-import { readdirSync, realpathSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isFormatOrLineSeparatorCharacter } from '../lib/safe-text.js';
 
 /** A tool name is a single path segment — no separator, no traversal, no drive letter. */
@@ -247,7 +282,12 @@ export const MAX_STDERR_TAIL_CHARS = 4096;
  * blocker 6: `resolveTool` used to special-case `env.Path` for every
  * platform, while {@link filterAllowedEnv} looked up `PATH` only, so a win32
  * caller passing `{...process.env}` (which carries `Path`) could resolve a
- * tool but hand the child no `PATH` at all).
+ * tool but hand the child no `PATH` at all). This case-insensitive treatment
+ * is specific to `PATH` — every OTHER allow-listed variable
+ * ({@link ALLOWED_ENV_VARS}) is read by {@link filterAllowedEnv} under its
+ * exact, single spelling on every platform (gate cycle 3 advisory: stated
+ * here because it is easy to assume the whole allow-list is case-folded on
+ * win32, and it is not).
  */
 function readPathVar(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | undefined {
   if (platform !== 'win32') return env.PATH;
@@ -265,11 +305,13 @@ function readPathVar(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string 
  * one implementation"). Regardless of which case the caller's own `env` used
  * (`PATH`, `Path`, …), the child always receives it under the EXACT key
  * `PATH` — the one spelling every consumer of this module can rely on.
+ * Every OTHER key in {@link ALLOWED_ENV_VARS_SET} is looked up under its
+ * own exact spelling only — see {@link readPathVar}'s own comment.
  */
 function filterAllowedEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const key of ALLOWED_ENV_VARS_SET) {
-    if (key === 'PATH') continue; // handled below, case-insensitively on win32
+    if (key === 'PATH') continue; // handled below, case-insensitively on win32 only
     const value = env[key];
     if (value !== undefined) out[key] = value;
   }
@@ -312,8 +354,20 @@ function stripControlCharacters(value: string): string {
   return out;
 }
 
+/**
+ * Keep the last `max` UTF-16 code units of `value` — but NEVER split a
+ * surrogate pair (gate cycle 3 advisory). If the naive cut point lands on a
+ * low surrogate (0xDC00-0xDFFF), the cut moves one code unit later, dropping
+ * the now-orphaned low surrogate too — the result is then exactly
+ * `max - 1` code units in that one case, never `max` code units starting
+ * with an invalid lone surrogate.
+ */
 function capTail(value: string, max: number): string {
-  return value.length > max ? value.slice(value.length - max) : value;
+  if (value.length <= max) return value;
+  let start = value.length - max;
+  const code = value.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff) start += 1;
+  return value.slice(start);
 }
 
 function sanitizeStdout(value: string): string {
@@ -325,7 +379,7 @@ function sanitizeStderr(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// resolveTool
+// containment: string-based (isInside) and identity-based (identityContainment)
 // ---------------------------------------------------------------------------
 
 export type ResolveToolResult =
@@ -416,7 +470,10 @@ function pathFor(platform: NodeJS.Platform) {
  * `resolveTool`'s own containment checks always pass `process.platform` (see
  * this module's header), never `options.platform`, precisely because this
  * function faithfully does what it is told and cannot itself tell a
- * declared platform from the host's own reality.
+ * declared platform from the host's own reality. This is the STRING half of
+ * containment only — see {@link identityContainment} for the other half,
+ * and {@link isInsideEitherWay} for the combination every real call site
+ * uses.
  */
 export function isInside(candidate: string, root: string, platform: NodeJS.Platform): boolean {
   const p = pathFor(platform);
@@ -427,6 +484,108 @@ export function isInside(candidate: string, root: string, platform: NodeJS.Platf
   const rel = p.relative(r, c);
   if (rel === '') return true;
   return !rel.startsWith('..') && !p.isAbsolute(rel);
+}
+
+export type StatIdentity = { dev: bigint; ino: bigint };
+
+/**
+ * This module's default identity source: `fs.statSync(…, {bigint: true})`,
+ * reduced to just `dev`+`ino`. `null` on any stat failure (missing,
+ * unreadable, …) — the caller ({@link identityContainment}) treats that the
+ * same as an unavailable inode (limit 11).
+ */
+function statIdentityOrNull(target: string): StatIdentity | null {
+  try {
+    const st = statSync(target, { bigint: true });
+    return { dev: st.dev, ino: st.ino };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The IDENTITY half of containment (gate cycle 3, blocker 2): whether
+ * `candidate` shares device+inode identity with `root`, walking candidate's
+ * own ancestry upward — bounded by candidate's OWN path-segment count, so
+ * this can never loop regardless of what `path.dirname` does for a
+ * malformed input. This catches what a STRING comparison of two realpaths
+ * cannot: a UNC spelling (`\\localhost\C$\…`) and its drive-letter
+ * equivalent name the SAME directory, but `fs.realpathSync.native` maps
+ * neither to the other.
+ *
+ * Returns `'unknown'` — deferring entirely to the string-based check
+ * ({@link isInside}) — when EITHER side's own identity cannot be
+ * established: `stat` returned `null`, or reported `ino: 0n` (limit 11). An
+ * unavailable inode makes this check meaningless, not merely inconclusive
+ * partway through the walk.
+ */
+/**
+ * One step up the path, accepting EITHER separator (`/` or `\`) regardless
+ * of the host — `path.dirname` alone uses the HOST's own flavour
+ * (`path.posix` on Linux, which does not treat a backslash as a separator
+ * at all), which would break this walk for a Windows-shaped fixture
+ * injected in a host-independent unit test (gate cycle 3, blocker 2's own
+ * pin). On the real filesystem calls this module makes elsewhere, the
+ * strings are always host-native anyway, so this is never less correct
+ * than the host's own `dirname` there — only more so when the two disagree.
+ */
+function stepUpOnePathSegment(target: string): string {
+  const withoutTrailingSeparators = target.replace(/[\\/]+$/, '');
+  const lastSeparator = Math.max(
+    withoutTrailingSeparators.lastIndexOf('/'),
+    withoutTrailingSeparators.lastIndexOf('\\'),
+  );
+  if (lastSeparator < 0) return target; // no separator left at all: cannot ascend further
+  if (lastSeparator === 0) return withoutTrailingSeparators.slice(0, 1); // a bare POSIX root ("/…")
+  return withoutTrailingSeparators.slice(0, lastSeparator);
+}
+
+export function identityContainment(
+  candidate: string,
+  root: string,
+  stat: (target: string) => StatIdentity | null,
+): 'inside' | 'outside' | 'unknown' {
+  const rootIdentity = stat(root);
+  if (rootIdentity === null || rootIdentity.ino === 0n) return 'unknown';
+  const candidateIdentity = stat(candidate);
+  if (candidateIdentity === null || candidateIdentity.ino === 0n) return 'unknown';
+
+  let current = candidate;
+  let identity: StatIdentity | null = candidateIdentity;
+  const bound = current.split(/[\\/]+/).filter(Boolean).length + 1;
+  for (let step = 0; step < bound; step += 1) {
+    if (
+      identity !== null &&
+      identity.ino !== 0n &&
+      identity.dev === rootIdentity.dev &&
+      identity.ino === rootIdentity.ino
+    ) {
+      return 'inside';
+    }
+    const parent = stepUpOnePathSegment(current);
+    if (parent === current) break; // reached the top of the path; cannot ascend further
+    current = parent;
+    identity = stat(current);
+  }
+  return 'outside';
+}
+
+/**
+ * Every REAL containment decision in this module goes through this
+ * function: `candidate` is inside `root` if EITHER the string check
+ * ({@link isInside}) or the identity check ({@link identityContainment})
+ * says so — fail closed on either (gate cycle 3, blocker 2). `stat` is
+ * injectable (default {@link statIdentityOrNull}) for the same
+ * host-independent-testing reason `resolveTool`'s `realpath` option is.
+ */
+function isInsideEitherWay(
+  candidate: string,
+  root: string,
+  platform: NodeJS.Platform,
+  stat: (target: string) => StatIdentity | null,
+): boolean {
+  if (isInside(candidate, root, platform)) return true;
+  return identityContainment(candidate, root, stat) === 'inside';
 }
 
 /**
@@ -491,10 +650,19 @@ export function resolveTool(
      * falling back to some OTHER, uninjected realpath internally.
      */
     realpath?: (target: string) => string | null;
+    /**
+     * The identity source for the IDENTITY half of containment (see this
+     * module's header). Defaults to {@link statIdentityOrNull}. Injectable
+     * so a test can pin the identity walk itself with literal `dev`/`ino`
+     * fixtures, independent of any real filesystem (gate cycle 3, blocker
+     * 2's host-independent pin).
+     */
+    stat?: (target: string) => StatIdentity | null;
   },
 ): ResolveToolResult {
   if (!isValidToolName(name)) return { status: 'tool-not-found' };
   const realpath = options.realpath ?? realpathOrNull;
+  const stat = options.stat ?? statIdentityOrNull;
 
   const repoReal = realpath(options.repoDir) ?? path.resolve(options.repoDir);
 
@@ -512,10 +680,10 @@ export function resolveTool(
     const dirReal = realpath(rawEntry);
     if (dirReal === null) continue; // does not exist / unreadable
     // ALWAYS `process.platform` here, never `options.platform` — see this
-    // module's header and `isInside`'s own comment. `dirReal`/`repoReal` are
-    // HOST realpaths; comparing them with a declared-but-wrong platform's
-    // path module is exactly gate cycle 2's blocker 1.
-    if (isInside(dirReal, repoReal, process.platform)) continue; // never resolve from inside the repo
+    // module's header. `dirReal`/`repoReal` are HOST realpaths; comparing
+    // them with a declared-but-wrong platform's path module is exactly gate
+    // cycle 2's blocker 1.
+    if (isInsideEitherWay(dirReal, repoReal, process.platform, stat)) continue; // never resolve from inside the repo
 
     let fileNames: string[];
     try {
@@ -538,7 +706,7 @@ export function resolveTool(
     const candidate = path.join(dirReal, matchedName);
     const candidateReal = realpath(candidate);
     if (candidateReal === null) continue; // dangling symlink etc.
-    if (isInside(candidateReal, repoReal, process.platform)) continue; // a symlinked file resolving into the repo
+    if (isInsideEitherWay(candidateReal, repoReal, process.platform, stat)) continue; // a symlinked file resolving into the repo
 
     return { status: 'ok', absFile: candidateReal };
   }
@@ -551,12 +719,29 @@ export function resolveTool(
 // ---------------------------------------------------------------------------
 
 export type BoundedRunResult =
-  | { status: 'ok'; code: 0; stdout: string; stderr: string }
-  | { status: 'nonzero-exit'; code: number; stdout: string; stderr: string }
-  | { status: 'timeout'; stdout: string; stderr: string }
-  | { status: 'killed-by-signal'; signal: NodeJS.Signals; stdout: string; stderr: string }
-  | { status: 'output-exceeded' }
-  | { status: 'spawn-error'; code: string | undefined; message: string };
+  | { status: 'ok'; code: 0; stdout: string; stderr: string; cwdCleanup?: 'left-behind' }
+  | {
+      status: 'nonzero-exit';
+      code: number;
+      stdout: string;
+      stderr: string;
+      cwdCleanup?: 'left-behind';
+    }
+  | { status: 'timeout'; stdout: string; stderr: string; cwdCleanup?: 'left-behind' }
+  | {
+      status: 'killed-by-signal';
+      signal: NodeJS.Signals;
+      stdout: string;
+      stderr: string;
+      cwdCleanup?: 'left-behind';
+    }
+  | { status: 'output-exceeded'; cwdCleanup?: 'left-behind' }
+  | {
+      status: 'spawn-error';
+      code: string | undefined;
+      message: string;
+      cwdCleanup?: 'left-behind';
+    };
 
 export type BoundedRunOptions = {
   timeoutMs: number;
@@ -571,6 +756,16 @@ export type BoundedRunOptions = {
   repoDir: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The parent directory this module creates its own per-run temp directory
+   * under, when `cwd` is omitted. Defaults to `os.tmpdir()`. Injectable so a
+   * test can point it at a non-existent directory (simulating a broken
+   * `TMPDIR`/`TEMP`) without mutating `process.env` globally (gate cycle 3,
+   * blocker 1).
+   */
+  tempRoot?: string;
+  /** See {@link resolveTool}'s own `stat` option — the same identity source, for the cwd containment check. */
+  stat?: (target: string) => StatIdentity | null;
 };
 
 type ExecFileError = NodeJS.ErrnoException & {
@@ -579,8 +774,14 @@ type ExecFileError = NodeJS.ErrnoException & {
 };
 
 const SPAWN_ERROR_MESSAGE = 'boundedRun: the process could not be spawned';
-const INVALID_BOUND_MESSAGE = 'boundedRun requires a positive, finite timeoutMs and maxBuffer';
+const INVALID_BOUND_MESSAGE =
+  'boundedRun requires a positive, finite, bounded timeoutMs and maxBuffer';
 const INVALID_BOUND_CODE = 'ERR_INVALID_ARG_VALUE';
+
+/** Node's own `setTimeout`/`execFile` `timeout` ceiling: a delay beyond `2^31 - 1` ms does not mean what it says (Node treats it as 1ms). */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+/** A sanity ceiling on captured output, not a Node-imposed one — 1 GiB is far beyond anything a CLI tool's stdout/stderr should legitimately need. */
+const MAX_MAX_BUFFER_BYTES = 1024 * 1024 * 1024;
 
 function spawnErrorFrom(err: NodeJS.ErrnoException): BoundedRunResult {
   // Never forward `err.message` — Node's own text for ENOENT/EACCES/EINVAL
@@ -594,9 +795,42 @@ function spawnErrorFrom(err: NodeJS.ErrnoException): BoundedRunResult {
   };
 }
 
-/** A bound this module enforces (a deadline, an output cap) must be a positive, finite number — `0`, `NaN` and `Infinity` would silently disarm it. */
-function isInvalidBound(value: number): boolean {
-  return !Number.isFinite(value) || value <= 0;
+/** A bound this module enforces (a deadline, an output cap) must be a positive, finite number no larger than `max` — `0`, `NaN`, `Infinity`, or an absurdly large value would each silently disarm or destabilise it. */
+function isInvalidBound(value: number, max: number): boolean {
+  return !Number.isFinite(value) || value <= 0 || value > max;
+}
+
+/**
+ * Remove `dir` (this module's own per-run cwd) WITHOUT ever throwing — a
+ * failure here must never reject the promise `boundedRun` promises to
+ * always resolve, nor replace the result already computed (gate cycle 3,
+ * blocker 1). One bounded retry after a short backoff: a detached
+ * grandchild that still holds the directory open can clear within
+ * milliseconds; this is a single, bounded attempt, never a loop. Returns
+ * `'left-behind'` — never a path — if both attempts fail; see this module's
+ * header, limit 10.
+ */
+async function removeOwnedCwd(dir: string): Promise<'removed' | 'left-behind'> {
+  try {
+    await rm(dir, { recursive: true, force: true });
+    return 'removed';
+  } catch {
+    await delay(50);
+    try {
+      await rm(dir, { recursive: true, force: true });
+      return 'removed';
+    } catch {
+      return 'left-behind';
+    }
+  }
+}
+
+function withCwdCleanup(
+  result: BoundedRunResult,
+  cleanup: 'removed' | 'left-behind',
+): BoundedRunResult {
+  if (cleanup === 'removed') return result;
+  return { ...result, cwdCleanup: 'left-behind' };
 }
 
 /**
@@ -621,24 +855,33 @@ export async function boundedRun(
     };
   }
 
-  if (isInvalidBound(options.timeoutMs) || isInvalidBound(options.maxBuffer)) {
+  if (
+    isInvalidBound(options.timeoutMs, MAX_TIMEOUT_MS) ||
+    isInvalidBound(options.maxBuffer, MAX_MAX_BUFFER_BYTES)
+  ) {
     return { status: 'spawn-error', code: INVALID_BOUND_CODE, message: INVALID_BOUND_MESSAGE };
   }
+
+  const stat = options.stat ?? statIdentityOrNull;
 
   // Never the inherited `process.cwd()` — during this project's own tests
   // (and plausibly during a real run) that IS the untrusted repository being
   // acted on. When the caller omits `cwd`, this module owns a FRESH per-run
-  // directory under `os.tmpdir()` rather than handing out the shared,
-  // world-writable temp root itself (gate cycle 2 advisory: a spawned tool
-  // that reads `cwd`-relative configuration would otherwise see whatever
-  // another process left there) — created with mode `0700` and removed on
-  // every exit path, including a timeout or an unexpected throw.
+  // directory under `tempRoot` (default `os.tmpdir()`) rather than handing
+  // out the shared, world-writable temp root itself (gate cycle 2 advisory).
+  // Creating it is now TOTAL (gate cycle 3, blocker 1): `mkdtemp` failing
+  // (e.g. a `tempRoot` that does not exist) resolves `spawn-error` rather
+  // than rejecting.
   let cwd: string;
   let ownedCwd: string | null = null;
   if (options.cwd !== undefined) {
     cwd = options.cwd;
   } else {
-    ownedCwd = await mkdtemp(path.join(tmpdir(), 'rig-run-'));
+    try {
+      ownedCwd = await mkdtemp(path.join(options.tempRoot ?? tmpdir(), 'rig-run-'));
+    } catch (error) {
+      return spawnErrorFrom(error as NodeJS.ErrnoException);
+    }
     try {
       await chmod(ownedCwd, 0o700);
     } catch {
@@ -650,117 +893,117 @@ export async function boundedRun(
     cwd = ownedCwd;
   }
 
-  try {
-    // Realpath-resolved BEFORE the containment check — through any symlink
-    // chain, the same way `resolveTool` resolves a `PATH` entry — so a `cwd`
-    // reaching into the repository only via a symlink is caught too (see
-    // this module's header, limit 6). `process.platform`, never a caller
-    // option: there is no `options.platform` here, and there must not be one
-    // for the same reason `resolveTool`'s own containment checks never take
-    // one either (gate cycle 2, blocker 1).
-    const cwdReal = realpathOrNull(cwd) ?? path.resolve(cwd);
-    const repoReal = realpathOrNull(options.repoDir) ?? path.resolve(options.repoDir);
-    if (isInside(cwdReal, repoReal, process.platform)) {
-      return {
-        status: 'spawn-error',
-        code: undefined,
-        message: 'boundedRun refuses a cwd inside the repository',
-      };
-    }
-
-    const childEnv = filterAllowedEnv(options.env ?? {}, process.platform);
-
-    return await new Promise<BoundedRunResult>((resolve) => {
-      try {
-        execFile(
-          absFile,
-          [...argv],
-          {
-            cwd: cwdReal, // the REAL path, not the possibly-symlinked one the caller gave
-            env: childEnv,
-            timeout: options.timeoutMs,
-            killSignal: 'SIGKILL',
-            maxBuffer: options.maxBuffer,
-            windowsHide: true,
-          },
-          (error, stdout, stderr) => {
-            if (error === null) {
-              resolve({
-                status: 'ok',
-                code: 0,
-                stdout: sanitizeStdout(stdout),
-                stderr: sanitizeStderr(stderr),
-              });
-              return;
-            }
-
-            const err = error as ExecFileError;
-
-            if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-              resolve({ status: 'output-exceeded' });
-              return;
-            }
-
-            // execFile sets `.killed` true exactly when IT killed the
-            // process — either the deadline or (handled above, first)
-            // maxBuffer.
-            if (err.killed === true && err.signal) {
-              resolve({
-                status: 'timeout',
-                stdout: sanitizeStdout(stdout),
-                stderr: sanitizeStderr(stderr),
-              });
-              return;
-            }
-
-            if (typeof err.code === 'number') {
-              resolve({
-                status: 'nonzero-exit',
-                code: err.code,
-                stdout: sanitizeStdout(stdout),
-                stderr: sanitizeStderr(stderr),
-              });
-              return;
-            }
-
-            // A signal this module's own deadline/maxBuffer handling did NOT
-            // send (`.killed` is false) — an external kill from a test
-            // harness, an operator, or another process. The child DID run
-            // and may have produced output before it died, so — unlike the
-            // spawn-level failure below, where nothing ever ran — that
-            // output is kept (gate cycle 1, blocker 2: this case used to
-            // fall through to `spawn-error` with its output silently
-            // dropped).
-            if (err.signal) {
-              resolve({
-                status: 'killed-by-signal',
-                signal: err.signal,
-                stdout: sanitizeStdout(stdout),
-                stderr: sanitizeStderr(stderr),
-              });
-              return;
-            }
-
-            // A spawn-level failure (ENOENT, EACCES, …): the process never
-            // ran, so there is no output to report.
-            resolve(spawnErrorFrom(err));
-          },
-        );
-      } catch (error) {
-        // A SYNCHRONOUS spawn failure — `execFile` itself throws for some
-        // inputs (a NUL byte in an argv element, an invalid option, and,
-        // measured on Node 24.18.0 win32, a `.cmd` file spawned with
-        // `shell: false`, which throws `EINVAL` rather than delivering an
-        // async error) instead of ever invoking the callback above. Without
-        // this `try`/`catch` the throw propagated out of the `new Promise`
-        // executor and rejected the promise this function promises to always
-        // RESOLVE (gate cycle 1, blocker 1).
-        resolve(spawnErrorFrom(error as NodeJS.ErrnoException));
-      }
-    });
-  } finally {
-    if (ownedCwd !== null) {
-      await rm(ownedCwd, { recursive: true, force: true });
-    }
+  // Realpath-resolved BEFORE the containment check — through any symlink
+  // chain, the same way `resolveTool` resolves a `PATH` entry — so a `cwd`
+  // reaching into the repository only via a symlink is caught too (see this
+  // module's header, limit 6). `process.platform`, never a caller option:
+  // there is no `options.platform` here, and there must not be one for the
+  // same reason `resolveTool`'s own containment checks never take one
+  // either (gate cycle 2, blocker 1). `isInsideEitherWay` also applies the
+  // identity check (gate cycle 3, blocker 2).
+  const cwdReal = realpathOrNull(cwd) ?? path.resolve(cwd);
+  const repoReal = realpathOrNull(options.repoDir) ?? path.resolve(options.repoDir);
+  if (isInsideEitherWay(cwdReal, repoReal, process.platform, stat)) {
+    if (ownedCwd !== null) await removeOwnedCwd(ownedCwd); // never surfaced: nothing was spawned to report a cleanup signal against
+    return {
+      status: 'spawn-error',
+      code: undefined,
+      message: 'boundedRun refuses a cwd inside the repository',
+    };
   }
+
+  const childEnv = filterAllowedEnv(options.env ?? {}, process.platform);
+
+  const result = await new Promise<BoundedRunResult>((resolve) => {
+    try {
+      execFile(
+        absFile,
+        [...argv],
+        {
+          cwd: cwdReal, // the REAL path, not the possibly-symlinked one the caller gave
+          env: childEnv,
+          timeout: options.timeoutMs,
+          killSignal: 'SIGKILL',
+          maxBuffer: options.maxBuffer,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          if (error === null) {
+            resolve({
+              status: 'ok',
+              code: 0,
+              stdout: sanitizeStdout(stdout),
+              stderr: sanitizeStderr(stderr),
+            });
+            return;
+          }
+
+          const err = error as ExecFileError;
+
+          if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+            resolve({ status: 'output-exceeded' });
+            return;
+          }
+
+          // execFile sets `.killed` true exactly when IT killed the
+          // process — either the deadline or (handled above, first)
+          // maxBuffer.
+          if (err.killed === true && err.signal) {
+            resolve({
+              status: 'timeout',
+              stdout: sanitizeStdout(stdout),
+              stderr: sanitizeStderr(stderr),
+            });
+            return;
+          }
+
+          if (typeof err.code === 'number') {
+            resolve({
+              status: 'nonzero-exit',
+              code: err.code,
+              stdout: sanitizeStdout(stdout),
+              stderr: sanitizeStderr(stderr),
+            });
+            return;
+          }
+
+          // A signal this module's own deadline/maxBuffer handling did NOT
+          // send (`.killed` is false) — an external kill from a test
+          // harness, an operator, or another process. The child DID run
+          // and may have produced output before it died, so — unlike the
+          // spawn-level failure below, where nothing ever ran — that
+          // output is kept (gate cycle 1, blocker 2: this case used to
+          // fall through to `spawn-error` with its output silently
+          // dropped).
+          if (err.signal) {
+            resolve({
+              status: 'killed-by-signal',
+              signal: err.signal,
+              stdout: sanitizeStdout(stdout),
+              stderr: sanitizeStderr(stderr),
+            });
+            return;
+          }
+
+          // A spawn-level failure (ENOENT, EACCES, …): the process never
+          // ran, so there is no output to report.
+          resolve(spawnErrorFrom(err));
+        },
+      );
+    } catch (error) {
+      // A SYNCHRONOUS spawn failure — `execFile` itself throws for some
+      // inputs (a NUL byte in an argv element, an invalid option, and,
+      // measured on Node 24.18.0 win32, a `.cmd` file spawned with
+      // `shell: false`, which throws `EINVAL` rather than delivering an
+      // async error) instead of ever invoking the callback above. Without
+      // this `try`/`catch` the throw propagated out of the `new Promise`
+      // executor and rejected the promise this function promises to always
+      // RESOLVE (gate cycle 1, blocker 1).
+      resolve(spawnErrorFrom(error as NodeJS.ErrnoException));
+    }
+  });
+
+  if (ownedCwd === null) return result;
+  const cleanup = await removeOwnedCwd(ownedCwd);
+  return withCwdCleanup(result, cleanup);
 }
