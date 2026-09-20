@@ -1405,7 +1405,9 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       }
 
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain('inject-rules');
+      // the hook's own one-line diagnostic, not any mention of the file name:
+      // an UNHANDLED stream error prints a stack trace that names it too
+      expect(result.stderr).toContain('inject-rules: stdout write failed:');
       expect(result.stderr).not.toContain('EPIPE');
     } finally {
       await removeFixture(planted);

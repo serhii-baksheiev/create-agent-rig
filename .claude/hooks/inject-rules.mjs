@@ -231,7 +231,10 @@ function main() {
   // handler here made a genuine stdout write failure (stdout redirected to
   // /dev/full) exit 0 with nothing delivered and no diagnostic — exactly the
   // silent-loss shape this whole file exists to avoid, just moved one write
-  // call over. Pinned in hooks.test.ts (absent in a generated rig).
+  // call over. Pinned in hooks.test.ts (absent in a generated rig) ›
+  // "silently exits 0 when the reader is gone before the write starts
+  // (EPIPE)" and › "reports a genuine stdout write failure on stderr and
+  // marks the exit non-zero, rather than looking like a healthy session".
   process.stdout.on('error', (err) => {
     if (err && err.code === 'EPIPE') return;
     process.stderr.write(`inject-rules: stdout write failed: ${err}\n`);
