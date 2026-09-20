@@ -66,6 +66,23 @@ async function decisionRecords(): Promise<Record_[]> {
   );
 }
 
+/**
+ * The `docs/decisions/*.md` entries `init` actually ships, read from the one
+ * manifest it reads (`packages/cli/src/commands/init.ts` loads
+ * `layers.json`'s `process` array to decide what a generated rig receives).
+ * A record can exist on disk and be cited by the rulebook — both checked
+ * above — and still never reach a generated project if this list omits it,
+ * which is exactly the gap RP-185 shipped: the hook cites
+ * `session-start-wire-format.md`, the file exists here, and `layers.json`
+ * never named it.
+ */
+async function layersDecisionEntries(): Promise<string[]> {
+  const manifest = JSON.parse(await readFile(path.join(universalDir, 'layers.json'), 'utf8')) as {
+    process: string[];
+  };
+  return manifest.process.filter((entry) => entry.startsWith('docs/decisions/'));
+}
+
 type Citation = { from: string; target: string };
 
 /** Every `docs/decisions/<name>.md` reference in the universal layer. */
@@ -142,6 +159,39 @@ describe('decision records travel with the layer that cites them', () => {
       }
     }
     expect(leaks).toEqual([]);
+  });
+
+  // Existence-on-disk and citation-by-the-rulebook (checked above) are both
+  // necessary but neither is sufficient: `init` installs from `layers.json`,
+  // not from the directory listing, so a record the manifest never names is
+  // a record a generated rig never receives — a dead reference the moment a
+  // shipped hook cites it. Checked in both directions, per
+  // `.claude/rules/invariants.md` ("One mechanism, one implementation").
+  it('is listed in layers.json for every record on disk, and vice versa', async () => {
+    const onDisk = (await decisionRecords()).map((r) => `docs/decisions/${r.name}`).sort();
+    const listed = (await layersDecisionEntries()).sort();
+    const missingFromManifest = onDisk.filter((entry) => !listed.includes(entry));
+    const missingFromDisk = listed.filter((entry) => !onDisk.includes(entry));
+    expect({ missingFromManifest, missingFromDisk }).toEqual({
+      missingFromManifest: [],
+      missingFromDisk: [],
+    });
+  });
+
+  it('reports a record layers.json does not list (mutation: drop the entry)', async () => {
+    const onDisk = (await decisionRecords()).map((r) => `docs/decisions/${r.name}`).sort();
+    const listed = (await layersDecisionEntries()).filter(
+      (entry) => entry !== 'docs/decisions/gate-coverage.md',
+    );
+    const missingFromManifest = onDisk.filter((entry) => !listed.includes(entry));
+    expect(missingFromManifest).toEqual(['docs/decisions/gate-coverage.md']);
+  });
+
+  it('reports a manifest entry with no file behind it (mutation: bogus entry)', async () => {
+    const onDisk = (await decisionRecords()).map((r) => `docs/decisions/${r.name}`).sort();
+    const listed = [...(await layersDecisionEntries()), 'docs/decisions/nope.md'];
+    const missingFromDisk = listed.filter((entry) => !onDisk.includes(entry));
+    expect(missingFromDisk).toEqual(['docs/decisions/nope.md']);
   });
 
   it('does not ship generator-only RP tracker keys or CLI paths in the capability-coverage record', async () => {
