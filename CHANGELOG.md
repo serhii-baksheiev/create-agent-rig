@@ -44,6 +44,17 @@ The full pre-0.10 migration path is pinned in `test/e2e/upgrade.test.ts` ›
 "retires the deleted stack overlay, and preserves the application and the
 process layer".
 
+**Fixed: Codex rejected the `SessionStart` rules refresh.** `inject-rules`
+printed plain text opening with `[agent-os]`, and Codex 0.154.0 was measured
+failing the hook with `hook returned invalid session start JSON output`, so
+that session started without the autonomy rules. The hook now prints one JSON object —
+`hookSpecificOutput.additionalContext`, the shape both harnesses document —
+carrying the same text, character for character, that Claude Code received
+before. It also waits for that write to finish instead of exiting over it,
+and a stdout failure other than an abandoned reader is reported on stderr
+with a non-zero exit rather than looking like a healthy session
+(`docs/decisions/session-start-wire-format.md`).
+
 **This repository's own node-ts conventions move out of the shipped
 package**, into `scripts/dogfood/` — a repo-local overlay `sync-agent-os.mjs`
 composes into this repository's own rulebook, same as before, just no longer

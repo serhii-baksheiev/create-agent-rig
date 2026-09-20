@@ -7,6 +7,12 @@
 > **Status (0.9.1 published 17 Sep 2026):** 0.9.1 is `latest`, published from
 > `gitHead` `872f7f67f11761c17aad3cbbe26540862581795b`. Versions 0.1.0 through
 > 0.9.1 are live; delivery is done through `0.9.1`, the current `latest`.
+>
+> **The default branch is not that release.** 0.10.0 work merges to `master`
+> continuously, so what is on it at any moment is ahead of `latest`,
+> unreleased, and has not been through a release gate. Installing from the
+> default branch installs a development snapshot — the README's "Which version
+> you get" table says what that costs.
 
 ## 1. Product boundary
 
@@ -61,6 +67,12 @@ never edited directly.
 
 ## 7. Phases — 0.10.0 release sequence
 
+<!-- The heading number is a landmark, not a position: `test/template/journal.test.ts`
+     › "keeps the queues and the phases, and no longer carries the journal" pins the
+     literal string `## 7. Phases`. The section order here reads 1, 2, 3, 7, 5 for
+     that reason. Renumber it only together with that assertion. -->
+
+
 The dependency order is:
 
 1. RP-177 removes application skeletons and reduces `create` to the thin
@@ -69,19 +81,34 @@ The dependency order is:
    remaining workflow governance as experimental opt-in behavior.
 3. RP-181 adds ownership-safe uninstall without taking plugin or MCP cleanup
    away from their assigned tickets.
-4. RP-179 and RP-180 establish native-plugins-first composition and the
-   disabled-by-default experimental workflow layer.
-5. RP-22 composes supported plugins, MCP and executable subsystems through
+4. RP-179 **decides** what is delivered natively and what stays generated, with
+   evidence. It is an evaluation and an architecture decision — not a migration,
+   and not a plugin-first promise. Delivery, provenance and receipts belong to
+   RP-22; making `AGENTS.md` canonical belongs to RP-186.
+5. RP-180 makes the workflow layer a disabled-by-default experimental opt-in.
+   It records the choice in the manifest, so it follows RP-181's merge and
+   rebases onto the ownership model RP-181 settled.
+6. RP-22 composes supported plugins, MCP and executable subsystems through
    allowed official installers.
-6. RP-21 adds doctor checks for the manifest, wiring, profiles, receipts and
+7. RP-21 adds doctor checks for the manifest, wiring, profiles, receipts and
    subsystem health.
-7. RP-24 runs clean-machine acceptance.
-8. RP-92 is the exact release gate; RP-88 closes only after that gate passes.
+8. RP-24 runs clean-machine acceptance.
+9. RP-92 is the exact release gate; RP-88 closes only after that gate passes.
+
+Two items sit outside that chain and are sequenced by their own dependencies,
+not by it: RP-185 (the Codex `SessionStart` hook output Codex rejects) and
+RP-186 (`AGENTS.md` canonical, `CLAUDE.md` a compatibility shim) both block
+RP-92 and may be implemented in parallel with the chain above. RP-175 is
+supporting-lane work and blocks nothing.
+
+### Delivery discipline
 
 After each merge, remaining branches are rebased on and rechecked against the
 new `origin/master`. GitHub-hosted runners are the primary CI. Local
 self-hosted runner configuration is fallback only and laptop availability is
-not a release condition.
+not a release condition. A PR merges on the required checks (`ci`, `e2e`,
+`windows-smoke`) being green for its **exact** head, never an older one, and
+never on CI alone where a review gate is owed.
 
 ## 5. Release evidence
 
