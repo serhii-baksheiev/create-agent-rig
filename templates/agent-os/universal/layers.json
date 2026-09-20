@@ -79,6 +79,7 @@
     "docs/decisions/closing-a-task.md",
     "docs/decisions/content-blind-revalidation.md",
     "docs/decisions/run-directory.md",
+    "docs/decisions/session-start-wire-format.md",
     "docs/decisions/spacing-rations-mechanisms.md",
     "docs/decisions/stop-conditions-in-a-file.md",
     "docs/decisions/two-empty-endings.md"

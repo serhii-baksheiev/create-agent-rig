@@ -53,7 +53,10 @@ carrying the same text, character for character, that Claude Code received
 before. It also waits for that write to finish instead of exiting over it,
 and a stdout failure other than an abandoned reader is reported on stderr
 with a non-zero exit rather than looking like a healthy session
-(`docs/decisions/session-start-wire-format.md`).
+(`docs/decisions/session-start-wire-format.md`). That decision record now
+ships with the hook that cites it — the process layer's manifest
+(`layers.json`) had omitted it, so a generated rig received the hook's
+citation but not the file it pointed at.
 
 **Breaking: the workflow layer (queue/loop/pr-ship/run-state/journal/
 revalidation/claim-records/PR-lifecycle helpers) is now an experimental,
