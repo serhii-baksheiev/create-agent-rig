@@ -13,13 +13,14 @@
  * This module imports only its sibling `./registry.js` and `../lib/safe-text.js`.
  * Pinned by `packages/cli/test/integrations-registry.test.ts` › "registry.ts
  * and declaration.ts import only their declared relative modules, and never
- * require, dynamically import, fetch, or createRequire".
+ * require, dynamically import, fetch, createRequire, process.binding,
+ * bare-import, or re-export".
  *
  * `parseDeclaration` is TOTAL: no string input may make it throw. The one
  * property that would break that promise — an iterative-vs-recursive walk
  * over attacker-controlled JSON — is pinned by
- * `packages/cli/test/integrations-declaration.test.ts` › "parseDeclaration
- * never throws, for a fuzz list of hostile shapes".
+ * `packages/cli/test/integrations-declaration.test.ts` › "a fuzz list of
+ * hostile shapes never makes parseDeclaration throw".
  */
 import { hasControlCharacter } from '../lib/safe-text.js';
 import { validateDescriptor, type Harness, type ProviderDescriptor } from './registry.js';
@@ -48,7 +49,19 @@ const MAX_DECLARATION_DEPTH = 4;
 const ROOT_KEYS = new Set(['schemaVersion', 'integrations']);
 const ARBITRARY_COMMAND_KEYS = new Set(['command', 'args', 'env']);
 const NON_OFFICIAL_SOURCE_KEYS = new Set(['source', 'url', 'headers']);
-const KNOWN_ENTRY_KEYS = new Set(['id', 'required', 'version', 'harnesses']);
+
+/**
+ * Exported so a test can assert this is the SAME set as the schema's
+ * `properties.integrations.items.properties` keys — one fact, one spelling
+ * (`.claude/rules/invariants.md`, "One mechanism, one implementation"). Before
+ * that correspondence test existed, the schema's own `additionalProperties:
+ * false` on an entry could be deleted with every test still green (RP-22 gate
+ * cycle 2, blocker 1): the parser and the schema legitimately refuse an
+ * unknown entry key at different LEVELS (parser: per-entry rejection, file
+ * still `ok`; schema: the whole document fails to validate), so neither
+ * layer's own test suite alone could notice the other losing its closure.
+ */
+export const KNOWN_ENTRY_KEYS = new Set(['id', 'required', 'version', 'harnesses']);
 const MAX_ECHOED_ID_LENGTH = 64;
 
 export type DeclaredIntegration = {

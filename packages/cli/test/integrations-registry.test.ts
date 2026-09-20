@@ -215,14 +215,21 @@ describe('REGISTRY', () => {
 });
 
 describe('structural: what registry.ts and declaration.ts may import', () => {
-  // Text scan, not a parser: `stripComments` and this regex are blind to a
-  // specifier assembled at runtime (a template literal, string
-  // concatenation, `["node:" + "fs"]`) — see test/template/lib/source-scan.ts's
-  // own header. Good enough here because both files are hand-authored,
-  // reviewed source, not a code-generation target.
+  // Text scan, not a parser: `stripComments` and every regex below are blind
+  // to a specifier or call assembled at runtime (a template literal, string
+  // concatenation, `["node:" + "fs"]`, `globalThis["fetch"]`) — see
+  // test/template/lib/source-scan.ts's own header. Good enough here because
+  // both files are hand-authored, reviewed source, not a code-generation
+  // target. The checks: only the allow-listed `from '...'` specifiers; no
+  // `require(`, dynamic `import(`, `fetch(`, `createRequire`, or
+  // `process.binding` (a lower-level escape hatch to the same native
+  // capabilities `require`/`import()` reach); no bare side-effect import
+  // (`import 'x';` — no binding, so the specifier-allow-list loop above never
+  // sees it); no re-export (`export … from '...'` — a second way to pull in
+  // a module the specifier loop does not walk).
   const ALLOWED_IMPORT_SPECIFIERS = new Set(['../lib/safe-text.js', './registry.js']);
 
-  it('registry.ts and declaration.ts import only their declared relative modules, and never require, dynamically import, fetch, or createRequire', async () => {
+  it('registry.ts and declaration.ts import only their declared relative modules, and never require, dynamically import, fetch, createRequire, process.binding, bare-import, or re-export', async () => {
     const files = [
       path.join(repoRoot, 'packages', 'cli', 'src', 'integrations', 'registry.ts'),
       path.join(repoRoot, 'packages', 'cli', 'src', 'integrations', 'declaration.ts'),
@@ -241,6 +248,12 @@ describe('structural: what registry.ts and declaration.ts may import', () => {
       expect(code, file).not.toMatch(/\bimport\s*\(/);
       expect(code, file).not.toMatch(/\bfetch\s*\(/);
       expect(code, file).not.toMatch(/\bcreateRequire\b/);
+      expect(code, file).not.toMatch(/\bprocess\s*\.\s*binding\b/);
+      // A bare side-effect import carries no `from`, so it never appears in
+      // `specifiers` above; caught here instead.
+      expect(code, file).not.toMatch(/\bimport\s*['"]/);
+      // A re-export pulls in a module without ever being an `import` at all.
+      expect(code, file).not.toMatch(/\bexport\b[^;]*\bfrom\s*['"]/);
     }
   });
 

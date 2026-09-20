@@ -5,10 +5,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DECLARATION_REL,
   DECLARATION_SCHEMA_VERSION,
+  KNOWN_ENTRY_KEYS,
   VERSION_PATTERN,
   parseDeclaration,
   serializeDeclaration,
   type DeclaredIntegration,
+  type RejectionReason,
 } from '../src/integrations/declaration.js';
 import { REGISTRY, type ProviderDescriptor } from '../src/integrations/registry.js';
 
@@ -25,8 +27,14 @@ const loadValidate = async (): Promise<Validate> =>
   ((await import(pathToFileURL(schemaSubsetPath).href)) as { validate: Validate }).validate;
 
 interface DeclarationSchema {
+  additionalProperties: boolean;
   properties: {
-    integrations: { items: { properties: { version: { pattern: string } } } };
+    integrations: {
+      items: {
+        additionalProperties: boolean;
+        properties: { version: { pattern: string } } & Record<string, unknown>;
+      };
+    };
   };
 }
 
@@ -437,14 +445,30 @@ type FileShapeFixture = { name: string; value: unknown; accepted: boolean };
  * Shared between `parseDeclaration` and the schema oracle, so the two
  * enforcement layers cannot silently drift apart the way they did in gate
  * cycle 1 (blocker 2: the schema refused a root key `parseDeclaration`
- * ignored). Every fixture here runs through BOTH.
+ * ignored). Every fixture here runs through BOTH, and is accepted or refused
+ * identically at the FILE level by both layers.
  *
- * What is deliberately absent: a duplicate id. `scripts/lib/json-schema-subset.mjs`'s
- * supported keyword set (`type`, `properties`, `required`,
- * `additionalProperties`, `enum`, `const`, `items`, `pattern`, `minLength`)
- * has nothing equivalent to `uniqueItems` across a whole array, so a
- * duplicate id cannot be expressed as a schema-shape violation at all — it is
- * pinned on the parser side alone, by "whole file invalid" above.
+ * Two classes of input are deliberately absent from this shared list, because
+ * for each of them the two layers legitimately disagree about which LEVEL the
+ * refusal happens at, so "the same fixture, judged the same way by both"
+ * would be the wrong shape of test:
+ *
+ * 1. A duplicate id. `scripts/lib/json-schema-subset.mjs`'s supported
+ *    keyword set (`type`, `properties`, `required`, `additionalProperties`,
+ *    `enum`, `const`, `items`, `pattern`, `minLength`) has nothing equivalent
+ *    to `uniqueItems` across a whole array, so a duplicate id cannot be
+ *    expressed as a schema-shape violation at all — it is pinned on the
+ *    parser side alone, by "whole file invalid" above.
+ * 2. An entry-level refusal (a refused key, a malformed scalar). The schema
+ *    has no way to express "this one array element is invalid but the
+ *    document as a whole still parses" — `additionalProperties: false` on an
+ *    entry makes the WHOLE document fail schema validation, while the parser
+ *    reports the file as `status: 'ok'` with that one entry moved to
+ *    `rejected`. These are pinned together, on purpose, by
+ *    `SCHEMA_ONLY_ENTRY_FIXTURES` below (RP-22 gate cycle 2, blocker 1) —
+ *    each fixture there asserts BOTH the schema's file-level refusal and the
+ *    parser's specific per-entry reason, so the correspondence between the
+ *    two layers stays checked instead of merely assumed.
  */
 const FILE_SHAPE_FIXTURES: readonly FileShapeFixture[] = [
   {
@@ -491,6 +515,69 @@ describe('file-level shape: parseDeclaration and the schema oracle agree on one 
     if (parsed.status === 'ok') expect(parsed.rejected).toEqual([]);
 
     expect(validate(schema, value).ok).toBe(accepted);
+  });
+});
+
+// RP-22 gate cycle 2, blocker 1: the schema's `additionalProperties: false`
+// closure over an entry's keys had no test of its own — deleting it left all
+// (then) 69 tests green, because KNOWN_ENTRY_KEYS (the parser's closure) and
+// the schema's `items.properties` keys are one fact spelled twice, with
+// nothing checking the two spellings still agree.
+describe('the schema and KNOWN_ENTRY_KEYS spell the same entry-key closure once', () => {
+  it("KNOWN_ENTRY_KEYS equals the schema's entry property keys, and both layers close the object", async () => {
+    const schema = await loadSchema();
+    const itemsSchema = schema.properties.integrations.items;
+    expect(new Set(Object.keys(itemsSchema.properties))).toEqual(KNOWN_ENTRY_KEYS);
+    expect(itemsSchema.additionalProperties).toBe(false);
+    expect(schema.additionalProperties).toBe(false);
+  });
+});
+
+type SchemaOnlyEntryFixture = { name: string; value: unknown; parserReason: RejectionReason };
+
+/**
+ * Exception class 2 from {@link FILE_SHAPE_FIXTURES}'s docstring: each of
+ * these makes the WHOLE document fail the schema (an entry carries a key, or
+ * a value shape, `additionalProperties`/`properties`/`pattern` refuses) while
+ * `parseDeclaration` reports the file as `ok` with that one entry rejected
+ * for a specific, literal reason. Asserting both sides together is what turns
+ * "the two layers agree this input is bad, in their own way" from an assumed
+ * property into a checked one.
+ */
+const SCHEMA_ONLY_ENTRY_FIXTURES: readonly SchemaOnlyEntryFixture[] = [
+  {
+    name: 'an entry carrying the refused command key',
+    value: { schemaVersion: 1, integrations: [{ id: 'gamma-board', command: 'rm -rf /' }] },
+    parserReason: 'arbitrary-command-refused',
+  },
+  {
+    name: 'an entry carrying an unrecognised key',
+    value: { schemaVersion: 1, integrations: [{ id: 'gamma-board', unexpectedField: true }] },
+    parserReason: 'malformed',
+  },
+  {
+    name: 'an entry with a non-boolean required',
+    value: { schemaVersion: 1, integrations: [{ id: 'gamma-board', required: 'yes' }] },
+    parserReason: 'malformed',
+  },
+  {
+    name: 'an entry with an out-of-pattern version',
+    value: { schemaVersion: 1, integrations: [{ id: 'gamma-board', version: 'not a version!' }] },
+    parserReason: 'malformed',
+  },
+];
+
+describe('entry-level refusals: the schema fails the whole document while the parser rejects just the entry', () => {
+  it.each(SCHEMA_ONLY_ENTRY_FIXTURES)('$name', async ({ value, parserReason }) => {
+    const validate = await loadValidate();
+    const schema = await loadSchema();
+    expect(validate(schema, value).ok).toBe(false);
+
+    const parsed = parseDeclaration(JSON.stringify(value), testRegistry);
+    expect(parsed.status).toBe('ok');
+    if (parsed.status === 'ok') {
+      expect(parsed.rejected).toEqual([{ id: 'gamma-board', reason: parserReason }]);
+    }
   });
 });
 

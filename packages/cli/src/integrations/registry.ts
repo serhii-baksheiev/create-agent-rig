@@ -9,11 +9,13 @@
  * (`manifest.ts` and `uninstall.ts` already state this posture for their own
  * files).
  *
- * This module imports only `./registry.js`'s own sibling, `declaration.ts` —
- * see that file's header for the exact claim and its test. Pinned by
+ * This module imports NOTHING — no `node:` builtin, no sibling, not even its
+ * own `declaration.ts`. Pinned by
  * `packages/cli/test/integrations-registry.test.ts` › "registry.ts and
  * declaration.ts import only their declared relative modules, and never
- * require, dynamically import, fetch, or createRequire".
+ * require, dynamically import, fetch, createRequire, process.binding,
+ * bare-import, or re-export" and, more precisely for this file, › "registry.ts
+ * has no imports at all, and declaration.ts imports exactly its two siblings".
  */
 
 /** The harnesses Rig configures integrations for. */
@@ -132,6 +134,12 @@ export function validateDescriptor(descriptor: ProviderDescriptor): DescriptorVa
  * fixed-shape, in-code literal — never over parsed input — so it is exempt
  * from `invariants.md`'s "no recursion over input": there is no input here,
  * only the shape this file's author wrote.
+ *
+ * Stops descending into a value that is already frozen (`Object.isFrozen`),
+ * which also means it never verifies what is INSIDE one: a descriptor that
+ * reused a pre-frozen shared object (rather than a literal written fresh for
+ * that descriptor) would have its own contents skipped here. Every entry in
+ * {@link REGISTRY} today is a fresh object literal with no such reuse.
  */
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
