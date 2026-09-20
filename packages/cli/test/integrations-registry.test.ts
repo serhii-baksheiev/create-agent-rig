@@ -164,21 +164,26 @@ describe('isValidLocator — the one grammar shared by validateDescriptor and re
       // excludes `\s` outright. `contracts/integrations/v1/receipt.schema.
       // json`'s `license.url` pattern is the oracle this closes the gap
       // against — see `integrations-receipt.test.ts` › "closed divergence
-      // (whitespace)".
+      // (whitespace): a raw space in the path now fails both the schema
+      // pattern and isValidLocator".
       ['a raw space', 'https://mcp.example.com/te rms'],
       // A backslash is refused here too, but NOT because it closes a gap the
       // way the space above does — the schema's character class does not
       // exclude a backslash at all, so this makes the parser STRICTER than
       // the schema, a named divergence in the opposite direction (gate cycle
       // 1, blocker 9) — see `integrations-receipt.test.ts` › "named
-      // divergence 3 (backslash)".
+      // divergence 3 (backslash): isValidLocator is STRICTER than the schema
+      // pattern here — the schema's character class does not exclude a
+      // backslash at all".
       ['a backslash', 'https://mcp.example.com/te\\rms'],
       // The schema's literal `^https://` prefix always refused an
       // uppercase-scheme URL; isHttpsUrl's real URL parse used to accept any
       // casing (URL itself lower-cases `.protocol`), so isValidLocator was
       // LAXER here — now closed by requiring the raw locator to literally
       // start with lowercase `https://` — see `integrations-receipt.test.ts`
-      // › "closed divergence (uppercase scheme)".
+      // › "closed divergence (uppercase scheme): HTTPS://… now fails
+      // isValidLocator too, matching the schema pattern's literal lowercase
+      // prefix".
       ['an uppercase scheme', 'HTTPS://mcp.example.com/mcp'],
     ])('refuses %s', (_label, locator) => {
       expect(isValidLocator('https', locator)).toBe(false);
