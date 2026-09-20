@@ -470,9 +470,14 @@ const objectOf = (projectRoot, raw) =>
  * `mergeCommit` is pure caller attestation — the only check tying it to
  * anything was `toSha === mergeCommit`, which a lazy or hostile
  * `--merge-commit "$(git rev-parse origin/master)"` satisfies trivially, no
- * matter what actually advanced the target. Conditions 5 and 6 below are the
- * fix: a LOCAL binding to `HEAD` in `projectRoot` that nothing but the actual
- * checkout can satisfy.
+ * matter what actually advanced the target. Conditions 5, 6 and 7 below are
+ * the fix: a LOCAL binding to `HEAD` in `projectRoot` that nothing but the
+ * actual checkout can satisfy. Condition 2 stays load-bearing on its own —
+ * it is the only place `mergeCommit` is ever compared against the REAL
+ * target advance (`toSha`); conditions 3 and 4 check `fromSha`/`toSha`
+ * without reading `mergeCommit` at all, so a caller could otherwise name a
+ * commit that is not the target's tip yet still shares HEAD's tree, and
+ * nothing past condition 2 would catch it.
  *
  * True only when ALL of:
  * 1. `fromSha`, `toSha` and `mergeCommit` are each a syntactically valid git
@@ -498,8 +503,15 @@ const objectOf = (projectRoot, raw) =>
  *    files;
  * 7. `git rev-parse mergeCommit^{tree}` equals `git rev-parse HEAD^{tree}` —
  *    the exempted commit's TREE is byte-identical to this checkout's own
- *    tree. This is what an up-to-date squash merge produces and a foreign
- *    commit, or a stale squash, cannot.
+ *    tree. A foreign commit whose tree DIFFERS is refused by this condition;
+ *    a stale squash (the target moved before it landed) carries that extra
+ *    content and is refused the same way. This condition judges CONTENT,
+ *    never provenance: a commit built by any other route that happens to
+ *    carry the exact byte-identical tree — meaning the target's content
+ *    really is exactly what this run's own merge would have produced — is
+ *    indistinguishable from a genuine squash merge and IS exempted. That is
+ *    judged correct, not a gap: what is being protected is the target's
+ *    content, not the mechanism that produced it.
  *
  * Any other shape — no `mergeCommit` supplied, a mismatch, a non-ancestor
  * `fromSha`, more than one commit in range, `HEAD` already at or past the
@@ -538,18 +550,23 @@ const objectOf = (projectRoot, raw) =>
  * at BEFORE_CLOSE — the identical own-merge shape still holds on claim:scope
  * at BEFORE_PR", › "a single FOREIGN commit named as --merge-commit does not
  * exempt it — reproduces the gate-hold attack and proves it now holds", ›
- * "HEAD already at the merge commit is vacuous, and still holds (a
- * fast-forwarded checkout must not self-satisfy the exemption)", › "a squash
- * merge of a branch that was NOT up to date still holds, even with a
- * correctly-named --merge-commit (acceptable: the safe side)", › "a tree
- * that matches by coincidence but shares no ancestry with the recorded
- * baseline still holds (lineage, not just content)", › "a --merge-commit
- * that is well-formed but names no object this repository has holds (git
- * failure is the safe side, not a crash)", › "pins evidence.ownMergeAdvance
- * on the genuine own-merge case" and › "carries no evidence.ownMergeAdvance
- * when content also drifted (the `!scopeContentMoved &&` conjunct only ever
- * governs whether this evidence is emitted, never the verdict — content
- * drift already holds on its own)".
+ * "a FABRICATED --merge-commit sharing HEAD's tree, correctly rooted at the
+ * baseline, but naming a commit the target never actually advanced to,
+ * still holds (condition 2 is load-bearing on its own)", › "HEAD already at
+ * the merge commit is vacuous, and still holds (a fast-forwarded checkout
+ * must not self-satisfy the exemption)", › "a squash merge of a branch that
+ * was NOT up to date still holds, even with a correctly-named
+ * --merge-commit (acceptable: the safe side)", › "a tree that matches by
+ * coincidence but shares no ancestry with the recorded baseline still holds
+ * (lineage, not just content)", › "a --merge-commit that is well-formed but
+ * names no object this repository has holds (git failure is the safe side,
+ * not a crash)", › "a foreign commit landed by another route is exempted
+ * when its tree is byte-identical to HEAD's (condition 7 judges content,
+ * not provenance)", › "pins evidence.ownMergeAdvance on the genuine
+ * own-merge case" and › "carries no evidence.ownMergeAdvance when content
+ * also drifted (the `!scopeContentMoved &&` conjunct only ever governs
+ * whether this evidence is emitted, never the verdict — content drift
+ * already holds on its own)".
  */
 const isAncestorOf = (projectRoot, ancestor, descendant) => {
   try {

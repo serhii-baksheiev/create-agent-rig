@@ -1097,6 +1097,45 @@ describe("BEFORE_CLOSE — the own-merge exemption also binds to the checkout's 
     expect(result.source).toContain('claim:scope');
   });
 
+  it("a FABRICATED --merge-commit sharing HEAD's tree, correctly rooted at the baseline, but naming a commit the target never actually advanced to, still holds (condition 2 is load-bearing on its own)", async () => {
+    const p = await closeProject();
+    // The recorded baseline, captured before anything below moves master.
+    const fromSha = await git(['rev-parse', 'master'], p.dir);
+    // The task's real, unmerged work stays on the branch...
+    await writeFile(path.join(p.dir, 'feature.txt'), 'shipped\n');
+    await git(['add', 'feature.txt'], p.dir);
+    await git(['commit', '-q', '-m', 'feat: add feature.txt'], p.dir);
+    const headTree = await git(['rev-parse', 'HEAD^{tree}'], p.dir);
+    // ...while the target advances by exactly ONE, wholly unrelated commit —
+    // satisfying conditions 3 (ancestor) and 4 (count) on its own terms, using
+    // the REAL target advance, not the fabricated commit below.
+    const foreignShas = await advanceMaster(p.dir, ['chore: unrelated housekeeping']);
+    const foreignSha = foreignShas[0];
+    if (!foreignSha) throw new Error('fixture: advanceMaster did not return a sha');
+    // A FABRICATED commit that is neither the target's new tip nor anywhere
+    // in its history: same tree as HEAD (would satisfy condition 7), rooted
+    // at the recorded baseline so it is not an ancestor of HEAD and the
+    // baseline IS an ancestor of HEAD (would satisfy conditions 5 and 6) —
+    // but it never actually landed anywhere. Only condition 2
+    // (`toSha === mergeCommit`) refuses this; nothing else in the function
+    // ever compares `mergeCommit` against the real target advance at all.
+    const fabricated = await git(
+      [
+        'commit-tree',
+        headTree,
+        '-p',
+        fromSha,
+        '-m',
+        'fabricated: HEAD tree, baseline parent, never actually merged',
+      ],
+      p.dir,
+    );
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', fabricated]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
   it('HEAD already at the merge commit is vacuous, and still holds (a fast-forwarded checkout must not self-satisfy the exemption)', async () => {
     const p = await closeProject();
     const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
@@ -1111,10 +1150,20 @@ describe("BEFORE_CLOSE — the own-merge exemption also binds to the checkout's 
 
   it('a squash merge of a branch that was NOT up to date still holds, even with a correctly-named --merge-commit (acceptable: the safe side)', async () => {
     const p = await closeProject();
-    // master moves with real, unrelated content BEFORE the squash merge lands
-    // — the branch's squash is stale relative to the target it actually
-    // merged into, so its tree cannot equal the pre-merge branch tip either.
-    await advanceMaster(p.dir, ['chore: master moved before the merge landed']);
+    // master moves with REAL, unrelated content BEFORE the squash merge
+    // lands, so the squash carries that unrelated file too. This is held
+    // TWICE over, independently: the range is now two commits, not one
+    // (condition 4), and the squash's tree — which includes the unrelated
+    // file HEAD never had — no longer equals HEAD's tree (condition 7).
+    // (An earlier version of this fixture advanced master with an EMPTY
+    // commit, which leaves the tree unchanged and is held by condition 4
+    // alone — the comment here previously, and wrongly, attributed the hold
+    // to a tree mismatch that never happened.)
+    await git(['checkout', '-q', 'master'], p.dir);
+    await writeFile(path.join(p.dir, 'unrelated.txt'), 'master moved before the merge landed\n');
+    await git(['add', 'unrelated.txt'], p.dir);
+    await git(['commit', '-q', '-m', 'chore: master moved before the merge landed'], p.dir);
+    await git(['checkout', '-q', 'feat/revalidation-close'], p.dir);
     const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
     const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
     expect(code, out).toBe(2);
@@ -1147,6 +1196,35 @@ describe("BEFORE_CLOSE — the own-merge exemption also binds to the checkout's 
     expect(code, out).toBe(2);
     expect(result.action).toBe('hold');
     expect(result.source).toContain('claim:scope');
+  });
+
+  it("a foreign commit landed by another route is exempted when its tree is byte-identical to HEAD's (condition 7 judges content, not provenance)", async () => {
+    const p = await closeProject();
+    const fromSha = await git(['rev-parse', 'master'], p.dir);
+    // The task's real work, exactly as a legitimate squash would carry it.
+    await writeFile(path.join(p.dir, 'feature.txt'), 'shipped\n');
+    await git(['add', 'feature.txt'], p.dir);
+    await git(['commit', '-q', '-m', 'feat: add feature.txt'], p.dir);
+    const headTree = await git(['rev-parse', 'HEAD^{tree}'], p.dir);
+    // Built by an entirely different route than `squashMergeOwnWork` (no
+    // `git merge --squash` in sight) but carrying the exact same tree, and
+    // it IS the real target advance: toSha === mergeCommit, exactly one
+    // commit, correctly rooted at the baseline. Conditions 2-6 pass on their
+    // own merits; only condition 7 could tell this apart from a genuine
+    // squash merge, and it correctly cannot — the target's content really is
+    // exactly what this run's own merge would have produced.
+    const landedByAnotherRoute = await git(
+      ['commit-tree', headTree, '-p', fromSha, '-m', 'chore: landed by another route entirely'],
+      p.dir,
+    );
+    await git(['branch', '-f', 'master', landedByAnotherRoute], p.dir);
+    const { code, result, out } = await revalidateCloseJson(p, [
+      '--merge-commit',
+      landedByAnotherRoute,
+    ]);
+    expect(code, out).toBe(0);
+    expect(result.action).toBe('continue');
+    expect(result.changed).toBe(false);
   });
 
   it('pins evidence.ownMergeAdvance on the genuine own-merge case', async () => {
