@@ -223,10 +223,13 @@ way `upgrade` reports a conflict; a manifest naming the same path under both
 ambiguity on its own. `.claude/settings.json` and `.codex/hooks.json` follow
 the same rule `upgrade` applies to them: removed only when the manifest proves
 the rig wrote those exact bytes, reported with the hooks still wired
-otherwise — and a hook file a preserved (edited) wiring file still calls is
-itself preserved too, naming which wiring file holds it, so `uninstall` never
-leaves a settings file the run deliberately kept pointing at a hook that is no
-longer there. The manifest itself is read and, at checkpoints below, verified
+otherwise — and a hook file a preserved (edited, or itself a symlink) wiring
+file still calls is itself preserved too, naming which wiring file holds it,
+whether that wiring's own state is discovered at plan time or only at apply
+time (an edit inside the confirmation-prompt window is re-checked before the
+first hook is removed) — so `uninstall` never leaves a settings file the run
+deliberately kept pointing at a hook that is no longer there. The manifest
+itself is read and, at checkpoints below, verified
 through the same symlink-safe check every other file gets — never a plain
 lexical path — so a symlinked `.claude` cannot make this command trust a
 manifest it did not really find, or delete one through a link that appeared

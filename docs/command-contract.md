@@ -810,27 +810,33 @@ enough that continuing is the wrong default, while an ordinary content edit
 is not.
 
 Every ancestor check above — `regularFileStatus`'s per-segment walk and its
-equivalent for the parent-cleanup below — is written to hold for a Windows
-directory JUNCTION exactly as it does for a POSIX symlink: an intermediate
-segment is refused unless it is BOTH a real directory and not a symlink
+equivalent for the parent-cleanup below — makes TWO independent checks at
+every segment, not one. The first is classification: an intermediate segment
+is refused unless it is BOTH a real directory and not a symlink
 (`info.isSymbolicLink() || !info.isDirectory()`), and the final segment
-unless it is a plain file and not a symlink (`!info.isSymbolicLink() &&
-info.isFile()`) — never `isDirectory()`/`isFile()` checked alone. Node/libuv
-report a junction through `Stats.isSymbolicLink()` on Windows the same way a
-real symlink is reported (the same behaviour this repository's own
+unless it is a plain file and not a symlink. The second, separate check does
+not read that classification at all: `realpath` is resolved on that same
+segment and the result must still fall inside the repository root. This
+second check is what makes the containment guarantee hold BY CONSTRUCTION for
+any reparse-point kind, including one `lstat` does not report as a symlink at
+all — `realpath` resolves the actual target regardless of how the entry
+classifies itself, so a segment whose real target lands outside the
+repository is refused whatever tag produced it.
+
+⚠ **What is, and is not, measured for a Windows directory junction
+specifically.** This repository's own development environment cannot create
+one. `packages/cli/test/uninstall.test.ts`'s junction tests, gated by
+`onlyOnWindows` and run only in the `windows-e2e` CI lane, measure that
+Node/libuv reports a junction through `Stats.isSymbolicLink()` on Windows the
+same way a real symlink is (the same behaviour this repository's own
 ancestor-escape fixtures already rely on elsewhere — e.g.
 `test/template/content-blind-revalidation.test.ts`'s
-`process.platform === 'win32' ? 'junction' : 'dir'` pattern, and the reason
-`fs.symlink(target, path, 'junction')` is the documented way to create a
-directory link on Windows without administrator privilege), so the explicit
-`isSymbolicLink()` clause is redundant with `isDirectory()` under that
-classification; it is written anyway so the guarantee does not depend on it —
-a hypothetical junction reporting `isDirectory(): true` would still be
-refused. Exercised by `packages/cli/test/uninstall.test.ts`'s junction tests,
-gated by `onlyOnWindows` and run only in the `windows-e2e` CI lane: this
-repository's own development environment cannot create a junction to verify
-this directly, which is exactly why the check is not written to depend on any
-one classification of it.
+`process.platform === 'win32' ? 'junction' : 'dir'` pattern) — that is, they
+exercise the FIRST (classification) check. They do not exercise the
+`realpath` check, and no claim is made that they do: that check needs no
+junction-specific measurement, because its containment property follows from
+what `realpath` does on any platform, independent of how the segment it is
+given happens to be classified.
 
 No manifest on disk is success with nothing to do (`planned`, `removed`,
 `absent` and `preserved` all empty, `manifestRemoved: false`), which is also
@@ -907,30 +913,50 @@ false`.
    `completed` names every file that really was removed, `remaining` names
    only the manifest, `error` names the mismatch.
 
-`--json`'s payload states the run's end state in one word, `outcome`, present
-on every completed run **that is not a `--dry-run` preview** (absent when
-`error` is set, AND absent on `--dry-run` over an existing plan — a preview
-has no end state to name, so the field is left out entirely rather than
-carrying a fourth, invented value):
+`--json`'s payload states the run's end state in one word, `outcome`. **One
+rule, no exceptions:** present on every completed run that is not a
+`--dry-run`, and absent on every `--dry-run` — including `noManifest`, where
+"nothing installed, nothing to do" only becomes an end state once a real
+(non-dry) run has acted, or declined to act, on it. Also absent whenever
+`error` is set — a hard failure is its own signal, not one of the three:
 
-| `outcome`     | when                                                                                                                                                                                                                    | manifest                                    |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `uninstalled` | nothing in the plan was `preserved`, and nothing was caught changed since planning (also reported for `noManifest`: nothing installed, nothing to do, regardless of `--dry-run` — that end state does not depend on it) | removed                                     |
-| `partial`     | something was `preserved`, or caught changed since planning, and `--detach` was not given                                                                                                                               | kept                                        |
-| `detached`    | `--detach` was given                                                                                                                                                                                                    | removed, regardless of what was `preserved` |
-| _(absent)_    | `--dry-run` over an existing plan: the plan was only shown, nothing was decided yet                                                                                                                                     | unchanged — nothing was touched             |
+| `outcome`     | when                                                                                                                                                | manifest                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `uninstalled` | not `--dry-run`; nothing in the plan was `preserved`, and nothing was caught changed since planning (also the `noManifest` case)                    | removed                                     |
+| `partial`     | not `--dry-run`; something was `preserved`, caught changed since planning, or a hook was protected only at apply time, and `--detach` was not given | kept                                        |
+| `detached`    | not `--dry-run`; `--detach` was given                                                                                                               | removed, regardless of what was `preserved` |
+| _(absent)_    | `--dry-run` — the plan was only shown, nothing was decided yet, whether or not a manifest exists                                                    | unchanged — nothing was touched             |
+
+A hook file (`.claude/hooks/*.mjs`) a wiring file still calls is preserved
+even when that protection is discovered only at APPLY time, not at plan
+time: `planUninstall`'s own per-file pass can only see the wiring file's
+state as it was when planning ran, so a wiring file still pristine then but
+edited — or replaced with a symlink — in the confirmation-prompt window is
+re-checked again, immediately before the first hook removal, using the SAME
+protection logic against current disk state. A wiring file this command
+cannot safely READ at that point (itself a symlink, or reached through one)
+protects every hook path this release owns, not a computed subset — this
+command has no safe way to learn which hooks an unsafe entry actually
+references without reading through it, and protecting too many is the safe
+direction; protecting too few is the bug this closes. Such a hook is reported
+in `--json`'s `preserved` array with the identical reason wording
+`planUninstall` itself uses for a hook it protects at plan time (`still
+referenced by <wiring path>, which was preserved as edited — removing this
+file would leave it pointing at nothing`), so a reader cannot tell which pass
+discovered the protection from the wording alone.
 
 **`--detach`** performs the identical safe cleanup — every check on this page
-applies exactly the same, including the two manifest-digest checkpoints — and
-then removes the manifest anyway, even when something in the plan is
-`preserved` or was caught changed at apply time. It never deletes a path this
-command would not otherwise have deleted on its own: `--detach` changes only
-whether the manifest survives a run that left something behind, never the
-per-path safety decisions above. There is no `--force` in this command, now
-or planned: nothing safety refuses to remove becomes removable by a flag.
-Every preserved (and changed-since-planning) path is still reported in
-`preserved`, which under `--detach` doubles as the handover list — what the
-rig is leaving for the user to own from here.
+applies exactly the same, including the two manifest-digest checkpoints and
+the apply-time hook re-check — and then removes the manifest anyway, even
+when something in the plan is `preserved` or was caught changed (or
+protected) at apply time. It never deletes a path this command would not
+otherwise have deleted on its own: `--detach` changes only whether the
+manifest survives a run that left something behind, never the per-path
+safety decisions above. There is no `--force` in this command, now or
+planned: nothing safety refuses to remove becomes removable by a flag. Every
+preserved, changed-since-planning, and apply-time-protected path is still
+reported in `preserved`, which under `--detach` doubles as the handover list
+— what the rig is leaving for the user to own from here.
 
 Removing a manifest-owned file also removes any parent directory that becomes
 empty as a result, walking up from that file and never past `dir` itself — with

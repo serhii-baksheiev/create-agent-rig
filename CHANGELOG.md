@@ -116,13 +116,27 @@ a template any generated rig receives.
   then removes the manifest anyway, leaving every preserved (or
   changed-since-planning) path for the user and printing the complete
   handover list — it never forces away a conflicting or modified file, and
-  there is no `--force`. Windows directory junctions get the same ancestor
-  protection symlinks do (`regularFileStatus` refuses on `isSymbolicLink()`
-  OR a non-directory/non-file result, never `isDirectory()` alone), exercised
-  by a Windows-only test in the `windows-e2e` lane
-  (`packages/cli/test/uninstall.test.ts`, gated by `onlyOnWindows`) since this
-  repository's own development environment cannot build a junction to verify
-  it directly.
+  there is no `--force`. A hook file a wiring file still calls survives even
+  when that protection is only discoverable at apply time — a symlinked
+  wiring file (whose referenced hooks cannot be safely read, so every owned
+  hook is protected instead of a guessed subset) or one edited inside the
+  confirmation-prompt window, re-checked immediately before the first hook
+  removal, since hook files sort ahead of the wiring that references them.
+  Every ancestor check now makes two independent tests per segment, not one:
+  the existing symlink/type classification, and a separate `realpath`
+  containment check that does not read that classification at all — the
+  second is what makes the containment guarantee hold for a Windows
+  directory junction (or any future reparse-point kind) by construction,
+  rather than resting on `isSymbolicLink()` reporting it correctly, which is
+  the one part of this that a Windows-only test in the `windows-e2e` lane
+  (`packages/cli/test/uninstall.test.ts`, gated by `onlyOnWindows`) actually
+  measures — this repository's own development environment cannot build a
+  junction to verify it directly. Also: a manifest segment with a very long
+  run of trailing dots or spaces no longer costs quadratic time to
+  normalise (a hostile committed manifest could otherwise hang
+  `uninstall --dry-run`); `rigOwnedPaths` reads the bare install-manifest
+  list rather than rendering every template's content just to learn which
+  paths exist.
 
 ### Generator (not a rig-facing change)
 

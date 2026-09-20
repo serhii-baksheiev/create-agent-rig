@@ -1,6 +1,6 @@
-import { lstat, readFile, readdir, rmdir, unlink } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { initInstallSet } from './init.js';
+import { initManifest } from './init.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
 import type { RigManifest } from '../lib/manifest.js';
@@ -84,9 +84,14 @@ export interface ApplyUninstallOptions {
  * - `detached` — `--detach` was requested: the same safe cleanup ran, and the
  *   manifest was removed regardless of what else was left behind.
  *
- * Present only on a run that actually completed (no `error`) — a hard failure
- * (a symlink appeared, the manifest itself went stale) is its own signal and
- * carries no outcome of this vocabulary.
+ * Present on every run that actually completed — EXCEPT a `--dry-run`, which
+ * reaches none of these three: a preview has no end state to name, so the
+ * field is left out entirely there rather than inventing a fourth value, and
+ * that holds even for `noManifest` ("nothing installed" only becomes an end
+ * state once a real, non-dry run has acted — or declined to act — on it).
+ * Also absent whenever `error` is present — a hard failure (a symlink
+ * appeared, the manifest itself went stale) is its own signal, not one of
+ * these three.
  */
 export type UninstallOutcome = 'uninstalled' | 'partial' | 'detached';
 
@@ -109,7 +114,20 @@ export interface ApplyUninstallResult {
    * in the handover) exactly as any other `preserved` path would be.
    */
   changedSincePlanning?: string[];
-  /** Which of the three {@link UninstallOutcome}s this run reached — absent exactly when `error` is present. */
+  /**
+   * Hook files a wiring file that has been edited, or replaced with a
+   * symlink, SINCE `planUninstall` ran still references — discovered only at
+   * apply time, because the plan itself still called the wiring pristine.
+   * Present only when at least one occurred. Not removed, not a failure: the
+   * run kept going, and the manifest is kept (or, under `--detach`, the path
+   * is named in the handover) exactly as any other preserved hook would be.
+   */
+  protectedHooksAtApply?: Array<{ rel: string; wiringRel: string }>;
+  /**
+   * Which of the three {@link UninstallOutcome}s this run reached — present
+   * on every completed run EXCEPT a `--dry-run` (a preview reaches no end
+   * state to name) and absent whenever `error` is present.
+   */
   outcome?: UninstallOutcome;
 }
 
@@ -168,23 +186,32 @@ export const NOT_A_REGULAR_FILE_REASON = 'not a regular file inside the reposito
  * "nothing here to remove", which is what the existing `absent` verdict
  * already says.
  *
- * ⚠ **Windows junctions.** A directory junction is a distinct NTFS
- * reparse-point kind from a symlink, and Node/libuv report it through
- * `Stats.isSymbolicLink()` on Windows the same way a real symlink is
- * reported — the same behaviour this repository's own ancestor-escape
- * fixtures already rely on elsewhere (`test/template/*.test.ts`'s
- * `process.platform === 'win32' ? 'junction' : 'dir'` pattern) and the reason
- * `fs.symlink(target, path, 'junction')` is the documented way to create a
- * directory link on Windows without administrator privilege. Every check
- * below is written to hold regardless of that classification anyway: an
- * intermediate segment is refused unless it is BOTH a real directory and not
- * a symlink, and the final segment is refused unless it is a plain file and
- * not a symlink — so even a hypothetical junction that reported
- * `isDirectory(): true` would still be caught. Exercised through
- * `planUninstall`/`applyUninstall` by `packages/cli/test/uninstall.test.ts`'s
- * Windows-only junction tests (`onlyOnWindows`), which run only in the
- * `windows-e2e` CI lane — this repository's own development environment
- * cannot create a junction to verify it directly.
+ * Two INDEPENDENT checks run at every segment, not one: the `lstat`
+ * classification (`isSymbolicLink()` / `isDirectory()` / `isFile()`) refuses
+ * anything not confirmed to be a plain directory or file, AND, separately,
+ * `realpath` on that same segment must still resolve inside `repoDir`. The
+ * second check does not read the classification at all — it is what makes
+ * the containment guarantee hold even for a reparse-point kind `lstat` does
+ * not report as a symlink, whatever that kind turns out to be, rather than
+ * resting on one interpretation of one field.
+ *
+ * ⚠ **What is and is not measured here.** This repository's own development
+ * environment cannot create a Windows directory junction, so the claim above
+ * — that the containment check does not depend on how `lstat` classifies
+ * one — is a property of the CODE (realpath resolution is classification-
+ * independent by construction), not a measurement taken on a junction.
+ * `packages/cli/test/uninstall.test.ts`'s Windows-only junction tests
+ * (`onlyOnWindows`) DO measure the symlink-classification branch, in the
+ * `windows-e2e` CI lane only: they pin that Node/libuv reports a junction
+ * through `Stats.isSymbolicLink()` on Windows the same way a real symlink is
+ * — the same behaviour this repository's own ancestor-escape fixtures
+ * elsewhere already rely on (`test/template/*.test.ts`'s
+ * `process.platform === 'win32' ? 'junction' : 'dir'` pattern). Neither this
+ * repository's tests nor its CI have ever exercised a reparse-point kind
+ * `lstat().isSymbolicLink()` reports `false` for while still pointing outside
+ * the repository, so no claim is made about that case beyond "the realpath
+ * check would still catch it, by construction, if the target actually
+ * resolves outside `repoDir`".
  */
 async function regularFileStatus(
   repoDir: string,
@@ -195,6 +222,13 @@ async function regularFileStatus(
   // exactly as it did when this was `onDisk`'s job alone. Only a path that
   // passes this can even reach the lstat walk below.
   onDisk(repoDir, rel);
+  let base: string;
+  try {
+    base = await realpath(repoDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+    throw error;
+  }
   const segments = rel.split('/');
   let current = repoDir;
   for (const [index, segment] of segments.entries()) {
@@ -207,13 +241,25 @@ async function regularFileStatus(
       throw error;
     }
     const isLast = index === segments.length - 1;
-    if (isLast) return !info.isSymbolicLink() && info.isFile() ? 'ok' : 'unsafe';
-    if (info.isSymbolicLink() || !info.isDirectory()) return 'unsafe';
+    const classifiedSafe = isLast
+      ? !info.isSymbolicLink() && info.isFile()
+      : !info.isSymbolicLink() && info.isDirectory();
+    if (!classifiedSafe) return 'unsafe';
+    // Classification-independent: whatever this segment reports itself as,
+    // its actual target must still resolve inside the repository root.
+    let resolved: string;
+    try {
+      resolved = await realpath(current);
+    } catch {
+      return 'unsafe';
+    }
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) return 'unsafe';
   }
-  // Unreachable: `segments` always has at least one element (`''.split('/')`
-  // is `['']`), and every branch inside the loop returns. Here only to
-  // satisfy the compiler, the same way `applyUpgrade`'s "Internal:" throw does.
-  throw new UninstallError(`Internal: could not classify "${rel}" — no path segment to check.`);
+  return 'ok';
+  // Unreachable in practice: `segments` always has at least one element
+  // (`''.split('/')` is `['']`), and every branch inside the loop above
+  // returns before falling through. No trailing throw is needed here — the
+  // loop's own `return 'ok'` covers every path that reaches the end of it.
 }
 
 const normalizeToLF = (content: string): string => content.replace(/\r\n/g, '\n');
@@ -251,7 +297,13 @@ function isLineEndingOnlyMatch(current: Buffer, recordedHash: string): boolean {
  */
 function normalizeGitLikeSegment(segment: string): string {
   const withoutStream = segment.split(':')[0] ?? segment;
-  return withoutStream.replace(/[. ]+$/, '').toLowerCase();
+  // A linear scan, not a regex: `/[. ]+$/` backtracks quadratically on a long
+  // run of dots on some engines/inputs (measured: 400,000 dots cost 83s of
+  // CPU) — availability only, nothing is removed, but a manifest is
+  // committed input and a hostile one must not be able to hang a `--dry-run`.
+  let end = withoutStream.length;
+  while (end > 0 && (withoutStream[end - 1] === '.' || withoutStream[end - 1] === ' ')) end--;
+  return withoutStream.slice(0, end).toLowerCase();
 }
 
 /**
@@ -315,9 +367,16 @@ function refuseFilesKeptOverlap(manifest: RigManifest): void {
  * suffix (`name::$DATA`) is never mistaken for the plain name it addresses on
  * disk — the two are different strings, so the suffixed one is simply absent
  * from this set and falls to `preserved` on that ground alone.
+ *
+ * Reads `initManifest()` alone — the bare `{ rel, source }` list — never
+ * `initInstallSet`, which also RENDERS every template's substituted content.
+ * Ownership is a question about which PATHS this release installs, not about
+ * what bytes it would write there; coupling it to content rendering means a
+ * destructive command's plan can fail on a template error that has nothing
+ * to do with what is being deleted.
  */
-async function rigOwnedPaths(repoDir: string): Promise<Set<string>> {
-  const files = await initInstallSet(repoDir);
+async function rigOwnedPaths(): Promise<Set<string>> {
+  const files = await initManifest();
   return new Set(files.map((f) => f.rel));
 }
 
@@ -342,37 +401,72 @@ async function readManifestBytes(repoDir: string): Promise<Buffer | null> {
   return readFile(onDisk(repoDir, MANIFEST_REL));
 }
 
+/** Matches an owned hook file's path shape — `.claude/hooks/<name>.mjs`. */
+const HOOK_REL_PATTERN = /^\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs$/;
+
+/** Reason named when a hook file is preserved because the wiring file that still calls it is itself preserved. */
+export function hookStillReferencedReason(wiringRel: string): string {
+  return `still referenced by ${wiringRel}, which was preserved as edited — removing this file would leave it pointing at nothing`;
+}
+
 /**
- * Hook files a PRESERVED (edited) wiring file still references, keyed by the
- * hook's own `rel` and naming which wiring file holds it.
+ * Hook files a wiring file that will end up PRESERVED (not removed) still
+ * references, keyed by the hook's own `rel` and naming which wiring file
+ * protects it — plus the wiring bytes this pass already read for an `'ok'`
+ * wiring file, so a caller that goes on to decide THAT wiring file's own
+ * verdict never reads and hashes it a second time.
  *
- * Computed as its own pass, before the main per-file loop below — deciding a
- * hook file's own verdict from that single alphabetical pass would process it
- * before its wiring file's preserved status was even known, since a wiring
- * path (`.claude/settings.json`) sorts AFTER the hook files it references
- * (`.claude/hooks/*.mjs`). Deleting a hook file a preserved wiring file still
- * calls would leave that wiring — which the run left in place on purpose —
- * pointing at nothing, including the secret guard if it happened to be the
- * hook in question.
+ * Computed as its own pass, before the main per-file loop that calls it —
+ * deciding a hook file's own verdict from a single alphabetical pass over
+ * `manifest.files` would process it before its wiring file's preserved
+ * status was even known, since a wiring path (`.claude/settings.json`) sorts
+ * AFTER the hook files it references (`.claude/hooks/*.mjs`).
+ *
+ * `recordedHashFor` abstracts over WHERE the recorded hash comes from, so
+ * this one pass serves both callers: `planUninstall` asks the manifest
+ * directly; `applyUninstall` calls this a SECOND time, asking the plan's own
+ * `remove`-verdict actions instead, to catch a wiring file that was still
+ * pristine when `planUninstall` ran this same pass but has since been
+ * edited or replaced with a symlink — the window a confirmation prompt sits
+ * in, and hook files sort ahead of the wiring that references them, so the
+ * removal loop would otherwise unlink them before ever re-examining it.
+ *
+ * A wiring file this command cannot safely READ (`status === 'unsafe'` —
+ * itself a symlink, or reached through one) still gets its hooks protected:
+ * every hook path this release owns, not a computed subset, because reading
+ * an unsafe entry to learn exactly which hooks it names is precisely what
+ * `regularFileStatus` exists to refuse. Protecting too many hooks is the
+ * safe direction; protecting too few — leaving a settings file the run kept
+ * pointing at a hook it just deleted — is the bug this exists to close.
  */
 async function protectedHooksFor(
   repoDir: string,
-  manifest: RigManifest,
   ownedPaths: ReadonlySet<string>,
-): Promise<Map<string, string>> {
+  recordedHashFor: (wiringRel: string) => string | undefined,
+): Promise<{ protectedHooks: Map<string, string>; wiringBytes: Map<string, Buffer> }> {
   const protectedHooks = new Map<string, string>();
+  const wiringBytes = new Map<string, Buffer>();
   for (const wiringRel of WIRING_PATHS) {
-    const recorded = manifest.files[wiringRel];
+    const recorded = recordedHashFor(wiringRel);
     if (recorded === undefined || !ownedPaths.has(wiringRel)) continue;
     const status = await regularFileStatus(repoDir, wiringRel);
-    if (status !== 'ok') continue;
+    if (status === 'absent') continue;
+    if (status === 'unsafe') {
+      for (const rel of ownedPaths) {
+        if (HOOK_REL_PATTERN.test(rel) && !protectedHooks.has(rel)) {
+          protectedHooks.set(rel, wiringRel);
+        }
+      }
+      continue;
+    }
     const current = await readFile(onDisk(repoDir, wiringRel));
+    wiringBytes.set(wiringRel, current);
     if (sha256(current) === recorded) continue; // pristine — removed, not preserved
     for (const hook of hookFilesReferencedIn(current.toString('utf8'))) {
       if (!protectedHooks.has(hook)) protectedHooks.set(hook, wiringRel);
     }
   }
-  return protectedHooks;
+  return { protectedHooks, wiringBytes };
 }
 
 /**
@@ -399,8 +493,12 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
   }
   refuseGitPaths(manifest);
   refuseFilesKeptOverlap(manifest);
-  const ownedPaths = await rigOwnedPaths(repoDir);
-  const protectedHooks = await protectedHooksFor(repoDir, manifest, ownedPaths);
+  const ownedPaths = await rigOwnedPaths();
+  const { protectedHooks, wiringBytes } = await protectedHooksFor(
+    repoDir,
+    ownedPaths,
+    (wiringRel) => manifest.files[wiringRel],
+  );
 
   const actions: UninstallAction[] = [];
   for (const rel of Object.keys(manifest.files).sort()) {
@@ -427,8 +525,10 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       continue;
     }
     // status === 'ok': every ancestor is a real directory and the path itself
-    // is a regular file — safe to read and to hash.
-    const current = await readFile(onDisk(repoDir, rel));
+    // is a regular file — safe to read and to hash. A wiring file's bytes may
+    // already have been read by `protectedHooksFor` above; reuse them rather
+    // than reading the same file twice.
+    const current = wiringBytes.get(rel) ?? (await readFile(onDisk(repoDir, rel)));
 
     if (WIRING_PATHS.has(rel)) {
       if (sha256(current) === recorded) {
@@ -451,7 +551,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       actions.push({
         rel,
         verdict: 'preserved',
-        reason: `still referenced by ${protectingWiring}, which was preserved as edited — removing this file would leave it pointing at nothing`,
+        reason: hookStillReferencedReason(protectingWiring),
       });
       continue;
     }
@@ -487,6 +587,12 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
  * through a symlink it did not itself just reject.
  */
 async function isPlainDirectoryChain(repoDir: string, relDir: string): Promise<boolean> {
+  let base: string;
+  try {
+    base = await realpath(repoDir);
+  } catch {
+    return false;
+  }
   let current = repoDir;
   for (const segment of relDir.split('/')) {
     current = path.join(current, segment);
@@ -496,10 +602,18 @@ async function isPlainDirectoryChain(repoDir: string, relDir: string): Promise<b
     } catch {
       return false;
     }
-    // `isSymbolicLink()` checked explicitly, not only `isDirectory()` — the
-    // same defensive pairing `regularFileStatus` uses, so this holds for a
-    // Windows junction regardless of exactly how it is classified.
     if (info.isSymbolicLink() || !info.isDirectory()) return false;
+    // Classification-independent, the same second check `regularFileStatus`
+    // makes and for the same reason: whatever `lstat` classifies this
+    // segment as, its actual target must still resolve inside the
+    // repository root.
+    let resolved: string;
+    try {
+      resolved = await realpath(current);
+    } catch {
+      return false;
+    }
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) return false;
   }
   return true;
 }
@@ -587,7 +701,14 @@ export async function applyUninstall(
   plan: UninstallPlan,
   options: ApplyUninstallOptions = {},
 ): Promise<ApplyUninstallResult> {
-  if (plan.noManifest) return { removed: [], manifestRemoved: false, outcome: 'uninstalled' };
+  if (plan.noManifest) {
+    // `outcome` names one of three end states a REAL run reached; `--dry-run`
+    // never reaches one, including here — "nothing installed" is only an end
+    // state once a real run has (not) acted on it. See `UninstallOutcome`.
+    return options.dryRun === true
+      ? { removed: [], manifestRemoved: false }
+      : { removed: [], manifestRemoved: false, outcome: 'uninstalled' };
+  }
 
   const toRemove = plan.actions.filter((a) => a.verdict === 'remove');
   if (options.dryRun === true) return { removed: [], manifestRemoved: false };
@@ -617,11 +738,41 @@ export async function applyUninstall(
     }
   }
 
+  // Re-derived here, not trusted from the plan's own (already-baked-in)
+  // per-file verdicts: a wiring file that was still pristine when
+  // `planUninstall` ran can have been edited, or replaced with a symlink, in
+  // the window since — the confirmation prompt sits in exactly that window —
+  // and hook files sort ahead of the wiring that references them, so the
+  // removal loop below would otherwise unlink them before ever re-examining
+  // it. `recordedHashFor` reads each wiring path's hash off `toRemove`
+  // itself: defined only when the PLAN called it `remove` (pristine at plan
+  // time), which is exactly the case this re-check exists to catch — a
+  // wiring path the plan already preserved protected its hooks in the plan's
+  // own actions already, and needs no second pass here.
+  const ownedPaths = await rigOwnedPaths();
+  const { protectedHooks: applyTimeProtectedHooks, wiringBytes } = await protectedHooksFor(
+    repoDir,
+    ownedPaths,
+    (wiringRel) => toRemove.find((a) => a.rel === wiringRel)?.recordedHash,
+  );
+
   const removeFile = options.removeFile ?? ((absolutePath: string) => unlink(absolutePath));
   const removed: string[] = [];
   const changedSincePlanning: string[] = [];
+  const protectedHooksAtApply: Array<{ rel: string; wiringRel: string }> = [];
   for (let i = 0; i < toRemove.length; i++) {
     const { rel, recordedHash } = toRemove[i]!;
+
+    const protectingWiring = applyTimeProtectedHooks.get(rel);
+    if (protectingWiring !== undefined) {
+      // Discovered only now: the plan said `remove`, but the wiring file
+      // that still calls this hook has since been edited or become a
+      // symlink. Skipped, never removed, reported loudly — this is not a
+      // silent exit 0.
+      protectedHooksAtApply.push({ rel, wiringRel: protectingWiring });
+      continue;
+    }
+
     try {
       // Re-checked here, not trusted from the plan: the plan can be stale by
       // the time this runs, and a symlink swapped in after planning is
@@ -637,9 +788,10 @@ export async function applyUninstall(
       // above cannot see a plain edit, and the confirmation prompt between
       // the plan and this call is exactly the window one could happen in. A
       // mismatch is not suspicious the way a symlink is — it is skipped, not
-      // aborted, and the run keeps going.
+      // aborted, and the run keeps going. A wiring file's bytes may already
+      // be cached from the hook-protection re-check above.
       if (recordedHash !== undefined) {
-        const current = await readFile(onDisk(repoDir, rel));
+        const current = wiringBytes.get(rel) ?? (await readFile(onDisk(repoDir, rel)));
         if (sha256(current) !== recordedHash) {
           changedSincePlanning.push(rel);
           continue;
@@ -655,13 +807,15 @@ export async function applyUninstall(
         remaining: wouldDeleteManifest ? [...stillOwed, MANIFEST_REL] : stillOwed,
         error: (error as Error).message,
         ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+        ...(protectedHooksAtApply.length > 0 ? { protectedHooksAtApply } : {}),
       };
     }
     removed.push(rel);
     await removeEmptyParents(repoDir, rel);
   }
 
-  const stillPreserved = !wouldDeleteManifest || changedSincePlanning.length > 0;
+  const stillPreserved =
+    !wouldDeleteManifest || changedSincePlanning.length > 0 || protectedHooksAtApply.length > 0;
 
   // Something is still preserved and this is not a detach — the rig remains
   // installed, on purpose. The manifest is the only record naming what it
@@ -673,6 +827,7 @@ export async function applyUninstall(
       manifestRemoved: false,
       outcome: 'partial',
       ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+      ...(protectedHooksAtApply.length > 0 ? { protectedHooksAtApply } : {}),
     };
   }
 
@@ -696,6 +851,7 @@ export async function applyUninstall(
         remaining: [MANIFEST_REL],
         error: mismatch,
         ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+        ...(protectedHooksAtApply.length > 0 ? { protectedHooksAtApply } : {}),
       };
     }
   }
@@ -710,6 +866,7 @@ export async function applyUninstall(
       remaining: [MANIFEST_REL],
       error: (error as Error).message,
       ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+      ...(protectedHooksAtApply.length > 0 ? { protectedHooksAtApply } : {}),
     };
   }
   // The manifest is often the last file left in `.claude/` — its own removal
@@ -722,5 +879,6 @@ export async function applyUninstall(
     manifestRemoved: true,
     outcome: detach ? 'detached' : 'uninstalled',
     ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+    ...(protectedHooksAtApply.length > 0 ? { protectedHooksAtApply } : {}),
   };
 }

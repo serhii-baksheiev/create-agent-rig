@@ -206,6 +206,26 @@ describe('planUninstall — per-file verdicts', () => {
     await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
   });
 
+  // A manifest is committed, untrusted input — segment normalisation must
+  // stay linear-time in the length of a hostile segment, not merely correct.
+  // A regex-based trim here once backtracked quadratically (measured:
+  // 400,000 trailing dots cost 83s of CPU), which is an availability attack
+  // a committed manifest could mount against `--dry-run` alone, nothing
+  // needing to be removed. This uses a smaller, still-decisive count: any
+  // remaining quadratic behavior would still blow well past the bound below.
+  it('normalises a manifest segment with a very long run of trailing dots in bounded time, and still refuses it', async () => {
+    await installRig();
+    const hostileRel = `.git${'.'.repeat(200_000)}/hooks/pre-commit`;
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    manifest.files[hostileRel] = sha256('whatever the manifest claims this is');
+    await writeManifest(repo, manifest);
+
+    const start = Date.now();
+    await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
   // A manifest this rig ever wrote never lists the same path in both `files`
   // and `kept` — `planUpgrade` explicitly excludes a `kept` path the moment
   // it becomes one the rig vouches for. A manifest that does is therefore
@@ -257,7 +277,10 @@ describe('planUninstall — per-file verdicts', () => {
     ['.claude/doctor-exemptions.json', '{}'],
     ['docs/architecture.md', '# not shipped by this release\n'],
     ['journal/2026-09.md', '# journal entry\n'],
-    ['.claude/user-secret.txt', 'sk-not-a-real-secret-but-treated-as-user-owned\n'],
+    [
+      '.claude/user-secret.txt',
+      'a personal note the user keeps here, not shipped by any release\n',
+    ],
   ] as const)(
     'preserves %s even with its true hash — ownership is the exact path, not the top-level directory',
     async (rel, content) => {
@@ -706,15 +729,21 @@ describe('planUninstall / applyUninstall — a symlink never gets read or remove
 // above cannot cover, because `symlink(..., 'dir')` needs a privilege an
 // ordinary CI account lacks while a junction does not — that asymmetry is
 // exactly why junctions are worth their own case rather than being folded
-// into `symlinksAvailable`. `regularFileStatus`'s own safety does not lean on
-// any one classification of a junction: the intermediate-segment check is
-// `info.isSymbolicLink() || !info.isDirectory()`, so it refuses whether a
-// junction is reported as a symlink (the documented Node/libuv behaviour on
-// Windows, and the same behaviour this repository's own ancestor-escape
-// fixtures elsewhere already rely on — e.g.
-// `test/template/content-blind-revalidation.test.ts`'s
-// `process.platform === 'win32' ? 'junction' : 'dir'` pattern) or, failing
-// that, simply because it is not a plain directory either way.
+// into `symlinksAvailable`.
+//
+// What these two tests actually pin, stated precisely rather than claimed
+// more broadly: that Node/libuv reports a junction through
+// `Stats.isSymbolicLink()` on Windows the same way a real symlink is (the
+// same behaviour this repository's own ancestor-escape fixtures elsewhere
+// already rely on — e.g. `test/template/content-blind-revalidation.test.ts`'s
+// `process.platform === 'win32' ? 'junction' : 'dir'` pattern), so
+// `regularFileStatus`'s classification check refuses it exactly as it
+// refuses a symlink. They do NOT measure the separate `realpath` containment
+// check `regularFileStatus` also makes — that check is classification
+// -independent BY CONSTRUCTION (it resolves the actual target and compares
+// it against the repository root, without reading `isSymbolicLink()` at
+// all), so no fixture is needed to demonstrate it holds for a reparse-point
+// kind these two tests do not build.
 describe('planUninstall / applyUninstall — a Windows junction never gets read or removed through', () => {
   const onlyOnWindowsPlatform = (name: string, body: () => Promise<void>): void =>
     it(name, async (ctx) => {
@@ -914,17 +943,58 @@ describe('applyUninstall — a file that changed after planning', () => {
     await expect(readManifest(repo)).resolves.not.toBeNull();
   });
 
-  it('never removes a wiring file whose bytes changed after planning either', async () => {
+  it('never removes a wiring file whose bytes changed after planning — and never removes the hooks it still references either', async () => {
     await installRig();
     const plan = await planUninstall(repo);
     expect(actionFor(plan, SETTINGS)?.verdict).toBe('remove');
 
-    await write(SETTINGS, `${await read(SETTINGS)}\n`);
+    // still pristine AT PLAN TIME, so `protectedHooksFor`'s plan-time pass
+    // finds nothing to protect — the edit happens only now, in the window a
+    // confirmation prompt sits in. Hook files sort ahead of
+    // `.claude/settings.json` alphabetically, so a naive re-check would
+    // unlink every hook this settings.json still references before ever
+    // noticing the settings.json edit itself.
+    const original = await read(SETTINGS);
+    const edited = `${original}\n`;
+    await write(SETTINGS, edited);
+    const referencedHooks = [...hookFilesReferencedIn(original)];
+    expect(referencedHooks.length).toBeGreaterThan(0);
 
     const result = await applyUninstall(repo, plan);
     expect(result.changedSincePlanning).toContain(SETTINGS);
     expect(await exists(SETTINGS)).toBe(true);
+    for (const hookRel of referencedHooks) {
+      expect(await exists(hookRel), hookRel).toBe(true);
+    }
   });
+
+  onlyWhereSymlinksExist(
+    'never removes a hook file referenced by wiring that is itself a symlink, even though it cannot safely read which hooks the wiring names',
+    async () => {
+      await installRig();
+      const original = await read(SETTINGS);
+      const referencedHooks = [...hookFilesReferencedIn(original)];
+      expect(referencedHooks.length).toBeGreaterThan(0);
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const target = path.join(outside, 'external-settings.json');
+        await writeFile(target, original);
+        await rm(abs(SETTINGS));
+        await symlink(target, abs(SETTINGS));
+
+        const plan = await planUninstall(repo);
+        expect(actionFor(plan, SETTINGS)?.verdict).toBe('preserved');
+
+        await applyUninstall(repo, plan);
+        for (const hookRel of referencedHooks) {
+          expect(await exists(hookRel), hookRel).toBe(true);
+        }
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
 });
 
 // The manifest's own bytes are the evidence the whole plan rests on — a

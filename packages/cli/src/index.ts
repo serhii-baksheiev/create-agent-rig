@@ -11,6 +11,7 @@ import {
   CHANGED_SINCE_PLANNING_REASON,
   UninstallError,
   applyUninstall,
+  hookStillReferencedReason,
   planUninstall,
 } from './commands/uninstall.js';
 import type {
@@ -429,12 +430,21 @@ interface UninstallPayload {
  * plan's own answer regardless of outcome, so a caller can tell "what would
  * this have done" from "what did it do" even when they differ.
  *
- * `changedSincePlanning` paths are folded into `preserved`, reason
- * {@link CHANGED_SINCE_PLANNING_REASON} — they are not in `plan.actions`
- * (they were `remove` at plan time, and only discovered changed at apply
- * time), but they are exactly as un-removed as any other preserved path, and
- * a caller reading `preserved` for "what did this run leave behind" must see
- * them there too, not in a fourth, easy-to-miss list.
+ * `changedSincePlanning` and `protectedHooksAtApply` paths are both folded
+ * into `preserved` — the first with reason
+ * {@link CHANGED_SINCE_PLANNING_REASON}, the second with
+ * {@link hookStillReferencedReason}, the same function `planUninstall` itself
+ * calls to word a hook it protects at PLAN time, so a reader cannot tell
+ * which pass discovered the protection from the wording alone. Neither is in
+ * `plan.actions` (both were `remove` at plan time and only discovered
+ * otherwise at apply time), but both are exactly as un-removed as any other
+ * preserved path, and a caller reading `preserved` for "what did this run
+ * leave behind" must see them there too, not in a third and fourth,
+ * easy-to-miss list.
+ *
+ * `outcome` is passed straight through from `applyUninstall`'s own result:
+ * present on every completed, non-dry-run call, absent on `--dry-run` and on
+ * a hard failure alike — this function never invents or infers it.
  */
 function uninstallPayload(
   dryRun: boolean,
@@ -446,6 +456,7 @@ function uninstallPayload(
     remaining?: string[];
     error?: string;
     changedSincePlanning?: string[];
+    protectedHooksAtApply?: Array<{ rel: string; wiringRel: string }>;
     outcome?: UninstallOutcome;
   },
 ): UninstallPayload {
@@ -465,6 +476,10 @@ function uninstallPayload(
       ...(applied?.changedSincePlanning ?? []).map((path) => ({
         path,
         reason: CHANGED_SINCE_PLANNING_REASON,
+      })),
+      ...(applied?.protectedHooksAtApply ?? []).map(({ rel, wiringRel }) => ({
+        path: rel,
+        reason: hookStillReferencedReason(wiringRel),
       })),
     ],
     manifestRemoved: applied?.manifestRemoved ?? false,
@@ -512,6 +527,12 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
         json: { type: 'boolean' },
         yes: { type: 'boolean' },
         detach: { type: 'boolean' },
+        // `--no-color` for the same reason it is accepted on `init` and
+        // `upgrade`: USAGE offers it without scoping it to one command. It
+        // has no observable effect here specifically — uninstall's report
+        // never uses the colour palette in the first place — accepted only
+        // so the flag never produces an "unknown option" error a reader of
+        // USAGE would not expect.
         'no-color': { type: 'boolean' },
       },
       allowPositionals: true,
@@ -557,9 +578,19 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 
   if (plan.noManifest) {
     if (json) {
+      // `outcome` names an END STATE a real run reached; `--dry-run` never
+      // reaches one, even here — "nothing installed" is an end state only
+      // once a real (non-dry) run has acted, or declined to act, on it.
       process.stdout.write(
         `${JSON.stringify(
-          uninstallPayload(dryRun, [], [], { manifestRemoved: false, outcome: 'uninstalled' }),
+          uninstallPayload(
+            dryRun,
+            [],
+            [],
+            dryRun
+              ? { manifestRemoved: false }
+              : { manifestRemoved: false, outcome: 'uninstalled' },
+          ),
         )}\n`,
       );
     } else {
@@ -630,6 +661,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
             remaining: result.remaining,
             error: result.error,
             changedSincePlanning: result.changedSincePlanning,
+            protectedHooksAtApply: result.protectedHooksAtApply,
           }),
         )}\n`,
       );
@@ -650,6 +682,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
         uninstallPayload(false, plan.actions, result.removed, {
           manifestRemoved: result.manifestRemoved,
           changedSincePlanning: result.changedSincePlanning,
+          protectedHooksAtApply: result.protectedHooksAtApply,
           outcome: result.outcome,
         }),
       )}\n`,
@@ -659,12 +692,14 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 
   // The three outcomes `--json` names structurally are said in prose here
   // too, not only encoded in a field: `preserved` below folds together the
-  // plan's own `preserved` verdicts and any path caught changed only at apply
-  // time — both are equally "left behind", and a report naming only one kind
-  // would read as if the other never happened.
+  // plan's own `preserved` verdicts, any path caught changed only at apply
+  // time, and any hook a wiring file's OWN apply-time edit or symlink just
+  // protected — all three are equally "left behind", and a report naming
+  // only one kind would read as if the others never happened.
   const preserved = [
     ...plan.actions.filter((a) => a.verdict === 'preserved').map((a) => a.rel),
     ...(result.changedSincePlanning ?? []),
+    ...(result.protectedHooksAtApply ?? []).map((p) => p.rel),
   ];
   if (result.outcome === 'detached') {
     process.stdout.write(
