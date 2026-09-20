@@ -1,13 +1,11 @@
 import { lstat, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { initManifest } from './init.js';
-import { AGENTS_MD_RESCUE } from './upgrade.js';
+import { AGENTS_MD_RESCUE, renderedAgentsMd } from './upgrade.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { ALL_LAYERS, MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
 import type { RigManifest } from '../lib/manifest.js';
 import { MAX_PATH_SEGMENTS, exceedsMaxPathSegments, resolveInside } from '../lib/safe-path.js';
-import type { SubstitutionContext } from '../lib/substitute.js';
-import { substituteContent } from '../lib/substitute.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class UninstallError extends Error {}
@@ -1081,32 +1079,45 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
   // `manifest.kept` — both are always decided by the loop above, never here.
   const claudeAction = actions.find((a) => a.rel === 'CLAUDE.md');
   const agentsAction = actions.find((a) => a.rel === 'AGENTS.md');
-  const siblingState = (a: UninstallAction | undefined): string =>
-    a === undefined
-      ? 'is not tracked by this rig'
-      : a.verdict === 'absent'
+  // Round 5 advisory: the `undefined` case previously said "is not tracked
+  // by this rig", which reads as "is absent" — it is not. `undefined` here
+  // only ever means the manifest never named this path (an old, pre-RP-186
+  // manifest missing an entry the current install set always has); the file
+  // itself may well be sitting right there. Checked directly rather than
+  // guessed at, so the wording says what is actually true.
+  const siblingState = async (a: UninstallAction | undefined, rel: string): Promise<string> => {
+    if (a !== undefined) {
+      return a.verdict === 'absent'
         ? 'is already gone'
         : `stays as yours (${a.reason ?? 'edited'})`;
+    }
+    const status = await regularFileStatus(repoDir, rel);
+    return status === 'absent' ? 'is already gone' : 'exists and is yours (untracked by this rig)';
+  };
   const notACleanRemoval = (a: UninstallAction | undefined): boolean =>
     a === undefined || a.verdict === 'preserved' || a.verdict === 'absent';
   if (claudeAction?.verdict === 'remove' && notACleanRemoval(agentsAction)) {
     claudeAction.note =
       `this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which ` +
-      `${siblingState(agentsAction)}, as the only rulebook copy`;
+      `${await siblingState(agentsAction, 'AGENTS.md')}, as the only rulebook copy`;
   }
   if (agentsAction?.verdict === 'remove' && notACleanRemoval(claudeAction)) {
     agentsAction.note =
       `this is the rig's own AGENTS.md — removing it leaves CLAUDE.md, which ` +
-      `${siblingState(claudeAction)}, as the only rulebook copy`;
+      `${await siblingState(claudeAction, 'CLAUDE.md')}, as the only rulebook copy`;
   }
 
-  // Round 4, blocker 1: the sibling `upgrade` writes when AGENTS.md cannot
-  // be resolved automatically (`AGENTS_MD_RESCUE`, never recorded in the
+  // Round 4, blocker 1 (round 5: shares `renderedAgentsMd` with `upgrade.ts`
+  // — one implementation of "is this the current rendering", not two that
+  // could drift apart): the sibling `upgrade` writes when CLAUDE.md's shim
+  // is genuinely held back (`AGENTS_MD_RESCUE`, never recorded in the
   // manifest) is invisible to the loop above — it only ever walks
   // `manifest.files`/`manifest.kept`. Decided the same way as everything
   // else here: rig-owned (removable) only when its bytes are EXACTLY what
   // this release would render for THIS project right now; anything else is
-  // the user's, left alone and reported as preserved.
+  // the user's, left alone and reported as preserved. Round 5 advisory:
+  // annotated in every state, not only `preserved` — a bare `remove` line
+  // said nothing about why removing an UNTRACKED path was safe.
   const rescueStatus = await regularFileStatus(repoDir, AGENTS_MD_RESCUE);
   if (rescueStatus === 'unsafe') {
     actions.push({
@@ -1116,12 +1127,13 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
     });
   } else if (rescueStatus === 'ok') {
     const rescueBytes = await readFile(onDisk(repoDir, AGENTS_MD_RESCUE));
-    const rendered = await renderedAgentsMd(manifest);
+    const rendered = await renderedAgentsMd(manifest.project, manifest.layers ?? ALL_LAYERS);
     if (rendered !== null && sha256(rescueBytes) === sha256(Buffer.from(rendered, 'utf8'))) {
       actions.push({
         rel: AGENTS_MD_RESCUE,
         verdict: 'remove',
         recordedHash: sha256(rescueBytes),
+        note: 'byte-identical to what this release renders for AGENTS.md right now — safe to remove, and never recorded in the manifest as rig-owned',
       });
     } else {
       actions.push({
@@ -1136,22 +1148,6 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
   // installs.
 
   return { noManifest: false, actions, manifestHash };
-}
-
-/**
- * The bytes THIS release would render for AGENTS.md, for THIS project right
- * now — the same rendering `initFileContents`/`upgrade` uses, computed
- * directly from the one file this needs rather than rendering the whole
- * install set. `null` only if a future release ever stopped shipping
- * AGENTS.md as a plain substituted file (it does not today).
- */
-async function renderedAgentsMd(manifest: RigManifest): Promise<string | null> {
-  const layers = manifest.layers ?? ALL_LAYERS;
-  const files = await initManifest(layers);
-  const entry = files.find((f) => f.rel === 'AGENTS.md');
-  if (entry === undefined || entry.source === null) return null;
-  const ctx: SubstitutionContext = { projectName: manifest.project.name };
-  return substituteContent(await readFile(entry.source, 'utf8'), ctx);
 }
 
 /**

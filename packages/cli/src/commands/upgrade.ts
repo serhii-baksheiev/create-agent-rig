@@ -1,12 +1,15 @@
 import { access, lstat, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { initInstallSet, layerOnlyPaths, projectNameFor } from './init.js';
+import { initInstallSet, initManifest, layerOnlyPaths, projectNameFor } from './init.js';
+import { isReadableRulebook } from '../lib/elevated-paths.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
 import { ALL_LAYERS, MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { Layer, RigManifest, RigProject } from '../lib/manifest.js';
 import { isSafeSubstitutionValue, resolveInside, resolveWritableInside } from '../lib/safe-path.js';
+import { substituteContent } from '../lib/substitute.js';
+import type { SubstitutionContext } from '../lib/substitute.js';
 import { packageVersion } from '../lib/version.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
@@ -73,6 +76,8 @@ export interface UpgradePlan {
   contents: Map<string, string>;
   /** The manifest to leave behind once the plan is applied. */
   manifest: RigManifest;
+  /** See {@link AgentsRescueStatus}. Decided here, at plan time, always. */
+  agentsRescue: AgentsRescueStatus;
 }
 
 export interface UpgradeOptions {
@@ -86,43 +91,48 @@ export interface ApplyOptions {
 
 /**
  * The sibling file `upgrade` writes RENDERED (already project-substituted)
- * AGENTS.md bytes into when AGENTS.md itself cannot be resolved
- * automatically (round 4, blocker 1 — the previous remedy, a ~270-line dump
- * to stdout, could not actually be pasted back: de-indenting it byte-for-byte
- * by hand is not something a human does reliably, and nothing tested that a
- * human could). Never `AGENTS.md` itself, and never recorded in the
- * manifest — see {@link AgentsRescueOutcome} for what happens to it on later
- * runs.
+ * AGENTS.md bytes into when — and only when — CLAUDE.md's shim adoption is
+ * genuinely held back (round 5's content-based rule; see
+ * {@link isReadableRulebook}). Never `AGENTS.md` itself, and never recorded
+ * in the manifest. See {@link AgentsRescueStatus} for what decides whether
+ * this run touches it at all.
  */
 export const AGENTS_MD_RESCUE = 'AGENTS.md.rig-new';
 
 /**
- * What this run did with {@link AGENTS_MD_RESCUE}, for the CLI to report —
- * `null` when AGENTS.md needed no rescue and none was left over from before.
+ * The rescue file's status, decided ENTIRELY at plan time (round 5, blocker
+ * 3) — `applyUpgrade` reads this and never re-probes the filesystem to
+ * decide what to do, so a dry run and a real run report the identical
+ * status, and every refusal is known before a single byte is written.
  *
- * - `wrote` — AGENTS.md is `conflict`/`deleted` this run and no rescue file
- *   existed yet: the rendered content was written to it.
- * - `exists-matches` — AGENTS.md is still `conflict`/`deleted` and a rescue
- *   file already there already holds exactly the rendered content (an
- *   earlier run wrote it and nothing has changed since).
- * - `exists-differs` — AGENTS.md is still `conflict`/`deleted` and a rescue
- *   file already there holds something ELSE — never overwritten; the run
- *   reports it instead.
- * - `cleaned-up` — AGENTS.md is no longer `conflict`/`deleted` this run (it
- *   resolved) and a leftover rescue file's bytes matched exactly what this
- *   run just installed — removed, since it has nothing left to offer.
- * - `left-stale` — AGENTS.md resolved, but a leftover rescue file's bytes do
- *   NOT match what was installed — left alone and reported, never guessed at.
+ * `holdBack: true` — CLAUDE.md's shim is genuinely held back:
+ * - `would-write` — no rescue file exists yet; a real run will write one.
+ * - `identical` — one already exists and already holds exactly this
+ *   release's rendered content (an earlier run wrote it, untouched since).
+ * - `differs` — one already exists holding something ELSE — never
+ *   overwritten, and never described as fixable by `mv`: those bytes are
+ *   not this run's, so the remedy is `rm` it and re-run, or restore
+ *   AGENTS.md some other way.
+ * - `unsafe` — the path exists but is not a plain file (a symlink, a
+ *   directory, or similar) — a real run refuses outright, before writing
+ *   anything else, rather than crash or write through it.
+ *
+ * `holdBack: false` — CLAUDE.md's shim is not held back this run, so the
+ * rescue file is not the rulebook's remedy any more (if it ever was); its
+ * only remaining role is housekeeping:
+ * - `cleanup` — a leftover exists, is a plain file, and is byte-identical to
+ *   what this release renders right now — a real run removes it and says so.
+ * - `none` — nothing to do, and nothing to say: absent, or present but not a
+ *   plain matching file (round 5, blocker 3's "must not affect upgrade at
+ *   all" — a stray directory or symlink here is the user's own business,
+ *   never touched, never even mentioned, on an otherwise healthy rig).
  */
-export type AgentsRescueOutcome = {
-  kind: 'wrote' | 'exists-matches' | 'exists-differs' | 'cleaned-up' | 'left-stale';
-  rel: string;
-};
+export type AgentsRescueStatus =
+  | { holdBack: true; status: 'would-write' | 'identical' | 'differs' | 'unsafe' }
+  | { holdBack: false; status: 'cleanup' | 'none' };
 
 export interface UpgradeResult {
   written: string[];
-  /** See {@link AgentsRescueOutcome}. */
-  agentsRescue: AgentsRescueOutcome | null;
 }
 
 const SETTINGS = '.claude/settings.json';
@@ -289,6 +299,55 @@ async function readIfPresent(repoDir: string, rel: string): Promise<Buffer | nul
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
+}
+
+/**
+ * The bytes THIS release would render for AGENTS.md, for THIS project,
+ * right now — the ONE implementation `upgrade` (deciding the rescue file's
+ * status) and `uninstall` (recognising a byte-identical rescue file as
+ * rig-owned) both call, closing round 4 cycle 4's finding that the two had
+ * separate re-renders which could drift apart. `null` only if a future
+ * release ever stopped shipping AGENTS.md as a plain substituted file (it
+ * does not today).
+ */
+export async function renderedAgentsMd(
+  project: RigProject,
+  layers: readonly Layer[],
+): Promise<string | null> {
+  const files = await initManifest(layers);
+  const entry = files.find((f) => f.rel === 'AGENTS.md');
+  if (entry === undefined || entry.source === null) return null;
+  const ctx: SubstitutionContext = { projectName: project.name };
+  return substituteContent(await readFile(entry.source, 'utf8'), ctx);
+}
+
+/**
+ * What is actually sitting at {@link AGENTS_MD_RESCUE}, read ONCE at plan
+ * time (round 5, blocker 3) — `absent`, a plain file's bytes, or `unsafe`
+ * (a symlink anywhere in the path, a directory sitting at the leaf, or any
+ * other non-regular entry). Never throws: `applyUpgrade`'s preflight is what
+ * refuses to proceed on `unsafe`, and a healthy rig with unrelated clutter at
+ * this path must see `unsafe` reported, not an exception raised, so it can
+ * decide (per {@link AgentsRescueStatus}) to simply ignore it.
+ */
+async function readRescueFile(
+  repoDir: string,
+): Promise<{ kind: 'absent' } | { kind: 'unsafe' } | { kind: 'file'; bytes: Buffer }> {
+  let dest: string;
+  try {
+    dest = await writableOnDisk(repoDir, AGENTS_MD_RESCUE);
+  } catch {
+    return { kind: 'unsafe' };
+  }
+  let stat;
+  try {
+    stat = await lstat(dest);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unsafe' };
+  }
+  if (!stat.isFile()) return { kind: 'unsafe' };
+  return { kind: 'file', bytes: await readFile(dest) };
 }
 
 /**
@@ -636,15 +695,27 @@ export async function planUpgrade(
     }
   }
 
-  // PR #241 round 2, blocker 1 (security): a PRISTINE CLAUDE.md must never be
-  // replaced by the `@AGENTS.md` shim while AGENTS.md's own verdict says its
-  // content on disk is NOT what this release ships (`conflict` — the user's
-  // AGENTS.md may carry no rulebook and no `elevated-paths` block at all —
-  // or `deleted` — there would then be no rulebook file at all). Both files
-  // are ordinary, independently-decided manifest-tracked paths, so nothing
-  // upstream of this point knows about the other when it decides either
-  // one's verdict; this is the one place both are visible together, after
-  // the loop, before the plan is returned.
+  // Round 5 design ruling (replacing round 4's verdict-only rule, gate cycle
+  // 4 blocker 1): a PRISTINE CLAUDE.md must never be replaced by the
+  // `@AGENTS.md` shim while the on-disk AGENTS.md cannot actually SERVE as
+  // the rulebook — but a customised AGENTS.md that still carries a non-empty
+  // `elevated-paths` block is exactly the STEADY STATE this project's own
+  // shipped rulebook tells every project to reach (extend the block for your
+  // own paths). Keying the hold on AGENTS.md's VERDICT alone (`conflict` or
+  // `deleted`) made every customisation indistinguishable from a broken
+  // rulebook — round 4's own bug. The hold now keys on CONTENT: absent
+  // (`deleted`), or present but unreadable as a rulebook
+  // ({@link isReadableRulebook} says no — no block, or a block with nothing
+  // left after stripping comments and blank lines). An AGENTS.md that IS a
+  // readable rulebook, however edited, lets the shim through — the shim then
+  // imports the user's own rulebook, which is the whole point of it — and
+  // AGENTS.md itself stays an perfectly ordinary, quiet `conflict`: no
+  // rescue file, no special wording, nothing this section touches.
+  //
+  // Both files are ordinary, independently-decided manifest-tracked paths,
+  // so nothing upstream of this point knows about the other when it decides
+  // either one's verdict; this is the one place both are visible together,
+  // after the loop, before the plan is returned.
   //
   // Held back means: not written, and re-vouched for its CURRENT bytes (the
   // still-untouched old rulebook text) rather than the shim's — so the very
@@ -654,30 +725,79 @@ export async function planUpgrade(
   // longer vouches for anything and staying `conflict` forever.
   const claudeAction = actions.find((a) => a.rel === 'CLAUDE.md');
   const agentsAction = actions.find((a) => a.rel === 'AGENTS.md');
-  if (
-    claudeAction !== undefined &&
-    claudeAction.verdict === 'update' &&
-    agentsAction !== undefined &&
-    (agentsAction.verdict === 'conflict' || agentsAction.verdict === 'deleted')
-  ) {
+  const agentsUnreadable = ((): boolean => {
+    if (agentsAction === undefined) return true; // no rulebook to speak of at all
+    if (agentsAction.verdict === 'deleted') return true;
+    // `update` / `unchanged` / `new`: this release's OWN canonical AGENTS.md
+    // is what will be (or already is) on disk — always a readable rulebook,
+    // never a case that needs judging by content.
+    if (agentsAction.verdict !== 'conflict') return false;
+    const bytes = currentBytesByRel.get('AGENTS.md');
+    // A `conflict` verdict is only ever reached from the branch that
+    // requires `currentBytes !== null` — see the per-file loop above — so
+    // this is always defined here; the `undefined` arm is a defensive
+    // fallback, never an observed path (same proof shape as the guard
+    // below).
+    return bytes === undefined || !isReadableRulebook(bytes.toString('utf8'));
+  })();
+  const heldBack =
+    claudeAction !== undefined && claudeAction.verdict === 'update' && agentsUnreadable;
+  if (heldBack) {
     claudeAction.verdict = 'conflict';
     claudeAction.heldBack = true;
+    // Round 5, blocker 2: this text never hardcodes `mv` — the actual
+    // remedy (`mv` a written/verified rescue copy, or `rm` a differing one)
+    // depends on `agentsRescue`'s status, computed AFTER this point, and
+    // printed by the CLI's own closing section (`index.ts`'s
+    // `renderAgentsRescueNotice`), which reads that status directly. A
+    // fixed `mv` promise here was gate cycle 4's own blocker 2: it survived
+    // even the `differs` case, where `mv` would install bytes this run
+    // never wrote or verified as the live rulebook.
     claudeAction.reason =
-      `held back — AGENTS.md is ${agentsAction.verdict} (${agentsAction.reason ?? 'no reason recorded'}), ` +
-      'so writing the `@AGENTS.md` shim now would leave the rulebook unreadable. Resolve ' +
-      `AGENTS.md first — this run wrote a rescue copy to \`${AGENTS_MD_RESCUE}\` (see below); ` +
-      'review it, `mv' +
-      ` ${AGENTS_MD_RESCUE} AGENTS.md\`, then run \`create-agent-rig upgrade\` again to finish ` +
-      'adopting the shim.';
-    // `claudeAction.verdict === 'update'` (the guard just above) is only ever
+      `held back — AGENTS.md ${
+        agentsAction?.verdict === 'deleted'
+          ? 'is deleted'
+          : 'does not carry a readable rulebook (no non-empty `elevated-paths` block)'
+      }, so writing the \`@AGENTS.md\` shim now would leave the rulebook unreadable. Resolve ` +
+      `AGENTS.md first — see the \`${AGENTS_MD_RESCUE}\` section below for the exact remedy, ` +
+      'then run `create-agent-rig upgrade` again to finish adopting the shim.';
+    // `claudeAction.verdict === 'update'` (the guard above) is only ever
     // reached from the branch that requires `currentBytes !== null` — see the
     // per-file loop above — so `currentBytesByRel` always has an entry for
-    // CLAUDE.md here. Proven by type/flow, not merely observed: pinned by
-    // `upgrade.test.ts`'s full RP-186 describe block, none of which would
-    // pass if this ever executed the (deleted) `else` branch that used to
-    // sit here.
-    nextFiles['CLAUDE.md'] = sha256(currentBytesByRel.get('CLAUDE.md')!);
+    // CLAUDE.md here. A guard, not a `!` assertion (round 5 advisory): if this
+    // invariant is ever wrong, a clear internal error beats a crash on
+    // `undefined`. Pinned by `upgrade.test.ts`'s full RP-186 describe block,
+    // none of which would pass if this guard ever actually threw.
+    const heldBytes = currentBytesByRel.get('CLAUDE.md');
+    if (heldBytes === undefined) {
+      throw new UpgradeError(
+        'Internal: CLAUDE.md verdict was `update` with no current bytes on record — cannot hold it back.',
+      );
+    }
+    nextFiles['CLAUDE.md'] = sha256(heldBytes);
   }
+
+  // Round 5, blocker 3: the rescue file's status is decided HERE, once, at
+  // plan time — never re-probed by `applyUpgrade`, so a dry run and a real
+  // run report the identical status and every refusal is known before a
+  // single byte is written. Round 4 cycle 4's blocker 3 was exactly the
+  // alternative: probing the filesystem again inside `applyUpgrade`, AFTER
+  // the ordinary payload writes had already run and BEFORE the manifest
+  // write — a symlink or a directory there crashed (or exited 1) with files
+  // already rewritten and the manifest left stale.
+  const rescueFile = await readRescueFile(repoDir);
+  const renderedAgentsForRescue = await renderedAgentsMd(project, layers);
+  const rescueMatchesRelease =
+    rescueFile.kind === 'file' &&
+    renderedAgentsForRescue !== null &&
+    rescueFile.bytes.equals(Buffer.from(renderedAgentsForRescue, 'utf8'));
+  const agentsRescue: AgentsRescueStatus = heldBack
+    ? rescueFile.kind === 'unsafe'
+      ? { holdBack: true, status: 'unsafe' }
+      : rescueFile.kind === 'absent'
+        ? { holdBack: true, status: 'would-write' }
+        : { holdBack: true, status: rescueMatchesRelease ? 'identical' : 'differs' }
+    : { holdBack: false, status: rescueMatchesRelease ? 'cleanup' : 'none' };
 
   // A path an OLDER manifest still names but this release's single payload no
   // longer contains at all (RP-177: the per-target stack overlays and the
@@ -737,6 +857,7 @@ export async function planUpgrade(
     wiring,
     wiringByPath,
     contents,
+    agentsRescue,
     manifest: {
       version: await packageVersion(),
       kind,
@@ -765,7 +886,20 @@ export async function applyUpgrade(
   options: ApplyOptions = {},
 ): Promise<UpgradeResult> {
   const written: string[] = [];
-  if (options.dryRun === true) return { written, agentsRescue: null };
+  if (options.dryRun === true) return { written };
+
+  // Round 5, blocker 3: refused BEFORE any write at all — not merely before
+  // the manifest write. Round 4 cycle 4 measured that probing the rescue
+  // path AFTER the ordinary payload writes left files rewritten and the
+  // manifest stale on exactly this refusal. `plan.agentsRescue` was already
+  // decided at plan time, so this is a plain read of a fact, not a new probe.
+  if (plan.agentsRescue.holdBack && plan.agentsRescue.status === 'unsafe') {
+    throw new UpgradeError(
+      `Refusing to write the AGENTS.md rescue file: "${AGENTS_MD_RESCUE}" exists but is not a ` +
+        'plain file — a symlink, a directory, or similar sits there. Move or remove it by hand, ' +
+        'then run `create-agent-rig upgrade` again.',
+    );
+  }
 
   // Preflight the complete write set, including the manifest, before changing
   // any file. Then re-check each destination after mkdir and immediately before
@@ -795,47 +929,28 @@ export async function applyUpgrade(
     written.push(action.rel);
   }
 
-  // Round 4, blocker 1: the ACTUAL remedy — never a dump to stdout a human
-  // has to paste back byte-for-byte, which cycle 3 measured could not be
-  // pasted at all. `AGENTS_MD_RESCUE` is refused through a symlink exactly
-  // like every other write above; it is never added to `destinations` above
-  // because it is never `update`/`new` — it is not a tracked path at all.
-  const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
-  const rescueDest = await writableOnDisk(repoDir, AGENTS_MD_RESCUE);
-  const existingRescue = await readIfPresent(repoDir, AGENTS_MD_RESCUE);
-  let agentsRescue: AgentsRescueOutcome | null = null;
-  const renderedAgents = plan.contents.get('AGENTS.md');
-  if (
-    agentsAction !== undefined &&
-    (agentsAction.verdict === 'conflict' || agentsAction.verdict === 'deleted')
-  ) {
-    if (renderedAgents === undefined) {
-      throw new UpgradeError('Internal: no rendered content planned for "AGENTS.md".');
-    }
-    const renderedBytes = Buffer.from(renderedAgents, 'utf8');
-    if (existingRescue === null) {
+  // Round 5: no new filesystem probing here — `plan.agentsRescue` already
+  // says exactly what (if anything) this run does, decided before any write
+  // above ever ran. `would-write` is the only status that writes; `identical`
+  // and `differs` are both "leave it exactly as it is"; `cleanup` is the only
+  // status that deletes; `unsafe` already returned above and `none` does
+  // nothing at all — round 4 cycle 4's "must not affect upgrade" case.
+  if (plan.agentsRescue.holdBack) {
+    if (plan.agentsRescue.status === 'would-write') {
+      const rendered = plan.contents.get('AGENTS.md');
+      if (rendered === undefined) {
+        throw new UpgradeError('Internal: no rendered content planned for "AGENTS.md".');
+      }
+      const rescueDest = await writableOnDisk(repoDir, AGENTS_MD_RESCUE);
       await mkdir(path.dirname(rescueDest), { recursive: true });
-      await writeFile(rescueDest, renderedAgents);
-      agentsRescue = { kind: 'wrote', rel: AGENTS_MD_RESCUE };
-    } else if (existingRescue.equals(renderedBytes)) {
-      // Already there from an earlier run, and still exactly right — never
-      // rewritten for no reason.
-      agentsRescue = { kind: 'exists-matches', rel: AGENTS_MD_RESCUE };
-    } else {
-      // Never overwritten: it might be the user's own in-progress merge.
-      agentsRescue = { kind: 'exists-differs', rel: AGENTS_MD_RESCUE };
+      await writeFile(rescueDest, rendered);
+      written.push(AGENTS_MD_RESCUE);
     }
-  } else if (existingRescue !== null && renderedAgents !== undefined) {
-    // AGENTS.md resolved this run (or already had) — a leftover rescue file
-    // has nothing left to offer once its bytes match what is now installed.
-    if (existingRescue.equals(Buffer.from(renderedAgents, 'utf8'))) {
-      await unlink(rescueDest);
-      agentsRescue = { kind: 'cleaned-up', rel: AGENTS_MD_RESCUE };
-    } else {
-      agentsRescue = { kind: 'left-stale', rel: AGENTS_MD_RESCUE };
-    }
+  } else if (plan.agentsRescue.status === 'cleanup') {
+    const rescueDest = await writableOnDisk(repoDir, AGENTS_MD_RESCUE);
+    await unlink(rescueDest);
   }
 
   await writeManifest(repoDir, plan.manifest);
-  return { written, agentsRescue };
+  return { written };
 }

@@ -154,6 +154,48 @@ describe('the RP-186 migration against a rig built from the actual pre-RP-186 pa
     await expect(readFile(rescuePath, 'utf8')).rejects.toThrow();
   });
 
+  // Round 5 design ruling: a CUSTOMISED AGENTS.md that still carries a
+  // readable `elevated-paths` block is the shipped rulebook's own designed
+  // steady state (extend the block for your own paths) — not a broken
+  // rulebook. Against the REAL pre-RP-186 payload: one upgrade adopts the
+  // shim (AGENTS.md's own customisation survives untouched, no rescue file,
+  // no "migration" wording), and a second run is a no-op.
+  it('a legacy rig whose AGENTS.md was customised (still a readable rulebook) before upgrading: the shim is adopted in one run, and a second run is a no-op', async () => {
+    const rig = await installLegacyRig(work, 'legacy-customised-app');
+
+    const original = await readFile(path.join(rig, 'AGENTS.md'), 'utf8');
+    const customised = original.replace(
+      '```elevated-paths\n',
+      '```elevated-paths\nmy-own-service/\n',
+    );
+    expect(customised).not.toBe(original); // fixture sanity: the edit landed
+    await writeFile(path.join(rig, 'AGENTS.md'), customised);
+
+    const run1 = await runCurrentUpgrade(rig, ['--yes']);
+    expect(run1.code, run1.stderr).toBe(0);
+    // Not a bare /migration/i: the fixture's own tmpdir prefix
+    // (`caf-agents-md-migration-`, shared by this whole file, unrelated to
+    // this specific assertion) prints in the plan's own "init rig in <cwd>"
+    // line and would false-positive a bare word match. The literal banner
+    // phrase is the actual thing under test.
+    expect(run1.stdout).not.toContain('the migration is NOT finished');
+    expect(run1.stdout).not.toContain(AGENTS_MD_RESCUE);
+
+    const claudeMd = await readFile(path.join(rig, 'CLAUDE.md'), 'utf8');
+    expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
+    // AGENTS.md itself is untouched — the user's own customisation survives,
+    // never overwritten, never quoted or rewritten by this run.
+    expect(await readFile(path.join(rig, 'AGENTS.md'), 'utf8')).toBe(customised);
+
+    // A second run: CLAUDE.md is already the shim (`unchanged`), AGENTS.md
+    // is still the exact same ordinary, quiet conflict — nothing to write.
+    const run2 = await runCurrentUpgrade(rig, ['--yes']);
+    expect(run2.code, run2.stderr).toBe(0);
+    expect(run2.stdout).toContain('Wrote 0 files.');
+    expect(run2.stdout).not.toContain('the migration is NOT finished');
+    expect(await readFile(path.join(rig, 'AGENTS.md'), 'utf8')).toBe(customised);
+  });
+
   // PR #241 round 3 blocker/item 5: the migration e2e above only ever
   // upgrades. This is the rest of the lifecycle a real user reaches next —
   // `uninstall` against the pair `upgrade` just wrote — built from the SAME

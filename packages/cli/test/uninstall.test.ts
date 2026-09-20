@@ -1967,6 +1967,27 @@ describe('planUninstall — the CLAUDE.md/AGENTS.md pair disclosure (round 4, bl
     await applyUninstall(repo, plan);
     expect(actionFor(plan, 'CLAUDE.md')?.note).toBe(noteBeforeApply);
   });
+
+  // Round 5 advisory: the `undefined`-sibling wording used to say "is not
+  // tracked by this rig", which reads as "is absent" — it is not. The file
+  // is checked directly here rather than guessed at: an old manifest that
+  // never named AGENTS.md at all still leaves the file sitting right there.
+  it('when the sibling is untracked by the manifest (present on disk, never recorded), says it EXISTS — never "absent"', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    delete manifest.files['AGENTS.md'];
+    await writeManifest(repo, manifest);
+    // AGENTS.md is still physically present on disk — only untracked.
+
+    const plan = await planUninstall(repo);
+    const claude = actionFor(plan, 'CLAUDE.md');
+    expect(claude?.verdict).toBe('remove');
+    expect(claude?.note).toBe(
+      "this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which exists and is yours (untracked by this rig), as the only rulebook copy",
+    );
+    expect(claude?.note).not.toMatch(/is already gone/);
+  });
 });
 
 // PR #241 round 4, blocker 1: the sibling `upgrade` writes when AGENTS.md
@@ -1986,6 +2007,20 @@ describe('planUninstall — the AGENTS.md.rig-new rescue file (round 4, blocker 
 
     await applyUninstall(repo, plan);
     await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
+  });
+
+  // Round 5 advisory: a bare `remove` line for an UNTRACKED path (never in
+  // the manifest) said nothing about why removing it was safe — every other
+  // annotated state here already had one (`preserved`'s `reason`).
+  it('annotates the remove verdict too, not only preserved — why removing an untracked path is safe', async () => {
+    await installRig();
+    const rendered = await read('AGENTS.md');
+    await write(AGENTS_MD_RESCUE, rendered);
+
+    const plan = await planUninstall(repo);
+    const rescue = actionFor(plan, AGENTS_MD_RESCUE);
+    expect(rescue?.verdict).toBe('remove');
+    expect(rescue?.note).toMatch(/byte-identical to what this release renders for AGENTS\.md/);
   });
 
   it("leaves a differing rescue file alone, reported as preserved — not this release's own bytes", async () => {

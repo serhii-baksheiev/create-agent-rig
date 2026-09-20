@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -429,7 +429,7 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     // will not be until a future release publishes and regenerates that
     // table — which is precisely why the fix is the rendered copy, not the
     // raw template pointer.
-    it('pasting the raw, unsubstituted template the conflict points at does NOT resolve it', async () => {
+    it('pasting the raw, unsubstituted template DOES let the shim through — round 5 judges content, not project-name correctness', async () => {
       await installRig();
       await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
       await write('AGENTS.md', '# not the rulebook at all\n');
@@ -447,81 +447,152 @@ describe('planUpgrade — what it would do, before it does anything', () => {
 
       const stillHeld = await planUpgrade(repo, { history: emptyHistory });
       expect(verdictFor(stillHeld, 'AGENTS.md')).toBe('conflict');
-      expect(verdictFor(stillHeld, 'CLAUDE.md')).not.toBe('update');
+      // Round 5 (replacing round 3/4's own assumption here): the raw
+      // template DOES carry a real, non-empty `elevated-paths` block —
+      // content-wise a readable rulebook, even with the wrong project name
+      // sitting in unrelated prose elsewhere in the file. Round 5 judges
+      // AGENTS.md by content, not by verdict or by whether every token in
+      // it was substituted, so this is no longer held back.
+      expect(verdictFor(stillHeld, 'CLAUDE.md')).toBe('update');
     });
 
-    // The full 3×3 grid, each axis independently pristine / edited / deleted,
-    // with an independent oracle: the real `readDeclaredPaths` (not a
-    // reimplementation of it) must still find a block whenever at least one
-    // of the two files legitimately carries the canonical text after the
-    // upgrade — which this fix guarantees for every cell except the two
-    // where the human destroyed BOTH files themselves (nothing left to hold
-    // back).
-    type Axis = 'pristine' | 'edited' | 'deleted';
-    const setUp = async (rel: 'CLAUDE.md' | 'AGENTS.md', axis: Axis): Promise<void> => {
-      if (axis === 'pristine') await pretendInstalled(rel, PRE_RP186_TEXT);
-      else if (axis === 'edited') await write(rel, `# my own edit of ${rel}\n`);
-      else await rm(abs(rel));
+    // Round 5's re-derived grid (replacing round 2's 3×3): AGENTS.md now has
+    // FOUR states, not three — `edited` splits into `edited-with-block`
+    // (still a readable rulebook: the shipped rulebook's own designed steady
+    // state, extending `elevated-paths` for the project's own paths) and
+    // `edited-without-block` (not a readable rulebook — no block, or one
+    // that parses to nothing after stripping comments/blank lines). Every
+    // expectation below is hand-derived from round 5's rule — content, not
+    // verdict — independently of `upgrade.ts`'s own branching, the same way
+    // round 2's grid was.
+    type AgentsAxis = 'pristine' | 'edited-with-block' | 'edited-without-block' | 'deleted';
+    type ClaudeAxis = 'pristine' | 'edited' | 'deleted';
+
+    const EDITED_WITH_BLOCK = [
+      '# my own edit of AGENTS.md',
+      '',
+      'Customised prose the project added for itself.',
+      '',
+      '```elevated-paths',
+      'my-custom-dir/',
+      '```',
+      '',
+    ].join('\n');
+
+    const setUpAgents = async (axis: AgentsAxis): Promise<void> => {
+      if (axis === 'pristine') await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+      else if (axis === 'edited-with-block') await write('AGENTS.md', EDITED_WITH_BLOCK);
+      else if (axis === 'edited-without-block')
+        await write('AGENTS.md', '# my own edit of AGENTS.md\n');
+      else await rm(abs('AGENTS.md'));
+    };
+    const setUpClaude = async (axis: ClaudeAxis): Promise<void> => {
+      if (axis === 'pristine') await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      else if (axis === 'edited') await write('CLAUDE.md', '# my own edit of CLAUDE.md\n');
+      else await rm(abs('CLAUDE.md'));
     };
 
-    const GRID: Array<[Axis, Axis]> = [
+    const GRID: Array<[AgentsAxis, ClaudeAxis]> = [
       ['pristine', 'pristine'],
       ['pristine', 'edited'],
       ['pristine', 'deleted'],
-      ['edited', 'pristine'],
-      ['edited', 'edited'],
-      ['edited', 'deleted'],
+      ['edited-with-block', 'pristine'],
+      ['edited-with-block', 'edited'],
+      ['edited-with-block', 'deleted'],
+      ['edited-without-block', 'pristine'],
+      ['edited-without-block', 'edited'],
+      ['edited-without-block', 'deleted'],
       ['deleted', 'pristine'],
       ['deleted', 'edited'],
       ['deleted', 'deleted'],
     ];
 
-    it.each(GRID)(
-      'AGENTS.md %s × CLAUDE.md %s: never a silent, unreadable shim',
-      async (agentsAxis, claudeAxis) => {
-        await installRig();
-        await setUp('AGENTS.md', agentsAxis);
-        await setUp('CLAUDE.md', claudeAxis);
+    it.each(GRID)('AGENTS.md %s × CLAUDE.md %s', async (agentsAxis, claudeAxis) => {
+      await installRig();
+      await setUpAgents(agentsAxis);
+      await setUpClaude(claudeAxis);
 
-        const plan = await planUpgrade(repo, { history: emptyHistory });
-        await applyUpgrade(repo, plan);
+      const plan = await planUpgrade(repo, { history: emptyHistory });
 
-        const claudeAction = plan.actions.find((a) => a.rel === 'CLAUDE.md');
-        // The one thing that must NEVER happen: CLAUDE.md becomes the shim
-        // while AGENTS.md's own verdict says its content is not what the
-        // release ships (conflict or deleted).
-        const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
-        if (agentsAction?.verdict === 'conflict' || agentsAction?.verdict === 'deleted') {
-          expect(claudeAction?.verdict).not.toBe('update');
-        }
+      // Hand-derived expectations — round 5's content rule, not a copy of
+      // `upgrade.ts`'s own branching.
+      const expectedAgentsVerdict =
+        agentsAxis === 'deleted' ? 'deleted' : agentsAxis === 'pristine' ? 'update' : 'conflict';
+      // Held back iff CLAUDE.md's own verdict would otherwise be `update`
+      // (only when pristine) AND AGENTS.md cannot serve as a rulebook
+      // (absent, or edited with no readable block).
+      const expectedHeldBack =
+        claudeAxis === 'pristine' &&
+        (agentsAxis === 'edited-without-block' || agentsAxis === 'deleted');
+      const expectedClaudeVerdict =
+        claudeAxis === 'deleted'
+          ? 'deleted'
+          : claudeAxis === 'edited'
+            ? 'conflict'
+            : expectedHeldBack
+              ? 'conflict'
+              : 'update';
 
-        // Deletion is never resurrected, on either path, regardless of the
-        // sibling's state.
-        if (claudeAxis === 'deleted') expect(claudeAction?.verdict).toBe('deleted');
-        if (agentsAxis === 'deleted') expect(agentsAction?.verdict).toBe('deleted');
+      const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
+      const claudeAction = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+      expect(agentsAction?.verdict, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).toBe(
+        expectedAgentsVerdict,
+      );
+      expect(claudeAction?.verdict, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).toBe(
+        expectedClaudeVerdict,
+      );
+      expect(
+        claudeAction?.heldBack === true,
+        `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`,
+      ).toBe(expectedHeldBack);
 
-        // The independent oracle, asserted for EVERY cell rather than only
-        // the ones expected to find something (PR #241 round 3 advisory: an
-        // oracle that only ever asserts `not.toBeNull()` never notices a cell
-        // that should have found nothing but didn't). A block survives this
-        // upgrade only through one of two carriers: AGENTS.md becomes the
-        // canonical text when it is `pristine` (recognised, replaced with
-        // this release's block-bearing content), or CLAUDE.md is held back
-        // with its own still-block-bearing pre-migration bytes when IT is
-        // `pristine` and AGENTS.md is not (the held-back branch above). An
-        // `edited` or `deleted` file never carries the block either way, so
-        // the label a cell needs is decided by the same two axes the fixture
-        // already varies — not a copy of `planUpgrade`'s own branching.
-        const { readDeclaredPaths } = await loadDetectMissedGate();
-        const declared = readDeclaredPaths(repo);
-        const expectDeclared = agentsAxis === 'pristine' || claudeAxis === 'pristine';
-        if (expectDeclared) {
-          expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).not.toBeNull();
-        } else {
-          expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).toBeNull();
-        }
-      },
-    );
+      await applyUpgrade(repo, plan);
+
+      // The independent oracle, asserted for EVERY cell (round 3
+      // advisory): the real `readDeclaredPaths`, never a reimplementation.
+      // A block survives this upgrade through one of two carriers:
+      // AGENTS.md carries one whenever it is `pristine` (replaced with
+      // this release's own block-bearing text) or `edited-with-block`
+      // (kept exactly as the user's own still-block-bearing edit — an
+      // ordinary, untouched conflict); or CLAUDE.md carries the OLD block
+      // when it is held back (re-vouched for its own still-block-bearing
+      // pre-migration bytes).
+      const agentsCarriesBlockRegardless =
+        agentsAxis === 'pristine' || agentsAxis === 'edited-with-block';
+      const expectDeclared = agentsCarriesBlockRegardless || claudeAxis === 'pristine';
+      const { readDeclaredPaths } = await loadDetectMissedGate();
+      const declared = readDeclaredPaths(repo);
+      if (expectDeclared) {
+        expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).not.toBeNull();
+      } else {
+        expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).toBeNull();
+      }
+    });
+
+    // Round 5, blocker 1's central case, spelled out on its own rather than
+    // left implicit in the grid: a customised-but-readable AGENTS.md next to
+    // a pristine CLAUDE.md adopts the shim — the shim then imports the
+    // user's OWN rulebook — and AGENTS.md itself is a perfectly ordinary,
+    // ownership-quiet conflict: no rescue file, no held-back wording.
+    it('AGENTS.md customised WITH a readable elevated-paths block: the shim is adopted, not held back, and no rescue file appears', async () => {
+      await installRig();
+      // A pre-migration, still-pristine CLAUDE.md — otherwise this fresh
+      // rig's CLAUDE.md is ALREADY the shim (verdict `unchanged`), which
+      // would demonstrate nothing about the hold at all.
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      await write('AGENTS.md', EDITED_WITH_BLOCK);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(plan, 'AGENTS.md')).toBe('conflict');
+      expect(verdictFor(plan, 'CLAUDE.md')).toBe('update');
+      expect(plan.actions.find((a) => a.rel === 'CLAUDE.md')?.heldBack).not.toBe(true);
+      expect(plan.agentsRescue).toEqual({ holdBack: false, status: 'none' });
+
+      await applyUpgrade(repo, plan);
+      expect((await read('CLAUDE.md')).split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
+      expect(await read('AGENTS.md')).toBe(EDITED_WITH_BLOCK);
+      await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
+    });
 
     // PR #241 round 3 advisory: the 3×3 grid above exercises upgrading FROM
     // a pre-RP-186 pair. This is the other axis entirely — a rig that has
@@ -564,58 +635,72 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     // oracle for "the bytes are actually right"; these are about the state
     // machine around the rescue file — write, don't clobber, clean up, leave
     // stale — which does not need a spawned process to exercise.
-    describe('the AGENTS.md.rig-new rescue file (round 4, blocker 1)', () => {
-      it('writes the rendered AGENTS.md content to AGENTS.md.rig-new when AGENTS.md is conflict', async () => {
+    describe('the AGENTS.md.rig-new rescue file — GENUINELY held back only (round 5)', () => {
+      // Round 5 design ruling: a customised-but-still-readable AGENTS.md
+      // (has a non-empty elevated-paths block) is NOT held back at all — the
+      // rescue file exists only in the genuinely held-back state (absent, or
+      // present but not a readable rulebook). This describe block exercises
+      // exactly those two held-back triggers; the "customised and readable"
+      // case (never held back, never a rescue file) is its own describe
+      // block below.
+      const unreadableAgents = '# not the rulebook at all\n';
+
+      it('plan-time status is `would-write` when AGENTS.md is conflict with no readable rulebook content', async () => {
         await installRig();
-        await write('AGENTS.md', '# not the rulebook at all\n');
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
 
         const plan = await planUpgrade(repo, { history: emptyHistory });
         expect(verdictFor(plan, 'AGENTS.md')).toBe('conflict');
-        const result = await applyUpgrade(repo, plan);
+        expect(plan.agentsRescue).toEqual({ holdBack: true, status: 'would-write' });
 
-        expect(result.agentsRescue).toEqual({ kind: 'wrote', rel: AGENTS_MD_RESCUE });
+        await applyUpgrade(repo, plan);
         expect(await read(AGENTS_MD_RESCUE)).toBe(plan.contents.get('AGENTS.md'));
       });
 
-      it('writes it when AGENTS.md is deleted too', async () => {
+      it('plan-time status is `would-write` when AGENTS.md is deleted too', async () => {
         await installRig();
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
         await rm(abs('AGENTS.md'));
 
         const plan = await planUpgrade(repo, { history: emptyHistory });
         expect(verdictFor(plan, 'AGENTS.md')).toBe('deleted');
-        const result = await applyUpgrade(repo, plan);
+        expect(plan.agentsRescue).toEqual({ holdBack: true, status: 'would-write' });
 
-        expect(result.agentsRescue).toEqual({ kind: 'wrote', rel: AGENTS_MD_RESCUE });
+        await applyUpgrade(repo, plan);
         expect(await read(AGENTS_MD_RESCUE)).toBe(plan.contents.get('AGENTS.md'));
       });
 
-      it('a second run leaves an already-matching rescue file alone (reports it, never rewrites it)', async () => {
+      it('a second run reports `identical` for an already-matching rescue file, and never rewrites it', async () => {
         await installRig();
-        await write('AGENTS.md', '# not the rulebook at all\n');
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
         const plan = await planUpgrade(repo, { history: emptyHistory });
         await applyUpgrade(repo, plan);
         const firstWrite = await read(AGENTS_MD_RESCUE);
 
         const plan2 = await planUpgrade(repo, { history: emptyHistory });
-        const result2 = await applyUpgrade(repo, plan2);
-        expect(result2.agentsRescue).toEqual({ kind: 'exists-matches', rel: AGENTS_MD_RESCUE });
+        expect(plan2.agentsRescue).toEqual({ holdBack: true, status: 'identical' });
+        await applyUpgrade(repo, plan2);
         expect(await read(AGENTS_MD_RESCUE)).toBe(firstWrite);
       });
 
-      it('never overwrites a pre-existing rescue file that differs from the rendered bytes', async () => {
+      it('reports `differs` for a pre-existing rescue file that does not match the rendered bytes, and never overwrites it', async () => {
         await installRig();
-        await write('AGENTS.md', '# not the rulebook at all\n');
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
         await write(AGENTS_MD_RESCUE, '# my own in-progress merge\n');
 
         const plan = await planUpgrade(repo, { history: emptyHistory });
-        const result = await applyUpgrade(repo, plan);
-        expect(result.agentsRescue).toEqual({ kind: 'exists-differs', rel: AGENTS_MD_RESCUE });
+        expect(plan.agentsRescue).toEqual({ holdBack: true, status: 'differs' });
+        await applyUpgrade(repo, plan);
         expect(await read(AGENTS_MD_RESCUE)).toBe('# my own in-progress merge\n');
       });
 
       it('cleans up a leftover rescue file once AGENTS.md resolves and its bytes match', async () => {
         await installRig();
-        await write('AGENTS.md', '# not the rulebook at all\n');
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
         const plan = await planUpgrade(repo, { history: emptyHistory });
         await applyUpgrade(repo, plan);
         const rendered = await read(AGENTS_MD_RESCUE);
@@ -623,14 +708,15 @@ describe('planUpgrade — what it would do, before it does anything', () => {
 
         const plan2 = await planUpgrade(repo, { history: emptyHistory });
         expect(verdictFor(plan2, 'AGENTS.md')).toBe('unchanged');
-        const result2 = await applyUpgrade(repo, plan2);
-        expect(result2.agentsRescue).toEqual({ kind: 'cleaned-up', rel: AGENTS_MD_RESCUE });
+        expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
+        await applyUpgrade(repo, plan2);
         await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
       });
 
-      it('leaves a stale, differing rescue file alone once AGENTS.md resolves some other way', async () => {
+      it('reports `none` and leaves a stale, differing rescue file alone once AGENTS.md resolves some other way', async () => {
         await installRig();
-        await write('AGENTS.md', '# not the rulebook at all\n');
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
         const plan = await planUpgrade(repo, { history: emptyHistory });
         await applyUpgrade(repo, plan);
         const rendered = plan.contents.get('AGENTS.md')!;
@@ -644,8 +730,8 @@ describe('planUpgrade — what it would do, before it does anything', () => {
 
         const plan2 = await planUpgrade(repo, { history: emptyHistory });
         expect(verdictFor(plan2, 'AGENTS.md')).toBe('unchanged');
-        const result2 = await applyUpgrade(repo, plan2);
-        expect(result2.agentsRescue).toEqual({ kind: 'left-stale', rel: AGENTS_MD_RESCUE });
+        expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'none' });
+        await applyUpgrade(repo, plan2);
         expect(await read(AGENTS_MD_RESCUE)).toBe(
           '# a stale rescue copy from a different attempt\n',
         );
@@ -653,7 +739,8 @@ describe('planUpgrade — what it would do, before it does anything', () => {
 
       it('never recorded in the manifest — it is not rig-owned content the user could lose', async () => {
         await installRig();
-        await write('AGENTS.md', '# not the rulebook at all\n');
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
         const plan = await planUpgrade(repo, { history: emptyHistory });
         await applyUpgrade(repo, plan);
 
@@ -661,21 +748,97 @@ describe('planUpgrade — what it would do, before it does anything', () => {
         expect(manifest?.files[AGENTS_MD_RESCUE]).toBeUndefined();
       });
 
-      it('refuses a symlinked AGENTS.md.rig-new and never overwrites its outside bytes', async (context) => {
+      // Round 5, blocker 3: refused BEFORE any other write, not merely
+      // before the manifest write — proven here by checking that NOTHING
+      // else changed (the manifest still matches every file's disk bytes)
+      // when the refusal fires, closing the gap gate cycle 4 measured (a
+      // symlinked rescue file previously left other files rewritten and the
+      // manifest stale).
+      it('refuses a symlinked AGENTS.md.rig-new BEFORE any other write — zero files changed, manifest untouched', async (context) => {
         const outside = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-outside-'));
         try {
           const target = path.join(outside, 'outside.md');
           await writeFile(target, 'OUTSIDE BYTES\n');
           await installRig();
-          await write('AGENTS.md', '# not the rulebook at all\n');
+          await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+          await write('AGENTS.md', unreadableAgents);
           try {
             await symlink(target, abs(AGENTS_MD_RESCUE), 'file');
           } catch {
             context.skip();
             return;
           }
+          const manifestBefore = await readManifest(repo);
+          const claudeMdBefore = await read('CLAUDE.md');
+
           const plan = await planUpgrade(repo, { history: emptyHistory });
+          expect(plan.agentsRescue).toEqual({ holdBack: true, status: 'unsafe' });
           await expect(applyUpgrade(repo, plan)).rejects.toThrow(UpgradeError);
+
+          expect(await readFile(target, 'utf8')).toBe('OUTSIDE BYTES\n');
+          // Nothing else moved: CLAUDE.md (which this plan would otherwise
+          // have held back, still an ordinary write-eligible file in the
+          // sense that a bug could write it before the refusal) is
+          // byte-for-byte what it was, and the manifest is the exact bytes
+          // it was before this run ever started.
+          expect(await read('CLAUDE.md')).toBe(claudeMdBefore);
+          expect(await readManifest(repo)).toEqual(manifestBefore);
+        } finally {
+          await removeFixture(outside);
+        }
+      });
+
+      it('refuses a directory sitting at AGENTS.md.rig-new the same way — no EISDIR crash, a clean UpgradeError', async () => {
+        await installRig();
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
+        await mkdir(abs(AGENTS_MD_RESCUE));
+
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        expect(plan.agentsRescue).toEqual({ holdBack: true, status: 'unsafe' });
+        await expect(applyUpgrade(repo, plan)).rejects.toThrow(UpgradeError);
+      });
+    });
+
+    // Round 5, blocker 3's own advisory-turned-test: "a stray directory or
+    // symlink named AGENTS.md.rig-new must not affect upgrade at all" on an
+    // otherwise HEALTHY rig (never held back). No error, no touch, no
+    // mention — this is the user's own unrelated clutter.
+    describe('AGENTS.md.rig-new clutter on a HEALTHY (never held back) rig must not affect upgrade at all', () => {
+      it('a directory at the rescue path: upgrade succeeds, exit reachable via applyUpgrade with no throw, manifest matches disk', async () => {
+        await installRig();
+        await mkdir(abs(AGENTS_MD_RESCUE));
+
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        expect(plan.agentsRescue).toEqual({ holdBack: false, status: 'none' });
+        const result = await applyUpgrade(repo, plan);
+        expect(result.written).not.toContain(AGENTS_MD_RESCUE);
+
+        const manifest = await readManifest(repo);
+        for (const [rel, hash] of Object.entries(manifest?.files ?? {})) {
+          expect(sha256(await readFile(abs(rel))), rel).toBe(hash);
+        }
+        // The directory itself is untouched — never read, never removed.
+        await expect(lstat(abs(AGENTS_MD_RESCUE))).resolves.toBeTruthy();
+      });
+
+      it('a symlink at the rescue path: upgrade succeeds and never follows or removes it', async (context) => {
+        const outside = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-outside-'));
+        try {
+          const target = path.join(outside, 'outside.md');
+          await writeFile(target, 'OUTSIDE BYTES\n');
+          await installRig();
+          try {
+            await symlink(target, abs(AGENTS_MD_RESCUE), 'file');
+          } catch {
+            context.skip();
+            return;
+          }
+
+          const plan = await planUpgrade(repo, { history: emptyHistory });
+          expect(plan.agentsRescue).toEqual({ holdBack: false, status: 'none' });
+          const result = await applyUpgrade(repo, plan);
+          expect(result.written).not.toContain(AGENTS_MD_RESCUE);
           expect(await readFile(target, 'utf8')).toBe('OUTSIDE BYTES\n');
         } finally {
           await removeFixture(outside);

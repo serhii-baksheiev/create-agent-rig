@@ -6,7 +6,7 @@ import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { AGENTS_MD_RESCUE, UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
-import type { AgentsRescueOutcome, UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
+import type { AgentsRescueStatus, UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import {
   CHANGED_SINCE_PLANNING_REASON,
   UninstallError,
@@ -376,75 +376,93 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   return `${lines.join('\n')}\n`;
 }
 
-type AgentsRescueNotice = AgentsRescueOutcome | { kind: 'would-write'; rel: string };
-
 /**
- * The short, delimited remedy for an unresolved AGENTS.md — round 4,
- * blocker 1. Printed as the LAST thing a run prints (after the plan, after
- * the wiring hand-over blocks if any, after "Wrote N files.") so it is what
- * stays on screen, never buried under a rendered-content dump the way the
- * previous remedy was. Never quotes the rulebook's own text — pinned by
- * `cli-report.test.ts`'s CLI-boundary tests, which assert the rulebook
- * heading does not appear in stdout at all for this case.
+ * The short, delimited remedy for a genuinely HELD-BACK AGENTS.md — round 5
+ * (replacing round 4's verdict-only rule, which fired this same notice for
+ * every edited AGENTS.md, including a customised-but-readable one: the
+ * shipped rulebook's own designed steady state). Printed as the LAST thing a
+ * run prints (after the plan, after any wiring hand-over, after "Wrote N
+ * files.") so it is what stays on screen. Never printed at all when
+ * `status.holdBack` is `false` and there is no rescue-file housekeeping to
+ * report (`status: 'none'`) — round 5, blockers 1 and 2: an ordinary,
+ * readable, customised AGENTS.md conflict earns no mention here whatsoever,
+ * and neither does unrelated clutter (a stray directory or symlink) sitting
+ * at the rescue path on an otherwise healthy rig.
+ *
+ * `mv` is printed ONLY for `would-write` and `identical` — bytes this run
+ * either just wrote or independently verified byte-identical to its own
+ * rendering. For `differs`, the file is NOT this run's — the remedy is `rm`
+ * (or restoring AGENTS.md some other way), never `mv` (round 5, blocker 2:
+ * printing `mv` there would install a hostile or merely stale file as the
+ * live rulebook the moment a user followed the instruction literally).
  */
-function renderAgentsRescueNotice(notice: AgentsRescueNotice, claudeHeldBack: boolean): string {
+function renderAgentsRescueNotice(status: AgentsRescueStatus, isDryRun: boolean): string | null {
   const lines: string[] = ['', `---- ${AGENTS_MD_RESCUE} ----`];
-  const unresolved =
-    notice.kind === 'would-write' ||
-    notice.kind === 'wrote' ||
-    notice.kind === 'exists-matches' ||
-    notice.kind === 'exists-differs';
-
-  if (unresolved) {
+  if (!status.holdBack) {
+    if (status.status === 'none') return null;
+    // 'cleanup': a leftover regular file, byte-identical to this release's
+    // own rendering, with AGENTS.md itself already resolved — pure
+    // housekeeping, never "migration" wording.
     lines.push(
-      'AGENTS.md needs your attention (see its line above) — the migration is NOT finished.',
+      isDryRun
+        ? `A real run will remove a leftover ${AGENTS_MD_RESCUE} — it matches what would be installed.`
+        : `Removed a leftover ${AGENTS_MD_RESCUE} — it matched what this run just installed.`,
     );
-    switch (notice.kind) {
-      case 'would-write':
-        lines.push(
-          `A real run (no --dry-run) will write this release's rendered AGENTS.md content to ${notice.rel}.`,
-        );
-        break;
-      case 'wrote':
-        lines.push(`Wrote this release's rendered AGENTS.md content to ${notice.rel}.`);
-        break;
-      case 'exists-matches':
-        lines.push(`${notice.rel} already holds this release's rendered content, unchanged.`);
-        break;
-      case 'exists-differs':
-        lines.push(
-          `${notice.rel} already exists with DIFFERENT content — left untouched, in case it`,
-          'is your own in-progress merge. Delete it and re-run upgrade for a fresh copy, or',
-          'merge your edits into it before the next two steps.',
-        );
-        break;
-    }
-    if (claudeHeldBack) {
+    return `${lines.join('\n')}\n`;
+  }
+
+  lines.push(
+    'AGENTS.md needs your attention (see its line above) — the migration is NOT finished.',
+    '',
+    'CLAUDE.md is held back — kept as its old content, not the new shim — until AGENTS.md',
+    'resolves: CLAUDE.md still imports AGENTS.md (`@AGENTS.md`), so shimming it now would',
+    'leave no rulebook loaded at all.',
+  );
+  switch (status.status) {
+    case 'would-write':
+      lines.push(
+        isDryRun
+          ? `A real run (no --dry-run) will write this release's rendered AGENTS.md content to ${AGENTS_MD_RESCUE}.`
+          : `Wrote this release's rendered AGENTS.md content to ${AGENTS_MD_RESCUE}.`,
+      );
       lines.push(
         '',
-        'CLAUDE.md is held back — kept as its old content, not the new shim — until AGENTS.md',
-        'resolves: CLAUDE.md still imports AGENTS.md (`@AGENTS.md`), so shimming it now would',
-        'leave no rulebook loaded at all.',
+        'Review it, then:',
+        `  mv ${AGENTS_MD_RESCUE} AGENTS.md`,
+        '  create-agent-rig upgrade',
       );
-    }
-    // The concrete remedy is always the true LAST content — never followed
-    // by more prose — so a reader scrolling to the bottom of the run finds
-    // the exact two commands, not an explanation.
-    lines.push(
-      '',
-      'Review it, then:',
-      `  mv ${notice.rel} AGENTS.md`,
-      '  create-agent-rig upgrade',
-    );
-  } else if (notice.kind === 'cleaned-up') {
-    lines.push(
-      `Removed a leftover ${notice.rel} — its content matched what this run just installed.`,
-    );
-  } else {
-    lines.push(
-      `Note: ${notice.rel} is still on disk with different content than what this run just`,
-      'installed — left untouched. Delete it by hand if you no longer need it.',
-    );
+      break;
+    case 'identical':
+      lines.push(`${AGENTS_MD_RESCUE} already holds this release's rendered content, unchanged.`);
+      lines.push(
+        '',
+        'Review it, then:',
+        `  mv ${AGENTS_MD_RESCUE} AGENTS.md`,
+        '  create-agent-rig upgrade',
+      );
+      break;
+    case 'differs':
+      lines.push(
+        `${AGENTS_MD_RESCUE} already exists with content that is NOT this run's rendering —`,
+        'left untouched (it may be your own in-progress merge, or a leftover from another',
+        'release). Never `mv` this one over AGENTS.md — it is not bytes this run wrote or',
+        'verified.',
+      );
+      lines.push(
+        '',
+        'Resolve it, then re-run upgrade:',
+        `  rm ${AGENTS_MD_RESCUE}`,
+        '  # …or restore/repair AGENTS.md yourself, then:',
+        '  create-agent-rig upgrade',
+      );
+      break;
+    case 'unsafe':
+      lines.push(
+        `${AGENTS_MD_RESCUE} exists but is not a plain file (a symlink, a directory, or similar).`,
+      );
+      if (isDryRun) lines.push('A real run refuses to touch it rather than write through it.');
+      lines.push('', 'Move or remove it by hand, then:', '  create-agent-rig upgrade');
+      break;
   }
   return `${lines.join('\n')}\n`;
 }
@@ -492,28 +510,15 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
     }
   }
 
-  // Round 4, blocker 1: AGENTS.md is the one conflict/deleted case that
-  // needs a REMEDY a human can actually carry out, not a report of what
-  // happened. The previous remedy (this same spot, cycle 3) printed the
-  // rendered content itself — up to ~270 lines, between the plan and the
-  // consent prompt — and nothing tested that a human could paste it back;
-  // measured, none of "paste verbatim" and "de-indent and paste" resolved
-  // the conflict. `applyUpgrade` now WRITES the rendered bytes to
-  // `AGENTS_MD_RESCUE` on a real run instead, and this is only the preview:
-  // a dry run touches no file, so it says what a real run would do instead
-  // of doing it.
-  const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
-  const agentsUnresolved =
-    agentsAction?.verdict === 'conflict' || agentsAction?.verdict === 'deleted';
-  const claudeHeldBack = plan.actions.find((a) => a.rel === 'CLAUDE.md')?.heldBack === true;
+  // Round 5: `plan.agentsRescue` is the one, plan-time-decided status this
+  // whole closing section reads — the same value a dry run and a real run
+  // both see, so they can never disagree about what would happen.
+  const claudeAction = plan.actions.find((a) => a.rel === 'CLAUDE.md');
 
   if (values['dry-run'] === true) {
     process.stdout.write('\nDry run — nothing written.\n');
-    if (agentsUnresolved) {
-      process.stdout.write(
-        renderAgentsRescueNotice({ kind: 'would-write', rel: AGENTS_MD_RESCUE }, claudeHeldBack),
-      );
-    }
+    const notice = renderAgentsRescueNotice(plan.agentsRescue, true);
+    if (notice !== null) process.stdout.write(notice);
     return 0;
   }
 
@@ -541,8 +546,19 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
     }
   }
 
+  // Decided from the PLAN, before applying it: whether this run is the one
+  // that actually adopts the shim (round 5 advisory — a positive completion
+  // line, not only ever bad news at the end of a run). `applyUpgrade` writes
+  // every `update`/`new` action unconditionally, so a `claudeAction` verdict
+  // of `update` here means CLAUDE.md really will be (or already was) written
+  // as the shim by the time this function returns.
+  const adoptsShimThisRun = claudeAction?.verdict === 'update';
+
   const result = await applyUpgrade(cwd, plan);
   process.stdout.write(`\nWrote ${result.written.length} files.\n`);
+  if (adoptsShimThisRun) {
+    process.stdout.write('CLAUDE.md now imports AGENTS.md.\n');
+  }
 
   // The subsystem manifest is machine-scoped and written by `setup`; an
   // upgrade re-runs the same derivation so `installedVersion` follows the
@@ -569,10 +585,12 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // on a bare 'Wrote N files.' that reads as success while CLAUDE.md is held
   // back" — so this is what a reader scrolling to the bottom of the run
   // actually sees, whether the news is "not finished, here is exactly what
-  // to run next" or a small, ordinary cleanup note.
-  if (result.agentsRescue !== null) {
-    process.stdout.write(renderAgentsRescueNotice(result.agentsRescue, claudeHeldBack));
-  }
+  // to run next" or a small, ordinary cleanup note. `null` (round 5,
+  // blockers 1/2) means genuinely nothing to add: an ordinary, readable,
+  // customised AGENTS.md conflict, or unrelated clutter at the rescue path,
+  // both print nothing here at all.
+  const notice = renderAgentsRescueNotice(plan.agentsRescue, false);
+  if (notice !== null) process.stdout.write(notice);
   return 0;
 }
 

@@ -468,16 +468,45 @@ describe('the plan summary accounts for every file it planned', () => {
 // THE CLI BOUNDARY (the spawned, built binary) rather than through
 // `plan.contents`, which is exactly the map the previous test of "the remedy
 // works" trusted circularly.
-describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS.md', () => {
-  /** Puts AGENTS.md into `conflict` without touching CLAUDE.md's own state. */
+//
+// Round 5 design ruling: the rescue file exists ONLY in the GENUINELY
+// held-back state — absent AGENTS.md, or one with no readable
+// `elevated-paths` block. A fresh `installRig()` already has CLAUDE.md AS
+// the shim (verdict `unchanged`), so merely breaking AGENTS.md's CONTENT
+// does not by itself reach the held-back state any more (round 4's own bug,
+// gate cycle 4 blocker 1) — every genuinely-held-back test below also
+// simulates a pre-migration, still-pristine CLAUDE.md
+// (`pretendInstalled('CLAUDE.md', PRE_RP186_TEXT)`), the same fixture idiom
+// `upgrade.test.ts` uses for the identical reason.
+describe('AGENTS.md.rig-new — the CLI-boundary remedy for a GENUINELY held-back AGENTS.md', () => {
+  const PRE_RP186_TEXT = [
+    '# __PROJECT_NAME__',
+    '',
+    '## One operating system, two harnesses',
+    '',
+    'Old shared rulebook text.',
+    '',
+    '```elevated-paths',
+    '.claude/',
+    '```',
+    '',
+  ].join('\n');
+
+  /** Puts AGENTS.md into `conflict`, with NO readable rulebook content. */
   async function breakAgentsMd(): Promise<void> {
     await writeFile(abs('AGENTS.md'), '# not the rulebook at all\n');
+  }
+
+  /** The genuinely held-back precondition: see the file-level comment above. */
+  async function makeClaudePristine(): Promise<void> {
+    await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
   }
 
   const sha256Hex = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
   it('the rescue file is byte-identical to an independently-rendered AGENTS.md for the same project — not `plan.contents`', async () => {
     await installRig();
+    await makeClaudePristine();
     await breakAgentsMd();
 
     const run = await runCli(repo, ['upgrade', '--yes']);
@@ -505,6 +534,7 @@ describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS
 
   it('moving the rescue file over AGENTS.md and re-running upgrade finishes the migration', async () => {
     await installRig();
+    await makeClaudePristine();
     await breakAgentsMd();
 
     const run1 = await runCli(repo, ['upgrade', '--yes']);
@@ -521,10 +551,14 @@ describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS
     const claudeMd = await readFile(abs('CLAUDE.md'), 'utf8');
     expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
     await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
+    // Round 5 advisory: a positive completion line on the run that actually
+    // adopts the shim.
+    expect(run2.stdout).toContain('CLAUDE.md now imports AGENTS.md.');
   });
 
   it('a dry run writes no rescue file at all, and says a real run would', async () => {
     await installRig();
+    await makeClaudePristine();
     await breakAgentsMd();
     const before = (await readdir(repo)).sort();
 
@@ -537,19 +571,31 @@ describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS
     expect(run.stdout).toContain(AGENTS_MD_RESCUE);
   });
 
-  it('never overwrites a pre-existing AGENTS.md.rig-new that differs from the rendered bytes', async () => {
+  it('never overwrites a pre-existing AGENTS.md.rig-new that differs from the rendered bytes, and NEVER prints `mv` for it', async () => {
     await installRig();
+    await makeClaudePristine();
     await breakAgentsMd();
-    await writeFile(abs(AGENTS_MD_RESCUE), '# my own in-progress merge\n');
+    // A hostile pre-planted rescue file — measured (gate cycle 4, blocker
+    // 2): the previous rule printed `mv` for this anyway, which installs
+    // whatever is here as the live rulebook the moment it is followed.
+    await writeFile(
+      abs(AGENTS_MD_RESCUE),
+      '# hostile\n\n```elevated-paths\n```\n', // "Everything is Tier 0"
+    );
 
     const run = await runCli(repo, ['upgrade', '--yes']);
     expect(run.code, run.stderr).toBe(0);
-    expect(await readFile(abs(AGENTS_MD_RESCUE), 'utf8')).toBe('# my own in-progress merge\n');
-    expect(run.stdout).toMatch(/already exists with DIFFERENT content/i);
+    expect(await readFile(abs(AGENTS_MD_RESCUE), 'utf8')).toBe(
+      '# hostile\n\n```elevated-paths\n```\n',
+    );
+    expect(run.stdout).toMatch(/already exists with content that is NOT this run's rendering/i);
+    expect(run.stdout).not.toContain(`mv ${AGENTS_MD_RESCUE}`);
+    expect(run.stdout).toContain(`rm ${AGENTS_MD_RESCUE}`);
   });
 
   it('stdout never quotes the rulebook, and its last non-empty lines are the concrete remedy', async () => {
     await installRig();
+    await makeClaudePristine();
     await breakAgentsMd();
 
     const run = await runCli(repo, ['upgrade', '--yes']);
@@ -573,19 +619,7 @@ describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS
 
   it('also names the held-back CLAUDE.md consequence when a pristine CLAUDE.md is held back', async () => {
     await installRig();
-    const preRp186Text = [
-      '# __PROJECT_NAME__',
-      '',
-      '## One operating system, two harnesses',
-      '',
-      'Old shared rulebook text.',
-      '',
-      '```elevated-paths',
-      '.claude/',
-      '```',
-      '',
-    ].join('\n');
-    await pretendInstalled('CLAUDE.md', preRp186Text);
+    await makeClaudePristine();
     await breakAgentsMd();
 
     const run = await runCli(repo, ['upgrade', '--yes']);
@@ -604,6 +638,7 @@ describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS
 
   it('once AGENTS.md resolves, a leftover matching rescue file is cleaned up and reported', async () => {
     await installRig();
+    await makeClaudePristine();
     await breakAgentsMd();
     const run1 = await runCli(repo, ['upgrade', '--yes']);
     expect(run1.code, run1.stderr).toBe(0);
@@ -618,5 +653,83 @@ describe('AGENTS.md.rig-new — the CLI-boundary remedy for an unresolved AGENTS
     expect(run2.code, run2.stderr).toBe(0);
     await expect(readFile(abs(AGENTS_MD_RESCUE))).rejects.toThrow();
     expect(run2.stdout).toMatch(/Removed a leftover/);
+  });
+
+  // Round 5, blocker 3: refused BEFORE any other write, exit 1, a clean
+  // payload message (never a stack trace), and — the load-bearing assertion
+  // gate cycle 4 asked for — ZERO files changed and the manifest untouched,
+  // hashed before and after.
+  it('a symlinked AGENTS.md.rig-new in the held-back state: exit 1, a clean message, zero files changed', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-outside-'));
+    try {
+      const target = path.join(outside, 'outside.md');
+      await writeFile(target, 'OUTSIDE BYTES\n');
+      await installRig();
+      await makeClaudePristine();
+      await breakAgentsMd();
+      try {
+        await symlink(target, abs(AGENTS_MD_RESCUE), 'file');
+      } catch {
+        context.skip();
+        return;
+      }
+      const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+      const claudeMdBefore = await readFile(abs('CLAUDE.md'), 'utf8');
+
+      const run = await runCli(repo, ['upgrade', '--yes']);
+      expect(run.code).toBe(1);
+      expect(run.stderr).not.toContain('at '); // no stack trace frame
+      expect(run.stderr.toLowerCase()).toMatch(/not a plain file|refus/);
+
+      expect(await readFile(target, 'utf8')).toBe('OUTSIDE BYTES\n');
+      expect(await readFile(abs('CLAUDE.md'), 'utf8')).toBe(claudeMdBefore);
+      expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('a directory at AGENTS.md.rig-new in the held-back state: exit 1, a clean message, no EISDIR crash', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+    await mkdir(abs(AGENTS_MD_RESCUE));
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code).toBe(1);
+    expect(run.stderr).not.toContain('EISDIR');
+    expect(run.stderr).not.toContain('at '); // no stack trace frame
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+  });
+});
+
+// Round 5, blocker 1/2: the central case the round-5 ruling exists for — a
+// CUSTOMISED AGENTS.md that still carries a readable `elevated-paths` block
+// is the shipped rulebook's own designed steady state (extend the block for
+// your own paths), not a broken rulebook. It must be QUIET: the ordinary
+// `! AGENTS.md — edited since it was installed` line and nothing else.
+describe('a customised-but-readable AGENTS.md conflict is QUIET — no rescue file, no "migration" wording (round 5)', () => {
+  it('fresh init, then a path line added to elevated-paths: upgrade --yes is silent about it, exit 0, AGENTS.md unchanged', async () => {
+    await installRig();
+    const original = await readFile(abs('AGENTS.md'), 'utf8');
+    const customised = original.replace(
+      '```elevated-paths\n',
+      '```elevated-paths\nmy-own-service/\n',
+    );
+    expect(customised).not.toBe(original); // fixture sanity: the edit landed
+    await writeFile(abs('AGENTS.md'), customised);
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).not.toMatch(/migration/i);
+    expect(run.stdout).not.toContain(AGENTS_MD_RESCUE);
+    expect((await readdir(repo)).sort()).toEqual(before);
+    expect(await readFile(abs('AGENTS.md'), 'utf8')).toBe(customised);
+    // The one line this DOES earn — the ordinary, generic conflict line
+    // every other kept file gets, nothing AGENTS.md-specific.
+    const line = lineMatching(run.stdout, /AGENTS\.md/);
+    expect(line).toMatch(/edited since it was installed/);
   });
 });
