@@ -1103,6 +1103,26 @@ change: every real `init`/`upgrade` run always records a wiring path in one
 of the two, so reaching this requires a manifest already missing an entry a
 real run never omits.
 
+⚠ **A second known gap, judged materially weaker than the hole this whole
+apply-time re-check exists to close, and deliberately left as a documented
+limitation rather than chased in this change (security-lens review, RP-181,
+cycle 8):** if a hook an EDITED (not `kept`) wiring file names is genuinely
+ABSENT at plan time, its single-seeded dependency (if it has one) is never
+swept — correctly, since an absent file has nothing to protect a dependency
+on behalf of — and gets an ordinary `remove` verdict. If the hook then
+REAPPEARS, rewired (a symlink, or a legitimate working file), in the
+confirmation-prompt window before apply, nothing re-examines it: the
+apply-time re-check only re-derives protection for a wiring path that was
+ITSELF a plan-time `remove` verdict, and an edited wiring file never is one.
+The dependency is removed on schedule. This needs write access to the
+working tree in the narrow window between the plan being shown and `--yes`
+being answered — materially weaker than the hole this feature closes, which
+needed only a symlink committed and surviving a fresh `git clone`, no
+post-plan write access at all. Closing it would mean re-deriving apply-time
+protection for every wiring path unconditionally rather than only ones
+already known to be plan-time `remove` verdicts — a wider change than this
+cycle's fix earns.
+
 A hook is reported in `--json`'s `preserved` array with one of FIVE reason
 wordings, decided by `protectedFileReason` from whichever evidence for its
 protection actually exists — a genuine import trace beats mere caution

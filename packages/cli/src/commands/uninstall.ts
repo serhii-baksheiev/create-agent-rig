@@ -477,28 +477,27 @@ export type WiringPreservedKind = 'edited' | 'kept' | 'unsafe';
  * (which records it under `kept`, never `files`), then `uninstall --yes`.
  */
 export function hookStillReferencedReason(wiringRel: string, kind: WiringPreservedKind): string {
-  // A value TypeScript's own types already rule out at every real call
-  // site, kept here purely as a runtime safety net (a caller that ignores
-  // types, or a future member this exact build predates) — checked BEFORE
-  // the exhaustive switch below, not as its `default`, so the switch itself
-  // keeps its compile-time-only exhaustiveness guarantee untouched: without
-  // this guard, an unexpected `kind` reaching the switch would interpolate
-  // a literal `undefined` into the sentence rather than this named fallback
-  // (security-lens review, RP-181).
-  if (kind !== 'edited' && kind !== 'kept' && kind !== 'unsafe') {
-    return (
-      `still referenced by ${wiringRel}, for a reason this version does not name — removing ` +
-      'this file would leave it pointing at nothing'
-    );
-  }
-  // Exhaustiveness is enforced at COMPILE time only, deliberately with no
-  // `default` branch and no runtime throw: `why`'s definite-assignment check
-  // fails typecheck the moment `WiringPreservedKind` grows a fourth member
-  // this switch does not handle. This function runs from `index.ts` inside
-  // `uninstallPayload`, AFTER `applyUninstall` has already deleted files —
-  // a throw reachable from here would turn an inconsequential inconsistency
-  // into a post-deletion stack trace with no JSON on stdout, the worst point
-  // in the whole command for that to happen (security-lens review, RP-181).
+  // Exhaustiveness is enforced at COMPILE time via `default`'s
+  // `kind satisfies never` — not by leaving `default` off, which was tried
+  // and measured to NOT work: a pre-switch runtime guard that narrows
+  // `kind` down to the three known members (`if (kind !== 'edited' && …)`)
+  // makes the switch exhaustive over the NARROWED type, so a fourth
+  // `WiringPreservedKind` member compiled clean under `tsc --strict` with
+  // that guard in place — the opposite of what its own comment claimed
+  // (code-lens and security-lens review, RP-181, cycle 8). `satisfies never`
+  // inside `default` narrows nothing upstream (there is nothing upstream of
+  // `default` left to narrow) and fails typecheck the moment a fourth member
+  // exists — verified in a sandbox built from this exact file: three
+  // members compiles clean, four members raises `TS1360: Type "..." does
+  // not satisfy the expected type 'never'`. The `default` RETURNS a named
+  // fallback rather than throwing: this function runs from `index.ts`
+  // inside `uninstallPayload`, AFTER `applyUninstall` has already deleted
+  // files — a throw reachable from here would turn an unreachable-today
+  // inconsistency into a post-deletion stack trace with no JSON on stdout,
+  // the worst point in the whole command for that to happen. Verified in
+  // the same sandbox: an unexpected `kind` at runtime returns the fallback
+  // string, never throws, and never interpolates a literal `undefined`
+  // into the sentence.
   let why: string;
   switch (kind) {
     case 'edited':
@@ -510,6 +509,13 @@ export function hookStillReferencedReason(wiringRel: string, kind: WiringPreserv
     case 'unsafe':
       why = 'which could not be safely read (itself a symlink, or reached through one)';
       break;
+    default: {
+      kind satisfies never;
+      return (
+        `still referenced by ${wiringRel}, for a reason this version does not name — removing ` +
+        'this file would leave it pointing at nothing'
+      );
+    }
   }
   return `still referenced by ${wiringRel}, ${why} — removing this file would leave it pointing at nothing`;
 }
@@ -723,13 +729,7 @@ async function protectHookAndDeps(
     if (visited.has(rel)) continue;
     visited.add(rel);
     if (!protectedHooks.has(rel)) protectedHooks.set(rel, wiringRel);
-    // A genuine import trace is the strongest evidence this walk ever has —
-    // it means SOME readable file really does need `rel` — so it clears any
-    // earlier, merely-precautionary `unverified` entry for the same path.
-    if (parent !== undefined) {
-      if (!importedBy.has(rel)) importedBy.set(rel, parent);
-      unverified.delete(rel);
-    }
+    if (parent !== undefined && !importedBy.has(rel)) importedBy.set(rel, parent);
     const status = await regularFileStatus(repoDir, rel);
     // `'absent'` buys the sweep below nothing: a file that is not there has
     // no imports that can fail to resolve, because the module that would
@@ -749,6 +749,25 @@ async function protectHookAndDeps(
       }
       continue;
     }
+    // `status === 'ok'`: `rel` is a real, plain file inside the repository —
+    // confirmed, whether `rel` arrived here as a SEED a wiring file names
+    // directly (`parent === undefined`) or as an import target resolved
+    // from another file's content (`parent !== undefined`). Either way this
+    // clears any earlier, merely-precautionary `unverified` mark a
+    // DIFFERENT unreadable seed's sweep may have planted for this exact
+    // path before `rel` got its own turn in the queue — which is exactly
+    // what happens whenever an unreadable seed sorts ahead of the others in
+    // `hookFilesReferencedIn`'s iteration order (`guard-secret-file.mjs` is
+    // first in the shipped template): its sweep used to run, and reach
+    // paths, before those paths' OWN seed calls had a chance to confirm
+    // them, so a genuinely wiring-named hook was reported as swept-in
+    // caution rather than a direct reference — the sweep fired first and
+    // nothing ever cleared it (UX-lens and security-lens review, RP-181,
+    // cycle 8). A confirmed import trace was already the strongest
+    // evidence this walk has; a confirmed DIRECT SEED is exactly as strong
+    // — the wiring file was read and really does name it — and previously
+    // had no way to say so.
+    unverified.delete(rel);
     let text: string;
     try {
       text = await readFile(onDisk(repoDir, rel), 'utf8');
@@ -1279,6 +1298,27 @@ export async function applyUninstall(
       // than the pre-existing state (a hook this rig never removes anyway
       // stays exactly as absent-or-present as it already was), but stated
       // here rather than left implied.
+      //
+      // ⚠ A second, sibling gap, this one for an EDITED (not `kept`) wiring
+      // file specifically (security-lens review, RP-181, cycle 8): if a
+      // hook a preserved-as-edited wiring file names is genuinely ABSENT at
+      // plan time, its dependency is never swept (correctly — an absent
+      // file has nothing to protect a dependency on behalf of), and that
+      // dependency gets an ordinary `remove` verdict. If the hook then
+      // REAPPEARS — as a symlink, or as a legitimate working file that
+      // needs it — in the confirmation-prompt window before apply, nothing
+      // re-examines it: this whole pass only re-derives protection for a
+      // wiring path that was itself a plan-time `remove` verdict, and an
+      // EDITED wiring file never is one. The dependency is removed on
+      // schedule. Judged materially weaker than the hole this apply-time
+      // re-check exists to close (that one needed only a symlink committed
+      // and surviving `git clone`; this one needs WRITE ACCESS to the
+      // working tree in the narrow window between the plan being shown and
+      // `--yes` being answered) and left as a documented limitation rather
+      // than grown into this change: closing it would mean re-deriving
+      // apply-time protection for every wiring path unconditionally, not
+      // only ones already known to be plan-time `remove` verdicts, which is
+      // a wider change than this cycle's fix earns.
       const importer = applyTimeImportedBy.get(rel);
       const unverifiedBecause = applyTimeUnverified.get(rel);
       protectedHooksAtApply.push({

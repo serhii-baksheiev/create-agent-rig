@@ -1577,6 +1577,34 @@ describe('applyUninstall — a file that changed after planning', () => {
         const plan = await planUninstall(repo);
         expect(actionFor(plan, guardSecretFile)?.verdict).toBe('preserved');
         expect(actionFor(plan, SECRETS_LIB)?.verdict).toBe('preserved');
+        // Cycle-8 review (code, security, UX lenses, independently): the
+        // symlinked seeder's own sweep used to sort AHEAD of the other six
+        // hooks .claude/settings.json ALSO wires directly, in
+        // hookFilesReferencedIn's text order — sweeping them into
+        // "unverified" before their own, later turn in the queue could ever
+        // confirm and clear it. Every one of them must carry the DIRECT
+        // wording here, not the precaution one, proving the fix (clearing
+        // `unverified` the moment a path is popped and confirmed readable,
+        // not only on a genuine import edge) actually applies to a SEED,
+        // not only to an imported dependency.
+        for (const hook of [
+          '.claude/hooks/block-no-verify.mjs',
+          '.claude/hooks/gate-stop-dod.mjs',
+          '.claude/hooks/guard-bash.mjs',
+          '.claude/hooks/guard-rulebook.mjs',
+          '.claude/hooks/guard-subagent-model.mjs',
+          '.claude/hooks/inject-rules.mjs',
+          '.claude/hooks/warn-subagent-routing.mjs',
+        ]) {
+          // Spelled out rather than taken from `hookStillReferencedReason`:
+          // an expectation derived from production cannot tell the direct
+          // wording from whichever wording production happens to return.
+          const reason = actionFor(plan, hook)?.reason ?? '';
+          expect(reason, hook).toContain(
+            `still referenced by ${SETTINGS}, which was preserved as edited`,
+          );
+          expect(reason, hook).not.toContain('protected because');
+        }
 
         await applyUninstall(repo, plan);
         expect(await exists(SECRETS_LIB)).toBe(true);

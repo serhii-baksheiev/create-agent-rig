@@ -403,7 +403,23 @@ describe('create-agent-rig uninstall', () => {
   // precaution. `guard-secret-file.mjs` symlinked, with `.claude/settings.json`
   // also preserved as edited, is the exact scenario that produces a large
   // unverified sweep — real, on the built CLI, not only in the unit suite.
-  it('a run with a symlinked, single-seeded hook dependency rolls up genuinely-traced versus precaution-only preserved counts', async (ctx) => {
+  // Cycle-8 review (code, security and UX lenses independently): the FIRST
+  // version of this test asserted only that the two roll-up phrases and the
+  // unverified reason APPEARED, never that either count was right, and
+  // never that a genuinely wiring-named hook got the direct wording — which
+  // is exactly why a precedence bug (an unreadable seed's sweep retroactively
+  // marking six OTHER, already-wiring-named hooks as merely "unverified",
+  // because nothing cleared the mark when they were later read and traced
+  // as their own seed) shipped and still passed. Fixed by clearing
+  // `unverified` the moment a path is popped and confirmed readable, whether
+  // reached as a seed or an import; this test now pins the EXACT numbers
+  // security measured against the built CLI (15 genuinely referenced or
+  // imported — 7 direct hooks + 6 real imports + the two non-dependency
+  // entries `settings.json` and `guard-secret-file.mjs` themselves, neither
+  // of whose OWN reasons start with "protected because" — and 29 kept only
+  // as a precaution) and that a directly-wired hook the sweep used to
+  // swallow gets the DIRECT wording back, not the caution one.
+  it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
     expect((await runCli(['init'])).code).toBe(0);
@@ -423,16 +439,60 @@ describe('create-agent-rig uninstall', () => {
 
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
-      expect(result.stdout).toMatch(/genuinely referenced or imported/);
-      expect(result.stdout).toMatch(/kept only as a precaution/);
+      expect(result.stdout).toContain(
+        '(15 genuinely referenced or imported; 29 kept only as a precaution',
+      );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',
       );
+      // The exact defect this test now guards: guard-bash.mjs (and the other
+      // six hooks .claude/settings.json wires directly) must carry the
+      // DIRECT wording, not the precaution one — the sweep triggered by the
+      // symlinked guard-secret-file.mjs used to swallow them.
+      expect(result.stdout).toMatch(
+        /! \.claude\/hooks\/guard-bash\.mjs — still referenced by \.claude\/settings\.json, which was preserved as edited/,
+      );
+      expect(result.stdout).not.toMatch(/! \.claude\/hooks\/guard-bash\.mjs — protected because/);
       await expect(
         readFile(path.join(repo, '.claude', 'scripts', 'lib', 'secrets.mjs')),
       ).resolves.toBeTruthy();
     } finally {
       await removeFixture(outside);
+    }
+  });
+
+  // The control the UX lens ran independently: no unreadable seed at all, so
+  // every one of the seven hooks `.claude/settings.json` wires directly must
+  // get the DIRECT wording and NONE of the preserved set is merely
+  // "unverified" — this is what proves the direct-wording logic itself was
+  // always fine, and only broke when an unreadable sibling swept first.
+  it('deleting a hook file (no unreadable seed at all) leaves every remaining wired hook with the direct wording and zero unverified entries', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const settingsPath = path.join(repo, '.claude', 'settings.json');
+    const settings = await readFile(settingsPath, 'utf8');
+    await writeFile(settingsPath, settings.replace('"hooks"', '"mine": true, "hooks"'));
+    await rm(path.join(repo, '.claude', 'hooks', 'block-no-verify.mjs'));
+
+    const result = await runCli(['uninstall', '--yes']);
+    expect(result.code, result.stderr).toBe(0);
+    // no roll-up line at all — nothing was kept only as a precaution
+    expect(result.stdout).not.toMatch(/kept only as a precaution/);
+    expect(result.stdout).not.toContain('protected because');
+    for (const hook of [
+      'gate-stop-dod',
+      'guard-bash',
+      'guard-rulebook',
+      'guard-subagent-model',
+      'inject-rules',
+      'warn-subagent-routing',
+    ]) {
+      expect(result.stdout).toMatch(
+        new RegExp(
+          `! \\.claude/hooks/${hook}\\.mjs — still referenced by \\.claude/settings\\.json, which was preserved as edited`,
+        ),
+      );
     }
   });
 
