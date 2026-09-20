@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   REGISTRY,
+  deepFreeze,
   isHttpsUrl,
   validateDescriptor,
   type ProviderDescriptor,
@@ -211,6 +212,34 @@ describe('REGISTRY', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- proving a frozen nested-of-nested object write throws
       (REGISTRY[0]!.routes as any)['claude-code'].automation = 'guided';
     }).toThrow();
+  });
+});
+
+describe('deepFreeze', () => {
+  // Backs the limit stated in deepFreeze's own header comment: it stops
+  // descending as soon as it meets a value that is ALREADY frozen, so it
+  // never looks inside one. A descriptor that reused a pre-frozen shared
+  // object (rather than a fresh literal) would have its own nested contents
+  // left mutable — this is that scenario, constructed directly rather than
+  // relying on REGISTRY happening to contain one (RP-22 S2 carry-over).
+  it('does not descend into a value that arrives already frozen, so a nested mutable property inside a pre-frozen shared object is left mutable', () => {
+    const sharedChild = Object.freeze({ mutable: { value: 1 } });
+    const outer = { child: sharedChild };
+
+    deepFreeze(outer);
+
+    expect(Object.isFrozen(outer)).toBe(true);
+    expect(Object.isFrozen(sharedChild)).toBe(true); // was already frozen
+    expect(Object.isFrozen(sharedChild.mutable)).toBe(false); // the stated limit
+    sharedChild.mutable.value = 2; // proves it is genuinely still writable
+    expect(sharedChild.mutable.value).toBe(2);
+  });
+
+  it('does descend into a fresh (not pre-frozen) nested object', () => {
+    const outer = { child: { grandchild: { value: 1 } } };
+    deepFreeze(outer);
+    expect(Object.isFrozen(outer.child)).toBe(true);
+    expect(Object.isFrozen(outer.child.grandchild)).toBe(true);
   });
 });
 

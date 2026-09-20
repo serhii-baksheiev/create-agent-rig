@@ -46,12 +46,25 @@ export const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  */
 const MAX_DECLARATION_DEPTH = 4;
 
-const ROOT_KEYS = new Set(['schemaVersion', 'integrations']);
+const ROOT_KEYS_LIST = ['schemaVersion', 'integrations'] as const;
+
+/**
+ * Exported so a test can assert this is the SAME array as the schema's
+ * top-level `properties` keys — one fact, one spelling
+ * (`.claude/rules/invariants.md`, "One mechanism, one implementation"). A
+ * frozen ARRAY, not a `Set`: `Object.freeze` on a `Set` leaves its internal
+ * slots (`add`/`delete`) open, so a live `Set` export is still mutable
+ * (RP-22 S2 carry-over) — the same reasoning as {@link KNOWN_ENTRY_KEYS} below.
+ */
+export const ROOT_KEYS: readonly string[] = Object.freeze([...ROOT_KEYS_LIST]);
+const ROOT_KEYS_SET = new Set(ROOT_KEYS);
 const ARBITRARY_COMMAND_KEYS = new Set(['command', 'args', 'env']);
 const NON_OFFICIAL_SOURCE_KEYS = new Set(['source', 'url', 'headers']);
 
+const KNOWN_ENTRY_KEYS_LIST = ['id', 'required', 'version', 'harnesses'] as const;
+
 /**
- * Exported so a test can assert this is the SAME set as the schema's
+ * Exported so a test can assert this is the SAME array as the schema's
  * `properties.integrations.items.properties` keys — one fact, one spelling
  * (`.claude/rules/invariants.md`, "One mechanism, one implementation"). Before
  * that correspondence test existed, the schema's own `additionalProperties:
@@ -60,8 +73,15 @@ const NON_OFFICIAL_SOURCE_KEYS = new Set(['source', 'url', 'headers']);
  * unknown entry key at different LEVELS (parser: per-entry rejection, file
  * still `ok`; schema: the whole document fails to validate), so neither
  * layer's own test suite alone could notice the other losing its closure.
+ *
+ * A frozen ARRAY, not a `Set` (RP-22 S2 carry-over, gate finding on S1): a
+ * frozen `Set` is still mutable through `add`/`delete` — `Object.freeze`
+ * only closes the object's own property slots, not the methods a `Set`
+ * dispatches through internally. The membership check below uses a private,
+ * un-exported `Set` built from this array.
  */
-export const KNOWN_ENTRY_KEYS = new Set(['id', 'required', 'version', 'harnesses']);
+export const KNOWN_ENTRY_KEYS: readonly string[] = Object.freeze([...KNOWN_ENTRY_KEYS_LIST]);
+const KNOWN_ENTRY_KEYS_SET = new Set(KNOWN_ENTRY_KEYS);
 const MAX_ECHOED_ID_LENGTH = 64;
 
 export type DeclaredIntegration = {
@@ -86,8 +106,13 @@ export type ParseResult =
   | { status: 'ok'; entries: DeclaredIntegration[]; rejected: Rejection[] }
   | { status: 'invalid'; error: string };
 
-/** A value longer than {@link MAX_ECHOED_ID_LENGTH} truncated for a message a maintainer reads. */
-function truncateForMessage(value: string): string {
+/**
+ * A value longer than {@link MAX_ECHOED_ID_LENGTH} truncated for a message a
+ * maintainer reads. Exported so `receipt.ts` does not re-implement the same
+ * truncation rule (`.claude/rules/invariants.md`, "One mechanism, one
+ * implementation").
+ */
+export function truncateForMessage(value: string): string {
   return value.length > MAX_ECHOED_ID_LENGTH ? `${value.slice(0, MAX_ECHOED_ID_LENGTH)}…` : value;
 }
 
@@ -171,7 +196,7 @@ function mostSevereUnknownKeyReason(entry: Record<string, unknown>): RejectionRe
   for (const key of Object.keys(entry)) {
     let reason: RejectionReason | null;
     let severity: number;
-    if (KNOWN_ENTRY_KEYS.has(key)) {
+    if (KNOWN_ENTRY_KEYS_SET.has(key)) {
       reason = null;
       severity = SEVERITY.known;
     } else if (ARBITRARY_COMMAND_KEYS.has(key)) {
@@ -240,7 +265,7 @@ export function parseDeclaration(
   const root = parsed;
 
   for (const key of Object.keys(root)) {
-    if (!ROOT_KEYS.has(key)) {
+    if (!ROOT_KEYS_SET.has(key)) {
       return {
         status: 'invalid',
         error: 'the declaration has a root key outside {schemaVersion, integrations}',

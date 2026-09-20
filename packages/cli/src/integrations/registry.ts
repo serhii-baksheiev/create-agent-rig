@@ -141,7 +141,13 @@ export function validateDescriptor(descriptor: ProviderDescriptor): DescriptorVa
  * that descriptor) would have its own contents skipped here. Every entry in
  * {@link REGISTRY} today is a fresh object literal with no such reuse.
  */
-function deepFreeze<T>(value: T): T {
+// Exported (RP-22 S2 carry-over) only so the "stops descending into an
+// already-frozen value" limit above has a direct test of its own — see
+// `integrations-registry.test.ts` › "does not descend into a value that
+// arrives already frozen, so a nested mutable property inside a pre-frozen
+// shared object is left mutable" — rather than resting on this comment alone
+// (`.claude/rules/invariants.md`, "State the limits — and test them").
+export function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);
     for (const key of Object.getOwnPropertyNames(value)) {
