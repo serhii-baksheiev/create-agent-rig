@@ -37,10 +37,10 @@ area *is* Tier 2 from that moment: run the gate, record the verdict on the PR,
 and say in the description that the tier changed mid-work.
 
 **Where the elevated paths of this project are written down:** the
-`elevated-paths` block in `CLAUDE.md`, plus any such block in `.claude/rules/` —
-the gate sweep reads them all and unions the result, so a stack layer declares the
-paths that exist only in its shape. A path declared in none of them is a path
-nothing checks.
+`elevated-paths` block in `AGENTS.md` (the canonical rulebook), plus
+any such block in `.claude/rules/` — the gate sweep reads them all and unions
+the result, so a stack layer declares the paths that exist only in its shape.
+A path declared in none of them is a path nothing checks.
 
 <!-- inject:skip -->
 <!-- `inject-rules` puts this WHOLE FILE into every session's context, minus
@@ -58,7 +58,7 @@ nothing checks.
 #### The gate is swept from outside (opt-in workflow layer), because a run cannot report this on itself
 
 **`detect-missed-gate.mjs` and `reconcile-external-prs.mjs` below ship with
-the opt-in workflow layer** (`init --layer workflow`) — see `CLAUDE.md`'s "The
+the opt-in workflow layer** (`init --layer workflow`) — see `AGENTS.md`'s "The
 opt-in workflow layer" section. Without that layer, sweep merged PRs against
 the elevated-paths block by hand; the rule they enforce — a Tier-2 change
 needs a `human-review` label — does not change with or without the script.

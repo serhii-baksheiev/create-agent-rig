@@ -162,10 +162,12 @@ manages it; it is now yours"` — the same verdict RP-177 gave a deleted stack
 overlay, applied here to files that are simply no longer read as this rig's
 layer. `applyUpgrade` then writes a manifest whose `files` map has no entry
 for any of the roughly three dozen workflow paths at all — measured, on a
-clean `--layer workflow` install, at exactly 86 file entries down to 53
+clean `--layer workflow` install, at exactly 87 file entries down to 54
 (`packages/cli/test/upgrade.test.ts`, absent in a generated rig, pins "a
 clean workflow-layer install hand-edited down to a core-only layers array
-goes from 86 manifest entries to 53").
+goes from 87 manifest entries to 54"; the figure moved by one from an
+earlier 86/53 when RP-186 added `docs/decisions/agents-md-canonical.md` to
+the process layer).
 The files stay on disk, silently un-hashed and unowned —
 and a LATER `uninstall`, reading the same manifest, has nothing there to
 recognise them by: they read as an ordinary foreign/untracked path, not as

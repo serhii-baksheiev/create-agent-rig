@@ -138,7 +138,7 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   if (!declared || declared.length === 0) {
     throw new Error(
       'nothing in this project declares an elevated path, so no tier can be ' +
-        'computed: add an `elevated-paths` block to CLAUDE.md or a rule file. ' +
+        'computed: add an `elevated-paths` block to AGENTS.md or a rule file. ' +
         'Treating the absence as `normal` would ration on a declaration that ' +
         'does not exist.',
     );

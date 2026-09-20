@@ -16,6 +16,26 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## Unreleased
 
+**`AGENTS.md` is now the canonical rulebook; `CLAUDE.md` is a short
+compatibility shim.** A new project gets the full rulebook text in
+`AGENTS.md` and a `CLAUDE.md` that is just an `@AGENTS.md` import (Claude
+Code's own import syntax) plus Claude-Code-specific notes — never a second
+copy of the rulebook. This is not a claim that Claude Code always reads
+`AGENTS.md` on its own: that support is version- and configuration-dependent,
+and the shim exists precisely for the sessions where it is not active (see
+`docs/decisions/agents-md-canonical.md` for what is verified and what is
+not). Provider-specific wiring (`.claude/settings.json`, `.claude/agents/`,
+`.codex/hooks.json`, `.codex/config.toml`) is unaffected.
+
+Migrating an existing rig: `upgrade` treats both files as the ordinary
+manifest-tracked paths they always were — no special-cased migration code.
+An untouched pair is replaced with the new shim/canonical split; a
+`CLAUDE.md` or `AGENTS.md` the user edited is reported as a conflict and kept
+exactly as edited, never force-shimmed or overwritten; a file the user
+deleted stays deleted. `uninstall` follows the same generic rule. Pinned by
+`packages/cli/test/upgrade.test.ts` › "RP-186: AGENTS.md becomes canonical,
+CLAUDE.md becomes its shim".
+
 **Breaking: the application skeletons are removed, exactly as 0.9.0
 announced.** `create <dir>` no longer takes `--target` and no longer
 scaffolds `aws-serverless` or `node-service` — there is one payload, the same

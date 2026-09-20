@@ -10,13 +10,18 @@ import { readManifest, sha256 } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 /**
- * RP-179 acceptance #3. The Codex projection's output (`AGENTS.md`,
- * `.codex/agents/*.toml`, `.agents/skills/**`) is not a special case in
- * `planUpgrade` — `layers.json` lists each one as an ordinary template-sourced
- * path (`packages/cli/src/commands/init.ts`, `initManifest`), exactly like
+ * RP-179 acceptance #3. The Codex projection's output (`.codex/agents/*.toml`,
+ * `.agents/skills/**`) is not a special case in `planUpgrade` — `layers.json`
+ * lists each one as an ordinary template-sourced path
+ * (`packages/cli/src/commands/init.ts`, `initManifest`), exactly like
  * `.claude/rules/workflow.md` (see `upgrade.test.ts`), so it goes through the
- * same verdict machinery. This file proves that on the actual generated
- * paths, rather than resting on "the code has no special case for them".
+ * same verdict machinery. `AGENTS.md` stays on this list for the same generic
+ * reason even though it is no longer a Codex *projection* of `CLAUDE.md`: since
+ * RP-186 it is the canonical, authored rulebook and `CLAUDE.md` is the
+ * derived-in-spirit shim, but `layers.json`/`initManifest` still track it as
+ * one ordinary path, so the machinery this file is about is unchanged. This
+ * file proves that on the actual generated paths, rather than resting on "the
+ * code has no special case for them".
  * Deterministic generation from one source is
  * `test/template/codex.test.ts` › "is in sync with its Claude Code sources"
  * (`node scripts/sync-codex-adapter.mjs --check`, run in CI on every push);

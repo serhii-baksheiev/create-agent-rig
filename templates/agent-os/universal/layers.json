@@ -47,7 +47,8 @@
     "docs/decisions/subagent-routing.md",
     "docs/decisions/review-lanes.md",
     "docs/decisions/workflow-layer-split.md",
-    "docs/decisions/session-start-wire-format.md"
+    "docs/decisions/session-start-wire-format.md",
+    "docs/decisions/agents-md-canonical.md"
   ],
   "workflow": [
     ".claude/skills/pr-ship/SKILL.md",

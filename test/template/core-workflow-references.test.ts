@@ -138,9 +138,13 @@ const GENERIC_BASENAMES = new Set([
  * substring that no longer appears in that file is itself a failure below,
  * so this list cannot silently outlive what it was written for.
  */
+// RP-186: the generator addendum is composed into the root AGENTS.md only —
+// CLAUDE.md there is a short shim that imports it and carries no addendum
+// text of its own, so there is no longer a "CLAUDE.md (dogfood copy)" entry
+// to exempt here.
 const ALLOWLIST: ReadonlyArray<{ file: string; contains: string; reason: string }> = [
   {
-    file: 'CLAUDE.md (dogfood copy)',
+    file: 'AGENTS.md (dogfood copy)',
     contains: 'detect-missed-gate` and the `loop` skill here are ahead of the copies',
     reason:
       'this repository\'s own addendum ("Repo-specific rules", item 0), describing THIS ' +
@@ -150,21 +154,11 @@ const ALLOWLIST: ReadonlyArray<{ file: string; contains: string; reason: string 
   },
   {
     file: 'AGENTS.md (dogfood copy)',
-    contains: 'detect-missed-gate` and the `loop` skill here are ahead of the copies',
-    reason: 'same as the CLAUDE.md entry above — AGENTS.md is its Codex projection',
-  },
-  {
-    file: 'CLAUDE.md (dogfood copy)',
     contains: '(`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and',
     reason:
       'this repository\'s own addendum ("Repo-specific rules", item 5), listing what ' +
       "sync-agent-os.mjs synchronises into THIS repo's own tree — again a statement about " +
       'this always-workflow-ful dogfood repo, not an instruction to a generated rig',
-  },
-  {
-    file: 'AGENTS.md (dogfood copy)',
-    contains: '(`AGENTS.md`, `.agents/`, `.codex/`), **`journal/README.md`** and',
-    reason: 'same as the CLAUDE.md entry above — AGENTS.md is its Codex projection',
   },
 ];
 
@@ -360,15 +354,20 @@ describe('Core-layer documents never presuppose the opt-in workflow layer silent
       expect(uncovered.length, 'mutation must be caught').toBeGreaterThan(0);
     });
 
-    it('CLAUDE.md: stripping every workflow-layer caveat is caught (the paths and skill names stay, cited elsewhere in the file)', async () => {
+    // RP-186: AGENTS.md is now the canonical, rig-facing rulebook that
+    // carries the "Four things"/elevated-paths prose this mutation targets —
+    // CLAUDE.md is a short shim that imports it and states none of these
+    // needles itself, so the mutation moved to the file that actually has
+    // the text to strip.
+    it('AGENTS.md: stripping every workflow-layer caveat is caught (the paths and skill names stay, cited elsewhere in the file)', async () => {
       const docs = await coreDocuments();
       // The rig-facing template source, not the dogfood copy — this is the
       // file a generated rig actually receives, and the one the mutation
       // matters for.
-      const doc = docs.find((d) => d.label === 'CLAUDE.md');
-      if (!doc) throw new Error('fixture: CLAUDE.md not found');
+      const doc = docs.find((d) => d.label === 'AGENTS.md');
+      if (!doc) throw new Error('fixture: AGENTS.md not found');
       // A single "delete the opt-in workflow layer section" mutation is not
-      // enough here: CLAUDE.md has SEVERAL independently-qualified mentions
+      // enough here: AGENTS.md has SEVERAL independently-qualified mentions
       // (the "Four things"/gitignore item, the elevated-paths intro) whose
       // OWN caveat sits outside that one section, so deleting only that
       // section leaves every remaining mention still covered by its own

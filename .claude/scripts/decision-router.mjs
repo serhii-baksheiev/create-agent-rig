@@ -1193,7 +1193,7 @@ if (invokedDirectly()) {
     process.stderr.write(
       'decision-router: nothing in this project declares an elevated path, so the ' +
         '`elevated-path` risk flag cannot be evaluated and no lane can be trusted. Add an ' +
-        '`elevated-paths` block to CLAUDE.md or a rule file. Nothing was routed — treat ' +
+        '`elevated-paths` block to AGENTS.md or a rule file. Nothing was routed — treat ' +
         'this as the expensive lane, never as a cheap one.\n',
     );
     process.exit(1);

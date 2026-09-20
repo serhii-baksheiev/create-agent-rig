@@ -36,15 +36,18 @@ import { dirname, join } from 'node:path';
  * detecting. Reading the declaration removes that failure mode instead of
  * monitoring it.
  *
- * `CLAUDE.md` carries the project's own paths; each stack layer's rule file
- * carries the ones that only exist in that shape (`infra/` comes from the
- * infrastructure layer, and a project without one must not declare it). Seeding
- * every path in one place would declare directories that do not exist in half the
- * targets — and a gate declared over a missing directory reports "clean" while
- * looking nowhere.
+ * `AGENTS.md` carries the project's own paths — it is the canonical rulebook
+ * since RP-186, and `CLAUDE.md` is a short shim that imports it and declares
+ * no block of its own; reading both costs nothing when a not-yet-migrated
+ * rig still carries the full text in `CLAUDE.md`. Each stack layer's rule
+ * file carries the ones that only exist in that shape (`infra/` comes from
+ * the infrastructure layer, and a project without one must not declare it).
+ * Seeding every path in one place would declare directories that do not
+ * exist in half the targets — and a gate declared over a missing directory
+ * reports "clean" while looking nowhere.
  */
 export const readDeclaredPaths = (projectRoot, { readFile = readFileSync, listDir = null } = {}) => {
-  const sources = [join(projectRoot, 'CLAUDE.md')];
+  const sources = [join(projectRoot, 'AGENTS.md'), join(projectRoot, 'CLAUDE.md')];
   try {
     const rulesDir = join(projectRoot, '.claude', 'rules');
     const entries = listDir ? listDir(rulesDir) : readdirSync(rulesDir);
@@ -396,7 +399,7 @@ export const sweep = ({ prs = [], elevatedPaths = [], epoch = null } = {}) => {
     findings.push({
       kind: 'no-elevated-paths-declared',
       why:
-        'CLAUDE.md declares no `elevated-paths` block, so this sweep cannot tell ' +
+        'AGENTS.md declares no `elevated-paths` block, so this sweep cannot tell ' +
         'an elevated merge from an ordinary one. Until it does, "no findings" ' +
         'means "did not look".',
       actions: ['journal-line', 'escalation-issue'],

@@ -142,6 +142,98 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     await expect(read(STOP_FLAG)).rejects.toThrow();
   });
 
+  // RP-186's own migration gate. A rig installed before RP-186 has a
+  // byte-identical CLAUDE.md/AGENTS.md pair recorded in its manifest — the old
+  // "publish the same text as AGENTS.md" model this ticket replaces.
+  // `pretendInstalled` simulates exactly that: both files rewritten to the
+  // pre-RP-186 shared text AND the manifest updated to vouch for those bytes,
+  // "the release changed it" for both paths at once. What upgrade does next
+  // goes through no RP-186-specific code — CLAUDE.md and AGENTS.md are
+  // ordinary manifest-tracked paths (`MAPS` in init.ts) — so these cases pin
+  // that the existing generic verdict machinery produces the right outcome
+  // for this specific migration, not just for some tracked file in general.
+  describe('RP-186: AGENTS.md becomes canonical, CLAUDE.md becomes its shim', () => {
+    const PRE_RP186_TEXT = '# __PROJECT_NAME__\n\nOld shared rulebook text.\n';
+
+    it('an untouched pre-RP-186 pair upgrades to the new shim/canonical split', async () => {
+      await installRig();
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(plan, 'CLAUDE.md')).toBe('update');
+      expect(verdictFor(plan, 'AGENTS.md')).toBe('update');
+
+      await applyUpgrade(repo, plan);
+      const claudeMd = await read('CLAUDE.md');
+      const agentsMd = await read('AGENTS.md');
+      expect(claudeMd.trimStart().startsWith('@AGENTS.md')).toBe(true);
+      expect(claudeMd).not.toContain('## One operating system, two harnesses');
+      expect(agentsMd).toContain('## One operating system, two harnesses');
+      expect((await readManifest(repo))?.files['CLAUDE.md']).toBe(sha256(claudeMd));
+      expect((await readManifest(repo))?.files['AGENTS.md']).toBe(sha256(agentsMd));
+    });
+
+    it('a CLAUDE.md the user edited is kept, never force-shimmed', async () => {
+      await installRig();
+      await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+      const mine = '# my own project notes\n';
+      await write('CLAUDE.md', mine);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      const action = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+      expect(action?.verdict).toBe('conflict');
+      expect(action?.reason).toBeTruthy();
+
+      await applyUpgrade(repo, plan);
+      expect(await read('CLAUDE.md')).toBe(mine);
+      expect((await readManifest(repo))?.files['CLAUDE.md']).toBeUndefined();
+      // AGENTS.md is unaffected by the sibling conflict — it still upgrades
+      expect(await read('AGENTS.md')).toContain('## One operating system, two harnesses');
+    });
+
+    it('an AGENTS.md the user edited is kept, never overwritten with the canonical text', async () => {
+      await installRig();
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      const mine = '# my own rulebook, thanks\n';
+      await write('AGENTS.md', mine);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+      expect(action?.verdict).toBe('conflict');
+      expect(action?.reason).toBeTruthy();
+
+      await applyUpgrade(repo, plan);
+      expect(await read('AGENTS.md')).toBe(mine);
+      expect((await readManifest(repo))?.files['AGENTS.md']).toBeUndefined();
+    });
+
+    it('a CLAUDE.md the user deleted stays deleted — never restored as the new shim', async () => {
+      await installRig();
+      await rm(abs('CLAUDE.md'));
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(plan, 'CLAUDE.md')).toBe('deleted');
+
+      await applyUpgrade(repo, plan);
+      await expect(read('CLAUDE.md')).rejects.toThrow();
+      // AGENTS.md is a separate tracked path and still upgrades on its own
+      expect(await read('AGENTS.md')).toContain('## One operating system, two harnesses');
+    });
+
+    it('an AGENTS.md the user deleted stays deleted — never restored as the canonical text', async () => {
+      await installRig();
+      await rm(abs('AGENTS.md'));
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(plan, 'AGENTS.md')).toBe('deleted');
+
+      await applyUpgrade(repo, plan);
+      await expect(read('AGENTS.md')).rejects.toThrow();
+      expect(await read('CLAUDE.md')).toContain('@AGENTS.md');
+    });
+  });
+
   // `settings.json` is a merge target rather than a payload — but only while
   // the bytes on disk are somebody's own. When the manifest's recorded hash
   // matches them they are provably the rig's, and handing the wiring over by
@@ -847,21 +939,23 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   });
 
   // RP-180 round 4, blocker E: the decision record's "a workflow rig's
-  // manifest went from 86 file entries to 53" is a specific, checkable
+  // manifest went from 87 file entries to 54" is a specific, checkable
   // number — pinned here, on a clean `--layer workflow` install, rather than
-  // left as a claim nothing asserts.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 86 manifest entries to 53', async () => {
+  // left as a claim nothing asserts. Both figures moved by one (86→87,
+  // 53→54) when RP-186 added `docs/decisions/agents-md-canonical.md` to the
+  // process layer.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 87 manifest entries to 54', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(86);
+    expect(Object.keys(before!.files).length).toBe(87);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(53);
+    expect(Object.keys(after!.files).length).toBe(54);
   });
 });
 

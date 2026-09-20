@@ -610,10 +610,13 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
 
     const surfaces = await describingSurfaces();
     // Discovery that silently found nothing would pass every assertion below.
+    // RP-186: the rulebook prose describing this guard lives in the composed
+    // AGENTS.md now (canonical) — CLAUDE.md is a short shim and carries none
+    // of it.
     expect(
       surfaces.map(({ file }) => file),
       'the walk found no rulebook document describing guard-secret-file at all',
-    ).toEqual(expect.arrayContaining(['CLAUDE.md', 'README.md', '.claude/rules/autonomy.md']));
+    ).toEqual(expect.arrayContaining(['AGENTS.md', 'README.md', '.claude/rules/autonomy.md']));
 
     const offenders = surfaces.flatMap(({ file, blocks }) =>
       blocks
