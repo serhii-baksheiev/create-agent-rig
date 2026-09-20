@@ -165,7 +165,9 @@ run. Never merge on an older head's green.
 - **Every PR takes the full gate:** `gate-round`, `revalidate --point
 BEFORE_PR`, `decision-router`, the reviewer fan-out, `verdict.mjs check` on
   each report, the fan-out and verdict records, then `verdict.mjs coverage` on
-  the head.
+  the head. **The round cap is not the skill's default here** — `pr-ship`
+  documents 2, and `.claude/queue.json`'s `options.maxGateRounds` overrides it
+  to 3 for this repository. Read the number there, never from a copy.
 - **GitHub-hosted runners are the primary CI.** Self-hosted configuration is a
   fallback for exhausted hosted minutes; no PR may depend on a laptop being on.
 

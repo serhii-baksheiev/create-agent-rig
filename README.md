@@ -40,9 +40,16 @@ There are two install channels, and they are not interchangeable:
 
 The npm release is what `upgrade` reasons about: the manifest records a rig
 version, and `templates/release-ledger.json` is written at the release _after_
-the one it describes. A snapshot installed from the default branch carries a
-version that names no published release, so a later `upgrade` has nothing to
-compare it against but the files themselves.
+the one it describes (`docs/releasing.md`).
+
+A snapshot does not announce itself as one. `packageVersion()`
+(`packages/cli/src/lib/version.ts`) returns `package.json`'s `version` field
+verbatim — no branch, no commit, no suffix — and that field is bumped only
+inside a `release: prepare X` commit. So between releases a default-branch
+checkout reports the **previous release's** version: a snapshot stamps `0.9.1`
+into the manifest while carrying files that are ahead of 0.9.1. The version
+string is therefore not evidence of which bytes you have; only a published
+install makes those two agree.
 
 ⚠ **The default branch is not the published release.** Work merges to the
 default branch continuously between releases, so what is on `main`/`master` at
