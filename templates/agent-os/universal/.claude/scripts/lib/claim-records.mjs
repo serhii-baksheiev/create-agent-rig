@@ -439,8 +439,24 @@ const committedObjectOf = (projectRoot, path) => {
   }
 };
 
-const objectOf = (projectRoot, raw) =>
-  execFileSync('git', ['-C', projectRoot, 'hash-object', '--stdin'], {
+// RP-190: `--path <relativePath>` makes `hash-object` apply the same clean
+// filter git itself would apply when staging that path — including the
+// built-in CRLF-to-LF normalisation `core.autocrlf=true` performs on commit.
+// Windows defaults `core.autocrlf` to `true`, so a checkout that
+// re-materializes a tracked (LF-committed) claim record smudges it back to
+// CRLF in the worktree; a bare `hash-object --stdin` (no `--path`) hashes
+// those CRLF bytes literally, which can never equal the LF blob `HEAD:<path>`
+// names, and the integrity check below reported "diverges" for a file whose
+// CONTENT never changed. `--path` makes this comparison ask git's own
+// question — "would `git add` at this path produce the committed blob" —
+// instead of a byte-literal one, so a genuine content edit still normalises
+// to a different blob and is still caught. Pinned in the generator's
+// `test/template/revalidate.test.ts` — absent in a generated rig — ›
+// "does not report UNVERIFIABLE when a checkout re-materializes the tracked
+// claim as CRLF" and › "still holds on a genuine content change to the
+// tracked claim under core.autocrlf=true".
+const objectOf = (projectRoot, raw, relativePath) =>
+  execFileSync('git', ['-C', projectRoot, 'hash-object', '--path', relativePath, '--stdin'], {
     encoding: 'utf8',
     env: withoutGitLocation(),
     input: raw,
@@ -899,7 +915,7 @@ export const revalidateClaim = ({
   let claim;
   try {
     const read = readClaim(projectRoot, path);
-    if (objectOf(projectRoot, read.raw) !== committedObject) {
+    if (objectOf(projectRoot, read.raw, pointer) !== committedObject) {
       throw new Error('tracked claim worktree content diverges from its committed Git version');
     }
     claim = read.parsed;
