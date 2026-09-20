@@ -11,11 +11,17 @@
  *
  * This module imports NOTHING — no `node:` builtin, no sibling, not even its
  * own `declaration.ts`. Pinned by
- * `packages/cli/test/integrations-registry.test.ts` › "registry.ts and
- * declaration.ts import only their declared relative modules, and never
- * require, dynamically import, fetch, createRequire, process.binding,
- * bare-import, or re-export" and, more precisely for this file, › "registry.ts
- * has no imports at all, and declaration.ts imports exactly its two siblings".
+ * `packages/cli/test/integrations-registry.test.ts` › "every integrations/
+ * module imports only its declared relative modules, and never requires,
+ * dynamically imports, fetches, createRequires, process.bindings,
+ * bare-imports, or re-exports" and, more precisely for this file, › "each
+ * module imports EXACTLY its declared set — registry.ts and state.ts import
+ * nothing at all".
+ *
+ * `isValidLocator`/`isValidSpdxExpression` are the one grammar a
+ * `source.locator`/`license.id` must match, for a shipped descriptor here AND
+ * for a committed, untrusted receipt (`receipt.ts` imports both rather than
+ * keeping its own copy — RP-22 S2 gate finding B1).
  */
 
 /** The harnesses Rig configures integrations for. */
@@ -87,8 +93,14 @@ export function isHttpsUrl(value: string): boolean {
   );
 }
 
-/** A real calendar date in `YYYY-MM-DD`, not just four digits that look like one. */
-function isRealDateString(value: string): boolean {
+/**
+ * A real calendar date in `YYYY-MM-DD`, not just four digits that look like
+ * one. Exported (RP-22 S2 gate finding) so `receipt.ts` imports this instead
+ * of duplicating it — its own prior copy is exactly the "not exported there"
+ * this comment used to describe (`.claude/rules/invariants.md`, "One
+ * mechanism, one implementation").
+ */
+export function isRealDateString(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (match === null) return false;
   const [, yearText, monthText, dayText] = match;
@@ -100,6 +112,96 @@ function isRealDateString(value: string): boolean {
   // March 2nd for a February 30th that was never a real day.
   return (
     date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+/**
+ * The one bound every `source.locator`, of any kind, is checked against
+ * before its own kind's grammar even runs. A per-kind pattern below can
+ * itself admit a longer string (`{0,99}` etc.) than this — the cap is
+ * enforced exactly once, here, rather than re-derived per pattern
+ * (RP-22 S2 gate finding B1).
+ */
+export const MAX_LOCATOR_LENGTH = 128;
+
+/** The bound a `license.id` (an SPDX expression) is checked against. */
+export const MAX_LICENSE_ID_LENGTH = 64;
+
+/**
+ * `owner/repo`, GitHub's own shape: an owner (alnum and hyphens, no leading
+ * hyphen, GitHub's 39-character ceiling) then exactly one `/` then a repo
+ * name (alnum, dot, underscore, hyphen, starting alnum). Anchored full-string,
+ * so a leading `/`, a `..` segment, a drive letter, a backslash, a scheme, a
+ * second `/`, `?`/`#`, an `@`, or whitespace all fail to match — there is
+ * nothing in either character class for them to match against.
+ */
+export const GITHUB_LOCATOR_PATTERN =
+  /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/**
+ * An npm package name: optionally `@scope/`, then a lowercase name (alnum,
+ * dot, underscore, hyphen, starting alnum). npm names are lowercase by
+ * convention and by npm's own registry rule, so this is stricter than GitHub's
+ * pattern on purpose — the same hostile shapes are excluded for the same
+ * reason (no character in either class can spell a path, a scheme, or an
+ * unscoped `@`).
+ */
+export const NPM_LOCATOR_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]{0,63}\/)?[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** A PyPI project name: one segment, alnum/dot/underscore/hyphen, starting alnum. */
+export const PYPI_LOCATOR_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * No marketplace-kind descriptor ships in {@link REGISTRY} yet, so there is no
+ * real example to derive a richer (e.g. `name@marketplace`) grammar from —
+ * inventing one ahead of a real descriptor would be exactly the kind of
+ * unbacked API this project's rules refuse. Until one exists, a marketplace
+ * locator is treated as the same conservative opaque-slug shape as PyPI: no
+ * `@`, so a `user@host`-shaped value is refused by the character class alone,
+ * not by a rule about what looks like a hostname. Widen this only once an
+ * actual marketplace descriptor needs more (RP-22 S2 gate finding B1).
+ */
+export const MARKETPLACE_LOCATOR_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * An SPDX license EXPRESSION shape (`MIT`, `Apache-2.0`, `MIT OR Apache-2.0`)
+ * — the operator grammar SPDX expressions use, not a check against the real
+ * SPDX license list (that list is thousands of entries long and would be a
+ * second closed vocabulary to keep in sync; this is a shape check, the same
+ * kind of bound `VERSION_PATTERN` in `declaration.ts` applies to a version
+ * string). Capped by {@link MAX_LICENSE_ID_LENGTH}, checked in
+ * {@link isValidSpdxExpression} rather than inside the pattern, so the pattern
+ * itself needs no repetition-count bookkeeping to stay total.
+ */
+export const SPDX_EXPRESSION_PATTERN = /^[A-Za-z0-9.+-]+(?: (?:AND|OR|WITH) [A-Za-z0-9.+-]+)*$/;
+
+/**
+ * Whether `locator` is a legitimate locator for `kind` — the ONE grammar
+ * `validateDescriptor` (below, for a shipped registry entry) and
+ * `receipt.ts`'s `parseSource` (for committed, untrusted receipt input) both
+ * call, so the two can never quietly drift into checking different things
+ * (RP-22 S2 gate finding B1; `.claude/rules/invariants.md`, "One mechanism,
+ * one implementation"). The `https` branch folds in the query-string/fragment
+ * refusal `receipt.ts` used to apply only to itself — a receipt or a
+ * descriptor never carries a token or header field, and a query string is
+ * exactly where one gets smuggled in.
+ */
+export function isValidLocator(kind: ProviderSource['kind'], locator: string): boolean {
+  if (locator.length === 0 || locator.length > MAX_LOCATOR_LENGTH) return false;
+  if (kind === 'https') {
+    if (!isHttpsUrl(locator)) return false;
+    return !locator.includes('?') && !locator.includes('#');
+  }
+  if (kind === 'github') return GITHUB_LOCATOR_PATTERN.test(locator);
+  if (kind === 'npm') return NPM_LOCATOR_PATTERN.test(locator);
+  if (kind === 'pypi') return PYPI_LOCATOR_PATTERN.test(locator);
+  return MARKETPLACE_LOCATOR_PATTERN.test(locator); // kind === 'marketplace'
+}
+
+/** Whether `value` is a bounded, SPDX-expression-shaped string. */
+export function isValidSpdxExpression(value: string): boolean {
+  return (
+    value.length > 0 && value.length <= MAX_LICENSE_ID_LENGTH && SPDX_EXPRESSION_PATTERN.test(value)
   );
 }
 
@@ -116,10 +218,33 @@ export function validateDescriptor(descriptor: ProviderDescriptor): DescriptorVa
   if (descriptor.license.kind === 'terms' && !isHttpsUrl(descriptor.license.url)) {
     return { ok: false, reason: 'unknown-license' };
   }
+  if (descriptor.license.kind === 'spdx' && !isValidSpdxExpression(descriptor.license.id)) {
+    return { ok: false, reason: 'malformed' };
+  }
   if (descriptor.source.official !== true) return { ok: false, reason: 'non-official-source' };
+  // `docsUrl` deliberately stays on the plain `isHttpsUrl` check, not
+  // `isValidLocator` — it is a documentation link a maintainer reads, never
+  // a fetch or spawn target, so a query string on it (`?tab=readme`) is
+  // ordinary and is not the same risk a `source.locator`'s query string is.
   if (!isHttpsUrl(descriptor.source.docsUrl)) return { ok: false, reason: 'non-official-source' };
-  if (descriptor.source.kind === 'https' && !isHttpsUrl(descriptor.source.locator)) {
+  // Both branches route through the SAME `isValidLocator` a committed
+  // receipt is checked against (RP-22 gate cycle 2, advisory (a): the https
+  // branch used to call `isHttpsUrl` directly, bypassing the query-string/
+  // fragment refusal `isValidLocator('https', …)` also applies — "one
+  // grammar, both callers" was false in this one branch). Only the REASON
+  // differs per kind, kept exactly as before: https keeps its pre-existing,
+  // tested `non-official-source`; the other four kinds had no locator-shape
+  // check at all before gate cycle 1, so a new failure there is `malformed`.
+  // MAX_LOCATOR_LENGTH (128) applies here too — a shipped descriptor's
+  // locator is capped exactly like a committed receipt's.
+  if (descriptor.source.kind === 'https' && !isValidLocator('https', descriptor.source.locator)) {
     return { ok: false, reason: 'non-official-source' };
+  }
+  if (
+    descriptor.source.kind !== 'https' &&
+    !isValidLocator(descriptor.source.kind, descriptor.source.locator)
+  ) {
+    return { ok: false, reason: 'malformed' };
   }
   if (!isRealDateString(descriptor.source.verifiedOn)) return { ok: false, reason: 'malformed' };
   if (descriptor.mode === 'external-installer' && descriptor.versionPolicy.kind === 'floating') {
@@ -141,7 +266,13 @@ export function validateDescriptor(descriptor: ProviderDescriptor): DescriptorVa
  * that descriptor) would have its own contents skipped here. Every entry in
  * {@link REGISTRY} today is a fresh object literal with no such reuse.
  */
-function deepFreeze<T>(value: T): T {
+// Exported (RP-22 S2 carry-over) only so the "stops descending into an
+// already-frozen value" limit above has a direct test of its own — see
+// `integrations-registry.test.ts` › "does not descend into a value that
+// arrives already frozen, so a nested mutable property inside a pre-frozen
+// shared object is left mutable" — rather than resting on this comment alone
+// (`.claude/rules/invariants.md`, "State the limits — and test them").
+export function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);
     for (const key of Object.getOwnPropertyNames(value)) {

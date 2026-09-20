@@ -6,6 +6,7 @@ import {
   DECLARATION_REL,
   DECLARATION_SCHEMA_VERSION,
   KNOWN_ENTRY_KEYS,
+  ROOT_KEYS,
   VERSION_PATTERN,
   parseDeclaration,
   serializeDeclaration,
@@ -32,7 +33,12 @@ interface DeclarationSchema {
     integrations: {
       items: {
         additionalProperties: boolean;
-        properties: { version: { pattern: string } } & Record<string, unknown>;
+        required: string[];
+        properties: {
+          id: { minLength: number };
+          harnesses: { items: { enum: string[] } };
+          version: { pattern: string };
+        } & Record<string, unknown>;
       };
     };
   };
@@ -502,6 +508,20 @@ const FILE_SHAPE_FIXTURES: readonly FileShapeFixture[] = [
     value: { schemaVersion: 1, integrations: [], command: 'rm -rf /' },
     accepted: false,
   },
+  // RP-22 S2 carry-over: pins items.required:["id"] on the schema side and
+  // parseDeclaration's own "every declared integration needs a string id"
+  // check on the parser side — dropping either lets this fixture through.
+  {
+    name: 'an entry with no id',
+    value: { schemaVersion: 1, integrations: [{}] },
+    accepted: false,
+  },
+  // Pins id.minLength:1 on the schema side.
+  {
+    name: 'an entry with an empty id',
+    value: { schemaVersion: 1, integrations: [{ id: '' }] },
+    accepted: false,
+  },
 ];
 
 describe('file-level shape: parseDeclaration and the schema oracle agree on one shared fixture list', () => {
@@ -527,9 +547,31 @@ describe('the schema and KNOWN_ENTRY_KEYS spell the same entry-key closure once'
   it("KNOWN_ENTRY_KEYS equals the schema's entry property keys, and both layers close the object", async () => {
     const schema = await loadSchema();
     const itemsSchema = schema.properties.integrations.items;
-    expect(new Set(Object.keys(itemsSchema.properties))).toEqual(KNOWN_ENTRY_KEYS);
+    expect(new Set(Object.keys(itemsSchema.properties))).toEqual(new Set(KNOWN_ENTRY_KEYS));
     expect(itemsSchema.additionalProperties).toBe(false);
     expect(schema.additionalProperties).toBe(false);
+  });
+
+  // RP-22 S2 carry-over: KNOWN_ENTRY_KEYS used to be an exported, live `Set` —
+  // mutable through add/delete even though nothing ever froze it, since
+  // `Object.freeze` on a `Set` does not close its internal slots.
+  it('mutating the exported KNOWN_ENTRY_KEYS throws', () => {
+    expect(() => {
+      (KNOWN_ENTRY_KEYS as string[]).push('command');
+    }).toThrow();
+  });
+});
+
+describe('ROOT_KEYS equals the schema root property keys (RP-22 S2 carry-over)', () => {
+  it('ROOT_KEYS equals {schemaVersion, integrations}', async () => {
+    const schema = await loadSchema();
+    expect(new Set(ROOT_KEYS)).toEqual(new Set(Object.keys(schema.properties)));
+  });
+
+  it('mutating the exported ROOT_KEYS throws', () => {
+    expect(() => {
+      (ROOT_KEYS as string[]).push('command');
+    }).toThrow();
   });
 });
 
@@ -563,6 +605,15 @@ const SCHEMA_ONLY_ENTRY_FIXTURES: readonly SchemaOnlyEntryFixture[] = [
   {
     name: 'an entry with an out-of-pattern version',
     value: { schemaVersion: 1, integrations: [{ id: 'gamma-board', version: 'not a version!' }] },
+    parserReason: 'malformed',
+  },
+  // RP-22 S2 carry-over: pins the schema's harnesses enum ["claude-code",
+  // "codex"] — widening it to admit "other" would let this fixture pass the
+  // schema while the parser's own isHarness/isHarnessSubset checks still
+  // (correctly) refuse it.
+  {
+    name: 'an entry with a harnesses value naming an unsupported harness ("other")',
+    value: { schemaVersion: 1, integrations: [{ id: 'gamma-board', harnesses: ['other'] }] },
     parserReason: 'malformed',
   },
 ];
