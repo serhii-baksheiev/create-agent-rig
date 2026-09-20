@@ -473,12 +473,26 @@ export type WiringPreservedKind = 'edited' | 'kept' | 'unsafe';
  * (which records it under `kept`, never `files`), then `uninstall --yes`.
  */
 export function hookStillReferencedReason(wiringRel: string, kind: WiringPreservedKind): string {
-  const why =
-    kind === 'edited'
-      ? 'which was preserved as edited'
-      : kind === 'kept'
-        ? 'which init found already in place and never took ownership of'
-        : 'which could not be safely read (itself a symlink, or reached through one)';
+  // Exhaustiveness is enforced at COMPILE time only, deliberately with no
+  // `default` branch and no runtime throw: `why`'s definite-assignment check
+  // fails typecheck the moment `WiringPreservedKind` grows a fourth member
+  // this switch does not handle. This function runs from `index.ts` inside
+  // `uninstallPayload`, AFTER `applyUninstall` has already deleted files —
+  // a throw reachable from here would turn an inconsequential inconsistency
+  // into a post-deletion stack trace with no JSON on stdout, the worst point
+  // in the whole command for that to happen (security-lens review, RP-181).
+  let why: string;
+  switch (kind) {
+    case 'edited':
+      why = 'which was preserved as edited';
+      break;
+    case 'kept':
+      why = 'which init found already in place and never took ownership of';
+      break;
+    case 'unsafe':
+      why = 'which could not be safely read (itself a symlink, or reached through one)';
+      break;
+  }
   return `still referenced by ${wiringRel}, ${why} — removing this file would leave it pointing at nothing`;
 }
 
@@ -543,17 +557,24 @@ export function hookImportedByReason(importedByRel: string, wiringRel: string): 
  * manifest through nothing worse than `git clone`, before consent, and
  * fatal to the "`--json` prints exactly one object" promise either way.
  * `regularFileStatus !== 'ok'` skips the read entirely; `protectedHooks.set`
- * already ran for `rel` a line above, so THAT file stays protected — walked
- * or not, "protecting too many is the safe direction" (below) covers exactly
- * this case too. ⚠ What it does NOT cover: `visited.add(rel)` also runs
- * before the gate, so a symlinked hook's own IMPORTS are never discovered —
- * a dependency reachable ONLY through it (never seeded directly, never
- * imported by any other protected file) loses protection along with the
- * read. Defensible in the shipped tree today (every `.claude/scripts/`
- * dependency the walk needs to reach is also imported by at least one
- * OTHER, ordinarily-readable hook — see the candidate-set tests in
- * `uninstall.test.ts`), but that is a property of today's tree, not a
- * guarantee this function makes.
+ * already ran for `rel` a line above, so THAT file stays protected. What it
+ * cannot do is discover what an unreadable `rel` itself imports — `visited`
+ * has already been marked, so nothing else in the walk will try again
+ * either. An earlier version of this function stopped there, on the
+ * reasoning that every `.claude/scripts/` dependency the walk needs to reach
+ * is also imported by at least one OTHER, ordinarily-readable hook. That
+ * reasoning was checked against the shipped import graph and found false:
+ * `.claude/scripts/lib/secrets.mjs` has exactly ONE seeder
+ * (`guard-secret-file.mjs`), and `.claude/scripts/unattended-flag.mjs` has
+ * exactly one (`guard-rulebook.mjs`) — reproduced end to end through a real
+ * `git commit` (mode `120000`) and a fresh `git clone`: symlink the sole
+ * seeder, preserve the wiring that references it, and `secrets.mjs` survived
+ * the uninstall while its only importer died at module resolution, silently
+ * inert (security-lens review, RP-181). So the branch below does not stop
+ * at `rel` alone: it protects the conservative superset — every owned
+ * `.mjs` path — the same move `protectedHooksFor` already makes one level up
+ * for an unreadable WIRING file. "Protecting too many is the safe direction"
+ * is the same doctrine either way; only where it gets applied changed.
  *
  * Bounded, per `.claude/rules/invariants.md`'s fail-open rule, but precisely:
  * no recursion, and every REAL read happens at most once per owned path —
@@ -591,7 +612,26 @@ async function protectHookAndDeps(
     visited.add(rel);
     if (!protectedHooks.has(rel)) protectedHooks.set(rel, wiringRel);
     if (parent !== undefined && !importedBy.has(rel)) importedBy.set(rel, parent);
-    if ((await regularFileStatus(repoDir, rel)) !== 'ok') continue;
+    if ((await regularFileStatus(repoDir, rel)) !== 'ok') {
+      // Cannot read `rel` to discover what IT imports (security-lens review,
+      // RP-181 — blocker 1: `.claude/scripts/lib/secrets.mjs` has exactly
+      // ONE seeder in the shipped tree, `guard-secret-file.mjs`; symlinking
+      // that one seeder — with the wiring referencing it ALSO preserved —
+      // dropped secrets.mjs's protection even though nothing else in the
+      // walk would ever reach it. Same move `protectedHooksFor` already
+      // makes one level up for an unreadable WIRING file: protect every
+      // owned `.mjs` path outright rather than only the imports `rel`
+      // happened to make when it was last readable. Not narrowed to
+      // `HOOK_REL_PATTERN` — that only reaches `.claude/hooks/`, and this
+      // exists precisely because a dependency can sit in `.claude/scripts/`
+      // instead.
+      for (const owned of ownedPaths) {
+        if (owned.endsWith('.mjs') && !protectedHooks.has(owned)) {
+          protectedHooks.set(owned, wiringRel);
+        }
+      }
+      continue;
+    }
     let text: string;
     try {
       text = await readFile(onDisk(repoDir, rel), 'utf8');
@@ -1121,6 +1161,12 @@ export async function applyUninstall(
       protectedHooksAtApply.push({
         rel,
         wiringRel: protectingWiring,
+        // `applyTimeWiringKind` is set for `protectingWiring` in the SAME
+        // iteration of `protectedHooksFor` that populated
+        // `applyTimeProtectedHooks` with `rel` — never independently, so
+        // this can only be `undefined` if the two maps disagreed with each
+        // other, which would itself be the bug to fix (the same reasoning
+        // as the plan-time assertion above).
         wiringKind: applyTimeWiringKind.get(protectingWiring)!,
         ...(importer !== undefined ? { importedBy: importer } : {}),
       });

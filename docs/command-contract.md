@@ -1016,6 +1016,28 @@ mode `120000`. The file stays protected either way (it was recorded before
 the read is attempted) — walked or not — the same "protecting too many is
 the safe direction" doctrine below covers exactly this case too.
 
+**An unreadable file also loses the ability to name what IT imports — and the
+walk protects the conservative superset rather than losing those too.** An
+earlier version of this stopped at "the symlinked file itself stays
+protected", on the reasoning that every dependency the walk needs to reach
+through `.claude/scripts/` is also imported by at least one OTHER,
+ordinarily-readable hook. That reasoning was checked against the shipped
+import graph and found false: `.claude/scripts/lib/secrets.mjs` has exactly
+ONE seeder (`guard-secret-file.mjs`), and `.claude/scripts/unattended-flag.mjs`
+has exactly one (`guard-rulebook.mjs`). Symlinking that one seeder — with the
+wiring referencing it also preserved — used to drop the dependency's
+protection entirely, measured end to end through a real `git commit` and a
+fresh `git clone`: the credential guard (`guard-secret-file.mjs`) went from
+blocking a credential write (exit 2) to dying at module resolution
+(`ERR_MODULE_NOT_FOUND`, exit 1, non-blocking for `PreToolUse`) once
+`secrets.mjs` was gone, wiring still in place, still claiming to enforce it.
+So an unreadable file now protects every owned `.mjs` path outright — the
+same move the `unsafe`-wiring branch below already makes one level up —
+rather than only the file itself. Pinned by
+`packages/cli/test/uninstall.test.ts` › "protects a dependency with only ONE
+seeder even when that exact seeder is symlinked — the credential guard's own
+import" and its `guard-rulebook.mjs`/`unattended-flag.mjs` sibling.
+
 Bounded, but precisely: every REAL read happens at most once per owned path
 — a visited set is checked before reading, and only an import target already
 among the ~80 paths this release installs is ever opened, so a path this
@@ -1048,22 +1070,58 @@ to fall into, ever. The walk treats it accordingly: a `kept` wiring path's
 CURRENT hook references are always protected, never skipped on a hash match
 that does not exist for this purpose.
 
-A hook is reported in `--json`'s `preserved` array with one of two reason
-wordings, depending on how the walk reached it: a hook a wiring file names
-DIRECTLY gets the same wording `planUninstall` uses for a hook it protects at
-plan time (`still referenced by <wiring path>, which was preserved as edited
-— removing this file would leave it pointing at nothing`); a file reached
-only through another protected file's own import — `.claude/scripts/lib/secrets.mjs`
-is never mentioned by `.claude/settings.json` at ALL, only
-`.claude/hooks/guard-secret-file.mjs` is — gets a wording that names the
-immediate importer instead (`imported by <importer>, itself needed —
-directly or through further imports — by the still-preserved <wiring path>,
-which is why it survives too`), so an operator grepping the wiring file for
-the path they actually care about is not left empty-handed. Neither wording
-claims the immediate importer is itself directly named by the wiring
-file — only that the wiring file needs it, directly or transitively — which
-stays true at any import depth, including a dependency reached three hops
-down (`.claude/hooks/lib/edit-input.mjs` imports `.claude/scripts/git-env.mjs`,
+⚠ **Known gap, pre-existing and not changed by this feature, the opposite
+lever from the three kinds above:** a wiring path named in NEITHER `files`
+nor `kept` at all is untracked, and `trackingFor`'s `{ tracked: false }`
+short-circuit means it protects nothing while ALSO never being removed
+itself — a manifest simply omitting `.codex/hooks.json`, for instance, still
+deletes the 6 hooks it wires while leaving that file on disk still
+referencing them, reported `outcome: "uninstalled"` (security-lens review,
+RP-181). Recorded here as a known limitation rather than chased in this
+change: every real `init`/`upgrade` run always records a wiring path in one
+of the two, so reaching this requires a manifest already missing an entry a
+real run never omits.
+
+A hook is reported in `--json`'s `preserved` array with one of FOUR reason
+wordings, depending on how the walk reached it and, for a directly-named
+hook, WHY the wiring file protecting it is itself preserved (its
+`WiringPreservedKind` — `'edited'`, `'kept'`, or `'unsafe'`, decided once per
+wiring path from the exact same distinction `planUninstall`/`applyUninstall`
+already compute, never assumed):
+
+- **Edited** — a `files`-tracked wiring file whose current bytes no longer
+  match the recorded hash: `still referenced by <wiring path>, which was
+preserved as edited — removing this file would leave it pointing at
+nothing`.
+- **Kept** — a `kept` wiring file `init` found already in place and never
+  took ownership of, so it was never "edited" by anyone this command has
+  evidence about: `still referenced by <wiring path>, which init found
+already in place and never took ownership of — removing this file would
+leave it pointing at nothing`.
+- **Unsafe** — the wiring file itself could not be safely read (a symlink,
+  or reached through one), so its content was never compared to anything:
+  `still referenced by <wiring path>, which could not be safely read (itself
+a symlink, or reached through one) — removing this file would leave it
+pointing at nothing`.
+- **Imported** — a file reached only through another protected file's own
+  import, regardless of that file's own `WiringPreservedKind` —
+  `.claude/scripts/lib/secrets.mjs` is never mentioned by
+  `.claude/settings.json` at ALL, only `.claude/hooks/guard-secret-file.mjs`
+  is — gets a wording that names the immediate importer instead: `imported
+by <importer>, itself needed — directly or through further imports — by
+the still-preserved <wiring path>, which is why it survives too`, so an
+  operator grepping the wiring file for the path they actually care about is
+  not left empty-handed.
+
+The first three exist because reusing the "edited" wording for a `kept` or
+`unsafe` wiring file told two contradictory stories about the same
+repository state in one report — `.claude/settings.json` → "user-owned (kept
+by init)", two lines away `guard-bash.mjs` → "preserved as **edited**",
+about a file nobody edited. None of the four wordings claims the immediate
+importer is itself directly named by the wiring file — only that the wiring
+file needs it, directly or transitively — which stays true at any import
+depth, including a dependency reached three hops down
+(`.claude/hooks/lib/edit-input.mjs` imports `.claude/scripts/git-env.mjs`,
 and neither is named in `.claude/settings.json` at all). A reader who needs
 the next hop finds it on the importer's OWN `preserved` entry.
 

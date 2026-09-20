@@ -59,6 +59,29 @@ const exists = async (rel: string): Promise<boolean> => {
 const actionFor = (plan: UninstallPlan, rel: string): UninstallAction | undefined =>
   plan.actions.find((a) => a.rel === rel);
 
+// The same relative-import shape production's `RELATIVE_MJS_IMPORT` matches
+// — deliberately a second copy rather than an import of the private constant,
+// so this can never be satisfied merely by production checking its own work.
+const TEST_RELATIVE_MJS_IMPORT = /from\s+['"](\.\.?\/[^'"]+\.mjs)['"]/g;
+
+/**
+ * Sanity for the hand-maintained importer candidate lists below: fails
+ * loudly if `importerRel` does not actually import `depRel`, rather than
+ * letting a list drift into a superset that would silently widen what
+ * counts as a correct reason string — the exact failure mode the
+ * `hookImportedByReason` wording fix (cycle-5 review) closed for production;
+ * a candidate list nothing checks is the same failure mode one layer up, in
+ * the tests meant to catch a regression of it.
+ */
+async function expectImports(importerRel: string, depRel: string): Promise<void> {
+  const content = await read(importerRel);
+  const dir = path.posix.dirname(importerRel);
+  const resolved = [...content.matchAll(TEST_RELATIVE_MJS_IMPORT)].map((match) =>
+    path.posix.normalize(path.posix.join(dir, match[1]!)),
+  );
+  expect(resolved, `${importerRel} must actually import ${depRel}`).toContain(depRel);
+}
+
 /** The rig as `init` leaves it: files installed, manifest written. */
 async function installRig(): Promise<void> {
   await initProject(repo, {});
@@ -537,10 +560,17 @@ describe('planUninstall — wiring files', () => {
     // previously distinguished the two for a transitively-reached file, so
     // `hookImportedByReason` and its whole `importedBy` map could be deleted
     // outright and the suite stayed green).
-    const validReasonsFor = (importers: readonly string[]): string[] =>
-      importers.map((importer) => hookImportedByReason(importer, SETTINGS));
+    const validReasonsFor = async (
+      dep: string,
+      importers: readonly string[],
+    ): Promise<string[]> => {
+      for (const importer of importers) {
+        await expectImports(importer, dep);
+      }
+      return importers.map((importer) => hookImportedByReason(importer, SETTINGS));
+    };
     const expectedReasons: Record<string, string[]> = {
-      [HOOK_INPUT]: validReasonsFor([
+      [HOOK_INPUT]: await validReasonsFor(HOOK_INPUT, [
         '.claude/hooks/guard-bash.mjs',
         '.claude/hooks/guard-secret-file.mjs',
         '.claude/hooks/block-no-verify.mjs',
@@ -550,18 +580,18 @@ describe('planUninstall — wiring files', () => {
         '.claude/hooks/inject-rules.mjs',
         '.claude/hooks/warn-subagent-routing.mjs',
       ]),
-      [EDIT_INPUT]: validReasonsFor([
+      [EDIT_INPUT]: await validReasonsFor(EDIT_INPUT, [
         '.claude/hooks/guard-secret-file.mjs',
         '.claude/hooks/guard-rulebook.mjs',
       ]),
       // Only ONE shipped hook imports this — no traversal-order ambiguity,
       // so this is the single exact reason, not a candidate set.
-      [SECRETS_LIB]: validReasonsFor(['.claude/hooks/guard-secret-file.mjs']),
+      [SECRETS_LIB]: await validReasonsFor(SECRETS_LIB, ['.claude/hooks/guard-secret-file.mjs']),
       // Two real paths reach this one: guard-bash.mjs imports it directly,
       // AND guard-rulebook.mjs imports unattended-flag.mjs, which imports it
       // too — whichever hook's closure walk runs first (a traversal-order
       // detail, not a stated contract) claims it.
-      [STOP_FLAG]: validReasonsFor([
+      [STOP_FLAG]: await validReasonsFor(STOP_FLAG, [
         '.claude/hooks/guard-bash.mjs',
         '.claude/scripts/unattended-flag.mjs',
       ]),
@@ -1380,10 +1410,19 @@ describe('applyUninstall — a file that changed after planning', () => {
       // imported by nearly every wired hook — which of the two a given
       // `ownedPaths` iteration order resolves first is not a stated
       // contract, so this allows either shape rather than guessing one.
+      const importedReasonsFor = async (
+        dep: string,
+        importers: readonly string[],
+      ): Promise<string[]> => {
+        for (const importer of importers) {
+          await expectImports(importer, dep);
+        }
+        return importers.map((importer) => hookImportedByReason(importer, SETTINGS));
+      };
       const allowedReasonsFor: Record<string, string[]> = {
         [HOOK_INPUT]: [
           hookStillReferencedReason(SETTINGS, 'unsafe'),
-          ...[
+          ...(await importedReasonsFor(HOOK_INPUT, [
             '.claude/hooks/guard-bash.mjs',
             '.claude/hooks/guard-secret-file.mjs',
             '.claude/hooks/block-no-verify.mjs',
@@ -1392,14 +1431,17 @@ describe('applyUninstall — a file that changed after planning', () => {
             '.claude/hooks/gate-stop-dod.mjs',
             '.claude/hooks/inject-rules.mjs',
             '.claude/hooks/warn-subagent-routing.mjs',
-          ].map((importer) => hookImportedByReason(importer, SETTINGS)),
+          ])),
         ],
-        [SECRETS_LIB]: [hookImportedByReason('.claude/hooks/guard-secret-file.mjs', SETTINGS)],
+        [SECRETS_LIB]: await importedReasonsFor(SECRETS_LIB, [
+          '.claude/hooks/guard-secret-file.mjs',
+        ]),
         // Two real paths: guard-bash.mjs directly, or guard-rulebook.mjs via
         // its own import of unattended-flag.mjs, which imports this too.
-        [STOP_FLAG]: ['.claude/hooks/guard-bash.mjs', '.claude/scripts/unattended-flag.mjs'].map(
-          (importer) => hookImportedByReason(importer, SETTINGS),
-        ),
+        [STOP_FLAG]: await importedReasonsFor(STOP_FLAG, [
+          '.claude/hooks/guard-bash.mjs',
+          '.claude/scripts/unattended-flag.mjs',
+        ]),
       };
 
       const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
@@ -1436,10 +1478,19 @@ describe('applyUninstall — a file that changed after planning', () => {
   // relative import naming a real owned "canary" path
   // (`.claude/scripts/preflight.mjs`, never otherwise reachable from
   // `guard-bash.mjs`'s real closure) that only an actual read would ever
-  // discover. If the read happened, the canary would show up `preserved`
-  // (protected as an import); the fix means it never does.
+  // discover.
+  //
+  // The canary IS now protected either way, since the security-lens cycle-6
+  // fix protects the conservative superset of every owned `.mjs` path once a
+  // hook cannot be safely read — so `verdict` alone no longer distinguishes
+  // "the spoofed import was discovered by an actual read" from "the
+  // superset caught it regardless". The REASON still does: the superset
+  // path sets `protectedHooks` directly, never touching `importedBy`, so its
+  // reason is the DIRECT wording naming `SETTINGS`; had the symlink's
+  // content actually been read and the spoofed import believed, the canary
+  // would carry the IMPORTED wording naming `guardBash` instead.
   onlyWhereSymlinksExist(
-    'never reads a hook file through a symlink while walking its import closure — it stays protected without being opened',
+    'never reads a hook file through a symlink while walking its import closure — a spoofed import in the link target is never discovered',
     async () => {
       await installRig();
       const CANARY = '.claude/scripts/preflight.mjs';
@@ -1467,13 +1518,96 @@ describe('applyUninstall — a file that changed after planning', () => {
         // `protectedHooks` before the gate is ever checked), just via the
         // ordinary "not a regular file" verdict its own manifest entry gets
         expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
-        // the canary: NOT protected — proof the symlink's content was never
-        // read to discover this "import" at all
-        expect(actionFor(plan, CANARY)?.verdict).toBe('remove');
+        // the canary: protected too now (the safe superset), but its EXACT
+        // reason proves this is the superset, not the spoofed import
+        const canaryAction = actionFor(plan, CANARY);
+        expect(canaryAction?.verdict).toBe('preserved');
+        expect(canaryAction?.reason).toBe(hookStillReferencedReason(SETTINGS, 'edited'));
+        expect(canaryAction?.reason).not.toContain(guardBash);
 
         await applyUninstall(repo, plan);
         const info = await lstat(abs(guardBash));
         expect(info.isSymbolicLink()).toBe(true); // untouched, never read or removed
+        expect(await exists(CANARY)).toBe(true); // protected, so never removed either
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  // Security-lens review, RP-181: the exact exploit the docblock's earlier,
+  // now-deleted "defensible in the shipped tree today" claim was wrong
+  // about. `.claude/scripts/lib/secrets.mjs` has exactly ONE seeder in the
+  // shipped tree — `guard-secret-file.mjs` — so symlinking that ONE seeder
+  // (with `.claude/settings.json` also preserved as edited, so the walk
+  // actually runs) used to drop secrets.mjs's protection entirely: nothing
+  // else in the walk would ever reach it. Reproduced end to end by the lens
+  // through a real `git commit` (mode `120000`) and a fresh `git clone`,
+  // with the credential guard measured going from exit 2 (blocks a
+  // credential write) before `uninstall` to exit 1 (`ERR_MODULE_NOT_FOUND`,
+  // non-blocking for `PreToolUse`) after it — the wiring still there,
+  // still claiming to enforce it.
+  onlyWhereSymlinksExist(
+    "protects a dependency with only ONE seeder even when that exact seeder is symlinked — the credential guard's own import",
+    async () => {
+      await installRig();
+      const SECRETS_LIB = '.claude/scripts/lib/secrets.mjs';
+      const guardSecretFile = '.claude/hooks/guard-secret-file.mjs';
+      await expectImports(guardSecretFile, SECRETS_LIB);
+
+      const original = await read(SETTINGS);
+      const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+      await write(SETTINGS, edited);
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const target = path.join(outside, 'external-guard-secret-file.mjs');
+        await writeFile(target, await read(guardSecretFile));
+        await rm(abs(guardSecretFile));
+        await symlink(target, abs(guardSecretFile));
+
+        const plan = await planUninstall(repo);
+        expect(actionFor(plan, guardSecretFile)?.verdict).toBe('preserved');
+        expect(actionFor(plan, SECRETS_LIB)?.verdict).toBe('preserved');
+
+        await applyUninstall(repo, plan);
+        expect(await exists(SECRETS_LIB)).toBe(true);
+        const info = await lstat(abs(guardSecretFile));
+        expect(info.isSymbolicLink()).toBe(true);
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
+
+  // Same exploit shape, independently, for `guard-rulebook.mjs`'s own
+  // single-seeded dependency — two data points, not one, since the earlier
+  // false claim was falsified by BOTH.
+  onlyWhereSymlinksExist(
+    'protects a dependency with only ONE seeder even when that exact seeder is symlinked — guard-rulebook.mjs and unattended-flag.mjs',
+    async () => {
+      await installRig();
+      const UNATTENDED_FLAG = '.claude/scripts/unattended-flag.mjs';
+      const guardRulebook = '.claude/hooks/guard-rulebook.mjs';
+      await expectImports(guardRulebook, UNATTENDED_FLAG);
+
+      const original = await read(SETTINGS);
+      const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+      await write(SETTINGS, edited);
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const target = path.join(outside, 'external-guard-rulebook.mjs');
+        await writeFile(target, await read(guardRulebook));
+        await rm(abs(guardRulebook));
+        await symlink(target, abs(guardRulebook));
+
+        const plan = await planUninstall(repo);
+        expect(actionFor(plan, guardRulebook)?.verdict).toBe('preserved');
+        expect(actionFor(plan, UNATTENDED_FLAG)?.verdict).toBe('preserved');
+
+        await applyUninstall(repo, plan);
+        expect(await exists(UNATTENDED_FLAG)).toBe(true);
       } finally {
         await removeFixture(outside);
       }

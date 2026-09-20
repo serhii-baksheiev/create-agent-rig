@@ -139,10 +139,29 @@ a template any generated rig receives.
   `init` never took ownership of — the ordinary "starts from an existing
   repository" path) now protects its hooks too: it used to protect NONE of
   them, silently, because the pass that decides this read only `files`'
-  hashes and a `kept` path has none. A file reached only through another
-  protected file's own import, rather than named by the wiring file
-  directly, now gets its own reason wording naming the immediate importer,
-  since the wiring file itself may never mention it at all. Two other
+  hashes and a `kept` path has none. **The reason a protected hook reports
+  now names WHY its wiring file survives, not only THAT it does** — a `kept`
+  wiring file's hook used to say "which was preserved as edited" too, which
+  is false (nobody edited it; the rig never wrote it), and told a
+  contradictory story two lines apart from `.claude/settings.json`'s own
+  "user-owned (kept by init)" verdict in the same report. It now reads
+  "which init found already in place and never took ownership of"; a hook
+  whose wiring file could not be safely read at all (itself a symlink) now
+  says so ("which could not be safely read…") instead of "edited" too. A
+  file reached only through another protected file's own import, rather
+  than named by the wiring file directly, now gets its own reason wording
+  naming the immediate importer, since the wiring file itself may never
+  mention it at all. **A hook file that cannot itself be safely read (a
+  symlink) now protects the conservative superset of every owned `.mjs`
+  path, not only itself.** Two dependencies in the shipped tree have exactly
+  ONE hook that imports them — `.claude/scripts/lib/secrets.mjs` (only
+  `guard-secret-file.mjs`) and `.claude/scripts/unattended-flag.mjs` (only
+  `guard-rulebook.mjs`) — so symlinking that one seeder used to drop the
+  dependency's protection entirely: measured end to end through a real `git
+commit` and a fresh `git clone`, the credential guard went from blocking a
+  credential write (exit 2) to dying at module resolution (exit 1,
+  non-blocking for `PreToolUse`) once its own import was gone, wiring still
+  in place and still claiming to enforce it. Two other
   apply-time-only fixes in the same area: the removal loop now re-reads a
   wiring file's bytes fresh, immediately before that file's own removal,
   instead of reusing a copy `protectedHooksFor` read before the loop even
