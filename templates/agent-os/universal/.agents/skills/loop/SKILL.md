@@ -344,7 +344,7 @@ it only here. A tier outside that vocabulary **holds**, never releases
 (`docs/decisions/spacing-rations-mechanisms.md`).
 
 **The tier marker is a pre-filter, not the authority.** If an item passed as normal
-and the work turns out to touch an elevated path (`CLAUDE.md` →
+and the work turns out to touch an elevated path (`AGENTS.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
@@ -842,8 +842,8 @@ unbounded improvement list is another diary, and three forces a choice. Each nam
 four things, and a proposal missing any of them is not ready to file:
 
 1. the finding it came from, cited as the journal line it appears on;
-2. the part to change — a skill, an agent spec, a hook, a rule file, `CLAUDE.md`,
-   the CI workflow;
+2. the part to change — a skill, an agent spec, a hook, a rule file, `AGENTS.md`,
+   `CLAUDE.md`, the CI workflow;
 3. the change, concretely enough to diff;
 4. how the next run would prove it worked — the observation that would differ.
 
@@ -858,7 +858,7 @@ node --input-type=module -e '
   const a = await import("./.claude/scripts/queue/plan-md.mjs");   // or github-issues / jira
   console.log(await a.proposeTriage({
     finding: "<the journal line it came from>",
-    part:    "<skill | agent | hook | rule | CLAUDE.md | workflow>",
+    part:    "<skill | agent | hook | rule | AGENTS.md | CLAUDE.md | workflow>",
     change:  "<concretely enough to diff>",
     proof:   "<the observation that would differ next run>",
     // a pair: what the probe touched, and what is concluded from it. The

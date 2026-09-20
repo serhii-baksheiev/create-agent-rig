@@ -49,8 +49,12 @@ describe('create-agent-rig <dir>', () => {
     expect(result.stdout).toContain('my-app');
 
     const projectDir = path.join(work, 'my-app');
+    // RP-186: AGENTS.md is the canonical, substituted rulebook; CLAUDE.md is
+    // a short shim with no project-name token of its own to substitute.
+    const agentsMd = await readFile(path.join(projectDir, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('my-app');
+    expect(agentsMd).not.toContain('__PROJECT_NAME__');
     const claudeMd = await readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('my-app');
     expect(claudeMd).not.toContain('__PROJECT_NAME__');
     // no application scaffolding of any kind
     await expect(readFile(path.join(projectDir, 'package.json'), 'utf8')).rejects.toThrow();
@@ -152,7 +156,8 @@ describe('npm pack tarball (distribution path)', () => {
         env: installEnv(path.join(work, 'npx-cache')),
       },
     );
-    const claudeMd = await readFile(path.join(appDir, 'tar-app', 'CLAUDE.md'), 'utf8');
-    expect(claudeMd).toContain('tar-app');
+    // RP-186: AGENTS.md carries the substituted project name; CLAUDE.md is a shim.
+    const agentsMd = await readFile(path.join(appDir, 'tar-app', 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('tar-app');
   });
 });

@@ -492,8 +492,9 @@ describe('validate-no-secrets is wired into the paths that run it', () => {
         path.join(repoRoot, 'templates/agent-os/universal/.claude/scripts/detect-missed-gate.mjs'),
       ).href
     )) as { parseElevatedPaths: (md: string) => string[] | null };
-    const claudeMd = await readFile(path.join(repoRoot, 'CLAUDE.md'), 'utf8');
-    const declared = parseElevatedPaths(claudeMd);
+    // RP-186: the elevated-paths block lives in the composed AGENTS.md now.
+    const agentsMd = await readFile(path.join(repoRoot, 'AGENTS.md'), 'utf8');
+    const declared = parseElevatedPaths(agentsMd);
     expect(declared).not.toBeNull();
     expect(declared).toContain('.husky/');
   });

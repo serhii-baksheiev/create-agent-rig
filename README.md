@@ -5,10 +5,13 @@ review gates, and hooks; the wired hooks enforce the configured process
 mechanically rather than by prose. It is a harness configurator, not an
 application generator: it never scaffolds application code.
 
-The same Agent OS is native to both **Claude Code and Codex**. Claude-facing
-files remain the authoring surface; the generator derives Codex's `AGENTS.md`,
-repository skills under `.agents/skills/`, custom agents under `.codex/agents/`,
-and `.codex/hooks.json`. `node scripts/sync-codex-adapter.mjs --check` refuses
+The same Agent OS is native to both **Claude Code and Codex**. `AGENTS.md` is
+the canonical, provider-neutral rulebook; `CLAUDE.md` next to it is a short
+compatibility shim (`@AGENTS.md` import plus anything Claude-Code-specific —
+see `docs/decisions/agents-md-canonical.md`). The generator derives Codex's
+remaining projection from the Claude-facing sources: repository skills under
+`.agents/skills/`, custom agents under `.codex/agents/`, and
+`.codex/hooks.json`. `node scripts/sync-codex-adapter.mjs --check` refuses
 drift between the two projections.
 
 ```sh
@@ -339,7 +342,7 @@ marked Claude Code, which only `.claude/settings.json` wires:
 - **`guard-rulebook`** — in an unattended run (a flag file the `loop` skill
   writes at claim time), refuses an edit to the rulebook — hooks, wiring,
   `queue.json` and its board selector, the queue adapters, the router, the gate sweep, the rules,
-  `CLAUDE.md` — outside the current item's allow-list; does nothing in an
+  `AGENTS.md`, `CLAUDE.md` — outside the current item's allow-list; does nothing in an
   attended session.
 - **`guard-secret-file`** — refuses an edit that writes a credential: either the
   path names one (`jira.env`, `id_rsa`, anything under `secrets/`) or the text

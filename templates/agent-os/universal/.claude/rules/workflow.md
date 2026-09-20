@@ -36,7 +36,7 @@ carries its own reasoning in context and will not challenge its own decisions
 the way a cold reader does. That is *why* `code-reviewer` is a separate
 subagent with a fresh context. **The `pr-ship` skill, which fans reviewers
 out automatically, ships only with the opt-in workflow layer** (`init
---layer workflow`; `CLAUDE.md`'s "The opt-in workflow layer" section) —
+--layer workflow`; `AGENTS.md`'s "The opt-in workflow layer" section) —
 without it, the session itself dispatches `code-reviewer` (and
 `security-scanner`/`prose-reviewer` when their triggers fire) directly,
 before opening or merging a PR. Either way, this isolation is load-bearing,
@@ -67,7 +67,7 @@ travels one path to merge, in this order:
    | `model` | everything else, including anything unclassifiable | `code-reviewer`, **always** |
 
    **`.claude/scripts/decision-router.mjs` ships with the opt-in workflow
-   layer** (`init --layer workflow`; `CLAUDE.md`'s "The opt-in workflow layer"
+   layer** (`init --layer workflow`; `AGENTS.md`'s "The opt-in workflow layer"
    section). Without it, this table is still the rule — it is just applied by
    a human or the session rather than by the script, and the safe default on
    any doubt is `model`, exactly as the script's own refusal-to-decide reads
@@ -82,8 +82,8 @@ travels one path to merge, in this order:
    so it never reaches the prose lane; `.md`/`.mdx` files and test paths that
    provision nothing are inert, so a README inside an elevated directory does
    not escalate on that ground alone. **Rulebook paths are exempt from that
-   carve-out** — `CLAUDE.md`, anything under `.claude/`, and the decision
-   records under `docs/decisions/`, which are extracted rationale and reviewed
+   carve-out** — `CLAUDE.md`, `AGENTS.md`, anything under `.claude/`, and the
+   decision records under `docs/decisions/`, which are extracted rationale and reviewed
    like the rules they explain. The inert set is otherwise those two extensions
    and test paths exactly — **not** the router's own notion of prose, which is
    `.md`/`.txt`. Neither set contains the other, and reconciling them breaks a
@@ -108,7 +108,7 @@ travels one path to merge, in this order:
      parsing, file handling, or outbound calls;
    - `prose-reviewer` when it touches the documents that instruct agents — a
      rule file, a skill, an agent spec, a decision record under
-     `docs/decisions/`, `CLAUDE.md`, the README. In this layer the prose *is*
+     `docs/decisions/`, `CLAUDE.md`, `AGENTS.md`, the README. In this layer the prose *is*
      the implementation, and it fails the same way code does: silently, in the
      direction of false confidence;
    - any additional review a repository rule explicitly names for the touched

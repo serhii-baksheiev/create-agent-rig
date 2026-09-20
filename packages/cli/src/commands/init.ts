@@ -300,8 +300,12 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       ) {
         continue;
       }
+      // "AGENTS.md" starts with a vowel SOUND ("a" said as a letter, /eɪ/);
+      // "CLAUDE.md" does not — so the article is picked per file rather than
+      // hardcoded to "an", which read as "an CLAUDE.md".
+      const article = /^[aeiou]/i.test(map) ? 'an' : 'a';
       throw new InitError(
-        `This repo already has an ${map}. Refusing to overwrite it. ` +
+        `This repo already has ${article} ${map}. Refusing to overwrite it. ` +
           'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.',
       );
     }
