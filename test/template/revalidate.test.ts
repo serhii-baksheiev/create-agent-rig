@@ -105,6 +105,26 @@ const git = async (args: string[], cwd: string): Promise<string> => {
   return result.stdout.trim();
 };
 
+/** `git merge-base --is-ancestor`, as a boolean — never throws on "no". */
+const isAncestor = async (ancestor: string, descendant: string, cwd: string): Promise<boolean> =>
+  (
+    await run(
+      'git',
+      [
+        '-c',
+        'user.email=t@example.invalid',
+        '-c',
+        'user.name=t',
+        'merge-base',
+        '--is-ancestor',
+        ancestor,
+        descendant,
+      ],
+      cwd,
+      withoutGitLocation(),
+    )
+  ).code === 0;
+
 /**
  * A bare `origin` and a working clone on a feature branch that edits `a.txt`.
  * `moveMain` lands a commit on master through a SECOND clone and fetches it into
@@ -629,6 +649,10 @@ interface CloseResult {
   state: { expected: 'in-progress'; actual: string | null };
   dependants: string[];
   dependantState: Record<string, string>;
+  // Carried straight through from `revalidateClaim` (AR-135); not yet named in
+  // this interface's original declaration, so it is widened here rather than
+  // read through a cast at every call site.
+  movedFingerprintSet?: string[];
 }
 
 const T3 = '2026-08-25T11:30:00.000Z';
@@ -700,6 +724,50 @@ const closeProject = async ({
     );
   }
   return { dir, configPath, runDir, env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir } };
+};
+
+/**
+ * Advances local `master` with one commit per subject (empty commits — under
+ * the SHA-identity exemption a commit's subject text is never inspected, only
+ * its position and identity are), then returns to the feature branch
+ * `closeProject` leaves checked out, so the working tree `revalidate` reads is
+ * unchanged from every other BEFORE_CLOSE test in this file. Returns the SHA
+ * of each commit it creates, in order, so a caller can name one of them as
+ * `--merge-commit`.
+ */
+const advanceMaster = async (dir: string, subjects: string[]): Promise<string[]> => {
+  await git(['checkout', '-q', 'master'], dir);
+  const shas: string[] = [];
+  for (const subject of subjects) {
+    await git(['commit', '-q', '--allow-empty', '-m', subject], dir);
+    shas.push(await git(['rev-parse', 'HEAD'], dir));
+  }
+  await git(['checkout', '-q', 'feat/revalidation-close'], dir);
+  return shas;
+};
+
+/**
+ * A REAL squash merge: `feat/revalidation-close` gets one more commit with
+ * actual file content (the loop's own work, beyond the claim-record commit
+ * `trackClaimBaseline` already made), then `master` receives it via
+ * `git merge --squash` + a commit of its own — the same shape a squash-merged
+ * PR produces. Returns the merge commit's SHA and leaves the working tree back
+ * on `feat/revalidation-close` (HEAD is the pre-merge task branch, exactly as
+ * a loop's own checkout is between "PR merged" and worktree cleanup).
+ */
+const squashMergeOwnWork = async (
+  dir: string,
+  { subject = 'feat: ship it (#1)', file = 'feature.txt', content = 'shipped\n' } = {},
+): Promise<string> => {
+  await writeFile(path.join(dir, file), content);
+  await git(['add', file], dir);
+  await git(['commit', '-q', '-m', `feat: add ${file}`], dir);
+  await git(['checkout', '-q', 'master'], dir);
+  await git(['merge', '-q', '--squash', 'feat/revalidation-close'], dir);
+  await git(['commit', '-q', '-m', subject], dir);
+  const mergeSha = await git(['rev-parse', 'HEAD'], dir);
+  await git(['checkout', '-q', 'feat/revalidation-close'], dir);
+  return mergeSha;
 };
 
 const revalidateClose = (
@@ -857,6 +925,381 @@ describe('BEFORE_CLOSE — workflow state remains part of claim:scope', () => {
     const p = await closeProject();
     const { result } = await revalidateCloseJson(p);
     expect(result.state).toEqual({ expected: 'in-progress', actual: 'in-progress' });
+  });
+});
+
+// RP-175: at BEFORE_CLOSE, `targetSha` is resolved AFTER this item's own PR was
+// just squash-merged — so it almost always differs from what was recorded at
+// take-up even when nothing besides the item's own merge landed on `master`.
+// The exemption is by SHA IDENTITY, never commit-message text: the caller (the
+// loop, via `revalidate.mjs --merge-commit <sha>`) vouches for the exact SHA of
+// this item's own merge, and the exemption fires only when that SHA is the
+// target's new tip, an ancestor-respecting advance from the recorded baseline,
+// and the only commit in the range. Any other shape — no `--merge-commit` at
+// all, a mismatched SHA, more than one commit in range (whether or not one of
+// them carries an empty message), or a target that moved backward off the
+// baseline — holds exactly as it did before this exemption existed.
+describe("BEFORE_CLOSE — the item's own squash merge advancing targetSha is not scope drift (SHA identity, not commit text)", () => {
+  const ownMergeSubject = 'feat: ship it (#1)';
+  const foreignSubject = 'chore: unrelated housekeeping';
+
+  type Setup = (p: CloseProject) => Promise<string | null>;
+
+  const rows: Array<[string, Setup, boolean]> = [
+    [
+      "the item's own REAL squash merge (actual file content, not an empty commit), nothing foreign, correctly named by --merge-commit",
+      async (p) => squashMergeOwnWork(p.dir, { subject: ownMergeSubject }),
+      false,
+    ],
+    [
+      'no --merge-commit supplied at all, even though the target moved by exactly one commit that would otherwise exempt it',
+      async (p) => {
+        await advanceMaster(p.dir, [ownMergeSubject]);
+        return null;
+      },
+      true,
+    ],
+    [
+      "a --merge-commit that does not match the target's new tip (the old recorded baseline sha)",
+      async (p) => {
+        const fromSha = await git(['rev-parse', 'master'], p.dir);
+        await advanceMaster(p.dir, [ownMergeSubject]);
+        return fromSha;
+      },
+      true,
+    ],
+    [
+      'a foreign commit plus the real merge in the same range, --merge-commit correctly naming the real one',
+      async (p) => {
+        const shas = await advanceMaster(p.dir, [foreignSubject, ownMergeSubject]);
+        return shas[1] ?? null;
+      },
+      true,
+    ],
+    [
+      'an empty-message commit landing before the real merge, --merge-commit correctly naming the real one (a commit COUNT still catches it even though its subject line is blank)',
+      async (p) => {
+        await git(['checkout', '-q', 'master'], p.dir);
+        await git(['commit', '-q', '--allow-empty', '--allow-empty-message', '-m', ''], p.dir);
+        await git(['commit', '-q', '--allow-empty', '-m', ownMergeSubject], p.dir);
+        const realSha = await git(['rev-parse', 'HEAD'], p.dir);
+        await git(['checkout', '-q', 'feat/revalidation-close'], p.dir);
+        return realSha;
+      },
+      true,
+    ],
+  ];
+
+  it.each(rows)('%s', async (_name, setup, expectHold) => {
+    const p = await closeProject();
+    const mergeCommit = await setup(p);
+    const extra = mergeCommit === null ? [] : ['--merge-commit', mergeCommit];
+    const { code, result, out } = await revalidateCloseJson(p, extra);
+    if (expectHold) {
+      expect(code, out).toBe(2);
+      expect(result.action).toBe('hold');
+      expect(result.source).toContain('claim:scope');
+    } else {
+      expect(code, out).toBe(0);
+      expect(result.action).toBe('continue');
+      expect(result.changed).toBe(false);
+      expect(result.source).not.toContain('claim:scope');
+      expect(result.movedFingerprintSet ?? []).not.toContain('scope');
+    }
+  });
+
+  it('holds when content also drifted even though --merge-commit correctly identifies the target advance', async () => {
+    // Same tracker fixture shape as "holds on claim:scope when the item was
+    // moved back to open" above, but ALSO advances the target by the item's
+    // own (correctly identified) merge commit — proving the exemption only
+    // ever widens the targetSha component of scope, never the content half.
+    const p = await closeProject({ status: TO_DO });
+    const shas = await advanceMaster(p.dir, [ownMergeSubject]);
+    const mergeSha = shas[0];
+    if (!mergeSha) throw new Error('fixture: advanceMaster did not return a sha');
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('rejects a target that moved backward off the recorded baseline, even though the final commit alone would look like a correct single-commit identity match', async () => {
+    const p = await closeProject();
+    // Build a commit with NO ancestry relationship to the recorded baseline
+    // (an orphan branch), then force `master` onto it. `rev-list --count` from
+    // the baseline to this tip reads 1 — the orphan has no parents of its own
+    // reachable from the baseline either — so only the ancestry check catches
+    // this; a naive "one commit and the SHA matches" rule would wrongly exempt
+    // it.
+    await git(['checkout', '-q', '--orphan', 'rp175-rewind'], p.dir);
+    await git(
+      ['commit', '-q', '--allow-empty', '-m', 'orphaned history, not a descendant of the baseline'],
+      p.dir,
+    );
+    const rewindSha = await git(['rev-parse', 'HEAD'], p.dir);
+    await git(['checkout', '-q', 'feat/revalidation-close'], p.dir);
+    await git(['branch', '-f', 'master', rewindSha], p.dir);
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', rewindSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('only exempts at BEFORE_CLOSE — the identical own-merge shape still holds on claim:scope at BEFORE_PR', async () => {
+    const p = await closeProject();
+    const shas = await advanceMaster(p.dir, [ownMergeSubject]);
+    const toSha = shas[0];
+    if (!toSha) throw new Error('fixture: advanceMaster did not return a sha');
+    const jira = (await loadQueue('jira.mjs')) as {
+      find: (
+        id: string,
+        options: Record<string, unknown>,
+      ) => Promise<Record<string, unknown> | null>;
+    };
+    const claims = (await loadScript('lib/claim-records.mjs')) as {
+      revalidateClaim: (input: Record<string, unknown>) => {
+        action: string;
+        movedFingerprintSet?: string[];
+      };
+    };
+    const config = JSON.parse(await readFile(p.configPath, 'utf8')) as {
+      options: Record<string, unknown>;
+    };
+    const ticket = await jira.find('AR-1', config.options);
+    if (!ticket) throw new Error('fixture: could not re-resolve AR-1 for the confinement check');
+    // Same fromSha (recorded baseline) -> toSha single-commit own-merge shape
+    // that continues cleanly at BEFORE_CLOSE (row 1 above) — called directly
+    // against `revalidateClaim` at BEFORE_PR instead, where the exemption must
+    // never fire. This is the test that fails loudly if the
+    // `point === 'BEFORE_CLOSE' &&` guard is ever dropped from the conjunction.
+    const result = claims.revalidateClaim({
+      projectRoot: p.dir,
+      ticket,
+      point: 'BEFORE_PR',
+      targetSha: toSha,
+      mergeCommit: toSha,
+    });
+    expect(result.action).not.toBe('continue');
+    expect(result.movedFingerprintSet ?? []).toContain('scope');
+  });
+});
+
+// RP-175 gate hold (round 2, security): `mergeCommit` above is pure caller
+// attestation — the only prior check was `toSha === mergeCommit`, which a
+// lazy or hostile `--merge-commit "$(git rev-parse origin/master)"` satisfies
+// trivially. These tests hold the line at the actual reproduced attack (a
+// single foreign commit advances the target by exactly one commit and gets
+// NAMED as the own merge) and at the vacuity a naive "checkout tree == merge
+// tree" comparison would fall into once the loop's own checkout has already
+// fast-forwarded past the merge. The fix adds a non-attestable LOCAL binding:
+// the exempted commit's tree must equal `HEAD`'s tree in `projectRoot`, HEAD
+// must NOT already be at-or-past that commit (or the comparison is vacuous),
+// and HEAD must still descend from the recorded baseline (or a tree match is
+// coincidence, not identity). See `isOwnMergeAdvance` in claim-records.mjs.
+describe("BEFORE_CLOSE — the own-merge exemption also binds to the checkout's tree, not just the tracker's say-so", () => {
+  const ownMergeSubject = 'feat: ship it (#1)';
+
+  it('a single FOREIGN commit named as --merge-commit does not exempt it — reproduces the gate-hold attack and proves it now holds', async () => {
+    const p = await closeProject();
+    // The task's real, unmerged work stays on the branch...
+    await writeFile(path.join(p.dir, 'feature.txt'), 'shipped\n');
+    await git(['add', 'feature.txt'], p.dir);
+    await git(['commit', '-q', '-m', 'feat: add feature.txt'], p.dir);
+    // ...while a single, wholly unrelated commit lands on master and is named
+    // as if it were the own merge — SHA identity, ancestry and commit COUNT
+    // all look exactly like a legitimate one-commit squash merge.
+    const foreignShas = await advanceMaster(p.dir, ['chore: unrelated housekeeping']);
+    const foreignSha = foreignShas[0];
+    if (!foreignSha) throw new Error('fixture: advanceMaster did not return a sha');
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', foreignSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it("a FABRICATED --merge-commit sharing HEAD's tree, correctly rooted at the baseline, but naming a commit the target never actually advanced to, still holds (condition 2 is load-bearing on its own)", async () => {
+    const p = await closeProject();
+    // The recorded baseline, captured before anything below moves master.
+    const fromSha = await git(['rev-parse', 'master'], p.dir);
+    // The task's real, unmerged work stays on the branch...
+    await writeFile(path.join(p.dir, 'feature.txt'), 'shipped\n');
+    await git(['add', 'feature.txt'], p.dir);
+    await git(['commit', '-q', '-m', 'feat: add feature.txt'], p.dir);
+    const headTree = await git(['rev-parse', 'HEAD^{tree}'], p.dir);
+    // ...while the target advances by exactly ONE, wholly unrelated commit —
+    // satisfying conditions 3 (ancestor) and 4 (count) on its own terms, using
+    // the REAL target advance, not the fabricated commit below.
+    const foreignShas = await advanceMaster(p.dir, ['chore: unrelated housekeeping']);
+    const foreignSha = foreignShas[0];
+    if (!foreignSha) throw new Error('fixture: advanceMaster did not return a sha');
+    // A FABRICATED commit that is neither the target's new tip nor anywhere
+    // in its history: same tree as HEAD (would satisfy condition 7), rooted
+    // at the recorded baseline so it is not an ancestor of HEAD and the
+    // baseline IS an ancestor of HEAD (would satisfy conditions 5 and 6) —
+    // but it never actually landed anywhere. Only condition 2
+    // (`toSha === mergeCommit`) refuses this; nothing else in the function
+    // ever compares `mergeCommit` against the real target advance at all.
+    const fabricated = await git(
+      [
+        'commit-tree',
+        headTree,
+        '-p',
+        fromSha,
+        '-m',
+        'fabricated: HEAD tree, baseline parent, never actually merged',
+      ],
+      p.dir,
+    );
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', fabricated]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('HEAD already at the merge commit is vacuous, and still holds (a fast-forwarded checkout must not self-satisfy the exemption)', async () => {
+    const p = await closeProject();
+    const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    // Unlike the passing case, leave the checkout ON master — HEAD now IS the
+    // merge commit, so a bare tree-equality check would trivially pass.
+    await git(['checkout', '-q', 'master'], p.dir);
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('a squash merge of a branch that was NOT up to date still holds, even with a correctly-named --merge-commit (acceptable: the safe side)', async () => {
+    const p = await closeProject();
+    // master moves with REAL, unrelated content BEFORE the squash merge
+    // lands, so the squash carries that unrelated file too. This is held
+    // TWICE over, independently: the range is now two commits, not one
+    // (condition 4), and the squash's tree — which includes the unrelated
+    // file HEAD never had — no longer equals HEAD's tree (condition 7).
+    // (An earlier version of this fixture advanced master with an EMPTY
+    // commit, which leaves the tree unchanged and is held by condition 4
+    // alone — the comment here previously, and wrongly, attributed the hold
+    // to a tree mismatch that never happened.)
+    await git(['checkout', '-q', 'master'], p.dir);
+    await writeFile(path.join(p.dir, 'unrelated.txt'), 'master moved before the merge landed\n');
+    await git(['add', 'unrelated.txt'], p.dir);
+    await git(['commit', '-q', '-m', 'chore: master moved before the merge landed'], p.dir);
+    await git(['checkout', '-q', 'feat/revalidation-close'], p.dir);
+    const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('a tree that matches by coincidence but shares no ancestry with the recorded baseline still holds (lineage, not just content)', async () => {
+    const p = await closeProject();
+    const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    const mergeTree = await git(['rev-parse', `${mergeSha}^{tree}`], p.dir);
+    // A brand-new, parentless commit carrying the SAME tree as the merge, with
+    // no history connecting it to the recorded baseline at all.
+    const decoy = await git(
+      ['commit-tree', mergeTree, '-m', 'decoy: same tree, unrelated history'],
+      p.dir,
+    );
+    await git(['checkout', '-q', decoy], p.dir);
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('a --merge-commit that is well-formed but names no object this repository has holds (git failure is the safe side, not a crash)', async () => {
+    const p = await closeProject();
+    await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    const phantom = '1'.repeat(40);
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', phantom]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it("a foreign commit landed by another route is exempted when its tree is byte-identical to HEAD's (condition 7 judges content, not provenance)", async () => {
+    const p = await closeProject();
+    const fromSha = await git(['rev-parse', 'master'], p.dir);
+    // The task's real work, exactly as a legitimate squash would carry it.
+    await writeFile(path.join(p.dir, 'feature.txt'), 'shipped\n');
+    await git(['add', 'feature.txt'], p.dir);
+    await git(['commit', '-q', '-m', 'feat: add feature.txt'], p.dir);
+    const headTree = await git(['rev-parse', 'HEAD^{tree}'], p.dir);
+    // Built by an entirely different route than `squashMergeOwnWork` (no
+    // `git merge --squash` in sight) but carrying the exact same tree, and
+    // it IS the real target advance: toSha === mergeCommit, exactly one
+    // commit, correctly rooted at the baseline. Conditions 2-6 pass on their
+    // own merits; only condition 7 could tell this apart from a genuine
+    // squash merge, and it correctly cannot — the target's content really is
+    // exactly what this run's own merge would have produced.
+    const landedByAnotherRoute = await git(
+      ['commit-tree', headTree, '-p', fromSha, '-m', 'chore: landed by another route entirely'],
+      p.dir,
+    );
+    await git(['branch', '-f', 'master', landedByAnotherRoute], p.dir);
+    const { code, result, out } = await revalidateCloseJson(p, [
+      '--merge-commit',
+      landedByAnotherRoute,
+    ]);
+    expect(code, out).toBe(0);
+    expect(result.action).toBe('continue');
+    expect(result.changed).toBe(false);
+  });
+
+  it('a foreign EMPTY commit ahead of the genuine squash still holds — only the commit COUNT refuses it (conditions 2, 3, 5, 6 and 7 all pass on their own)', async () => {
+    const p = await closeProject();
+    const fromSha = await git(['rev-parse', 'master'], p.dir);
+    // A foreign commit that changes NO content lands on master first...
+    const foreignShas = await advanceMaster(p.dir, ['chore: foreign empty commit, no content']);
+    const foreignSha = foreignShas[0];
+    if (!foreignSha) throw new Error('fixture: advanceMaster did not return a sha');
+    // ...then the item's OWN, genuine, up-to-date squash merge lands right
+    // after it. `--merge-commit` correctly names this real squash.
+    const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    const headSha = await git(['rev-parse', 'HEAD'], p.dir);
+    const headTree = await git(['rev-parse', 'HEAD^{tree}'], p.dir);
+    const mergeTree = await git(['rev-parse', `${mergeSha}^{tree}`], p.dir);
+
+    // Verify every OTHER condition actually holds in this fixture, with git
+    // itself, before trusting that condition 4 is the only thing standing
+    // between this and a false CURRENT.
+    expect(mergeSha).not.toBe(foreignSha); // toSha === mergeCommit (2) — real squash is master's tip
+    expect(await isAncestor(fromSha, mergeSha, p.dir)).toBe(true); // (3)
+    expect(await isAncestor(mergeSha, headSha, p.dir)).toBe(false); // (5) — not vacuous
+    expect(headSha).not.toBe(mergeSha); // (5)
+    expect(await isAncestor(fromSha, headSha, p.dir)).toBe(true); // (6)
+    expect(mergeTree).toBe(headTree); // (7) — the empty commit contributed nothing
+    const count = await git(['rev-list', '--count', `${fromSha}..${mergeSha}`], p.dir);
+    expect(count).toBe('2'); // the foreign empty commit AND the squash — only (4) refuses this
+
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
+  });
+
+  it('pins evidence.ownMergeAdvance on the genuine own-merge case', async () => {
+    const p = await closeProject();
+    const fromSha = await git(['rev-parse', 'master'], p.dir);
+    const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(0);
+    expect(
+      (result as unknown as { evidence?: { ownMergeAdvance?: { from: string; to: string } } })
+        .evidence?.ownMergeAdvance,
+    ).toEqual({ from: fromSha, to: mergeSha });
+  });
+
+  it('carries no evidence.ownMergeAdvance when content also drifted (the `!scopeContentMoved &&` conjunct only ever governs whether this evidence is emitted, never the verdict — content drift already holds on its own)', async () => {
+    const p = await closeProject({ status: TO_DO });
+    const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(
+      (result as unknown as { evidence?: { ownMergeAdvance?: unknown } }).evidence?.ownMergeAdvance,
+    ).toBeUndefined();
   });
 });
 
