@@ -1343,6 +1343,9 @@ describe('claim record integrity survives a CRLF-converting checkout (RP-190, Wi
     await git(['checkout', '-q', '-f', 'feat/revalidation-close'], p.dir);
     const claimPath = path.join(p.dir, '.rig', 'claims', 'AR-1.json');
     const original = await readFile(claimPath, 'utf8');
+    expect(original.includes('\r\n'), 'fixture did not reproduce a CRLF-smudged checkout').toBe(
+      true,
+    );
     // The edit keeps the record a VALID claim that parses to the same object —
     // one added space — so only the blob comparison can refuse it; a tamper
     // that broke the shape would be refused by the parser and prove nothing

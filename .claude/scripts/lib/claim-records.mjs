@@ -449,12 +449,17 @@ const committedObjectOf = (projectRoot, path) => {
 // names, and the integrity check below reported "diverges" for a file whose
 // CONTENT never changed. `--path` makes this comparison ask git's own
 // question — "would `git add` at this path produce the committed blob" —
-// instead of a byte-literal one, so a genuine content edit still normalises
-// to a different blob and is still caught. Pinned in the generator's
-// `test/template/revalidate.test.ts` — absent in a generated rig — ›
-// "does not report UNVERIFIABLE when a checkout re-materializes the tracked
-// claim as CRLF" and › "still holds on a genuine content change to the
-// tracked claim under core.autocrlf=true".
+// instead of a byte-literal one: an edit git itself would see as a
+// modification at this path still yields a different blob and still holds.
+// LIMIT: the answer is now git's, so it follows this repository's attributes
+// and configuration — a clean filter configured for the path decides what
+// counts as "unmodified", exactly as it does for `git status`.
+// Pinned in the generator's (absent in a generated rig)
+// `test/template/revalidate.test.ts` › "does not report UNVERIFIABLE when a
+// checkout re-materializes the tracked claim as CRLF", and in the generator's
+// (absent in a generated rig) `test/template/revalidate.test.ts` › "still
+// holds on a genuine content change to the tracked claim under
+// core.autocrlf=true".
 const objectOf = (projectRoot, raw, relativePath) =>
   execFileSync('git', ['-C', projectRoot, 'hash-object', '--path', relativePath, '--stdin'], {
     encoding: 'utf8',
