@@ -28,6 +28,22 @@
 // the whole file pays for it twice. That is harness behaviour, observable but
 // not pinned here. Where it does not hold, this is a plain subtraction — which
 // is why every ambiguity resolves toward injecting more.
+//
+// The output on stdout is a single JSON object —
+// `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":…}}`
+// — not the plain text an earlier version of this hook wrote directly. Both
+// Claude Code and Codex document that shape as valid SessionStart output
+// (Claude Code: code.claude.com/docs/en/hooks; Codex:
+// learn.chatgpt.com/docs/hooks), and Codex additionally documents plain text
+// as accepted for `session_start` — this hook always emits the JSON form
+// anyway, so one code path satisfies both without guessing which harness is
+// asking. The change exists because Codex 0.154.0 on Windows was measured
+// reporting this hook's OLD plain-text banner as invalid SessionStart JSON,
+// so the rules refresh never reached the session; Claude Code was unaffected.
+// The mechanism Codex used to reach that verdict is not published — a leading
+// `[` is a plausible trigger, not a confirmed one. See
+// `docs/decisions/session-start-wire-format.md` for what was measured and
+// what each harness's own documentation says.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readHookInput } from './lib/hook-input.mjs';
@@ -193,12 +209,14 @@ function main() {
   const additionalContext =
     `[agent-os] Autonomy rules refresh — in force regardless of compaction.\n${notice}${body}\n`;
 
-  // `hookSpecificOutput.additionalContext` is the one shape both harnesses'
-  // hooks documentation gives for SessionStart output (Claude Code:
-  // code.claude.com/docs/en/hooks; Codex: learn.chatgpt.com/docs/hooks) — see
-  // the file header and `docs/decisions/session-start-wire-format.md`. No
-  // trailing newline: both harnesses' documented detection is "starts with `{`
-  // ends with `}`", and appending one would cost that without buying anything.
+  // `hookSpecificOutput.additionalContext` is the JSON shape both harnesses'
+  // hooks documentation gives an example of for SessionStart output — see the
+  // file header and `docs/decisions/session-start-wire-format.md`. No leading
+  // or trailing byte outside the object, and no trailing newline: Claude Code's
+  // OWN documented detection reads "starts with `{` ends with `}`", literally
+  // (code.claude.com/docs/en/hooks) — Codex's JSON-vs-plain-text detection is
+  // not published, so this satisfies the one contract that IS written down
+  // rather than guessing at the one that is not.
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext },
@@ -208,5 +226,14 @@ function main() {
 }
 
 if (invokedDirectly()) {
-  process.exit(main());
+  // NOT process.exit(main()): exit() tears the process down without waiting
+  // for a queued stdout write to drain, and this hook's payload (the whole
+  // rules excerpt, wrapped in one JSON object) can be large enough to miss a
+  // pipe's buffer in one write. A write that process.exit() cuts off mid-object
+  // is not a short excerpt, the way the old plain-text form degraded — it is
+  // invalid JSON, which is exactly the failure this hook exists to avoid.
+  // Every path through main() returns 0, so setting exitCode and letting the
+  // event loop drain naturally changes nothing about the exit status, only
+  // whether the write actually finished first.
+  process.exitCode = main();
 }

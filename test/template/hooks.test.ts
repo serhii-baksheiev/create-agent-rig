@@ -918,9 +918,14 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       hook_event_name: 'SessionStart',
       source: 'compact',
     });
-    expect(result.stdout).not.toContain('## Post-deploy verification');
-    expect(result.stdout).not.toContain('## Escalation format');
-    expect(result.stdout.length).toBeLessThan(rules.length);
+    const context = additionalContextOf(result);
+    expect(context).not.toContain('## Post-deploy verification');
+    expect(context).not.toContain('## Escalation format');
+    // Compared against the injected TEXT, not the JSON envelope wrapping it --
+    // the envelope's own overhead (quoting, escaped newlines) is transport, and
+    // measuring it here would make this assertion track the wire format instead
+    // of the excerpt.
+    expect(context.length).toBeLessThan(rules.length);
   });
 
   // An excerpt that does not say it is an excerpt reads as the whole rule. A
@@ -1022,8 +1027,15 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       expect(result.code, source).toBe(0);
       // Matched against whitespace-collapsed text with emphasis stripped: the
       // rule wraps across lines in the source and carries markdown bold, and
-      // neither the wrap point nor the styling is a behaviour worth pinning.
-      const injected = result.stdout.replace(/[*`]/g, '').replace(/\s+/g, ' ').toLowerCase();
+      // neither the wrap point nor the styling is a behaviour worth pinning. Read
+      // through additionalContextOf(): a real newline in the source becomes a
+      // literal backslash-n escape sequence inside the JSON envelope, which
+      // `\s+` does not match, so collapsing whitespace on raw `result.stdout`
+      // would silently stop joining a line-wrapped sentence.
+      const injected = additionalContextOf(result)
+        .replace(/[*`]/g, '')
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
       expect(injected, source).toContain('revert first');
       expect(injected, source).toContain('diagnose second');
     }
@@ -1048,8 +1060,11 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
       // Whitespace-collapsed: the rule wraps across lines in the source, and
       // where the wrap falls is not a behaviour worth pinning. Asserted on the
       // verdict word and the command that records it, so any wording carrying
-      // both stays green.
-      const injected = result.stdout.replace(/\s+/g, ' ');
+      // both stays green. Read through additionalContextOf() for the same reason
+      // as the revert-first case above: a real newline in the source is a literal
+      // backslash-n escape sequence inside the envelope, and `\s+` does not
+      // match that.
+      const injected = additionalContextOf(result).replace(/\s+/g, ' ');
       expect(injected, source).toContain('run-state.mjs');
       expect(injected, source).toContain('HEALTHY');
     }
@@ -1224,11 +1239,14 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
     }
   });
 
-  // RP-185: both harnesses' documented SessionStart contract is JSON on
-  // stdout — `hookSpecificOutput.additionalContext` — not raw text, and Codex
-  // was observed treating this hook's plain-text banner as invalid JSON
-  // because stdout began with `[`. See docs/decisions/session-start-wire-format.md
-  // for why the fix is the envelope rather than a Codex-side carve-out.
+  // RP-185: both harnesses document the same `hookSpecificOutput.additionalContext`
+  // JSON shape for SessionStart output, so this hook emits exactly that,
+  // unconditionally. That is a preference, not something Codex requires —
+  // Codex's own docs say plain text on stdout is also accepted for
+  // `session_start`. What was measured is narrower: Codex reported this
+  // hook's OLD plain-text banner as invalid JSON rather than reading it as
+  // text. See docs/decisions/session-start-wire-format.md for what is
+  // measured and what each harness's own documentation says.
   it('emits a JSON hookSpecificOutput envelope for SessionStart, on startup, resume and compact', async () => {
     for (const source of sessionStartSources) {
       const result = await runHookFull('inject-rules.mjs', {
@@ -1255,9 +1273,13 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
   });
 
   // RP-185 regression pin: the old banner started with the literal characters
-  // `[agent-os]`, written straight to stdout. That leading `[` is exactly what
-  // made Codex misdetect the output as JSON and reject it — so this asserts the
-  // old shape can never quietly come back, not just that the new shape works.
+  // `[agent-os]`, written straight to stdout, and Codex reported it as invalid
+  // JSON. A leading `[` is a plausible trigger for that (see
+  // docs/decisions/session-start-wire-format.md for why this stays an
+  // inference, not a documented mechanism) — but this test does not depend
+  // on knowing why: it pins that the old raw-text shape can never quietly
+  // come back, and that stdout is exactly one JSON object with no byte
+  // outside it, not just that the new shape happens to work.
   it('never regresses to the old bare [agent-os]-prefixed plain-text stdout', async () => {
     for (const source of sessionStartSources) {
       const result = await runHookFull('inject-rules.mjs', {
@@ -1265,7 +1287,14 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
         source,
       });
       expect(result.stdout.startsWith('[agent-os]'), source).toBe(false);
-      expect(result.stdout.trimStart().startsWith('{'), source).toBe(true);
+      // Exact boundaries, not `trimStart()` + `JSON.parse` (both tolerate
+      // surrounding whitespace, so an appended trailing newline byte — the exact
+      // regression this hook was written to avoid, and precisely what Claude
+      // Code's documented "ends with `}`" detection reads — would leave this
+      // test green).
+      expect(result.stdout.startsWith('{'), source).toBe(true);
+      expect(result.stdout.endsWith('}'), source).toBe(true);
+      expect(result.stdout, source).toBe(result.stdout.trim());
       expect(() => JSON.parse(result.stdout), source).not.toThrow();
     }
   });
