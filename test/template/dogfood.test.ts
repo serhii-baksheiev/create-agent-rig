@@ -150,8 +150,11 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
 
   it('the composed CLAUDE.md is a short shim that imports AGENTS.md', async () => {
     const claudeMd = await readFile(path.join(repoRoot, 'CLAUDE.md'), 'utf8');
-    expect(claudeMd.trimStart().startsWith('@AGENTS.md')).toBe(true);
+    // The exact first line, not merely a prefix — `startsWith` alone would
+    // also pass a line with trailing text on it, which is not the import.
+    expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
     expect(claudeMd).not.toContain('generator repo addendum');
+    expect(claudeMd).not.toContain('## One operating system, two harnesses');
     expect(claudeMd.length).toBeLessThan(2000);
   });
 

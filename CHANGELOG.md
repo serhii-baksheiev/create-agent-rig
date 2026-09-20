@@ -28,13 +28,25 @@ not). Provider-specific wiring (`.claude/settings.json`, `.claude/agents/`,
 `.codex/hooks.json`, `.codex/config.toml`) is unaffected.
 
 Migrating an existing rig: `upgrade` treats both files as the ordinary
-manifest-tracked paths they always were — no special-cased migration code.
-An untouched pair is replaced with the new shim/canonical split; a
-`CLAUDE.md` or `AGENTS.md` the user edited is reported as a conflict and kept
-exactly as edited, never force-shimmed or overwritten; a file the user
-deleted stays deleted. `uninstall` follows the same generic rule. Pinned by
+manifest-tracked paths they always were, with one deliberate coupling. An
+untouched pair is replaced with the new shim/canonical split. A `CLAUDE.md`
+or `AGENTS.md` the user edited is reported as a conflict and kept exactly as
+edited, never force-shimmed or overwritten — and if the kept CLAUDE.md is not
+already the `@AGENTS.md` shim, the reason also says it **shadows AGENTS.md**
+(by Claude Code's own default, a `CLAUDE.md` is read _instead of_ `AGENTS.md`,
+not alongside it) and names the fix. A file the user deleted stays deleted.
+**Security fix:** if AGENTS.md's own verdict is `conflict` or `deleted`, a
+pristine CLAUDE.md is **held back** rather than replaced with the shim — its
+old, still-readable content stays exactly as it was, and the reported reason
+names AGENTS.md's state and says to resolve it and run `upgrade` again.
+Without this, an edited or deleted AGENTS.md combined with an untouched
+CLAUDE.md would have silently installed a shim over a rulebook that might no
+longer be readable at all (including its `elevated-paths` declaration).
+`uninstall` follows the same generic per-file rule for both paths. Pinned by
 `packages/cli/test/upgrade.test.ts` › "RP-186: AGENTS.md becomes canonical,
-CLAUDE.md becomes its shim".
+CLAUDE.md becomes its shim" (untouched pair, edited/deleted each side, the
+shadow-note cases, the held-back cases, and the full pristine/edited/deleted
+grid across both files).
 
 **Breaking: the application skeletons are removed, exactly as 0.9.0
 announced.** `create <dir>` no longer takes `--target` and no longer

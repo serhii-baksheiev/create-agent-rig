@@ -344,7 +344,7 @@ it only here. A tier outside that vocabulary **holds**, never releases
 (`docs/decisions/spacing-rations-mechanisms.md`).
 
 **The tier marker is a pre-filter, not the authority.** If an item passed as normal
-and the work turns out to touch an elevated path (`CLAUDE.md` →
+and the work turns out to touch an elevated path (`AGENTS.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 

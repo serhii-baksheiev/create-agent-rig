@@ -71,8 +71,30 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       expect(agentsMd).toMatch(/Claude Code and Codex/);
       expect(agentsMd).toContain('## One operating system, two harnesses');
       expect(agentsMd).toContain('```elevated-paths');
-      expect(claudeMd.trimStart().startsWith('@AGENTS.md')).toBe(true);
-      expect(claudeMd).not.toContain('## One operating system, two harnesses');
+
+      // PR #241 round 2 advisory: the shim's own FIRST LINE must be exactly
+      // `@AGENTS.md` — `startsWith` alone would also pass a line like
+      // `@AGENTS.md-ish` or one with trailing text on the same line, neither
+      // of which is Claude Code's import syntax.
+      expect(claudeMd.split(/\r?\n/, 1)[0]).toBe('@AGENTS.md');
+
+      // A literal list of AGENTS.md's own section headings, not derived from
+      // AGENTS.md's content — the shim must contain NONE of them, so a
+      // regression that copies even one section back in is caught, not just
+      // the one heading a single `.not.toContain` would have watched.
+      const CANONICAL_SECTION_HEADINGS = [
+        '## One operating system, two harnesses',
+        '## What was installed here, and what was not',
+        '## If you read only three sections, read these',
+        '## How work happens here',
+        '## The opt-in workflow layer (experimental)',
+        '## Four things this install left for you to finish',
+        '## The elevated paths of this project',
+        '## Foot-guns',
+      ];
+      for (const heading of CANONICAL_SECTION_HEADINGS) {
+        expect(claudeMd, `shim must not restate "${heading}"`).not.toContain(heading);
+      }
       expect(claudeMd).not.toContain('```elevated-paths');
       expect(claudeMd.length).toBeLessThan(2000);
     },

@@ -342,7 +342,7 @@ marked Claude Code, which only `.claude/settings.json` wires:
 - **`guard-rulebook`** — in an unattended run (a flag file the `loop` skill
   writes at claim time), refuses an edit to the rulebook — hooks, wiring,
   `queue.json` and its board selector, the queue adapters, the router, the gate sweep, the rules,
-  `CLAUDE.md` — outside the current item's allow-list; does nothing in an
+  `AGENTS.md`, `CLAUDE.md` — outside the current item's allow-list; does nothing in an
   attended session.
 - **`guard-secret-file`** — refuses an edit that writes a credential: either the
   path names one (`jira.env`, `id_rsa`, anything under `secrets/`) or the text

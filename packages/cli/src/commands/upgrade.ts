@@ -437,9 +437,14 @@ export async function planUpgrade(
   const nextFiles: Record<string, string> = {};
   let wiring: string | null = null;
   const wiringByPath = new Map<string, string>();
+  // Only ever consulted by the CLAUDE.md/AGENTS.md coupling below, which runs
+  // after this loop and needs each file's on-disk bytes to re-vouch for
+  // CLAUDE.md's CURRENT content when it holds the shim back.
+  const currentBytesByRel = new Map<string, Buffer>();
 
   for (const file of files) {
     const currentBytes = await readIfPresent(repoDir, file.rel);
+    if (currentBytes !== null) currentBytesByRel.set(file.rel, currentBytes);
     const recordedInManifest = manifest?.files[file.rel];
     const recorded =
       recordedInManifest === undefined && currentBytes === null && inferredOptInPaths.has(file.rel)
@@ -541,19 +546,72 @@ export async function planUpgrade(
       const kept = recorded === undefined ? manifest?.kept?.[file.rel] : undefined;
       const keptReason = (since: string): string =>
         `kept by init (already here, not the rig's bytes), ${since} since — treated as yours`;
+      let reason =
+        kept !== undefined
+          ? keptReason(currentHash === kept ? 'unchanged' : 'edited')
+          : recorded === undefined
+            ? 'not a version this rig ever released — treated as yours'
+            : 'edited since it was installed';
+      // PR #241 round 2, blocker 3: CLAUDE.md is the one file whose CONTENT
+      // decides which rulebook Claude Code reads at all. A CLAUDE.md that is
+      // not already the `@AGENTS.md` shim — this release's shim, an older
+      // rig's own full rulebook text, or genuinely unrelated content — makes
+      // Claude Code read THIS file INSTEAD OF AGENTS.md by default (Claude
+      // Code's own docs, "AGENTS.md", the `claude-md-or-agents-md` default).
+      // A `conflict` verdict already means "kept, never written"; without
+      // this the reader has no way to learn that keeping it also means the
+      // canonical AGENTS.md this release ships is not what gets read.
+      if (file.rel === 'CLAUDE.md' && !current.trimStart().startsWith('@AGENTS.md')) {
+        reason +=
+          ' — this file is not the `@AGENTS.md` shim, so it shadows AGENTS.md: Claude Code ' +
+          'reads it INSTEAD OF AGENTS.md by default. Adopt the shim by hand — replace this ' +
+          "file's content with `@AGENTS.md` plus anything Claude-Code-specific (see " +
+          'docs/decisions/agents-md-canonical.md) — to have Claude Code read the canonical ' +
+          'rulebook again.';
+      }
       actions.push({
         rel: file.rel,
         verdict: 'conflict',
-        reason:
-          kept !== undefined
-            ? keptReason(currentHash === kept ? 'unchanged' : 'edited')
-            : recorded === undefined
-              ? 'not a version this rig ever released — treated as yours'
-              : 'edited since it was installed',
+        reason,
         templatePath: file.source,
       });
       // deliberately NOT recorded in `files`: the rig does not own these bytes
     }
+  }
+
+  // PR #241 round 2, blocker 1 (security): a PRISTINE CLAUDE.md must never be
+  // replaced by the `@AGENTS.md` shim while AGENTS.md's own verdict says its
+  // content on disk is NOT what this release ships (`conflict` — the user's
+  // AGENTS.md may carry no rulebook and no `elevated-paths` block at all —
+  // or `deleted` — there would then be no rulebook file at all). Both files
+  // are ordinary, independently-decided manifest-tracked paths, so nothing
+  // upstream of this point knows about the other when it decides either
+  // one's verdict; this is the one place both are visible together, after
+  // the loop, before the plan is returned.
+  //
+  // Held back means: not written, and re-vouched for its CURRENT bytes (the
+  // still-untouched old rulebook text) rather than the shim's — so the very
+  // next `upgrade`, once the human fixes AGENTS.md, evaluates CLAUDE.md as
+  // `unchanged` up front and `update` the moment this release's CLAUDE.md
+  // content next changes, instead of falling through to a manifest that no
+  // longer vouches for anything and staying `conflict` forever.
+  const claudeAction = actions.find((a) => a.rel === 'CLAUDE.md');
+  const agentsAction = actions.find((a) => a.rel === 'AGENTS.md');
+  if (
+    claudeAction !== undefined &&
+    claudeAction.verdict === 'update' &&
+    agentsAction !== undefined &&
+    (agentsAction.verdict === 'conflict' || agentsAction.verdict === 'deleted')
+  ) {
+    claudeAction.verdict = 'conflict';
+    claudeAction.reason =
+      `held back — AGENTS.md is ${agentsAction.verdict} (${agentsAction.reason ?? 'no reason recorded'}), ` +
+      'so writing the `@AGENTS.md` shim now would leave the rulebook unreadable. Resolve ' +
+      'AGENTS.md by hand first (see its own reason above), then run `create-agent-rig ' +
+      'upgrade` again to finish adopting the shim.';
+    const heldBytes = currentBytesByRel.get('CLAUDE.md');
+    if (heldBytes !== undefined) nextFiles['CLAUDE.md'] = sha256(heldBytes);
+    else delete nextFiles['CLAUDE.md'];
   }
 
   // A path an OLDER manifest still names but this release's single payload no

@@ -1,8 +1,11 @@
 // Codex adapter for the Claude Code-shaped Agent OS templates.
 //
-// Claude files remain the authoring surface. This script derives Codex-native
-// repository guidance, skills, custom agents and hook wiring so both harnesses
-// execute the same operating system without two hand-maintained rulebooks.
+// Claude files remain the authoring surface for skills, custom agents and
+// hook wiring. This script derives their Codex-native equivalents so both
+// harnesses execute the same operating system without two hand-maintained
+// copies of each. The rulebook itself is authored directly in AGENTS.md, not
+// derived here or anywhere else — see docs/decisions/agents-md-canonical.md
+// (RP-186).
 //
 // Subagent routing is read from the one policy both harnesses share
 // (`templates/agent-os/subagent-routing.json`, through `subagent-routing.mjs`):

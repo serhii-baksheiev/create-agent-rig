@@ -77,28 +77,40 @@ this record both have to survive a reader who takes them literally:
 
 A rig installed before this change has a `CLAUDE.md`/`AGENTS.md` pair that is
 byte-identical and recorded as such in its manifest (`.claude/.rig-manifest.json`
-— see `packages/cli/lib/manifest.ts`). Neither file gets special-cased code in
-`upgrade`/`uninstall`: both are ordinary manifest-tracked paths (`MAPS` in
-`packages/cli/src/commands/init.ts`), so the existing hash-based verdict
-machinery — the same one that decides `update` / `conflict` / `deleted` for
-every other tracked file — governs both, per file, independently:
+— see `packages/cli/src/lib/manifest.ts`). Both files are ordinary
+manifest-tracked paths (`MAPS` in `packages/cli/src/commands/init.ts`), so
+`upgrade`/`uninstall` need no special-cased migration logic for the
+*ordinary* per-file cases — the same hash-based verdict machinery that
+decides `update` / `conflict` / `deleted` for every other tracked file
+governs both, independently. One coupling IS special-cased (PR #241 round 2,
+a security fix): CLAUDE.md's own verdict is never allowed to become `update`
+— writing the `@AGENTS.md` shim — while AGENTS.md's verdict is `conflict` or
+`deleted`, because AGENTS.md's content in that state is not what the release
+ships and may carry no rulebook (or `elevated-paths` block) at all. `upgrade`
+holds CLAUDE.md back instead: kept as its current bytes, verdict `conflict`,
+with a reason naming AGENTS.md's own state and the fix (resolve AGENTS.md,
+run `upgrade` again).
 
 | Case | Upgrade outcome | Uninstall outcome |
 | --- | --- | --- |
 | Both untouched since install | Both `update`: `CLAUDE.md` becomes the shim, `AGENTS.md` becomes canonical | Both removed (rig-owned, unedited) |
-| `CLAUDE.md` edited by the user | `conflict`: kept exactly as the user left it, never force-shimmed; `AGENTS.md` upgrades independently if it was untouched | `CLAUDE.md` left in place (not rig-owned bytes) |
-| `AGENTS.md` edited by the user | `conflict`: kept exactly as the user left it, never overwritten with the canonical text | `AGENTS.md` left in place |
-| `CLAUDE.md` deleted by the user | `deleted`: stays deleted, never restored as the new shim | already absent |
-| `AGENTS.md` deleted by the user | `deleted`: stays deleted, never restored as the canonical text | already absent |
-| A repo that had its own `CLAUDE.md` before `init` | recorded under `kept` at install time (pre-existing generic behaviour, unrelated to this ticket) | left in place, as any `kept` path is |
+| `CLAUDE.md` edited by the user, AGENTS.md untouched | `conflict`: kept exactly as the user left it, never force-shimmed; if the edited content is not already the `@AGENTS.md` shim, the reason also says it shadows AGENTS.md (Claude Code reads CLAUDE.md instead, by default) and names the fix; AGENTS.md upgrades independently | `CLAUDE.md` left in place (not rig-owned bytes) |
+| `AGENTS.md` edited by the user, CLAUDE.md untouched | AGENTS.md `conflict`: kept exactly as the user left it, never overwritten with the canonical text. CLAUDE.md is **held back**: verdict `conflict` (not `update`), kept as its current (old, still-readable) bytes, never written as the shim | Both left in place |
+| `AGENTS.md` deleted by the user, CLAUDE.md untouched | AGENTS.md `deleted`: stays deleted. CLAUDE.md is **held back** the same way, for the same reason (there is no rulebook file at all otherwise) | Both left absent/in place |
+| `CLAUDE.md` deleted by the user | `deleted`: stays deleted, never restored as the new shim; unaffected by AGENTS.md's own state | already absent |
+| `AGENTS.md` deleted by the user, CLAUDE.md deleted too | Both `deleted`: stays deleted on both sides — there is nothing left to hold back | already absent |
+| A repo that had its own `CLAUDE.md` (or `AGENTS.md`) before `init` | `init` **refuses outright** (`InitError`, non-zero exit) rather than installing over it or recording it as `kept` — `MAPS` files are the one install-time exception to the generic "kept" path every other pre-existing process file gets. Pinned in the generator's own CLI test suite (absent in a generated rig — the same basename ambiguity noted above applies): `init.test.ts` under `packages/cli/test/`, cases "refuses to clobber an existing CLAUDE.md unless forced" and "refuses to clobber an existing AGENTS.md" | N/A — `init` never installed here, so there is nothing for `uninstall` to have owned |
 
 Pinned in the generator's own CLI test suite (absent in a generated rig —
 `packages/cli/test/` ships no test into the payload, so a pointer into it is
 not a citation this rulebook's own checker can resolve by basename against a
 shipped file): the describe block titled "RP-186: AGENTS.md becomes
-canonical, CLAUDE.md becomes its shim" under `upgrade.test.ts`, five cases —
-untouched pair, edited `CLAUDE.md`, edited `AGENTS.md`, deleted `CLAUDE.md`,
-deleted `AGENTS.md`. Also see the byte-identity tests this ticket replaced,
+canonical, CLAUDE.md becomes its shim" under `upgrade.test.ts` — the
+untouched pair, the edited/deleted cases on each side, the shadow-note cases,
+the two held-back cases, "resolving AGENTS.md and re-running upgrade
+finishes the migration", and the full 3×3 pristine/edited/deleted grid across
+both files, each cell checked against the real gate-sweep parser as an
+independent oracle. Also see the byte-identity tests this ticket replaced,
 listed in the PR description as an old-test → new-test table.
 
 ## What did not change
@@ -114,6 +126,8 @@ listed in the PR description as an old-test → new-test table.
   `AGENTS.md` first and `CLAUDE.md` second, so a not-yet-migrated rig (or a
   test fixture that still writes the block into a `CLAUDE.md`) is not
   silently un-declared.
-- Zero new dependencies; `__PROJECT_NAME__` is still the only substitution
-  token; no application skeleton, benchmark, agent-bus or mandatory Memory
+- Zero new dependencies; the project-name token this generator substitutes
+  everywhere else is unaffected (it is not written literally here — this
+  file is itself substituted); no application skeleton, benchmark, agent-bus
+  or mandatory Memory
   came back.

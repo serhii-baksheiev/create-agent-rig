@@ -245,6 +245,7 @@ templates/agent-os/universal/CLAUDE.md
 .agents/
 .codex/
 AGENTS.md
+CLAUDE.md
 templates/agent-os/universal/docs/decisions/
 docs/decisions/
 contracts/
@@ -316,9 +317,12 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
   file; `--staged` is what pre-commit runs FIRST, before lint/typecheck/test, and
   `--self-test` proves the scanner still detects each shape it claims
 - `pnpm lint` / `pnpm typecheck` / `pnpm format`
-- `node scripts/sync-agent-os.mjs` — compose the Claude rulebook and regenerate
-  its derived Codex projection (`AGENTS.md`, `.agents/`, `.codex/`) from the
-  templates; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
+- `node scripts/sync-agent-os.mjs` — compose the canonical `AGENTS.md` rulebook
+  (and the `CLAUDE.md` shim) plus `.claude/` from the templates, and regenerate
+  the derived Codex projection (`.agents/`, `.codex/`) from the Claude-shaped
+  sources; `scripts/sync-codex-adapter.mjs --check` verifies that projection.
+  `AGENTS.md` is authored, not derived, since RP-186
+  (`docs/decisions/agents-md-canonical.md`).
 
 ## Repo-specific rules
 

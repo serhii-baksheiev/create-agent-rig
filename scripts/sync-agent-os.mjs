@@ -71,6 +71,9 @@ const ELEVATED_PATHS = [
   '.agents/',
   '.codex/',
   'AGENTS.md',
+  // RP-186: CLAUDE.md is now a separately-authored shim, not a byte-identical
+  // copy of AGENTS.md — declared in its own right, same as AGENTS.md above.
+  'CLAUDE.md',
   // The rationale extracted out of those rules (AR-63). Declaring it is only
   // half of what it needs: `.md` is inert to the sweep unless the path counts
   // as rulebook, so `isDecisionRecord` in `detect-missed-gate.mjs` is the other

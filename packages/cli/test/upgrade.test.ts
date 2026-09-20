@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initInstallSet, initProject, projectNameFor } from '../src/commands/init.js';
 import { applyUninstall, planUninstall } from '../src/commands/uninstall.js';
@@ -44,6 +45,21 @@ async function pretendInstalled(rel: string, content: string): Promise<void> {
 }
 
 const emptyHistory: HashHistory = { versions: [], files: {} };
+
+/**
+ * The real gate-sweep parser, loaded from the shipped template source rather
+ * than reimplemented — an independent oracle for "is the elevated-paths
+ * block still discoverable after this upgrade", not a second copy of the
+ * function this fix is about keeping honest.
+ */
+async function loadDetectMissedGate(): Promise<{
+  readDeclaredPaths: (projectRoot: string) => string[] | null;
+}> {
+  const universal = agentOsUniversalDir();
+  return (await import(
+    pathToFileURL(path.join(universal, '.claude', 'scripts', 'detect-missed-gate.mjs')).href
+  )) as { readDeclaredPaths: (projectRoot: string) => string[] | null };
+}
 
 beforeEach(async () => {
   repo = await mkdtemp(path.join(tmpdir(), 'caf-upgrade-'));
@@ -153,7 +169,23 @@ describe('planUpgrade — what it would do, before it does anything', () => {
   // that the existing generic verdict machinery produces the right outcome
   // for this specific migration, not just for some tracked file in general.
   describe('RP-186: AGENTS.md becomes canonical, CLAUDE.md becomes its shim', () => {
-    const PRE_RP186_TEXT = '# __PROJECT_NAME__\n\nOld shared rulebook text.\n';
+    // Carries a real `elevated-paths` block, the way the actual pre-RP-186
+    // CLAUDE.md/AGENTS.md pair did — the security-gate tests below need it to
+    // check whether the block stays discoverable across an upgrade, and a
+    // fixture with no block at all would make that check vacuous.
+    const PRE_RP186_TEXT = [
+      '# __PROJECT_NAME__',
+      '',
+      '## One operating system, two harnesses',
+      '',
+      'Old shared rulebook text, byte-identical between CLAUDE.md and AGENTS.md',
+      'before RP-186.',
+      '',
+      '```elevated-paths',
+      '.claude/',
+      '```',
+      '',
+    ].join('\n');
 
     it('an untouched pre-RP-186 pair upgrades to the new shim/canonical split', async () => {
       await installRig();
@@ -192,6 +224,36 @@ describe('planUpgrade — what it would do, before it does anything', () => {
       expect(await read('AGENTS.md')).toContain('## One operating system, two harnesses');
     });
 
+    // PR #241 round 2, blocker 3: an edited CLAUDE.md is kept (never
+    // force-shimmed, tested above) — but the file is not yet the
+    // `@AGENTS.md` shim, so by Claude Code's own default project-instructions
+    // setting it is read INSTEAD OF AGENTS.md, not alongside it. The reason
+    // has to say that plainly or a reader has no way to learn it from `plan`.
+    it('an edited CLAUDE.md that is not yet the shim says it shadows AGENTS.md', async () => {
+      await installRig();
+      await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+      await write('CLAUDE.md', PRE_RP186_TEXT + '\nplus my own note\n');
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      const action = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+      expect(action?.verdict).toBe('conflict');
+      expect(action?.reason).toMatch(/shadow/i);
+      expect(action?.reason).toMatch(/@AGENTS\.md/);
+    });
+
+    // A CLAUDE.md the user already turned into the shim by hand is not
+    // shadowing anything — the note above must not fire on it.
+    it('an edited CLAUDE.md that already imports AGENTS.md is not accused of shadowing it', async () => {
+      await installRig();
+      await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+      await write('CLAUDE.md', '@AGENTS.md\n\n## Claude Code\n\nUse plan mode here.\n');
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      const action = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+      expect(action?.verdict).toBe('conflict');
+      expect(action?.reason).not.toMatch(/shadow/i);
+    });
+
     it('an AGENTS.md the user edited is kept, never overwritten with the canonical text', async () => {
       await installRig();
       await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
@@ -207,6 +269,147 @@ describe('planUpgrade — what it would do, before it does anything', () => {
       expect(await read('AGENTS.md')).toBe(mine);
       expect((await readManifest(repo))?.files['AGENTS.md']).toBeUndefined();
     });
+
+    // PR #241 round 2, blocker 1 (security): a PRISTINE CLAUDE.md must never
+    // be replaced by the `@AGENTS.md` shim while AGENTS.md itself is in
+    // `conflict` — the user's AGENTS.md may not carry a valid rulebook (or
+    // any `elevated-paths` block) at all, and writing the shim over a
+    // perfectly good, still-readable old CLAUDE.md would make the rulebook
+    // (and the gate sweep's declaration) silently unreadable.
+    it('a pristine CLAUDE.md is held back, not shimmed, while AGENTS.md is conflict', async () => {
+      await installRig();
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      await write('AGENTS.md', '# not the rulebook at all\n');
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      const claudeAction = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+      expect(claudeAction?.verdict).not.toBe('update');
+      expect(claudeAction?.reason).toMatch(/AGENTS\.md/);
+      expect(claudeAction?.reason).toMatch(/upgrade/i);
+
+      await applyUpgrade(repo, plan);
+      // held back means EXACTLY that: the old, still-readable text stays
+      const claudeMd = await read('CLAUDE.md');
+      expect(claudeMd).toBe(PRE_RP186_TEXT);
+      expect(claudeMd.trimStart().startsWith('@AGENTS.md')).toBe(false);
+      // the manifest re-vouches for the HELD (old) bytes, not the shim's —
+      // this is what lets the NEXT upgrade resolve cleanly once AGENTS.md is
+      // fixed, rather than falling through to "not a version this rig ever
+      // released" forever (see "resolving AGENTS.md and re-running upgrade
+      // finishes the migration" below)
+      expect((await readManifest(repo))?.files['CLAUDE.md']).toBe(sha256(claudeMd));
+      // the independent oracle: the real sweep tool can still find the block
+      const { readDeclaredPaths } = await loadDetectMissedGate();
+      expect(readDeclaredPaths(repo)).not.toBeNull();
+    });
+
+    // Same hazard, the other trigger: AGENTS.md genuinely gone rather than
+    // merely edited.
+    it('a pristine CLAUDE.md is held back, not shimmed, while AGENTS.md is deleted', async () => {
+      await installRig();
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      await rm(abs('AGENTS.md'));
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      const claudeAction = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+      expect(claudeAction?.verdict).not.toBe('update');
+      expect(claudeAction?.reason).toMatch(/AGENTS\.md/);
+
+      await applyUpgrade(repo, plan);
+      const claudeMd = await read('CLAUDE.md');
+      expect(claudeMd).toBe(PRE_RP186_TEXT);
+      const { readDeclaredPaths } = await loadDetectMissedGate();
+      expect(readDeclaredPaths(repo)).not.toBeNull();
+    });
+
+    // The way out the held-back reason has to name: fix AGENTS.md, run
+    // upgrade again. Proves the "how to finish by hand" claim is real rather
+    // than merely a sentence.
+    it('resolving AGENTS.md and re-running upgrade finishes the migration', async () => {
+      await installRig();
+      await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+      await write('AGENTS.md', '# not the rulebook at all\n');
+
+      const held = await planUpgrade(repo, { history: emptyHistory });
+      await applyUpgrade(repo, held);
+      expect((await read('CLAUDE.md')).trimStart().startsWith('@AGENTS.md')).toBe(false);
+
+      // The human resolves AGENTS.md by hand, exactly as the reason says to.
+      // `pretendInstalled` (not a bare `write`) because "resolved" has to mean
+      // restored to bytes the rig recognises as its own — the same released
+      // pre-RP-186 text — not merely present; an unrecognised AGENTS.md would
+      // legitimately stay `conflict` on the next run too.
+      await pretendInstalled('AGENTS.md', PRE_RP186_TEXT);
+
+      const finished = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(finished, 'AGENTS.md')).toBe('update');
+      expect(verdictFor(finished, 'CLAUDE.md')).toBe('update');
+      await applyUpgrade(repo, finished);
+      expect((await read('CLAUDE.md')).trimStart().startsWith('@AGENTS.md')).toBe(true);
+      expect(await read('AGENTS.md')).toContain('## One operating system, two harnesses');
+    });
+
+    // The full 3×3 grid, each axis independently pristine / edited / deleted,
+    // with an independent oracle: the real `readDeclaredPaths` (not a
+    // reimplementation of it) must still find a block whenever at least one
+    // of the two files legitimately carries the canonical text after the
+    // upgrade — which this fix guarantees for every cell except the two
+    // where the human destroyed BOTH files themselves (nothing left to hold
+    // back).
+    type Axis = 'pristine' | 'edited' | 'deleted';
+    const setUp = async (rel: 'CLAUDE.md' | 'AGENTS.md', axis: Axis): Promise<void> => {
+      if (axis === 'pristine') await pretendInstalled(rel, PRE_RP186_TEXT);
+      else if (axis === 'edited') await write(rel, `# my own edit of ${rel}\n`);
+      else await rm(abs(rel));
+    };
+
+    const GRID: Array<[Axis, Axis]> = [
+      ['pristine', 'pristine'],
+      ['pristine', 'edited'],
+      ['pristine', 'deleted'],
+      ['edited', 'pristine'],
+      ['edited', 'edited'],
+      ['edited', 'deleted'],
+      ['deleted', 'pristine'],
+      ['deleted', 'edited'],
+      ['deleted', 'deleted'],
+    ];
+
+    it.each(GRID)(
+      'AGENTS.md %s × CLAUDE.md %s: never a silent, unreadable shim',
+      async (agentsAxis, claudeAxis) => {
+        await installRig();
+        await setUp('AGENTS.md', agentsAxis);
+        await setUp('CLAUDE.md', claudeAxis);
+
+        const plan = await planUpgrade(repo, { history: emptyHistory });
+        await applyUpgrade(repo, plan);
+
+        const claudeAction = plan.actions.find((a) => a.rel === 'CLAUDE.md');
+        // The one thing that must NEVER happen: CLAUDE.md becomes the shim
+        // while AGENTS.md's own verdict says its content is not what the
+        // release ships (conflict or deleted).
+        const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
+        if (agentsAction?.verdict === 'conflict' || agentsAction?.verdict === 'deleted') {
+          expect(claudeAction?.verdict).not.toBe('update');
+        }
+
+        // Deletion is never resurrected, on either path, regardless of the
+        // sibling's state.
+        if (claudeAxis === 'deleted') expect(claudeAction?.verdict).toBe('deleted');
+        if (agentsAxis === 'deleted') expect(agentsAction?.verdict).toBe('deleted');
+
+        // The independent oracle: unless BOTH files were destroyed by the
+        // human, the real sweep must still find a block somewhere.
+        if (!(agentsAxis !== 'pristine' && claudeAxis === 'deleted')) {
+          const { readDeclaredPaths } = await loadDetectMissedGate();
+          const declared = readDeclaredPaths(repo);
+          if (agentsAxis === 'pristine' || claudeAxis === 'pristine') {
+            expect(declared, `AGENTS.md=${agentsAxis} CLAUDE.md=${claudeAxis}`).not.toBeNull();
+          }
+        }
+      },
+    );
 
     it('a CLAUDE.md the user deleted stays deleted — never restored as the new shim', async () => {
       await installRig();

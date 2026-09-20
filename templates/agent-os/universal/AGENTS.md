@@ -232,6 +232,7 @@ rule does not change with or without the script.
 .agents/
 .codex/
 AGENTS.md
+CLAUDE.md
 .github/workflows/
 ```
 
