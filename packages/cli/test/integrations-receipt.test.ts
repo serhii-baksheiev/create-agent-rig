@@ -1602,9 +1602,9 @@ describe('license.id and SPDX_EXPRESSION_PATTERN have one spelling', () => {
  * parser ALSO calls the real `URL` constructor, which no regex here
  * re-implements. A shared fixture list run through both is the
  * correspondence check instead (RP-22 gate cycle 3, cheap survivor (b)) —
- * with the three KNOWN divergences named rather than silently matched by
- * accident (found while writing this very test; only "length" was expected
- * going in):
+ * with the two KNOWN remaining divergences named rather than silently matched
+ * by accident (found while writing this very test; only "length" was
+ * expected going in):
  *
  * 1. Length: the schema's own bound is 9-129 characters, `isValidLocator`'s
  *    is 128, so a value of EXACTLY 129 characters is a fixture the two
@@ -1618,17 +1618,19 @@ describe('license.id and SPDX_EXPRESSION_PATTERN have one spelling', () => {
  *    reality" split every other real-value check in this module has
  *    (`isRealDateString`, `isRealTimestampString`) — restated here because
  *    it was not named before this fixture list surfaced it.
- * 3. A raw space: the schema's `\s` exclusion refuses it outright, but the
- *    WHATWG `URL` constructor `isHttpsUrl` calls percent-encodes a bare
- *    space in the path rather than throwing, and `isValidLocator`'s own
- *    query/fragment check only looks for literal `?`/`#` characters — so a
- *    locator carrying a raw space parses. Named here as a found, disclosed
- *    gap rather than fixed, matching this module's established posture
- *    toward `source.locator`'s own undecidable shapes (a real fix would be
- *    a new `isValidLocator` check for a schema-caller mismatch, which is
- *    out of scope for a "pin the two-mutant divergence" round).
+ *
+ * A THIRD divergence — a raw space — was found and closed in RP-22 S3: the
+ * schema's `\s` exclusion always refused a bare space, but `isValidLocator`'s
+ * https branch did not, because the WHATWG `URL` constructor percent-encodes
+ * a bare space in the path rather than throwing and the query/fragment check
+ * only looked for literal `?`/`#`. `isValidLocator`'s https branch now also
+ * refuses any locator containing whitespace or a backslash (a backslash is
+ * folded into a path separator by the same URL parse rather than rejected),
+ * so the parser is no longer laxer than the schema on this shape — see
+ * `integrations-registry.test.ts` › "https: a real https URL with no query
+ * string or fragment" › "refuses a raw space" / "refuses a backslash".
  */
-describe('license.url: the schema pattern and isValidLocator agree, except at the three named divergences (length, userinfo, whitespace)', () => {
+describe('license.url: the schema pattern and isValidLocator agree, except at the two named divergences (length, userinfo)', () => {
   const LICENSE_URL_FIXTURES: readonly { name: string; url: string; accepted: boolean }[] = [
     { name: 'a plain https URL', url: 'https://mcp.figma.com/terms', accepted: true },
     { name: 'a query string', url: 'https://mcp.figma.com/terms?x=1', accepted: false },
@@ -1669,14 +1671,19 @@ describe('license.url: the schema pattern and isValidLocator agree, except at th
     expect(isValidLocator('https', url)).toBe(false);
   });
 
-  it("named divergence 3 (whitespace): a raw space in the path fails the schema's \\s-excluding pattern but isValidLocator accepts it, because the real URL parse percent-encodes a space rather than throwing", async () => {
+  it('closed divergence (whitespace): a raw space in the path now fails both the schema pattern and isValidLocator', async () => {
     const url = 'https://mcp.figma.com/te rms';
     const schema = await loadSchema();
     const pattern = (
       schema as { properties: { license: { properties: { url: { pattern: string } } } } }
     ).properties.license.properties.url.pattern;
     expect(new RegExp(pattern).test(url)).toBe(false);
-    expect(isValidLocator('https', url)).toBe(true);
+    expect(isValidLocator('https', url)).toBe(false);
+  });
+
+  it('closed divergence (backslash): a backslash in the path now fails isValidLocator too, matching the schema-level intent (backslash is folded into a path separator by the URL parse rather than rejected)', () => {
+    const url = 'https://mcp.figma.com/te\\rms';
+    expect(isValidLocator('https', url)).toBe(false);
   });
 });
 

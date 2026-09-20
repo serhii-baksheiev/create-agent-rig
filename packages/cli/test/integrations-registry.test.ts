@@ -157,6 +157,15 @@ describe('isValidLocator — the one grammar shared by validateDescriptor and re
       ['a non-https scheme', 'http://mcp.example.com/mcp'],
       ['a file scheme', 'file:///etc/passwd'],
       ['userinfo', 'https://user:pass@mcp.example.com'],
+      // RP-22 S3 carry-over from S2: the https branch used to accept a raw
+      // space or backslash, because isHttpsUrl's real URL parse percent-
+      // encodes a space and folds a backslash into a path separator rather
+      // than throwing — so isValidLocator was LAXER here than the schema's
+      // own `^https://[^\s?#]{1,121}$` pattern, which excludes `\s` outright.
+      // `contracts/integrations/v1/receipt.schema.json`'s `license.url`
+      // pattern is the oracle this closes the gap against.
+      ['a raw space', 'https://mcp.example.com/te rms'],
+      ['a backslash', 'https://mcp.example.com/te\\rms'],
     ])('refuses %s', (_label, locator) => {
       expect(isValidLocator('https', locator)).toBe(false);
     });

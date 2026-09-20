@@ -185,12 +185,24 @@ export const SPDX_EXPRESSION_PATTERN = /^[A-Za-z0-9.+-]+(?: (?:AND|OR|WITH) [A-Z
  * refusal `receipt.ts` used to apply only to itself — a receipt or a
  * descriptor never carries a token or header field, and a query string is
  * exactly where one gets smuggled in.
+ *
+ * RP-22 S3 carry-over from S2: the https branch used to be LAXER than
+ * `contracts/integrations/v1/receipt.schema.json`'s `license.url` pattern
+ * (`^https://[^\s?#]{1,121}$`) on two shapes the real `URL` parse tolerates
+ * rather than rejects — a raw space (percent-encoded into the path) and a
+ * backslash (folded into a path separator, since https is a "special" scheme
+ * per the WHATWG URL spec). Both are now refused on the raw input string
+ * directly, closing the gap named in `integrations-receipt.test.ts` ›
+ * "license.url: the schema pattern and isValidLocator agree, except at the
+ * two named divergences (length, userinfo)".
  */
 export function isValidLocator(kind: ProviderSource['kind'], locator: string): boolean {
   if (locator.length === 0 || locator.length > MAX_LOCATOR_LENGTH) return false;
   if (kind === 'https') {
     if (!isHttpsUrl(locator)) return false;
-    return !locator.includes('?') && !locator.includes('#');
+    if (locator.includes('?') || locator.includes('#')) return false;
+    if (locator.includes('\\') || /\s/.test(locator)) return false;
+    return true;
   }
   if (kind === 'github') return GITHUB_LOCATOR_PATTERN.test(locator);
   if (kind === 'npm') return NPM_LOCATOR_PATTERN.test(locator);
