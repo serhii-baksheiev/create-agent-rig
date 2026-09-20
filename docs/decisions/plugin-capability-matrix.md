@@ -55,6 +55,13 @@ not necessarily the current ticket's. Flagged for the gate to rule on.
    documented non-interactive API is not the same as impossibility of
    cross-harness plugin delivery**, and this record no longer says or
    implies that it is.
+
+   > **Corrected 2026-09-20 by `integration-composition-rp22.md` M6:** that
+   > documented-interactive-only baseline has since moved. A live run of
+   > `@openai/codex@0.155.1` found `codex plugin add/list/remove/marketplace
+   > add`, a full non-interactive CLI with `--json` on every verb — trigger 6
+   > below has fired. This does not itself re-decide "why not now"; RP-22
+   > owns that re-decision (S6+).
 3. **Whether tracked hooks hold any execution advantage over plugin hooks
    under `disableAllHooks`/`allowManagedHooksOnly` is unmeasured**, not
    assumed either way. The spike (`plugin-delivery-spike-rp179.md`) ran two
@@ -140,6 +147,14 @@ receiving Rig's rulebook as installed repository files that
    person running `codex /plugins` interactively once per machine is a real
    option (correction 2) — it is just not equivalent to Rig's own installer
    doing it unattended.
+
+   > **Corrected 2026-09-20 by `integration-composition-rp22.md` M6:**
+   > "Codex documents no non-interactive install command" is no longer
+   > accurate as a blanket statement — `codex plugin add/list/remove
+   > /marketplace add --json` is a live, measured, non-interactive surface.
+   > Trigger 6 has fired; this bullet's *sequencing* argument (already
+   > tested, no human at a keyboard needed today) is unaffected until RP-22
+   > re-decides whether to adopt the new surface.
 3. Project `CLAUDE.md` asks for the narrowest change that satisfies the
    ticket ("Minimize scope of changes"); a native-plugin migration on the
    Claude side is a distinct proposal with its own capability-matrix-backed
@@ -236,6 +251,13 @@ commands to re-measure at a later head):
    "Why not now" and RP-22's own installer-selection logic, not a reason to
    touch the projection itself.
 
+   > **Fired, 2026-09-20** — `integration-composition-rp22.md` M6 measured
+   > exactly this: `@openai/codex@0.155.1` ships `codex plugin
+   > add/list/remove/marketplace add`, non-interactive, `--json` on every
+   > verb. This note records that the trigger condition is now true; it does
+   > not reopen "Why not now" itself — that re-decision is RP-22 S6+'s, not
+   > this record's, to make.
+
 This section does not itself argue for or against extraction or migration —
 "Why not now" and the corrections above already do that, on scope and
 measurement grounds respectively.
@@ -300,6 +322,12 @@ should, per guard/skill/agent and per provider:
   something `init`/`upgrade` invokes unattended, unless a future Codex
   release documents a non-interactive form (trigger 6 in the cost section
   above);
+
+  > **Corrected 2026-09-20 by `integration-composition-rp22.md` M6:** trigger
+  > 6 has fired — a non-interactive form (`codex plugin add/list/remove
+  > /marketplace add --json`) is documented (via `--help`) and live-run,
+  > measured there. Whether `init`/`upgrade` should invoke it unattended is
+  > RP-22's decision to make (S6+), not decided or reversed by this note.
 - build the receipt and its installation-mode vocabulary from the measured
   states in `plugin-delivery-spike-rp179.md` (`supported` /
   `degraded` / `unsupported` / `unverified`) rather than inventing new
