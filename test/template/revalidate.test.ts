@@ -105,6 +105,26 @@ const git = async (args: string[], cwd: string): Promise<string> => {
   return result.stdout.trim();
 };
 
+/** `git merge-base --is-ancestor`, as a boolean — never throws on "no". */
+const isAncestor = async (ancestor: string, descendant: string, cwd: string): Promise<boolean> =>
+  (
+    await run(
+      'git',
+      [
+        '-c',
+        'user.email=t@example.invalid',
+        '-c',
+        'user.name=t',
+        'merge-base',
+        '--is-ancestor',
+        ancestor,
+        descendant,
+      ],
+      cwd,
+      withoutGitLocation(),
+    )
+  ).code === 0;
+
 /**
  * A bare `origin` and a working clone on a feature branch that edits `a.txt`.
  * `moveMain` lands a commit on master through a SECOND clone and fetches it into
@@ -1225,6 +1245,38 @@ describe("BEFORE_CLOSE — the own-merge exemption also binds to the checkout's 
     expect(code, out).toBe(0);
     expect(result.action).toBe('continue');
     expect(result.changed).toBe(false);
+  });
+
+  it('a foreign EMPTY commit ahead of the genuine squash still holds — only the commit COUNT refuses it (conditions 2, 3, 5, 6 and 7 all pass on their own)', async () => {
+    const p = await closeProject();
+    const fromSha = await git(['rev-parse', 'master'], p.dir);
+    // A foreign commit that changes NO content lands on master first...
+    const foreignShas = await advanceMaster(p.dir, ['chore: foreign empty commit, no content']);
+    const foreignSha = foreignShas[0];
+    if (!foreignSha) throw new Error('fixture: advanceMaster did not return a sha');
+    // ...then the item's OWN, genuine, up-to-date squash merge lands right
+    // after it. `--merge-commit` correctly names this real squash.
+    const mergeSha = await squashMergeOwnWork(p.dir, { subject: ownMergeSubject });
+    const headSha = await git(['rev-parse', 'HEAD'], p.dir);
+    const headTree = await git(['rev-parse', 'HEAD^{tree}'], p.dir);
+    const mergeTree = await git(['rev-parse', `${mergeSha}^{tree}`], p.dir);
+
+    // Verify every OTHER condition actually holds in this fixture, with git
+    // itself, before trusting that condition 4 is the only thing standing
+    // between this and a false CURRENT.
+    expect(mergeSha).not.toBe(foreignSha); // toSha === mergeCommit (2) — real squash is master's tip
+    expect(await isAncestor(fromSha, mergeSha, p.dir)).toBe(true); // (3)
+    expect(await isAncestor(mergeSha, headSha, p.dir)).toBe(false); // (5) — not vacuous
+    expect(headSha).not.toBe(mergeSha); // (5)
+    expect(await isAncestor(fromSha, headSha, p.dir)).toBe(true); // (6)
+    expect(mergeTree).toBe(headTree); // (7) — the empty commit contributed nothing
+    const count = await git(['rev-list', '--count', `${fromSha}..${mergeSha}`], p.dir);
+    expect(count).toBe('2'); // the foreign empty commit AND the squash — only (4) refuses this
+
+    const { code, result, out } = await revalidateCloseJson(p, ['--merge-commit', mergeSha]);
+    expect(code, out).toBe(2);
+    expect(result.action).toBe('hold');
+    expect(result.source).toContain('claim:scope');
   });
 
   it('pins evidence.ownMergeAdvance on the genuine own-merge case', async () => {

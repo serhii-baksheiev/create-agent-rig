@@ -543,7 +543,9 @@ const objectOf = (projectRoot, raw) =>
  * --merge-commit correctly naming the real one", › "an empty-message commit
  * landing before the real merge, --merge-commit correctly naming the real
  * one (a commit COUNT still catches it even though its subject line is
- * blank)", › "holds when content also drifted even though --merge-commit
+ * blank)", › "a foreign EMPTY commit ahead of the genuine squash still holds
+ * — only the commit COUNT refuses it (conditions 2, 3, 5, 6 and 7 all pass
+ * on their own)", › "holds when content also drifted even though --merge-commit
  * correctly identifies the target advance", › "rejects a target that moved
  * backward off the recorded baseline, even though the final commit alone
  * would look like a correct single-commit identity match", › "only exempts
