@@ -961,8 +961,18 @@ three poisons the only channel by which this project learns.
   underneath it:
 
   ```bash
-  node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id>
+  node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id> \
+    --merge-commit "$(gh pr view <pr> --json mergeCommit -q .mergeCommit.oid)"
   ```
+
+  `--merge-commit` names the exact SHA the tracker's own PR metadata records as
+  THIS item's merge commit — the one piece of evidence that lets a `targetSha`
+  move which is nothing but that merge read as `CURRENT` instead of
+  `claim:scope` drift. Resolve it from the PR just merged, by name, never by
+  reading `git log` text, and only after the merge has landed and been
+  fetched. Omitting it (the item has not merged yet, or an older loop that
+  predates this flag) leaves any target movement holding exactly as it did
+  before this flag existed — it is purely additive to that default.
 
   It compares the tracked claim's `scope` and `commentary` fingerprint sets;
   commentary becomes hold-authoritative only here. Marker/take-up movement is

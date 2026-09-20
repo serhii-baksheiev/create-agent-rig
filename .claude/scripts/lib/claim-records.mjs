@@ -447,59 +447,100 @@ const objectOf = (projectRoot, raw) =>
     stdio: ['pipe', 'pipe', 'ignore'],
   }).trim();
 
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 /**
  * At `BEFORE_CLOSE`, `targetSha` is resolved right after this item's OWN PR
  * merged and was fetched — so it almost always differs from the value the
  * claim recorded at take-up, even when nothing else landed on the default
  * branch. This asks a narrower question than "did the target move": did it
- * move by EXACTLY the one commit that is this item's own squash merge?
+ * move by EXACTLY the one commit that IS `mergeCommit` — the SHA the CALLER
+ * vouches for as this item's own merge (resolved from the tracker's own PR
+ * metadata, e.g. `gh pr view <pr> --json mergeCommit -q .mergeCommit.oid`,
+ * never guessed from anything inside this function).
  *
- * True only when `git log <fromSha>..<toSha>` is exactly one commit AND that
- * commit's subject line contains the literal, parenthesised ticket id —
- * `(RP-173)`, never a prefix or substring match, so ticket `AR-1` is never
- * satisfied by a commit tagged for `AR-11`. Any other shape — zero commits,
- * more than one, the right count but the wrong (or no) ticket id, or git
- * itself failing to resolve the range — returns false, and the caller keeps
- * treating the target movement as scope drift exactly as it did before this
- * existed. The false side is the safe default: this function only ever makes
- * `scopeMoved` MORE permissive, never less, and every path that cannot prove
- * "this was my own merge" falls back to holding.
+ * This decides identity, never text. An earlier version matched the moved
+ * commit's SUBJECT LINE against the ticket id in parentheses; a review gate
+ * found that unsound on two counts — an empty commit message silently
+ * disappeared from a naive `git log` line count, and ANY commit merely
+ * mentioning the ticket (a stray doc commit, a revert of the real merge)
+ * satisfied a text match without having merged anything. Nothing here reads a
+ * commit message any more.
+ *
+ * True only when ALL of:
+ * 1. `fromSha`, `toSha` and `mergeCommit` are each a syntactically valid git
+ *    object id, and `fromSha !== toSha`;
+ * 2. `toSha === mergeCommit` — the target's current tip literally IS the SHA
+ *    the caller named, not merely a commit somewhere in the range that
+ *    mentions the item;
+ * 3. `fromSha` is a git-ancestor of `toSha` (`merge-base --is-ancestor`) — a
+ *    target that moved BACKWARDS (a rewind, a force-push) is never exempted,
+ *    no matter what `mergeCommit` claims;
+ * 4. `git rev-list --count fromSha..toSha` is exactly `1` — counting commits,
+ *    not lines of text, so a foreign commit sharing the window with the real
+ *    merge (whether or not IT carries an empty message) still holds.
+ *
+ * Any other shape — no `mergeCommit` supplied, a mismatch, a non-ancestor
+ * `fromSha`, more than one commit in range, or git itself failing to resolve
+ * any of the above — returns false, and the caller keeps treating the target
+ * movement as scope drift exactly as it did before this existed. The false
+ * side is the safe default: this function only ever makes `scopeMoved` MORE
+ * permissive, never less, and every path that cannot prove "this SHA is my
+ * own merge, and nothing else shares its window" falls back to holding.
+ *
+ * ⚠ What this function CANNOT prove: that `mergeCommit` is the right PR's
+ * merge commit in the first place. That identity guarantee lives entirely in
+ * how the CALLER obtained it (the tracker's own PR-to-merge-commit mapping)
+ * and is outside anything visible in git history alone — a caller that
+ * passes the wrong item's merge SHA is not caught here.
  *
  * Pinned in the generator's `test/template/revalidate.test.ts`
  * — absent in a generated rig — › "the item's own squash merge, nothing
- * foreign", › "a foreign change to the target, untagged", › "never lets a
- * different ticket that merely shares this id as a prefix satisfy the
- * exemption (AR-11 must not match AR-1)" and › "treats a two-commit range as
- * foreign even when one of the two commits is the item's own merge".
+ * foreign, correctly named by --merge-commit", › "no --merge-commit supplied
+ * at all, even though the target moved by exactly one commit that would
+ * otherwise exempt it", › "a --merge-commit that does not match the target's
+ * new tip (the old recorded baseline sha)", › "a foreign commit plus the real
+ * merge in the same range, --merge-commit correctly naming the real one", ›
+ * "an empty-message commit landing before the real merge, --merge-commit
+ * correctly naming the real one (a commit COUNT still catches it even though
+ * its subject line is blank)", › "holds when content also drifted even
+ * though --merge-commit correctly identifies the target advance", › "rejects
+ * a target that moved backward off the recorded baseline, even though the
+ * final commit alone would look like a correct single-commit identity match"
+ * and › "only exempts at BEFORE_CLOSE — the identical own-merge shape still
+ * holds on claim:scope at BEFORE_PR".
  */
-const isOwnMergeAdvance = (projectRoot, ticketId, fromSha, toSha) => {
+const isOwnMergeAdvance = (projectRoot, fromSha, toSha, mergeCommit) => {
   if (
     !GIT_OBJECT_ID.test(fromSha ?? '') ||
     !GIT_OBJECT_ID.test(toSha ?? '') ||
-    fromSha === toSha
+    !GIT_OBJECT_ID.test(mergeCommit ?? '') ||
+    fromSha === toSha ||
+    toSha !== mergeCommit
   ) {
     return false;
   }
-  let subjects;
   try {
-    subjects = execFileSync(
+    execFileSync('git', ['-C', projectRoot, 'merge-base', '--is-ancestor', fromSha, toSha], {
+      env: withoutGitLocation(),
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+  } catch {
+    return false;
+  }
+  let count;
+  try {
+    count = execFileSync(
       'git',
-      ['-C', projectRoot, 'log', '--format=%s', `${fromSha}..${toSha}`],
+      ['-C', projectRoot, 'rev-list', '--count', `${fromSha}..${toSha}`],
       {
         encoding: 'utf8',
         env: withoutGitLocation(),
         stdio: ['ignore', 'pipe', 'ignore'],
-        maxBuffer: 1024 * 1024,
       },
-    );
+    ).trim();
   } catch {
     return false;
   }
-  const lines = subjects.split('\n').filter((line) => line !== '');
-  if (lines.length !== 1) return false;
-  return new RegExp(`\\(${escapeRegExp(ticketId)}\\)`).test(lines[0]);
+  return count === '1';
 };
 
 const readClaim = (projectRoot, path) => {
@@ -641,6 +682,7 @@ export const revalidateClaim = ({
   point,
   claimedState = 'in-progress',
   targetSha,
+  mergeCommit = null,
   allowCreate = false,
   isResume = false,
 }) => {
@@ -813,9 +855,9 @@ export const revalidateClaim = ({
     !scopeContentMoved &&
     isOwnMergeAdvance(
       projectRoot,
-      ticketIdOf(ticket),
       claim.fingerprints.scope.targetSha,
       current.scope.targetSha,
+      mergeCommit,
     );
   const scopeMoved = scopeContentMoved || (scopeTargetMoved && !scopeTargetIsOwnMerge);
   const commentaryMoved = claim.fingerprints.commentary.value !== current.commentary.value;
@@ -833,7 +875,9 @@ export const revalidateClaim = ({
     evidence: {
       claim: pointer,
       ...(commentaryMoved && point !== 'BEFORE_CLOSE' ? { observedFingerprintSet: ['commentary'] } : {}),
-      ...(scopeTargetIsOwnMerge ? { ownMergeAdvance: current.scope.targetSha } : {}),
+      ...(scopeTargetIsOwnMerge
+        ? { ownMergeAdvance: { from: claim.fingerprints.scope.targetSha, to: current.scope.targetSha } }
+        : {}),
     },
     identity: fingerprintIdentity(current),
   });
