@@ -31,12 +31,15 @@
  * filesystem facts, and comparing them with a declared-but-wrong platform's
  * path module fails OPEN (gate cycle 2, blocker 1).
  *
- * `boundedRun` never shells out (`node:child_process` is imported ONLY as
+ * `boundedRun` never shells out (`child_process` is imported ONLY as
  * `execFile` throughout `src/integrations/`, and `shell` is never set to
  * anything but its own default `false` — see `integrations-exec.test.ts` ›
- * "no file under src/integrations/ imports node:child_process with anything
- * other than execFile, sets shell to anything but false, or does a
- * recursive readdir"): it uses `execFile` with an absolute file and an argv
+ * "no file under src/integrations/ (scanned recursively, not just its top
+ * level) imports child_process with anything other than execFile, sets
+ * shell to anything but false, or does a recursive readdir (gate cycle 5,
+ * blocker 6; gate cycle 6, security: the import/shell checks now also cover
+ * the bare child_process specifier, require()/dynamic import() call forms,
+ * and a quoted shell key)"): it uses `execFile` with an absolute file and an argv
  * array only, and refuses a non-absolute file before it ever reaches
  * `execFile`. `argv` ELEMENTS THEMSELVES are passed through completely
  * unvalidated — this module bounds the PROCESS (deadline, output, cwd,

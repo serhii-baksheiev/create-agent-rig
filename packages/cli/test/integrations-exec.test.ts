@@ -2055,30 +2055,61 @@ describe('declared limit: captured output is not redacted for secrets', () => {
 });
 
 /**
- * True if `code` imports/requires `node:child_process` in any way OTHER than
- * the single named import `execFile` (gate cycle 5, blocker 6: the previous
- * call-site regex `/(?<!\.)\bexec(Sync)?\s*\(/` could not match `cp.exec(`,
- * `cp.execSync(`, or `require('node:child_process').exec(` at ALL — its own
- * negative lookbehind for a preceding "." excludes exactly those shapes,
- * since each has a `.` right before `exec`). This checks the IMPORT/REQUIRE
- * site instead of every possible call-site spelling: a default import
- * (`import cp from …`), a namespace import (`import * as cp from …`), a
- * named import of anything other than `execFile`, or any `require(…)` of the
- * module at all, are each disallowed — only `import { execFile } from
- * 'node:child_process'` is not.
+ * True if `code` imports/requires `child_process` (either specifier
+ * spelling — `node:child_process` or the bare, canonical `child_process`;
+ * both typecheck and no lint rule here forbids the bare form) in any way
+ * OTHER than the single named import `execFile` (gate cycle 5, blocker 6:
+ * the previous call-site regex `/(?<!\.)\bexec(Sync)?\s*\(/` could not match
+ * `cp.exec(`, `cp.execSync(`, or `require('node:child_process').exec(` at
+ * ALL — its own negative lookbehind for a preceding "." excludes exactly
+ * those shapes, since each has a `.` right before `exec`). Covers, on either
+ * specifier spelling: a default import (`import cp from …`), a namespace
+ * import (`import * as cp from …`), a named import of anything other than
+ * `execFile`, a CALL-form `require(…)`, and a dynamic `import(…)` (gate
+ * cycle 6, security: the previous version matched only the literal string
+ * `node:child_process` and only `require(`, missing the bare specifier
+ * entirely and any dynamic `import(…)`) — only `import { execFile } from
+ * 'node:child_process'` (or the bare specifier) is not. The named-import
+ * clause is normalised (trailing comma dropped, internal whitespace
+ * collapsed) before comparing, so a Prettier-wrapped multi-line `{
+ * execFile, }` is still recognised as the one allowed shape (gate cycle 6:
+ * the previous version treated that wrapped form as a false positive).
  */
 function hasDisallowedChildProcessImport(code: string): boolean {
-  if (/require\(\s*['"]node:child_process['"]\s*\)/.test(code)) return true;
-  const importRe = /import\s+([^;]+?)\s+from\s+['"]node:child_process['"]/g;
+  if (/(?:require|import)\s*\(\s*['"](?:node:)?child_process['"]\s*\)/.test(code)) return true;
+  const importRe = /import\s+([^;]+?)\s+from\s+['"](?:node:)?child_process['"]/g;
   let match: RegExpExecArray | null;
   while ((match = importRe.exec(code)) !== null) {
     const clause = (match[1] ?? '').trim();
     if (!clause.startsWith('{')) return true; // a default or namespace import
-    const inner = clause.slice(1, clause.lastIndexOf('}')).trim();
+    const inner = clause
+      .slice(1, clause.lastIndexOf('}'))
+      .trim()
+      .replace(/,\s*$/, '')
+      .replace(/\s+/g, ' ');
     if (inner !== 'execFile') return true; // anything other than the single allowed binding
   }
   return false;
 }
+
+/**
+ * Anything assigned to `shell:` OTHER than the literal `false` — not just
+ * the literal `true` this used to check for alone, and now also matching a
+ * QUOTED key spelling (`'shell': true`), which the previous version (a bare
+ * `shell\s*:` with no allowance for a leading quote) missed entirely (gate
+ * cycle 6, security).
+ */
+const SHELL_NOT_FALSE = /['"]?shell['"]?\s*:\s*(?!false\b)\S/;
+
+describe('SHELL_NOT_FALSE — refuses shell set to anything but the literal false, however the key is spelled (gate cycle 6, security)', () => {
+  it.each([
+    ['a plain shell: true', 'shell: true', true],
+    ["a quoted key ('shell': true)", "'shell': true", true],
+    ['shell: false is allowed, never caught', 'shell: false', false],
+  ])('%s', (_label, code, expected) => {
+    expect(SHELL_NOT_FALSE.test(code)).toBe(expected);
+  });
+});
 
 describe('hasDisallowedChildProcessImport — the import-based guard (gate cycle 5, blocker 6)', () => {
   it.each([
@@ -2109,20 +2140,39 @@ describe('hasDisallowedChildProcessImport — the import-based guard (gate cycle
       'const m = PATTERN.exec(value);',
       false,
     ],
+    [
+      "the bare specifier, no node: prefix (from 'child_process')",
+      "import { exec } from 'child_process';",
+      true,
+    ],
+    [
+      'require("child_process") — the bare specifier, double-quoted',
+      'require("child_process").exec(\'ls\');',
+      true,
+    ],
+    [
+      "a dynamic import (await import('node:child_process'))",
+      "const cp = await import('node:child_process');\ncp.exec('ls');",
+      true,
+    ],
+    [
+      'the Prettier-wrapped multi-line allowed form (import {\\n  execFile,\\n} from …)',
+      "import {\n  execFile,\n} from 'node:child_process';",
+      false,
+    ],
   ])('%s', (_label, code, expected) => {
     expect(hasDisallowedChildProcessImport(code)).toBe(expected);
   });
 });
 
-describe('structural: integrations/ imports only execFile from node:child_process, and no file sets shell to anything but false', () => {
-  it('no file under src/integrations/ imports node:child_process with anything other than execFile, sets shell to anything but false, or does a recursive readdir (gate cycle 5, blocker 6: replaces a call-site regex that could not match cp.exec(/cp.execSync(/require(...).exec( at all)', async () => {
+describe('structural: integrations/ imports only execFile from child_process, and no file sets shell to anything but false', () => {
+  it('no file under src/integrations/ (scanned recursively, not just its top level) imports child_process with anything other than execFile, sets shell to anything but false, or does a recursive readdir (gate cycle 5, blocker 6; gate cycle 6, security: the import/shell checks now also cover the bare child_process specifier, require()/dynamic import() call forms, and a quoted shell key)', async () => {
     const dir = path.join(repoRoot, 'packages', 'cli', 'src', 'integrations');
     const { readdir } = await import('node:fs/promises');
-    const files = (await readdir(dir)).filter((f) => f.endsWith('.ts'));
+    // `{ recursive: true }` — this walks any subdirectory under
+    // src/integrations/ too, not just its immediate top level.
+    const files = (await readdir(dir, { recursive: true })).filter((f) => f.endsWith('.ts'));
     expect(files.length).toBeGreaterThan(0);
-    // Anything assigned to `shell:` OTHER than the literal `false` — not
-    // just the literal `true` this used to check for alone.
-    const SHELL_NOT_FALSE = /shell\s*:\s*(?!false\b)\S/;
     const RECURSIVE_READDIR = /readdir(Sync)?\s*\([^)]*recursive/s;
     for (const file of files) {
       const code = stripComments(await readFile(path.join(dir, file), 'utf8'));
