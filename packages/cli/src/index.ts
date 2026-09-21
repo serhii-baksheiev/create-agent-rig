@@ -1159,29 +1159,10 @@ async function main(): Promise<number> {
 }
 
 /**
- * A closed stdout/stderr — the read end of a pipe hung up (`| head -c 100`),
- * a terminal that closed — must exit quietly, never with an `EPIPE` stack
- * trace (RP-22 round 3 advisory): a write to a broken pipe surfaces as an
- * `'error'` EVENT on the stream, not a thrown exception any `try`/`catch`
- * here could catch, so it is handled once, at the process level, for both
- * streams this bin ever writes to.
- *
- * **This handler NEVER touches `process.exitCode` on EPIPE (RP-22 round 4,
- * blocker 1 — a round-3 regression, measured):** setting it to `0`
- * unconditionally overwrote whatever real verdict `main()` had already
- * assigned — `setup verify --json` on a required-but-not-installed
- * integration exits 1 to a file and, through this handler's OLD code, a
- * silently-successful 0 through a reader that closed early, on exactly the
- * seam `doctor`/RP-24 read. A bare `return` on `EPIPE` leaves whatever
- * `process.exitCode` already is untouched. A stream error that is NOT
- * `EPIPE` is reported the only way this handler is allowed to — setting
- * `process.exitCode` to `1` if nothing has claimed a verdict yet (`0` and
- * `undefined` both count as "nothing has") — never by throwing INSIDE the
- * stream's own `'error'` listener, which would just re-raise as an uncaught
- * exception at the same severity an unhandled stream error always had, with
- * a stack trace on stderr for a run that may otherwise have finished
- * cleanly. Pinned in `packages/cli/test/integrations-cli.test.ts`'s EPIPE
- * describe block.
+ * A reader closing stdout/stderr must not produce an EPIPE stack trace or
+ * replace the command's exit code. Other stream errors set failure only when
+ * no failing verdict has already been assigned. Built-CLI pipe regressions
+ * live in packages/cli/test/integrations-cli.test.ts.
  */
 function quietlyExitOnEpipe(stream: NodeJS.WritableStream): void {
   stream.on('error', (error: NodeJS.ErrnoException) => {

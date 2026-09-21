@@ -30,6 +30,27 @@ describe('integration intent declaration', () => {
       status: 'ok',
       entries: [{ id: 'figma-mcp', targets: { 'claude-code': { entryHash: h } } }],
     }));
+  it('refuses a Codex entry hash until a Codex target is part of this declaration slice', () =>
+    expect(
+      parseDeclaration(
+        JSON.stringify({
+          schemaVersion: 1,
+          integrations: [
+            {
+              id: 'figma-mcp',
+              selected: true,
+              harnesses: ['codex'],
+              targets: { codex: { entryHash: h } },
+            },
+          ],
+        }),
+        REGISTRY,
+      ),
+    ).toMatchObject({
+      status: 'ok',
+      entries: [],
+      rejected: [{ id: 'figma-mcp', reason: 'arbitrary-command-refused' }],
+    }));
   it('preserves an explicit required false through serialization and parsing', () =>
     expect(
       parseDeclaration(

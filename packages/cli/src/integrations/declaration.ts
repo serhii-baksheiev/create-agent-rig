@@ -21,7 +21,7 @@ export type DeclaredIntegration = {
   version?: string;
   harnesses?: Harness[];
   selected?: true;
-  targets?: Partial<Record<Harness, { entryHash: string }>>;
+  targets?: Partial<Record<'claude-code', { entryHash: string }>>;
 };
 export type RejectionReason = 'not-in-matrix' | 'arbitrary-command-refused' | 'malformed';
 export type Rejection = { id: string; reason: RejectionReason };
@@ -113,7 +113,7 @@ export function parseDeclaration(
       }
       harnesses = value.harnesses;
     }
-    let targets: Partial<Record<Harness, { entryHash: string }>> | undefined;
+    let targets: Partial<Record<'claude-code', { entryHash: string }>> | undefined;
     if (Object.hasOwn(value, 'targets')) {
       if (!isPlainObject(value.targets)) {
         rejected.push({ id: value.id, reason: 'malformed' });
@@ -123,7 +123,7 @@ export function parseDeclaration(
       let badTarget = false;
       for (const [name, target] of Object.entries(value.targets)) {
         if (
-          !isHarness(name) ||
+          name !== 'claude-code' ||
           !isPlainObject(target) ||
           Object.keys(target).length !== 1 ||
           typeof target.entryHash !== 'string' ||

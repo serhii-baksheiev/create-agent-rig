@@ -12,13 +12,13 @@ import {
 } from '../integrations/declaration.js';
 import { REGISTRY, type Harness, type ProviderDescriptor } from '../integrations/registry.js';
 import { resolveReadableInside, resolveWritableInside } from '../lib/safe-path.js';
-import { hasControlCharacter, isPlainObject } from '../lib/safe-text.js';
+import { hasControlCharacter } from '../lib/safe-text.js';
+import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
 
 const MCP = '.mcp.json';
 const MAX_MCP_BYTES = 64 * 1024;
 type Snapshot = { rel: string; bytes: Buffer | null };
 type Edit = Snapshot & { next: Buffer };
-type Config = Record<string, unknown> & { mcpServers: Record<string, unknown> };
 export type IntegrationsCliResult = { exitCode: number; stdout: string; stderr: string };
 export type IntegrationsCliOptions = {
   verb: string;
@@ -66,25 +66,18 @@ async function snapshot(root: string, rel: string): Promise<Snapshot> {
 }
 function decode(bytes: Buffer): string {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new Refusal('preimage-invalid-utf8');
   }
 }
-function readConfig(file: Snapshot): Config {
-  if (file.bytes === null) return { mcpServers: {} };
-  let value: unknown;
+function readConfig(file: Snapshot) {
+  if (file.bytes === null) return { mcpServers: {} as Record<string, unknown> };
   try {
-    value = JSON.parse(decode(file.bytes));
+    return readMcpConfig(decode(file.bytes));
   } catch {
-    throw new Refusal('mcp-config-invalid');
+    throw new Refusal('mcp-config-invalid-or-ambiguous');
   }
-  if (
-    !isPlainObject(value) ||
-    (Object.hasOwn(value, 'mcpServers') && !isPlainObject(value.mcpServers))
-  )
-    throw new Refusal('mcp-config-invalid');
-  return { ...value, mcpServers: (value.mcpServers ?? {}) as Record<string, unknown> };
 }
 const equalBytes = (a: Buffer | null, b: Buffer | null) =>
   a === null ? b === null : b !== null && a.equals(b);
@@ -243,7 +236,7 @@ export async function runIntegrationsCommand(
     }
     const selected = entries.filter((entry) => id === undefined || entry.id === id);
     if (id !== undefined && !selected.length) throw new Refusal('integration-not-declared');
-    let configChanged = false;
+    const mcpChanges = new Map<string, unknown | undefined>();
     for (const entry of selected) {
       if (entry.harnesses?.length !== 1 || entry.harnesses[0] !== 'claude-code')
         throw new Refusal('harness-unsupported-or-pending');
@@ -259,20 +252,26 @@ export async function runIntegrationsCommand(
         if (!exists || ownership === undefined) throw new Refusal('owned-mcp-entry-absent');
         delete servers[name];
         entries = entries.filter((candidate) => candidate.id !== entry.id);
-        configChanged = true;
+        mcpChanges.set(name, undefined);
       } else {
         if (!exists) {
           servers[name] = server;
-          configChanged = true;
+          mcpChanges.set(name, server);
         }
         entry.targets = { ...entry.targets, 'claude-code': { entryHash: hash(server) } };
       }
     }
     const nextDeclaration = Buffer.from(serializeDeclaration(entries));
     if (nextDeclaration.length > MAX_DECLARATION_BYTES) throw new Refusal('declaration-too-large');
-    const nextMcp = configChanged
-      ? Buffer.from(`${JSON.stringify({ ...config, mcpServers: servers }, null, 2)}\n`)
-      : mcpFile.bytes;
+    const nextMcp =
+      mcpChanges.size > 0
+        ? Buffer.from(
+            editMcpServers(
+              mcpFile.bytes === null ? '{\n  "mcpServers": {}\n}\n' : decode(mcpFile.bytes),
+              mcpChanges,
+            ),
+          )
+        : mcpFile.bytes;
     if (nextMcp !== null && nextMcp.length > MAX_MCP_BYTES)
       throw new Refusal('mcp-config-too-large');
     const edits: Edit[] = [];

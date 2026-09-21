@@ -14,10 +14,29 @@ RP-92 supersede the older receipt-based architecture in prior handoffs.
   `420ff588936c40bf2d06521c036f2ecd9fab5e21`, Windows worktree
   `.claude/worktrees/rp22-s5-mcp`. No history rewrite.
 - Current ownership slice: `feat/rp-22-intent-mcp`, Windows and WSL
-  `.claude/worktrees/rp22-intent-mcp`; the WSL checkout is a validation mirror.
+  `.claude/worktrees/rp22-intent-mcp`, pushed head
+  `6d561fd03d7c8527edc541f0d2cb95e9ff8082f0`; Windows has round-2 corrections
+  in progress, and the WSL mirror remains on the reviewed head.
+  Full Linux suite: 3789 passed, 14 platform skips; native Windows targeted
+  suite: 24 passed, 2 capability skips; lint/typecheck/pre-commit passed.
+  [Exact-head hosted dispatch](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35594680334):
+  Linux passed, Windows was cancelled because review blocked this head.
+  Gate round 1/3: security SHIP, code/prose HOLD. No PR opened yet.
+  Corrections: preserve foreign JSON bytes, restore built-CLI/Memory/EPIPE
+  tests, remove premature Codex entryHash, and correct stale schema/changelog
+  prose. Review reports and the HOLD are saved in the run directory.
+- Next Codex slice: `feat/rp-22-codex-mcp`, Windows
+  `.claude/worktrees/rp22-codex-mcp`, based on the ownership head above.
+  Test writer is creating `integrations-codex.test.ts`; no adapter implementation
+  yet. Whole-file ownership will use intent-root `targets.codex.fileHash`,
+  retained after last-provider removal for the next operation's guard.
 - Independent upcoming spawn/Spec Kit slice: `feat/rp-22-spec-kit`, Windows
   `.claude/worktrees/rp22-spec-kit`, created from the baseline above. Integrate
-  the ownership slice before connecting its command surface.
+  the ownership slice before connecting its command surface. Uncommitted
+  staged `spawn.ts`, `windows-job.ts` and `provider-spawn.test.ts` are backed up
+  in the run directory's `spec-kit-spawn.patch`. Windows Job assignment uses
+  the atomic process-creation job-list attribute; native tests 7/7 passed,
+  Linux 6 passed with one Windows-only skip. No Spec Kit consumer yet.
 - Main Windows checkout has preserved local changes: modified
   `.claude/hooks/dod-checks.json`; untracked `.rig/claims/RP-111.json.local`,
   `.rig/claims/RP-185.json` and `docs/rig-0.9.0-codex-loop-prompt.md`.
@@ -56,6 +75,19 @@ uses the existing user-level `~/.config/create-agent-rig/jira.env`; never copy
 its contents into a repository or report. RP-22's changed scope was detected at
 SELECT and resolved after reading the superseding descriptions, with
 `action-changed true`. Claim/revalidation behavior remains frozen.
+BEFORE_PR search returned incomplete commentary (25 total comments); the
+existing adapter's direct `find` returned all 25 unique ids. Run helper
+`revalidate-direct.mjs` fed that complete live record through unchanged
+`revalidateClaim`, confirmed no default-branch drift, and journaled the
+evidence-equivalent check. The scope outcome was recorded after re-reading the
+same final contract. Do not alter the frozen revalidation mechanism.
+
+Next deterministic steps: finish round-2 regressions/corrections, commit and
+push, run gate round 2 with a single fan-out record, check coverage/DoD, open
+the ownership PR, require hosted
+`ci`, `windows-smoke`, `e2e` plus dispatched `windows-e2e` before exact-reviewed
+merge, then verify master and update RP-22. Continue Codex after its failing
+tests; do not close RP-22 until all later provider/wizard acceptance passes.
 
 Before compaction or restart, save all current edits in the task branch or a
 named patch and update this checkpoint with the new exact heads and evidence.
