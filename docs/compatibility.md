@@ -152,8 +152,11 @@ fixtures cover dual-harness initialization, repeat setup, adoption, update,
 removal and authoritative status on Linux and native Windows. Process-tree
 cleanup is tested on both systems. These are adapter tests, not a claim of
 real network installation acceptance; that remains a dedicated exact-SHA
-release check. Upstream sources and generated payloads are not shipped in
-Rig's package.
+release check. See `packages/cli/test/spec-kit.test.ts` › "initializes a clean
+repository once, then adds only a missing harness on a later add" and
+`packages/cli/test/provider-spawn.test.ts` › "returns only after a deadline
+kills a live child and grandchild on this platform". Packed-artifact content
+inspection remains part of release acceptance.
 
 The scope bullet "remove tracked duplicate projections from templates when
 replacement evidence exists" has no target either: the replacement it names

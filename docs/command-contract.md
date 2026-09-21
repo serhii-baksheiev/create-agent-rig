@@ -1368,6 +1368,22 @@ process-tree cleanup; unconfirmed cleanup refuses success. Normal tests use
 isolated fake upstream executables; real network acceptance is a separate
 release check.
 
+Executable evidence:
+
+- `packages/cli/test/setup-wizard.test.ts` › "routes a Spec Kit both-harness
+  selection through deterministic add rather than a guide".
+- `packages/cli/test/spec-kit.test.ts` › "initializes a clean repository once,
+  then adds only a missing harness on a later add", › "requires explicit
+  adoption before touching an external .specify payload", and › "treats the
+  upstream missing integration state as successful after removing the final
+  requested harness".
+- `packages/cli/test/spec-kit-command.test.ts` › "persists one pinned selected
+  intent only after the official lifecycle succeeds, without claiming upstream
+  files" and › "reports the bounded upstream status and recovery reason after
+  partial setup without recording intent".
+- `packages/cli/test/provider-spawn.test.ts` › "returns only after a deadline
+  kills a live child and grandchild on this platform".
+
 ## Fixtures
 
 Examples, one per shape the contract names. They are illustrative payloads, not
