@@ -561,14 +561,11 @@ describe('bounded reads and the receipts-dir scan cap (RP-22 round 2 advisory)',
 
   it('an oversized declaration is refused at the boundary value, exactly 64 KiB vs 64 KiB + 1', async () => {
     // Not a 300 MB fixture (impractical in a unit test); this pins the
-    // EXACT boundary the stat-first code path must still produce — the
-    // memory-avoidance property itself is a code-shape fact, visible in the
-    // diff (`readDeclarationFile` calls `stat` before `readFile`), which the
-    // companion timing test below gives an independent, if coarse, signal
-    // for. The padding lives on an ENTRY's own unknown key (rejected as
-    // "malformed", not fatal to the whole file) rather than a root key,
-    // which `declaration.ts`'s closed root-key set would refuse regardless
-    // of size — this test is about the byte cap specifically.
+    // EXACT boundary the size check must still produce. The padding lives
+    // on an ENTRY's own unknown key (rejected as "malformed", not fatal to
+    // the whole file) rather than a root key, which `declaration.ts`'s
+    // closed root-key set would refuse regardless of size — this test is
+    // about the byte cap specifically.
     const atCap = `${JSON.stringify({
       schemaVersion: 1,
       integrations: [{ id: 'padded-entry', padding: 'x'.repeat(64 * 1024 - 150) }],
@@ -615,6 +612,20 @@ describe('an unreadable individual orphan candidate is never silently "complete"
     expect(payload.orphaned).not.toContain('fifo-orphan');
     expect(payload.orphanScan).toBe('unreadable');
   }, 10_000);
+
+  it('a readable file that merely fails receipt validation is NOT "unreadable" — it is just not a receipt (RP-22 round 5)', async () => {
+    await mkdir(path.dirname(receiptPath('not-a-receipt')), { recursive: true });
+    // A plain file, readable end to end (resolveReadableInside says "ok",
+    // stat and readFile both succeed) — it fails only `parseReceipt`'s own
+    // schema check. That is a fact about its CONTENT, not about whether the
+    // scan could examine it, so it must not be conflated with a symlink, a
+    // FIFO, or an oversized file (all of which the scan genuinely could not
+    // read at all).
+    await writeFile(receiptPath('not-a-receipt'), 'not a valid receipt at all');
+    const { payload } = await verifyIntegrations({ repoDir: repo });
+    expect(payload.orphaned).not.toContain('not-a-receipt');
+    expect(payload.orphanScan).toBe('complete');
+  });
 });
 
 describe('renderVerifyProse prints the orphan-scan note in prose, not only in --json (RP-22 round 4, blocker 4)', () => {
@@ -631,11 +642,40 @@ describe('renderVerifyProse prints the orphan-scan note in prose, not only in --
     );
   }, 30_000);
 
-  it('prints the unreadable note when a plain FILE sits where the receipts directory belongs', async () => {
+  it('prints the incomplete note when a plain FILE sits where the receipts directory belongs (RP-22 round 5)', async () => {
     await mkdir(path.dirname(path.join(repo, ...RECEIPTS_DIR_REL.split('/'))), { recursive: true });
     await writeFile(path.join(repo, ...RECEIPTS_DIR_REL.split('/')), 'not a directory');
     const result = await runIntegrationsCommand({ verb: 'verify', args: [], cwd: repo });
-    expect(result.stdout).toContain('(orphan scan: the receipts directory could not be read)\n');
+    expect(result.stdout).toContain(
+      '(orphan scan: incomplete — the receipts directory or one of its entries could not be read)\n',
+    );
+  });
+
+  it('prints the SAME incomplete note when the directory itself is readable but one candidate is a symlink (RP-22 round 5)', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-integrations-orphan-note-outside-'));
+    try {
+      // An empty but VALID declaration: renderVerifyProse's "no declaration
+      // at all" branch returns before it ever reaches the orphaned-list
+      // loop, so an absent declaration here would silently hide the
+      // "real-orphan" assertion below rather than genuinely exercise it.
+      await writeDeclaration([]);
+      await mkdir(path.dirname(receiptPath('symlinked-orphan')), { recursive: true });
+      // A genuine orphan alongside the symlinked one, so this note is proven
+      // to coexist with real findings rather than only firing when the scan
+      // has nothing else to report.
+      await writeFile(receiptPath('real-orphan'), validReceiptText('real-orphan', 'installed'));
+      const outsideReceipt = path.join(outside, 'r.json');
+      await writeFile(outsideReceipt, validReceiptText('symlinked-orphan', 'installed'));
+      await symlink(outsideReceipt, receiptPath('symlinked-orphan'));
+      const result = await runIntegrationsCommand({ verb: 'verify', args: [], cwd: repo });
+      expect(result.stdout).toContain('real-orphan: orphaned receipt, no declaration');
+      expect(result.stdout).toContain(
+        '(orphan scan: incomplete — the receipts directory or one of its entries could not be read)\n',
+      );
+    } finally {
+      await removeFixture(outside);
+    }
   });
 });
 
@@ -1451,7 +1491,14 @@ describe('setup: CLI wiring, spawning the actually-built binary (RP-22 S4 + roun
     expect(run.stderr).not.toContain(esc);
   });
 
-  it('no --json payload the spawn block produces carries a caller-supplied or absolute path shape in its error field (RP-22 round 4, blocker 5)', async (ctx) => {
+  it('the write-refused --json payload names no host-derived or absolute path in its error field (RP-22 round 5, narrowed from round 4 blocker 5)', async (ctx) => {
+    // This is one specific payload — the fixed `write-refused` message — not
+    // a claim about every payload this surface can produce: a caller-typed
+    // <id> that happens to look like a path (e.g. "/etc/passwd") IS echoed
+    // back elsewhere in the payload, sanitised and length-truncated, because
+    // it is the caller's own input read back at them, not a path this
+    // surface derived (docs/command-contract.md, "## setup integrations
+    // (RP-22)").
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     const outside = await mkdtemp(path.join(tmpdir(), 'caf-integrations-path-scan-'));
     try {
@@ -1468,12 +1515,8 @@ describe('setup: CLI wiring, spawning the actually-built binary (RP-22 S4 + roun
   });
 
   describe('EPIPE on a closed stdout exits quietly, without corrupting the real exit code (RP-22 round 4, blocker 1)', () => {
-    // Deterministic, not a timing race: the payload is sized well past the
-    // platform pipe buffer (64 KiB on Linux), so destroying the read end
-    // after the FIRST chunk arrives is guaranteed to leave the child still
-    // trying to write when the pipe closes underneath it. Nested inside
-    // "CLI wiring" so it shares that describe's `cliBin` (the actually-built
-    // binary this whole block spawns).
+    // Nested inside "CLI wiring" so it shares that describe's `cliBin` (the
+    // actually-built binary this whole block spawns).
     async function spawnWithEarlyStdoutClose(
       args: string[],
       cwd: string,
@@ -1483,14 +1526,17 @@ describe('setup: CLI wiring, spawning the actually-built binary (RP-22 S4 + roun
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
+        // Destroyed SYNCHRONOUSLY, before any listener is attached and
+        // before the child has written a single byte — round 5: the
+        // previous recipe (destroy after the first `data` chunk) let the
+        // child finish writing on Linux often enough that the handler never
+        // fired (measured: 0/200 at a 73.9 KB payload), so the test passed
+        // against both the fixed handler and the round-3 bug it exists to
+        // catch. Destroying before the pipe ever carries a byte fires the
+        // handler on every run, at any payload size — this is what makes
+        // the recipe deterministic rather than a timing race.
+        child.stdout.destroy();
         let stderr = '';
-        let closedStdout = false;
-        child.stdout.on('data', () => {
-          if (!closedStdout) {
-            closedStdout = true;
-            child.stdout.destroy();
-          }
-        });
         child.stderr.on('data', (chunk: Buffer) => {
           stderr += chunk.toString('utf8');
         });

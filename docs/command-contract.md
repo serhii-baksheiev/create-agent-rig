@@ -203,9 +203,11 @@ consumer refuses to interpret the payload at all — that is what exit 4 is for.
 A closed stdout or stderr (a reader that hung up early) never turns into an
 `EPIPE` stack trace or a corrupted exit code: the rig bin swallows `EPIPE`
 without touching `process.exitCode`, so whatever verdict the run already
-reached survives (RP-22 round 4). Pinned in
-`packages/cli/test/integrations-cli.test.ts`'s `EPIPE on a closed stdout
-exits quietly, without corrupting the real exit code` describe block.
+reached survives (RP-22 round 4). Measured on non-Windows only — the tests
+below are `skipUnless`-gated off Windows, so this guarantee is not verified
+on Windows pipes. Pinned in `packages/cli/test/integrations-cli.test.ts`'s
+`EPIPE on a closed stdout exits quietly, without corrupting the real exit
+code (RP-22 round 4, blocker 1)` describe block.
 
 ## The version handshake
 
@@ -1295,22 +1297,25 @@ Like `uninstall`, this surface is not a member of the foundation verb set and
 does not use its five-code exit table: every one of the three verbs exits 0 or
 1 only (owner ruling D4, recorded on the RP-22 ticket, 2026-09-20) — a usage
 error, a refusal, and a required integration failing to verify all exit 1.
-Unlike `uninstall`'s own carved-out payload rule, none of these three
-payloads names a file path at all (RP-22 round 4, blocker 5 — round 3's
-`write-refused` message named `.rig/integrations.json`, measured; fixed by
-REMOVING the constant from that message rather than narrowing this
-sentence, so the general "no file paths" rule stays unweakened for this
-surface) — not even the repository-relative `.rig/integrations.json` or
-`.rig/receipts/<id>.json` the verb reads or writes. `runAdd`'s PROSE
+Unlike `uninstall`'s own carved-out payload rule, no `--json` payload on this
+surface ever names a path this surface itself reads or writes — not even the
+repository-relative `.rig/integrations.json` or `.rig/receipts/<id>.json`
+(RP-22 round 4, blocker 5 — round 3's `write-refused` message named
+`.rig/integrations.json`, measured; fixed by REMOVING the constant from that
+message) — nor a host-derived absolute path (the checkout directory, a temp
+directory). A caller-typed `<id>` is a different matter: it is echoed back
+into the payload sanitised and length-truncated even when it happens to LOOK
+like a path (`/etc/passwd`, a Windows drive path) — that is the caller's own
+input read back at them, not a path this surface derived. `runAdd`'s PROSE
 rendering — never a `--json` payload — is still free to name
 `DECLARATION_REL` for a human reading a terminal; the rule binds the machine
 surface, as it does everywhere else in this document. Recognised
 structurally by `command: "setup"` plus `verb: "list" | "add" | "verify"`,
 distinct from the legacy `setup --memory-root` prose path (which carries no
 `--json` output at all) and from `uninstall`'s own `command: "uninstall"`
-shape. Pinned: `packages/cli/test/integrations-cli.test.ts` › "no --json
-payload the spawn block produces carries a caller-supplied or absolute path
-shape in its error field (RP-22 round 4, blocker 5)".
+shape. Pinned: `packages/cli/test/integrations-cli.test.ts` › "the
+write-refused --json payload names no host-derived or absolute path in its
+error field (RP-22 round 5, narrowed from round 4 blocker 5)".
 
 **What "exactly one JSON object … regardless" actually covers here, stated
 precisely (RP-22 round 4, blocker 2 — round 3's version of this paragraph
@@ -1522,8 +1527,8 @@ refuses a symlink component in EITHER direction (a committed
 honoured for reading, any more than `resolveWritableInside` would silently
 write through it) and checks the final component's kind (a directory where a
 file is expected, or the reverse, is refused rather than surfacing a raw
-`EISDIR`/`ENOTDIR`). Size is checked with `stat` before any content is
-loaded, so an oversized file is refused without being read whole into memory.
+`EISDIR`/`ENOTDIR`). An oversized file is refused at an exact, tested
+boundary, not merely as a general property.
 Pinned: `packages/cli/test/integrations-cli.test.ts` › "verify: a directory
 sitting at the declaration path is declaration: \"invalid\", not a thrown
 EISDIR", › "add: a directory sitting at the declaration path refuses outright

@@ -274,30 +274,40 @@ async function readDeclarationFile(
 
 type ReceiptStatus = 'absent' | 'present' | 'invalid';
 
+/**
+ * `readReceiptFile`'s `invalid` status covers two genuinely different
+ * claims (RP-22 round 5): the content was never read at all (a symlink, the
+ * wrong kind, an oversized file, an I/O error) — `contentWasRead: false` —
+ * versus the raw bytes WERE read successfully and only then failed
+ * `parseReceipt`'s own schema check — `contentWasRead: true`. The per-harness
+ * `receipt` field does not need the distinction (both are simply "not a
+ * usable receipt"), but `scanOrphanedReceipts` does: a candidate whose
+ * content was read is not evidence that the SCAN itself missed anything.
+ */
 async function readReceiptFile(
   repoDir: string,
   id: string,
-): Promise<{ status: ReceiptStatus; receipt?: Receipt }> {
+): Promise<{ status: ReceiptStatus; receipt?: Receipt; contentWasRead?: boolean }> {
   const resolved = await resolveReadableInside(repoDir, `${RECEIPTS_DIR_REL}/${id}.json`, 'file');
   if (resolved.status === 'absent') return { status: 'absent' };
-  if (resolved.status === 'unsafe') return { status: 'invalid' };
+  if (resolved.status === 'unsafe') return { status: 'invalid', contentWasRead: false };
 
   let size: number;
   try {
     size = (await stat(resolved.path)).size;
   } catch {
-    return { status: 'invalid' };
+    return { status: 'invalid', contentWasRead: false };
   }
-  if (size > MAX_RECEIPT_BYTES) return { status: 'invalid' };
+  if (size > MAX_RECEIPT_BYTES) return { status: 'invalid', contentWasRead: false };
 
   let raw: string;
   try {
     raw = await readFile(resolved.path, 'utf8');
   } catch {
-    return { status: 'invalid' };
+    return { status: 'invalid', contentWasRead: false };
   }
   const parsed = parseReceipt(raw);
-  if (parsed.status === 'invalid') return { status: 'invalid' };
+  if (parsed.status === 'invalid') return { status: 'invalid', contentWasRead: true };
   return { status: 'present', receipt: parsed.receipt };
 }
 
@@ -344,18 +354,27 @@ async function scanOrphanedReceipts(
   const bounded = candidates.slice(0, MAX_ORPHAN_CANDIDATES);
 
   const orphaned: string[] = [];
-  // An individual candidate this loop could not read (a symlink, a FIFO, an
-  // oversized file) is NEITHER "orphaned" nor "not orphaned" — it is
-  // unknown, and reporting `scan: 'complete'` anyway would say "nothing was
-  // missed" about a candidate that was never actually examined (RP-22 round
-  // 4 advisory). `'unreadable'` already means exactly that for the
-  // directory itself; widened here to cover one candidate within it too,
-  // rather than adding a fourth `OrphanScan` member for the same claim.
+  // An individual candidate this loop could not READ AT ALL (a symlink, a
+  // FIFO, an oversized file, an I/O error) is NEITHER "orphaned" nor "not
+  // orphaned" — it is unknown, and reporting `scan: 'complete'` anyway would
+  // say "nothing was missed" about a candidate that was never actually
+  // examined (RP-22 round 4 advisory). `'unreadable'` already means exactly
+  // that for the directory itself; widened here to cover one candidate
+  // within it too, rather than adding a fourth `OrphanScan` member for the
+  // same claim.
+  //
+  // A candidate whose bytes WERE read but that merely fails `parseReceipt`'s
+  // schema (RP-22 round 5) is a different fact: the scan examined it and
+  // learned it is not a receipt. That is not evidence the scan missed
+  // anything, so it is excluded from `orphaned` without flipping `scan` —
+  // `readReceiptFile`'s `contentWasRead` is exactly this distinction.
   let anyCandidateUnreadable = false;
   for (const id of bounded) {
     const result = await readReceiptFile(repoDir, id);
     if (result.status === 'present') orphaned.push(id);
-    else if (result.status === 'invalid') anyCandidateUnreadable = true;
+    else if (result.status === 'invalid' && result.contentWasRead !== true) {
+      anyCandidateUnreadable = true;
+    }
   }
   const scan: OrphanScan = anyCandidateUnreadable
     ? 'unreadable'
@@ -943,16 +962,23 @@ export async function verifyIntegrations(
 /**
  * A caveat line about the receipts-directory scan itself, printed whenever
  * `orphanScan` is not the clean case (RP-22 round 3 advisory) — a scan that
- * hit the candidate cap, or one that could not read the directory at all,
- * is a fact about the ANSWER's completeness that a reader of prose output
- * deserves as much as a `--json` consumer already gets from the field.
+ * hit the candidate cap, or one that could not read everything, is a fact
+ * about the ANSWER's completeness that a reader of prose output deserves as
+ * much as a `--json` consumer already gets from the field.
+ *
+ * `'unreadable'` covers two on-disk shapes (RP-22 round 5): the receipts
+ * directory itself could not be read, OR the directory was read fine but at
+ * least one candidate inside it could not be — a symlink, a FIFO, an
+ * oversized file. One shared, honestly-scoped sentence names both rather
+ * than claiming specifically "the directory" when the directory was, in
+ * fact, read.
  */
 function orphanScanNote(scan: OrphanScan): string {
   if (scan === 'truncated') {
     return `(orphan scan: truncated at ${MAX_ORPHAN_CANDIDATES} candidates — some receipts were not examined)\n`;
   }
   if (scan === 'unreadable') {
-    return '(orphan scan: the receipts directory could not be read)\n';
+    return '(orphan scan: incomplete — the receipts directory or one of its entries could not be read)\n';
   }
   return '';
 }
