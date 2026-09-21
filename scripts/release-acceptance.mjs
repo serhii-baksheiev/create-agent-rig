@@ -396,7 +396,8 @@ async function main() {
     )
       abort('spec-kit-intent-missing');
     const marker = await firstSpecKitSkill(project);
-    await writeFile(marker, `${await readFile(marker, 'utf8')}\nrelease-acceptance-marker\n`);
+    const originalSkill = await readFile(marker, 'utf8');
+    const originalSkillTime = (await stat(marker, { bigint: true })).mtimeNs;
     const repeated = await rig(
       'spec-kit-repeat',
       'setup',
@@ -413,13 +414,17 @@ async function main() {
       repeated.outcome !== 'written' ||
       !repeated.observed?.installedIntegrations?.includes('claude') ||
       !repeated.observed?.installedIntegrations?.includes('codex') ||
-      !(await readFile(marker, 'utf8')).includes('release-acceptance-marker')
+      (await readFile(marker, 'utf8')) !== originalSkill ||
+      (await stat(marker, { bigint: true })).mtimeNs !== originalSkillTime
     )
       abort('spec-kit-repeat-reinitialized');
     const doctor = await rig('spec-kit-doctor', 'doctor', '--json');
     const checks = safeDoctor(doctor);
     if (doctor.specKit?.connectivity !== 'not-observed' || doctor.specKit?.trust !== 'not-observed')
       abort('doctor-trust-or-connectivity-inferred');
+    // Modification is the uninstall preservation scenario. Doing it before
+    // repeat/status would deliberately turn upstream's healthy status into drift.
+    await writeFile(marker, `${originalSkill}\nrelease-acceptance-marker\n`);
     const removeSpecKit = await rig(
       'spec-kit-remove',
       'setup',

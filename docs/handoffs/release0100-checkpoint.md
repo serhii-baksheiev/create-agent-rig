@@ -1,9 +1,11 @@
 # 0.10.0 release continuation checkpoint
 
-Snapshot: 2026-09-21 15:44 UTC. Recheck Git/GitHub/Jira after restart;
+Snapshot: 2026-09-21 16:02 UTC. Recheck Git/GitHub/Jira after restart;
 heads and current ticket descriptions take precedence over this note.
 
-Master: 3d0ef3e9f231134b45dbb99c9edcb5cc4e6e94c6. PR247 schema1/Claude,
+Master: eb86d97b02c33c88bb6f9ed93511280d585d2f35. PR251 merged the
+Spec Kit prerequisite correction; its master CI35622465648/E2E35622465657
+are pending. Previous master3d0ef3e passed all checks. PR247 schema1/Claude,
 PR248 Codex rolling hashes, PR249 official Spec Kit lifecycle/process runner,
 and PR250 aggregated doctor/Basic Memory preview are merged. PR250 reviewed
 head a61d3ff92c4aa98afb76bf2f786c9d91f2e462af has the same tree as master.
@@ -15,25 +17,37 @@ fe15a5f5b6bb994092306555efffc12f2c7c36bd. It adds official
 --ignore-agent-tools to initial Spec Kit configuration and discloses that
 harness runtime/trust remain unverified. Fake-upstream regression was Red;
 Windows targeted30pass2skip, Linux32pass, lint/typecheck and3726unit/template
-pass7skip. Gate round1/3; code review started; security/prose pending.
-Full hosted dispatch35620638349 pending. No PR yet. Matching Windows/WSL
+pass7skip. Gate round1/3; code/security/prose SHIP and coverage complete.
+Full hosted dispatch35620638349 PASS both OS; PR251 merged with identical
+tree. Matching Windows/WSL
 worktrees rp22-spec-kit-prerequisites are clean. RP22 scope revalidation hold
 was resolved by rereading the current final description and normal outcome.
 
 RP24 branch feat/rp-24-release-acceptance is pushed at
-f01a0a18ba53b2457e001a5761f0bf5c12d8b247. No PR yet. First real network lane
+ff01fda00bb5e1a5b820090fb794853660ca8300. No PR yet. First real network lane
 35618263910: normal full Linux/Windows suites PASS, packed acceptance FAIL
 on both with packed-rig-command-failed. No real acceptance pass is claimed.
 Review round1/3 HOLD: add finite phase/status/exit diagnosis, validate full
 SHA before checkout in both jobs, name exact preflight tests in release docs.
-Windows worktree has those source/workflow/docs fixes and new Red tests in
-progress; not yet copied to WSL or committed. Test writer is correcting the
-Windows Bash test launcher. Do not reset either worktree or lose edits.
-Integrate the Spec Kit prerequisite fix before the next real acceptance run;
-its relation to the current failure is still a hypothesis until phase data.
+Round2 code/security/prose SHIP and coverage complete at ff01fda.
+Dedicated run35621981552: Linux full suite passed; real initial Spec Kit
+installation and dual status passed, then repeat failed because the fixture
+modified SKILL.md before repeat. Official status correctly reported warning.
+Windows still running. The bounded scenario fix keeps skill bytes+mtimeNs
+unchanged through repeat, then doctor, then modifies it only for uninstall
+preservation. Windows script/checkpoint edits are being committed in WSL.
+This failed real test is the Red case; no product mechanism changes.
 
-Active worktrees: rp24-release-acceptance and rp22-spec-kit-prerequisites.
-Merged rp21-doctor cleanup is in progress; merged rp22-spec-kit was removed.
+Release metadata is prepared independently in chore/rp-24-release0100,
+worktree release0100. Windows at ff01fda has six uncommitted metadata/doc
+files (root+inner package0.10.0, CHANGELOG, README, command contract,
+regenerated hash-history). WSL worktree is mid-merge from master eb86d97
+with the same metadata copied; no commit/push yet. Backup release-metadata.patch
+is in runDir. Targeted version/hash/contract/compatibility126tests PASS.
+Do not reset either metadata worktree. Bring in the final acceptance fix
+before final release review/evidence. No 0.10 ledger row is added.
+Active worktrees: rp24-release-acceptance, rp22-spec-kit-prerequisites, release0100.
+Merged rp21-doctor and rp22-spec-kit worktrees/local+remote branches removed.
 Matching WSL clone /home/serhiibaksheiev/rig, Ubuntu user serhiibaksheiev;
 source ~/.nvm/nvm.sh before pnpm. Original S5 and historical dirty worktrees
 remain untouched. Root owner dirt: .claude/hooks/dod-checks.json,
@@ -45,7 +59,7 @@ patch backups live there. Root stash labelled RP21 Windows checkpoint and
 WSL backup/rp21-before-spec-parent preserve earlier doctor work. Record
 review verdicts via record.mjs decision, not events; coverage reads decisions.
 Original Spec Kit gate3 exhausted and completed; doctor gate2 completed;
-acceptance gate1 and new prerequisite branch gate1 are independent work.
+acceptance gate2 and prerequisite branch gate1 are independent work.
 No frozen claim fingerprints or revalidation mechanisms were changed.
 
 Next: finish bounded fixes/reviews, merge prerequisite PR after exact-head
