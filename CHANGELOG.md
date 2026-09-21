@@ -14,7 +14,13 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
-## Unreleased
+## 0.10.0
+
+Platforms: the packed release candidate is accepted on Linux and Windows
+(`scripts/release-acceptance.mjs`, dispatched on the exact release commit).
+macOS is untested for this release. On Windows, Spec Kit 1.0.8 rewrites
+`.claude/settings.json` and `.codex/config.toml` with CRLF line endings, so
+`doctor` reports `rig-owned-files` as `warn` after Spec Kit setup there.
 
 `doctor [--json]` aggregates Rig file integrity, installed guards, optional
 workflow mechanisms, MCP wiring, pinned offline Spec Kit status and the
@@ -240,8 +246,9 @@ a template any generated rig receives.
   answer regardless of outcome — documented next to the other command
   contracts in `docs/command-contract.md` ("## uninstall (RP-181)"). A
   successful removal names its own next step (`git add -A` and a commit) —
-  `uninstall` never touches git history itself. Removing plugin/MCP
-  registrations this rig owns is deferred to RP-179/RP-22 (RP-181).
+  `uninstall` never touches git history itself. Selected MCP wiring and
+  delegated Spec Kit removal have their own lifecycle, `setup remove`;
+  `uninstall` touches only files the Rig manifest names (RP-181).
 - **`uninstall` re-verifies bytes twice more, and gains `--detach`.** A plan
   can go stale in the window a confirmation prompt sits in: each `remove`
   action now carries the plan's own recorded hash, re-read and compared

@@ -1,6 +1,6 @@
 {
   "name": "create-agent-rig",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Configure an agent operating system (rules, gates, hooks) for Claude Code and Codex in a new or existing repository — no application scaffolding",
   "keywords": [
     "agent",

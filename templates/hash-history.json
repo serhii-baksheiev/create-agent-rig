@@ -12,7 +12,8 @@
     "0.7.0",
     "0.7.1",
     "0.8.0",
-    "0.9.0"
+    "0.9.0",
+    "0.9.1"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -397,7 +398,8 @@
         "d8a5916bae71efcc6a21978af713112c9ec33a7554fd07f5978bdf2c3633b560",
         "1804c2351a4f3042dc6a3fb4203f96e98ae12bec32569b99bda77d002d6ba5f2",
         "b81ae3181e02b9c1c3f0e954688490ab3db3961381c2dc397c47c651c9d07f88",
-        "c9902da15d06de3e952352115db0288433520eae2caac1f70ee6e06753d1f444"
+        "c9902da15d06de3e952352115db0288433520eae2caac1f70ee6e06753d1f444",
+        "e31f9899d6edad127db7a2f43dafdfff2671c5c780209cccd3107e56b09c6042"
       ]
     },
     ".claude/scripts/queue/gate-rounds.mjs": {
@@ -437,7 +439,8 @@
         "b8be5855809c0d44ece94858456098663296c17c5ad9abb1ea2cf1a8f48ca491",
         "3fc8ff9a06a2e22355a660a31e2943a97f50869f7e5726f768a7931d17b64b5b",
         "f44203af187e855b9f738f8dbedfd313abf9d6a5cc29182fb46cd58d70698d7a",
-        "c2f2af8ac5eadd8d35a15bcdeffe585e32c6f99b4e6ab9ace0f9d7fd9d694943"
+        "c2f2af8ac5eadd8d35a15bcdeffe585e32c6f99b4e6ab9ace0f9d7fd9d694943",
+        "add45ea2bf2f96fbda0399afc1903bab75c251001f4d05fcbaa0b5958c8c1702"
       ]
     },
     ".claude/scripts/queue/plan-md.mjs": {
@@ -459,7 +462,8 @@
     ".claude/scripts/reconcile-external-prs.mjs": {
       "since": "0.3.0",
       "hashes": [
-        "a326acd64ea19a50d093c91e711ad0234eb05c76d00066db5657c22f4355c190"
+        "a326acd64ea19a50d093c91e711ad0234eb05c76d00066db5657c22f4355c190",
+        "1b14ee0302932a40611011a57410d7f45d6c2d54799847b94f01f448de7c1827"
       ]
     },
     ".claude/scripts/revalidate.mjs": {
