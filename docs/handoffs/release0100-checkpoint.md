@@ -80,3 +80,39 @@ unchanged frozen revalidation mechanism, verifies the actual origin/master
 merge base, and journals evidence. Superseded claim scope was reread and
 resolved with the normal outcome command. Do not rewrite frozen claim hashes.
 Use normal revalidation if the direct helper detects a moved merge base.
+
+## Live continuation checkpoint — 2026-09-21 14:53 UTC
+
+Revalidate these observations after restart. Master is
+92a3f81fd63ae44dda3db694257ea2604ed0dc11; its Linux/Windows checks passed.
+PR249 is open at 4eefcd454e16851e73c22786b92382343c432d07 on
+feat/rp-22-spec-kit. Ordinary PR checks and full Linux pass; full Windows
+dispatch35614012001 is running. Prior Windows failures were isolated to two
+cold-compiler test preparation timeouts. The fixture now uses bounded direct
+git initialization; provider operations and assertions remain unchanged.
+All three lenses SHIP at e7601f48f7dcbde92308ec2bcad470caa4701505; bounded
+code/test closure SHIP at4eefcd4, with unchanged production/docs verified.
+Round cap remains3, with no fourth broad audit. Merge still waits Windows.
+
+Doctor branch feat/rp-21-doctor is clean/pushed in Windows and WSL at
+8e20575924665859bf55f5b206af959e6e20ea40. Prior full Linux passed; Windows
+9a4d3b1 failed one test fixture that computed a relative PATH across drives.
+Its same-volume fixture correction preserves the refusal assertion. New full
+dispatch35614771275 is running; formal first review is in progress. No PR yet.
+RP22 and RP21 are In Progress; RP24/RP92 remain open. No ticket is declared Done.
+
+RP24 worktrees in Windows and WSL are based on master92a3f81. Windows owns
+uncommitted workflow/docs/preflight tests and scripts/release-acceptance.mjs;
+WSL has only the clean base and installed dependencies so far. The script is
+still under implementation review, and no real network acceptance is claimed.
+Next: finish its safety/contract corrections, preserve changes, integrate the
+delivered doctor parent, and run the exact-SHA dedicated network lane.
+
+Backups remain in .claude/runs/20260921-codex-release0100: doctor-post-ci.patch,
+doctor-before-parent.patch and prior spec/doctor patches. Root stash labelled
+"RP21 Windows checkpoint before adopting saved and rebased doctor commit"
+and WSL branch backup/rp21-before-spec-parent preserve the earlier doctor work.
+Root owner modification .claude/hooks/dod-checks.json and untracked claims/prompt
+remain untouched. Historical dirty worktrees and original S5 branch remain.
+Package version is0.9.1; release bump/ledger/pack evidence still pending.
+No npm publish, public tag or release-channel operation has occurred.

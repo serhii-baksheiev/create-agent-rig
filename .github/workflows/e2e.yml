@@ -26,6 +26,14 @@ on:
         options:
           - hosted
           - self-hosted
+      release_acceptance:
+        description: 'Run real pinned Spec Kit acceptance from the packed candidate (network and disposable machine cache)'
+        type: boolean
+        default: false
+      release_sha:
+        description: 'Full candidate commit SHA; required for release acceptance'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -53,6 +61,7 @@ jobs:
           echo "runner.name=$RUNNER_NAME_ runner.os=$RUNNER_OS_ runner.environment=$RUNNER_ENVIRONMENT_ runner.arch=$RUNNER_ARCH_ ImageOS=${ImageOS:-} sha=$SHA_"
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_acceptance && inputs.release_sha || github.sha }}
           fetch-depth: 0 # the released-hash ledger test reads commits of past releases
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -61,6 +70,19 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - name: Provision pinned uv for release acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.release_acceptance
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.12.17'
+          enable-cache: false
+      - name: Accept the exact packed release candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.release_acceptance
+        shell: bash
+        env:
+          RIG_RELEASE_SHA: ${{ inputs.release_sha }}
+          RELEASE_ACCEPTANCE: '1'
+        run: node scripts/release-acceptance.mjs --sha "$RIG_RELEASE_SHA"
 
   # The whole suite on Windows — unit, template and e2e, no file
   # excluded by name (AR-93). Not on
@@ -84,6 +106,7 @@ jobs:
           echo "runner.name=$RUNNER_NAME_ runner.os=$RUNNER_OS_ runner.environment=$RUNNER_ENVIRONMENT_ runner.arch=$RUNNER_ARCH_ ImageOS=${ImageOS:-} sha=$SHA_"
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_acceptance && inputs.release_sha || github.sha }}
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -92,3 +115,16 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test --maxWorkers=2
+      - name: Provision pinned uv for release acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.release_acceptance
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.12.17'
+          enable-cache: false
+      - name: Accept the exact packed release candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.release_acceptance
+        shell: bash
+        env:
+          RIG_RELEASE_SHA: ${{ inputs.release_sha }}
+          RELEASE_ACCEPTANCE: '1'
+        run: node scripts/release-acceptance.mjs --sha "$RIG_RELEASE_SHA"
