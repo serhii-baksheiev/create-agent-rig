@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DECLARATION_REL, MAX_DECLARATION_BYTES, parseDeclaration } from './declaration.js';
 import { readMcpConfig } from './mcp-json.js';
 import { REGISTRY, type Harness } from './registry.js';
+import { matchesIgnoringLineEndings } from '../lib/manifest.js';
 import { resolveReadableInside } from '../lib/safe-path.js';
 
 const MCP_REL = '.mcp.json';
@@ -168,7 +169,6 @@ export async function verifyIntegrations(
     }
   }
   const codexFile = await readBounded(options.repoDir, CODEX_REL, MAX_WIRING_BYTES);
-  const codexHash = codexFile.status === 'ok' ? sha256(codexFile.bytes) : undefined;
   const locator = options.locateLauncher ?? ((name) => defaultLocateLauncher(name, options.env));
   const integrations: IntegrationVerification[] = [];
 
@@ -204,7 +204,7 @@ export async function verifyIntegrations(
             ? 'missing'
             : codexFile.status !== 'ok'
               ? 'unreadable'
-              : codexHash === expectedHash
+              : matchesIgnoringLineEndings(codexFile.bytes, expectedHash)
                 ? 'healthy'
                 : 'drift';
       const launcher =

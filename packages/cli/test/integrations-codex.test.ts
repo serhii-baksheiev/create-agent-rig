@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initFileContents, initProject } from '../src/commands/init.js';
 import { runIntegrationsCommand } from '../src/commands/integrations.js';
+import { verifyIntegrations } from '../src/integrations/verify.js';
 import { applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import { MANIFEST_REL, readManifest, serializeManifest, sha256 } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -317,5 +318,94 @@ describe('setup integrations Codex adapter (RP-22)', () => {
     expect(await readFile(configPath(), 'utf8')).toBe(configBefore);
     expect(await readFile(manifestPath(), 'utf8')).toBe(manifestBefore);
     expect(await exists(statePath())).toBe(false);
+  });
+});
+
+// Spec Kit 1.0.8 regenerates .codex/config.toml in Python text mode on every
+// integration install or upgrade — CRLF on Windows, identical bytes on Linux.
+// A difference only in line endings is not a user modification.
+describe('Codex ownership across a line-ending-only rewrite', () => {
+  const toCrlf = (text: string) => text.replace(/\r?\n/g, '\r\n');
+
+  async function rewriteConfigWithCrlf(): Promise<string> {
+    const rewritten = toCrlf(await readFile(configPath(), 'utf8'));
+    await writeFile(configPath(), rewritten);
+    return rewritten;
+  }
+
+  it('adds another Codex provider over a CRLF rewrite of the owned config and rolls the file hash', async () => {
+    await addFigmaForBothHarnesses();
+    await rewriteConfigWithCrlf();
+
+    const result = await setup('add', ['atlassian-mcp', '--harness', 'codex', '--yes', '--json']);
+
+    expect(result.exitCode).toBe(0);
+    const config = await readFile(configPath(), 'utf8');
+    expect(config).toContain(FIGMA_SECTION);
+    expect(config).toContain(ATLASSIAN_SECTION);
+    expect(codexFileHash(await state())).toBe(sha256(config));
+  });
+
+  it('still refuses a real edit that arrives together with CRLF line endings', async () => {
+    await addFigmaForBothHarnesses();
+    const edited = `${await rewriteConfigWithCrlf()}# user edit\r\n`;
+    await writeFile(configPath(), edited);
+    const before = await readFile(statePath(), 'utf8');
+
+    const result = await setup('add', ['atlassian-mcp', '--harness', 'codex', '--yes', '--json']);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout).reason).toMatch(/^codex-config-conflict/);
+    expect(await readFile(configPath(), 'utf8')).toBe(edited);
+    expect(await readFile(statePath(), 'utf8')).toBe(before);
+  });
+
+  it('reports the Codex wiring healthy, not drift, after a CRLF-only rewrite', async () => {
+    await addFigmaForBothHarnesses();
+    await rewriteConfigWithCrlf();
+
+    const report = await verifyIntegrations({ repoDir: repo });
+
+    const figma = report.integrations.find((entry) => entry.id === 'figma-mcp')!;
+    expect(figma.harnesses.codex?.wiring).toBe('healthy');
+  });
+
+  it('applies Spec Kit together with a Codex provider when the lifecycle rewrites the config with CRLF', async () => {
+    await addFigmaForBothHarnesses();
+    const declaration = await state();
+    (declaration.integrations as unknown[]).push({
+      id: 'spec-kit',
+      version: '1.0.8',
+      selected: true,
+      harnesses: ['claude-code', 'codex'],
+    });
+    await writeFile(statePath(), `${JSON.stringify(declaration, null, 2)}\n`);
+    await mkdir(path.join(repo, '.specify'), { recursive: true });
+
+    const result = await runIntegrationsCommand({
+      verb: 'apply',
+      args: ['--yes', '--json'],
+      cwd: repo,
+      isTTY: false,
+      runSpecKit: async (options) => {
+        await rewriteConfigWithCrlf();
+        return {
+          ok: true,
+          plan: ['official pinned Spec Kit lifecycle'],
+          observed: {
+            status: 'ok',
+            installedIntegrations: options.harnesses.map((harness) =>
+              harness === 'claude-code' ? 'claude' : 'codex',
+            ),
+            findings: [],
+          },
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const config = await readFile(configPath(), 'utf8');
+    expect(config).toContain(FIGMA_SECTION);
+    expect(codexFileHash(await state())).toBe(sha256(config));
   });
 });

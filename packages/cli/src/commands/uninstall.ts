@@ -3,7 +3,13 @@ import path from 'node:path';
 import { initManifest } from './init.js';
 import { AGENTS_MD_RESCUE, renderedAgentsMd } from './upgrade.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
-import { ALL_LAYERS, MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
+import {
+  ALL_LAYERS,
+  isLineEndingOnlyMatch,
+  MANIFEST_REL,
+  parseManifest,
+  sha256,
+} from '../lib/manifest.js';
 import type { RigManifest } from '../lib/manifest.js';
 import { MAX_PATH_SEGMENTS, exceedsMaxPathSegments, resolveInside } from '../lib/safe-path.js';
 
@@ -299,31 +305,6 @@ async function regularFileStatus(
   // (`''.split('/')` is `['']`), and every branch inside the loop above
   // returns before falling through. No trailing throw is needed here — the
   // loop's own `return 'ok'` covers every path that reaches the end of it.
-}
-
-const normalizeToLF = (content: string): string => content.replace(/\r\n/g, '\n');
-const normalizeToCRLF = (content: string): string => normalizeToLF(content).replace(/\n/g, '\r\n');
-
-/**
- * True when `current`'s only difference from the recorded hash is its line
- * endings — checked both directions, since the recorded hash was taken of
- * whatever the rig actually wrote, and this command has no other record of
- * those original bytes to compare against.
- *
- * A binary file — one whose bytes do not round-trip through UTF-8 without
- * loss — can never take this branch: decoding it would hash a
- * replacement-character string standing in for bytes that were never text,
- * exactly what ADR-RP-003 forbids. Its own raw-byte hash was already checked
- * and did not match, so it falls through to `modified` instead, the same as
- * `upgrade`'s `isReleasedVersion` treats an invalid-UTF-8 candidate.
- */
-function isLineEndingOnlyMatch(current: Buffer, recordedHash: string): boolean {
-  const decoded = current.toString('utf8');
-  if (!Buffer.from(decoded, 'utf8').equals(current)) return false;
-  return (
-    sha256(normalizeToLF(decoded)) === recordedHash ||
-    sha256(normalizeToCRLF(decoded)) === recordedHash
-  );
 }
 
 /**

@@ -15,7 +15,13 @@ import { resolveReadableInside, resolveWritableInside } from '../lib/safe-path.j
 import { hasControlCharacter } from '../lib/safe-text.js';
 import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
 import { initFileContents } from './init.js';
-import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
+import {
+  isLineEndingOnlyMatch,
+  MANIFEST_REL,
+  matchesIgnoringLineEndings,
+  parseManifest,
+  sha256,
+} from '../lib/manifest.js';
 import { subsystemsManifestPath } from '../lib/subsystems.js';
 import {
   runSpecKitLifecycle,
@@ -407,9 +413,12 @@ export async function runIntegrationsCommand(
         if (verb !== 'apply' || targets?.codex === undefined)
           throw new Refusal('codex-config-absent-explicit-apply-required');
       } else if (targets?.codex !== undefined) {
-        if (sha256(codexFile.bytes) !== targets.codex.fileHash)
+        if (!matchesIgnoringLineEndings(codexFile.bytes, targets.codex.fileHash))
           throw new Refusal(`codex-config-conflict; managed provider fragment:\n${fragment}`);
-      } else if (manifest.files[CODEX_CONFIG] !== sha256(codexFile.bytes)) {
+      } else if (
+        manifest.files[CODEX_CONFIG] === undefined ||
+        !matchesIgnoringLineEndings(codexFile.bytes, manifest.files[CODEX_CONFIG])
+      ) {
         throw new Refusal(
           `codex-config-not-release-baseline; managed provider fragment:\n${fragment}`,
         );
@@ -478,15 +487,33 @@ export async function runIntegrationsCommand(
     // reads: Spec Kit regenerates .codex/config.toml, as CRLF on Windows. The
     // Codex config and release manifest are inputs only when a Codex MCP entry
     // is rendered, so only then must they still match the plan.
-    await applyEdits(
-      options.cwd,
-      upstreamApplied && !codexSelected ? [declarationFile, mcpFile] : preimages,
-      edits,
-    );
+    let checked = upstreamApplied && !codexSelected ? [declarationFile, mcpFile] : preimages;
+    let writes = edits;
+    if (upstreamApplied && codexSelected && codexFile.bytes !== null && nextCodex !== null) {
+      // When it is rendered, a line-ending-only rewrite is not a modification:
+      // plan over the rewritten bytes and render Rig's own file over them.
+      const current = await snapshot(options.cwd, CODEX_CONFIG);
+      if (
+        current.bytes !== null &&
+        !current.bytes.equals(codexFile.bytes) &&
+        isLineEndingOnlyMatch(current.bytes, sha256(codexFile.bytes))
+      ) {
+        checked = [declarationFile, mcpFile, current, manifestFile];
+        const codexEdit: Edit[] = current.bytes.equals(nextCodex)
+          ? []
+          : [{ ...current, next: nextCodex }];
+        writes = [
+          ...edits.filter((edit) => edit.rel !== CODEX_CONFIG && edit.rel !== DECLARATION_REL),
+          ...codexEdit,
+          ...edits.filter((edit) => edit.rel === DECLARATION_REL),
+        ];
+      }
+    }
+    await applyEdits(options.cwd, checked, writes);
     return respond(
       {
         outcome: verb === 'remove' ? 'removed' : 'written',
-        changed: edits.length !== 0,
+        changed: writes.length !== 0,
         ...(id === undefined ? {} : { id }),
         integrations: entries,
         ...(observed === undefined ? {} : { observed }),

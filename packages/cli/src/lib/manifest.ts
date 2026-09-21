@@ -88,6 +88,36 @@ export function sha256(data: string | Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
+const normalizeToLF = (content: string): string => content.replace(/\r\n/g, '\n');
+const normalizeToCRLF = (content: string): string => normalizeToLF(content).replace(/\n/g, '\r\n');
+
+/**
+ * True when `current`'s only difference from the recorded hash is its line
+ * endings — checked both directions, since the recorded hash was taken of
+ * whatever the rig actually wrote, and the caller has no other record of
+ * those original bytes to compare against.
+ *
+ * A binary file — one whose bytes do not round-trip through UTF-8 without
+ * loss — can never take this branch: decoding it would hash a
+ * replacement-character string standing in for bytes that were never text,
+ * exactly what ADR-RP-003 forbids. Its own raw-byte hash was already checked
+ * and did not match, so it falls through to `modified` instead, the same as
+ * `upgrade`'s `isReleasedVersion` treats an invalid-UTF-8 candidate.
+ */
+export function isLineEndingOnlyMatch(current: Buffer, recordedHash: string): boolean {
+  const decoded = current.toString('utf8');
+  if (!Buffer.from(decoded, 'utf8').equals(current)) return false;
+  return (
+    sha256(normalizeToLF(decoded)) === recordedHash ||
+    sha256(normalizeToCRLF(decoded)) === recordedHash
+  );
+}
+
+/** The recorded hash, or the same bytes differing only in line endings. */
+export function matchesIgnoringLineEndings(current: Buffer, recordedHash: string): boolean {
+  return sha256(current) === recordedHash || isLineEndingOnlyMatch(current, recordedHash);
+}
+
 function isStringRecord(value: unknown): value is Record<string, string> {
   return (
     typeof value === 'object' &&
