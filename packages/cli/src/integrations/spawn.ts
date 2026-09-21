@@ -53,6 +53,9 @@ export async function runProviderProcess(
   const env: NodeJS.ProcessEnv = { NO_COLOR: '1', UV_NO_PROGRESS: '1', PYTHONUTF8: '1' };
   const allowed = new Set([
     'PATH',
+    // uv resolves git through PATHEXT on Windows; without it the job
+    // supervisor leaves only `.CPL` and every git-sourced provider fails.
+    'PATHEXT',
     'HOME',
     'USERPROFILE',
     'APPDATA',

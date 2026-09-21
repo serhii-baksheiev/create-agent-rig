@@ -82,6 +82,32 @@ describe('runProviderProcess', () => {
     expect(result).toEqual({ status: 'ok', stdout: await realpath(repo), stderr: '', exitCode: 0 });
   });
 
+  it('passes PATHEXT to the provider, which uv needs to find git on Windows, and still strips unlisted variables', async () => {
+    const saved = { PATHEXT: process.env.PATHEXT, RIG_UNLISTED: process.env.RIG_UNLISTED };
+    process.env.PATHEXT = '.COM;.EXE;.RIG-SENTINEL';
+    process.env.RIG_UNLISTED = 'must-not-reach-the-provider';
+    try {
+      const result = await run([
+        '-e',
+        'process.stdout.write(JSON.stringify([process.env.PATHEXT, process.env.RIG_UNLISTED ?? null]))',
+      ]);
+
+      expect(result.status).toBe('ok');
+      const [pathext, unlisted] = JSON.parse(result.stdout) as [string | null, string | null];
+      // Windows PowerShell appends `.CPL` to the inherited list; what matters is
+      // that every inherited extension, `.EXE` above all, still reaches uv.
+      expect(pathext?.split(';')).toEqual(
+        expect.arrayContaining(['.COM', '.EXE', '.RIG-SENTINEL']),
+      );
+      expect(unlisted).toBeNull();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('bounds both output streams instead of retaining unbounded provider output', async () => {
     const result = await run(
       [
