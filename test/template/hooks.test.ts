@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as fsp from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
-import { closeSync, openSync } from 'node:fs';
+import { closeSync, existsSync, openSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { skipUnless, symlinksAvailable } from '../helpers/env.js';
@@ -1390,11 +1390,11 @@ describe('inject-rules hook (rules survive compaction and resumes)', () => {
 
   /** `/dev/full` accepts every write and fails it with ENOSPC — a real,
    *  reproducible stdout error with the reader still fully attached, unlike
-   *  EPIPE. Not available on Windows, where there is no character device to
-   *  redirect to for this. */
+   *  EPIPE. A Linux device: Windows has no character device to redirect to
+   *  for this, and macOS has no /dev/full (RP-24). */
   const devFullAvailable = (): { ok: boolean; reason: string } => ({
-    ok: process.platform !== 'win32',
-    reason: 'no /dev/full on Windows to force a non-EPIPE stdout write failure',
+    ok: existsSync('/dev/full'),
+    reason: 'no /dev/full on this platform to force a non-EPIPE stdout write failure',
   });
 
   it('reports a genuine stdout write failure on stderr and marks the exit non-zero, rather than looking like a healthy session', async (ctx) => {

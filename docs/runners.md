@@ -31,20 +31,23 @@ default":
   exactly so (Settings → Secrets and variables → Actions → Variables); delete
   it to return to hosted.
 
-Self-hosted runners are selected by label set: `self-hosted, Linux, X64` and
-`self-hosted, Windows, X64`. Confirm a runner carrying those labels is online
-before dispatching in self-hosted mode. A runner on this path needs `bash`
-(both jobs' first step) and, on Windows, `pwsh`, the shells the jobs already
+Self-hosted runners are selected by label set: `self-hosted, Linux, X64`,
+`self-hosted, Windows, X64` and `self-hosted, macOS, ARM64`; the hosted
+defaults are `ubuntu-latest`, `windows-latest` and `macos-latest`. Confirm a
+runner carrying those labels is online before dispatching in self-hosted mode. A runner on this path needs `bash`
+(every job's first step) and, on Windows, `pwsh`, the shells the jobs already
 declare.
 
 Two consequences of the shape. On a pull request the `windows-e2e` check
 reports `skipped`, not `success` — observed on PR #211's own head (`16d53eb`,
-E2E run 34775448341); the merge criterion in `.claude/rules/node-ts.md` reads
+E2E run 34775448341) — and `macos-e2e` carries the same `if:`; the merge criterion in `.claude/rules/node-ts.md` reads
 `ci` and, where the paths trigger it, `e2e`. And `gh workflow run e2e.yml
 --ref <branch>` is a `workflow_dispatch`, which the job's `if:` does not
-exclude, so it runs **both** jobs, the full Windows suite included, on that
-branch head — pinned by `test/template/root-ci.test.ts` › "keeps the Windows
-full suite off pull requests — it runs on master, nightly and by dispatch".
+exclude, so it runs **all three** jobs, the full Windows and macOS suites
+included, on that branch head — pinned by `test/template/root-ci.test.ts` ›
+"keeps the Windows full suite off pull requests — it runs on master, nightly
+and by dispatch" and › "runs the full suite on macOS off pull requests, on the
+hosted image or the self-hosted macOS runner".
 
 ## When to switch
 
@@ -75,12 +78,16 @@ fallback was used.
 
 ## Registering a self-hosted runner
 
-This repository has no runner registered today (`gh api
-repos/{owner}/{repo}/actions/runners` → `total_count: 0`). Registration is
-repository-scoped and follows GitHub's own procedure (Settings → Actions →
-Runners → New self-hosted runner), with the labels above added at
-configuration time; register it ephemeral and on an isolated host, because
-the jobs it would run check out and execute this repository's code. Nothing in
-this repository installs or configures a runner; the Memory repository's
-dedicated Windows host is registered there, not here, and cannot be scheduled
-from this repository's workflows.
+Registration is repository-scoped and follows GitHub's own procedure
+(Settings → Actions → Runners → New self-hosted runner), with the labels above
+added at configuration time; the jobs a runner takes check out and execute
+this repository's code. Nothing in this repository installs or configures a
+runner, and runners registered for another repository cannot be scheduled
+from this one's workflows.
+
+Registered since 2026-09-22 (`gh api repos/{owner}/{repo}/actions/runners`
+lists them): `wsl-ubuntu-rig` (Linux X64, WSL) and `win-x64-rig` (Windows X64)
+on one owner laptop, and `mac-arm64-01` (macOS ARM64). They are persistent,
+not ephemeral, and share hosts with other work — the owner's choice for a
+release fallback. A new runner is better registered ephemeral and on an
+isolated host, because the jobs it takes execute this repository's code.

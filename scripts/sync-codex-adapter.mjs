@@ -14,7 +14,15 @@
 //
 //   node scripts/sync-codex-adapter.mjs           # write derived files
 //   node scripts/sync-codex-adapter.mjs --check   # report drift only
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -306,6 +314,7 @@ export function syncCodexAdapters({ check = false } = {}) {
           .join('\n')}\nRun: node scripts/sync-codex-adapter.mjs`,
       );
     }
+    console.log(`Codex adapter is in sync (${expected.size} files checked)`);
     return;
   }
 
@@ -320,7 +329,12 @@ export function syncCodexAdapters({ check = false } = {}) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node resolves the main module through symlinks and argv[1] keeps the path
+// as typed, so both sides are compared as real paths (RP-24, macOS /var).
+if (
+  process.argv[1] &&
+  realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
+) {
   try {
     syncCodexAdapters({ check: process.argv.includes('--check') });
   } catch (error) {
