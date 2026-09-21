@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
@@ -16,6 +16,7 @@ import { hasControlCharacter } from '../lib/safe-text.js';
 import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
 import { initFileContents } from './init.js';
 import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
+import { subsystemsManifestPath } from '../lib/subsystems.js';
 import {
   runSpecKitLifecycle,
   SPEC_KIT_VERSION,
@@ -37,6 +38,7 @@ export type IntegrationsCliOptions = {
   isTTY?: boolean;
   confirm?: (plan: string) => Promise<boolean>;
   runSpecKit?: typeof runSpecKitLifecycle;
+  env?: NodeJS.ProcessEnv;
 };
 export const INTEGRATIONS_VERBS = ['list', 'add', 'apply', 'remove'] as const;
 class Refusal extends Error {}
@@ -47,12 +49,68 @@ function serverFor(id: string) {
     return { name: 'figma', server: { type: 'http', url: 'https://mcp.figma.com/mcp' } };
   if (id === 'atlassian-mcp')
     return { name: 'atlassian', server: { type: 'http', url: 'https://mcp.atlassian.com/v2/mcp' } };
+  if (id === 'basic-memory')
+    return { name: 'basic-memory', server: { command: 'uvx', args: ['basic-memory', 'mcp'] } };
   throw new Refusal('not-in-matrix');
 }
 function codexSection(id: string): string {
   const { name, server } = serverFor(id);
-  if (server.type !== 'http') throw new Refusal('codex-provider-not-renderable');
-  return `[mcp_servers.${name}]\nurl = ${JSON.stringify(server.url)}\n`;
+  if ('type' in server && server.type === 'http')
+    return `[mcp_servers.${name}]\nurl = ${JSON.stringify(server.url)}\n`;
+  if ('command' in server && Array.isArray(server.args))
+    return `[mcp_servers.${name}]\ncommand = ${JSON.stringify(server.command)}\nargs = [${server.args.map((arg) => JSON.stringify(arg)).join(', ')}]\n`;
+  throw new Refusal('codex-provider-not-renderable');
+}
+
+async function hasMachineMemoryManifest(env: NodeJS.ProcessEnv): Promise<boolean> {
+  let file: string;
+  try {
+    file = subsystemsManifestPath(env, process.platform);
+  } catch {
+    return false;
+  }
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(file);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_MCP_BYTES) return false;
+  } catch {
+    return false;
+  }
+  const flags =
+    constants.O_RDONLY |
+    (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(file, flags);
+  } catch {
+    return false;
+  }
+  try {
+    const current = await handle.stat();
+    if (!current.isFile() || current.size > MAX_MCP_BYTES) return false;
+    const bytes = Buffer.alloc(MAX_MCP_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > MAX_MCP_BYTES) return false;
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bytes.subarray(0, offset),
+    );
+    const parsed: unknown = JSON.parse(text);
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { entries?: { memory?: unknown } }).entries?.memory === 'object' &&
+      (parsed as { entries?: { memory?: unknown } }).entries?.memory !== null
+    );
+  } catch {
+    return false;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 function renderCodexConfig(base: string, entries: readonly DeclaredIntegration[]): Buffer {
   const sections = entries
@@ -379,7 +437,15 @@ export async function runIntegrationsCommand(
       edits.push({ ...codexFile, next: nextCodex });
     if (!equalBytes(declarationFile.bytes, nextDeclaration))
       edits.push({ ...declarationFile, next: nextDeclaration });
-    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}. MCP wiring does not verify authorization, connectivity or trust.${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}`;
+    const basicMemory = selected.some((entry) => entry.id === 'basic-memory');
+    const coexistence =
+      basicMemory && (await hasMachineMemoryManifest(options.env ?? process.env))
+        ? ' existing Memory subsystem detected; Basic Memory can coexist, but this setup does not connect them.'
+        : '';
+    const basicBoundary = basicMemory
+      ? ' Basic Memory is a wiring-only preview: it configures local, per-machine storage only; does not automatically access Memory; does not synchronize across machines; and uvx is a launcher, not a verified runtime.'
+      : '';
+    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}. MCP wiring does not verify authorization, connectivity or trust.${basicBoundary}${coexistence}${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}`;
     if (values['dry-run'])
       return respond({ outcome: 'planned', dryRun: true, changed: false, plan }, plan);
     if (

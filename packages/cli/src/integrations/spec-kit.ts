@@ -50,7 +50,11 @@ export type SpecKitOptions = {
   runner?: typeof runProviderProcess;
 };
 
-async function locate(name: 'uv' | 'uvx' | 'git', repoDir: string): Promise<string | undefined> {
+async function locate(
+  name: 'uv' | 'uvx' | 'git',
+  repoDir: string,
+  env = process.env,
+): Promise<string | undefined> {
   const root = await realpath(repoDir);
   const inside = (file: string) => {
     const relative = path.relative(root, file);
@@ -60,7 +64,7 @@ async function locate(name: 'uv' | 'uvx' | 'git', repoDir: string): Promise<stri
     );
   };
   const filename = process.platform === 'win32' ? `${name}.exe` : name;
-  for (const directory of (process.env.PATH ?? process.env.Path ?? '').split(path.delimiter)) {
+  for (const directory of (env.PATH ?? env.Path ?? '').split(path.delimiter)) {
     if (!path.isAbsolute(directory)) continue;
     try {
       const candidate = path.join(directory, filename);
@@ -74,6 +78,77 @@ async function locate(name: 'uv' | 'uvx' | 'git', repoDir: string): Promise<stri
     }
   }
   return undefined;
+}
+
+export type SpecKitInspection = {
+  status: 'pass' | 'warn' | 'fail';
+  reason: string;
+  launcher: 'observed' | 'missing';
+  runtime: 'verified' | 'unverified';
+  observed?: Observation;
+};
+
+/** Only the official read-only status command; network and Python downloads disabled. */
+export async function inspectSpecKit(options: {
+  repoDir: string;
+  harnesses: Harness[];
+  env?: NodeJS.ProcessEnv;
+  runner?: typeof runProviderProcess;
+}): Promise<SpecKitInspection> {
+  const uvx = await locate('uvx', options.repoDir, options.env);
+  if (!uvx)
+    return {
+      status: 'warn',
+      reason: 'upstream-status-unavailable',
+      launcher: 'missing',
+      runtime: 'unverified',
+    };
+  const result = await (options.runner ?? runProviderProcess)({
+    executable: uvx,
+    args: [
+      '--offline',
+      '--no-config',
+      '--no-python-downloads',
+      ...PREFIX,
+      'integration',
+      'status',
+      '--json',
+    ],
+    repoDir: options.repoDir,
+    timeoutMs: 30_000,
+    maxOutputBytes: 256 * 1024,
+  });
+  if (result.status === 'cleanup-unconfirmed')
+    return {
+      status: 'fail',
+      reason: 'upstream-cleanup-unconfirmed',
+      launcher: 'observed',
+      runtime: 'unverified',
+    };
+  const observed = observe(result);
+  if (observed === undefined)
+    return {
+      status: result.status === 'failed' ? 'warn' : 'fail',
+      reason: 'upstream-status-unavailable',
+      launcher: 'observed',
+      runtime: 'unverified',
+    };
+  const complete = options.harnesses.every((harness) =>
+    observed.installedIntegrations.includes(harness === 'claude-code' ? 'claude' : 'codex'),
+  );
+  const status =
+    observed.status === 'error' || result.exitCode !== 0
+      ? 'fail'
+      : observed.status === 'warning' || !complete
+        ? 'warn'
+        : 'pass';
+  return {
+    status,
+    reason: !complete ? 'upstream-harness-status-incomplete' : `upstream-status-${observed.status}`,
+    launcher: 'observed',
+    runtime: 'verified',
+    observed,
+  };
 }
 
 function observe(result: ProviderProcessResult): Observation | undefined {

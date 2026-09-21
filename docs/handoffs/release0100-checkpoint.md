@@ -83,3 +83,85 @@ unchanged frozen revalidation mechanism, verifies the actual origin/master
 merge base, and journals evidence. Superseded claim scope was reread and
 resolved with the normal outcome command. Do not rewrite frozen claim hashes.
 Use normal revalidation if the direct helper detects a moved merge base.
+
+## Live continuation checkpoint � 2026-09-21 13:36 UTC
+
+This section supersedes older progress above; revalidate all live heads.
+Master is 92a3f81fd63ae44dda3db694257ea2604ed0dc11, merged Codex PR248.
+Reviewed head a97b3b45cf2cbd5fac1347787065d30a0c610bcb has identical tree.
+Master CI35604145986 and E2E35604145975 passed including nativeWindows.
+Codex Windows/WSL worktrees and local/remote branches removed after clean checks.
+Jira RP22 updated with exact merge and postmerge links; remains InProgress.
+
+Spec Kit branch feat/rp-22-spec-kit is clean/pushed at
+159746b07ff0527fa0010dcaa7ae1972f8cd2c86 in Windows and WSL worktrees.
+No PR yet. Round1/3 code/security SHIP, prose running. One fanout recorded
+seq60, security seq61, code seq62. Dispatch35605355062 Linux passed,
+Windows pending. FullLinux134files3735pass8skips before two narrow diagnostics
+fixes; final related27tests and ordinary precommit passed. NativeWindows
+privacy regression passed. Real upstream network acceptance not yet performed.
+
+Doctor/Basic preparation feat/rp-21-doctor is based on159746b0 with uncommitted
+source/tests/docs in Windows and WSL. Basic wiring4tests green; verifier14tests
+Windows12pass2POSIXskips, Linux14pass. Aggregate foundation7tests green.
+Offline pinned SpecKit inspector4tests green. Not yet public index routing,
+customMemory diagnosis, full guard fixture diagnosis, or final command docs.
+Memory-doctor test-writer is active. Do not claim RP21 delivered.
+
+Next deterministic step: collect prose gate, complete pr-ship coverage, open
+SpecKit PR; merge only exact reviewed head after namedPRchecks and dispatchWindows.
+In parallel finish doctor TDD surfaces, then full checks/reviews. RP24/RP92
+remain open; version still0.9.1; no publish/tag/releasechannel action taken.
+Root owner dirt and historical worktrees listed above remain untouched.
+Run directory remains .claude/runs/20260921-codex-release0100; backups refreshed
+as spec-kit-spawn.patch and doctor-verify.patch before any cleanup.
+
+## Live continuation checkpoint � 2026-09-21 14:00 UTC
+
+Master remains 92a3f81fd63ae44dda3db694257ea2604ed0dc11; origin re-fetched,
+zero divergence and no open PRs. Previous Codex master checks passed.
+Spec Kit clean/pushed head abb85a97fefcc48567a39a1dae7b21caed0f1862 includes
+TEMPORARY phase diagnostics that MUST be removed before review/merge.
+Hosted run35605355062 failed Windows; Linux passed. Isolated diagnostic
+run35608077994 also failed as intended, proving a 10-second timeout inside
+Windows PowerShell Add-Type: entered marker observed, compiled/created absent.
+Linux passed. Docs-only run35607073381 cancelled after original failure.
+Local Node22 isolated normal spawn passed, so Node version is not the cause.
+No retry without correction. Round2/3 counted at78903ebb, no round2 fanout;
+round1 code/security SHIP159746b, prose HOLD evidence pointers fixed78903ebb.
+
+Doctor branch remains uncommitted based159746b in Windows/WSL; Windows is
+newer. Public CLI routing, Basic wiring, bounded verifier, offline SpecKit
+inspection, Memory diagnosis are implemented with focused tests. Public
+schema corrected to existing ok/warn/fail plus detail/fix; nine doctor tests
+pass. Guard fixture worker still diagnoses one failing clean batch; workflow
+integrity verification and final full-suite/reviews remain. Memory child
+payload validation needs inspection. Do not claim RP21 done.
+
+Next: fix measured Windows compiler bootstrap, remove probe and validate exact
+head; finish guard/workflow doctor and docs concurrently. Preserve all dirty
+files before updating doctor parent. Root owner dirt unchanged. Refresh
+run-directory doctor-verify.patch from HEAD including staged new files.
+RP22 InProgress; RP21/RP24/RP92 open; version0.9.1, no publish/tag.
+
+## Live continuation checkpoint � 2026-09-21 14:17 UTC
+
+Spec Kit clean/pushed Windows+WSL head e7601f48f7dcbde92308ec2bcad470caa4701505.
+Temporary probes are removed. Diagnostic35610272733 at2ad7a073 proved identical
+supervisor succeeds under PowerShell7 within the unchanged deadline; PS5
+compiler stalls on hosted Windows. Final change prefers installed standard
+PowerShell7, retains system PowerShell fallback, never installs a runtime.
+NativeWindows lifecycle/process tests37pass2skip; lint/typecheck and normal
+precommit3667pass7skip. Exact-head full hosted dispatch just requested; inspect
+GitHub for its run ID. Final gate still pending; no PR, no merge.
+
+Doctor Windows source now includes public route, versioned JSON records,
+Basic wiring, bounded verifier, offline SpecKit status, validated Memory
+response, structural guard wiring plus package-only allowed/denied fixtures,
+and workflow-script integrity. Native focused modules24pass; publicdoctor+
+CLI14pass. Linux full suite3792pass8skip with ONE obsolete documented-exit
+expectation failure; corrected to include new doctor's usage2, and targeted
+contract+guard104tests pass. Final full verification/review still pending.
+Current doctor parent159746b; save its own commit before updating parent to
+SpecKit final head. Windows is source of latest edits; sync changed files to
+WSL and refresh binary patch before cleanup/rebase. Root owner dirt unchanged.
