@@ -474,7 +474,15 @@ export async function runIntegrationsCommand(
         throw new Refusal(result.reason ?? 'upstream-incomplete-use-adopt-and-status');
       upstreamApplied = true;
     }
-    await applyEdits(options.cwd, preimages, edits);
+    // An upstream lifecycle may rewrite files this operation neither writes nor
+    // reads: Spec Kit regenerates .codex/config.toml, as CRLF on Windows. The
+    // Codex config and release manifest are inputs only when a Codex MCP entry
+    // is rendered, so only then must they still match the plan.
+    await applyEdits(
+      options.cwd,
+      upstreamApplied && !codexSelected ? [declarationFile, mcpFile] : preimages,
+      edits,
+    );
     return respond(
       {
         outcome: verb === 'remove' ? 'removed' : 'written',
