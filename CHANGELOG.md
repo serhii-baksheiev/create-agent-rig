@@ -21,6 +21,10 @@ Platforms: the packed release candidate is accepted on Linux and Windows
 macOS is untested for this release. On Windows, Spec Kit 1.0.8 rewrites
 `.claude/settings.json` and `.codex/config.toml` with CRLF line endings, so
 `doctor` reports `rig-owned-files` as `warn` after Spec Kit setup there.
+Ownership hashes cover exact bytes (`docs/decisions/raw-byte-ownership.md`), so
+where a Codex MCP provider is also wired, `doctor` reports that wiring as
+`drift` and a later `setup` change to a Codex MCP provider refuses with the
+managed fragment for a manual merge instead of overwriting the file.
 
 `doctor [--json]` aggregates Rig file integrity, installed guards, optional
 workflow mechanisms, MCP wiring, pinned offline Spec Kit status and the
