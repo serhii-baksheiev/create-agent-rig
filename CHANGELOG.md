@@ -20,7 +20,9 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 MCP configuration through Claude Code's documented project config. Dry-run and
 consent apply before changes; existing user entries are preserved. Ownership
 hashes live alongside provider selection in `.rig/integrations.json`.
-Authorization stays with the provider and harness. Codex wiring is pending.
+Authorization stays with the provider and harness. Codex uses whole-file
+rendering from the installed release baseline and a rolling intent hash; a
+manual edit refuses rather than being merged or overwritten.
 
 **`AGENTS.md` is now the canonical rulebook; `CLAUDE.md` is a short
 compatibility shim.** A new project gets the full rulebook text in

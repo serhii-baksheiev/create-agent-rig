@@ -5,7 +5,11 @@ export const DECLARATION_REL = '.rig/integrations.json';
 export const DECLARATION_SCHEMA_VERSION = 1;
 export const MAX_DECLARATION_BYTES = 64 * 1024;
 export const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-export const ROOT_KEYS: readonly string[] = Object.freeze(['schemaVersion', 'integrations']);
+export const ROOT_KEYS: readonly string[] = Object.freeze([
+  'schemaVersion',
+  'integrations',
+  'targets',
+]);
 export const KNOWN_ENTRY_KEYS: readonly string[] = Object.freeze([
   'id',
   'required',
@@ -23,10 +27,16 @@ export type DeclaredIntegration = {
   selected?: true;
   targets?: Partial<Record<'claude-code', { entryHash: string }>>;
 };
+export type DeclarationTargets = { codex?: { fileHash: string } };
 export type RejectionReason = 'not-in-matrix' | 'arbitrary-command-refused' | 'malformed';
 export type Rejection = { id: string; reason: RejectionReason };
 export type ParseResult =
-  | { status: 'ok'; entries: DeclaredIntegration[]; rejected: Rejection[] }
+  | {
+      status: 'ok';
+      entries: DeclaredIntegration[];
+      rejected: Rejection[];
+      targets?: DeclarationTargets;
+    }
   | { status: 'invalid'; error: string };
 export function truncateForMessage(value: string): string {
   return value.length > 64 ? `${value.slice(0, 64)}…` : value;
@@ -69,6 +79,23 @@ export function parseDeclaration(
     !Array.isArray(parsed.integrations)
   )
     return { status: 'invalid', error: 'the declaration shape is invalid' };
+  let targets: DeclarationTargets | undefined;
+  if (Object.hasOwn(parsed, 'targets')) {
+    if (
+      !isPlainObject(parsed.targets) ||
+      Object.keys(parsed.targets).some((key) => key !== 'codex') ||
+      (Object.hasOwn(parsed.targets, 'codex') &&
+        (!isPlainObject(parsed.targets.codex) ||
+          Object.keys(parsed.targets.codex).length !== 1 ||
+          typeof parsed.targets.codex.fileHash !== 'string' ||
+          !hash.test(parsed.targets.codex.fileHash)))
+    )
+      return { status: 'invalid', error: 'the declaration targets shape is invalid' };
+    if (Object.hasOwn(parsed.targets, 'codex'))
+      targets = {
+        codex: { fileHash: (parsed.targets.codex as Record<string, unknown>).fileHash as string },
+      };
+  }
   const ids = new Set<string>(),
     entries: DeclaredIntegration[] = [],
     rejected: Rejection[] = [],
@@ -155,9 +182,12 @@ export function parseDeclaration(
       ...(targets === undefined ? {} : { targets }),
     });
   }
-  return { status: 'ok', entries, rejected };
+  return { status: 'ok', entries, rejected, ...(targets === undefined ? {} : { targets }) };
 }
-export function serializeDeclaration(entries: readonly DeclaredIntegration[]): string {
+export function serializeDeclaration(
+  entries: readonly DeclaredIntegration[],
+  targets?: DeclarationTargets,
+): string {
   const integrations = [...entries]
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((entry) => ({
@@ -168,5 +198,9 @@ export function serializeDeclaration(entries: readonly DeclaredIntegration[]): s
       selected: true,
       ...(entry.targets === undefined ? {} : { targets: entry.targets }),
     }));
-  return `${JSON.stringify({ schemaVersion: 1, integrations }, null, 2)}\n`;
+  return `${JSON.stringify(
+    { schemaVersion: 1, integrations, ...(targets === undefined ? {} : { targets }) },
+    null,
+    2,
+  )}\n`;
 }

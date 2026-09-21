@@ -1291,9 +1291,10 @@ create-agent-rig setup apply figma-mcp --yes --json
 create-agent-rig setup remove figma-mcp --yes --json
 ```
 
-The first ownership adapter configures Figma and Atlassian MCP in Claude's
-project `.mcp.json`. Codex whole-file wiring and upstream-managed providers
-are subsequent RP-22 slices; this slice does not establish their acceptance.
+Figma and Atlassian MCP can be selected for Claude Code and Codex. Claude's
+project `.mcp.json` is owned entry by entry. Codex is rendered as a whole file
+from the installed release baseline plus every intended Rig MCP provider; Rig
+does not parse or merge TOML.
 
 For the public ownership and consent contract, see
 `packages/cli/test/integrations-intent.test.ts`. It exercises the command
@@ -1305,6 +1306,23 @@ A Claude target records `targets["claude-code"].entryHash`, the SHA-256 of
 the JSON serialization of its server entry. The provider's intended harnesses
 remain in `harnesses`. The file stores no runtime observations, timestamps,
 credentials, provider data or executable instructions.
+
+Codex records one rolling `targets.codex.fileHash`, the SHA-256 of the whole
+`.codex/config.toml` Rig last wrote. The first write requires the file to match
+the installed release manifest's recorded baseline. Later writes require that
+rolling hash; a manual edit refuses without writing and prints the compiled
+provider TOML fragment, never the user's file contents. Repeated `setup add`
+extends the selected harnesses. `setup apply --yes` may restore a missing previously owned Codex
+file, while `setup add` refuses it. Upgrade reports a deleted Codex file and
+does not restore it.
+
+These Codex guarantees are pinned in `packages/cli/test/integrations-codex.test.ts`:
+"renders both intended Codex providers from the init release baseline, rolls
+one root file hash, and does not rewrite the release manifest";
+"refuses a manual TOML edit with the compiled managed Figma fragment and never
+echoes user config"; and "refuses an add after a previously owned Codex config
+is deleted, while explicit apply restores it after consent". The last case
+also checks upgrade's deleted-file verdict and unchanged intent.
 
 Dry-run describes work without applying it. JSON mode never prompts; mutation
 requires `--yes`. An interactive call obtains consent for the planned

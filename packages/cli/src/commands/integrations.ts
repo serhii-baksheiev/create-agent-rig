@@ -14,8 +14,11 @@ import { REGISTRY, type Harness, type ProviderDescriptor } from '../integrations
 import { resolveReadableInside, resolveWritableInside } from '../lib/safe-path.js';
 import { hasControlCharacter } from '../lib/safe-text.js';
 import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
+import { initFileContents } from './init.js';
+import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
 
 const MCP = '.mcp.json';
+const CODEX_CONFIG = '.codex/config.toml';
 const MAX_MCP_BYTES = 64 * 1024;
 type Snapshot = { rel: string; bytes: Buffer | null };
 type Edit = Snapshot & { next: Buffer };
@@ -38,6 +41,20 @@ function serverFor(id: string) {
   if (id === 'atlassian-mcp')
     return { name: 'atlassian', server: { type: 'http', url: 'https://mcp.atlassian.com/v2/mcp' } };
   throw new Refusal('not-in-matrix');
+}
+function codexSection(id: string): string {
+  const { name, server } = serverFor(id);
+  if (server.type !== 'http') throw new Refusal('codex-provider-not-renderable');
+  return `[mcp_servers.${name}]\nurl = ${JSON.stringify(server.url)}\n`;
+}
+function renderCodexConfig(base: string, entries: readonly DeclaredIntegration[]): Buffer {
+  const sections = entries
+    .filter((entry) => entry.harnesses?.includes('codex'))
+    .map((entry) => codexSection(entry.id))
+    .sort((a, b) => a.localeCompare(b));
+  return Buffer.from(
+    `${base.replace(/\n*$/, '\n')}${sections.length ? `\n${sections.join('\n')}` : ''}`,
+  );
 }
 async function snapshot(root: string, rel: string): Promise<Snapshot> {
   const resolved = await resolveReadableInside(root, rel, 'file');
@@ -202,9 +219,11 @@ export async function runIntegrationsCommand(
     const id = positionals[0];
     if (id !== undefined && !registry.some((entry) => entry.id === id))
       throw new Refusal('not-in-matrix');
-    const [declarationFile, mcpFile] = await Promise.all([
+    const [declarationFile, mcpFile, codexFile, manifestFile] = await Promise.all([
       snapshot(options.cwd, DECLARATION_REL),
       snapshot(options.cwd, MCP),
+      snapshot(options.cwd, CODEX_CONFIG),
+      snapshot(options.cwd, MANIFEST_REL),
     ]);
     const parsed =
       declarationFile.bytes === null
@@ -213,11 +232,23 @@ export async function runIntegrationsCommand(
     if (parsed.status !== 'ok' || parsed.rejected.length)
       throw new Refusal('declaration-invalid-or-rejected');
     let entries = structuredClone(parsed.entries);
-    const config = readConfig(mcpFile);
-    const servers = { ...config.mcpServers };
+    let targets = structuredClone(parsed.targets);
     if (verb === 'add') {
       const previous = entries.find((entry) => entry.id === id);
-      const harnesses = values.harness ?? previous?.harnesses ?? ['claude-code'];
+      const requested: unknown = values.harness;
+      if (
+        requested !== undefined &&
+        (!Array.isArray(requested) ||
+          !requested.every((harness) => typeof harness === 'string') ||
+          new Set(requested).size !== requested.length)
+      )
+        throw new Refusal('malformed-provider-selection');
+      const harnesses = [
+        ...new Set([
+          ...(previous?.harnesses ?? []),
+          ...(requested ?? previous?.harnesses ?? ['claude-code']),
+        ]),
+      ];
       const candidate = {
         ...previous,
         id: id!,
@@ -236,10 +267,16 @@ export async function runIntegrationsCommand(
     }
     const selected = entries.filter((entry) => id === undefined || entry.id === id);
     if (id !== undefined && !selected.length) throw new Refusal('integration-not-declared');
+    const needsClaude = selected.some((entry) => entry.harnesses?.includes('claude-code'));
+    const servers = needsClaude ? { ...readConfig(mcpFile).mcpServers } : {};
     const mcpChanges = new Map<string, unknown | undefined>();
     for (const entry of selected) {
-      if (entry.harnesses?.length !== 1 || entry.harnesses[0] !== 'claude-code')
+      if (entry.harnesses === undefined || entry.harnesses.length === 0)
         throw new Refusal('harness-unsupported-or-pending');
+      if (!entry.harnesses.includes('claude-code')) {
+        if (verb === 'remove') entries = entries.filter((candidate) => candidate.id !== entry.id);
+        continue;
+      }
       const { name, server } = serverFor(entry.id);
       const exists = Object.hasOwn(servers, name);
       const ownership = entry.targets?.['claude-code']?.entryHash;
@@ -261,7 +298,35 @@ export async function runIntegrationsCommand(
         entry.targets = { ...entry.targets, 'claude-code': { entryHash: hash(server) } };
       }
     }
-    const nextDeclaration = Buffer.from(serializeDeclaration(entries));
+    const codexSelected = selected.some((entry) => entry.harnesses?.includes('codex'));
+    let nextCodex = codexFile.bytes;
+    if (codexSelected) {
+      const fragment = selected
+        .filter((entry) => entry.harnesses?.includes('codex'))
+        .map((entry) => codexSection(entry.id))
+        .join('\n');
+      const manifest =
+        manifestFile.bytes === null ? null : parseManifest(decode(manifestFile.bytes));
+      if (manifest === null) throw new Refusal('release-manifest-unreadable');
+      const base = (await initFileContents(options.cwd, manifest.project, manifest.layers)).get(
+        CODEX_CONFIG,
+      );
+      if (base === undefined) throw new Refusal('release-codex-baseline-unavailable');
+      if (codexFile.bytes === null) {
+        if (verb !== 'apply' || targets?.codex === undefined)
+          throw new Refusal('codex-config-absent-explicit-apply-required');
+      } else if (targets?.codex !== undefined) {
+        if (sha256(codexFile.bytes) !== targets.codex.fileHash)
+          throw new Refusal(`codex-config-conflict; managed provider fragment:\n${fragment}`);
+      } else if (manifest.files[CODEX_CONFIG] !== sha256(codexFile.bytes)) {
+        throw new Refusal(
+          `codex-config-not-release-baseline; managed provider fragment:\n${fragment}`,
+        );
+      }
+      nextCodex = renderCodexConfig(base, entries);
+      targets = { ...(targets ?? {}), codex: { fileHash: sha256(nextCodex) } };
+    }
+    const nextDeclaration = Buffer.from(serializeDeclaration(entries, targets));
     if (nextDeclaration.length > MAX_DECLARATION_BYTES) throw new Refusal('declaration-too-large');
     const nextMcp =
       mcpChanges.size > 0
@@ -277,6 +342,8 @@ export async function runIntegrationsCommand(
     const edits: Edit[] = [];
     if (!equalBytes(mcpFile.bytes, nextMcp) && nextMcp !== null)
       edits.push({ ...mcpFile, next: nextMcp });
+    if (!equalBytes(codexFile.bytes, nextCodex) && nextCodex !== null)
+      edits.push({ ...codexFile, next: nextCodex });
     if (!equalBytes(declarationFile.bytes, nextDeclaration))
       edits.push({ ...declarationFile, next: nextDeclaration });
     const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}. MCP wiring does not verify authorization, connectivity or trust.`;
@@ -290,7 +357,7 @@ export async function runIntegrationsCommand(
         !(await options.confirm(plan)))
     )
       throw new Refusal('yes-required-for-json-or-noninteractive');
-    await applyEdits(options.cwd, [declarationFile, mcpFile], edits);
+    await applyEdits(options.cwd, [declarationFile, mcpFile, codexFile, manifestFile], edits);
     return respond(
       {
         outcome: verb === 'remove' ? 'removed' : 'written',

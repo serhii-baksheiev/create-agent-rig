@@ -60,6 +60,23 @@
           }
         }
       }
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "codex": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fileHash"],
+          "properties": {
+            "fileHash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
     }
   }
 }
