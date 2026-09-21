@@ -126,6 +126,138 @@ export function resolveInside(root: string, rel: string): string | null {
 }
 
 /**
+ * What kind of thing a caller of {@link resolveReadableInside} expects to find
+ * at the end of `rel` — a plain file (a declaration, a receipt) or a
+ * directory (the receipts directory itself).
+ */
+export type ReadableKind = 'file' | 'directory';
+
+export type SafeReadResult =
+  | { status: 'ok'; path: string }
+  /** No component of `rel` exists yet — there is nothing to read, and that is not a refusal. */
+  | { status: 'absent' }
+  /**
+   * Something exists at (or along) `rel`, but reading it safely is refused:
+   * a symlink component (never followed, in either direction — RP-22 round
+   * 2), the final component being the wrong kind (a directory where a file
+   * was expected, or vice versa), the resolved path escaping `root`, or an
+   * I/O error other than "does not exist" (`code`, when one is available).
+   */
+  | {
+      status: 'unsafe';
+      reason: 'symlink' | 'wrong-kind' | 'escapes-root' | 'io-error';
+      code?: string;
+    };
+
+type SegmentWalkResult =
+  | { outcome: 'complete'; finalEntry: Awaited<ReturnType<typeof lstat>> }
+  | { outcome: 'stopped-missing' }
+  | { outcome: 'refused'; reason: 'symlink' | 'escapes-root' | 'io-error'; code?: string };
+
+/**
+ * The one per-segment walk both {@link resolveWritableInside} and
+ * {@link resolveReadableInside} build on (RP-22 round 3 advisory: it used to
+ * exist twice, nearly identically, in this file). It answers three things a
+ * caller can tell apart: every segment existed and was safe (`'complete'`,
+ * carrying the FINAL segment's own `lstat` result, since a read-side caller
+ * still needs to know its kind — file or directory); some segment did not
+ * exist yet, so nothing PAST that point is real (`'stopped-missing'` — a
+ * write-side caller treats this as "safe to create", a read-side caller as
+ * "absent"); or a segment could not be trusted at all (`'refused'`, with
+ * why). It does not itself decide what either outcome MEANS to a caller —
+ * that stays in each function, because a missing component means something
+ * different to a writer than to a reader, and a behaviour decision belongs
+ * at the call site, not in shared plumbing (`.claude/rules/invariants.md`,
+ * "One mechanism, one implementation" — the mechanism here is the WALK, not
+ * the interpretation of it).
+ */
+async function walkSegments(base: string, rel: string): Promise<SegmentWalkResult> {
+  let cursor = base;
+  let finalEntry: Awaited<ReturnType<typeof lstat>> | undefined;
+  for (const segment of rel.split('/')) {
+    cursor = path.join(cursor, segment);
+    let resolved: string;
+    try {
+      finalEntry = await lstat(cursor);
+      if (finalEntry.isSymbolicLink()) return { outcome: 'refused', reason: 'symlink' };
+      // `realpath` stays INSIDE this same try (RP-22 round 4 advisory): the
+      // round-2 extraction of this walk from `resolveWritableInside` had
+      // moved it outside, so an lstat-succeeds/realpath-throws race (the
+      // entry existing for `lstat`, then vanishing or becoming unreadable
+      // before `realpath` runs) surfaced as an uncaught exception instead of
+      // the same `'refused'` outcome master's own try/catch always gave it.
+      // A genuine race is not deterministically testable, so this is
+      // restored on the strength of the diff — master's original
+      // try/catch scope, read directly — being provably narrower than
+      // round 2's, not on a reproduction; the PR body says so.
+      resolved = await realpath(cursor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { outcome: 'stopped-missing' };
+      return {
+        outcome: 'refused',
+        reason: 'io-error',
+        code: (error as NodeJS.ErrnoException).code,
+      };
+    }
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+      return { outcome: 'refused', reason: 'escapes-root' };
+    }
+  }
+  // `rel` is never `''` here — `resolveInside` above already refused that —
+  // so `rel.split('/')` has at least one element and the loop always runs at
+  // least once: `finalEntry` is always assigned on this path.
+  return { outcome: 'complete', finalEntry: finalEntry! };
+}
+
+/**
+ * The read-side counterpart of {@link resolveWritableInside}: walk `rel`
+ * under `root` one segment at a time, exactly the same way, but for a
+ * caller that only intends to READ what is there — never write, never
+ * create. A symlink anywhere in the path is refused, never followed, in
+ * EITHER direction: a write-refused symlink that is nonetheless silently
+ * READ (a committed `.rig/integrations.json` pointing outside the
+ * repository, honoured as if it were the real declaration) is exactly as
+ * dangerous as one silently written through, because from S5 on this file's
+ * content decides what gets installed (RP-22 round 2 gate finding).
+ *
+ * Unlike {@link resolveWritableInside}, a missing component is `'absent'`,
+ * not a green light — there is nothing to read, and a caller building a
+ * fresh declaration from scratch is a different case from one whose read
+ * was refused. The final component is additionally required to be the
+ * `kind` the caller names, so a directory sitting where a file is expected
+ * (or the reverse) is `'unsafe'` rather than surfacing as a raw `EISDIR`/
+ * `ENOTDIR` from a subsequent `readFile`/`readdir` call.
+ */
+export async function resolveReadableInside(
+  root: string,
+  rel: string,
+  kind: ReadableKind,
+): Promise<SafeReadResult> {
+  let base: string;
+  try {
+    base = await realpath(root);
+    if (!(await lstat(base)).isDirectory()) return { status: 'absent' };
+  } catch {
+    return { status: 'absent' };
+  }
+
+  const dest = resolveInside(base, rel);
+  if (dest === null) return { status: 'unsafe', reason: 'escapes-root' };
+
+  const walk = await walkSegments(base, rel);
+  if (walk.outcome === 'stopped-missing') return { status: 'absent' };
+  if (walk.outcome === 'refused') {
+    if (walk.reason === 'symlink') return { status: 'unsafe', reason: 'symlink' };
+    if (walk.reason === 'io-error')
+      return { status: 'unsafe', reason: 'io-error', code: walk.code };
+    return { status: 'unsafe', reason: 'escapes-root' };
+  }
+  const isRightKind = kind === 'file' ? walk.finalEntry.isFile() : walk.finalEntry.isDirectory();
+  if (!isRightKind) return { status: 'unsafe', reason: 'wrong-kind' };
+  return { status: 'ok', path: dest };
+}
+
+/**
  * Resolve a prospective write through the repository's real path and refuse
  * every symlink in the relative path that already exists.
  *
@@ -134,6 +266,14 @@ export function resolveInside(root: string, rel: string): string | null {
  * until `writeFile` creates its target. Missing components are allowed because
  * callers create them, then call this function again immediately before the
  * write. The second check makes the newly-created chain evidence too.
+ *
+ * Observable behaviour is unchanged from before the shared `walkSegments`
+ * extraction (RP-22 round 3): a missing component at ANY point in the walk
+ * (`'stopped-missing'`) and a fully-walked, fully-safe path (`'complete'`)
+ * both still mean "return `dest`" here — only `walkSegments` itself is new,
+ * this function's own outward answer for every input is identical to what it
+ * was, and `packages/cli/test/safe-path.test.ts`'s existing tests for it are
+ * unmodified.
  */
 export async function resolveWritableInside(root: string, rel: string): Promise<string | null> {
   let base: string;
@@ -147,19 +287,7 @@ export async function resolveWritableInside(root: string, rel: string): Promise<
   const dest = resolveInside(base, rel);
   if (dest === null) return null;
 
-  let cursor = base;
-  for (const segment of rel.split('/')) {
-    cursor = path.join(cursor, segment);
-    try {
-      const stat = await lstat(cursor);
-      if (stat.isSymbolicLink()) return null;
-      const resolved = await realpath(cursor);
-      if (resolved !== base && !resolved.startsWith(base + path.sep)) return null;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return dest;
-      return null;
-    }
-  }
-
+  const walk = await walkSegments(base, rel);
+  if (walk.outcome === 'refused') return null;
   return dest;
 }
