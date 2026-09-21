@@ -1406,7 +1406,10 @@ inserts `--yes`. Noninteractive and JSON calls use the deterministic verbs.
 Spec Kit is upstream-managed. `setup add spec-kit --harness claude-code
 --harness codex` plans the official pinned `uvx --from
 git+https://github.com/github/spec-kit@v1.0.8 specify` route, requiring local
-`uv`, `uvx`, and `git`. The plan explains downloads and uv cache effects;
+`uv`, `uvx`, and `git`. Initial configuration uses the official
+`--ignore-agent-tools` option: it writes integration files without requiring
+Claude Code or Codex to be installed on that machine. The consent plan states
+that harness runtime and trust are not verified. The plan explains downloads and uv cache effects;
 Rig does not modify global tool installations. Initial setup requires a clean
 repository. Existing external installations require explicit `--adopt` and a
 clean worktree. Repeated add checks authoritative status and installs only a
