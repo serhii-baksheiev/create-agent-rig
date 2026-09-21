@@ -82,9 +82,16 @@ export async function runProviderProcess(
         env.SystemDrive = path.parse(systemRoot).root.replace(/[\\/]$/, '');
       }
       const powershell =
-        systemRoot === undefined
-          ? undefined
-          : path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+        process.env.RIG_WINDOWS_JOB_PROBE === '1'
+          ? path.join(
+              process.env.ProgramFiles ?? 'C:\\Program Files',
+              'PowerShell',
+              '7',
+              'pwsh.exe',
+            )
+          : systemRoot === undefined
+            ? undefined
+            : path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       if (isWindows && (powershell === undefined || !path.isAbsolute(powershell))) {
         resolve(failed());
         return;
