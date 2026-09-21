@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initFileContents, initProject } from '../src/commands/init.js';
 import { runIntegrationsCommand } from '../src/commands/integrations.js';
+import { verifyIntegrations } from '../src/integrations/verify.js';
 import { applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import { MANIFEST_REL, readManifest, serializeManifest, sha256 } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -317,5 +318,42 @@ describe('setup integrations Codex adapter (RP-22)', () => {
     expect(await readFile(configPath(), 'utf8')).toBe(configBefore);
     expect(await readFile(manifestPath(), 'utf8')).toBe(manifestBefore);
     expect(await exists(statePath())).toBe(false);
+  });
+});
+
+// Spec Kit 1.0.8 regenerates .codex/config.toml in Python text mode on every
+// integration install or upgrade: CRLF on Windows. Ownership hashes cover exact
+// bytes (docs/decisions/raw-byte-ownership.md, ADR-RP-003), so Rig treats that
+// rewrite as a change it did not make — the 0.10.0 changelog's Windows note.
+describe('Codex ownership after a line-ending-only rewrite (ADR-RP-003)', () => {
+  async function rewriteConfigWithCrlf(): Promise<string> {
+    const rewritten = (await readFile(configPath(), 'utf8')).replace(/\r?\n/g, '\r\n');
+    await writeFile(configPath(), rewritten);
+    return rewritten;
+  }
+
+  it('refuses a later Codex provider change with the manual-merge fragment and writes nothing', async () => {
+    await addFigmaForBothHarnesses();
+    const rewritten = await rewriteConfigWithCrlf();
+    const before = await readFile(statePath(), 'utf8');
+
+    const result = await setup('add', ['atlassian-mcp', '--harness', 'codex', '--yes', '--json']);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout).reason).toMatch(
+      /^codex-config-conflict; managed provider fragment:\n/,
+    );
+    expect(await readFile(configPath(), 'utf8')).toBe(rewritten);
+    expect(await readFile(statePath(), 'utf8')).toBe(before);
+  });
+
+  it('reports the Codex wiring as drift, never healthy', async () => {
+    await addFigmaForBothHarnesses();
+    await rewriteConfigWithCrlf();
+
+    const report = await verifyIntegrations({ repoDir: repo });
+
+    const figma = report.integrations.find((entry) => entry.id === 'figma-mcp')!;
+    expect(figma.harnesses.codex?.wiring).toBe('drift');
   });
 });
