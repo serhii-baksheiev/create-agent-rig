@@ -83,12 +83,18 @@ describe('setup integrations Codex adapter (RP-22)', () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      integrations: [
-        { id: 'figma-mcp', routes: { 'claude-code': 'automatic', codex: 'automatic' } },
-        { id: 'atlassian-mcp', routes: { 'claude-code': 'automatic', codex: 'automatic' } },
-      ],
-    });
+    expect(JSON.parse(result.stdout).integrations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'figma-mcp',
+          routes: { 'claude-code': 'automatic', codex: 'automatic' },
+        }),
+        expect.objectContaining({
+          id: 'atlassian-mcp',
+          routes: { 'claude-code': 'automatic', codex: 'automatic' },
+        }),
+      ]),
+    );
   });
 
   it('renders both intended Codex providers from the init release baseline, rolls one root file hash, and does not rewrite the release manifest', async () => {

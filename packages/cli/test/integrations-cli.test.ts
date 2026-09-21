@@ -191,6 +191,25 @@ describe('setup integrations through the built CLI', () => {
     }
   });
 
+  it('keeps legacy equals-form --memory-root dispatch on the memory setup command', async () => {
+    const memoryRoot = await mkdtemp(path.join(tmpdir(), 'caf-memory-root-equals-'));
+    try {
+      await mkdir(path.join(memoryRoot, 'shared-memory'), { recursive: true });
+      await writeFile(
+        path.join(memoryRoot, 'shared-memory', 'memory.mjs'),
+        'console.log(JSON.stringify({ schemaVersion: 1, name: "memory", version: "1.0.0", contractVersion: "1.0" }));\n',
+      );
+
+      const run = await runCli(['setup', `--memory-root=${memoryRoot}`, '--dry-run']);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(run.stdout).toContain('Dry run');
+      expect(run.stderr).toBe('');
+    } finally {
+      await removeFixture(memoryRoot);
+    }
+  });
+
   it('keeps a successful list exit code when the stdout reader closes early', async (ctx) => {
     skipUnless(
       ctx,

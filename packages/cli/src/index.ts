@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import { CreateError, createProject } from './commands/create.js';
 import { InitError, initFileContents, initProject, planInit } from './commands/init.js';
 import { INTEGRATIONS_VERBS, runIntegrationsCommand } from './commands/integrations.js';
+import { runSetupWizard } from './commands/setup-wizard.js';
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
 import { AGENTS_MD_RESCUE, UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
 import type { AgentsRescueStatus, UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
@@ -80,17 +81,21 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
 Also: create-agent-rig setup list [--json]
   List the supported repository integrations.
 
-Also: create-agent-rig setup add <id> [--harness <name>] [--dry-run] [--yes] [--json]
-  Plan and configure selected MCP wiring after consent. Record intent and
+Also: create-agent-rig setup
+  Choose a provider and harness interactively, then approve its exact plan.
+
+Also: create-agent-rig setup add <id> [--harness <name>] [--adopt] [--dry-run] [--yes] [--json]
+  Plan MCP wiring or the pinned official Spec Kit lifecycle. Record intent and
   ownership in .rig/integrations.json. JSON never prompts; writes require --yes.
+  --adopt explicitly adopts an existing external Spec Kit installation.
 
 Also: create-agent-rig setup apply [id] [--dry-run] [--yes] [--json]
   Apply declared integration intent. Refuse if files changed after planning.
   Claude project wiring does not prove authorization, connectivity or trust.
 
 Also: create-agent-rig setup remove <id> [--dry-run] [--yes] [--json]
-  Remove matching Rig-owned wiring and intent. Preserve foreign or modified
-  entries and provider data.
+  Remove proven Rig-owned wiring, or delegate Spec Kit removal to its official
+  CLI. Preserve foreign wiring and provider data; retire intent after success.
 
 Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]
   Remove what a rig installed from [dir] (default: the current directory) —
@@ -136,6 +141,28 @@ async function runSetup(rawArgs: string[]): Promise<number> {
       args: rawArgs.slice(1),
       cwd: process.cwd(),
       isTTY: isInteractive,
+      confirm: async (plan) => {
+        process.stderr.write(`${plan}\n`);
+        return promptConfirm('Apply this integration plan?', {
+          input: process.stdin,
+          output: process.stderr,
+          isInteractive,
+        });
+      },
+    });
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
+  if (
+    !rawArgs.some((arg) => arg === '--memory-root' || arg.startsWith('--memory-root=')) &&
+    (verb === undefined || verb.startsWith('-'))
+  ) {
+    const isInteractive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+    const result = await runSetupWizard({
+      cwd: process.cwd(),
+      isTTY: isInteractive,
+      args: rawArgs,
       confirm: async (plan) => {
         process.stderr.write(`${plan}\n`);
         return promptConfirm('Apply this integration plan?', {

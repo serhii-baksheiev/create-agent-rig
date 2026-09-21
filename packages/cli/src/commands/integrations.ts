@@ -16,6 +16,12 @@ import { hasControlCharacter } from '../lib/safe-text.js';
 import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
 import { initFileContents } from './init.js';
 import { MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
+import {
+  runSpecKitLifecycle,
+  SPEC_KIT_VERSION,
+  type SpecKitOptions,
+  type SpecKitResult,
+} from '../integrations/spec-kit.js';
 
 const MCP = '.mcp.json';
 const CODEX_CONFIG = '.codex/config.toml';
@@ -30,6 +36,7 @@ export type IntegrationsCliOptions = {
   registry?: readonly ProviderDescriptor[];
   isTTY?: boolean;
   confirm?: (plan: string) => Promise<boolean>;
+  runSpecKit?: typeof runSpecKitLifecycle;
 };
 export const INTEGRATIONS_VERBS = ['list', 'add', 'apply', 'remove'] as const;
 class Refusal extends Error {}
@@ -49,7 +56,7 @@ function codexSection(id: string): string {
 }
 function renderCodexConfig(base: string, entries: readonly DeclaredIntegration[]): Buffer {
   const sections = entries
-    .filter((entry) => entry.harnesses?.includes('codex'))
+    .filter((entry) => entry.id !== 'spec-kit' && entry.harnesses?.includes('codex'))
     .map((entry) => codexSection(entry.id))
     .sort((a, b) => a.localeCompare(b));
   return Buffer.from(
@@ -181,6 +188,8 @@ export async function runIntegrationsCommand(
         : '',
     stderr: !json && exitCode !== 0 ? `${prose}\n` : '',
   });
+  let upstreamApplied = false;
+  let observed: SpecKitResult['observed'];
   try {
     if (verb === undefined)
       throw new Refusal(`unknown-verb; known: ${INTEGRATIONS_VERBS.join(', ')}`);
@@ -201,6 +210,7 @@ export async function runIntegrationsCommand(
                     harness: { type: 'string' as const, multiple: true },
                     required: { type: 'boolean' as const },
                     version: { type: 'string' as const },
+                    adopt: { type: 'boolean' as const },
                   }
                 : {}),
             }),
@@ -219,6 +229,7 @@ export async function runIntegrationsCommand(
     const id = positionals[0];
     if (id !== undefined && !registry.some((entry) => entry.id === id))
       throw new Refusal('not-in-matrix');
+    if (values.adopt && id !== 'spec-kit') throw new Refusal('adopt-only-for-spec-kit');
     const [declarationFile, mcpFile, codexFile, manifestFile] = await Promise.all([
       snapshot(options.cwd, DECLARATION_REL),
       snapshot(options.cwd, MCP),
@@ -256,6 +267,7 @@ export async function runIntegrationsCommand(
         harnesses: harnesses as Harness[],
         ...(values.required !== undefined ? { required: values.required } : {}),
         ...(values.version !== undefined ? { version: values.version } : {}),
+        ...(id === 'spec-kit' ? { version: values.version ?? SPEC_KIT_VERSION } : {}),
       };
       const checked = parseDeclaration(
         JSON.stringify({ schemaVersion: 1, integrations: [candidate] }),
@@ -267,10 +279,31 @@ export async function runIntegrationsCommand(
     }
     const selected = entries.filter((entry) => id === undefined || entry.id === id);
     if (id !== undefined && !selected.length) throw new Refusal('integration-not-declared');
-    const needsClaude = selected.some((entry) => entry.harnesses?.includes('claude-code'));
+    const specKit = selected.find((entry) => entry.id === 'spec-kit');
+    let upstreamOptions: SpecKitOptions | undefined;
+    let upstreamPlan: string[] = [];
+    if (specKit) {
+      if (specKit.version !== SPEC_KIT_VERSION || specKit.targets !== undefined)
+        throw new Refusal('spec-kit-pinned-version-and-upstream-ownership-required');
+      upstreamOptions = {
+        repoDir: options.cwd,
+        operation: verb,
+        harnesses: specKit.harnesses ?? [],
+        managed: parsed.entries.some((entry) => entry.id === 'spec-kit'),
+        adopt: values.adopt === true,
+        consent: false,
+      };
+      const planned = await runSpecKitLifecycle(upstreamOptions);
+      if (planned.reason !== 'consent-required')
+        throw new Refusal(planned.reason ?? 'upstream-plan-refused');
+      upstreamPlan = planned.plan;
+      if (verb === 'remove') entries = entries.filter((entry) => entry.id !== 'spec-kit');
+    }
+    const selectedMcp = selected.filter((entry) => entry.id !== 'spec-kit');
+    const needsClaude = selectedMcp.some((entry) => entry.harnesses?.includes('claude-code'));
     const servers = needsClaude ? { ...readConfig(mcpFile).mcpServers } : {};
     const mcpChanges = new Map<string, unknown | undefined>();
-    for (const entry of selected) {
+    for (const entry of selectedMcp) {
       if (entry.harnesses === undefined || entry.harnesses.length === 0)
         throw new Refusal('harness-unsupported-or-pending');
       if (!entry.harnesses.includes('claude-code')) {
@@ -298,10 +331,10 @@ export async function runIntegrationsCommand(
         entry.targets = { ...entry.targets, 'claude-code': { entryHash: hash(server) } };
       }
     }
-    const codexSelected = selected.some((entry) => entry.harnesses?.includes('codex'));
+    const codexSelected = selectedMcp.some((entry) => entry.harnesses?.includes('codex'));
     let nextCodex = codexFile.bytes;
     if (codexSelected) {
-      const fragment = selected
+      const fragment = selectedMcp
         .filter((entry) => entry.harnesses?.includes('codex'))
         .map((entry) => codexSection(entry.id))
         .join('\n');
@@ -346,7 +379,7 @@ export async function runIntegrationsCommand(
       edits.push({ ...codexFile, next: nextCodex });
     if (!equalBytes(declarationFile.bytes, nextDeclaration))
       edits.push({ ...declarationFile, next: nextDeclaration });
-    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}. MCP wiring does not verify authorization, connectivity or trust.`;
+    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}. MCP wiring does not verify authorization, connectivity or trust.${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}`;
     if (values['dry-run'])
       return respond({ outcome: 'planned', dryRun: true, changed: false, plan }, plan);
     if (
@@ -357,19 +390,47 @@ export async function runIntegrationsCommand(
         !(await options.confirm(plan)))
     )
       throw new Refusal('yes-required-for-json-or-noninteractive');
-    await applyEdits(options.cwd, [declarationFile, mcpFile, codexFile, manifestFile], edits);
+    const preimages = [declarationFile, mcpFile, codexFile, manifestFile];
+    await checkSnapshots(options.cwd, preimages);
+    if (upstreamOptions) {
+      const rechecked = await runSpecKitLifecycle(upstreamOptions);
+      if (
+        rechecked.reason !== 'consent-required' ||
+        JSON.stringify(rechecked.plan) !== JSON.stringify(upstreamPlan)
+      )
+        throw new Refusal('changed-since-plan');
+      const result = await (options.runSpecKit ?? runSpecKitLifecycle)({
+        ...upstreamOptions,
+        consent: true,
+      });
+      observed = result.observed;
+      if (!result.ok)
+        throw new Refusal(result.reason ?? 'upstream-incomplete-use-adopt-and-status');
+      upstreamApplied = true;
+    }
+    await applyEdits(options.cwd, preimages, edits);
     return respond(
       {
         outcome: verb === 'remove' ? 'removed' : 'written',
         changed: edits.length !== 0,
         ...(id === undefined ? {} : { id }),
         integrations: entries,
+        ...(observed === undefined ? {} : { observed }),
       },
       plan,
     );
   } catch (error) {
-    const reason =
+    const failure =
       error instanceof Refusal ? error.message : 'invalid-arguments-or-unreadable-state';
-    return respond({ outcome: 'refused', reason }, `setup: ${reason}`, 1);
+    const reason = upstreamApplied
+      ? `upstream-success-intent-not-recorded; use adopt/status; ${failure}`
+      : failure;
+    const diagnosis =
+      observed === undefined ? '' : `\nUpstream status: ${JSON.stringify(observed)}`;
+    return respond(
+      { outcome: 'refused', reason, ...(observed === undefined ? {} : { observed }) },
+      `setup: ${reason}${diagnosis}`,
+      1,
+    );
   }
 }
