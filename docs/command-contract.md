@@ -204,8 +204,8 @@ A closed stdout or stderr (a reader that hung up early) never turns into an
 `EPIPE` stack trace or a corrupted exit code: the rig bin swallows `EPIPE`
 without touching `process.exitCode`, so whatever verdict the run already
 reached survives (RP-22 round 4). Measured on non-Windows only — the tests
-below are `skipUnless`-gated off Windows, so this guarantee is not verified
-on Windows pipes. Pinned in `packages/cli/test/integrations-cli.test.ts`'s
+in that file are `skipUnless`-gated off Windows, so this guarantee is not
+verified on Windows pipes. Pinned in `packages/cli/test/integrations-cli.test.ts`'s
 `EPIPE on a closed stdout exits quietly, without corrupting the real exit
 code (RP-22 round 4, blocker 1)` describe block.
 
@@ -1304,9 +1304,13 @@ repository-relative `.rig/integrations.json` or `.rig/receipts/<id>.json`
 `.rig/integrations.json`, measured; fixed by REMOVING the constant from that
 message) — nor a host-derived absolute path (the checkout directory, a temp
 directory). A caller-typed `<id>` is a different matter: it is echoed back
-into the payload sanitised and length-truncated even when it happens to LOOK
-like a path (`/etc/passwd`, a Windows drive path) — that is the caller's own
-input read back at them, not a path this surface derived. `runAdd`'s PROSE
+into the payload's `id` field exactly as given — `JSON.stringify` escapes it,
+nothing here truncates it — even when it happens to LOOK like a path
+(`/etc/passwd`, a Windows drive path); that is the caller's own input read
+back at them, not a path this surface derived (RP-22 round 6: the previous
+wording here claimed this field was also truncated, which is false —
+truncation applies only to a display-sanitised copy embedded inside a
+refusal's prose `error` message, not to `id` itself). `runAdd`'s PROSE
 rendering — never a `--json` payload — is still free to name
 `DECLARATION_REL` for a human reading a terminal; the rule binds the machine
 surface, as it does everywhere else in this document. Recognised
@@ -1315,7 +1319,8 @@ distinct from the legacy `setup --memory-root` prose path (which carries no
 `--json` output at all) and from `uninstall`'s own `command: "uninstall"`
 shape. Pinned: `packages/cli/test/integrations-cli.test.ts` › "the
 write-refused --json payload names no host-derived or absolute path in its
-error field (RP-22 round 5, narrowed from round 4 blocker 5)".
+error field (RP-22 round 5, narrowed from round 4 blocker 5)" and › "the
+same hostile id is safely JSON-escaped, not stripped, under --json".
 
 **What "exactly one JSON object … regardless" actually covers here, stated
 precisely (RP-22 round 4, blocker 2 — round 3's version of this paragraph

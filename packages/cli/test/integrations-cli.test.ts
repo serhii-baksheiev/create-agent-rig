@@ -1546,7 +1546,8 @@ describe('setup: CLI wiring, spawning the actually-built binary (RP-22 S4 + roun
     }
 
     it('a required-integration failure (exit 1) is not corrupted into exit 0 by a closed stdout', async (ctx) => {
-      // Windows pipe/EPIPE semantics are not verified here — see the PR body.
+      // Windows pipe/EPIPE semantics are not verified here — see
+      // docs/command-contract.md.
       skipUnless(
         ctx,
         process.platform !== 'win32',
