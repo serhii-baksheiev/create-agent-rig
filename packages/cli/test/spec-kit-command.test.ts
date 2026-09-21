@@ -103,6 +103,55 @@ describe('Spec Kit through setup add, apply, and remove', () => {
     expect(await exists(path.join(repo, '.claude', '.rig-manifest.json'))).toBe(false);
   });
 
+  it('records intent when the official lifecycle rewrites a Codex config Rig does not write in this operation', async () => {
+    // Spec Kit 1.0.8 regenerates .codex/config.toml (and .claude/settings.json)
+    // on every integration install; on Windows Python's text mode turns LF into
+    // CRLF. With no Codex MCP entry selected Rig neither writes that file nor
+    // derives a hash from it, so the upstream rewrite must not block intent.
+    const codexConfig = path.join(repo, '.codex', 'config.toml');
+    await mkdir(path.dirname(codexConfig), { recursive: true });
+    await writeFile(codexConfig, '[agents]\ndefault_subagent_reasoning_effort = "medium"\n');
+    const rewritten = '[agents]\r\ndefault_subagent_reasoning_effort = "medium"\r\n';
+
+    const result = await command({
+      verb: 'add',
+      args: [SPEC_KIT, '--harness', 'claude-code', '--harness', 'codex', '--yes', '--json'],
+      cwd: repo,
+      isTTY: false,
+      runSpecKit: async (options) => {
+        await writeFile(codexConfig, rewritten);
+        return successfulLifecycle(options);
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ outcome: 'written' });
+    expect(JSON.parse(await readFile(declarationPath(), 'utf8')).integrations).toEqual([
+      intent(['claude-code', 'codex']),
+    ]);
+    expect(await readFile(codexConfig, 'utf8')).toBe(rewritten);
+  });
+
+  it('still refuses to record intent when the lifecycle changes the declaration Rig is about to write', async () => {
+    const foreign = `${JSON.stringify({ schemaVersion: 1, integrations: [] }, null, 2)}\n`;
+
+    const result = await command({
+      verb: 'add',
+      args: [SPEC_KIT, '--harness', 'claude-code', '--yes', '--json'],
+      cwd: repo,
+      isTTY: false,
+      runSpecKit: async (options) => {
+        await mkdir(path.dirname(declarationPath()), { recursive: true });
+        await writeFile(declarationPath(), foreign);
+        return successfulLifecycle(options);
+      },
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout).reason).toContain('changed-since-plan');
+    expect(await readFile(declarationPath(), 'utf8')).toBe(foreign);
+  });
+
   it('refuses JSON add without --yes before starting a lifecycle or writing intent', async () => {
     let lifecycleCalls = 0;
     const result = await command({
