@@ -1340,7 +1340,7 @@ The integration commands use a single repository intent file,
 `.rig/integrations.json`, with `schemaVersion: 1`. Legacy
 `setup --memory-root` retains its machine-scoped registration and version
 handshake. Separate integration receipts and `setup verify` are retired;
-aggregated verification belongs to the forthcoming `doctor` surface.
+aggregated verification is available through `create-agent-rig doctor [--json]`.
 
 ```sh
 create-agent-rig setup

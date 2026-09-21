@@ -14,7 +14,13 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
-## Unreleased
+## 0.10.0
+
+Platforms: the packed release candidate is accepted on Linux and Windows
+(`scripts/release-acceptance.mjs`, dispatched on the exact release commit).
+macOS is untested for this release. On Windows, Spec Kit 1.0.8 rewrites
+`.claude/settings.json` and `.codex/config.toml` with CRLF line endings, so
+`doctor` reports `rig-owned-files` as `warn` after Spec Kit setup there.
 
 `doctor [--json]` aggregates Rig file integrity, installed guards, optional
 workflow mechanisms, MCP wiring, pinned offline Spec Kit status and the
