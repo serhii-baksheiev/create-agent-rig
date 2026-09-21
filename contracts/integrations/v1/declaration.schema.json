@@ -15,7 +15,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id"],
+        "required": ["id", "selected"],
         "properties": {
           "id": {
             "type": "string",
@@ -39,6 +39,24 @@
             "items": {
               "type": "string",
               "enum": ["claude-code", "codex"]
+            }
+          },
+          "targets": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "claude-code": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["entryHash"],
+                "properties": { "entryHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+              },
+              "codex": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["entryHash"],
+                "properties": { "entryHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+              }
             }
           }
         }

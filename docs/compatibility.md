@@ -140,13 +140,11 @@ choice about a third-party tool, not a per-harness one.
 | --------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Spec Kit non-interactive invocation (`specify init <name> --integration <key>`, plus `--here`, `--force`, `--script` with sh, ps or py) | UNVERIFIED |          | M8, 2026-09-20 (`docs/decisions/integration-composition-rp22.md`): the non-interactive flag shape is documented (fetched directly from `github.github.io/spec-kit/reference/core.html` and the project README) but no live run was performed — this environment has no `uv`/`uvx`/`pipx`, and installing that Python toolchain globally was out of this spike's pre-approved scope (npm packages only). |
 
-RP-179's scope also asks that a future `doctor` receipt record provider/plugin
-identity and observed version. **Nothing here builds one**, and this repository
-has no installation-mode vocabulary for it to join: the words RP-22's own
-ticket text proposes (`external-installer`, `native-plugin`, `hosted-service`,
-`external-executable`) exist in that ticket and nowhere in this tree. RP-22
-owns both the receipt and the vocabulary; this section is the evidence RP-22
-will classify, not the classification.
+The September 21 RP-22/RP-21 contract supersedes the proposed provider receipt
+and installation-mode framework. Desired integrations and Rig ownership
+baselines belong in `.rig/integrations.json`; doctor observations are read-only
+output. Spec Kit retains ownership of its files and manifests. The historical
+measurements above do not establish acceptance for that delegated lifecycle.
 
 The scope bullet "remove tracked duplicate projections from templates when
 replacement evidence exists" has no target either: the replacement it names

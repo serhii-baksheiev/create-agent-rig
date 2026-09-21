@@ -2018,42 +2018,6 @@ describe('boundedRun — output sanitization', () => {
   });
 });
 
-describe('declared limit: captured output is not redacted for secrets', () => {
-  const walkForUnboundedStrings = (node: unknown, keyPath: string, offenders: string[]): void => {
-    if (Array.isArray(node)) {
-      node.forEach((item, index) =>
-        walkForUnboundedStrings(item, `${keyPath}[${index}]`, offenders),
-      );
-      return;
-    }
-    if (typeof node !== 'object' || node === null) return;
-    const obj = node as Record<string, unknown>;
-    const isBounded =
-      typeof obj.pattern === 'string' || obj.const !== undefined || Array.isArray(obj.enum);
-    if (obj.type === 'string' && !isBounded) {
-      offenders.push(keyPath);
-    }
-    for (const [key, value] of Object.entries(obj)) {
-      walkForUnboundedStrings(value, `${keyPath}.${key}`, offenders);
-    }
-  };
-
-  it('the receipt schema has no property that could hold raw captured stdout/stderr text — every string property is pattern-, const-, or enum-bounded', async () => {
-    const schemaPath = path.join(
-      repoRoot,
-      'contracts',
-      'integrations',
-      'v1',
-      'receipt.schema.json',
-    );
-    const schema: unknown = JSON.parse(await readFile(schemaPath, 'utf8'));
-    expect((schema as { additionalProperties?: boolean }).additionalProperties).toBe(false);
-    const offenders: string[] = [];
-    walkForUnboundedStrings(schema, 'schema', offenders);
-    expect(offenders, 'an unconstrained free-text string property').toEqual([]);
-  });
-});
-
 /**
  * True if `code` imports/requires `child_process` (either specifier
  * spelling — `node:child_process` or the bare, canonical `child_process`;
