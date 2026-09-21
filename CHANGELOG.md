@@ -16,9 +16,9 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## 0.10.0
 
-Platforms: the packed release candidate is accepted on Linux and Windows
-(`scripts/release-acceptance.mjs`, dispatched on the exact release commit).
-macOS is untested for this release. On Windows, Spec Kit 1.0.8 rewrites
+Platforms: the packed release candidate is accepted on Linux, Windows and
+macOS on Apple silicon (`scripts/release-acceptance.mjs`, dispatched on the
+exact release commit; `e2e.yml` gains a `macos-e2e` job for it). On Windows, Spec Kit 1.0.8 rewrites
 `.claude/settings.json` and `.codex/config.toml` with CRLF line endings, so
 `doctor` reports `rig-owned-files` as `warn` after Spec Kit setup there.
 Ownership hashes cover exact bytes (`docs/decisions/raw-byte-ownership.md`), so

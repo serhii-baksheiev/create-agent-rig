@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -56,6 +56,28 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     await expect(
       exec(process.execPath, [path.join(repoRoot, 'scripts', 'sync-codex-adapter.mjs'), '--check']),
     ).resolves.toBeTruthy();
+  });
+
+  // RP-24: on macOS the checkout sat behind a symlink (/var → /private/var),
+  // Node resolved the main module through it, argv[1] did not, and the check
+  // exited 0 having run nothing. A silent pass is indistinguishable from that,
+  // so the check says what it verified and is started here through a link.
+  it('runs its check when started through a symlinked checkout, and says so', async () => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-codex-link-'));
+    const linked = path.join(outside, 'checkout');
+    try {
+      await symlink(repoRoot, linked, process.platform === 'win32' ? 'junction' : 'dir');
+      const { stdout } = await exec(process.execPath, [
+        path.join(linked, 'scripts', 'sync-codex-adapter.mjs'),
+        '--check',
+      ]);
+      expect(stdout).toMatch(/Codex adapter is in sync/);
+    } finally {
+      // The link alone, never recursively: a recursive removal through it
+      // would reach the checkout it points at.
+      await rm(linked, { force: true });
+      await removeFixture(outside);
+    }
   });
 
   // RP-186: AGENTS.md is the canonical, provider-neutral rulebook and

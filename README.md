@@ -249,7 +249,7 @@ contract version is refused with exit code `4`. The boundary is described in
 | -------- | ---------------------------------------------------------------------- |
 | Linux    | Supported — the packed release is accepted on the exact release commit |
 | Windows  | Supported — same acceptance; one Spec Kit limitation below             |
-| macOS    | Untested for this release                                              |
+| macOS    | Supported on Apple silicon — same acceptance                           |
 
 On Windows, Spec Kit 1.0.8 rewrites `.claude/settings.json` and
 `.codex/config.toml` with CRLF line endings. `doctor` then reports Rig's files
@@ -264,7 +264,6 @@ to it asks you to merge the Codex config by hand instead of overwriting it.
 - No plugin manager, and no bundled memory engine.
 - Provider accounts, authorization and connectivity are between you, the
   provider and the harness.
-- macOS is untested for this release.
 - The workflow layer is experimental.
 
 ## The 2-minute demo

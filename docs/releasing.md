@@ -58,9 +58,8 @@ gh workflow run e2e.yml --ref master \
 Use `runner_mode=self-hosted` for the registered fallback; both modes run the
 same release commands. The network lane is absent from PR, push and scheduled
 runs unless explicitly selected by dispatch. Ordinary tests keep isolated fake
-upstream executables. Record both Linux and Windows run links for the exact
-candidate; an earlier branch run is not evidence for a later SHA. macOS remains
-untested unless separately measured on that SHA.
+upstream executables. Record the Linux, Windows and macOS job links for the exact
+candidate; an earlier branch run is not evidence for a later SHA.
 
 `test/template/release-acceptance.test.ts` pins "rejects an invalid candidate SHA
 before packing or mutating its fixture" and "rejects a well-formed candidate SHA

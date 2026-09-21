@@ -203,19 +203,31 @@ describe('expensive root tests have their own narrowly-triggered workflow', () =
       expect(value, 'a job is not switchable').toMatch(/inputs\.runner_mode/);
       expect(value, 'a job ignores the repository variable').toMatch(/vars\.RUNNER_MODE/);
       expect(value, 'a job has no self-hosted branch').toMatch(/self-hosted/);
-      expect(value, 'a job has no hosted default').toMatch(/ubuntu-latest|windows-latest/);
+      expect(value, 'a job has no hosted default').toMatch(
+        /ubuntu-latest|windows-latest|macos-latest/,
+      );
     }
   });
 
   it('records which runner executed each job, so release evidence can name it', async () => {
     const yaml = await expensiveWorkflow();
-    for (const name of ['e2e', 'windows-e2e']) {
+    for (const name of ['e2e', 'windows-e2e', 'macos-e2e']) {
       const body = job(yaml, name);
       expect(body, `${name} does not print runner.environment`).toMatch(/runner\.environment/);
       expect(body, `${name} does not print runner.name`).toMatch(/runner\.name/);
       // Through env:, never interpolated into the shell line.
       expect(body).not.toMatch(/^\s*echo .*\$\{\{/m);
     }
+  });
+
+  it('runs the full suite on macOS off pull requests, on the hosted image or the self-hosted macOS runner', async () => {
+    const macos = job(await expensiveWorkflow(), 'macos-e2e');
+    expect(macos).toMatch(/^ {4}if:\s*github\.event_name != 'pull_request'\s*$/m);
+    expect(macos).toMatch(
+      /^ {4}runs-on:.*fromJSON\('\["self-hosted", "macOS", "ARM64"\]'\) \|\| 'macos-latest' \}\}\s*$/m,
+    );
+    expect(runCommands(macos)).toContain('pnpm test');
+    expect(macos).toMatch(/node scripts\/release-acceptance\.mjs --sha "\$RIG_RELEASE_SHA"/);
   });
 
   it('keeps the Windows full suite off pull requests — it runs on master, nightly and by dispatch', async () => {

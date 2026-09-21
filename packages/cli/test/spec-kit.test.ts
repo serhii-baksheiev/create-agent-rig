@@ -83,6 +83,23 @@ function restorePath(): void {
   else process.env.Path = originalPath;
 }
 
+/**
+ * A PATH entry that offers git and nothing else. `path.dirname(git)` is not
+ * that on macOS: Homebrew installs uv and uvx beside git, so a test that meant
+ * "no trusted launcher anywhere" found one (RP-24). Windows keeps git's own
+ * directory, where a symlink would need a privilege the runner may not have.
+ */
+async function gitOnlyPathEntry(git: string): Promise<string> {
+  if (process.platform === 'win32') {
+    // A fixture choice, not a skip: the caller's test still runs in full.
+    return path.dirname(git);
+  }
+  const dir = path.join(toolsDir, 'git-only');
+  await mkdir(dir);
+  await symlink(git, path.join(dir, 'git'), 'file');
+  return dir;
+}
+
 async function executableOnPath(name: string): Promise<string> {
   const extensions = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
   const entries = (process.env.PATH ?? process.env.Path ?? '').split(path.delimiter);
@@ -292,7 +309,7 @@ describe('runSpecKitLifecycle', { timeout: process.platform === 'win32' ? 60_000
       if (process.platform !== 'win32') await chmod(launcher, 0o755);
     }
     await commitFixturePaths(git, names);
-    process.env.PATH = [repo, path.dirname(git)].join(path.delimiter);
+    process.env.PATH = [repo, await gitOnlyPathEntry(git)].join(path.delimiter);
     if (process.platform === 'win32') process.env.Path = process.env.PATH;
 
     const requestedExecutables: string[] = [];
@@ -323,7 +340,7 @@ describe('runSpecKitLifecycle', { timeout: process.platform === 'win32' ? 60_000
       await symlink(target, path.join(toolsDir, name), 'file');
     }
     await commitFixturePaths(git, ['uv', 'uvx']);
-    process.env.PATH = [toolsDir, path.dirname(git)].join(path.delimiter);
+    process.env.PATH = [toolsDir, await gitOnlyPathEntry(git)].join(path.delimiter);
 
     const requestedExecutables: string[] = [];
     const result = await runSpecKitLifecycle({

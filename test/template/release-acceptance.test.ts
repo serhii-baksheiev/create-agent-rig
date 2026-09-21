@@ -59,7 +59,7 @@ async function fixtureList(): Promise<string[]> {
   return (await readdir(fixture)).sort();
 }
 
-async function candidateShaGuard(jobName: 'e2e' | 'windows-e2e'): Promise<string> {
+async function candidateShaGuard(jobName: 'e2e' | 'windows-e2e' | 'macos-e2e'): Promise<string> {
   const yaml = (await readFile(e2eWorkflow, 'utf8')).replace(/\r\n/g, '\n');
   const start = yaml.indexOf(`  ${jobName}:\n`);
   expect(start, `${jobName} job is missing`).toBeGreaterThanOrEqual(0);
@@ -153,7 +153,7 @@ describe('release acceptance candidate preflight', () => {
 });
 
 describe('release acceptance workflow candidate guards', () => {
-  const jobs = ['e2e', 'windows-e2e'] as const;
+  const jobs = ['e2e', 'windows-e2e', 'macos-e2e'] as const;
 
   it('accepts a full hexadecimal candidate SHA before checkout in both release jobs', async () => {
     for (const job of jobs) {
