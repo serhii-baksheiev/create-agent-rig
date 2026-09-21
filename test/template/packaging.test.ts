@@ -34,43 +34,55 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('ships 0.9.1 as one release in both package manifests', async () => {
+  it('ships 0.10.0 as one release in both package manifests', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
     const inner = JSON.parse(
       await readFile(path.join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
     ) as { version: string };
-    expect(root.version).toBe('0.9.1');
+    expect(root.version).toBe('0.10.0');
     expect(inner.version).toBe(root.version);
   });
 
-  it('puts the 0.9.1 fixes-only release first in the changelog', async () => {
+  it('puts the 0.10.0 feature release first in the changelog and preserves 0.9.1 history', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     const first = changelog.match(/^## (\d+\.\d+\.\d+)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(first?.[1]).toBe('0.9.1');
+    expect(first?.[1]).toBe('0.10.0');
     // The named subjects of THIS release, not words any release note would
     // contain — so an entry copied forward from 0.9.0 fails here. Each pin
     // pairs the fixed behavior with the ticket that owns it.
-    expect(first?.[2]).toMatch(/kept/);
-    expect(first?.[2]).toMatch(/RP-182/);
-    expect(first?.[2]).toMatch(/--timeout-ms 45000/);
-    expect(first?.[2]).toMatch(/RP-183/);
-    expect(first?.[2]).toMatch(/authorAssociation/);
-    expect(first?.[2]).toMatch(/RP-99/);
-    expect(first?.[2]).toMatch(/link-contradicted-by-body/);
-    expect(first?.[2]).toMatch(/RP-59/);
-    expect(first?.[2]).toMatch(/255 characters/);
-    expect(first?.[2]).toMatch(/RP-121/);
-    expect(first?.[2]).toMatch(/bounded-retry/);
-    expect(first?.[2]).toMatch(/RP-158/);
-    // 🔴 the numbering call, inverted from 0.9.0: this release is fixes only,
-    // so a PATCH, where 0.9.0 shipped additive content as a MINOR.
-    expect(first?.[2]).toMatch(/patch/i);
+    expect(first?.[2]).toMatch(/doctor \[--json\].*aggregates Rig file integrity/s);
+    expect(first?.[2]).toMatch(/provider\/harness wizard/);
+    expect(first?.[2]).toMatch(/Spec Kit setup to\s+the pinned official CLI/);
+    expect(first?.[2]).toMatch(
+      /Ownership\s+hashes live alongside provider selection in `\.rig\/integrations\.json`/,
+    );
+    const historical = changelog.match(/^## 0\.9\.1\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    for (const subject of [
+      /kept/,
+      /RP-182/,
+      /--timeout-ms 45000/,
+      /RP-183/,
+      /authorAssociation/,
+      /RP-99/,
+      /link-contradicted-by-body/,
+      /RP-59/,
+      /255 characters/,
+      /RP-121/,
+      /bounded-retry/,
+      /RP-158/,
+    ]) {
+      expect(historical?.[1]).toMatch(subject);
+    }
+    // 🔴 The historical 0.9.1 section keeps its fixes-only PATCH rationale;
+    // 0.10.0 instead documents the additive setup composition above.
+    expect(historical?.[1]).toMatch(/patch/i);
     // 🔴 The 0.9.0 section must still be BELOW it, unedited in place: a
     // release that rewrites the previous release's note is describing bytes
     // that already shipped.
     expect(changelog).toMatch(/^## 0\.9\.0$/m);
+    expect(changelog.indexOf('## 0.10.0')).toBeLessThan(changelog.indexOf('## 0.9.1'));
     expect(changelog.indexOf('## 0.9.1')).toBeLessThan(changelog.indexOf('## 0.9.0'));
     expect(changelog.indexOf('## 0.9.0')).toBeLessThan(changelog.indexOf('## 0.8.0'));
     expect(changelog.slice(changelog.indexOf('## 0.9.0'))).toMatch(/setup --memory-root/);

@@ -14,7 +14,9 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
-## Unreleased
+## 0.10.0
+
+macOS is untested for this release; release acceptance targets Linux and Windows.
 
 `doctor [--json]` aggregates Rig file integrity, installed guards, optional
 workflow mechanisms, MCP wiring, pinned offline Spec Kit status and the

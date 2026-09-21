@@ -53,8 +53,8 @@ A snapshot does not announce itself as one. `packageVersion()`
 (`packages/cli/src/lib/version.ts`) returns `package.json`'s `version` field
 verbatim — no branch, no commit, no suffix — and that field is bumped only
 inside a `release: prepare X` commit. So between releases a default-branch
-checkout reports the **previous release's** version: a snapshot stamps `0.9.1`
-into the manifest while carrying files that are ahead of 0.9.1. The version
+checkout reports the **previous release's** version until release preparation:
+this candidate stamps `0.10.0` into the manifest before publication. The version
 string is therefore not evidence of which bytes you have; only a published
 install makes those two agree.
 
@@ -138,6 +138,27 @@ written. Unlike every other file, a match against the released hashes is not
 enough for this one, and a replacement that would stop calling a hook the
 current wiring names — while that hook's file is still in `.claude/hooks/` — is
 handed over instead.
+
+### Configuring repository integrations
+
+Run `create-agent-rig setup` for the provider/harness wizard, or use the
+deterministic commands in an initialized repository:
+
+```sh
+create-agent-rig setup list --json
+create-agent-rig setup add figma-mcp --harness claude-code --harness codex --yes --json
+create-agent-rig setup apply --yes --json
+create-agent-rig setup remove figma-mcp --yes --json
+create-agent-rig doctor --json
+```
+
+Setup manages selected Figma, Atlassian and optional Basic Memory MCP wiring.
+Spec Kit setup delegates to its pinned official CLI after plan and consent;
+Spec Kit owns its generated files and lifecycle. Doctor separates wiring from
+runtime, connectivity and trust. Basic Memory remains a wiring-only preview;
+Rig does not manage its data. See the [command contract](docs/command-contract.md)
+for ownership, refusals, adoption and JSON semantics. JSON mode without
+`--yes` never prompts or mutates.
 
 ### Registering Memory on this machine
 
@@ -326,9 +347,10 @@ history itself — so it says as much and points at `git add -A` and a commit
 as the next step. Full semantics, the JSON shape and worked examples are in
 `docs/command-contract.md` ("## uninstall (RP-181)").
 
-Registering plugin and MCP entries this rig owns is not part of this command
-yet — it lands once RP-179/RP-22 define what an owned registration is; today
-`uninstall` only ever touches files the manifest names.
+Provider wiring has a separate lifecycle: use `setup remove` for selected
+Rig-owned MCP entries or delegated Spec Kit removal. `uninstall` touches only
+files the Rig manifest names; it does not manage third-party plugins or provider
+data. See the setup removal contract in `docs/command-contract.md`.
 
 ## What you get
 

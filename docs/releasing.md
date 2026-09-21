@@ -39,6 +39,35 @@ the script's own header says where each is blind.
 It is a preflight, not a gate: nothing runs it for you, and a green run is not a
 verdict on the release. Pinned in `test/template/release-preflight.test.ts`.
 
+## Exact-SHA network acceptance
+
+The existing E2E workflow has an opt-in release lane. A dispatch with
+`release_acceptance=true` and a full `release_sha` checks out that candidate,
+runs the normal suite, provisions pinned uv on the runner, then runs
+`node scripts/release-acceptance.mjs --sha <candidate-sha>` against a packed Rig.
+The lane uses real pinned Spec Kit downloads and disposable fixture/cache
+directories. It does not publish a package or install providers globally.
+
+```sh
+gh workflow run e2e.yml --ref master \
+  -f runner_mode=hosted \
+  -f release_acceptance=true \
+  -f release_sha=<full-candidate-sha>
+```
+
+Use `runner_mode=self-hosted` for the registered fallback; both modes run the
+same release commands. The network lane is absent from PR, push and scheduled
+runs unless explicitly selected by dispatch. Ordinary tests keep isolated fake
+upstream executables. Record both Linux and Windows run links for the exact
+candidate; an earlier branch run is not evidence for a later SHA. macOS remains
+untested unless separately measured on that SHA.
+
+`test/template/release-acceptance.test.ts` pins "rejects an invalid candidate SHA
+before packing or mutating its fixture" and "rejects a well-formed candidate SHA
+that does not match the checked-out Git HEAD before packing or mutating its
+fixture". The dispatch supplies the real provider evidence; those negative
+tests alone do not establish release acceptance.
+
 ## Why the owner types the publish
 
 `npm publish` needs 2FA and cannot be undone, so an agent prepares a release and
