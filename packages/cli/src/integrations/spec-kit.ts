@@ -195,6 +195,7 @@ export async function runSpecKitLifecycle(options: SpecKitOptions): Promise<Spec
   const plan = [
     `Spec Kit ${SPEC_KIT_VERSION}; requires local uv, uvx and git, invoked from the repository root. Downloads the official pinned source and dependencies into the uv cache; no global tool installation.`,
     `uvx --from ${SOURCE} specify`,
+    'Configure integration files without checking whether Claude Code or Codex is installed; this does not verify harness runtime or trust.',
   ];
   const refuse = (reason: string, observed?: Observation): SpecKitResult => ({
     ok: false,
@@ -217,7 +218,7 @@ export async function runSpecKitLifecycle(options: SpecKitOptions): Promise<Spec
   const initialized = project.status === 'ok';
   if (options.operation === 'add' && !initialized) {
     plan.push(
-      `init --here --force --non-interactive --integration ${harnesses[0]}`,
+      `init --here --force --non-interactive --ignore-agent-tools --integration ${harnesses[0]}`,
       ...harnesses.slice(1).map((harness) => `integration install ${harness}`),
     );
   } else if (options.operation === 'add') {
@@ -280,7 +281,15 @@ export async function runSpecKitLifecycle(options: SpecKitOptions): Promise<Spec
   const commands: string[][] = [];
   if (options.operation === 'add' && !initialized) {
     commands.push(
-      ['init', '--here', '--force', '--non-interactive', '--integration', harnesses[0]!],
+      [
+        'init',
+        '--here',
+        '--force',
+        '--non-interactive',
+        '--ignore-agent-tools',
+        '--integration',
+        harnesses[0]!,
+      ],
       ...harnesses.slice(1).map((harness) => ['integration', 'install', harness]),
     );
   } else if (options.operation === 'add') {
