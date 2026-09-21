@@ -131,7 +131,7 @@ export async function pathWithout(pathValue, names) {
   return kept.join(path.delimiter);
 }
 
-async function treeContains(root, needle) {
+export async function treeContains(root, needle) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (entry.name === '.git') continue;
     const file = path.join(root, entry.name);
@@ -376,10 +376,14 @@ async function main() {
     const rigJson = async (phase, cwd, argv, env) =>
       parseJson(await rigCommand(phase, cwd, argv, env));
 
-    // Solo: the lean core needs neither uv nor uvx (RP-24 item 1).
-    const soloPath = await pathWithout(environment.PATH ?? environment.Path ?? '', ['uv', 'uvx']);
-    if ((await executablePresent('uv', soloPath)) || (await executablePresent('uvx', soloPath)))
-      abort('solo-path-still-provides-uv');
+    // Solo: the lean core needs neither uv nor Python (RP-24 item 1). Windows
+    // keeps Python apart from git, so it is removed there too; on Linux it
+    // shares /usr/bin with git and only uv/uvx can be removed.
+    const absent =
+      process.platform === 'win32' ? ['uv', 'uvx', 'python', 'python3'] : ['uv', 'uvx'];
+    const soloPath = await pathWithout(environment.PATH ?? environment.Path ?? '', absent);
+    for (const name of absent)
+      if (await executablePresent(name, soloPath)) abort('solo-path-still-provides-uv-or-python');
     const soloEnvironment = { ...environment, PATH: soloPath, Path: soloPath };
     const soloProject = path.join(scratch, 'solo-project');
     await command('git', ['init', '--quiet', soloProject], { env: environment });
@@ -647,7 +651,7 @@ async function main() {
       os: `${process.platform}-${process.arch}`,
       packageHash,
       checks,
-      solo: { uv: 'absent', doctor: soloDoctor.status },
+      solo: { absent, doctor: soloDoctor.status },
       sentinel: 'absent-from-output-and-state',
       doctor: {
         status: doctor.status,

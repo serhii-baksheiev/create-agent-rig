@@ -205,6 +205,27 @@ describe('release acceptance solo PATH', () => {
   });
 });
 
+describe('release acceptance credential scan', () => {
+  it('finds a planted sentinel in a nested file and reports a clean tree as clean', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-acceptance-scan-'));
+    try {
+      const module = (await import(pathToFileURL(script).href)) as {
+        treeContains?: (root: string, needle: string) => Promise<boolean>;
+      };
+      expect(module.treeContains).toBeTypeOf('function');
+      await mkdir(path.join(root, '.rig', 'nested'), { recursive: true });
+      await writeFile(path.join(root, '.rig', 'nested', 'state.json'), '{"clean":true}\n');
+
+      expect(await module.treeContains!(root, 'planted-sentinel')).toBe(false);
+
+      await writeFile(path.join(root, '.rig', 'nested', 'leak.json'), '{"t":"planted-sentinel"}\n');
+      expect(await module.treeContains!(root, 'planted-sentinel')).toBe(true);
+    } finally {
+      await removeFixture(root);
+    }
+  });
+});
+
 describe('release acceptance packed Rig diagnostics', () => {
   it('reports a finite phase, status and exit without provider output', async () => {
     const privateStdout = 'private stdout sentinel';
