@@ -76,6 +76,11 @@ export async function runProviderProcess(
     try {
       const isWindows = process.platform === 'win32';
       const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+      if (isWindows && systemRoot !== undefined && path.isAbsolute(systemRoot)) {
+        env.WINDIR = systemRoot;
+        env.ComSpec = path.join(systemRoot, 'System32', 'cmd.exe');
+        env.SystemDrive = path.parse(systemRoot).root.replace(/[\\/]$/, '');
+      }
       const powershell =
         systemRoot === undefined
           ? undefined
