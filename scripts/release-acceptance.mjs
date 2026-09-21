@@ -492,6 +492,13 @@ async function main() {
       )
     )
       abort('codex-manual-edit-not-refused');
+    const conflictReport = parseJson(conflict.stdout);
+    if (
+      conflictReport.outcome !== 'refused' ||
+      conflictReport.reason !==
+        'codex-config-conflict; managed provider fragment:\n[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\n'
+    )
+      abort('codex-manual-fragment-invalid');
     const report = {
       sha: candidate,
       version: item.version,
