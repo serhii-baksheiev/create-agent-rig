@@ -120,6 +120,20 @@ describe('Memory doctor integration inspection', () => {
     expect(calls).toEqual([]);
   });
 
+  it('warns when the machine configuration root is unavailable without running a provider command', async () => {
+    const { runner, calls } = scriptedRunner([]);
+
+    const result = await inspectMemory({ repoDir: repo, env: {}, runner });
+
+    expect(result).toMatchObject({
+      status: 'warn',
+      reason: 'machine-config-root-unavailable',
+      runtime: 'unverified',
+      contract: 'unverified',
+    });
+    expect(calls).toEqual([]);
+  });
+
   it.each([
     ['oversized', 'x'.repeat(1024 * 1024)],
     ['malformed', '{"entries": private-machine-manifest-sentinel'],

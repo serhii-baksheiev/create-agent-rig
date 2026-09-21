@@ -14,6 +14,7 @@ export type MemoryInspection = {
   status: 'pass' | 'warn' | 'fail';
   reason:
     | 'not-configured'
+    | 'machine-config-root-unavailable'
     | 'manifest-invalid'
     | 'handshake-failed'
     | 'foreign-contract'
@@ -112,7 +113,8 @@ function isDoctorStatus(value: unknown): value is DoctorStatus {
 /** Inspect only the registered machine-local Memory boundary; never provider data. */
 export async function inspectMemory(options: InspectMemoryOptions): Promise<MemoryInspection> {
   const location = manifestLocation(options.env);
-  if (location === null) return result('pass', 'not-configured', 'unverified', 'unverified');
+  if (location === null)
+    return result('warn', 'machine-config-root-unavailable', 'unverified', 'unverified');
   const source = await readBounded(location.root, location.rel, MAX_MACHINE_MANIFEST_BYTES);
   if (source.status === 'absent')
     return result('pass', 'not-configured', 'unverified', 'unverified');
