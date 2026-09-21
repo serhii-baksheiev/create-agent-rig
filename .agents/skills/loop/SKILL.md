@@ -12,7 +12,7 @@ decisions. This skill is the driver in between: what gets picked,
 what keeps the loop going, what stops it, and where the report goes.
 
 Per-task procedure: (worktree if another session may run) → `check-premises` on the
-item → failing test first → implement → **`check-premises` again, on your own prose**
+item → failing test first (`test-writer`) → implement (`implementation-agent`) → **`check-premises` again, on your own prose**
 → `pr-ship` → merge on the named criterion → verify the deployed surface if one
 changed.
 

@@ -1594,23 +1594,24 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   });
 
   // RP-180 round 4, blocker E: the decision record's "a workflow rig's
-  // manifest went from 87 file entries to 54" is a specific, checkable
+  // manifest went from 89 file entries to 56" is a specific, checkable
   // number — pinned here, on a clean `--layer workflow` install, rather than
   // left as a claim nothing asserts. Both figures moved by one (86→87,
   // 53→54) when RP-186 added `docs/decisions/agents-md-canonical.md` to the
-  // process layer.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 87 manifest entries to 54', async () => {
+  // process layer, and by two more (87→89, 54→56) when `implementation-agent`
+  // (its Claude definition and Codex profile) joined it.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 89 manifest entries to 56', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(87);
+    expect(Object.keys(before!.files).length).toBe(89);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(54);
+    expect(Object.keys(after!.files).length).toBe(56);
   });
 });
 

@@ -74,6 +74,7 @@ describe('planUpgrade — the Codex projection files use the general verdict mac
   const CODEX_PROJECTION_PATHS = [
     'AGENTS.md',
     '.codex/agents/test-writer.toml',
+    '.codex/agents/implementation-agent.toml',
     '.agents/skills/loop/SKILL.md',
   ];
 
