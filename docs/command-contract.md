@@ -382,7 +382,8 @@ resolved in order to trust the answer.
 installation manifest and owned bytes, distinguishes line-ending drift from
 content drift, and checks the intended integration wiring. The rolling Codex
 target hash takes precedence over its original installation hash. Optional
-unselected integrations do not fail the installation.
+unselected integrations do not fail the installation. A selected provider with
+no harness selection produces a warning and does not start upstream diagnosis.
 
 MCP observations distinguish `wired`, `absent`, `drifted`, `foreign`, and
 `unreadable`. A launcher found on the machine is only `observed`; Basic Memory
@@ -403,8 +404,10 @@ behavior; it does not assert that a running harness has loaded its hooks.
 For the optional workflow layer, diagnosis checks installed script bytes,
 including the frozen revalidation and claim-record mechanisms. It does not
 query Jira or change the external RP-26 freeze decision, which remains
-unobserved in the report. `doctor-guards.test.ts` and
-`doctor-workflow.test.ts` cover these boundaries.
+unobserved in the report. `packages/cli/test/doctor-guards.test.ts` pins
+"fails a modified installed guard without executing repository code";
+`packages/cli/test/doctor-workflow.test.ts` pins "passes an intact selected
+workflow layer and preserves its frozen mechanism bytes".
 
 The aggregate command also inspects the machine-scoped custom Memory manifest.
 It checks the child's version handshake before requesting its doctor response.
@@ -414,10 +417,16 @@ their own contract handshake first. The existing `memory doctor` and
 `memory load` pass-through commands retain their exit-4 compatibility boundary.
 Provider output and private machine paths are not copied into aggregate records.
 
-Evidence: `packages/cli/test/doctor.test.ts`, `integrations-verify.test.ts`,
-`spec-kit-doctor.test.ts`, and `memory-doctor.test.ts` exercise the read-only
-observations and failure boundaries; `cli-version.test.ts` exercises the public
-binary route without creating a project named `doctor`.
+Evidence: `packages/cli/test/doctor.test.ts` pins "fails unreadable owned MCP
+configuration without exposing its contents" and "distinguishes line-ending-only
+drift from pristine owned bytes". `packages/cli/test/integrations-verify.test.ts`
+pins "reports a manually changed Codex file as drift without writing a replacement
+config". `packages/cli/test/spec-kit-doctor.test.ts` pins "diagnoses the intended
+harnesses using only pinned offline official status";
+`packages/cli/test/memory-doctor.test.ts` pins "fails a foreign contract before
+running Memory doctor".
+`packages/cli/test/cli-version.test.ts` pins "routes doctor --json to read-only
+aggregate diagnosis instead of creating a directory".
 
 ## The memory command surface
 

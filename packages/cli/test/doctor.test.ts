@@ -130,6 +130,46 @@ describe('aggregated doctor (RP-21)', () => {
     expect(hasFailure(body)).toBe(false);
   });
 
+  it.each([
+    ['an MCP provider', { id: 'figma-mcp', selected: true }],
+    ['Spec Kit', { id: 'spec-kit', version: '1.0.8', selected: true }],
+  ])(
+    'warns when %s is selected without a harness and preserves the intent bytes',
+    async (_case, entry) => {
+      await initProject(repo, {});
+      const declaration = path.join(repo, '.rig', 'integrations.json');
+      await mkdir(path.dirname(declaration), { recursive: true });
+      await writeFile(
+        declaration,
+        `${JSON.stringify({ schemaVersion: 1, integrations: [entry] })}\n`,
+      );
+      const before = await readFile(declaration, 'utf8');
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.status).toBe('warn');
+      expect(body.checks).toContainEqual(
+        expect.objectContaining({
+          id: 'integrations',
+          status: 'warn',
+          reason: 'harness-selection-pending',
+        }),
+      );
+      expect(body.checks).toContainEqual(
+        expect.objectContaining({
+          id: `${entry.id}:harness-selection`,
+          status: 'warn',
+          reason: 'harness-selection-pending',
+        }),
+      );
+      if (entry.id === 'spec-kit')
+        expect(body.checks).not.toContainEqual(expect.objectContaining({ id: 'spec-kit' }));
+      expect(await readFile(declaration, 'utf8')).toBe(before);
+    },
+  );
+
   it('keeps declared Spec Kit on its authoritative upstream-status lane, not an MCP ownership check', async () => {
     await initProject(repo, {});
     const declaration = path.join(repo, '.rig', 'integrations.json');

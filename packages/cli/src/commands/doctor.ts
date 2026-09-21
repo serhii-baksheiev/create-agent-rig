@@ -110,16 +110,29 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   let specKit: SpecKitInspection | undefined;
   const wiring = await verifyIntegrations({ repoDir: options.cwd, env: options.env });
   const invalid = wiring.issues.some((issue) => issue.status !== 'missing');
+  const pendingHarness = wiring.integrations.some(
+    (entry) => Object.keys(entry.harnesses).length === 0,
+  );
   checks.push({
     id: 'integrations',
-    status: invalid ? 'fail' : 'pass',
+    status: invalid ? 'fail' : pendingHarness ? 'warn' : 'pass',
     reason: invalid
       ? 'invalid-declaration'
-      : wiring.integrations.length
-        ? 'declared'
-        : 'not-selected',
+      : pendingHarness
+        ? 'harness-selection-pending'
+        : wiring.integrations.length
+          ? 'declared'
+          : 'not-selected',
   });
   for (const entry of wiring.integrations) {
+    if (Object.keys(entry.harnesses).length === 0) {
+      checks.push({
+        id: `${entry.id}:harness-selection`,
+        status: 'warn',
+        reason: 'harness-selection-pending',
+      });
+      continue;
+    }
     if (entry.id === 'spec-kit') {
       const selected = intent?.entries.find((candidate) => candidate.id === 'spec-kit');
       if (selected?.version !== SPEC_KIT_VERSION) {
