@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import {
   access,
   chmod,
@@ -11,6 +12,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runSpecKitLifecycle } from '../src/integrations/spec-kit.js';
 import {
@@ -23,6 +25,7 @@ import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 
 const SOURCE = 'git+https://github.com/github/spec-kit@v1.0.8';
 const PREFIX = ['--from', SOURCE, 'specify'];
+const exec = promisify(execFile);
 const upstreamHarness = {
   claude: ['.claude', 'skills', 'speckit-fake', 'SKILL.md'],
   codex: ['.agents', 'skills', 'speckit-fake', 'SKILL.md'],
@@ -99,12 +102,13 @@ async function executableOnPath(name: string): Promise<string> {
 }
 
 async function initGitRepository(): Promise<void> {
-  const result = await runProviderProcess({
-    executable: await executableOnPath('git'),
-    args: ['init', '--quiet'],
-    repoDir: repo,
+  await exec(await executableOnPath('git'), ['init', '--quiet'], {
+    cwd: repo,
+    shell: false,
+    timeout: 5_000,
+    maxBuffer: 64 * 1024,
+    windowsHide: true,
   });
-  expect(result.status).toBe('ok');
 }
 
 function providerBasename(executable: string): string {
