@@ -77,9 +77,7 @@ async function killRecorded(pids: readonly number[]): Promise<void> {
 
 describe('runProviderProcess', () => {
   it('runs the compiled adapter argv at the repository root', async () => {
-    const result = await run(['-e', 'process.stdout.write(process.cwd())'], { timeoutMs: 10_000 });
-    if (process.env.RIG_WINDOWS_JOB_PROBE === '1')
-      console.error(JSON.stringify({ status: result.status, stages: result.stderr }));
+    const result = await run(['-e', 'process.stdout.write(process.cwd())']);
 
     expect(result).toEqual({ status: 'ok', stdout: await realpath(repo), stderr: '', exitCode: 0 });
   });

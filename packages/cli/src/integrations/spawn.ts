@@ -51,7 +51,6 @@ export async function runProviderProcess(
     return failed();
   }
   const env: NodeJS.ProcessEnv = { NO_COLOR: '1', UV_NO_PROGRESS: '1', PYTHONUTF8: '1' };
-  if (process.env.RIG_WINDOWS_JOB_PROBE === '1') env.RIG_WINDOWS_JOB_PROBE = '1';
   const allowed = new Set([
     'PATH',
     'HOME',
@@ -71,31 +70,36 @@ export async function runProviderProcess(
   for (const [key, value] of Object.entries(process.env)) {
     if (allowed.has(key.toUpperCase())) env[key] = value;
   }
+  const isWindows = process.platform === 'win32';
+  let powershell: string | undefined;
+  if (isWindows) {
+    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+    if (systemRoot === undefined || !path.isAbsolute(systemRoot)) return failed();
+    powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    // PowerShell 7 compiles this fixed C# source in-process. Prefer the standard
+    // installed runtime: Windows PowerShell's external CodeDom compiler stalls
+    // on the hosted image before provider creation. Do not install a runtime or
+    // search repository-controlled PATH entries for this supervisor.
+    const programFiles = process.env.ProgramFiles ?? process.env.PROGRAMFILES;
+    if (programFiles !== undefined && path.isAbsolute(programFiles)) {
+      const modern = path.join(programFiles, 'PowerShell', '7', 'pwsh.exe');
+      try {
+        const resolved = await realpath(modern);
+        const relative = path.relative(cwd, resolved);
+        if (
+          (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) &&
+          (await stat(resolved)).isFile()
+        )
+          powershell = resolved;
+      } catch {
+        // The built-in Windows PowerShell remains the baseline on machines
+        // without PowerShell 7; the same operation deadline still applies.
+      }
+    }
+  }
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      const isWindows = process.platform === 'win32';
-      const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-      if (isWindows && systemRoot !== undefined && path.isAbsolute(systemRoot)) {
-        env.WINDIR = systemRoot;
-        env.ComSpec = path.join(systemRoot, 'System32', 'cmd.exe');
-        env.SystemDrive = path.parse(systemRoot).root.replace(/[\\/]$/, '');
-      }
-      const powershell =
-        process.env.RIG_WINDOWS_JOB_PROBE === '1'
-          ? path.join(
-              process.env.ProgramFiles ?? 'C:\\Program Files',
-              'PowerShell',
-              '7',
-              'pwsh.exe',
-            )
-          : systemRoot === undefined
-            ? undefined
-            : path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-      if (isWindows && (powershell === undefined || !path.isAbsolute(powershell))) {
-        resolve(failed());
-        return;
-      }
       if (isWindows)
         env.RIG_WINDOWS_JOB_PAYLOAD = Buffer.from(
           JSON.stringify({ executable: options.executable, cwd, args: options.args }),
