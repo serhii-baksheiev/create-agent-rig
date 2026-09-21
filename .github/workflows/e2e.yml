@@ -1,7 +1,7 @@
 name: E2E
 
-# The expensive suite: the full test run on Linux and Windows and the e2e
-# installs. Hosted-first by ruling (docs/runners.md): both jobs run on
+# The expensive suite: the full test run on Linux, Windows and macOS and the
+# e2e installs. Hosted-first by ruling (docs/runners.md): every job runs on
 # GitHub-hosted images unless the dispatch input `runner_mode` or the
 # repository variable `RUNNER_MODE` says `self-hosted` — the same jobs and the
 # same commands either way, only `runs-on` differs, and every job prints which
@@ -149,6 +149,8 @@ jobs:
           RELEASE_ACCEPTANCE: '1'
         run: node scripts/release-acceptance.mjs --sha "$RIG_RELEASE_SHA"
 
+  # Off pull requests like windows-e2e: this job is the macOS (Apple silicon)
+  # evidence for master, the nightly and a release dispatch on an exact SHA.
   macos-e2e:
     if: github.event_name != 'pull_request'
     runs-on: ${{ github.event_name != 'pull_request' && (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "macOS", "ARM64"]') || 'macos-latest' }}

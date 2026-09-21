@@ -239,7 +239,7 @@ contract version is refused with exit code `4`. The boundary is described in
 - **Plan first.** `--dry-run` shows the plan for `init`, `upgrade`, `uninstall`
   and `setup`; `upgrade`, `uninstall` and `setup` also ask before writing.
 - **Bounded external processes.** Spec Kit runs with a fixed argument list, a
-  deadline, and cleanup of its whole process tree on Linux and Windows.
+  deadline, and cleanup of its whole process tree.
 - **No stored credentials.** Rig does not put provider credentials in the
   repository, its state files or its output.
 

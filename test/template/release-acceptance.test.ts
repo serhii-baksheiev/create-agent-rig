@@ -155,7 +155,7 @@ describe('release acceptance candidate preflight', () => {
 describe('release acceptance workflow candidate guards', () => {
   const jobs = ['e2e', 'windows-e2e', 'macos-e2e'] as const;
 
-  it('accepts a full hexadecimal candidate SHA before checkout in both release jobs', async () => {
+  it('accepts a full hexadecimal candidate SHA before checkout in every release job', async () => {
     for (const job of jobs) {
       const result = await runCandidateShaGuard(await candidateShaGuard(job), 'aBcD0123'.repeat(5));
       expect(result, job).toMatchObject({ code: 0 });
@@ -167,7 +167,7 @@ describe('release acceptance workflow candidate guards', () => {
     ['an empty value', ''],
     ['a newline-bearing value', `${'a'.repeat(40)}\nHEAD`],
     ['a shell command string', '$(printf hostile)'],
-  ])('refuses %s before candidate checkout in both release jobs', async (_label, candidate) => {
+  ])('refuses %s before candidate checkout in every release job', async (_label, candidate) => {
     for (const job of jobs) {
       const result = await runCandidateShaGuard(await candidateShaGuard(job), candidate);
       expect(result.code, job).not.toBe(0);

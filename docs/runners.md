@@ -89,5 +89,5 @@ Registered since 2026-09-22 (`gh api repos/{owner}/{repo}/actions/runners`
 lists them): `wsl-ubuntu-rig` (Linux X64, WSL) and `win-x64-rig` (Windows X64)
 on one owner laptop, and `mac-arm64-01` (macOS ARM64). They are persistent,
 not ephemeral, and share hosts with other work — the owner's choice for a
-release fallback, not the isolated ephemeral setup this page would otherwise
-advise.
+release fallback. A new runner is better registered ephemeral and on an
+isolated host, because the jobs it takes execute this repository's code.
