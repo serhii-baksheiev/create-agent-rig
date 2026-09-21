@@ -376,6 +376,48 @@ version handshake and exit 4, before it interprets any other payload. A doctor
 that reported it would be answering a question the caller must already have
 resolved in order to trust the answer.
 
+### Rig aggregate diagnosis
+
+`create-agent-rig doctor [--json]` uses the record shape above. It reads the
+installation manifest and owned bytes, distinguishes line-ending drift from
+content drift, and checks the intended integration wiring. The rolling Codex
+target hash takes precedence over its original installation hash. Optional
+unselected integrations do not fail the installation.
+
+MCP observations distinguish `wired`, `absent`, `drifted`, `foreign`, and
+`unreadable`. A launcher found on the machine is only `observed`; Basic Memory
+runtime remains `unverified`. Connectivity and trust are `not-observed`.
+No diagnosis installs, removes, or applies a provider plan.
+
+For selected Spec Kit, diagnosis calls the pinned official status command
+through `uvx --offline --no-config --no-python-downloads`. It may use uv's
+machine cache but cannot download a missing runtime. Unavailable status is a
+warning; authoritative upstream errors fail the check. The repository and
+integration intent remain unchanged.
+
+Guard diagnosis compares both harnesses' installed hook entries and the guard
+dependencies with this package, then runs allowed/denied fixtures against
+package-owned guards in a disposable directory. It never executes commands
+read from repository configuration. This verifies installation and guard
+behavior; it does not assert that a running harness has loaded its hooks.
+For the optional workflow layer, diagnosis checks installed script bytes,
+including the frozen revalidation and claim-record mechanisms. It does not
+query Jira or change a freeze decision. `doctor-guards.test.ts` and
+`doctor-workflow.test.ts` cover these boundaries.
+
+The aggregate command also inspects the machine-scoped custom Memory manifest.
+It checks the child's version handshake before requesting its doctor response.
+An incompatible child is unusable and its doctor is never invoked. This is a
+diagnosis of a dependency; callers of either executable must still resolve
+their own contract handshake first. The existing `memory doctor` and
+`memory load` pass-through commands retain their exit-4 compatibility boundary.
+Provider output and private machine paths are not copied into aggregate records.
+
+Evidence: `packages/cli/test/doctor.test.ts`, `integrations-verify.test.ts`,
+`spec-kit-doctor.test.ts`, and `memory-doctor.test.ts` exercise the read-only
+observations and failure boundaries; `cli-version.test.ts` exercises the public
+binary route without creating a project named `doctor`.
+
 ## The memory command surface
 
 The memory shim must implement the contract above. This section adds what is
@@ -614,8 +656,8 @@ records a fact, not a fault.
   `packages/cli/src/commands/memory.ts` (the foreign-major refusal payload).
   A fourth namer, or a missing one, makes the row stale. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin answers the version handshake in exactly three modules (RP-19)".
-- **The rig bin's exit codes outside 0 and 1 are `setup`'s 4, and `memory`'s 4,
-  3 and 2** — the contract-major refusal the consumer owns, carried as
+- **The rig bin's exit codes outside 0 and 1 are `setup`'s 4, `memory`'s 4,
+  3 and 2, and `doctor`'s usage exit 2** — the contract-major refusal the consumer owns, carried as
   `exitCode: 4` in `packages/cli/src/commands/setup.ts` and in
   `packages/cli/src/commands/memory.ts`; `memory`'s unmet-prerequisite 3
   (`prerequisites-unmet` with the unset variable in `missing`, when no
@@ -626,7 +668,7 @@ records a fact, not a fault.
   RP-19 — a measured difference, not a rule. No other literal above 1 is
   returned, passed to `process.exit`, or assigned to `process.exitCode`
   anywhere under `packages/cli/src`. Pinned in
-  `test/template/command-contract.test.ts` › "reports that the rig bin's only exit codes are 0, 1, setup's 4, and memory's 4, 3 and 2 (RP-19)".
+  `test/template/command-contract.test.ts` › "reports the rig bin's documented setup, memory and doctor exit codes".
 - **No reader of `RIG_UNATTENDED` exists under `.claude/scripts/`,
   `.claude/hooks/` or `packages/cli/src/`.** Reach: those three trees and no
   others — the template copies under `templates/agent-os/` are not scanned, and
@@ -1276,6 +1318,13 @@ prints a reminder that the change is unstaged (`git add -A`, then commit) —
 `packages/cli/test/uninstall.test.ts` and `test/e2e/uninstall.test.ts`.
 
 ## setup integrations (RP-22)
+
+Basic Memory is an optional wiring-only preview. Its `uvx basic-memory mcp`
+stdio entry is project wiring, not an installation, update, data lifecycle, or
+cross-machine synchronization feature. Removing it preserves provider storage.
+The doctor distinguishes launcher observation from unverified runtime and does
+not infer connectivity or trust. It may coexist with the machine-scoped custom
+Memory subsystem; setup reports that coexistence without connecting the two.
 
 The integration commands use a single repository intent file,
 `.rig/integrations.json`, with `schemaVersion: 1`. Legacy

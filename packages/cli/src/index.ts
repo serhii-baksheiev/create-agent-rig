@@ -32,6 +32,7 @@ import { promptConfirm } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
 import { packageVersion, rigHandshake } from './lib/version.js';
 import { runMemory } from './commands/memory.js';
+import { runDoctor } from './commands/doctor.js';
 
 const USAGE = `Usage: create-agent-rig <dir> [options]
 
@@ -80,6 +81,10 @@ Also: create-agent-rig setup --memory-root <checkout> [--memory-ref <sha>] [--dr
 
 Also: create-agent-rig setup list [--json]
   List the supported repository integrations.
+
+Also: create-agent-rig doctor [--json]
+  Diagnose installed Rig files, guards, provider wiring and available runtimes.
+  Does not apply setup plans or observe connectivity, authorization or trust.
 
 Also: create-agent-rig setup
   Choose a provider and harness interactively, then approve its exact plan.
@@ -1094,6 +1099,12 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 }
 
 async function main(): Promise<number> {
+  if (process.argv[2] === 'doctor') {
+    const result = await runDoctor({ cwd: process.cwd(), args: process.argv.slice(3) });
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
   if (process.argv[2] === 'init') {
     return runInit(process.argv.slice(3));
   }

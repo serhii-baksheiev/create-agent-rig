@@ -10,7 +10,7 @@
 // `npm pack` reads it. This file builds its own sandbox rather than sharing
 // cli-report.test.ts's, so it never depends on suite ordering.
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, realpath, symlink } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,18 @@ const runCli = async (cwd: string, args: string[], env?: NodeJS.ProcessEnv): Pro
     return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
   }
 };
+
+it('routes doctor --json to read-only aggregate diagnosis instead of creating a directory', async () => {
+  const env = { HOME: repo, APPDATA: repo };
+  expect((await runCli(repo, ['init'], env)).code).toBe(0);
+  const before = await readFile(path.join(repo, 'AGENTS.md'));
+  const entries = await readdir(repo);
+  const result = await runCli(repo, ['doctor', '--json'], env);
+  expect(result.code, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({ schemaVersion: 1, checks: expect.any(Array) });
+  expect(await readFile(path.join(repo, 'AGENTS.md'))).toEqual(before);
+  expect(await readdir(repo)).toEqual(entries);
+});
 
 beforeAll(async () => {
   sandbox = await mkdtemp(path.join(tmpdir(), 'caf-cli-version-build-'));

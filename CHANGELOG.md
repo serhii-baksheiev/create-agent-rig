@@ -16,6 +16,16 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## Unreleased
 
+`doctor [--json]` aggregates Rig file integrity, installed guards, optional
+workflow mechanisms, MCP wiring, pinned offline Spec Kit status and the
+machine's custom Memory diagnosis. It preserves the existing versioned
+`ok`/`warn`/`fail` contract and keeps connectivity and trust unobserved.
+
+Basic Memory is available as an optional, wiring-only MCP preview for Claude Code
+and Codex. Rig records only its project MCP wiring; it never installs, updates,
+inspects, synchronizes, or removes Basic Memory data. `uvx` remains a launcher
+observation rather than a runtime, connectivity, or trust verification.
+
 `setup` now offers a provider/harness wizard and delegates Spec Kit setup to
 the pinned official CLI after an explicit plan and consent. Existing external
 installations use `setup add spec-kit --adopt`; updates and removal use the
