@@ -1284,6 +1284,7 @@ handshake. Separate integration receipts and `setup verify` are retired;
 aggregated verification belongs to the forthcoming `doctor` surface.
 
 ```sh
+create-agent-rig setup
 create-agent-rig setup list --json
 create-agent-rig setup add figma-mcp --harness claude-code --yes --json
 create-agent-rig setup apply figma-mcp --dry-run --json
@@ -1338,6 +1339,50 @@ Wiring is not evidence of authorization, connectivity or trust. Authorization
 stays with the provider and harness. The integration declaration accepts
 provider selection and ownership baselines, never repository-supplied
 commands, URLs, headers or environment values.
+
+The human wizard selects a supported provider and Claude Code, Codex, or both,
+then delegates to the same deterministic command and consent prompt. It never
+inserts `--yes`. Noninteractive and JSON calls use the deterministic verbs.
+
+Spec Kit is upstream-managed. `setup add spec-kit --harness claude-code
+--harness codex` plans the official pinned `uvx --from
+git+https://github.com/github/spec-kit@v1.0.8 specify` route, requiring local
+`uv`, `uvx`, and `git`. The plan explains downloads and uv cache effects;
+Rig does not modify global tool installations. Initial setup requires a clean
+repository. Existing external installations require explicit `--adopt` and a
+clean worktree. Repeated add checks authoritative status and installs only a
+missing harness; it never repeats initial init.
+
+`setup apply spec-kit` delegates `integration upgrade` for the selected
+harnesses. `setup remove spec-kit` delegates `integration uninstall`. Neither
+passes `--force`. Successful final status is required before writing or retiring
+intent. The pinned upstream removes its integration manifest after the last
+uninstall; only that precise empty-state status is accepted after successful
+uninstall commands. Other partial/failing outcomes retain intent and direct
+the caller to adoption/status recovery.
+
+Rig does not copy, hash, or delete `.specify`, Spec Kit skills, or upstream
+manifests. Those files remain upstream-owned and are excluded from Rig's
+release manifest. Provider execution uses bounded output, deadlines and
+process-tree cleanup; unconfirmed cleanup refuses success. Normal tests use
+isolated fake upstream executables; real network acceptance is a separate
+release check.
+
+Executable evidence:
+
+- `packages/cli/test/setup-wizard.test.ts` › "routes a Spec Kit both-harness
+  selection through deterministic add rather than a guide".
+- `packages/cli/test/spec-kit.test.ts` › "initializes a clean repository once,
+  then adds only a missing harness on a later add", › "requires explicit
+  adoption before touching an external .specify payload", and › "treats the
+  upstream missing integration state as successful after removing the final
+  requested harness".
+- `packages/cli/test/spec-kit-command.test.ts` › "persists one pinned selected
+  intent only after the official lifecycle succeeds, without claiming upstream
+  files" and › "reports the bounded upstream status and recovery reason after
+  partial setup without recording intent".
+- `packages/cli/test/provider-spawn.test.ts` › "returns only after a deadline
+  kills a live child and grandchild on this platform".
 
 ## Fixtures
 

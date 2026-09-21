@@ -13,12 +13,7 @@ const FORMAT_CHARACTER_PATTERN = /\p{Cf}/u;
  * Whether one code point (as yielded by spreading a string, so a surrogate
  * pair arrives as a single two-code-unit element) is a Unicode format
  * character (a bidi override, a zero-width joiner, …) or one of the two
- * Unicode line separators (U+2028, U+2029). Shared by `hasControlCharacter`
- * below and by `../integrations/exec.ts`'s own output sanitizer, which
- * refuses the same three classes IN ADDITION TO the plain ASCII/C1
- * control-character ranges each of them tests separately, in its own,
- * non-shared way (`.claude/rules/invariants.md`, "One mechanism, one
- * implementation").
+ * Unicode line separators (U+2028, U+2029), used by `hasControlCharacter`.
  */
 export function isFormatOrLineSeparatorCharacter(character: string): boolean {
   const code = character.charCodeAt(0);

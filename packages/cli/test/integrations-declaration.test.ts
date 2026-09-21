@@ -11,8 +11,8 @@ const h = createHash('sha256')
   .update(JSON.stringify({ type: 'http', url: 'https://mcp.figma.com/mcp' }))
   .digest('hex');
 describe('integration intent declaration', () => {
-  it('has exactly the two release MCP providers', () =>
-    expect(REGISTRY.map((x) => x.id)).toEqual(['figma-mcp', 'atlassian-mcp']));
+  it('has only the implemented release providers', () =>
+    expect(REGISTRY.map((x) => x.id)).toEqual(['spec-kit', 'figma-mcp', 'atlassian-mcp']));
   it('round trips only finite intent and target hash fields', () =>
     expect(
       parseDeclaration(

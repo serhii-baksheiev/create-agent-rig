@@ -16,6 +16,12 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## Unreleased
 
+`setup` now offers a provider/harness wizard and delegates Spec Kit setup to
+the pinned official CLI after an explicit plan and consent. Existing external
+installations use `setup add spec-kit --adopt`; updates and removal use the
+official integration lifecycle without destructive force. Spec Kit retains
+its files and manifests; Rig records intent after authoritative status succeeds.
+
 `setup apply` and `setup remove` manage explicitly selected Figma and Atlassian
 MCP configuration through Claude Code's documented project config. Dry-run and
 consent apply before changes; existing user entries are preserved. Ownership
