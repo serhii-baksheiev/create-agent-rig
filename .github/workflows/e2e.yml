@@ -91,4 +91,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Temporary isolated Windows supervisor measurement
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RIG_WINDOWS_JOB_PROBE: '1'
+        run: pnpm exec vitest run packages/cli/test/provider-spawn.test.ts -t "runs the compiled adapter argv"
       - run: pnpm test --maxWorkers=2

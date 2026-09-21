@@ -51,6 +51,7 @@ export async function runProviderProcess(
     return failed();
   }
   const env: NodeJS.ProcessEnv = { NO_COLOR: '1', UV_NO_PROGRESS: '1', PYTHONUTF8: '1' };
+  if (process.env.RIG_WINDOWS_JOB_PROBE === '1') env.RIG_WINDOWS_JOB_PROBE = '1';
   const allowed = new Set([
     'PATH',
     'HOME',

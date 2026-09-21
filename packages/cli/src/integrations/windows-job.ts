@@ -2,6 +2,7 @@
 // adapter; repository declarations never reach this script as executable code.
 export const WINDOWS_JOB_SUPERVISOR = String.raw`
 $ErrorActionPreference = 'Stop'
+if ($env:RIG_WINDOWS_JOB_PROBE -eq '1') { [Console]::Error.WriteLine('rig-probe:entered') }
 $source = @'
 using System;
 using System.ComponentModel;
@@ -211,6 +212,7 @@ public static class RigJob
             PROCESS_INFORMATION process;
             Check(CreateProcess(executable, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero,
                 true, EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, cwd, ref startup, out process));
+            if (Environment.GetEnvironmentVariable("RIG_WINDOWS_JOB_PROBE") == "1") Console.Error.WriteLine("rig-probe:created");
             return process;
         }
         finally
@@ -266,6 +268,7 @@ public static class RigJob
 }
 '@
 Add-Type -TypeDefinition $source -Language CSharp
+if ($env:RIG_WINDOWS_JOB_PROBE -eq '1') { [Console]::Error.WriteLine('rig-probe:compiled') }
 $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:RIG_WINDOWS_JOB_PAYLOAD)) | ConvertFrom-Json
 $exe = [string]$payload.executable
 $cwd = [string]$payload.cwd
