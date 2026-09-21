@@ -146,6 +146,15 @@ baselines belong in `.rig/integrations.json`; doctor observations are read-only
 output. Spec Kit retains ownership of its files and manifests. The historical
 measurements above do not establish acceptance for that delegated lifecycle.
 
+The delegated adapter now pins official Spec Kit v1.0.8 through `uvx --from
+git+https://github.com/github/spec-kit@v1.0.8 specify`. Isolated executable
+fixtures cover dual-harness initialization, repeat setup, adoption, update,
+removal and authoritative status on Linux and native Windows. Process-tree
+cleanup is tested on both systems. These are adapter tests, not a claim of
+real network installation acceptance; that remains a dedicated exact-SHA
+release check. Upstream sources and generated payloads are not shipped in
+Rig's package.
+
 The scope bullet "remove tracked duplicate projections from templates when
 replacement evidence exists" has no target either: the replacement it names
 would be a native import, which Codex does not offer, so the committed

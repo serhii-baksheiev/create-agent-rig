@@ -1,4 +1,4 @@
-# 0.10.0 checkpoint - 2026-09-21, 12:38 UTC
+# 0.10.0 checkpoint - 2026-09-21, 13:14 UTC
 
 Recheck Git, GitHub and live Jira after resuming. Heads outrank this dated note.
 The September 21 RP-22/RP-21/RP-24/RP-88/RP-92 descriptions and owner prompt
@@ -15,29 +15,32 @@ supersede the receipt-based architecture in older handoffs.
   and [E2E 35598820192](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35598820192)
   passed, including native Windows full suite. Jira RP-22 has merge evidence.
   Owned intent worktrees/local branches and merged remote branch were removed.
-- Codex slice: `feat/rp-22-codex-mcp`, Windows and WSL
-  `.claude/worktrees/rp22-codex-mcp`. Implementation awaits commit/gates at this
-  checkpoint. Native WSL branch is based on master above; Windows still has
-  reviewed predecessor `bf978a5` until alignment with the native commit.
-  Whole-file base rendering, rolling root `targets.codex.fileHash`, safe
-  compiled conflict fragments, repeated harness selection, missing-file apply
-  restoration and stale snapshots are implemented. Nine original Reds plus
-  four failing follow-up regressions preceded their fixes. Current focused
-  native Windows suite: 11/11; Linux full suite: 131 files, 3815 passed,
-  14 platform skips. Lint/typecheck passed. No Codex PR opened yet.
-- Spec Kit slice: `feat/rp-22-spec-kit`, Windows worktree based on master above;
-  WSL mirror still based on original `8cd5096`. New uncommitted
-  `spawn.ts`, `windows-job.ts`, `spec-kit.ts`, `setup-wizard.ts` and tests.
-  Pinned official lifecycle tests: Linux 15/15, Windows 14 plus POSIX-only skip.
-  Process-tree tests: Windows 7/7, Linux 6 plus Windows-only skip. Wizard tests
-  5/5. Public Spec Kit command integration tests are being written; commands
-  are not wired yet. Old exec framework must be deleted with the real consumer.
-  Legacy Memory equals-option routing regression is pending.
+- Codex slice [PR #248](https://github.com/serhii-baksheiev/create-agent-rig/pull/248):
+  `feat/rp-22-codex-mcp`, exact clean/pushed head
+  `a97b3b45cf2cbd5fac1347787065d30a0c610bcb`, Windows and WSL worktrees.
+  Round 2/3 all code/security/prose SHIP; coverage complete. First-round prose
+  required only named Codex test links; runtime/tests unchanged from d9cf2115.
+  Full Linux 131 files/3815 passed/14 skips; native Windows Codex 11/11.
+  Ordinary hooks passed. Original exact-head dispatch 35600987747 passed;
+  new-head dispatch 35602582383 and all PR checks passed.
+  Merged as 92a3f81fd63ae44dda3db694257ea2604ed0dc11; trees match. Master CI 35604145986 and E2E 35604145975 are running.
+- Spec Kit slice: `feat/rp-22-spec-kit`, Windows and WSL, HEAD d9cf2115 with
+  staged implementation. Official pinned lifecycle, bounded process-tree
+  spawn, wizard, public add/apply/remove and explicit adoption are wired.
+  Legacy equals-form Memory routing is covered. Old unused exec.ts framework
+  and its framework-only tests were removed. Linux lifecycle18/18; native
+  Windows combined42passed4platformskips. Initial full Linux suite found two
+  obsolete exact-two-provider expectations and a recursive fake cleanup call;
+  corrected to include Spec Kit and remove only fixture-owned files. Their
+  targeted32tests passed. Three lint issues fixed. Full confirming run is in
+  progress, logs /tmp/rig-spec-{lint,typecheck,test}.log in WSL. No Spec Kit
+  commit or PR yet. Source/input/exec safety must receive all review gates.
 - Doctor preparation: `feat/rp-21-doctor`, Windows `.claude/worktrees/rp21-doctor`
-  based on master above. Only new `verify.ts` and `integrations-verify.test.ts`.
-  Four local-verification cases and the rejected-ID privacy regression pass;
-  Basic Memory and Codex cases await registry/schema integration. This is
-  preparatory RP-22 verification work, not a claim that RP-21 is delivered.
+  now based on d9cf2115. New verify.ts/integrations-verify.test.ts: seven cases
+  pass, two await Basic Memory registry. Rejected IDs are not echoed. Four
+  new Basic Memory wiring/data-preservation/coexistence tests are Red because
+  provider is not yet in registry; implementation pending after Spec Kit.
+  This is preparation, not delivery of RP-21 or a new release blocker.
 
 ## Preserved unrelated work
 
