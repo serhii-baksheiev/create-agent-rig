@@ -1,121 +1,65 @@
-# 0.10.0 checkpoint - 2026-09-21, 13:14 UTC
+# 0.10.0 release continuation checkpoint
 
-Recheck Git, GitHub and live Jira after resuming. Heads outrank this dated note.
-The September 21 RP-22/RP-21/RP-24/RP-88/RP-92 descriptions and owner prompt
-supersede the receipt-based architecture in older handoffs.
+Snapshot: 2026-09-21 15:17 UTC. Recheck Git/GitHub/Jira after restart;
+heads and current ticket descriptions take precedence over this note.
 
-## Delivered and current work
+Master: f38d9cbf8c914ea10f27562c62abe4cb894b927d. PR249 merged the pinned
+Spec Kit lifecycle and minimal process runner from reviewed head
+4eefcd454e16851e73c22786b92382343c432d07. Full hosted Linux/Windows dispatch
+35614012001 passed before merge; merge tree equals the reviewed tree.
+Master CI35616266887 passed; full post-merge E2E35616266888 is still running.
+Earlier PR247 delivered schema1/Claude ownership; PR248 delivered Codex hashes.
 
-- Master: `1f85b0783863ff4bba01fab5b1257e0359be3f79`, ownership
-  [PR #247](https://github.com/serhii-baksheiev/create-agent-rig/pull/247).
-  Reviewed head `bf978a53138955495eebcc51176de52f50446383`; trees match.
-  Code/security/prose SHIP in round 2/3, complete coverage. PR ci/e2e/
-  windows-smoke passed. Hosted Linux/Windows dispatch 35597239808 passed.
-  Post-merge [CI 35598820184](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35598820184)
-  and [E2E 35598820192](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35598820192)
-  passed, including native Windows full suite. Jira RP-22 has merge evidence.
-  Owned intent worktrees/local branches and merged remote branch were removed.
-- Codex slice [PR #248](https://github.com/serhii-baksheiev/create-agent-rig/pull/248):
-  `feat/rp-22-codex-mcp`, exact clean/pushed head
-  `a97b3b45cf2cbd5fac1347787065d30a0c610bcb`, Windows and WSL worktrees.
-  Round 2/3 all code/security/prose SHIP; coverage complete. First-round prose
-  required only named Codex test links; runtime/tests unchanged from d9cf2115.
-  Full Linux 131 files/3815 passed/14 skips; native Windows Codex 11/11.
-  Ordinary hooks passed. Original exact-head dispatch 35600987747 passed;
-  new-head dispatch 35602582383 and all PR checks passed.
-  Merged as 92a3f81fd63ae44dda3db694257ea2604ed0dc11; trees match. Master CI 35604145986 and E2E 35604145975 are running.
-- Spec Kit slice: `feat/rp-22-spec-kit`, Windows and WSL, HEAD d9cf2115 with
-  staged implementation. Official pinned lifecycle, bounded process-tree
-  spawn, wizard, public add/apply/remove and explicit adoption are wired.
-  Legacy equals-form Memory routing is covered. Old unused exec.ts framework
-  and its framework-only tests were removed. Linux lifecycle18/18; native
-  Windows combined42passed4platformskips. Initial full Linux suite found two
-  obsolete exact-two-provider expectations and a recursive fake cleanup call;
-  corrected to include Spec Kit and remove only fixture-owned files. Their
-  targeted32tests passed. Three lint issues fixed. Full confirming run is in
-  progress, logs /tmp/rig-spec-{lint,typecheck,test}.log in WSL. No Spec Kit
-  commit or PR yet. Source/input/exec safety must receive all review gates.
-- Doctor preparation: `feat/rp-21-doctor`, Windows `.claude/worktrees/rp21-doctor`
-  now based on d9cf2115. New verify.ts/integrations-verify.test.ts: seven cases
-  pass, two await Basic Memory registry. Rejected IDs are not echoed. Four
-  new Basic Memory wiring/data-preservation/coexistence tests are Red because
-  provider is not yet in registry; implementation pending after Spec Kit.
-  This is preparation, not delivery of RP-21 or a new release blocker.
+Open PR250: https://github.com/serhii-baksheiev/create-agent-rig/pull/250
+Head a61d3ff92c4aa98afb76bf2f786c9d91f2e462af, feat/rp-21-doctor.
+Code/security/prose SHIP in round2 of3; exact-head coverage complete.
+Full Linux passed dispatch35617153962; Windows and ordinary PR checks pending.
+Previous full Linux/Windows8e205759 passed. The final review correction warns
+on selected providers without harnesses and skips their upstream diagnosis;
+two regression rows were Red, then all11 doctor tests passed on both platforms.
+Do not merge until all exact-head checks pass. Verify master after merge.
 
-## Preserved unrelated work
+RP24 branch feat/rp-24-release-acceptance is pushed at
+de49b9906ee7177ff1398a996c6a3634dbf5b192. Windows was synchronized to that
+commit. WSL is merging reviewed doctor a61d3ff; only the old checkpoint text
+conflicted, replaced by this current snapshot. Finish the merge commit, push,
+synchronize Windows, then run formal reviews and the explicit network lane.
+No real provider-network acceptance has run yet. No RP24 PR is open yet.
+The branch owns .github/workflows/e2e.yml, scripts/release-acceptance.mjs,
+test/template/release-acceptance.test.ts, docs/releasing.md, this checkpoint
+and the adapter-created .rig/claims/RP-24.json. Preflight refusal tests pass.
+The lane requires release_acceptance=true plus a full release_sha and retains
+the hosted/self-hosted switch; macOS is untested.
 
-- Original S5 `feat/rp-22-s5-mcp` remains at
-  `420ff588936c40bf2d06521c036f2ecd9fab5e21`; no history rewrite.
-- Main Windows checkout preserves modified `.claude/hooks/dod-checks.json`
-  and untracked `.rig/claims/RP-111.json.local`, `.rig/claims/RP-185.json`,
-  `docs/rig-0.9.0-codex-loop-prompt.md`. Never include these in release commits.
-- Historical dirty worktrees remain: release-090-control (monthly journal),
-  rp111-semantic-benchmark (benchmark/diagnostics), rp177-owner-reset
-  (create/changelog/test), rp189-owned-directory (claim/upgrade/test).
-  Broken native-315ad8f metadata was deliberately not pruned.
+Jira: RP22/RP21/RP24 In Progress, RP92 To Do. RP92 closes last. Memory-owned
+issues remain relates-only. RP24 SELECT created its baseline through the
+unchanged claim mechanism after complete sibling-journal inspection; the
+adapter acknowledged its claim. RP22's old receipt scope is superseded and
+its revalidation holds have normal recorded reread outcomes. Do not rewrite
+frozen claim fingerprints or revalidation behavior.
 
-## Release authority and next steps
+Active Windows worktrees are under .claude/worktrees/: rp21-doctor,
+rp24-release-acceptance and merged rp22-spec-kit (cleanup pending).
+Matching WSL clone: /home/serhiibaksheiev/rig, Ubuntu user serhiibaksheiev;
+source ~/.nvm/nvm.sh before pnpm. Original S5 branch/worktree is preserved.
+Historical dirty worktrees are untouched. Root owner changes remain:
+.claude/hooks/dod-checks.json, untracked .rig/claims/RP-111.json.local,
+.rig/claims/RP-185.json and docs/rig-0.9.0-codex-loop-prompt.md.
+Never include those in a release commit.
 
-RP-22 remains In Progress; RP-21/RP-24/RP-92 remain open. RP-88 is In Progress.
-Mandatory path: RP-22 -> RP-21 -> RP-24 -> RP-92. Historical prerequisites stay
-Done; Memory-owned issues are relates-only. Version remains 0.9.1; no publish,
-tag, release-channel change or new credentials are authorized automatically.
+Run evidence: .claude/runs/20260921-codex-release0100. It contains review
+reports, CI failure diagnoses and patch backups, including doctor-review-fix.patch
+and rp24-fragment.patch. Root stash labelled "RP21 Windows checkpoint before
+adopting saved and rebased doctor commit" and WSL backup branch
+backup/rp21-before-spec-parent retain the earlier doctor state. No work is lost.
+For journal reviews use record.mjs decision, not an event: coverage reads
+review decisions. Reports end in fenced JSON; raw JSON is for recording only.
+Gate counts: SpecKit3 exhausted, CI fixture-only closure reviewed without a
+fourth broad audit; doctor2; RP24 formal review not started.
 
-Next: commit/push/gate Codex slice; dispatch exact-head Windows e2e before
-merge; wire Spec Kit through official pinned lifecycle and wizard; Basic Memory
-wiring-only preview; aggregate doctor; exact-SHA packed-artifact acceptance.
-After each merge verify master CI/E2E and update factual Jira evidence.
-Self-hosted fallback remains configured; registered runners were zero at the
-baseline. macOS and self-hosted execution are not claimed without actual runs.
-
-## Recovery
-
-Run directory in the Windows main checkout:
-`.claude/runs/20260921-codex-release0100`. It contains reports, JSON verdicts,
-run journal, `codex-implementation.patch`, `spec-kit-spawn.patch`, and
-`doctor-verify.patch`. Refresh backups before any reset/context cleanup.
-Export its absolute path as `RIG_RUN_DIR` for gates. Existing user-level Jira
-env file stays outside the repository; never copy or display it.
-
-Normal BEFORE_PR Jira search truncated comments. Direct adapter `find('RP-22')`
-returned complete commentary; `revalidate-direct.mjs` uses that record with the
-unchanged frozen revalidation mechanism, verifies the actual origin/master
-merge base, and journals evidence. Superseded claim scope was reread and
-resolved with the normal outcome command. Do not rewrite frozen claim hashes.
-Use normal revalidation if the direct helper detects a moved merge base.
-
-## Live continuation checkpoint — 2026-09-21 14:53 UTC
-
-Revalidate these observations after restart. Master is
-92a3f81fd63ae44dda3db694257ea2604ed0dc11; its Linux/Windows checks passed.
-PR249 is open at 4eefcd454e16851e73c22786b92382343c432d07 on
-feat/rp-22-spec-kit. Ordinary PR checks and full Linux pass; full Windows
-dispatch35614012001 is running. Prior Windows failures were isolated to two
-cold-compiler test preparation timeouts. The fixture now uses bounded direct
-git initialization; provider operations and assertions remain unchanged.
-All three lenses SHIP at e7601f48f7dcbde92308ec2bcad470caa4701505; bounded
-code/test closure SHIP at4eefcd4, with unchanged production/docs verified.
-Round cap remains3, with no fourth broad audit. Merge still waits Windows.
-
-Doctor branch feat/rp-21-doctor is clean/pushed in Windows and WSL at
-8e20575924665859bf55f5b206af959e6e20ea40. Prior full Linux passed; Windows
-9a4d3b1 failed one test fixture that computed a relative PATH across drives.
-Its same-volume fixture correction preserves the refusal assertion. New full
-dispatch35614771275 is running; formal first review is in progress. No PR yet.
-RP22 and RP21 are In Progress; RP24/RP92 remain open. No ticket is declared Done.
-
-RP24 worktrees in Windows and WSL are based on master92a3f81. Windows owns
-uncommitted workflow/docs/preflight tests and scripts/release-acceptance.mjs;
-WSL has only the clean base and installed dependencies so far. The script is
-still under implementation review, and no real network acceptance is claimed.
-Next: finish its safety/contract corrections, preserve changes, integrate the
-delivered doctor parent, and run the exact-SHA dedicated network lane.
-
-Backups remain in .claude/runs/20260921-codex-release0100: doctor-post-ci.patch,
-doctor-before-parent.patch and prior spec/doctor patches. Root stash labelled
-"RP21 Windows checkpoint before adopting saved and rebased doctor commit"
-and WSL branch backup/rp21-before-spec-parent preserve the earlier doctor work.
-Root owner modification .claude/hooks/dod-checks.json and untracked claims/prompt
-remain untouched. Historical dirty worktrees and original S5 branch remain.
-Package version is0.9.1; release bump/ledger/pack evidence still pending.
-No npm publish, public tag or release-channel operation has occurred.
+Next: merge doctor only after checks; verify master and update Jira. Complete
+RP24 real pinned Spec Kit/packed artifact evidence on Linux and Windows, then
+prepare version0.10.0, changelog/compatibility/ledger, content+secret scans and
+final exact-release-SHA acceptance. Package is still0.9.1. No npm publish,
+public tag/release or release-channel change is authorized. Stop only for the
+owner's final publish step after the remaining safe work is complete.

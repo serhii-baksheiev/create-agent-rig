@@ -12,7 +12,12 @@ const h = createHash('sha256')
   .digest('hex');
 describe('integration intent declaration', () => {
   it('has only the implemented release providers', () =>
-    expect(REGISTRY.map((x) => x.id)).toEqual(['spec-kit', 'figma-mcp', 'atlassian-mcp']));
+    expect(REGISTRY.map((x) => x.id)).toEqual([
+      'basic-memory',
+      'spec-kit',
+      'figma-mcp',
+      'atlassian-mcp',
+    ]));
   it('round trips only finite intent and target hash fields', () =>
     expect(
       parseDeclaration(

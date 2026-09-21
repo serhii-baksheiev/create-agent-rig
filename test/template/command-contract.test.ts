@@ -2006,7 +2006,7 @@ describe('the conformance section stays true about this repository', () => {
     ).toMatch(/rig bin[\s\S]{0,200}handshake|handshake[\s\S]{0,200}rig bin/i);
   });
 
-  it("reports that the rig bin's only exit codes are 0, 1, setup's 4, and memory's 4, 3 and 2 (RP-19)", async () => {
+  it("reports the rig bin's documented setup, memory and doctor exit codes", async () => {
     const sources = await walkSources(path.join(repoRoot, 'packages', 'cli', 'src'), '.ts');
     expect(sources.length, 'found no rig bin sources to search for an exit code').toBeGreaterThan(
       0,
@@ -2043,14 +2043,16 @@ describe('the conformance section stays true about this repository', () => {
     // {file, literal} pairs that exist.
     expect(
       [...new Set(wider)].sort(),
-      `the rig bin's exit codes outside {0, 1} are (${wider.join(', ')}) — the conformance row names setup's 4 and memory's 2, 3 and 4`,
+      `the rig bin's exit codes outside {0, 1} are (${wider.join(', ')}) — the conformance row names setup's 4, memory's 2, 3 and 4, and doctor's usage exit 2`,
     ).toEqual([
+      'packages/cli/src/commands/doctor.ts: exitCode: 2',
       'packages/cli/src/commands/memory.ts: exitCode: 2',
       'packages/cli/src/commands/memory.ts: exitCode: 3',
       'packages/cli/src/commands/memory.ts: exitCode: 4',
       'packages/cli/src/commands/setup.ts: exitCode: 4',
     ]);
     const prose = normalizeProse(await conformance());
+    expect(prose).toMatch(/doctor[\s\S]{0,100}\b2\b/);
     expect(
       prose,
       "the conformance section must record memory's invalid-invocation exit as 2",
