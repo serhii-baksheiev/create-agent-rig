@@ -522,6 +522,23 @@ describe('runSpecKitLifecycle', { timeout: process.platform === 'win32' ? 60_000
     expect(result).toMatchObject({ ok: false, reason: 'upstream-incomplete-use-adopt-and-status' });
   });
 
+  it('does not return secret-shaped upstream status identifiers in its diagnosis', async () => {
+    const secretShapedIdentifier = ['ghp', 'a'.repeat(36)].join('_');
+    await configureFake({
+      reportedInstalled: ['claude', 'codex'],
+      findings: [{ severity: 'warning', code: secretShapedIdentifier }],
+    });
+
+    const result = await run({
+      operation: 'add',
+      harnesses: ['claude-code', 'codex'],
+      managed: true,
+      consent: true,
+    });
+
+    expect(JSON.stringify(result)).not.toContain(secretShapedIdentifier);
+  });
+
   it.each([
     ['warning status', { status: 'warning' }],
     ['error status', { status: 'error' }],

@@ -8,6 +8,25 @@ import { runProviderProcess, type ProviderProcessResult } from './spawn.js';
 export const SPEC_KIT_VERSION = '1.0.8';
 const SOURCE = `git+https://github.com/github/spec-kit@v${SPEC_KIT_VERSION}`;
 const PREFIX = ['--from', SOURCE, 'specify'];
+// v1.0.8's status vocabulary. Unknown upstream strings never reach diagnostics.
+const STATUS_CODES = new Set([
+  'default-integration-missing',
+  'default-integration-not-installed',
+  'installed-integrations-invalid',
+  'integration-key-invalid',
+  'integration-state-missing',
+  'integration-state-unreadable',
+  'managed-file-collision',
+  'managed-files-missing',
+  'managed-files-modified',
+  'manifest-missing',
+  'manifest-paths-invalid',
+  'manifest-unreadable',
+  'no-installed-integrations',
+  'project-root-unresolved',
+  'unknown-integration',
+  'unsafe-multi-install',
+]);
 type Harness = 'claude-code' | 'codex';
 type UpstreamHarness = 'claude' | 'codex';
 type Observation = {
@@ -81,7 +100,7 @@ function observe(result: ProviderProcessResult): Observation | undefined {
     ? value.findings.flatMap((finding: unknown) =>
         isPlainObject(finding) &&
         typeof finding.code === 'string' &&
-        /^[a-z0-9_.-]{1,80}$/i.test(finding.code) &&
+        STATUS_CODES.has(finding.code) &&
         ['info', 'warning', 'error'].includes(String(finding.severity))
           ? [{ code: finding.code, severity: String(finding.severity) }]
           : [],
@@ -90,7 +109,9 @@ function observe(result: ProviderProcessResult): Observation | undefined {
   if (!Array.isArray(value.findings) || findings.length !== value.findings.length) return undefined;
   return {
     status: value.status as Observation['status'],
-    installedIntegrations: value.installed_integrations as string[],
+    installedIntegrations: value.installed_integrations.filter(
+      (id) => id === 'claude' || id === 'codex',
+    ),
     findings,
   };
 }
