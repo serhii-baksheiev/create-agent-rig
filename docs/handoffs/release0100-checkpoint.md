@@ -1,97 +1,82 @@
-# 0.10.0 checkpoint — 2026-09-21
+# 0.10.0 checkpoint - 2026-09-21, 12:38 UTC
 
-Re-read Git/GitHub/Jira before resuming: this is a dated checkpoint, not task
-authority. The September 21 descriptions of RP-22, RP-21, RP-24, RP-88 and
-RP-92 supersede the older receipt-based architecture in prior handoffs.
+Recheck Git, GitHub and live Jira after resuming. Heads outrank this dated note.
+The September 21 RP-22/RP-21/RP-24/RP-88/RP-92 descriptions and owner prompt
+supersede the receipt-based architecture in older handoffs.
 
-## Baseline and preserved work
+## Delivered and current work
 
-- Freshly fetched master: `8cd5096de23fefb23681ff383e1518bb04298d54`.
-- No open PRs at baseline. [CI](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35554031632)
-  and [Linux/Windows E2E](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35554031646)
-  passed on that SHA using hosted runners.
-- Preserved S5: `feat/rp-22-s5-mcp`, head
-  `420ff588936c40bf2d06521c036f2ecd9fab5e21`, Windows worktree
-  `.claude/worktrees/rp22-s5-mcp`. No history rewrite.
-- Current ownership slice: `feat/rp-22-intent-mcp`, Windows and WSL
-  `.claude/worktrees/rp22-intent-mcp`, pushed head
-  `6d561fd03d7c8527edc541f0d2cb95e9ff8082f0`; Windows has round-2 corrections
-  in progress, and the WSL mirror remains on the reviewed head.
-  Full Linux suite: 3789 passed, 14 platform skips; native Windows targeted
-  suite: 24 passed, 2 capability skips; lint/typecheck/pre-commit passed.
-  [Exact-head hosted dispatch](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35594680334):
-  Linux passed, Windows was cancelled because review blocked this head.
-  Gate round 1/3: security SHIP, code/prose HOLD. No PR opened yet.
-  Corrections: preserve foreign JSON bytes, restore built-CLI/Memory/EPIPE
-  tests, remove premature Codex entryHash, and correct stale schema/changelog
-  prose. Review reports and the HOLD are saved in the run directory.
-- Next Codex slice: `feat/rp-22-codex-mcp`, Windows
-  `.claude/worktrees/rp22-codex-mcp`, based on the ownership head above.
-  Test writer is creating `integrations-codex.test.ts`; no adapter implementation
-  yet. Whole-file ownership will use intent-root `targets.codex.fileHash`,
-  retained after last-provider removal for the next operation's guard.
-- Independent upcoming spawn/Spec Kit slice: `feat/rp-22-spec-kit`, Windows
-  `.claude/worktrees/rp22-spec-kit`, created from the baseline above. Integrate
-  the ownership slice before connecting its command surface. Uncommitted
-  staged `spawn.ts`, `windows-job.ts` and `provider-spawn.test.ts` are backed up
-  in the run directory's `spec-kit-spawn.patch`. Windows Job assignment uses
-  the atomic process-creation job-list attribute; native tests 7/7 passed,
-  Linux 6 passed with one Windows-only skip. No Spec Kit consumer yet.
-- Main Windows checkout has preserved local changes: modified
-  `.claude/hooks/dod-checks.json`; untracked `.rig/claims/RP-111.json.local`,
-  `.rig/claims/RP-185.json` and `docs/rig-0.9.0-codex-loop-prompt.md`.
-  These are not release changes. Other historical worktrees remain untouched.
-- Other dirty worktrees found in the baseline: `release-090-control`
-  (staged monthly journal); `rp111-semantic-benchmark` (benchmark tests and
-  untracked stage diagnostics); `rp177-owner-reset` (staged create fix/test
-  and changelog); `rp189-owned-directory` (staged claim, upgrade fix and test).
-  Preserve them. A prunable temporary `native-315ad8f` registration no longer
-  has usable Git metadata; it was not removed.
+- Master: `1f85b0783863ff4bba01fab5b1257e0359be3f79`, ownership
+  [PR #247](https://github.com/serhii-baksheiev/create-agent-rig/pull/247).
+  Reviewed head `bf978a53138955495eebcc51176de52f50446383`; trees match.
+  Code/security/prose SHIP in round 2/3, complete coverage. PR ci/e2e/
+  windows-smoke passed. Hosted Linux/Windows dispatch 35597239808 passed.
+  Post-merge [CI 35598820184](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35598820184)
+  and [E2E 35598820192](https://github.com/serhii-baksheiev/create-agent-rig/actions/runs/35598820192)
+  passed, including native Windows full suite. Jira RP-22 has merge evidence.
+  Owned intent worktrees/local branches and merged remote branch were removed.
+- Codex slice: `feat/rp-22-codex-mcp`, Windows and WSL
+  `.claude/worktrees/rp22-codex-mcp`. Implementation awaits commit/gates at this
+  checkpoint. Native WSL branch is based on master above; Windows still has
+  reviewed predecessor `bf978a5` until alignment with the native commit.
+  Whole-file base rendering, rolling root `targets.codex.fileHash`, safe
+  compiled conflict fragments, repeated harness selection, missing-file apply
+  restoration and stale snapshots are implemented. Nine original Reds plus
+  four failing follow-up regressions preceded their fixes. Current focused
+  native Windows suite: 11/11; Linux full suite: 131 files, 3815 passed,
+  14 platform skips. Lint/typecheck passed. No Codex PR opened yet.
+- Spec Kit slice: `feat/rp-22-spec-kit`, Windows worktree based on master above;
+  WSL mirror still based on original `8cd5096`. New uncommitted
+  `spawn.ts`, `windows-job.ts`, `spec-kit.ts`, `setup-wizard.ts` and tests.
+  Pinned official lifecycle tests: Linux 15/15, Windows 14 plus POSIX-only skip.
+  Process-tree tests: Windows 7/7, Linux 6 plus Windows-only skip. Wizard tests
+  5/5. Public Spec Kit command integration tests are being written; commands
+  are not wired yet. Old exec framework must be deleted with the real consumer.
+  Legacy Memory equals-option routing regression is pending.
+- Doctor preparation: `feat/rp-21-doctor`, Windows `.claude/worktrees/rp21-doctor`
+  based on master above. Only new `verify.ts` and `integrations-verify.test.ts`.
+  Four local-verification cases and the rejected-ID privacy regression pass;
+  Basic Memory and Codex cases await registry/schema integration. This is
+  preparatory RP-22 verification work, not a claim that RP-21 is delivered.
 
-## Remaining release path
+## Preserved unrelated work
 
-RP-22 remains In Progress until all setup acceptance passes. RP-21, RP-24 and
-RP-92 remain open. RP-88 is In Progress. Historical prerequisites are Done;
-Memory-owned tickets remain relates-only. RP-53 and RP-189 are outside the
-mandatory release path.
+- Original S5 `feat/rp-22-s5-mcp` remains at
+  `420ff588936c40bf2d06521c036f2ecd9fab5e21`; no history rewrite.
+- Main Windows checkout preserves modified `.claude/hooks/dod-checks.json`
+  and untracked `.rig/claims/RP-111.json.local`, `.rig/claims/RP-185.json`,
+  `docs/rig-0.9.0-codex-loop-prompt.md`. Never include these in release commits.
+- Historical dirty worktrees remain: release-090-control (monthly journal),
+  rp111-semantic-benchmark (benchmark/diagnostics), rp177-owner-reset
+  (create/changelog/test), rp189-owned-directory (claim/upgrade/test).
+  Broken native-315ad8f metadata was deliberately not pruned.
 
-The ownership slice replaces separate receipts and setup verification with
-intent-held Claude entry hashes, explicit consent and stale-plan refusal.
-Next: Codex whole-file rendering and rolling fileHash; minimal bounded spawn
-and official Spec Kit delegation; Basic Memory preview and aggregated doctor;
-exact-SHA release acceptance. The release version has not yet been bumped from
-0.9.1. The ledger includes the published 0.9.1 SHA.
+## Release authority and next steps
 
-Native Windows full-suite evidence requires an E2E dispatch on each code PR's
-exact head. The self-hosted dispatch switch remains configured; the repository
-runner API returned zero registered runners at this checkpoint. Do not claim
-self-hosted execution or macOS acceptance without a run.
+RP-22 remains In Progress; RP-21/RP-24/RP-92 remain open. RP-88 is In Progress.
+Mandatory path: RP-22 -> RP-21 -> RP-24 -> RP-92. Historical prerequisites stay
+Done; Memory-owned issues are relates-only. Version remains 0.9.1; no publish,
+tag, release-channel change or new credentials are authorized automatically.
 
-## Resume mechanics
+Next: commit/push/gate Codex slice; dispatch exact-head Windows e2e before
+merge; wire Spec Kit through official pinned lifecycle and wizard; Basic Memory
+wiring-only preview; aggregate doctor; exact-SHA packed-artifact acceptance.
+After each merge verify master CI/E2E and update factual Jira evidence.
+Self-hosted fallback remains configured; registered runners were zero at the
+baseline. macOS and self-hosted execution are not claimed without actual runs.
 
-Run trace: `.claude/runs/20260921-codex-release0100` in the Windows main checkout.
-Re-export its absolute path as `RIG_RUN_DIR` for journal and gates. Jira adapter
-uses the existing user-level `~/.config/create-agent-rig/jira.env`; never copy
-its contents into a repository or report. RP-22's changed scope was detected at
-SELECT and resolved after reading the superseding descriptions, with
-`action-changed true`. Claim/revalidation behavior remains frozen.
-BEFORE_PR search returned incomplete commentary (25 total comments); the
-existing adapter's direct `find` returned all 25 unique ids. Run helper
-`revalidate-direct.mjs` fed that complete live record through unchanged
-`revalidateClaim`, confirmed no default-branch drift, and journaled the
-evidence-equivalent check. The scope outcome was recorded after re-reading the
-same final contract. Do not alter the frozen revalidation mechanism.
+## Recovery
 
-Next deterministic steps: finish round-2 regressions/corrections, commit and
-push, run gate round 2 with a single fan-out record, check coverage/DoD, open
-the ownership PR, require hosted
-`ci`, `windows-smoke`, `e2e` plus dispatched `windows-e2e` before exact-reviewed
-merge, then verify master and update RP-22. Continue Codex after its failing
-tests; do not close RP-22 until all later provider/wizard acceptance passes.
+Run directory in the Windows main checkout:
+`.claude/runs/20260921-codex-release0100`. It contains reports, JSON verdicts,
+run journal, `codex-implementation.patch`, `spec-kit-spawn.patch`, and
+`doctor-verify.patch`. Refresh backups before any reset/context cleanup.
+Export its absolute path as `RIG_RUN_DIR` for gates. Existing user-level Jira
+env file stays outside the repository; never copy or display it.
 
-Before compaction or restart, save all current edits in the task branch or a
-named patch and update this checkpoint with the new exact heads and evidence.
-The owner has authorized routine engineering, review, Jira and exact-reviewed
-merges. Publishing to npm, public tags/releases, release-channel changes,
-credentials/grants, paid terms, destructive published-history changes and a
-product-boundary change remain owner-only.
+Normal BEFORE_PR Jira search truncated comments. Direct adapter `find('RP-22')`
+returned complete commentary; `revalidate-direct.mjs` uses that record with the
+unchanged frozen revalidation mechanism, verifies the actual origin/master
+merge base, and journals evidence. Superseded claim scope was reread and
+resolved with the normal outcome command. Do not rewrite frozen claim hashes.
+Use normal revalidation if the direct helper detects a moved merge base.
