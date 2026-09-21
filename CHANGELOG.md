@@ -31,6 +31,11 @@ workflow mechanisms, MCP wiring, pinned offline Spec Kit status and the
 machine's custom Memory diagnosis. It preserves the existing versioned
 `ok`/`warn`/`fail` contract and keeps connectivity and trust unobserved.
 
+A new project gets an `implementation-agent` for the Green step of TDD, pinned
+like the other roles (`claude-sonnet-5` / `gpt-5.6-terra`, `high`) in
+`.claude/agents/` and `.codex/agents/`. Ordinary implementation no longer falls
+to the unnamed general-purpose subagent, which remains for ad-hoc work.
+
 Basic Memory is available as an optional, wiring-only MCP preview for Claude Code
 and Codex. Rig records only its project MCP wiring; it never installs, updates,
 inspects, synchronizes, or removes Basic Memory data. `uvx` remains a launcher
