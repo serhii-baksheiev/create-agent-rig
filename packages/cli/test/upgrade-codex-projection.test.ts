@@ -74,6 +74,7 @@ describe('planUpgrade — the Codex projection files use the general verdict mac
   const CODEX_PROJECTION_PATHS = [
     'AGENTS.md',
     '.codex/agents/test-writer.toml',
+    '.codex/agents/implementation-agent.toml',
     '.agents/skills/loop/SKILL.md',
   ];
 
@@ -115,5 +116,57 @@ describe('planUpgrade — the Codex projection files use the general verdict mac
 
     await applyUpgrade(repo, plan);
     await expect(read(rel)).rejects.toThrow();
+  });
+});
+
+// The Claude definition of the implementation role follows the same ownership
+// rules as every other rig file: untouched is refreshed, edited is kept and
+// reported, deleted stays deleted — and a file of that name the user wrote
+// before the role shipped is theirs, never claimed or overwritten.
+describe('planUpgrade — the implementation-agent Claude definition', () => {
+  const REL = '.claude/agents/implementation-agent.md';
+
+  it('upgrades cleanly while untouched', async () => {
+    await installRig();
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, REL)).toBe('unchanged');
+  });
+
+  it('keeps and reports an edited definition', async () => {
+    await installRig();
+    const edited = `${await read(REL)}\nA project-specific note.\n`;
+    await write(REL, edited);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, REL)).toBe('conflict');
+    await applyUpgrade(repo, plan);
+    expect(await read(REL)).toBe(edited);
+  });
+
+  it('leaves a deleted definition deleted', async () => {
+    await installRig();
+    await rm(abs(REL));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, REL)).toBe('deleted');
+    await applyUpgrade(repo, plan);
+    await expect(read(REL)).rejects.toThrow();
+  });
+
+  it('never overwrites a user file of that name on a rig installed before the role shipped', async () => {
+    await installRig();
+    const manifestPath = abs('.claude/.rig-manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      files: Record<string, string>;
+    };
+    delete manifest.files[REL];
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const own = '---\nname: implementation-agent\n---\nOur own implementer.\n';
+    await write(REL, own);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    expect(verdictFor(plan, REL)).toBe('conflict');
+    await applyUpgrade(repo, plan);
+    expect(await read(REL)).toBe(own);
   });
 });

@@ -126,13 +126,15 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       expect(profile).toContain(`name = "${agent}"`);
       expect(profile).toMatch(/^description = ".+"$/m);
       expect(profile).toMatch(/^developer_instructions = /m);
-      if (agent !== 'test-writer') expect(profile).toContain('sandbox_mode = "read-only"');
+      if (agent !== 'test-writer' && agent !== 'implementation-agent')
+        expect(profile).toContain('sandbox_mode = "read-only"');
     }
   });
 
   it('routes every named Codex agent to its role-specific model and reasoning effort', async () => {
     const expected = new Map([
       ['universal/test-writer', ['gpt-5.6-terra', 'high']],
+      ['universal/implementation-agent', ['gpt-5.6-terra', 'high']],
       ['universal/prose-reviewer', ['gpt-5.6-terra', 'high']],
       ['universal/code-reviewer', ['gpt-5.6-sol', 'high']],
       ['universal/security-scanner', ['gpt-5.6-sol', 'high']],

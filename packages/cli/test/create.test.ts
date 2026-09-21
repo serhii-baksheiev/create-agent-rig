@@ -152,6 +152,7 @@ describe('createProject', { timeout: 60_000 }, () => {
 
     for (const agent of [
       'test-writer.md',
+      'implementation-agent.md',
       'code-reviewer.md',
       'security-scanner.md',
       'prose-reviewer.md',

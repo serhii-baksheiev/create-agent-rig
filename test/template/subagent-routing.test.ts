@@ -131,6 +131,10 @@ const RP_173_ROUTING: RoutingPolicy = {
       claude: { model: 'claude-sonnet-5', effort: 'high' },
       codex: { model: 'gpt-5.6-terra', effort: 'high' },
     },
+    'implementation-agent': {
+      claude: { model: 'claude-sonnet-5', effort: 'high' },
+      codex: { model: 'gpt-5.6-terra', effort: 'high' },
+    },
     'prose-reviewer': {
       claude: { model: 'claude-sonnet-5', effort: 'high' },
       codex: { model: 'gpt-5.6-terra', effort: 'high' },
@@ -742,5 +746,70 @@ describe('capability evidence records what the Claude routing can and cannot pin
       'model pin under a call-site model': true,
       'per-dispatch effort': true,
     });
+  });
+});
+
+// Ordinary production-code work used to fall to the built-in general-purpose
+// subagent, which runs on the unnamed default at the session's effort. The
+// Green step now has a named role, pinned from the same policy as the gates.
+describe('ordinary implementation has a named, pinned role: implementation-agent', () => {
+  const GATES = ['test-writer', 'prose-reviewer', 'code-reviewer', 'security-scanner'];
+
+  it('puts implementation-agent on the cost-efficient tier for both harnesses and leaves every gate as it was', async () => {
+    const policy = await realPolicy();
+    expect(policy.roles['implementation-agent']).toEqual({
+      claude: { model: 'claude-sonnet-5', effort: 'high' },
+      codex: { model: 'gpt-5.6-terra', effort: 'high' },
+    });
+    for (const gate of GATES) expect(policy.roles[gate], gate).toEqual(RP_173_ROUTING.roles[gate]);
+  });
+
+  it('ships a Claude definition and a Codex profile that carry the policy pins and may write code', async () => {
+    const policy = await realPolicy();
+    const route = policy.roles['implementation-agent']!;
+    const claude = frontmatterOf(
+      await text(universal, '.claude', 'agents', 'implementation-agent.md'),
+    );
+    expect(claude.get('name')).toBe('implementation-agent');
+    expect(claude.get('model')).toBe(route.claude.model);
+    expect(claude.get('effort')).toBe(route.claude.effort);
+    expect(claude.get('tools')).toMatch(/\bWrite\b/);
+    expect(claude.get('tools')).toMatch(/\bEdit\b/);
+
+    const codex = await text(universal, '.codex', 'agents', 'implementation-agent.toml');
+    expect(codex).toContain('name = "implementation-agent"');
+    expect(codex).toContain(`model = ${JSON.stringify(route.codex.model)}`);
+    expect(codex).toContain(`model_reasoning_effort = ${JSON.stringify(route.codex.effort)}`);
+    expect(codex).toContain('sandbox_mode = "workspace-write"');
+  });
+
+  it('refuses a set of Claude agents that lacks the implementation-agent definition', async () => {
+    const { validateClaudeAgents } = await routing();
+    const policy = await realPolicy();
+    const agents = (await claudeAgentTemplates()).filter(
+      (agent) => agent.name !== 'implementation-agent',
+    );
+    expect(() => validateClaudeAgents(policy, agents)).toThrow(
+      /routing role implementation-agent has no Claude agent/,
+    );
+  });
+
+  it('sends the Green step to implementation-agent, as the Red step goes to test-writer', async () => {
+    const workflow = await text(universal, '.claude', 'rules', 'workflow.md');
+    const red = workflow.match(/^1\. \*\*Red\*\*[\s\S]*?(?=^2\. )/m)?.[0] ?? '';
+    const green = workflow.match(/^2\. \*\*Green\*\*[\s\S]*?(?=^3\. )/m)?.[0] ?? '';
+    expect(red).toContain('`test-writer`');
+    expect(green).toContain('`implementation-agent`');
+
+    const loop = await text(universal, '.claude', 'skills', 'loop', 'SKILL.md');
+    expect(loop).toContain('`implementation-agent`');
+    expect(workflow).not.toMatch(/general-purpose/i);
+    expect(loop).not.toMatch(/general-purpose/i);
+  });
+
+  it('records implementation-agent in the routing decision and keeps general-purpose as the ad-hoc fallback only', async () => {
+    const record = await text(universal, 'docs', 'decisions', 'subagent-routing.md');
+    expect(record).toContain('`implementation-agent`');
+    expect(record).toMatch(/general-purpose[^.]*ad-hoc/i);
   });
 });

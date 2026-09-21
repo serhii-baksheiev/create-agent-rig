@@ -162,12 +162,12 @@ manages it; it is now yours"` — the same verdict RP-177 gave a deleted stack
 overlay, applied here to files that are simply no longer read as this rig's
 layer. `applyUpgrade` then writes a manifest whose `files` map has no entry
 for any of the roughly three dozen workflow paths at all — measured, on a
-clean `--layer workflow` install, at exactly 87 file entries down to 54
+clean `--layer workflow` install, at exactly 89 file entries down to 56
 (`packages/cli/test/upgrade.test.ts`, absent in a generated rig, pins "a
 clean workflow-layer install hand-edited down to a core-only layers array
-goes from 87 manifest entries to 54"; the figure moved by one from an
+goes from 89 manifest entries to 56"; the figure moved by one from an
 earlier 86/53 when RP-186 added `docs/decisions/agents-md-canonical.md` to
-the process layer).
+the process layer, and by two more when `implementation-agent` joined it).
 The files stay on disk, silently un-hashed and unowned —
 and a LATER `uninstall`, reading the same manifest, has nothing there to
 recognise them by: they read as an ordinary foreign/untracked path, not as
@@ -199,16 +199,16 @@ as though it always worked. Measured on the built CLI, both ways:
 - **Nothing on the rig was ever edited.** `uninstall --yes` removes every
   file it owns — Core and workflow alike — and, because nothing was left to
   preserve, deletes the manifest too. A fresh `init` then finds no manifest
-  and no workflow files: Core-only, as documented. Measured: 87 files → 0 →
-  a fresh `init` installs 54 (Core only).
+  and no workflow files: Core-only, as documented. A fresh `init` then
+  installs Core only.
 - **Anything was edited — one file is enough.** `uninstall --yes` preserves
   that one file (and reports it) and, because something was preserved,
   **keeps the manifest** — still recording `layers: ["process","
   workflow"]`. The next plain `init` reads that surviving manifest
   (`effectiveLayers` in `init.ts`: `previous?.layers.includes('workflow')`)
-  and reinstalls the entire workflow layer right back. Measured: 87 files →
-  `uninstall --yes` leaves 2 (the one preserved file plus the manifest) →
-  a plain `init` afterward brings it back to 87, `layers` still both. The
+  and reinstalls the entire workflow layer right back. `uninstall --yes` leaves
+  the one preserved file plus the manifest, and a plain `init` afterward
+  brings the whole workflow layer back, `layers` still both. The
   "fresh `init`" instruction alone does NOT reach Core-only here — round 3
   said it did.
 
@@ -217,9 +217,8 @@ preserved: pass `--detach`.** `uninstall --yes --detach` performs the
 identical safe removal and then deletes the manifest regardless of what is
 left behind, handing the preserved file(s) over to the operator outright
 (they stay on disk, no longer named by anything). The next plain `init`
-then finds no manifest at all and installs Core only. Measured: 87 → 2
-(the preserved file; no manifest) → a fresh `init` installs 55 (54 Core +
-the one preserved file untouched) with `layers: ["process"]`. No new flag
+then finds no manifest at all and installs Core only. A fresh `init` then installs
+Core, leaves the preserved file untouched, and records `layers: ["process"]`. No new flag
 was added for this — `--detach` already existed (RP-181) for the identical
 reason: a manifest kept alive only by something it has no business
 prescribing further action over.

@@ -7,7 +7,9 @@ Red → Green → Refactor, in that order, every time:
 1. **Red** — write the test that describes the behavior; run it; watch it fail.
    Use the `test-writer` agent for this step: it writes the failing test and is
    scoped so it cannot "helpfully" write the implementation too.
-2. **Green** — the minimum implementation that makes the test pass.
+2. **Green** — the minimum implementation that makes the test pass. Use the
+   `implementation-agent` for this step: it starts from the failing test and
+   never edits a test to reach green.
 3. **Refactor** — clean up with the tests staying green.
 
 No implementation before its failing test exists. A bug fix starts with a test

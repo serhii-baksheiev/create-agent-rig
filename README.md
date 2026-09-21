@@ -100,13 +100,13 @@ MCP wiring goes into Claude Code's `.mcp.json` entry by entry, but into Codex's
 
 ## What Rig installs
 
-| Area               | What you get                                                                                                                                                       |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Rules              | `AGENTS.md`, `CLAUDE.md` and `.claude/rules/`: autonomy tiers (what an agent may do alone), stop rules, TDD workflow and a Definition of Done                      |
-| Guards             | Hooks that refuse bypassing pre-commit, force-pushing a shared branch, destructive `rm`, writing credentials, and ending a session while a configured check is red |
-| Review agents      | `test-writer`, `code-reviewer`, `security-scanner` and `prose-reviewer`, each pinned to a model and effort                                                         |
-| Skills             | `worktree-task`, `new-invariant` and `check-premises`                                                                                                              |
-| Lifecycle metadata | `.claude/.rig-manifest.json`: which bytes Rig installed                                                                                                            |
+| Area               | What you get                                                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rules              | `AGENTS.md`, `CLAUDE.md` and `.claude/rules/`: autonomy tiers (what an agent may do alone), stop rules, TDD workflow and a Definition of Done                       |
+| Guards             | Hooks that refuse bypassing pre-commit, force-pushing a shared branch, destructive `rm`, writing credentials, and ending a session while a configured check is red  |
+| Agents             | `test-writer` and `implementation-agent` for the TDD steps; `code-reviewer`, `security-scanner` and `prose-reviewer` for review — each pinned to a model and effort |
+| Skills             | `worktree-task`, `new-invariant` and `check-premises`                                                                                                               |
+| Lifecycle metadata | `.claude/.rig-manifest.json`: which bytes Rig installed                                                                                                             |
 
 A guard is a check on each edit or command before it runs, not a sandbox. Each
 one states what it does not catch in its own header — `guard-secret-file`, for

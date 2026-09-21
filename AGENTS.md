@@ -37,8 +37,8 @@ is invisibly wrong.
 .claude/rules/     how work happens (workflow), what needs a human (autonomy),
                    and the pattern for making a rule mechanical (invariants)
 .claude/hooks/     the checks that refuse a violation at the tool layer
-.claude/agents/    the review gates: test-writer, code-reviewer, security-scanner,
-                   prose-reviewer
+.claude/agents/    the TDD roles test-writer and implementation-agent, and the
+                   review gates code-reviewer, security-scanner, prose-reviewer
 .claude/skills/    the drivers: worktree-task, new-invariant, check-premises —
                    loop and pr-ship ship only with the opt-in workflow layer
 .claude/scripts/   git-env, doctor, the verdict/gate-coverage checker, the
