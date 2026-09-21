@@ -1316,6 +1316,14 @@ extends the selected harnesses. `setup apply --yes` may restore a missing previo
 file, while `setup add` refuses it. Upgrade reports a deleted Codex file and
 does not restore it.
 
+These Codex guarantees are pinned in `packages/cli/test/integrations-codex.test.ts`:
+"renders both intended Codex providers from the init release baseline, rolls
+one root file hash, and does not rewrite the release manifest";
+"refuses a manual TOML edit with the compiled managed Figma fragment and never
+echoes user config"; and "refuses an add after a previously owned Codex config
+is deleted, while explicit apply restores it after consent". The last case
+also checks upgrade's deleted-file verdict and unchanged intent.
+
 Dry-run describes work without applying it. JSON mode never prompts; mutation
 requires `--yes`. An interactive call obtains consent for the planned
 configuration. All planned file preimages are re-read after consent, before
