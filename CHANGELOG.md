@@ -246,8 +246,9 @@ a template any generated rig receives.
   answer regardless of outcome — documented next to the other command
   contracts in `docs/command-contract.md` ("## uninstall (RP-181)"). A
   successful removal names its own next step (`git add -A` and a commit) —
-  `uninstall` never touches git history itself. Removing plugin/MCP
-  registrations this rig owns is deferred to RP-179/RP-22 (RP-181).
+  `uninstall` never touches git history itself. Selected MCP wiring and
+  delegated Spec Kit removal have their own lifecycle, `setup remove`;
+  `uninstall` touches only files the Rig manifest names (RP-181).
 - **`uninstall` re-verifies bytes twice more, and gains `--detach`.** A plan
   can go stale in the window a confirmation prompt sits in: each `remove`
   action now carries the plan's own recorded hash, re-read and compared
