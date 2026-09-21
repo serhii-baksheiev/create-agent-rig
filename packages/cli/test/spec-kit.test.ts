@@ -223,8 +223,20 @@ describe('runSpecKitLifecycle', { timeout: process.platform === 'win32' ? 60_000
       ok: true,
       observed: { status: 'ok', installedIntegrations: ['claude', 'codex'] },
     });
+    expect(first.plan.join('\n')).toContain(
+      'without checking whether Claude Code or Codex is installed',
+    );
     expect(upstreamCalls().map((call) => call.args)).toEqual([
-      [...PREFIX, 'init', '--here', '--force', '--non-interactive', '--integration', 'claude'],
+      [
+        ...PREFIX,
+        'init',
+        '--here',
+        '--force',
+        '--non-interactive',
+        '--ignore-agent-tools',
+        '--integration',
+        'claude',
+      ],
       [...PREFIX, 'integration', 'install', 'codex'],
       [...PREFIX, 'integration', 'status', '--json'],
     ]);
@@ -598,6 +610,10 @@ const uninstall = async (id) => {
 };
 
 if (command === 'init') {
+  if (!rest.includes('--ignore-agent-tools')) {
+    process.stderr.write('fake Spec Kit requires --ignore-agent-tools when agent CLIs are absent');
+    process.exit(24);
+  }
   await mkdir(path.join(root, '.specify'), { recursive: true });
   await writeFile(path.join(root, '.specify', 'created-by-fake'), 'upstream');
   await install(rest[rest.indexOf('--integration') + 1]);
