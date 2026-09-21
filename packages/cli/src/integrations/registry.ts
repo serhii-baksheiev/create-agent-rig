@@ -185,12 +185,46 @@ export const SPDX_EXPRESSION_PATTERN = /^[A-Za-z0-9.+-]+(?: (?:AND|OR|WITH) [A-Z
  * refusal `receipt.ts` used to apply only to itself — a receipt or a
  * descriptor never carries a token or header field, and a query string is
  * exactly where one gets smuggled in.
+ *
+ * RP-22 S3 carry-over from S2: the https branch used to be LAXER than
+ * `contracts/integrations/v1/receipt.schema.json`'s `license.url` pattern
+ * (`^https://[^\s?#]{1,121}$`) on a raw space — the real `URL` parse
+ * percent-encodes a space into the path rather than rejecting it, and the
+ * query/fragment check only looked for literal `?`/`#`. That is now refused
+ * on the raw input string directly, closing the gap named in
+ * `integrations-receipt.test.ts` › "closed divergence (whitespace): a raw
+ * space in the path now fails both the schema pattern and isValidLocator".
+ *
+ * A backslash was refused in the SAME pass, on the belief that it closed a
+ * matching gap the same way — it did not (gate cycle 1, blocker 9). The
+ * schema's `[^\s?#]` character class has nothing that excludes a backslash,
+ * so a backslash-bearing URL still passes the schema pattern; refusing it
+ * here makes THIS PARSER STRICTER than the schema, the opposite direction
+ * from every other named divergence. The contract schema is not this
+ * slice's to change (a separate, Tier-2 decision), so this is named as its
+ * own divergence rather than silently claimed closed — see
+ * `integrations-receipt.test.ts` › "named divergence 3 (backslash):
+ * isValidLocator is STRICTER than the schema pattern here — the schema's
+ * character class does not exclude a backslash at all".
+ *
+ * A separate shape — scheme casing — genuinely IS closed by this function:
+ * `isHttpsUrl`'s real `URL` parse accepts any casing of the scheme (`URL`
+ * itself lower-cases `.protocol`), so `isValidLocator('https', 'HTTPS://…')`
+ * used to accept what the schema's literal `^https://` prefix always
+ * refused — the parser was LAXER here. Requiring the raw locator to
+ * literally start with lowercase `https://` converges it with the schema —
+ * see `integrations-receipt.test.ts` › "closed divergence (uppercase
+ * scheme): HTTPS://… now fails isValidLocator too, matching the schema
+ * pattern's literal lowercase prefix".
  */
 export function isValidLocator(kind: ProviderSource['kind'], locator: string): boolean {
   if (locator.length === 0 || locator.length > MAX_LOCATOR_LENGTH) return false;
   if (kind === 'https') {
     if (!isHttpsUrl(locator)) return false;
-    return !locator.includes('?') && !locator.includes('#');
+    if (!locator.startsWith('https://')) return false;
+    if (locator.includes('?') || locator.includes('#')) return false;
+    if (locator.includes('\\') || /\s/.test(locator)) return false;
+    return true;
   }
   if (kind === 'github') return GITHUB_LOCATOR_PATTERN.test(locator);
   if (kind === 'npm') return NPM_LOCATOR_PATTERN.test(locator);
