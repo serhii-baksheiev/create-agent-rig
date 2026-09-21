@@ -181,11 +181,10 @@ async function runSetup(rawArgs: string[]): Promise<number> {
   // control-character handling would need to exist.
   if (verb !== undefined && !verb.startsWith('-')) {
     process.stderr.write(
-      `Unknown setup verb — expected one of: list, add, verify (or --memory-root for the legacy path).\n`,
+      `Unknown setup verb: expected one of ${INTEGRATIONS_VERBS.join(', ')} (or --memory-root for the legacy path).\n`,
     );
     return 1;
   }
-
   let values: {
     'memory-root'?: string;
     'memory-ref'?: string;

@@ -811,7 +811,11 @@ async function readMcpConfig(
 async function atomicWriteInside(repoDir: string, rel: string, body: string): Promise<boolean> {
   const first = await resolveWritableInside(repoDir, rel);
   if (first === null) return false;
-  await mkdir(path.dirname(first), { recursive: true });
+  try {
+    await mkdir(path.dirname(first), { recursive: true });
+  } catch {
+    return false;
+  }
   const dest = await resolveWritableInside(repoDir, rel);
   if (dest === null) return false;
   const temp = path.join(
@@ -826,6 +830,39 @@ async function atomicWriteInside(repoDir: string, rel: string, body: string): Pr
     await rm(temp, { force: true });
     return false;
   }
+}
+
+async function canWriteInside(repoDir: string, rel: string): Promise<boolean> {
+  const first = await resolveWritableInside(repoDir, rel);
+  if (first === null) return false;
+  try {
+    await mkdir(path.dirname(first), { recursive: true });
+  } catch {
+    return false;
+  }
+  return (await resolveWritableInside(repoDir, rel)) !== null;
+}
+
+async function restoreMcpConfig(
+  repoDir: string,
+  previous: Awaited<ReturnType<typeof readMcpConfig>>,
+  written: string,
+): Promise<boolean> {
+  const current = await readMcpConfig(repoDir);
+  if (current.status !== 'ok' || current.raw !== written) return false;
+  if (previous.status === 'absent') {
+    const target = await resolveWritableInside(repoDir, MCP_CONFIG_REL);
+    if (target === null) return false;
+    try {
+      await rm(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return previous.status === 'ok' && previous.raw !== undefined
+    ? atomicWriteInside(repoDir, MCP_CONFIG_REL, previous.raw)
+    : false;
 }
 
 function timestamp(): string {
@@ -926,11 +963,16 @@ async function applyHosted(
     return { outcome: 'refused', changed: false, reason: 'foreign-mcp-entry' };
   }
   if (dryRun) return { outcome: 'dry-run', changed: true };
+  if (!(await canWriteInside(repoDir, `${RECEIPTS_DIR_REL}/${descriptor.id}.json`)))
+    return { outcome: 'refused', changed: false, reason: 'receipt-write-refused' };
   config.mcpServers[mapped.name] = mapped.server;
-  if (!(await atomicWriteInside(repoDir, MCP_CONFIG_REL, `${JSON.stringify(config, null, 2)}\n`)))
+  const configText = `${JSON.stringify(config, null, 2)}\n`;
+  if (!(await atomicWriteInside(repoDir, MCP_CONFIG_REL, configText)))
     return { outcome: 'refused', changed: false, reason: 'mcp-config-write-refused' };
-  if (!(await writeHostedReceipt(repoDir, entry, descriptor)))
-    return { outcome: 'refused', changed: true, reason: 'receipt-write-refused' };
+  if (!(await writeHostedReceipt(repoDir, entry, descriptor))) {
+    const restored = await restoreMcpConfig(repoDir, current, configText);
+    return { outcome: 'refused', changed: !restored, reason: 'receipt-write-refused' };
+  }
   return { outcome: 'applied', changed: true };
 }
 
@@ -1488,6 +1530,13 @@ async function runApply(
       });
     }
   }
+  if (values.only !== undefined && results.length === 0)
+    return lifecycleRefusal(
+      'apply',
+      values.only,
+      'integration-not-declared-or-not-actionable',
+      values.json === true,
+    );
   const payload = {
     schemaVersion: 1,
     command: 'setup',
@@ -1583,7 +1632,7 @@ async function runRemove(
       'receipt-does-not-prove-rig-ownership',
       values.json === true,
     );
-  const config = await readMcpConfig(cwd);
+  let config = await readMcpConfig(cwd);
   if (config.status !== 'ok' || !sameServer(config.config!.mcpServers[mapped.name], mapped.server))
     return lifecycleRefusal(
       'remove',
@@ -1605,6 +1654,19 @@ async function runRemove(
       'yes-required-for-json-or-noninteractive',
       values.json === true,
     );
+  if (values['dry-run'] !== true) {
+    config = await readMcpConfig(cwd);
+    if (
+      config.status !== 'ok' ||
+      !sameServer(config.config!.mcpServers[mapped.name], mapped.server)
+    )
+      return lifecycleRefusal(
+        'remove',
+        descriptor.id,
+        'mcp-entry-absent-or-modified',
+        values.json === true,
+      );
+  }
   if (values['dry-run'] !== true) {
     delete config.config!.mcpServers[mapped.name];
     if (
@@ -1640,7 +1702,11 @@ async function runRemove(
   };
   return {
     exitCode: 0,
-    stdout: values.json ? `${JSON.stringify(payload)}\n` : `Removed ${descriptor.id}.\n`,
+    stdout: values.json
+      ? `${JSON.stringify(payload)}\n`
+      : values['dry-run'] === true
+        ? `Would remove ${descriptor.id}.\n`
+        : `Removed ${descriptor.id}.\n`,
     stderr: '',
   };
 }

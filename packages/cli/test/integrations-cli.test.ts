@@ -1260,6 +1260,26 @@ describe('runIntegrationsCommand (RP-22 S4)', () => {
   });
 });
 
+describe('setup CLI diagnostics (RP-22 S5)', () => {
+  it('the shipped executable names apply and remove alongside every other supported setup verb for an unknown bare verb', async () => {
+    try {
+      await exec(
+        process.execPath,
+        [path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js'), 'setup', 'verifyy'],
+        {
+          cwd: repo,
+        },
+      );
+      throw new Error('unknown setup verb unexpectedly succeeded');
+    } catch (error) {
+      const result = error as { code?: number; stdout?: string; stderr?: string };
+      expect(result.code).toBe(1);
+      expect(result.stdout ?? '').toBe('');
+      expect(result.stderr ?? '').toMatch(/list, add, verify, apply, remove/);
+    }
+  });
+});
+
 describe('setup: CLI wiring, spawning the actually-built binary (RP-22 S4 + round 2 blocker 5)', () => {
   let sandbox: string;
   let cliBin: string;

@@ -292,6 +292,27 @@ describe('setup apply (RP-22 S5)', () => {
     expect(await fileExists(receiptPath('figma-mcp'))).toBe(false);
   });
 
+  it.each([
+    { declared: ['figma-mcp'], only: 'atlassian-mcp', label: 'an undeclared hosted provider' },
+    {
+      declared: ['memory-custom-executable'],
+      only: 'memory-custom-executable',
+      label: 'a declared provider without an MCP route',
+    },
+  ])(
+    'refuses --only for $label rather than reporting an empty success',
+    async ({ declared, only }) => {
+      await declare(...declared);
+
+      const result = await run('apply', ['--only', only, '--yes', '--json']);
+
+      expect(result.exitCode).toBe(1);
+      expectJsonRefusal(result, /only|declared|actionable|unsupported/i);
+      expect(await fileExists(mcpConfigPath())).toBe(false);
+      expect(await fileExists(receiptPath(only))).toBe(false);
+    },
+  );
+
   it('leaves a pre-existing identical provider entry unowned and does not create a receipt', async () => {
     await declare('figma-mcp');
     const original: McpConfig = {
@@ -365,6 +386,52 @@ describe('setup remove (RP-22 S5)', () => {
       removedAt?: string;
     };
     expect(receipt.removedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+
+  it('re-reads the MCP config after TTY confirmation so an unrelated entry added during the prompt survives', async () => {
+    await declare('figma-mcp');
+    await expect(run('apply', ['--only', 'figma-mcp', '--yes', '--json'])).resolves.toMatchObject({
+      exitCode: 0,
+    });
+
+    const result = await runIntegrationsCommand({
+      verb: 'remove',
+      args: ['figma-mcp'],
+      cwd: repo,
+      isTTY: true,
+      confirm: async () => {
+        const current = await readConfig();
+        current.mcpServers.late = { type: 'http', url: 'https://example.test/late' };
+        await writeConfig(current);
+        return true;
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readConfig()).toEqual({
+      mcpServers: { late: { type: 'http', url: 'https://example.test/late' } },
+    });
+    const receipt = JSON.parse(await readFile(receiptPath('figma-mcp'), 'utf8')) as {
+      removedAt?: string;
+    };
+    expect(receipt.removedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+
+  it('prints a would-remove plan on prose dry-run while leaving config and receipt bytes unchanged', async () => {
+    await declare('figma-mcp');
+    await expect(run('apply', ['--only', 'figma-mcp', '--yes', '--json'])).resolves.toMatchObject({
+      exitCode: 0,
+    });
+    const configBefore = await readFile(mcpConfigPath(), 'utf8');
+    const receiptBefore = await readFile(receiptPath('figma-mcp'), 'utf8');
+
+    const result = await run('remove', ['figma-mcp', '--dry-run', '--yes']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toMatch(/would remove|planned/i);
+    expect(result.stdout).not.toMatch(/^removed\b/i);
+    expect(await readFile(mcpConfigPath(), 'utf8')).toBe(configBefore);
+    expect(await readFile(receiptPath('figma-mcp'), 'utf8')).toBe(receiptBefore);
   });
 
   it('refuses to remove an identical but unreceipted user entry, so an apply noop never becomes ownership', async () => {
@@ -462,6 +529,17 @@ describe('setup apply — unsafe owned-file shapes (RP-22 S5)', () => {
     expect(result.exitCode).toBe(1);
     expectJsonRefusal(result, /refus|directory|file|unreadable/i);
     expect(await fileExists(receiptPath('figma-mcp'))).toBe(false);
+  });
+
+  it('refuses a regular file at the receipts directory before creating an unreceipted MCP entry', async () => {
+    await declare('figma-mcp');
+    await writeFile(path.join(repo, '.rig', 'receipts'), 'not a directory\n');
+
+    const result = await run('apply', ['--only', 'figma-mcp', '--yes', '--json']);
+
+    expect(result.exitCode).toBe(1);
+    expectJsonRefusal(result, /receipt|write|unsafe|refus/i);
+    expect(await fileExists(mcpConfigPath())).toBe(false);
   });
 
   for (const shape of [
