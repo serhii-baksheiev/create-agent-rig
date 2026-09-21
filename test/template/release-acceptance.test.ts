@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -175,6 +175,36 @@ describe('release acceptance workflow candidate guards', () => {
   });
 });
 
+describe('release acceptance solo PATH', () => {
+  it('drops every absolute PATH entry that provides uv or uvx and keeps the rest in order', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'caf-acceptance-path-'));
+    try {
+      const extension = process.platform === 'win32' ? '.exe' : '';
+      const withUv = path.join(root, 'with-uv');
+      const withUvx = path.join(root, 'with-uvx');
+      const plain = path.join(root, 'plain');
+      const other = path.join(root, 'other');
+      for (const directory of [withUv, withUvx, plain, other])
+        await mkdir(directory, { recursive: true });
+      await writeFile(path.join(withUv, `uv${extension}`), '');
+      await writeFile(path.join(withUvx, `uvx${extension}`), '');
+      const module = (await import(pathToFileURL(script).href)) as {
+        pathWithout?: (pathValue: string, names: string[]) => Promise<string>;
+      };
+      expect(module.pathWithout).toBeTypeOf('function');
+
+      const result = await module.pathWithout!(
+        [plain, withUv, 'relative', other, withUvx].join(path.delimiter),
+        ['uv', 'uvx'],
+      );
+
+      expect(result).toBe([plain, other].join(path.delimiter));
+    } finally {
+      await removeFixture(root);
+    }
+  });
+});
+
 describe('release acceptance packed Rig diagnostics', () => {
   it('reports a finite phase, status and exit without provider output', async () => {
     const privateStdout = 'private stdout sentinel';
@@ -201,6 +231,15 @@ describe('release acceptance packed Rig diagnostics', () => {
         stderr: 'private stderr sentinel',
       }),
     ).resolves.toBe('packed-rig-command-failed:unknown:unknown:unknown');
+  });
+
+  it('names the solo phases that run with uv and uvx removed from PATH', async () => {
+    await expect(formatRigFailure('solo-init', { status: 'failed', exitCode: 1 })).resolves.toBe(
+      'packed-rig-command-failed:solo-init:failed:1',
+    );
+    await expect(formatRigFailure('solo-doctor', { status: 'ok', exitCode: 2 })).resolves.toBe(
+      'packed-rig-command-failed:solo-doctor:ok:2',
+    );
   });
 
   it('uses none only for a null exit and rejects out-of-range exits', async () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,8 @@ const SPEC_KIT_VERSION = '1.0.8';
 
 export function formatRigFailure(phase, result) {
   const phases = [
+    'solo-init',
+    'solo-doctor',
     'project-init',
     'spec-kit-add',
     'spec-kit-repeat',
@@ -98,16 +100,45 @@ function isSha(value) {
   return /^[0-9a-f]{40}$/i.test(value);
 }
 
-async function executablePresent(name) {
-  const pathValue = process.env.PATH ?? process.env.Path ?? '';
-  const extension = process.platform === 'win32' ? '.exe' : '';
+const executableName = (name) => `${name}${process.platform === 'win32' ? '.exe' : ''}`;
+
+async function provides(directory, name) {
+  try {
+    await access(path.join(directory, executableName(name)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function executablePresent(name, pathValue = process.env.PATH ?? process.env.Path ?? '') {
+  for (const directory of pathValue.split(path.delimiter)) {
+    // Continue through the machine PATH without executing anything.
+    if (path.isAbsolute(directory) && (await provides(directory, name))) return true;
+  }
+  return false;
+}
+
+/** The absolute PATH entries, in order, that provide none of `names`. */
+export async function pathWithout(pathValue, names) {
+  const kept = [];
   for (const directory of pathValue.split(path.delimiter)) {
     if (!path.isAbsolute(directory)) continue;
-    try {
-      await access(path.join(directory, `${name}${extension}`));
+    let providesAny = false;
+    for (const name of names) providesAny ||= await provides(directory, name);
+    if (!providesAny) kept.push(directory);
+  }
+  return kept.join(path.delimiter);
+}
+
+async function treeContains(root, needle) {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (entry.name === '.git') continue;
+    const file = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (await treeContains(file, needle)) return true;
+    } else if (entry.isFile() && (await readFile(file)).includes(needle)) {
       return true;
-    } catch {
-      // Continue through the machine PATH without executing anything.
     }
   }
   return false;
@@ -317,8 +348,8 @@ async function main() {
         ),
       ).href
     );
-    const packedRig = async (cwd, argv) =>
-      withPackedEnvironment(environment, async () =>
+    const packedRig = async (cwd, argv, env = environment) =>
+      withPackedEnvironment(env, async () =>
         runProviderProcess({
           executable: process.execPath,
           // The outer supervisor deliberately strips ProgramFiles from child
@@ -337,12 +368,31 @@ async function main() {
           maxOutputBytes: MAX_OUTPUT,
         }),
       );
-    const rigCommand = async (phase, cwd, argv) => {
-      const result = await packedRig(cwd, argv);
+    const rigCommand = async (phase, cwd, argv, env) => {
+      const result = await packedRig(cwd, argv, env);
       if (result.status !== 'ok' || result.exitCode !== 0) abort(formatRigFailure(phase, result));
       return result.stdout;
     };
-    const rigJson = async (phase, cwd, argv) => parseJson(await rigCommand(phase, cwd, argv));
+    const rigJson = async (phase, cwd, argv, env) =>
+      parseJson(await rigCommand(phase, cwd, argv, env));
+
+    // Solo: the lean core needs neither uv nor uvx (RP-24 item 1).
+    const soloPath = await pathWithout(environment.PATH ?? environment.Path ?? '', ['uv', 'uvx']);
+    if ((await executablePresent('uv', soloPath)) || (await executablePresent('uvx', soloPath)))
+      abort('solo-path-still-provides-uv');
+    const soloEnvironment = { ...environment, PATH: soloPath, Path: soloPath };
+    const soloProject = path.join(scratch, 'solo-project');
+    await command('git', ['init', '--quiet', soloProject], { env: environment });
+    await rigCommand('solo-init', soloProject, ['init'], soloEnvironment);
+    const soloDoctor = await rigJson(
+      'solo-doctor',
+      soloProject,
+      ['doctor', '--json'],
+      soloEnvironment,
+    );
+    safeDoctor(soloDoctor);
+    if (soloDoctor.status === 'fail') abort('solo-doctor-failed');
+
     const project = path.join(scratch, 'project');
     await command('git', ['init', '--quiet', project], { env: environment });
     await command('git', ['config', 'user.name', 'Release acceptance'], {
@@ -547,6 +597,48 @@ async function main() {
         'codex-config-conflict; managed provider fragment:\n[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\n'
     )
       abort('codex-manual-fragment-invalid');
+
+    // Credentials: run the packed CLI with a user's full environment carrying
+    // provider tokens; none may reach its output or any file it leaves behind.
+    const sentinel = `rig-acceptance-sentinel-${randomBytes(16).toString('hex')}`;
+    const credentialEnvironment = { ...environment };
+    for (const key of [
+      'FIGMA_API_KEY',
+      'FIGMA_OAUTH_TOKEN',
+      'ATLASSIAN_API_TOKEN',
+      'GITHUB_TOKEN',
+      'GH_TOKEN',
+      'OPENAI_API_KEY',
+      'ANTHROPIC_API_KEY',
+    ])
+      credentialEnvironment[key] = sentinel;
+    const credentialProject = path.join(scratch, 'credential-project');
+    await command('git', ['init', '--quiet', credentialProject], { env: environment });
+    let credentialOutput = '';
+    for (const argv of [
+      ['init'],
+      [
+        'setup',
+        'add',
+        'figma-mcp',
+        '--harness',
+        'claude-code',
+        '--harness',
+        'codex',
+        '--yes',
+        '--json',
+      ],
+      ['doctor', '--json'],
+    ]) {
+      const { stdout, stderr } = await command(process.execPath, [cli, ...argv], {
+        cwd: credentialProject,
+        env: credentialEnvironment,
+      });
+      credentialOutput += stdout + stderr;
+    }
+    if (credentialOutput.includes(sentinel) || (await treeContains(credentialProject, sentinel)))
+      abort('credential-leaked-into-output-or-state');
+
     const report = {
       sha: candidate,
       version: item.version,
@@ -555,6 +647,8 @@ async function main() {
       os: `${process.platform}-${process.arch}`,
       packageHash,
       checks,
+      solo: { uv: 'absent', doctor: soloDoctor.status },
+      sentinel: 'absent-from-output-and-state',
       doctor: {
         status: doctor.status,
         specKit: { connectivity: 'not-observed', trust: 'not-observed' },
