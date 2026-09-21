@@ -12,6 +12,30 @@ const MAX_OUTPUT = 256 * 1024;
 const TIMEOUT = 120_000;
 const SPEC_KIT_VERSION = '1.0.8';
 
+export function formatRigFailure(phase, result) {
+  const phases = [
+    'project-init',
+    'spec-kit-add',
+    'spec-kit-repeat',
+    'spec-kit-doctor',
+    'spec-kit-remove',
+    'wiring-init',
+    'figma-add',
+    'atlassian-add',
+    'basic-memory-add',
+    'basic-memory-remove',
+  ];
+  const statuses = ['ok', 'failed', 'timeout', 'output-limit', 'cleanup-unconfirmed'];
+  const value = result && typeof result === 'object' ? result : {};
+  const exit =
+    value.exitCode === null
+      ? 'none'
+      : Number.isInteger(value.exitCode) && value.exitCode >= 0 && value.exitCode <= 0xffffffff
+        ? String(value.exitCode)
+        : 'unknown';
+  return `packed-rig-command-failed:${phases.includes(phase) ? phase : 'unknown'}:${statuses.includes(value.status) ? value.status : 'unknown'}:${exit}`;
+}
+
 class AcceptanceError extends Error {
   constructor(code) {
     super(code);
@@ -313,12 +337,12 @@ async function main() {
           maxOutputBytes: MAX_OUTPUT,
         }),
       );
-    const rigCommand = async (cwd, argv) => {
+    const rigCommand = async (phase, cwd, argv) => {
       const result = await packedRig(cwd, argv);
-      if (result.status !== 'ok' || result.exitCode !== 0) abort('packed-rig-command-failed');
+      if (result.status !== 'ok' || result.exitCode !== 0) abort(formatRigFailure(phase, result));
       return result.stdout;
     };
-    const rigJson = async (cwd, argv) => parseJson(await rigCommand(cwd, argv));
+    const rigJson = async (phase, cwd, argv) => parseJson(await rigCommand(phase, cwd, argv));
     const project = path.join(scratch, 'project');
     await command('git', ['init', '--quiet', project], { env: environment });
     await command('git', ['config', 'user.name', 'Release acceptance'], {
@@ -329,8 +353,8 @@ async function main() {
       cwd: project,
       env: environment,
     });
-    const rig = async (...argv) => rigJson(project, argv);
-    await rigCommand(project, ['init']);
+    const rig = async (phase, ...argv) => rigJson(phase, project, argv);
+    await rigCommand('project-init', project, ['init']);
     await command('git', ['-c', 'core.fsmonitor=false', 'add', '-A'], {
       cwd: project,
       env: environment,
@@ -340,6 +364,7 @@ async function main() {
       env: environment,
     });
     const add = await rig(
+      'spec-kit-add',
       'setup',
       'add',
       'spec-kit',
@@ -373,6 +398,7 @@ async function main() {
     const marker = await firstSpecKitSkill(project);
     await writeFile(marker, `${await readFile(marker, 'utf8')}\nrelease-acceptance-marker\n`);
     const repeated = await rig(
+      'spec-kit-repeat',
       'setup',
       'add',
       'spec-kit',
@@ -390,11 +416,18 @@ async function main() {
       !(await readFile(marker, 'utf8')).includes('release-acceptance-marker')
     )
       abort('spec-kit-repeat-reinitialized');
-    const doctor = await rig('doctor', '--json');
+    const doctor = await rig('spec-kit-doctor', 'doctor', '--json');
     const checks = safeDoctor(doctor);
     if (doctor.specKit?.connectivity !== 'not-observed' || doctor.specKit?.trust !== 'not-observed')
       abort('doctor-trust-or-connectivity-inferred');
-    const removeSpecKit = await rig('setup', 'remove', 'spec-kit', '--yes', '--json');
+    const removeSpecKit = await rig(
+      'spec-kit-remove',
+      'setup',
+      'remove',
+      'spec-kit',
+      '--yes',
+      '--json',
+    );
     if (removeSpecKit.outcome !== 'removed') abort('spec-kit-remove-failed');
     const retiredIntent = parseJson(
       await readFile(path.join(project, '.rig', 'integrations.json'), 'utf8'),
@@ -408,12 +441,13 @@ async function main() {
 
     const wiringProject = path.join(scratch, 'wiring-project');
     await command('git', ['init', '--quiet', wiringProject], { env: environment });
-    const wiringRig = async (...argv) => rigJson(wiringProject, argv);
-    await rigCommand(wiringProject, ['init']);
+    const wiringRig = async (phase, ...argv) => rigJson(phase, wiringProject, argv);
+    await rigCommand('wiring-init', wiringProject, ['init']);
     const foreign =
       '{\n  "mcpServers": { "foreign": { "url": "https://example.test/foreign" } }\n}\n';
     await writeFile(path.join(wiringProject, '.mcp.json'), foreign);
     const figma = await wiringRig(
+      'figma-add',
       'setup',
       'add',
       'figma-mcp',
@@ -432,6 +466,7 @@ async function main() {
     )
       abort('figma-foreign-preservation-failed');
     const atlassian = await wiringRig(
+      'atlassian-add',
       'setup',
       'add',
       'atlassian-mcp',
@@ -452,6 +487,7 @@ async function main() {
     await mkdir(path.dirname(basicData), { recursive: true });
     await writeFile(basicData, 'must-survive-remove\n');
     const basicAdd = await wiringRig(
+      'basic-memory-add',
       'setup',
       'add',
       'basic-memory',
@@ -463,7 +499,14 @@ async function main() {
       '--json',
     );
     if (basicAdd.outcome !== 'written') abort('basic-memory-add-failed');
-    const basicRemove = await wiringRig('setup', 'remove', 'basic-memory', '--yes', '--json');
+    const basicRemove = await wiringRig(
+      'basic-memory-remove',
+      'setup',
+      'remove',
+      'basic-memory',
+      '--yes',
+      '--json',
+    );
     if (
       basicRemove.outcome !== 'removed' ||
       (await readFile(basicData, 'utf8')) !== 'must-survive-remove\n'
@@ -520,4 +563,5 @@ async function main() {
   }
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href)
+  await main();

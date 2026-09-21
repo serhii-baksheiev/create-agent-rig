@@ -1,65 +1,57 @@
 # 0.10.0 release continuation checkpoint
 
-Snapshot: 2026-09-21 15:17 UTC. Recheck Git/GitHub/Jira after restart;
+Snapshot: 2026-09-21 15:44 UTC. Recheck Git/GitHub/Jira after restart;
 heads and current ticket descriptions take precedence over this note.
 
-Master: f38d9cbf8c914ea10f27562c62abe4cb894b927d. PR249 merged the pinned
-Spec Kit lifecycle and minimal process runner from reviewed head
-4eefcd454e16851e73c22786b92382343c432d07. Full hosted Linux/Windows dispatch
-35614012001 passed before merge; merge tree equals the reviewed tree.
-Master CI35616266887 passed; full post-merge E2E35616266888 is still running.
-Earlier PR247 delivered schema1/Claude ownership; PR248 delivered Codex hashes.
+Master: 3d0ef3e9f231134b45dbb99c9edcb5cc4e6e94c6. PR247 schema1/Claude,
+PR248 Codex rolling hashes, PR249 official Spec Kit lifecycle/process runner,
+and PR250 aggregated doctor/Basic Memory preview are merged. PR250 reviewed
+head a61d3ff92c4aa98afb76bf2f786c9d91f2e462af has the same tree as master.
+Master CI35619123778 and full hosted Linux/Windows E2E35619123540 PASS.
+RP21 is Done with those links. RP22/RP24 In Progress; RP92 To Do, closes last.
 
-Open PR250: https://github.com/serhii-baksheiev/create-agent-rig/pull/250
-Head a61d3ff92c4aa98afb76bf2f786c9d91f2e462af, feat/rp-21-doctor.
-Code/security/prose SHIP in round2 of3; exact-head coverage complete.
-Full Linux passed dispatch35617153962; Windows and ordinary PR checks pending.
-Previous full Linux/Windows8e205759 passed. The final review correction warns
-on selected providers without harnesses and skips their upstream diagnosis;
-two regression rows were Red, then all11 doctor tests passed on both platforms.
-Do not merge until all exact-head checks pass. Verify master after merge.
+RP22 follow-up fix/rp-22-spec-kit-prerequisites is pushed at
+fe15a5f5b6bb994092306555efffc12f2c7c36bd. It adds official
+--ignore-agent-tools to initial Spec Kit configuration and discloses that
+harness runtime/trust remain unverified. Fake-upstream regression was Red;
+Windows targeted30pass2skip, Linux32pass, lint/typecheck and3726unit/template
+pass7skip. Gate round1/3; code review started; security/prose pending.
+Full hosted dispatch35620638349 pending. No PR yet. Matching Windows/WSL
+worktrees rp22-spec-kit-prerequisites are clean. RP22 scope revalidation hold
+was resolved by rereading the current final description and normal outcome.
 
 RP24 branch feat/rp-24-release-acceptance is pushed at
-de49b9906ee7177ff1398a996c6a3634dbf5b192. Windows was synchronized to that
-commit. WSL is merging reviewed doctor a61d3ff; only the old checkpoint text
-conflicted, replaced by this current snapshot. Finish the merge commit, push,
-synchronize Windows, then run formal reviews and the explicit network lane.
-No real provider-network acceptance has run yet. No RP24 PR is open yet.
-The branch owns .github/workflows/e2e.yml, scripts/release-acceptance.mjs,
-test/template/release-acceptance.test.ts, docs/releasing.md, this checkpoint
-and the adapter-created .rig/claims/RP-24.json. Preflight refusal tests pass.
-The lane requires release_acceptance=true plus a full release_sha and retains
-the hosted/self-hosted switch; macOS is untested.
+f01a0a18ba53b2457e001a5761f0bf5c12d8b247. No PR yet. First real network lane
+35618263910: normal full Linux/Windows suites PASS, packed acceptance FAIL
+on both with packed-rig-command-failed. No real acceptance pass is claimed.
+Review round1/3 HOLD: add finite phase/status/exit diagnosis, validate full
+SHA before checkout in both jobs, name exact preflight tests in release docs.
+Windows worktree has those source/workflow/docs fixes and new Red tests in
+progress; not yet copied to WSL or committed. Test writer is correcting the
+Windows Bash test launcher. Do not reset either worktree or lose edits.
+Integrate the Spec Kit prerequisite fix before the next real acceptance run;
+its relation to the current failure is still a hypothesis until phase data.
 
-Jira: RP22/RP21/RP24 In Progress, RP92 To Do. RP92 closes last. Memory-owned
-issues remain relates-only. RP24 SELECT created its baseline through the
-unchanged claim mechanism after complete sibling-journal inspection; the
-adapter acknowledged its claim. RP22's old receipt scope is superseded and
-its revalidation holds have normal recorded reread outcomes. Do not rewrite
-frozen claim fingerprints or revalidation behavior.
+Active worktrees: rp24-release-acceptance and rp22-spec-kit-prerequisites.
+Merged rp21-doctor cleanup is in progress; merged rp22-spec-kit was removed.
+Matching WSL clone /home/serhiibaksheiev/rig, Ubuntu user serhiibaksheiev;
+source ~/.nvm/nvm.sh before pnpm. Original S5 and historical dirty worktrees
+remain untouched. Root owner dirt: .claude/hooks/dod-checks.json,
+.rig/claims/RP-111.json.local, .rig/claims/RP-185.json,
+docs/rig-0.9.0-codex-loop-prompt.md. Never include them in release commits.
 
-Active Windows worktrees are under .claude/worktrees/: rp21-doctor,
-rp24-release-acceptance and merged rp22-spec-kit (cleanup pending).
-Matching WSL clone: /home/serhiibaksheiev/rig, Ubuntu user serhiibaksheiev;
-source ~/.nvm/nvm.sh before pnpm. Original S5 branch/worktree is preserved.
-Historical dirty worktrees are untouched. Root owner changes remain:
-.claude/hooks/dod-checks.json, untracked .rig/claims/RP-111.json.local,
-.rig/claims/RP-185.json and docs/rig-0.9.0-codex-loop-prompt.md.
-Never include those in a release commit.
+Evidence: .claude/runs/20260921-codex-release0100. Reviews, failure logs and
+patch backups live there. Root stash labelled RP21 Windows checkpoint and
+WSL backup/rp21-before-spec-parent preserve earlier doctor work. Record
+review verdicts via record.mjs decision, not events; coverage reads decisions.
+Original Spec Kit gate3 exhausted and completed; doctor gate2 completed;
+acceptance gate1 and new prerequisite branch gate1 are independent work.
+No frozen claim fingerprints or revalidation mechanisms were changed.
 
-Run evidence: .claude/runs/20260921-codex-release0100. It contains review
-reports, CI failure diagnoses and patch backups, including doctor-review-fix.patch
-and rp24-fragment.patch. Root stash labelled "RP21 Windows checkpoint before
-adopting saved and rebased doctor commit" and WSL backup branch
-backup/rp21-before-spec-parent retain the earlier doctor state. No work is lost.
-For journal reviews use record.mjs decision, not an event: coverage reads
-review decisions. Reports end in fenced JSON; raw JSON is for recording only.
-Gate counts: SpecKit3 exhausted, CI fixture-only closure reviewed without a
-fourth broad audit; doctor2; RP24 formal review not started.
-
-Next: merge doctor only after checks; verify master and update Jira. Complete
-RP24 real pinned Spec Kit/packed artifact evidence on Linux and Windows, then
-prepare version0.10.0, changelog/compatibility/ledger, content+secret scans and
-final exact-release-SHA acceptance. Package is still0.9.1. No npm publish,
-public tag/release or release-channel change is authorized. Stop only for the
-owner's final publish step after the remaining safe work is complete.
+Next: finish bounded fixes/reviews, merge prerequisite PR after exact-head
+Linux/Windows checks, verify master; complete real packed acceptance on
+Linux/Windows. Then prepare version0.10.0, changelog/compatibility/ledger,
+content+secret scans/package hash and final exact-release-SHA evidence.
+Package remains0.9.1. Hosted is primary, self-hosted route retained but no
+registered runner observed; macOS untested. Memory-owned tickets remain
+relates-only. No publish, public release/tag or channel change authorized.

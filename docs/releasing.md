@@ -62,9 +62,11 @@ upstream executables. Record both Linux and Windows run links for the exact
 candidate; an earlier branch run is not evidence for a later SHA. macOS remains
 untested unless separately measured on that SHA.
 
-`test/template/release-acceptance.test.ts` covers candidate preflight refusal
-before fixture mutation. The dispatch supplies the real provider evidence;
-those negative tests alone do not establish release acceptance.
+`test/template/release-acceptance.test.ts` pins "rejects an invalid candidate SHA
+before packing or mutating its fixture" and "rejects a well-formed candidate SHA
+that does not match the checked-out Git HEAD before packing or mutating its
+fixture". The dispatch supplies the real provider evidence; those negative
+tests alone do not establish release acceptance.
 
 ## Why the owner types the publish
 
