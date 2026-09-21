@@ -57,6 +57,7 @@
       }
     },
     "rigVersion": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "removedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
     "acts": {
       "description": "At least one of claude-code/codex must be present — enforced by receipt.ts, not expressible as this schema subset has no minProperties.",
       "type": "object",

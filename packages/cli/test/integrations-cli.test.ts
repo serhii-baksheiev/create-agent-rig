@@ -261,7 +261,7 @@ describe('setup add — preserves rejected entries verbatim (RP-22 round 2, bloc
     // ruling) — both happen to be not-in-matrix here, against the real
     // REGISTRY, which holds exactly one descriptor at this slice.
     expect(outcome.preservedRejected).toEqual([
-      { id: 'figma-mcp', reason: 'not-in-matrix' },
+      { id: 'figma-mcp', reason: 'explicit-selection-required' },
       { id: 'spec-kit', reason: 'not-in-matrix' },
     ]);
 

@@ -139,6 +139,7 @@ const ROOT_KEYS_LIST = [
   'declared',
   'rigVersion',
   'acts',
+  'removedAt',
 ] as const;
 /** The closed set of top-level receipt keys, matching the schema's root `properties`. */
 export const ROOT_KEYS: readonly string[] = Object.freeze([...ROOT_KEYS_LIST]);
@@ -256,6 +257,7 @@ export type Receipt = {
   declared: ReceiptDeclared;
   rigVersion: string;
   acts: Partial<Record<Harness, ReceiptAct>>;
+  removedAt?: string;
 };
 
 export type ParseReceiptResult =
@@ -541,6 +543,7 @@ export function parseReceipt(raw: string): ParseReceiptResult {
   const badRootKey = closedKeys(root, ROOT_KEYS_SET, 'the receipt');
   if (badRootKey !== null) return { status: 'invalid', error: badRootKey };
   for (const key of ROOT_KEYS) {
+    if (key === 'removedAt') continue;
     if (!Object.hasOwn(root, key)) {
       return { status: 'invalid', error: `the receipt is missing "${key}"` };
     }
@@ -576,6 +579,13 @@ export function parseReceipt(raw: string): ParseReceiptResult {
 
   const acts = parseActs(root.acts);
   if (!acts.ok) return { status: 'invalid', error: acts.error };
+  let removedAt: string | undefined;
+  if (Object.hasOwn(root, 'removedAt')) {
+    if (typeof root.removedAt !== 'string' || !isRealTimestampString(root.removedAt)) {
+      return { status: 'invalid', error: '"removedAt" must be a real UTC timestamp' };
+    }
+    removedAt = root.removedAt;
+  }
 
   return {
     status: 'ok',
@@ -589,6 +599,7 @@ export function parseReceipt(raw: string): ParseReceiptResult {
       declared: declared.value,
       rigVersion,
       acts: acts.value,
+      ...(removedAt !== undefined ? { removedAt } : {}),
     },
   };
 }
@@ -660,6 +671,7 @@ export function serializeReceipt(receipt: Receipt): string {
     declared,
     rigVersion: receipt.rigVersion,
     acts,
+    ...(receipt.removedAt !== undefined ? { removedAt: receipt.removedAt } : {}),
   };
   return `${JSON.stringify(body, null, 2)}\n`;
 }

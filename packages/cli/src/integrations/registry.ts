@@ -66,6 +66,8 @@ export type ProviderDescriptor = {
   versionPolicy: VersionPolicy;
   routes: Partial<Record<Harness, ProviderRoute>>;
   stability: 'supported' | 'preview';
+  /** Hosted configuration is acted on only after `setup add` records an explicit selection. */
+  requiresExplicitSelection?: boolean;
   trademark?: string;
 };
 
@@ -329,6 +331,49 @@ export function deepFreeze<T>(value: T): T {
  * is strict) instead of silently mutating the one matrix every consumer trusts.
  */
 export const REGISTRY: readonly ProviderDescriptor[] = deepFreeze([
+  {
+    id: 'figma-mcp',
+    displayName: 'Figma MCP',
+    capability: 'design',
+    mode: 'hosted-service',
+    source: {
+      kind: 'https',
+      locator: 'https://mcp.figma.com/mcp',
+      official: true,
+      verifiedOn: '2026-09-21',
+      docsUrl:
+        'https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server',
+    },
+    license: { kind: 'terms', url: 'https://www.figma.com/legal/tos/' },
+    versionPolicy: { kind: 'floating', reason: 'hosted MCP endpoint has no client version pin' },
+    routes: {
+      'claude-code': { route: 'mcp-config', automation: 'automatic' },
+      codex: { route: 'guided-manual', automation: 'guided' },
+    },
+    stability: 'supported',
+    requiresExplicitSelection: true,
+  },
+  {
+    id: 'atlassian-mcp',
+    displayName: 'Atlassian MCP',
+    capability: 'board',
+    mode: 'hosted-service',
+    source: {
+      kind: 'https',
+      locator: 'https://mcp.atlassian.com/v2/mcp',
+      official: true,
+      verifiedOn: '2026-09-21',
+      docsUrl: 'https://developer.atlassian.com/cloud/rovo-mcp/guides/getting-started/',
+    },
+    license: { kind: 'terms', url: 'https://www.atlassian.com/legal' },
+    versionPolicy: { kind: 'floating', reason: 'hosted MCP endpoint has no client version pin' },
+    routes: {
+      'claude-code': { route: 'mcp-config', automation: 'automatic' },
+      codex: { route: 'guided-manual', automation: 'guided' },
+    },
+    stability: 'supported',
+    requiresExplicitSelection: true,
+  },
   {
     id: 'memory-custom-executable',
     displayName: 'Custom Memory Executable',

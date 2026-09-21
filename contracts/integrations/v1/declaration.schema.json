@@ -24,6 +24,11 @@
           "required": {
             "type": "boolean"
           },
+          "selected": {
+            "type": "boolean",
+            "const": true,
+            "description": "Explicit provider selection; required by hosted MCP descriptors before activation."
+          },
           "version": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"

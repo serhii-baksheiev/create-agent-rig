@@ -16,6 +16,13 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## Unreleased
 
+`setup apply` and `setup remove` manage explicitly selected Figma and Atlassian
+MCP configuration through Claude Code's documented project config. Dry-run and
+consent apply before changes; existing user entries are preserved. Receipts
+record configuration separately from authorization, which the user completes
+with the provider. Codex setup remains guided. An old unsupported declaration
+does not activate when its provider becomes available: run `setup add` first.
+
 **`AGENTS.md` is now the canonical rulebook; `CLAUDE.md` is a short
 compatibility shim.** A new project gets the full rulebook text in
 `AGENTS.md` and a `CLAUDE.md` that is just an `@AGENTS.md` import (Claude

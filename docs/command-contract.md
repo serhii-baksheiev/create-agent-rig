@@ -1277,14 +1277,64 @@ prints a reminder that the change is unstaged (`git add -A`, then commit) —
 
 ## setup integrations (RP-22)
 
+### Hosted MCP lifecycle
+
+`setup apply [--only <id>] [--dry-run] [--yes] [--json]` configures selected
+integrations. `setup remove <id> [--dry-run] [--yes] [--json]` reverses their
+Rig-owned configuration. Both use exit codes 0 and 1 and the setup JSON
+envelope with `verb: "apply"` or `verb: "remove"`.
+
+The supported hosted providers are `figma-mcp` and `atlassian-mcp`. Claude Code
+uses its [documented project configuration](https://code.claude.com/docs/en/mcp):
+an HTTP entry under `mcpServers` in `.mcp.json`. Rig writes the official
+endpoint from its registry, without spawning a provider CLI. Consequently this
+route does not depend on Windows npm command shims. Codex receives guided
+instructions; Rig does not claim an automatic project-scoped Codex CLI route.
+
+Run `setup add <id>` before applying a hosted provider. This records
+`selected: true`; an older entry preserved while its id was outside the
+registry remains rejected until explicitly selected. The marker records the
+choice of provider, not authorization or trust in repository content.
+
+Dry-run reports the plan without changing configuration or receipts. An actual
+noninteractive or JSON invocation requires `--yes`. Apply preserves unrelated
+configuration and refuses a conflicting server entry. An identical entry that
+already existed is not adopted as Rig-owned. Remove requires a matching receipt
+and the exact configuration Rig installed; modified or user-owned entries stay
+in place. Removal retains a receipt marked `removedAt` and never deletes
+provider data.
+
+`installed` for these hosted routes means the configuration was observed.
+Authorization, connectivity and project approval remain `notObserved`; the user
+completes authorization directly with the provider through the harness. No
+credentials, headers or environment values are added to declarations or receipts.
+External process actions are empty for the direct configuration route.
+
+For example:
+
+```sh
+create-agent-rig setup add figma-mcp
+create-agent-rig setup apply --only figma-mcp --dry-run
+create-agent-rig setup apply --only figma-mcp --yes --json
+create-agent-rig setup verify --json
+create-agent-rig setup remove figma-mcp --yes --json
+```
+
+Verification of a required integration covers every declared harness. A guided
+Codex action is still pending; it cannot satisfy that requirement merely because
+Claude's configuration is present. The declaration's `harnesses` field can
+restrict the requirement to the harnesses the project actually uses.
+
+### Declaration and verification
+
 `setup list [--json]`, `setup add <id> [--required] [--version <pin>] [--dry-run] [--json]`
-and `setup verify [--only <id>] [--json]` are three new verbs alongside the
+and `setup verify [--only <id>] [--json]` accompany the lifecycle verbs and the
 existing `setup --memory-root …` (RP-147, unchanged). Dispatch on the first
 argument decides between them: `index.ts` reaches this surface only when
-`rawArgs[0]` is exactly `list`, `add` or `verify`; anything else that LOOKS
+`rawArgs[0]` is exactly `list`, `add`, `verify`, `apply` or `remove`; anything else that LOOKS
 like a legacy flag (starts with `-`) or is simply absent is the legacy path,
-byte for byte. A bare word that is none of the three — a typo near them, such
-as `verifyy` — is its own usage error naming `list, add, verify` explicitly,
+byte for byte. A bare word outside that set — a typo near them, such
+as `verifyy` — is its own usage error naming the supported verbs,
 rather than falling all the way through to the legacy `--memory-root` parser
 (whose own error names no verb at all). Pinned in
 `packages/cli/test/integrations-cli.test.ts` › "setup with no arguments still
@@ -1294,7 +1344,7 @@ near the three verbs (setup verifyy) is a usage error naming list/add/verify,
 not the legacy message".
 
 Like `uninstall`, this surface is not a member of the foundation verb set and
-does not use its five-code exit table: every one of the three verbs exits 0 or
+does not use its five-code exit table: every integration verb exits 0 or
 1 only (owner ruling D4, recorded on the RP-22 ticket, 2026-09-20) — a usage
 error, a refusal, and a required integration failing to verify all exit 1.
 Unlike `uninstall`'s own carved-out payload rule, no `--json` payload on this
@@ -1314,7 +1364,7 @@ refusal's prose `error` message, not to `id` itself). `runAdd`'s PROSE
 rendering — never a `--json` payload — is still free to name
 `DECLARATION_REL` for a human reading a terminal; the rule binds the machine
 surface, as it does everywhere else in this document. Recognised
-structurally by `command: "setup"` plus `verb: "list" | "add" | "verify"`,
+structurally by `command: "setup"` plus `verb: "list" | "add" | "verify" | "apply" | "remove"`,
 distinct from the legacy `setup --memory-root` prose path (which carries no
 `--json` output at all) and from `uninstall`'s own `command: "uninstall"`
 shape. Pinned: `packages/cli/test/integrations-cli.test.ts` › "the
@@ -1492,9 +1542,7 @@ own act when one exists, falling back to `['everything']` only when it does
 not. A receipt-recorded version against a probe that itself reports
 `version: null` reads `unverified` — `state.ts`'s own `classify()` rule
 (`versionUnconfirmed`), read from that module's documented behaviour, not
-obtained by running this code and copying its answer. Marking anything
-`--required` against the REAL registry, with no route adapter landed yet,
-still exits 1 — verified end to end through the built binary. Pinned:
+obtained by running this code and copying its answer. Pinned:
 `packages/cli/test/integrations-cli.test.ts` › "a required entry reaches
 state \"installed\" on its one applicable harness, via a matching probe +
 receipt, and exits 0", › "a required id through the REAL registry, with the
@@ -1506,19 +1554,12 @@ exists", and › "a receipt-recorded version against a probe reporting
 version: null reads \"unverified\" — derived from state.ts's own classify()
 rules".
 
-⚠ **No route adapter exists yet at this release.** `mcp-config` (S5),
-`claude-plugin-cli` (S6), the guided routes (S7) and the mapping from the
-existing Memory `handshake()` onto this verb's payload (S8) are later slices
-of the same ticket. Until one of them lands, `verify`'s built-in probe
-(`defaultProbe`) answers `unverified` with reason `no-sanctioned-probe` for
-every harness of every declared integration — never `installed`, and never
-`missing` (which would claim a probe ran and found nothing, which is not what
-happened). This is a measured statement about THIS release, not a permanent
-property of the verb: pinned in `packages/cli/test/integrations-cli.test.ts` ›
-"reports every route as unverified/no-sanctioned-probe by default — no route
-adapter has landed yet", and the same file's tests that exercise `missing`
-and required-vs-optional exit behaviour do so only by injecting a fake probe
-and a fake registry, never against a real route.
+Hosted Claude MCP verification reads the documented project configuration.
+Other routes without a supported probe remain `unverified`; a probe that
+could not run is never evidence of absence or successful installation.
+Doctor and release acceptance consume unscoped verification, because
+`--only` intentionally omits other integrations. The unused Claude plugin
+route is deferred beyond 0.10.0; it has no provider in the release matrix.
 
 ### Every filesystem read this surface performs is symlink-safe and bounded (RP-22 round 2 blocker 2, round 3 advisory)
 
@@ -1579,9 +1620,8 @@ depend on the declaration parsing at all, since it asks a question about
 `.rig/receipts/` that an unparseable `.rig/integrations.json` has no bearing
 on.
 
-`observed.evidence` is structurally always `[]` at this slice: no route
-adapter (S5–S8) exists yet to populate it, and `defaultProbe` never claims
-evidence for an observation it never made.
+Observation evidence describes only the checks performed by a supported
+probe. It does not imply authorization or connectivity to a hosted provider.
 
 The receipts-directory scan behind `orphaned` is capped at
 `MAX_ORPHAN_CANDIDATES` (500) candidates, with an explicit signal — never

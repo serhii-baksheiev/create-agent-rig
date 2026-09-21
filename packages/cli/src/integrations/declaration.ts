@@ -75,7 +75,7 @@ const ROOT_KEYS_SET = new Set(ROOT_KEYS);
 const ARBITRARY_COMMAND_KEYS = new Set(['command', 'args', 'env']);
 const NON_OFFICIAL_SOURCE_KEYS = new Set(['source', 'url', 'headers']);
 
-const KNOWN_ENTRY_KEYS_LIST = ['id', 'required', 'version', 'harnesses'] as const;
+const KNOWN_ENTRY_KEYS_LIST = ['id', 'required', 'version', 'harnesses', 'selected'] as const;
 
 /**
  * Exported so a test can assert this is the SAME array as the schema's
@@ -103,10 +103,12 @@ export type DeclaredIntegration = {
   required?: boolean;
   version?: string;
   harnesses?: Harness[];
+  selected?: true;
 };
 
 export type RejectionReason =
   | 'not-in-matrix'
+  | 'explicit-selection-required'
   | 'arbitrary-command-refused'
   | 'non-official-source'
   | 'malformed'
@@ -290,6 +292,15 @@ export function parseDeclaration(
       continue;
     }
 
+    if (Object.hasOwn(entry, 'selected') && entry.selected !== true) {
+      rejected.push({ id, reason: 'malformed' });
+      continue;
+    }
+    if (descriptor.requiresExplicitSelection === true && entry.selected !== true) {
+      rejected.push({ id, reason: 'explicit-selection-required' });
+      continue;
+    }
+
     let required: boolean | undefined;
     if (Object.hasOwn(entry, 'required')) {
       const value = entry.required;
@@ -332,6 +343,7 @@ export function parseDeclaration(
         ...(required !== undefined ? { required } : {}),
         ...(version !== undefined ? { version } : {}),
         ...(harnesses !== undefined ? { harnesses } : {}),
+        ...(entry.selected === true ? { selected: true as const } : {}),
       },
       descriptor,
     });
@@ -369,7 +381,7 @@ export function parseDeclaration(
 
 /**
  * Stable bytes: entries sorted by id, a fixed key order per entry
- * (`id, required, version, harnesses`), two-space indent, trailing newline,
+ * (`id, required, version, harnesses, selected`), two-space indent, trailing newline,
  * absent optionals omitted rather than written `null`.
  */
 export function serializeDeclaration(entries: readonly DeclaredIntegration[]): string {
@@ -379,6 +391,7 @@ export function serializeDeclaration(entries: readonly DeclaredIntegration[]): s
     if (entry.required !== undefined) ordered.required = entry.required;
     if (entry.version !== undefined) ordered.version = entry.version;
     if (entry.harnesses !== undefined) ordered.harnesses = entry.harnesses;
+    if (entry.selected !== undefined) ordered.selected = entry.selected;
     return ordered;
   });
   const body = { schemaVersion: DECLARATION_SCHEMA_VERSION, integrations };

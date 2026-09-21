@@ -90,15 +90,23 @@ Also: create-agent-rig setup add <id> [--required] [--version <pin>] [--dry-run]
   dropping it. An entry the CURRENT registry rejects is never pruned by a
   later add for a different id — it is preserved as the same JSON value (not
   necessarily the same original formatting) and named, with its rejection
-  reason, in preservedRejected. No route adapter exists yet at this release (see
-  "setup verify" below), so marking an entry --required makes verify exit 1
-  until one lands, not because the entry is actually missing.
+  reason, in preservedRejected. Explicitly selects a hosted MCP provider so
+  an old unsupported entry does not automatically activate after an upgrade.
+
+Also: create-agent-rig setup apply [--only <id>] [--dry-run] [--yes] [--json]
+  Configure selected Figma/Atlassian MCP entries in Claude Code's project
+  .mcp.json. Preserves user entries; Codex setup is guided. Authorization
+  stays with the provider. A noninteractive or JSON run requires --yes.
+
+Also: create-agent-rig setup remove <id> [--dry-run] [--yes] [--json]
+  Remove only matching Rig-owned MCP configuration and retain a removal
+  receipt. Never deletes provider data or modified user configuration.
 
 Also: create-agent-rig setup verify [--only <id>] [--json]
   Read-only: classify every declared integration against what can currently
-  be observed. No route adapter exists yet at this release, so every harness
-  reads "unverified" (no-sanctioned-probe) until a later release wires one up
-  — a --required entry therefore always exits 1 until then. Exits 1 when any
+  be observed. Hosted MCP configuration does not prove authorization,
+  connectivity or project approval. Unsupported probes stay unverified.
+  Exits 1 when any
   required integration is not installed on every harness it applies to, or
   when the declaration itself does not parse; 0 otherwise,
   including when there is no declaration at all.
@@ -144,10 +152,20 @@ async function runSetup(rawArgs: string[]): Promise<number> {
   // `setup` keep answering exactly as they did before this slice.
   const verb = rawArgs[0];
   if ((INTEGRATIONS_VERBS as readonly string[]).includes(verb ?? '')) {
+    const isInteractive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
     const result = await runIntegrationsCommand({
       verb: verb!,
       args: rawArgs.slice(1),
       cwd: process.cwd(),
+      isTTY: isInteractive,
+      confirm: async (plan) => {
+        process.stderr.write(`${plan}\n`);
+        return promptConfirm('Apply this integration plan?', {
+          input: process.stdin,
+          output: process.stderr,
+          isInteractive,
+        });
+      },
     });
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);

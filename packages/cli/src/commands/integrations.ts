@@ -1,8 +1,8 @@
-// `create-agent-rig setup list | add | verify` (RP-22 S4): the read-only
-// registry/verification verbs plus the one declaration write. Legacy
+// `create-agent-rig setup list | add | verify | apply | remove` (RP-22): the
+// registry, declaration, verification, and hosted-MCP lifecycle verbs. Legacy
 // `setup --memory-root …` is a separate module (`./setup.js`) and is not
 // touched by anything here; `index.ts` dispatches to this module only when
-// the first `setup` argument is one of the three verbs below, so an existing
+// the first `setup` argument is one of the integration verbs below, so an existing
 // invocation with none of them (including no arguments at all) still reaches
 // the unchanged legacy path.
 //
@@ -31,7 +31,8 @@
 // directory scan is bounded to `MAX_ORPHAN_CANDIDATES` with an explicit
 // `orphanScan` signal when the bound is hit or the directory could not be
 // read at all. Pinned by packages/cli/test/integrations-cli.test.ts.
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
@@ -50,8 +51,10 @@ import {
   MAX_RECEIPT_BYTES,
   RECEIPTS_DIR_REL,
   parseReceipt,
+  serializeReceipt,
   type Receipt,
 } from '../integrations/receipt.js';
+import { packageVersion } from '../lib/version.js';
 import {
   REGISTRY,
   type Harness,
@@ -568,11 +571,30 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
     (entry) => entry.id !== options.id && previousRejectedById.has(entry.id as string),
   );
 
-  const previous = previousEntries.find((entry) => entry.id === options.id);
+  let previous = previousEntries.find((entry) => entry.id === options.id);
+  if (previousRejectedById.get(options.id) === 'explicit-selection-required') {
+    // Reuse the declaration parser to retain valid existing requirements when
+    // the user explicitly activates a formerly unsupported provider.
+    const existing = previousRawEntries.find((entry) => entry.id === options.id);
+    const selected = parseDeclaration(
+      JSON.stringify({
+        schemaVersion: DECLARATION_SCHEMA_VERSION,
+        integrations: [{ ...existing, selected: true }],
+      }),
+      registry,
+    );
+    if (selected.status === 'ok') previous = selected.entries[0];
+  }
   const required = options.required ?? previous?.required;
   const version = options.version ?? previous?.version;
   const candidate: DeclaredIntegration = {
     id: options.id,
+    ...(registry.find((descriptor) => descriptor.id === options.id)?.requiresExplicitSelection ===
+    true
+      ? { selected: true as const }
+      : previous?.selected === true
+        ? { selected: true as const }
+        : {}),
     ...(required !== undefined ? { required } : {}),
     ...(version !== undefined ? { version } : {}),
     ...(previous?.harnesses !== undefined ? { harnesses: previous.harnesses } : {}),
@@ -734,6 +756,182 @@ export async function addIntegration(options: AddOptions): Promise<AddOutcome> {
   }
   await writeFile(checked, finalText);
   return { outcome: 'written', entry: finalEntry, changed, preservedRejected };
+}
+
+// ---------------------------------------------------------------------------
+// Project-scoped hosted MCP configuration (RP-22 S5)
+// ---------------------------------------------------------------------------
+
+const MCP_CONFIG_REL = '.mcp.json';
+type McpServer = { type: 'http'; url: string };
+type McpConfig = { mcpServers: Record<string, unknown>; [key: string]: unknown };
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function mcpServerFor(descriptor: ProviderDescriptor): { name: string; server: McpServer } | null {
+  if (descriptor.id === 'figma-mcp')
+    return { name: 'figma', server: { type: 'http', url: 'https://mcp.figma.com/mcp' } };
+  if (descriptor.id === 'atlassian-mcp')
+    return { name: 'atlassian', server: { type: 'http', url: 'https://mcp.atlassian.com/v2/mcp' } };
+  return null;
+}
+
+function sameServer(value: unknown, expected: McpServer): boolean {
+  return (
+    isPlainRecord(value) &&
+    Object.keys(value).length === 2 &&
+    value.type === expected.type &&
+    value.url === expected.url
+  );
+}
+
+async function readMcpConfig(
+  repoDir: string,
+): Promise<{ status: 'absent' | 'ok' | 'invalid'; raw?: string; config?: McpConfig }> {
+  const resolved = await resolveReadableInside(repoDir, MCP_CONFIG_REL, 'file');
+  if (resolved.status === 'absent') return { status: 'absent' };
+  if (resolved.status !== 'ok') return { status: 'invalid' };
+  let raw: string;
+  try {
+    raw = await readFile(resolved.path, 'utf8');
+  } catch {
+    return { status: 'invalid' };
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPlainRecord(parsed) || !isPlainRecord(parsed.mcpServers)) return { status: 'invalid' };
+    return { status: 'ok', raw, config: parsed as McpConfig };
+  } catch {
+    return { status: 'invalid' };
+  }
+}
+
+async function atomicWriteInside(repoDir: string, rel: string, body: string): Promise<boolean> {
+  const first = await resolveWritableInside(repoDir, rel);
+  if (first === null) return false;
+  await mkdir(path.dirname(first), { recursive: true });
+  const dest = await resolveWritableInside(repoDir, rel);
+  if (dest === null) return false;
+  const temp = path.join(
+    path.dirname(dest),
+    `.${path.basename(dest)}.tmp-${randomBytes(8).toString('hex')}`,
+  );
+  try {
+    await writeFile(temp, body);
+    await rename(temp, dest);
+    return true;
+  } catch {
+    await rm(temp, { force: true });
+    return false;
+  }
+}
+
+function timestamp(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+async function writeHostedReceipt(
+  repoDir: string,
+  entry: DeclaredIntegration,
+  descriptor: ProviderDescriptor,
+  removedAt?: string,
+): Promise<boolean> {
+  const claude = descriptor.routes['claude-code']!;
+  const codex = descriptor.routes.codex!;
+  const performedAt = timestamp();
+  const receipt: Receipt = {
+    schemaVersion: 1,
+    id: descriptor.id,
+    mode: descriptor.mode,
+    source: descriptor.source,
+    license: descriptor.license!,
+    declared: {
+      required: entry.required ?? false,
+      ...(entry.version !== undefined ? { version: entry.version } : {}),
+    },
+    rigVersion: await packageVersion(),
+    acts: {
+      'claude-code': {
+        route: claude.route,
+        automation: claude.automation,
+        performedAt,
+        observedAfter: { state: 'installed', evidence: ['mcp-json-entry'] },
+        notObserved: ['authorization', 'connectivity', 'project-approval'],
+      },
+      codex: {
+        route: codex.route,
+        automation: codex.automation,
+        performedAt,
+        observedAfter: { state: 'pending-user-action', evidence: [] },
+        notObserved: ['authorization', 'connectivity', 'project-approval'],
+      },
+    },
+    ...(removedAt !== undefined ? { removedAt } : {}),
+  };
+  return atomicWriteInside(
+    repoDir,
+    `${RECEIPTS_DIR_REL}/${descriptor.id}.json`,
+    serializeReceipt(receipt),
+  );
+}
+
+type LifecycleResult = {
+  outcome: 'applied' | 'removed' | 'noop' | 'dry-run' | 'pending-user-action' | 'refused';
+  changed: boolean;
+  reason?: string;
+};
+
+function lifecycleRefusal(
+  verb: 'apply' | 'remove',
+  id: string | undefined,
+  reason: string,
+  json: boolean,
+): IntegrationsCliResult {
+  if (json)
+    return {
+      exitCode: 1,
+      stdout: `${JSON.stringify({ schemaVersion: 1, command: 'setup', verb, ...(id !== undefined ? { id } : {}), outcome: 'refused', reason })}\n`,
+      stderr: '',
+    };
+  return {
+    exitCode: 1,
+    stdout: '',
+    stderr: `setup ${verb}: refused${id === undefined ? '' : ` ${sanitizeForDisplay(id)}`} (${reason}).\n`,
+  };
+}
+
+async function applyHosted(
+  entry: DeclaredIntegration,
+  descriptor: ProviderDescriptor,
+  repoDir: string,
+  dryRun: boolean,
+): Promise<LifecycleResult> {
+  if (descriptor.requiresExplicitSelection === true && entry.selected !== true)
+    return {
+      outcome: 'pending-user-action',
+      changed: false,
+      reason: 'explicit-selection-required',
+    };
+  const mapped = mcpServerFor(descriptor);
+  if (mapped === null) return { outcome: 'noop', changed: false };
+  const current = await readMcpConfig(repoDir);
+  if (current.status === 'invalid')
+    return { outcome: 'refused', changed: false, reason: 'mcp-config-unreadable' };
+  const config: McpConfig = current.status === 'absent' ? { mcpServers: {} } : current.config!;
+  const existing = config.mcpServers[mapped.name];
+  if (existing !== undefined) {
+    if (sameServer(existing, mapped.server)) return { outcome: 'noop', changed: false };
+    return { outcome: 'refused', changed: false, reason: 'foreign-mcp-entry' };
+  }
+  if (dryRun) return { outcome: 'dry-run', changed: true };
+  config.mcpServers[mapped.name] = mapped.server;
+  if (!(await atomicWriteInside(repoDir, MCP_CONFIG_REL, `${JSON.stringify(config, null, 2)}\n`)))
+    return { outcome: 'refused', changed: false, reason: 'mcp-config-write-refused' };
+  if (!(await writeHostedReceipt(repoDir, entry, descriptor)))
+    return { outcome: 'refused', changed: true, reason: 'receipt-write-refused' };
+  return { outcome: 'applied', changed: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -910,7 +1108,12 @@ export async function verifyIntegrations(
               digest: receiptAct.observedAfter.digest ?? null,
             }
           : undefined;
-      const observed = await probe(descriptor, harness);
+      let observed: ObservedNow;
+      try {
+        observed = await probe(descriptor, harness);
+      } catch {
+        observed = { present: false, kind: 'unverifiable', reason: 'no-sanctioned-probe' };
+      }
       const declaredInput: DeclaredInput = { kind: 'accepted', version: entry.version };
       let state = classify(declaredInput, baseline, observed);
 
@@ -1171,16 +1374,275 @@ async function runVerify(
       stderr: 'setup verify: --only contains a control or format character.\n',
     };
   }
+  const configuredProbe: Prober = async (descriptor, harness) => {
+    if (probe !== undefined) return probe(descriptor, harness);
+    if (harness !== 'claude-code' || mcpServerFor(descriptor) === null)
+      return defaultProbe(descriptor, harness);
+    const mapped = mcpServerFor(descriptor)!;
+    const config = await readMcpConfig(cwd);
+    if (config.status !== 'ok')
+      return { present: false, kind: 'unverifiable', reason: 'no-sanctioned-probe' };
+    return sameServer(config.config!.mcpServers[mapped.name], mapped.server)
+      ? { present: true, version: null, digest: null }
+      : { present: false, kind: 'missing' };
+  };
   const { payload, exitCode } = await verifyIntegrations({
     repoDir: cwd,
     only: values.only,
     registry,
-    probe,
+    probe: configuredProbe,
   });
   if (values.json === true) {
     return { exitCode, stdout: `${JSON.stringify(payload)}\n`, stderr: '' };
   }
   return { exitCode, stdout: renderVerifyProse(payload, values.only), stderr: '' };
+}
+
+async function runApply(
+  args: string[],
+  cwd: string,
+  registry: readonly ProviderDescriptor[],
+  isTTY: boolean,
+  confirm: IntegrationsCliOptions['confirm'],
+): Promise<IntegrationsCliResult> {
+  let values: { only?: string; 'dry-run'?: boolean; yes?: boolean; json?: boolean };
+  let positionals: string[];
+  try {
+    ({ values, positionals } = parseArgs({
+      args,
+      options: {
+        only: { type: 'string' },
+        'dry-run': { type: 'boolean' },
+        yes: { type: 'boolean' },
+        json: { type: 'boolean' },
+      },
+      allowPositionals: true,
+    }));
+  } catch (error) {
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeMessage((error as Error).message)}\n` };
+  }
+  if (positionals.length > 0)
+    return { exitCode: 1, stdout: '', stderr: 'setup apply takes no positional arguments.\n' };
+  const read = await readDeclarationFile(cwd, registry);
+  if (read.status !== 'ok')
+    return lifecycleRefusal(
+      'apply',
+      values.only,
+      'declaration-absent-or-invalid',
+      values.json === true,
+    );
+  const byId = new Map(registry.map((d) => [d.id, d]));
+  const entries = read.entries
+    .filter((e) => values.only === undefined || e.id === values.only)
+    .filter((e) => mcpServerFor(byId.get(e.id)!) !== null);
+  if (values['dry-run'] !== true && values.yes !== true) {
+    const plan = await Promise.all(
+      entries.map((entry) => applyHosted(entry, byId.get(entry.id)!, cwd, true)),
+    );
+    const refusal = plan.find((result) => result.outcome === 'refused');
+    if (refusal !== undefined)
+      return lifecycleRefusal('apply', values.only, refusal.reason!, values.json === true);
+    if (
+      !isTTY ||
+      values.json === true ||
+      confirm === undefined ||
+      !(await confirm(
+        `Apply ${entries.map((entry) => entry.id).join(', ')} project MCP configuration?`,
+      ))
+    ) {
+      return lifecycleRefusal(
+        'apply',
+        values.only,
+        'yes-required-for-json-or-noninteractive',
+        values.json === true,
+      );
+    }
+  }
+  const results: Array<{
+    id: string;
+    state: LifecycleResult['outcome'];
+    changed: boolean;
+    reason?: string;
+  }> = [];
+  for (const entry of entries) {
+    const result = await applyHosted(entry, byId.get(entry.id)!, cwd, values['dry-run'] === true);
+    results.push({
+      id: entry.id,
+      state: result.outcome,
+      changed: result.changed,
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+    });
+    if (result.outcome === 'refused')
+      return lifecycleRefusal('apply', entry.id, result.reason!, values.json === true);
+  }
+  for (const rejected of read.rejected) {
+    if (
+      rejected.reason === 'explicit-selection-required' &&
+      (values.only === undefined || rejected.id === values.only)
+    ) {
+      results.push({
+        id: rejected.id,
+        state: 'pending-user-action',
+        changed: false,
+        reason: rejected.reason,
+      });
+    }
+  }
+  const payload = {
+    schemaVersion: 1,
+    command: 'setup',
+    verb: 'apply',
+    dryRun: values['dry-run'] === true,
+    changed: results.some((r) => r.changed),
+    integrations: results,
+  };
+  return {
+    exitCode: 0,
+    stdout: values.json
+      ? `${JSON.stringify(payload)}\n`
+      : `${results.map((r) => `${r.id}: ${r.state}`).join('\n')}\n`,
+    stderr: '',
+  };
+}
+
+async function runRemove(
+  args: string[],
+  cwd: string,
+  registry: readonly ProviderDescriptor[],
+  isTTY: boolean,
+  confirm: IntegrationsCliOptions['confirm'],
+): Promise<IntegrationsCliResult> {
+  let values: { 'dry-run'?: boolean; yes?: boolean; json?: boolean };
+  let positionals: string[];
+  try {
+    ({ values, positionals } = parseArgs({
+      args,
+      options: {
+        'dry-run': { type: 'boolean' },
+        yes: { type: 'boolean' },
+        json: { type: 'boolean' },
+      },
+      allowPositionals: true,
+    }));
+  } catch (error) {
+    return { exitCode: 1, stdout: '', stderr: `${sanitizeMessage((error as Error).message)}\n` };
+  }
+  if (positionals.length !== 1)
+    return lifecycleRefusal('remove', undefined, 'exactly-one-id-required', values.json === true);
+  const descriptor = registry.find((d) => d.id === positionals[0]);
+  const mapped = descriptor === undefined ? null : mcpServerFor(descriptor);
+  if (descriptor === undefined || mapped === null)
+    return lifecycleRefusal(
+      'remove',
+      positionals[0],
+      'no-rig-owned-mcp-route',
+      values.json === true,
+    );
+  const receiptResult = await readReceiptFile(cwd, descriptor.id);
+  if (receiptResult.status !== 'present' || receiptResult.receipt === undefined)
+    return lifecycleRefusal(
+      'remove',
+      descriptor.id,
+      'no-active-rig-owned-receipt',
+      values.json === true,
+    );
+  if (receiptResult.receipt.removedAt !== undefined) {
+    const payload = {
+      schemaVersion: 1,
+      command: 'setup',
+      verb: 'remove',
+      id: descriptor.id,
+      dryRun: values['dry-run'] === true,
+      changed: false,
+    };
+    return {
+      exitCode: 0,
+      stdout: values.json
+        ? `${JSON.stringify(payload)}\n`
+        : `${descriptor.id} was already removed.\n`,
+      stderr: '',
+    };
+  }
+  const receipt = receiptResult.receipt;
+  const claudeAct = receipt.acts['claude-code'];
+  if (
+    receipt.mode !== descriptor.mode ||
+    receipt.source.kind !== descriptor.source.kind ||
+    receipt.source.locator !== descriptor.source.locator ||
+    receipt.source.official !== descriptor.source.official ||
+    receipt.source.verifiedOn !== descriptor.source.verifiedOn ||
+    claudeAct === undefined ||
+    claudeAct.route !== 'mcp-config' ||
+    claudeAct.automation !== 'automatic' ||
+    claudeAct.observedAfter.state !== 'installed' ||
+    !claudeAct.observedAfter.evidence.includes('mcp-json-entry')
+  )
+    return lifecycleRefusal(
+      'remove',
+      descriptor.id,
+      'receipt-does-not-prove-rig-ownership',
+      values.json === true,
+    );
+  const config = await readMcpConfig(cwd);
+  if (config.status !== 'ok' || !sameServer(config.config!.mcpServers[mapped.name], mapped.server))
+    return lifecycleRefusal(
+      'remove',
+      descriptor.id,
+      'mcp-entry-absent-or-modified',
+      values.json === true,
+    );
+  if (
+    values['dry-run'] !== true &&
+    values.yes !== true &&
+    (!isTTY ||
+      values.json === true ||
+      confirm === undefined ||
+      !(await confirm('Remove 1 Rig-owned project MCP configuration change?')))
+  )
+    return lifecycleRefusal(
+      'remove',
+      descriptor.id,
+      'yes-required-for-json-or-noninteractive',
+      values.json === true,
+    );
+  if (values['dry-run'] !== true) {
+    delete config.config!.mcpServers[mapped.name];
+    if (
+      !(await atomicWriteInside(cwd, MCP_CONFIG_REL, `${JSON.stringify(config.config, null, 2)}\n`))
+    )
+      return lifecycleRefusal(
+        'remove',
+        descriptor.id,
+        'mcp-config-write-refused',
+        values.json === true,
+      );
+    if (
+      !(await atomicWriteInside(
+        cwd,
+        `${RECEIPTS_DIR_REL}/${descriptor.id}.json`,
+        serializeReceipt({ ...receipt, removedAt: timestamp() }),
+      ))
+    )
+      return lifecycleRefusal(
+        'remove',
+        descriptor.id,
+        'removal-receipt-write-refused',
+        values.json === true,
+      );
+  }
+  const payload = {
+    schemaVersion: 1,
+    command: 'setup',
+    verb: 'remove',
+    id: descriptor.id,
+    dryRun: values['dry-run'] === true,
+    changed: values['dry-run'] !== true,
+  };
+  return {
+    exitCode: 0,
+    stdout: values.json ? `${JSON.stringify(payload)}\n` : `Removed ${descriptor.id}.\n`,
+    stderr: '',
+  };
 }
 
 export type IntegrationsCliOptions = {
@@ -1189,11 +1651,13 @@ export type IntegrationsCliOptions = {
   cwd: string;
   registry?: readonly ProviderDescriptor[];
   probe?: Prober;
+  isTTY?: boolean;
+  confirm?: (plan: string) => Promise<boolean>;
 };
 
-/** `list`/`add`/`verify` are the only verbs this dispatches; the caller
+/** These are the only verbs this dispatches; the caller
  * (`index.ts`) checks `rawArgs[0]` against them before ever calling this. */
-export const INTEGRATIONS_VERBS = ['list', 'add', 'verify'] as const;
+export const INTEGRATIONS_VERBS = ['list', 'add', 'verify', 'apply', 'remove'] as const;
 
 export async function runIntegrationsCommand(
   options: IntegrationsCliOptions,
@@ -1203,6 +1667,10 @@ export async function runIntegrationsCommand(
   if (options.verb === 'add') return runAdd(options.args, options.cwd, registry);
   if (options.verb === 'verify')
     return runVerify(options.args, options.cwd, registry, options.probe);
+  if (options.verb === 'apply')
+    return runApply(options.args, options.cwd, registry, options.isTTY ?? true, options.confirm);
+  if (options.verb === 'remove')
+    return runRemove(options.args, options.cwd, registry, options.isTTY ?? true, options.confirm);
   return {
     exitCode: 1,
     stdout: '',

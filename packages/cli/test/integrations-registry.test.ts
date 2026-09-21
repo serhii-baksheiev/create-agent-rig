@@ -408,8 +408,12 @@ describe('validateDescriptor', () => {
 });
 
 describe('REGISTRY', () => {
-  it('holds exactly one entry in this slice: memory-custom-executable', () => {
-    expect(REGISTRY.map((descriptor) => descriptor.id)).toEqual(['memory-custom-executable']);
+  it('holds the S5 hosted MCP entries alongside memory-custom-executable', () => {
+    expect(REGISTRY.map((descriptor) => descriptor.id)).toEqual([
+      'figma-mcp',
+      'atlassian-mcp',
+      'memory-custom-executable',
+    ]);
   });
 
   it('every shipped descriptor passes validateDescriptor, has an https docsUrl and a real verifiedOn date', () => {
