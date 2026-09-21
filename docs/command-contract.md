@@ -402,7 +402,8 @@ read from repository configuration. This verifies installation and guard
 behavior; it does not assert that a running harness has loaded its hooks.
 For the optional workflow layer, diagnosis checks installed script bytes,
 including the frozen revalidation and claim-record mechanisms. It does not
-query Jira or change a freeze decision. `doctor-guards.test.ts` and
+query Jira or change the external RP-26 freeze decision, which remains
+unobserved in the report. `doctor-guards.test.ts` and
 `doctor-workflow.test.ts` cover these boundaries.
 
 The aggregate command also inspects the machine-scoped custom Memory manifest.

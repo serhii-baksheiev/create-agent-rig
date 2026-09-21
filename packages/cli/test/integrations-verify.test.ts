@@ -224,16 +224,24 @@ describe('integration doctor verification (RP-21)', () => {
 
   it('ignores a relative PATH directory even when it contains an executable uvx', async () => {
     await writeBasicMemoryForClaude();
-    const launcher = path.join(launchers, uvxName());
-    await writeFile(launcher, 'fixture launcher');
-    if (process.platform !== 'win32') await chmod(launcher, 0o755);
-    const relative = path.relative(process.cwd(), launchers);
-    expect(path.isAbsolute(relative)).toBe(false);
-    usePath(relative);
+    const sameVolumeLaunchers = await mkdtemp(
+      path.join(process.cwd(), 'node_modules', 'caf-integrations-verify-relative-'),
+    );
+    try {
+      const launcher = path.join(sameVolumeLaunchers, uvxName());
+      await writeFile(launcher, 'fixture launcher');
+      if (process.platform !== 'win32') await chmod(launcher, 0o755);
+      const relative = path.relative(process.cwd(), sameVolumeLaunchers);
+      expect(path.isAbsolute(relative)).toBe(false);
+      await expect(access(path.join(relative, uvxName()))).resolves.toBeUndefined();
+      usePath(relative);
 
-    const result = await verifyIntegrations({ repoDir: repo });
+      const result = await verifyIntegrations({ repoDir: repo });
 
-    expect(result.integrations[0]?.harnesses['claude-code']?.launcher).toBe('missing');
+      expect(result.integrations[0]?.harnesses['claude-code']?.launcher).toBe('missing');
+    } finally {
+      await removeFixture(sameVolumeLaunchers);
+    }
   });
 
   it.each([

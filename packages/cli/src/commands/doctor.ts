@@ -184,7 +184,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     checks: checks.map((check) => ({
       ...check,
       status: check.status === 'pass' ? 'ok' : check.status,
-      detail: check.reason.replaceAll('-', ' '),
+      detail:
+        check.reason === 'workflow-verified'
+          ? 'Workflow and frozen revalidation scripts match this package; the RP-26 decision is not observed.'
+          : check.reason.replaceAll('-', ' '),
       fix:
         check.status === 'pass'
           ? ''
