@@ -1277,358 +1277,49 @@ prints a reminder that the change is unstaged (`git add -A`, then commit) —
 
 ## setup integrations (RP-22)
 
-`setup list [--json]`, `setup add <id> [--required] [--version <pin>] [--dry-run] [--json]`
-and `setup verify [--only <id>] [--json]` are three new verbs alongside the
-existing `setup --memory-root …` (RP-147, unchanged). Dispatch on the first
-argument decides between them: `index.ts` reaches this surface only when
-`rawArgs[0]` is exactly `list`, `add` or `verify`; anything else that LOOKS
-like a legacy flag (starts with `-`) or is simply absent is the legacy path,
-byte for byte. A bare word that is none of the three — a typo near them, such
-as `verifyy` — is its own usage error naming `list, add, verify` explicitly,
-rather than falling all the way through to the legacy `--memory-root` parser
-(whose own error names no verb at all). Pinned in
-`packages/cli/test/integrations-cli.test.ts` › "setup with no arguments still
-answers the legacy usage error", › "legacy setup --memory-root behaves
-exactly as before — the new dispatch never intercepts it", and › "a typo
-near the three verbs (setup verifyy) is a usage error naming list/add/verify,
-not the legacy message".
+The integration commands use a single repository intent file,
+`.rig/integrations.json`, with `schemaVersion: 1`. Legacy
+`setup --memory-root` retains its machine-scoped registration and version
+handshake. Separate integration receipts and `setup verify` are retired;
+aggregated verification belongs to the forthcoming `doctor` surface.
 
-Like `uninstall`, this surface is not a member of the foundation verb set and
-does not use its five-code exit table: every one of the three verbs exits 0 or
-1 only (owner ruling D4, recorded on the RP-22 ticket, 2026-09-20) — a usage
-error, a refusal, and a required integration failing to verify all exit 1.
-Unlike `uninstall`'s own carved-out payload rule, no `--json` payload on this
-surface ever names a path this surface itself reads or writes — not even the
-repository-relative `.rig/integrations.json` or `.rig/receipts/<id>.json`
-(RP-22 round 4, blocker 5 — round 3's `write-refused` message named
-`.rig/integrations.json`, measured; fixed by REMOVING the constant from that
-message) — nor a host-derived absolute path (the checkout directory, a temp
-directory). A caller-typed `<id>` is a different matter: it is echoed back
-into the payload's `id` field exactly as given — `JSON.stringify` escapes it,
-nothing here truncates it — even when it happens to LOOK like a path
-(`/etc/passwd`, a Windows drive path); that is the caller's own input read
-back at them, not a path this surface derived (RP-22 round 6: the previous
-wording here claimed this field was also truncated, which is false —
-truncation applies only to a display-sanitised copy embedded inside a
-refusal's prose `error` message, not to `id` itself). `runAdd`'s PROSE
-rendering — never a `--json` payload — is still free to name
-`DECLARATION_REL` for a human reading a terminal; the rule binds the machine
-surface, as it does everywhere else in this document. Recognised
-structurally by `command: "setup"` plus `verb: "list" | "add" | "verify"`,
-distinct from the legacy `setup --memory-root` prose path (which carries no
-`--json` output at all) and from `uninstall`'s own `command: "uninstall"`
-shape. Pinned: `packages/cli/test/integrations-cli.test.ts` › "the
-write-refused --json payload names no host-derived or absolute path in its
-error field (RP-22 round 5, narrowed from round 4 blocker 5)" and › "the
-same hostile id is safely JSON-escaped, not stripped, under --json".
+```sh
+create-agent-rig setup list --json
+create-agent-rig setup add figma-mcp --harness claude-code --yes --json
+create-agent-rig setup apply figma-mcp --dry-run --json
+create-agent-rig setup apply figma-mcp --yes --json
+create-agent-rig setup remove figma-mcp --yes --json
+```
 
-**What "exactly one JSON object … regardless" actually covers here, stated
-precisely (RP-22 round 4, blocker 2 — round 3's version of this paragraph
-misdescribed the machine-read surface; the general `## Output` rule above is
-held verbatim by `test/template/command-contract.test.ts` and is not
-reworded, this scopes it for THIS surface instead).** "Usage error" here
-means EXACTLY what argument PARSING itself rejects: an unknown flag, a
-missing or extra positional, and a malformed `--only` value (checked in the
-CLI dispatch, `runVerify`, purely an argument-parsing concern there) — every
-one of these is prose to stderr, empty stdout, exit 1, `--json` or not,
-following this repository's existing house convention for
-`create`/`init`/`upgrade`/`uninstall` alike. A malformed `<id>` or `--version`
-is DIFFERENT: both are checked one level down, inside `addIntegration`
-itself, and answered as an ordinary REFUSAL — one JSON object under
-`--json`, `reason: "malformed"` — exactly like `not-in-matrix` or
-`unpinnable-version` are. The dividing line is not "does this value look
-wrong" but "which layer catches it": argument parsing succeeding is what
-"after argument parsing succeeds" in the general rule means, and `<id>`/
-`--version` are always syntactically valid ARGUMENTS (parsing never
-objects to them) even when `addIntegration` goes on to refuse their
-CONTENT. A caller that always parses stdout as JSON on a non-zero exit is
-already wrong for every other command here for the usage-error case; it is
-NOT wrong for a malformed `<id>`/`--version` refusal, which is exactly why
-the two are told apart. Pinned per verb, spawning the built CLI:
-`packages/cli/test/integrations-cli.test.ts` › "an unknown flag on each verb
-is a usage error, exit 1, nothing on stdout", › "a refused setup add nope
---json exits 1, one JSON object, empty stderr" (a REFUSAL, not a usage error
-— reaches the one-object promise), › "setup verify --only with a control
-character is a usage error, distinct from \"not found\"" (a malformed
-`--only` value IS a usage error, caught before `verifyIntegrations` ever
-runs), › "an id with a control character is refused with reason malformed,
-ONE JSON object, exit 1", and › "a --version with a control character is
-refused with reason malformed, ONE JSON object, exit 1" (both spawning the
-built binary, both REFUSALS, not usage errors).
+The first ownership adapter configures Figma and Atlassian MCP in Claude's
+project `.mcp.json`. Codex whole-file wiring and upstream-managed providers
+are subsequent RP-22 slices; this slice does not establish their acceptance.
 
-**The registry (`packages/cli/src/integrations/registry.ts`, RP-22 S1) is
-closed and release-owned.** `list` prints it read-only: `id`, `capability`,
-`mode`, `license` (an SPDX id or a terms URL), `source`, `stability`, and the
-route/automation pair for each harness the descriptor supports. Nothing here
-installs anything.
+For the public ownership and consent contract, see
+`packages/cli/test/integrations-intent.test.ts`. It exercises the command
+against real temporary repositories: entry hashes in intent, foreign entry
+preservation, ownership-bounded removal, noninteractive consent, and changes
+between the displayed plan and apply.
 
-**`add` validates `<id>` against the registry and then upserts its entry** in
-the committed declaration, `.rig/integrations.json` (`../integrations/declaration.ts`,
-RP-22 S1) — through `resolveWritableInside`, so a symlink planted at that path
-is refused rather than followed, and with the declaration module's own sorted,
-stable bytes. Containment is decided BEFORE anything is created: `add` never
-`mkdir`s ahead of a `resolveWritableInside` check, so a `.rig` committed as a
-(possibly dangling) symlink is refused, not crashed into. Validation is not
-re-derived here: the candidate whole-file shape is built and handed to the
-SAME `parseDeclaration` the file format already owns, so registry membership,
-the version-pin pattern and an exclusive-group conflict are refused exactly
-the way a hand-edited declaration would be. **Upsert, not replace**: a flag
-the caller did not pass on a later call keeps the value an earlier call
-recorded, rather than dropping it — so `setup add memory-custom-executable
---required` followed by `setup add memory-custom-executable` (no flags) still
-reports `required` on the entry afterwards. `add` installs nothing; only the
-declaration file is written, and `--dry-run` performs no write (and refuses
-identically to a real run wherever a real run would refuse). Pinned in
-`packages/cli/test/integrations-cli.test.ts` › "refuses an id outside the
-registry and writes nothing", › "is idempotent: a second identical add leaves
-the bytes unchanged and reports changed: false", › "upserts: a later add
-without --required keeps the previously recorded required flag", › "a dry run
-performs no write", › "a dangling symlink at .rig refuses the write and
-creates nothing", › "a symlink to a valid declaration FILE at the declaration
-path is refused at the WRITE guard, target bytes unchanged", and › ".rig
-itself symlinked outside the repository is refused at the WRITE guard,
-outside directory listing unchanged".
+A Claude target records `targets["claude-code"].entryHash`, the SHA-256 of
+the JSON serialization of its server entry. The provider's intended harnesses
+remain in `harnesses`. The file stores no runtime observations, timestamps,
+credentials, provider data or executable instructions.
 
-**Every entry the current registry rejects is preserved verbatim by `add`,
-never pruned (RP-22 round 2 blocker 1, and round 3 blocker 1 below).** A
-declaration naming a provider this release does not (yet) know about — or one
-a later registry change newly rejects — survives every subsequent `add` for a
-DIFFERENT id, sorted alongside accepted entries by id (the ordering rule
-extended, not forked). "Verbatim" means the same JSON VALUE (same keys, same
-key order, same values as `JSON.parse` produced), not the same original file
-bytes — the whole file is still always re-serialized in this format's
-canonical two-space style. Each preserved id is named together with the
-reason it was rejected for, both in `--json`
-(`preservedRejected: [{ id, reason }, …]` — additive; this shape has not
-shipped in any release yet, so the contract's additive-only rule does not
-bind it, and this sentence records that plainly) and in prose. Pinned:
-`packages/cli/test/integrations-cli.test.ts` › "a second add never prunes an
-entry the current registry rejects — literal before/after bytes", ›
-"preserving a rejected entry is reported in --json as preservedRejected:
-[{id, reason}], and in prose with its reason", and › "preserved entries are
-stable across a second, otherwise-identical add".
+Dry-run describes work without applying it. JSON mode never prompts; mutation
+requires `--yes`. An interactive call obtains consent for the planned
+configuration. All planned file preimages are re-read after consent, before
+writing; a changed preimage refuses the operation.
 
-⚠ **Preservation is lossy in two named, tested ways — value preservation, not
-byte preservation.** A number outside what a JS double (and therefore JSON)
-can represent — `1e400` is the tested case — round-trips to `null`
-(`JSON.stringify(Infinity)` is `null`); duplicate keys within one preserved
-entry collapse to the LAST value, because that is what `JSON.parse` itself
-already did before this module ever sees the value. Neither is a defect to
-fix — a JSON parser cannot recover information the JSON GRAMMAR itself does
-not carry. Pinned: `packages/cli/test/integrations-cli.test.ts` › "a huge
-number literal in a preserved entry is lossy (JS number precision) — 1e400
-round-trips to null, stated as a limit" and › "duplicate keys in a preserved
-entry collapse to the LAST value (JSON.parse's own behaviour) — stated as a
-limit".
+An existing foreign MCP entry, including one identical to the official
+endpoint, is not adopted as Rig-owned. Removal requires the recorded entry
+hash to match the current entry. Other servers and root configuration fields
+remain outside that ownership.
 
-⚠ **`add` refuses a rewrite that would itself exceed 64 KiB, checked against
-the OUTGOING bytes, before the write guard runs (RP-22 round 3, blocker 1 — a
-round-2 regression).** `declaration.ts`'s own 64 KiB cap is enforced on READ;
-it says nothing about the file `add` is about to WRITE. Re-indenting a
-preserved entry into this format's canonical two-space style can be several
-times larger than however it was originally formatted (measured: a compact
-1600-entry fixture at 38,436 bytes pretty-prints to 67,249 bytes), so a
-declaration that fit on disk when read can fail to fit once rewritten. `add`
-now checks the REWRITTEN text's byte length against the same exported
-`MAX_DECLARATION_BYTES` `declaration.ts` uses, and refuses with
-`reason: 'declaration-too-large'` — a new, additive member of `add`'s refusal
-reason set (`RejectionReason | 'declaration-unreadable' | 'write-refused' |
-'declaration-too-large'`) — before ever touching the write guard, so nothing
-is created and the file on disk is left byte-for-byte unchanged.
-`--dry-run` reaches this same refusal identically; it is checked before the
-dry-run branch, not after. Pinned: `packages/cli/test/integrations-cli.test.ts`
-› "a rewrite that would exceed 64 KiB is refused with declaration-too-large,
-bytes unchanged (sha256), directory listing unchanged", › "--dry-run against
-the same oversized-after-rewrite fixture refuses identically, not a falsely
-clean preview", and › "a rewrite that still fits is written, and verify can
-read it back".
-
-⚠ **`add` re-validates the ACTUAL bytes it is about to write, not only the
-narrower candidate it built along the way (RP-22 round 4 advisory).**
-`candidateText` (validated to decide `ownRejection`/`collateralRejection`,
-above) is accepted entries plus the ONE new candidate — it never includes
-preserved-rejected entries, because those are merged in only when `finalText`
-is built. Once a real registry ships a populated `exclusiveGroup` (S5/S6), a
-preserved entry that conflicts with `options.id` only once both are read back
-TOGETHER could make `candidateText` see no conflict at all while the file
-`add` is about to write would, if read back independently, reject
-`options.id` anyway. `add` closes this by re-parsing `finalText` itself and
-refusing — with whichever reason that fresh parse gives, or
-`declaration-unreadable` if `options.id` is not named at all — unless
-`options.id` is confirmed still accepted in EXACTLY the bytes about to be
-written. Pinned: `packages/cli/test/integrations-cli.test.ts` › "re-validates
-the ACTUAL rewritten bytes, not just the narrower candidate: both
-exclusive-group members already declared, add M1 still refuses, bytes
-unchanged".
-
-**`verify` is read-only** — it never writes the declaration, a receipt, or
-anything else. It classifies every declared, accepted integration against
-what a probe currently observes (`../integrations/state.ts`'s `classify`,
-RP-22 S2), on every harness that integration applies to, and reports a
-`state` from that module's closed instance-axis vocabulary. It exits 1 when
-the declaration itself does not parse, or when a REQUIRED integration is not
-`installed` on every applicable harness; 0 otherwise — including "no
-declaration at all", which is success with empty arrays, because emptiness is
-a field and not a distinct exit code (see `## Exit codes` above). A rejected
-declaration entry (bad key, an id outside the registry, a malformed scalar, an
-exclusive-group conflict) is surfaced in the payload's `rejected` array and
-never affects the exit code on its own: the declaration parser does not carry
-a `required` flag through to a `Rejection`, so this verb has nothing to judge
-that entry's "required" status by. A `.rig/receipts/<id>.json` (RP-22 S2) with
-no matching declaration entry is reported in `orphaned`. Pinned in
-`packages/cli/test/integrations-cli.test.ts` › "exits 0 with declaration
-absent and empty arrays", › "exits 1 when the declaration itself does not
-parse", › "exits 1 when a required integration is missing, and 0 when only an
-optional one is", › "surfaces a rejected declaration entry in \"rejected\",
-not in \"integrations\"", and › "treats a receipt with no matching declaration
-entry as orphaned".
-
-**`verify`'s success path and receipt mapping (RP-22 round 3, blocker 5).** A
-harness reads `installed` only once a probe reports it present AND, when a
-receipt-recorded baseline exists, that baseline is confirmed rather than
-merely unreadable; per-harness `receipt` is `absent | present | invalid`
-(the closed set — see below), and `notObserved` is taken from the receipt's
-own act when one exists, falling back to `['everything']` only when it does
-not. A receipt-recorded version against a probe that itself reports
-`version: null` reads `unverified` — `state.ts`'s own `classify()` rule
-(`versionUnconfirmed`), read from that module's documented behaviour, not
-obtained by running this code and copying its answer. Marking anything
-`--required` against the REAL registry, with no route adapter landed yet,
-still exits 1 — verified end to end through the built binary. Pinned:
-`packages/cli/test/integrations-cli.test.ts` › "a required entry reaches
-state \"installed\" on its one applicable harness, via a matching probe +
-receipt, and exits 0", › "a required id through the REAL registry, with the
-default probe, exits 1 (spawned CLI, no adapter exists yet)", › "receipt:
-\"present\" when a valid receipt exists for that harness", › "receipt:
-\"absent\" when no receipt file exists for that id", › "notObserved is taken
-from the receipt's own act, not the [\"everything\"] default, when a receipt
-exists", and › "a receipt-recorded version against a probe reporting
-version: null reads \"unverified\" — derived from state.ts's own classify()
-rules".
-
-⚠ **No route adapter exists yet at this release.** `mcp-config` (S5),
-`claude-plugin-cli` (S6), the guided routes (S7) and the mapping from the
-existing Memory `handshake()` onto this verb's payload (S8) are later slices
-of the same ticket. Until one of them lands, `verify`'s built-in probe
-(`defaultProbe`) answers `unverified` with reason `no-sanctioned-probe` for
-every harness of every declared integration — never `installed`, and never
-`missing` (which would claim a probe ran and found nothing, which is not what
-happened). This is a measured statement about THIS release, not a permanent
-property of the verb: pinned in `packages/cli/test/integrations-cli.test.ts` ›
-"reports every route as unverified/no-sanctioned-probe by default — no route
-adapter has landed yet", and the same file's tests that exercise `missing`
-and required-vs-optional exit behaviour do so only by injecting a fake probe
-and a fake registry, never against a real route.
-
-### Every filesystem read this surface performs is symlink-safe and bounded (RP-22 round 2 blocker 2, round 3 advisory)
-
-`add` and `verify` share ONE read of the declaration
-(`readDeclarationFile`) and one of a receipt (`readReceiptFile`); neither is
-duplicated with a second failure policy. Every read — the declaration, one
-receipt, the receipts directory — resolves through
-`packages/cli/src/lib/safe-path.ts`'s `resolveReadableInside` first, which
-refuses a symlink component in EITHER direction (a committed
-`.rig/integrations.json` pointing outside the repository is never silently
-honoured for reading, any more than `resolveWritableInside` would silently
-write through it) and checks the final component's kind (a directory where a
-file is expected, or the reverse, is refused rather than surfacing a raw
-`EISDIR`/`ENOTDIR`). An oversized file is refused at an exact, tested
-boundary, not merely as a general property.
-Pinned: `packages/cli/test/integrations-cli.test.ts` › "verify: a directory
-sitting at the declaration path is declaration: \"invalid\", not a thrown
-EISDIR", › "add: a directory sitting at the declaration path refuses outright
-rather than crashing on writeFile EISDIR", › "verify: a plain FILE sitting
-where the receipts directory belongs reports orphanScan: \"unreadable\", not
-a thrown error", › "verify: a directory sitting at one specific receipt path
-reports that harness receipt: \"invalid\", never thrown", › "fails closed: an
-integration whose receipt could not be read is never reported installed", ›
-".rig/integrations.json -> a valid declaration file OUTSIDE the repo is NOT
-honoured by verify — reported invalid, not read through", › "a symlinked
-receipt is never read for its content — reported receipt: \"invalid\"", and ›
-"an oversized declaration is refused at the boundary value, exactly 64 KiB
-vs 64 KiB + 1". The shared per-segment walk itself (`resolveWritableInside`
-and `resolveReadableInside` both call one private `walkSegments` helper) is
-pinned directly, independent of this surface, in
-`packages/cli/test/safe-path.test.ts`'s `resolveReadableInside` describe
-block. `realpath` stays inside the SAME `try` as `lstat` in that walk (RP-22
-round 4 advisory — a round-2 extraction had moved it outside, which would
-have surfaced an lstat-succeeds/realpath-throws race as an uncaught
-exception instead of the ordinary refusal every other error on this path
-gets); this specific race is not deterministically reproducible, so its
-restoration rests on reading master's original try/catch scope directly
-(both `lstat` and `realpath` inside one `try`), not on a reproduction — see
-the PR body for that reasoning in full.
-
-⚠ **An individual orphan CANDIDATE this scan could not read (a symlink, a
-FIFO, an oversized file) is never silently folded into "complete".** It is
-excluded from `orphaned` (it is neither confirmed present nor confirmed
-absent) and `orphanScan` reports `'unreadable'` — the SAME value the whole
-directory being unreadable already used, widened rather than given a fourth
-member, because both say the identical thing: "this answer is not
-complete". Pinned: `packages/cli/test/integrations-cli.test.ts` › "a
-symlinked receipt among orphan candidates is excluded from orphaned, and
-orphanScan reports it" and › "a FIFO among orphan candidates is excluded
-from orphaned, and orphanScan reports it, without hanging" (a FIFO is
-refused by `resolveReadableInside`'s own `'file'`-kind check before any
-`readFile` is ever attempted, so this is `'wrong-kind'`, not a blocking
-open).
-
-An `invalid` declaration (unparseable, oversized, a control character) still
-reports every matching receipt as `orphaned` — orphan detection does not
-depend on the declaration parsing at all, since it asks a question about
-`.rig/receipts/` that an unparseable `.rig/integrations.json` has no bearing
-on.
-
-`observed.evidence` is structurally always `[]` at this slice: no route
-adapter (S5–S8) exists yet to populate it, and `defaultProbe` never claims
-evidence for an observation it never made.
-
-The receipts-directory scan behind `orphaned` is capped at
-`MAX_ORPHAN_CANDIDATES` (500) candidates, with an explicit signal — never
-silence — when the cap is hit or the directory could not be read at all:
-`orphanScan: 'complete' | 'truncated' | 'unreadable'`. Prose output names it
-too whenever it is not `'complete'`. Pinned: `packages/cli/test/integrations-cli.test.ts`
-› "caps the orphan candidate scan and reports orphanScan: \"truncated\" when
-the bound is hit".
-
-### Closed value domains this surface adds (RP-22 round 2/3 advisory — for RP-21's doctor mapping and any other consumer)
-
-- `declaration`: `absent | ok | invalid`.
-- per-harness `receipt`: `absent | present | invalid`.
-- `orphanScan`: `complete | truncated | unreadable`.
-- per-harness `state`: `InstanceState` (`../integrations/state.ts`, RP-22 S2 —
-  unchanged here).
-- `add`'s refusal `reason`: `RejectionReason` (`../integrations/declaration.ts`)
-  plus `declaration-unreadable | write-refused | declaration-too-large`.
-
-### A control character in `<id>`, `--version` or `--only` is refused at the argument boundary, with its own message (RP-22 round 3 advisory)
-
-Rather than falling through to the generic, field-less "the declaration
-carries a control or format character" refusal a hostile value used to reach
-by way of the whole-file reparse `add` validates a candidate through. `<id>`
-and `--version` are checked inside `addIntegration` itself (so any caller,
-not only the CLI, gets the same protection) and refuse with
-`reason: 'malformed'` and a message naming which field; `--only` is checked
-in the CLI dispatch (`runVerify`), since it is purely an argument-parsing
-concern there, and is a usage error like any other. `parseArgs`'s own thrown
-messages are stripped of control characters (never truncated — an
-unknown-flag message legitimately names the flag the caller typed) before
-reaching stderr. Pinned: `packages/cli/test/integrations-cli.test.ts` › "an
-id with a control character is refused with its own message, never reaching
-the generic declaration-invalid path", › "a --version with a control
-character is refused with its own message", › "setup verify --only with a
-control character is a usage error, distinct from \"not found\"", and — the
-one remaining legitimate way to reach that generic reparse-invalid path,
-now tested rather than marked (incorrectly) unreachable — › "the
-reparsed.status === 'invalid' branch IS reachable — a long,
-control-char-free <id> alone exceeds the 64 KiB file cap".
-
-Implementation: `packages/cli/src/commands/integrations.ts`
-(`listRegistry`, `addIntegration`, `verifyIntegrations`,
-`runIntegrationsCommand`), `packages/cli/src/lib/safe-path.ts`
-(`resolveReadableInside`), wired in `packages/cli/src/index.ts`. Pinned in
-`packages/cli/test/integrations-cli.test.ts` and
-`packages/cli/test/safe-path.test.ts`.
+Wiring is not evidence of authorization, connectivity or trust. Authorization
+stays with the provider and harness. The integration declaration accepts
+provider selection and ownership baselines, never repository-supplied
+commands, URLs, headers or environment values.
 
 ## Fixtures
 

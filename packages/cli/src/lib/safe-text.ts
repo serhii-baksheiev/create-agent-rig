@@ -36,10 +36,7 @@ export function hasControlCharacter(value: string): boolean {
 
 /**
  * A type predicate, not a cast: narrows `unknown` to an indexable object
- * without asserting anything. Shared by every parser of committed JSON in
- * `integrations/` (RP-22 S2 gate finding: this used to be a private copy in
- * both `declaration.ts` and `receipt.ts` — `.claude/rules/invariants.md`,
- * "One mechanism, one implementation").
+ * without asserting anything. Shared by the integration JSON parsers.
  */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -60,10 +57,7 @@ export type DepthScan = { tooDeep: boolean; hasControlChar: boolean };
  * bounded by the number of JSON tokens in `root`, which the caller's own byte
  * cap must be checked BEFORE this ever runs.
  *
- * Shared by `declaration.ts` (`maxDepth` 4) and `receipt.ts` (`maxDepth` 5) —
- * each file states its own depth bound next to its own schema shape, only the
- * walk itself is common (RP-22 S2 gate finding: this used to be duplicated,
- * one copy per file, with the same iterative structure typed twice).
+ * The caller selects the depth bound for its accepted schema.
  */
 export function scanForDepthAndControlChars(root: unknown, maxDepth: number): DepthScan {
   const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];

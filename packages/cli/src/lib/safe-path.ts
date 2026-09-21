@@ -127,8 +127,7 @@ export function resolveInside(root: string, rel: string): string | null {
 
 /**
  * What kind of thing a caller of {@link resolveReadableInside} expects to find
- * at the end of `rel` — a plain file (a declaration, a receipt) or a
- * directory (the receipts directory itself).
+ * at the end of `rel` — a plain file or a directory.
  */
 export type ReadableKind = 'file' | 'directory';
 

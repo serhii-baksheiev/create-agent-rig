@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/serhii-baksheiev/create-agent-rig/contracts/integrations/v1/declaration.schema.json",
   "title": "Rig integrations declaration",
-  "description": "The accepted shape of .rig/integrations.json (RP-22 S1). Validated with the dependency-free subset in scripts/lib/json-schema-subset.mjs — no $ref, no oneOf.",
+  "description": "The public shape of .rig/integrations.json. The CLI validates intent with packages/cli/src/integrations/declaration.ts.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "integrations"],
@@ -15,7 +15,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id"],
+        "required": ["id", "selected"],
         "properties": {
           "id": {
             "type": "string",
@@ -24,16 +24,38 @@
           "required": {
             "type": "boolean"
           },
+          "selected": {
+            "type": "boolean",
+            "const": true,
+            "description": "Explicit provider selection, required before activation."
+          },
           "version": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
           },
           "harnesses": {
-            "description": "Non-empty and duplicate-free — enforced by declaration.ts's parser, not by this schema: scripts/lib/json-schema-subset.mjs's supported keyword set has no minItems or uniqueItems (RP-22 gate cycle 1, advisory (e)). Extending that shared validator is out of scope for this PR.",
+            "description": "Non-empty and duplicate-free, enforced by the declaration parser.",
             "type": "array",
             "items": {
               "type": "string",
               "enum": ["claude-code", "codex"]
+            }
+          },
+          "targets": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "claude-code": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["entryHash"],
+                "properties": {
+                  "entryHash": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
             }
           }
         }

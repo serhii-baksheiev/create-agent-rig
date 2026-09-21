@@ -151,12 +151,7 @@
  * 5. Captured `stdout`/`stderr` are sanitized for control/format characters
  *    but NOT redacted for secrets — a token or credential a spawned tool
  *    prints is returned as-is. No caller of this module may persist a
- *    `BoundedRunResult`'s captured output into a receipt or any other
- *    committed record: `contracts/integrations/v1/receipt.schema.json` has
- *    no field shaped to hold free-form text at all — see "the receipt schema
- *    has no property that could hold raw captured stdout/stderr text — every
- *    string property is pattern-, const-, or enum-bounded" — so there is
- *    deliberately nowhere for it to go today.
+ *    `BoundedRunResult` captured output into committed records.
  * 6. `boundedRun`'s `cwd` — whether caller-supplied or this module's own
  *    per-run temporary directory — IS realpath-resolved (through any
  *    symlink chain) before the containment check, the same way `resolveTool`

@@ -16,6 +16,12 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## Unreleased
 
+`setup apply` and `setup remove` manage explicitly selected Figma and Atlassian
+MCP configuration through Claude Code's documented project config. Dry-run and
+consent apply before changes; existing user entries are preserved. Ownership
+hashes live alongside provider selection in `.rig/integrations.json`.
+Authorization stays with the provider and harness. Codex wiring is pending.
+
 **`AGENTS.md` is now the canonical rulebook; `CLAUDE.md` is a short
 compatibility shim.** A new project gets the full rulebook text in
 `AGENTS.md` and a `CLAUDE.md` that is just an `@AGENTS.md` import (Claude
@@ -165,30 +171,13 @@ a template any generated rig receives.
 
 ### Added
 
-- **`setup list | add | verify` (RP-22)**, alongside the existing
-  `setup --memory-root …` (unchanged). `list [--json]` prints the closed,
-  release-owned integrations registry — id, capability, mode, licence or
-  terms, source, and each harness's route and automation — read-only.
-  `add <id> [--required] [--version <pin>] [--dry-run] [--json]` validates
-  `<id>` against that registry and creates or updates its entry in the
-  committed `.rig/integrations.json`, through `resolveWritableInside` with
-  sorted, stable bytes; a flag left off a later call keeps the value an
-  earlier call recorded rather than dropping it, and it installs nothing.
-  `verify [--only <id>] [--json]` is read-only and classifies every declared
-  integration against what can currently be observed, exiting 1 when a
-  required one is not installed (or the declaration itself does not parse)
-  and 0 otherwise. `add` never prunes a declaration entry the current
-  registry rejects — it is preserved as the same JSON value (not necessarily
-  the same original formatting), named together with its
-  rejection reason in both `--json` and prose, so declaring a provider ahead
-  of its own slice landing survives every later `add` for a different id.
-  Every filesystem read on this surface (the declaration, a receipt, the
-  receipts directory) is symlink-safe and size-bounded, and the receipts scan
-  is capped with an explicit signal when the cap is hit. No route adapter
-  exists yet at this release — every harness of every declared integration
-  reads `unverified` — so this is the command surface and the
-  declaration/receipt file formats, not yet a working installer for any
-  provider (`docs/command-contract.md`, "## setup integrations (RP-22)").
+- **Setup MCP ownership (RP-22)** uses one schema-v1
+  `.rig/integrations.json` for intent and Claude entry hashes. The
+  `list | add | apply | remove` commands replace the intermediate receipt
+  and `setup verify` surface. See `docs/command-contract.md`,
+  "setup integrations", and the command-level regressions in
+  `packages/cli/test/integrations-intent.test.ts`. The published
+  `setup --memory-root` interface remains compatible.
 - **`uninstall [dir] [--dry-run] [--yes] [--json]`** removes what a rig
   installed, file by file, against the evidence `.claude/.rig-manifest.json`
   carries and nothing else: a path is removed only when its bytes on disk
