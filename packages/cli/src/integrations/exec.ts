@@ -7,12 +7,13 @@
  * own working tree, and running it with a deadline, an output cap, and a
  * closed environment.
  *
- * `resolveTool` NEVER returns a path inside the repository, even when a
+ * `resolveTool` never returns a path inside the repository, even when a
  * `PATH` entry (or a symlink a `PATH` entry resolves through) points there —
  * a hostile PR can commit a `claude`/`claude.exe` at the repo root and a CI
  * runner can plausibly have the checkout on `PATH` ahead of the real tool;
- * this module refuses to be the thing that resolves to it. It does this with
- * TWO independent containment checks, failing closed if EITHER says inside
+ * this module refuses to be the thing that resolves to it — except as
+ * limits 8 and 13 note. It does this with TWO independent containment
+ * checks, failing closed if EITHER says inside
  * (gate cycle 3, blocker 2): a STRING comparison of two REALPATHS (via
  * `fs.realpathSync.native`, falling back to the plain JS implementation only
  * if the native call itself throws — the JS implementation does not expand
@@ -30,10 +31,11 @@
  * filesystem facts, and comparing them with a declared-but-wrong platform's
  * path module fails OPEN (gate cycle 2, blocker 1).
  *
- * `boundedRun` never shells out (`child_process.exec` is never called and
- * `shell` is never set to anything but its own default `false` — see
- * `integrations-exec.test.ts` › "no file under src/integrations/ sets shell
- * to anything but false, calls a bare exec( or execSync(, or does a
+ * `boundedRun` never shells out (`node:child_process` is imported ONLY as
+ * `execFile` throughout `src/integrations/`, and `shell` is never set to
+ * anything but its own default `false` — see `integrations-exec.test.ts` ›
+ * "no file under src/integrations/ imports node:child_process with anything
+ * other than execFile, sets shell to anything but false, or does a
  * recursive readdir"): it uses `execFile` with an absolute file and an argv
  * array only, and refuses a non-absolute file before it ever reaches
  * `execFile`. `argv` ELEMENTS THEMSELVES are passed through completely
@@ -232,18 +234,20 @@
  *    own arguments". This module's own guarantees are about the PROCESS
  *    (deadline, output cap, cwd, env), never about the caller's own
  *    arguments.
- * 13. Supplying a `realpath` or `stat` option is a CALLER DUTY that can
- *    surrender containment entirely — these are trust boundaries, not
- *    conveniences. A caller-supplied `stat` that answers `null` for
- *    everything (deferring wholly to the string check) combined with a
- *    repository given by a spelling the string check cannot canonicalise
- *    (a UNC admin-share path) resolves an in-repo tool `ok` — measured via
- *    `stat: () => null` plus a UNC `repoDir` in this suite. Both injected
- *    functions are also called WITHOUT a `try`/`catch` around each call site
- *    (gate cycle 4 advisory): a caller-supplied function that THROWS
- *    propagates out of `resolveTool`/`boundedRun` rather than being treated
- *    as "unavailable", which is a totality gap for an otherwise-total
- *    function family.
+ * 13. Both `realpath` and `stat` are wrapped by {@link safelyCalled}, so a
+ *    THROW from either — this module's own default, or a caller-supplied
+ *    override — is caught and never propagates out of `resolveTool` or
+ *    `boundedRun` (gate cycle 5, blockers 1+2): see "resolveTool resolves —
+ *    never throws — when the injected stat throws for every call, and the
+ *    STRING half alone decides (an in-repo PATH entry is still refused; a
+ *    genuinely outside one still resolves ok)", "resolveTool resolves —
+ *    never throws — when the injected realpath throws for every call", and
+ *    "boundedRun resolves — never throws — when the injected stat throws for
+ *    every call, and a genuinely outside cwd still resolves ok". A throw or
+ *    a `null` answer from `stat` is treated identically: containment is then
+ *    decided by the string half alone (limit 11). Supplying either option is
+ *    a CALLER DUTY, not a convenience — the caller who overrides a default
+ *    canonicaliser owns the consequences of what it answers.
  * 14. A hardlink OUTSIDE the repository to a file whose CONTENT lives inside
  *    it resolves `ok` — the hardlink's own path is genuinely outside, and
  *    this module's containment checks are path-based (string or
@@ -254,14 +258,13 @@
  *    "the same file as something inside the repo" — only as "a path outside
  *    the repository", which it genuinely is.
  * 15. Removing `boundedRun`'s own per-run `cwd` ({@link removeOwnedCwd}) is
- *    NOT bounded by `timeoutMs` — it runs after the child has already been
- *    classified, on its own, unbounded-by-any-deadline recursive `rm` (plus
- *    one bounded 50ms-backoff retry). Measured: an 8000-file directory tree
- *    took ~6.8s to remove on this suite's own host — proportional to what
- *    was created under it, not to the run's own deadline. A directory this
- *    module leaves behind (`cwdCleanup: 'left-behind'`, limit 10) also has
- *    no reaper: nothing in this module, or elsewhere in this codebase,
- *    later retries or garbage-collects it — it is left exactly where
+ *    NOT bounded by `timeoutMs` — an UNTESTED DESIGN LIMIT: its recursive
+ *    `rm` (plus one bounded 50ms-backoff retry) runs after the child has
+ *    already been classified, proportional to what was created under the
+ *    directory, not to the run's own deadline. A directory this module
+ *    leaves behind (`cwdCleanup: 'left-behind'`, limit 10) also has no
+ *    reaper: nothing in this module, or elsewhere in this codebase, later
+ *    retries or garbage-collects it — it is left exactly where
  *    `os.tmpdir()` (or the caller's `tempRoot`) put it, indefinitely.
  */
 import { execFile } from 'node:child_process';
@@ -606,14 +609,17 @@ function looksHostAbsolute(p: string): boolean {
  * strings are always host-native anyway, so this is never less correct
  * than the host's own `dirname` there — only more so when the two disagree.
  *
- * NEVER yields a non-rooted path (gate cycle 4, blocker 1): a bare drive
- * designator (`"C:"`, no trailing separator) is not a filesystem root at
- * all — Windows resolves it as the PROCESS's own current directory on that
- * drive, so a walk that ever `stat`s it answers with whatever directory the
- * process happens to be standing in, not the volume. Once already at a
- * recognised floor ({@link isRootFloor} — `/`, `C:\`, or a UNC share root),
- * this returns the SAME string unchanged rather than stepping past it: there
- * is nothing above a volume or a share to ascend to.
+ * A bare drive designator (`"C:"`, no trailing separator) is not a
+ * filesystem root at all — Windows resolves it as the PROCESS's own current
+ * directory on that drive (gate cycle 4, blocker 1) — so this function
+ * normalises a stepped-to `"C:"` to the true root `"C:\"` before returning
+ * it. Once already at a recognised floor ({@link isRootFloor} — `/`, `C:\`,
+ * or a UNC share root), this returns the SAME string unchanged rather than
+ * stepping past it. {@link identityContainment}'s own walk never `stat`s a
+ * step this function returns unless {@link looksHostAbsolute} also agrees it
+ * is rooted — see "the identity walk never stats a bare drive designator or
+ * a bare UNC prefix, even walking a deep win32 path all the way to its root
+ * (host-independent: records every path an injected stat is asked about)".
  */
 export function stepUpOnePathSegment(target: string): string {
   if (isRootFloor(target)) return target; // already at a recognised floor: go no further

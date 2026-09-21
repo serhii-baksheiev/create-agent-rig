@@ -557,6 +557,84 @@ describe("resolveTool/boundedRun — identity containment via an injected stat, 
   });
 });
 
+describe('safelyCalled — a throwing caller-supplied realpath/stat never breaks totality (gate cycle 5, blockers 1+2)', () => {
+  it('resolveTool resolves — never throws — when the injected stat throws for every call, and the STRING half alone decides (an in-repo PATH entry is still refused; a genuinely outside one still resolves ok)', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-throwing-stat-repo-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-throwing-stat-outside-'));
+    try {
+      const toolFile = process.platform === 'win32' ? 'claude.exe' : 'claude';
+      await writeFile(path.join(fakeRepo, toolFile), 'hostile');
+      await writeFile(path.join(outside, toolFile), 'legit');
+      const throwingStat = (): StatIdentity => {
+        throw new Error('injected stat boom');
+      };
+
+      const insideResult = resolveTool('claude', {
+        env: { PATH: fakeRepo },
+        platform: process.platform,
+        repoDir: fakeRepo,
+        stat: throwingStat,
+      });
+      expect(insideResult.status).toBe('tool-not-found');
+
+      const outsideResult = resolveTool('claude', {
+        env: { PATH: outside },
+        platform: process.platform,
+        repoDir: fakeRepo,
+        stat: throwingStat,
+      });
+      expect(outsideResult.status).toBe('ok');
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outside);
+    }
+  });
+
+  it('resolveTool resolves — never throws — when the injected realpath throws for every call', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-throwing-realpath-repo-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rig-exec-throwing-realpath-outside-'));
+    try {
+      const toolFile = process.platform === 'win32' ? 'claude.exe' : 'claude';
+      await writeFile(path.join(outside, toolFile), 'legit');
+      const throwingRealpath = (): string => {
+        throw new Error('injected realpath boom');
+      };
+
+      const result = resolveTool('claude', {
+        env: { PATH: outside },
+        platform: process.platform,
+        repoDir: fakeRepo,
+        realpath: throwingRealpath,
+      });
+      expect(result.status).toBe('tool-not-found');
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outside);
+    }
+  });
+
+  it('boundedRun resolves — never throws — when the injected stat throws for every call, and a genuinely outside cwd still resolves ok', async () => {
+    const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-throwing-stat-run-repo-'));
+    const outsideCwd = await mkdtemp(path.join(tmpdir(), 'rig-exec-throwing-stat-run-outside-'));
+    try {
+      const throwingStat = (): StatIdentity => {
+        throw new Error('injected stat boom');
+      };
+      const result = await boundedRun(process.execPath, ['--version'], {
+        timeoutMs: 5000,
+        maxBuffer: 1024,
+        repoDir: fakeRepo,
+        cwd: outsideCwd,
+        stat: throwingStat,
+      });
+      expect(result.status).toBe('ok');
+    } finally {
+      await removeFixture(fakeRepo);
+      await removeFixture(outsideCwd);
+    }
+  });
+});
+
 describe('resolveTool — the injected realpath canonicaliser is what containment actually consults', () => {
   it('resolveTool consults the injected realpath function for BOTH the directory and the candidate file (a host-independent pin for gate cycle 2, blocker 2 — proving the same call sites the 8.3 fix depends on are genuinely reachable and load-bearing on ANY host, including one without a short name to construct)', async () => {
     const fakeRepo = await mkdtemp(path.join(tmpdir(), 'rig-exec-inject-repo-'));
@@ -1976,18 +2054,72 @@ describe('declared limit: captured output is not redacted for secrets', () => {
   });
 });
 
-describe('structural: integrations/ contains no shell option and no exec( call', () => {
-  it('no file under src/integrations/ sets shell to anything but false, calls a bare exec( or execSync(, or does a recursive readdir (gate cycle 3 advisory: widened from a literal shell: true / bare exec( check)', async () => {
+/**
+ * True if `code` imports/requires `node:child_process` in any way OTHER than
+ * the single named import `execFile` (gate cycle 5, blocker 6: the previous
+ * call-site regex `/(?<!\.)\bexec(Sync)?\s*\(/` could not match `cp.exec(`,
+ * `cp.execSync(`, or `require('node:child_process').exec(` at ALL — its own
+ * negative lookbehind for a preceding "." excludes exactly those shapes,
+ * since each has a `.` right before `exec`). This checks the IMPORT/REQUIRE
+ * site instead of every possible call-site spelling: a default import
+ * (`import cp from …`), a namespace import (`import * as cp from …`), a
+ * named import of anything other than `execFile`, or any `require(…)` of the
+ * module at all, are each disallowed — only `import { execFile } from
+ * 'node:child_process'` is not.
+ */
+function hasDisallowedChildProcessImport(code: string): boolean {
+  if (/require\(\s*['"]node:child_process['"]\s*\)/.test(code)) return true;
+  const importRe = /import\s+([^;]+?)\s+from\s+['"]node:child_process['"]/g;
+  let match: RegExpExecArray | null;
+  while ((match = importRe.exec(code)) !== null) {
+    const clause = (match[1] ?? '').trim();
+    if (!clause.startsWith('{')) return true; // a default or namespace import
+    const inner = clause.slice(1, clause.lastIndexOf('}')).trim();
+    if (inner !== 'execFile') return true; // anything other than the single allowed binding
+  }
+  return false;
+}
+
+describe('hasDisallowedChildProcessImport — the import-based guard (gate cycle 5, blocker 6)', () => {
+  it.each([
+    [
+      'a default import used to call cp.exec(',
+      "import cp from 'node:child_process';\ncp.exec('ls');",
+      true,
+    ],
+    [
+      'a default import used to call cp.execSync(',
+      "import cp from 'node:child_process';\ncp.execSync('ls');",
+      true,
+    ],
+    ["require('node:child_process').exec(", "require('node:child_process').exec('ls');", true],
+    [
+      'a named import of exec (import { exec })',
+      "import { exec } from 'node:child_process';",
+      true,
+    ],
+    ['a default import alone (import cp from)', "import cp from 'node:child_process';", true],
+    [
+      'the only allowed shape (import { execFile })',
+      "import { execFile } from 'node:child_process';",
+      false,
+    ],
+    [
+      'an unrelated .exec( call on a regex object, never child_process (PATTERN.exec(v))',
+      'const m = PATTERN.exec(value);',
+      false,
+    ],
+  ])('%s', (_label, code, expected) => {
+    expect(hasDisallowedChildProcessImport(code)).toBe(expected);
+  });
+});
+
+describe('structural: integrations/ imports only execFile from node:child_process, and no file sets shell to anything but false', () => {
+  it('no file under src/integrations/ imports node:child_process with anything other than execFile, sets shell to anything but false, or does a recursive readdir (gate cycle 5, blocker 6: replaces a call-site regex that could not match cp.exec(/cp.execSync(/require(...).exec( at all)', async () => {
     const dir = path.join(repoRoot, 'packages', 'cli', 'src', 'integrations');
     const { readdir } = await import('node:fs/promises');
     const files = (await readdir(dir)).filter((f) => f.endsWith('.ts'));
     expect(files.length).toBeGreaterThan(0);
-    // A negative lookbehind for the dot excludes `something.exec(` (a
-    // RegExp/String method call, e.g. `ISO_TIMESTAMP_PATTERN.exec(value)`,
-    // legitimately used in receipt.ts/registry.ts) while still catching a
-    // bare `exec(`/`execSync(` call — the shape `child_process.exec(...)`
-    // would take — and `require('node:child_process').exec(`.
-    const BARE_EXEC = /(?<!\.)\bexec(Sync)?\s*\(/;
     // Anything assigned to `shell:` OTHER than the literal `false` — not
     // just the literal `true` this used to check for alone.
     const SHELL_NOT_FALSE = /shell\s*:\s*(?!false\b)\S/;
@@ -1995,7 +2127,7 @@ describe('structural: integrations/ contains no shell option and no exec( call',
     for (const file of files) {
       const code = stripComments(await readFile(path.join(dir, file), 'utf8'));
       expect(code, file).not.toMatch(SHELL_NOT_FALSE);
-      expect(code, file).not.toMatch(BARE_EXEC);
+      expect(hasDisallowedChildProcessImport(code), file).toBe(false);
       expect(code, file).not.toMatch(RECURSIVE_READDIR);
     }
   });
