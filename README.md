@@ -1,528 +1,312 @@
 # create-agent-rig
 
-Configure an **agent operating system** for Claude Code and Codex — rules,
-review gates, and hooks; the wired hooks enforce the configured process
-mechanically rather than by prose. It is a harness configurator, not an
-application generator: it never scaffolds application code.
+**Rig configures a repository for reliable AI-assisted development with Claude
+Code and Codex — and keeps that configuration safe to upgrade and remove.**
 
-The same Agent OS is native to both **Claude Code and Codex**. `AGENTS.md` is
-the canonical, provider-neutral rulebook; `CLAUDE.md` next to it is a short
-compatibility shim (`@AGENTS.md` import plus anything Claude-Code-specific —
-see `docs/decisions/agents-md-canonical.md`). The generator derives Codex's
-remaining projection from the Claude-facing sources: repository skills under
-`.agents/skills/`, custom agents under `.codex/agents/`, and
-`.codex/hooks.json`. `node scripts/sync-codex-adapter.mjs --check` refuses
-drift between the two projections.
+- **One configuration, both harnesses.** One rulebook, one set of guards and
+  review agents, wired natively into Claude Code _and_ Codex.
+- **Upgrades that respect your changes.** Files you edited are reported, not
+  overwritten. Files you deleted stay deleted.
+- **Guardrails that run, not just rules that are read.** Hooks refuse a
+  pre-commit bypass, a force-push to a shared branch or a credential written
+  into a file.
+- **Optional integrations, done by the book.** Figma and Atlassian MCP wiring,
+  and GitHub Spec Kit through its own pinned CLI.
+- **A clean exit.** `doctor` shows what is installed and healthy; `uninstall`
+  removes only what Rig can prove it wrote.
 
-```sh
-npx create-agent-rig my-app   # mkdir + git init + the rig, into a new directory
-```
+Rig configures agent harnesses. It does not generate application code, run
+agents, or install plugins.
 
-There is exactly one payload — no `--target`, no application skeleton to
-choose between — split into a Lean Core layer, always installed, and an
-**experimental, opt-in workflow layer** (the queue adapter, the `loop` and
-`pr-ship` skills, run-state, the run journal, revalidation, claim-records and
-the PR-lifecycle helpers): pass `--layer workflow` to install it too. `--no-git`
-skips the initial baseline commit; `--no-color` (and `NO_COLOR`) plainens the
-output. Pinned in `packages/cli/test/create.test.ts` › "makes the directory
-and installs the one payload into it" and `test/e2e/generate.test.ts` ›
-"rejects retired --target without creating the requested directory".
-
-Already have a repo? Install the same payload into it directly:
+## Quick start
 
 ```sh
-npx create-agent-rig init                          # rules, gates, stop rules into the current repo
-npx create-agent-rig init --dry-run                # print the plan, write nothing
-npx create-agent-rig init --layer workflow          # also install the opt-in workflow layer
+# a new repository
+npx create-agent-rig@latest my-project
+cd my-project
+
+# …or an existing one
+cd your-repo
+npx create-agent-rig@latest init --dry-run   # show what would be written
+npx create-agent-rig@latest init
 ```
 
-### Which version you get, and why it matters
+Then open the repository in either harness — nothing else to configure:
 
-There are two install channels, and they are not interchangeable:
+```sh
+claude    # Claude Code reads CLAUDE.md and .claude/settings.json
+codex     # Codex reads AGENTS.md, .codex/ and .agents/skills/
+```
 
-| you run                                                                               | you get                                                                                                                          |
-| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `npx create-agent-rig@latest …` (or any published version/tag)                        | the **stable, released** package from npm — the only channel with a release ledger row, an upgrade path and acceptance behind it |
-| `npx github:serhii-baksheiev/create-agent-rig …` (or a tarball built from a checkout) | an **unreleased development snapshot** of whatever is on that branch right now                                                   |
+Check it and commit it:
 
-The npm release is what `upgrade` reasons about: the manifest records a rig
-version, and `templates/release-ledger.json` is written at the release _after_
-the one it describes (`docs/releasing.md`).
+```sh
+npx create-agent-rig@latest doctor
+git add -A && git commit -m "Add agent rig"
+```
 
-A snapshot does not announce itself as one. `packageVersion()`
-(`packages/cli/src/lib/version.ts`) returns `package.json`'s `version` field
-verbatim — no branch, no commit, no suffix — and that field is bumped only
-inside a `release: prepare X` commit. So between releases a default-branch
-checkout reports the **previous release's** version: a snapshot stamps `0.10.0`
-into the manifest while carrying files that are ahead of 0.10.0. The version
-string is therefore not evidence of which bytes you have; only a published
-install makes those two agree.
+Commit `.claude/.rig-manifest.json` with everything else — it is how later
+upgrades tell your changes from Rig's.
 
-⚠ **The default branch is not the published release.** Work merges to the
-default branch continuously between releases, so what is on `main`/`master` at
-any moment is ahead of npm `latest` and has not been through a release gate.
-Install from the default branch only when you intend to run unreleased code.
+Everything is written inside the repository; Rig changes no global Claude Code
+or Codex configuration. The only machine-level file it can write is the
+optional Memory registration described [below](#memory); Spec Kit setup also
+fills uv's download cache.
 
-`create <dir>` is a thin convenience wrapper over exactly this: make the
-directory, initialize Git, run `init` inside it, then commit the pristine
-baseline. The ordering is pinned in `packages/cli/test/create-order.test.ts` ›
-"initialises Git before handing the directory to init"; the baseline is pinned
-in `packages/cli/test/create.test.ts` › "initialises git with a
-pristine-template baseline commit".
-
-`init` drops in the autonomy tiers, stop rules, workflow, and the enforcement
-hooks — **wired** for both harnesses, in `.claude/settings.json` and
-`.codex/hooks.json`, each naming exactly the hooks it installed — plus matching
-`CLAUDE.md` and `AGENTS.md` maps that describe the rig itself, never an
-application shape it does not know your repository has. It refuses to clobber
-either existing map; if the repo already has a Claude or Codex hook config, it
-keeps it and prints the entries to merge, because a hook nothing calls is not
-enforcement.
-
-Pinned in `test/e2e/init.test.ts` › "leaves a rig whose hooks are wired and
-whose scripts parse", › "tells the operator when it could not wire the hooks
-itself", and › "tells the operator when it kept existing Codex hook wiring".
-
-Two things it deliberately leaves to you, and says so in the installed
-maps: the Definition-of-Done gate has no `dod-checks.json` (it cannot know
-your commands), and the elevated-path list names only what every repo has.
-
-After generation or upgrade, review the checked-in `.codex/hooks.json` in Codex's
-`/hooks` view and explicitly trust it if Codex presents a trust prompt. The
+After generation or upgrade, review the checked-in `.codex/hooks.json` in
+Codex's `/hooks` view and explicitly trust it if Codex asks. The
 [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks)
 records trust against the current hook hash, so a changed hook definition may
-require that review again; the adapter does not silently replace user-owned hook
-configuration.
+require that review again; Rig never silently replaces hook configuration you
+own.
 
-## Upgrading a rig you already have
+## Why Rig
 
-A release changes files, and `init` only ever _adds_ — so bringing an existing
-rig forward is its own command:
+Agent instructions tend to rot. A `CLAUDE.md` copied between projects, a
+separate set of Codex notes, hooks pasted from a blog post — each drifts on its
+own, and none of it can be upgraded without overwriting what the team changed
+since.
 
-```sh
-npx create-agent-rig@latest upgrade --dry-run  # print the plan, write nothing
-npx create-agent-rig@latest upgrade            # print the plan, then ask before writing
-npx create-agent-rig@latest upgrade --yes      # the answer up front (required off a terminal)
+Rig treats that configuration as something with an owner and a lifecycle:
+
+| Without Rig                                         | With Rig                                                  |
+| --------------------------------------------------- | --------------------------------------------------------- |
+| Separate Claude Code and Codex setups               | One rulebook, projected into each harness's native format |
+| Rules that only work if the agent reads them        | Hooks that refuse the dangerous action at the tool layer  |
+| Upgrading means re-copying and losing local changes | `upgrade` updates untouched files and reports the rest    |
+| A deleted rule quietly comes back                   | Deleted stays deleted                                     |
+| No way to tell what is installed or broken          | `doctor`                                                  |
+| Removal is guesswork                                | `uninstall` removes only files Rig can prove it wrote     |
+
+## Claude Code and Codex
+
+```mermaid
+flowchart TD
+    R["AGENTS.md — the rulebook<br/>.claude/rules, hooks, agents, skills"]
+    R --> C["Claude Code<br/>CLAUDE.md → @AGENTS.md<br/>.claude/settings.json<br/>.claude/agents, .claude/skills"]
+    R --> X["Codex<br/>AGENTS.md<br/>.codex/hooks.json, .codex/config.toml<br/>.codex/agents, .agents/skills"]
 ```
 
-It replaces the files the rig installed **and you have not touched**, installs
-what the release added, and **reports everything else** — no three-way merge, no
-patching. Silently merging your edits into the documents an agent loop obeys is
-how a rig quietly stops meaning what you think it means; a conflict report is how
-it does not. Each conflict names the file, why it was kept, and the path to the
-new version so you can diff it yourself.
+`AGENTS.md` is the canonical rulebook. `CLAUDE.md` is a short shim that imports
+it, so both harnesses read the same rules. The hook scripts live once in
+`.claude/hooks/` and are wired by both `.claude/settings.json` and
+`.codex/hooks.json`. Review agents and skills are projected into each harness's
+own format.
 
-How it knows: `create` and `init` write `.claude/.rig-manifest.json` — the rig
-version plus a hash per installed file. A file `init` found already in place and
-left alone is recorded separately, under `kept`, with the hash of the bytes it
-found, and never as the rig's (`packages/cli/test/init.test.ts` › "records what
-it kept, with the sha256 of the bytes actually on disk — never in `files`"). An
-`upgrade` conflict on such a file says it was kept by init and whether it was
-edited since (`packages/cli/test/upgrade.test.ts` › "says "edited since"
-instead, once the disk sha no longer matches what init recorded"). **Commit it**; without it in the
-repository the command is blind on CI and on a colleague's machine. Rigs
-installed before 0.4.0 have no manifest, so the package also carries the hashes
-of every release whose published commit is on record (0.2.0 onward — 0.1.0's
-published bytes are not recoverable, and a rig from it reports every file as
-yours) and recognises a file matching one of them. The record is
-`templates/release-ledger.json`, written at the release _after_ the one it
-describes, so the newest release is never in the table a rig installed from it
-carries — one more reason committing the manifest is the sentence in bold above
-and not an aside.
+The harnesses are not identical, and Rig does not pretend they are. Two hooks —
+the subagent model guard and the routing warning — exist only for Claude Code.
+MCP wiring goes into Claude Code's `.mcp.json` entry by entry, but into Codex's
+`.codex/config.toml` as a whole file Rig renders.
 
-`.claude/settings.json` is replaced only when the manifest's recorded hash
-proves the rig wrote those exact bytes and you have not touched them — the case
-where a release adds a hook and the wiring that calls it. Anything else, and it
-is where your own hooks live: the new wiring is printed for you to merge, never
-written. Unlike every other file, a match against the released hashes is not
-enough for this one, and a replacement that would stop calling a hook the
-current wiring names — while that hook's file is still in `.claude/hooks/` — is
-handed over instead.
+## What Rig installs
 
-### Configuring repository integrations
+| Area               | What you get                                                                                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Rules              | `AGENTS.md`, `CLAUDE.md` and `.claude/rules/`: autonomy tiers (what an agent may do alone), stop rules, TDD workflow and a Definition of Done                      |
+| Guards             | Hooks that refuse bypassing pre-commit, force-pushing a shared branch, destructive `rm`, writing credentials, and ending a session while a configured check is red |
+| Review agents      | `test-writer`, `code-reviewer`, `security-scanner` and `prose-reviewer`, each pinned to a model and effort                                                         |
+| Skills             | `worktree-task`, `new-invariant` and `check-premises`                                                                                                              |
+| Lifecycle metadata | `.claude/.rig-manifest.json`: which bytes Rig installed                                                                                                            |
 
-Run `create-agent-rig setup` for the provider/harness wizard, or use the
-deterministic commands in an initialized repository:
+A guard is a check on each edit or command before it runs, not a sandbox. Each
+one states what it does not catch in its own header — `guard-secret-file`, for
+example, sees what an agent writes through its edit tools, not a file committed
+from disk.
 
-```sh
-create-agent-rig setup list --json
-create-agent-rig setup add figma-mcp --harness claude-code --harness codex --yes --json
-create-agent-rig setup apply --yes --json
-create-agent-rig setup remove figma-mcp --yes --json
-create-agent-rig doctor --json
-```
+Two things are left for you, and the installed `AGENTS.md` says so: the
+commands your Definition of Done should run (`.claude/hooks/dod-checks.json`),
+and the paths in your project that need a human reviewer.
 
-Setup manages selected Figma, Atlassian and optional Basic Memory MCP wiring.
-Spec Kit setup delegates to its pinned official CLI after plan and consent;
-Spec Kit owns its generated files and lifecycle. Doctor separates wiring from
-runtime, connectivity and trust. Basic Memory remains a wiring-only preview;
-Rig does not manage its data. See the [command contract](docs/command-contract.md)
-for ownership, refusals, adoption and JSON semantics. JSON mode without
-`--yes` never prompts or mutates.
+An **experimental** workflow layer adds a queue-driven autonomous loop, a
+pre-merge gate skill and PR-lifecycle helpers. It is opt-in:
+`init --layer workflow`.
 
-### Registering Memory on this machine
+## How ownership works
 
-Memory is a separate subsystem with its own version; the rig never imports it
-and never searches for it. `setup` records where it is, once per machine:
+Rig remembers exactly which bytes it installed. That lets every lifecycle
+command tell Rig's files from yours:
+
+| The file is…                | `upgrade`                    | `uninstall`    |
+| --------------------------- | ---------------------------- | -------------- |
+| exactly as Rig installed it | updated to the new release   | removed        |
+| edited by you               | kept, reported as a conflict | kept, reported |
+| deleted by you              | stays deleted                | nothing to do  |
+| not Rig's, or there before  | never claimed                | never touched  |
+
+Conflicts are reported with the path to the new version, so you can compare
+and merge yourself — Rig does no automatic merging of the documents your agents
+obey. The details, including how line endings and hook wiring are handled, are
+in [`docs/command-contract.md`](docs/command-contract.md) and
+[`docs/decisions/raw-byte-ownership.md`](docs/decisions/raw-byte-ownership.md).
+
+## Lifecycle
+
+**Upgrade** to the current release:
 
 ```sh
-npx create-agent-rig@latest setup --memory-root ~/claude-config             # the checkout that holds shared-memory/memory.mjs
-npx create-agent-rig@latest setup --memory-root ~/claude-config --dry-run   # handshake only, write nothing
+npx create-agent-rig@latest upgrade --dry-run   # the plan, nothing written
+npx create-agent-rig@latest upgrade             # the plan, then asks before writing
+npx create-agent-rig@latest upgrade --yes       # no prompt (required off a terminal)
 ```
 
-It derives the invocation from that one root, runs Memory's `--version --json`
-first, and refuses a foreign contract major with exit 4 before writing anything.
-What it writes is one machine-scoped manifest —
-`~/.config/create-agent-rig/subsystems.json` (`%APPDATA%\create-agent-rig\` on
-Windows) — carrying the invocation, the required contract major, the pinned
-Memory ref (`--memory-ref`) and the version the handshake observed. `upgrade`
-re-runs the same derivation when the manifest exists; it never creates one. The
-behaviour is pinned in `packages/cli/test/setup.test.ts` and
-`packages/cli/test/subsystems.test.ts`; the seam itself is ADR-RP-002 R6
-(`docs/decisions/memory-rig-boundary.md`).
-
-Both bins answer the same handshake, and the rig consumes Memory only through it
-(RP-19):
+**Diagnose** the repository:
 
 ```sh
-npx create-agent-rig@latest --version --json          # {"schemaVersion":1,"name":"create-agent-rig","version":"…","contractVersion":"1.0"}
-npx create-agent-rig@latest memory doctor --json      # handshake first, then Memory's doctor, answer passed through unchanged
-npx create-agent-rig@latest memory load --json --cwd .   # same, for load (`--cwd`: Memory's own contract, per its owner — RP-183); arguments pass to Memory verbatim, plus `--timeout-ms 45000` when you name none
+npx create-agent-rig@latest doctor
+npx create-agent-rig@latest doctor --json
 ```
 
-`memory` reads the manifest above, runs Memory's `--version --json`, and only
-then the verb: a foreign contract major exits 4 and the verb never runs; no
-manifest (or an executable that has moved) is `unsupported`/`absent`, exit 0;
-an executable that answers but not as the manifest promised — a broken
-`VERSION`, a malformed handshake — is `integration-failed`, exit 1, never
-"absent". Pinned in `packages/cli/test/memory.test.ts` and
-`packages/cli/test/cli-version.test.ts`.
+`doctor` checks the Rig manifest and the files it lists, the installed guards,
+the optional workflow layer, integration wiring, Spec Kit's own offline status
+and the Memory registration. It exits `1` only when a check fails. It reports
+wiring, not reachability: it never contacts a provider, and never claims that
+authorization, connectivity or trust were verified.
 
-**A file you deleted stays deleted.** The rules invite you to delete the ones
-whose invariant your project does not have, so an upgrade that quietly restored
-them would be undoing your work. With a manifest that is direct — it names the
-file, the disk does not have it, and the manifest is _evidence_, not a command.
-Without one, the shipped table answers instead: a file that was in every release
-it covers was there to be removed. The single case nothing can tell apart is a
-file a **later** release added, which your rig never had — that one is installed,
-and `--dry-run` lists it before anything is written.
-
-**A file this release no longer ships is `retired`, not deleted.** A rig
-generated before 0.10 may have paths from a per-target overlay this version no
-longer composes (0.10 retired application scaffolding entirely — see
-`CHANGELOG.md`). Such a path is never written and never deleted: it drops out
-of the manifest's `files`, the report says it is no longer shipped, and it is
-now yours to keep, edit, or remove on your own schedule. Pinned in
-`packages/cli/test/upgrade.test.ts` › "retires a stack-overlay path this release
-no longer ships — never written, never deleted" and
-`test/e2e/upgrade.test.ts` › "retires the deleted stack overlay, and preserves
-the application and the process layer".
-
-### Conformance runner
-
-`contracts/conformance/v1/` holds the JSON schemas of the command contract's
-`--version --json`, `doctor --json` and `load --json` answers, and
-`scripts/memory-conformance.mjs` checks a Memory checkout against them:
+**Uninstall**, keeping everything you wrote:
 
 ```sh
-pnpm build
-node scripts/memory-conformance.mjs --from <claude-config checkout> --json [--out report.json]
+npx create-agent-rig@latest uninstall --dry-run
+npx create-agent-rig@latest uninstall
 ```
 
-It is offline by construction — `--from` is mandatory, nothing is fetched, no
-credential is read — and it never imports Memory code or copies a Memory
-fixture into this repository (`test/template/memory-conformance.test.ts` ›
-"carries no fetch, clone or credential: the checkout is always the caller's"
-and › "the repository carries no Memory fixture"). The contract directory is
-this repository's own, not a rig payload: `create`, `init` and `upgrade` do
-not deliver it (`test/template/conformance-contract.test.ts` › "is not
-delivered to rigs: no template carries a conformance contract"). The report's
-rows, its `rigSha` / `memorySha` / `verifierDigest` fields and the `--out`
-file are pinned by the same test file's › "passes every row against a
-well-formed local fixture root and names both SHAs and the verifier digest"
-and › "derives verifierDigest from the runner, its validator and the contract
-files, in that order, and writes the same report to --out". The authoritative
-cross-repository run lives in the private `claude-config` repository, which
-checks this repository out at an explicit full SHA and runs the command above
-against its own tree; the CI here runs only the offline tests.
+Only files whose bytes still match what Rig installed are removed. Anything
+edited is kept and listed, and the manifest stays until nothing of Rig's is
+left. `--detach` removes the manifest anyway and hands the kept files over to
+you. Integration wiring is removed with `setup remove`, not `uninstall`.
 
-## Uninstalling a rig
+## Optional integrations
 
-Remove what a rig installed, file by file, keeping everything you did not
-write yourselves:
+`setup` adds integrations after showing the exact plan and asking for
+consent. It works in a repository where Rig is installed:
 
 ```sh
-npx create-agent-rig@latest uninstall --dry-run   # print the plan, remove nothing
-npx create-agent-rig@latest uninstall             # print the plan, then ask before removing
-npx create-agent-rig@latest uninstall --yes       # the answer up front (required off a terminal, and always with --json)
-npx create-agent-rig@latest uninstall --json      # one JSON object, for a script — needs --yes to remove anything
-npx create-agent-rig@latest uninstall --yes --detach  # same safe cleanup, but also removes the manifest and hands over what it left behind
+npx create-agent-rig@latest setup                  # interactive: pick provider and harness
+npx create-agent-rig@latest setup list
+npx create-agent-rig@latest setup add figma-mcp --harness claude-code --harness codex
+npx create-agent-rig@latest setup apply            # re-apply everything declared
+npx create-agent-rig@latest setup remove figma-mcp
 ```
 
-It removes only a path whose bytes on disk still match the hash
-`.claude/.rig-manifest.json` recorded, is a plain file (never a symlink,
-directory, or other non-regular entry — checked one path segment at a time
-from the repository root, so a symlinked ANCESTOR is caught wherever it sits,
-never only the file itself), and is itself one of the EXACT paths this
-release installs — not merely a path that happens to sit under an owned
-directory such as `.claude/` or `.rig/`, which would let a manifest pair
-almost anything under one with its true hash and have it removed. Anything
-under `.git` is refused outright, for the whole run — any spelling that
-resolves to the same `.git` (a different case, a Windows alternate-data-stream
-suffix, a trailing dot or space, a nested `.git` several directories down) —
-no matter what hash a manifest pairs it with. A file you edited, already
-deleted, that `init` found already in place and left alone (`kept`), or that
-simply is not a path this rig owns is reported and never touched, exactly the
-way `upgrade` reports a conflict; a manifest naming the same path under both
-`files` and `kept` is refused outright rather than left to resolve the
-ambiguity on its own. `.claude/settings.json` and `.codex/hooks.json` follow
-the same rule `upgrade` applies to them: removed only when the manifest proves
-the rig wrote those exact bytes, reported with the hooks still wired
-otherwise — and a hook file a preserved (edited, itself a symlink, or simply
-`kept` — a pre-existing settings file `init` never took ownership of, which
-is preserved unconditionally with no hash to compare) wiring file still
-calls is itself preserved too, along with everything THAT hook file in turn
-imports (its own `.claude/hooks/lib/` and `.claude/scripts/` dependencies,
-walked to a fixed point, every real read gated the same symlink-safe way
-every other read here is) — naming which wiring file holds it, whether that
-wiring's own state is discovered at plan time or only at apply time (an edit
-inside the confirmation-prompt window is re-checked before the first hook is
-removed) — so `uninstall` never leaves a settings file the run deliberately
-kept pointing at a hook, or at one of that hook's own imports, that is no
-longer there. The manifest
-itself is read and, at checkpoints below, verified
-through the same symlink-safe check every other file gets — never a plain
-lexical path — so a symlinked `.claude` cannot make this command trust a
-manifest it did not really find, or delete one through a link that appeared
-after planning.
+`add`, `apply` and `remove` accept `--dry-run`. With `--json` they never
+prompt, and write only with `--yes`. Intent and ownership are recorded in `.rig/integrations.json`.
 
-A plan can go stale between being shown and being applied — a confirmation
-prompt sits in that window on purpose. Two things are re-verified, never
-trusted from the plan: each file's own bytes, immediately before its removal
-(a mismatch skips that ONE file — reported, not deleted, and the run keeps
-going — never aborts the way a symlink appearing in its place does), and the
-manifest's own bytes, checked once before the first removal (a mismatch there
-refuses the whole apply, nothing removed) and again immediately before the
-manifest's own deletion (a mismatch there keeps the manifest and reports an
-honest partial result: what finished, and that the manifest is what remains).
+| Integration     | ID              | What Rig does                                                                               |
+| --------------- | --------------- | ------------------------------------------------------------------------------------------- |
+| Figma MCP       | `figma-mcp`     | Writes the hosted MCP entry for Claude Code and/or Codex                                    |
+| Atlassian MCP   | `atlassian-mcp` | Same, for Atlassian's hosted MCP                                                            |
+| Basic Memory    | `basic-memory`  | Preview. Wires `uvx basic-memory mcp`; never installs, reads or removes Basic Memory's data |
+| GitHub Spec Kit | `spec-kit`      | Runs Spec Kit's own pinned CLI (1.0.8) to set up Claude Code and Codex                      |
 
-Removing files is destructive, so it asks first — `--yes` on the command
-line, or a yes/no prompt on a terminal; a non-interactive run without `--yes`
-refuses, and `--json` never prompts (it is read by a script, so it refuses the
-same way off a terminal). `--dry-run` never asks, because it never removes
-anything. `--detach` asks exactly the same way.
+**MCP wiring is owned by Rig.** Rig writes the entries and removes only the ones
+it can prove it wrote; your own MCP entries are preserved. Signing in to a
+provider happens in the harness — Rig stores no credentials.
 
-The manifest itself is removed last, and only once every file it names has
-either been removed or was already gone — **and only when nothing was
-preserved.** If anything was left in place (an edit, a CRLF checkout, a path
-outside this release's install set, a file caught changed since planning),
-the manifest stays too: it is the rig's only record of what it still owns,
-and deleting it would leave the rig installed with no evidence naming what
-belongs to it, blinding a later `upgrade`. A run interrupted partway also
-keeps the manifest and reports what finished and what a re-run still owes —
-including the manifest itself, whenever a clean re-run really would go on to
-delete it — so `uninstall` is safe to run again either way. It never removes
-`.rig/` itself — that directory is evidence (claims, run state), not
-something this command has ownership evidence for; a FILE under it that is
-one of the exact paths this release installs is still removed like any other
-manifest-owned file.
+**Spec Kit is owned by Spec Kit.** Rig runs the official `specify` CLI at a
+pinned version through `uvx` — so `uv`, `uvx` and `git` are required — and
+Spec Kit creates, upgrades and removes its own files. Rig never copies or
+deletes them. The first setup needs a clean working tree and never re-runs
+`init` on an already initialized repository; an existing installation is
+adopted with `setup add spec-kit --adopt`.
 
-**`--detach`** is the one way past "the manifest stays while anything is
-preserved": after the identical safe cleanup — every per-file check above
-applies exactly the same, and a conflicting or modified file is never forced
-away — it removes the manifest anyway and prints the complete list of what it
-is leaving behind. Use it when you mean to keep some of what the rig wrote
-(as your own files from here on) rather than fix or discard it first. There is
-no `--force`: nothing safety refuses to remove becomes removable by adding a
-flag, in this command or any future one in this PR.
+**Plugins are not managed.** Rig 0.10.0 has no plugin manager or marketplace.
+Claude Code and Codex plugins can be used alongside Rig as usual.
 
-`--json`'s payload names which of three outcomes a completed run reached, in
-one field, `outcome`: `uninstalled` (everything gone, including the manifest),
-`partial` (something preserved, manifest kept), `detached` (`--detach`: manifest
-gone, a handover list left behind). It is present on every completed run
-that is **not** a `--dry-run` preview — a preview has no end state to name,
-so the field is left out entirely rather than invented. A successful removal
-is a working-tree change, not a commit — `uninstall` never touches git
-history itself — so it says as much and points at `git add -A` and a commit
-as the next step. Full semantics, the JSON shape and worked examples are in
-`docs/command-contract.md` ("## uninstall (RP-181)").
+## Memory
 
-Provider wiring has a separate lifecycle: use `setup remove` for selected
-Rig-owned MCP entries or delegated Spec Kit removal. `uninstall` touches only
-files the Rig manifest names; it does not manage third-party plugins or provider
-data. See the setup removal contract in `docs/command-contract.md`.
+Memory is a separate project with its own releases. Rig does not include it,
+does not need it, and never searches for it. If you use Memory, register it
+once per machine; Rig then passes `doctor` and `load` through to it after a
+version handshake:
 
-## What you get
+```sh
+npx create-agent-rig@latest setup --memory-root <memory-checkout>
+npx create-agent-rig@latest memory doctor --json
+npx create-agent-rig@latest memory load --json --cwd .
+```
 
-**A system of boundaries, each held by tooling.** An agent (or a human using
-one) cannot talk its way past them — each guard is a pre-write scan that stops
-the normal path cold (review and tests back it; the claim is stated exactly,
-never inflated). The hook implementations live once in `.claude/hooks/` and are
-wired by both `.claude/settings.json` and `.codex/hooks.json` — except the two
-marked Claude Code, which only `.claude/settings.json` wires:
+The registration is written to `~/.config/create-agent-rig/subsystems.json`
+(`%APPDATA%\create-agent-rig\` on Windows). A Memory with an incompatible
+contract version is refused with exit code `4`. The boundary is described in
+[`docs/decisions/memory-rig-boundary.md`](docs/decisions/memory-rig-boundary.md).
 
-- **`guard-rulebook`** — in an unattended run (a flag file the `loop` skill
-  writes at claim time), refuses an edit to the rulebook — hooks, wiring,
-  `queue.json` and its board selector, the queue adapters, the router, the gate sweep, the rules,
-  `AGENTS.md`, `CLAUDE.md` — outside the current item's allow-list; does nothing in an
-  attended session.
-- **`guard-secret-file`** — refuses an edit that writes a credential: either the
-  path names one (`jira.env`, `id_rsa`, anything under `secrets/`) or the text
-  carries a credential VALUE. Both arms read one vocabulary,
-  `.claude/scripts/lib/secrets.mjs`, and a refusal names the pattern and the line
-  and **never the matched value** — printing it would leak the secret in the act
-  of refusing it. Its blind spots are in its own header, each naming the
-  test that pins it or saying plainly that none does — and those tests live in
-  this generator, not in the rig;
-- **`block-no-verify`** — refuses bypassing pre-commit checks (and knows the
-  difference between using the `--no-verify`/`-n` flag and merely mentioning it
-  in a message);
-- **`guard-bash`** — refuses the part of the "Never" tier a text scan can decide:
-  a force-push or `--delete` naming a shared branch, a push that names the default
-  branch, `gh workflow run`/`gh api …/dispatches` against a production workflow,
-  and `rm` on a catastrophic target. It **parses** the command rather than
-  pattern-matching it, so a commit message mentioning a forbidden flag is prose,
-  not a bypass — and the file states exactly what it does **not** inspect
-  (an infrastructure CLI driving a production deploy directly, `find -delete`,
-  a bare `git push`, and more);
-- **`gate-stop-dod`** — refuses to end the session while a Definition-of-Done
-  check is red; it fails open (a missing or corrupt config never makes the
-  session unquittable) and never blocks twice in a row;
-- **`inject-rules`** — re-injects the autonomy rules at session start, so they
-  survive compaction and resumes: the whole file, minus the regions the file
-  itself marks as reference. What is left out is a decision written in
-  `autonomy.md` on the line above it, not one this hook infers;
-- **`guard-subagent-model`** (Claude Code) — refuses an `Agent` dispatch that
-  passes a call-site `model` for a subagent whose definition pins one: the
-  definition, not the call, decides which model a gate reads with;
-- **`warn-subagent-routing`** (Claude Code) — at session start, warns when
-  `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set (it replaces every model pin below),
-  when `CLAUDE_CODE_EFFORT_LEVEL` is set (it replaces every effort pin), when
-  Claude Code is older than 2.1.251 (the unnamed default then replaces the model
-  pins), or when its version cannot be read (so the pins cannot be confirmed to
-  hold). It warns and never blocks.
+## Safe by default
 
-**A brake that is a real file.** `touch ~/.claude/<project>-loop-STOP` and no
-merge lands until it is removed — enforced at the tool layer, so it holds even if
-nothing reads the rule. Everything short of the merge stays allowed on purpose:
-finish the task, push the branch, open the PR, write the journal. Stopping
-cleanly must not mean losing work.
+- **Ownership, not guesswork.** Rig changes or removes only files whose bytes
+  match what it installed.
+- **Conflicts over overwrites.** Your edits are reported, never merged or
+  replaced.
+- **Deleted stays deleted.** An upgrade does not restore what you removed.
+- **Plan first.** `--dry-run` shows the plan for `init`, `upgrade`, `uninstall`
+  and `setup`; `upgrade`, `uninstall` and `setup` also ask before writing.
+- **Bounded external processes.** Spec Kit runs with a fixed argument list, a
+  deadline, and cleanup of its whole process tree on Linux and Windows.
+- **No stored credentials.** Rig does not put provider credentials in the
+  repository, its state files or its output.
 
-**The opt-in workflow layer** (`init --layer workflow`) adds autonomous,
-cooperative multi-session workflow governance — experimental, and not part of
-Lean Core. It brings the two sweeps below, the queue adapter, and the `loop`
-and `pr-ship` skills. **There is no supported opt-out short of `uninstall`.**
-If nothing on the rig was ever edited, `uninstall --yes` then a plain `init`
-reaches Core-only on its own. If anything was edited (one file is enough),
-`uninstall --yes` preserves it and keeps the manifest — a plain `init`
-afterward reinstalls the whole workflow layer right back, measured. Use
-`uninstall --yes --detach` instead: it removes the manifest regardless of
-what it had to preserve, so the next plain `init` finds no manifest and
-installs Core only. Hand-editing `layers` back down to `["process"]` in
-`.claude/.rig-manifest.json` is not an opt-out either way — the next
-`upgrade` retires every workflow file from the manifest (on disk, unowned,
-never deleted) but does not remove anything, so the files just sit there
-unrecognised. See `docs/decisions/workflow-layer-split.md`, "There is no
-opt-out short of `uninstall`" and "The exact opt-out procedure, measured".
+## Platform support
 
-**Two sweeps meant to run outside any session** — nothing schedules them for you;
-that is deliberate, because a check a run performs on itself is one a hurried run
-skips. `detect-missed-gate` finds merges
-that crossed an elevated path with no recorded reviewer verdict;
-`reconcile-external-prs` accounts for work that reached the default branch outside
-the queue. They exist because the one failure a run cannot report is its own
-missed gate — the run that skipped it is exactly the run that will not mention it.
+| Platform | Status for 0.10.0                                                      |
+| -------- | ---------------------------------------------------------------------- |
+| Linux    | Supported — the packed release is accepted on the exact release commit |
+| Windows  | Supported — same acceptance; one Spec Kit limitation below             |
+| macOS    | Untested for this release                                              |
 
-**A queue behind an adapter.** The `loop` driver selects through
-`.claude/scripts/queue/`: a pure core (filters in order, blocker resolution, the
-elevated-tier ration, stop conditions) with adapters for `PLAN.md` (the default,
-working before a project has a remote), GitHub Issues, and Jira. Two rules are
-load-bearing and tested from both directions — **blockers resolve from links,
-never labels**, and **the agent never files its own work items**. A queue claim
-is advisory, not a lock: nothing about it is transactional, which is why
-distributed multi-controller execution stays experimental.
+On Windows, Spec Kit 1.0.8 rewrites `.claude/settings.json` and
+`.codex/config.toml` with CRLF line endings. `doctor` then reports Rig's files
+with a warning, and where a Codex MCP integration is also wired, a later change
+to it asks you to merge the Codex config by hand instead of overwriting it.
 
-Around all of it: **autonomy tiers** (what an agent does alone / after review /
-never), **stop rules** (three strikes, flaky ≠ retry, session staleness),
-**subagent gates** (`test-writer`, `code-reviewer`, `security-scanner`,
-`prose-reviewer`), **skills** (`pr-ship` pre-merge gate;
-`loop` queue driver; `worktree-task` for concurrent sessions; `new-invariant`, a
-generator for the invariant→hook→test pattern; `check-premises` for verifying
-a queue item's own claims), and matching one-page `CLAUDE.md` / `AGENTS.md`
-maps a fresh session orients by.
+## Limitations and non-goals
 
-**Each gate reads with a pinned model and effort**, so a SHIP does not change
-meaning with whatever model the session was started on. `code-reviewer` and
-`security-scanner` pin `claude-opus-5`; `test-writer` and
-`prose-reviewer` pin `claude-sonnet-5`; all pin `high` effort — and their Codex
-profiles pin `gpt-5.6-sol` / `gpt-5.6-terra` from the same role table. A subagent
-with no definition defaults to `claude-sonnet-5` through
-`CLAUDE_CODE_SUBAGENT_MODEL` in `.claude/settings.json`; its effort cannot be
-pinned and follows the session. The driver session's own model and effort stay
-yours. To change a role in a generated project, edit `model:` / `effort:` in its
-`.claude/agents/<role>.md` — and the matching `.codex/agents/<role>.toml` — in a
-reviewed change; `upgrade` then reports the edited file as yours instead of
-replacing it. Why these values, and what voids them: `docs/decisions/subagent-routing.md`.
-
-**The hooks are examples, not laws.** `.claude/rules/invariants.md` states the
-pattern behind each one — a stated invariant, a mechanical check, a test for the
-check — so you can delete the ones whose invariant your project does not have and
-spend the slot on one it does. An inherited rule nobody chose is worse than an
-empty rule file: the empty one is visibly incomplete, the inherited one is
-invisibly wrong.
-
-## What it deliberately does not do
-
-No application skeleton, no target to choose, no scaffolded code of any kind.
-No authentication, design system, state manager, i18n, analytics, error
-tracking, or cloud promise — none of that is a rig's business either. A rig
-that configures agent harnesses makes no promise about your application's
-architecture; if your project has a boundary worth enforcing mechanically
-(a pure core, a storage seam, a service boundary), the `new-invariant` skill
-walks you through writing that hook yourself, in your own repository.
+- No application scaffolding, no project templates to choose from.
+- Not an agent runtime, scheduler or workflow engine; it configures the
+  harnesses you already run.
+- No plugin manager, and no bundled memory engine.
+- Provider accounts, authorization and connectivity are between you, the
+  provider and the harness.
+- macOS is untested for this release.
+- The workflow layer is experimental.
 
 ## The 2-minute demo
 
+From a clone of this repository:
+
 ```sh
-./demo.sh   # from a clone of this repo
+./demo.sh
 ```
 
-installs the rig into a scratch directory, with its pristine baseline commit
-→ **an attempted pre-commit bypass is refused live by a hook**:
-
-```
-== 2/2 an agent tries to bypass pre-commit… ==
-…and the block-no-verify hook REFUSED the edit at the tool layer (exit 2). ✔
-```
+It installs the rig into a scratch directory and shows a hook refusing an
+attempted pre-commit bypass.
 
 ## Requirements
 
-- Node ≥ 20. The CLI carries zero runtime dependencies — the
-  `npx github:…`, tarball, and published-package paths all work.
+- Node ≥ 20. The CLI has no runtime dependencies.
+- Git.
+- For Spec Kit only: `uv` and `uvx`.
 
-## How it stays honest
+## Documentation
 
-The template is real, tracked content, and every e2e run generates a fresh
-repository from it and exercises the installed rig cold; the pack-path and
-git-path installs are both under test, because that is exactly where
-scaffolders break. A grep-test keeps the universal rules free of any cloud
-provider or infrastructure vendor mention; the hook-blocking behavior itself
-is under test. This repo dogfoods its own rulebook — the Claude and Codex
-projections are composed from the same templates a generated rig receives,
-plus this repository's own node-ts conventions, and drift fails the suite.
+| Document                                               | Covers                                                                |
+| ------------------------------------------------------ | --------------------------------------------------------------------- |
+| [`docs/command-contract.md`](docs/command-contract.md) | Every command's options, output, exit codes and ownership rules       |
+| [`CHANGELOG.md`](CHANGELOG.md)                         | What changed in each release, and the release checklist               |
+| [`docs/decisions/`](docs/decisions/)                   | Design decisions: ownership, `AGENTS.md`, Codex adapter, integrations |
+| [`docs/compatibility.md`](docs/compatibility.md)       | What each capability does per harness and platform                    |
+| [`docs/releasing.md`](docs/releasing.md)               | How a release is prepared and accepted                                |
 
-**And the enforcement layer is adversarially reviewed, not just tested.** The
-Bash guard went through four review rounds with ten reviewers, who executed it
-rather than read it. They found a PR body that could forge its own reviewer
-verdict, a queue write that deleted the wrong line, and three ways to make the
-guard crash into permitting everything. Each round's findings — including the
-ones introduced by the previous round's _fix_ — are in the git history and in
-`CHANGELOG.md`. The rule that came out of it is now part of what ships: a guard
-that fails open must do provably bounded work, because fail-open turns every line
-of its own work into a potential bypass.
+## Development
 
-Development (from a clone — `PLAN.md` and `demo.sh` live in the repository, not
-in the published tarball): `pnpm test` (full), `pnpm test:unit` (fast loop),
-`pnpm test:smoke` (the unit project only — the Windows pull-request lane). The
-plan of record is `PLAN.md`; release notes and the release checklist ship in
-`CHANGELOG.md`.
+```sh
+pnpm install
+pnpm test          # build and the full suite
+pnpm test:unit     # the fast suite
+pnpm lint
+pnpm typecheck
+```
+
+This repository uses its own rig: changes go through a branch, tests first, and
+review before merge. [`AGENTS.md`](AGENTS.md) is the working agreement.
+
+## License
+
+[MIT](LICENSE)
