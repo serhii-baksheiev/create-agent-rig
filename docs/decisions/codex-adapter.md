@@ -31,7 +31,7 @@ table, and the projector refuses a missing or orphaned agent profile. It also
 refuses duplicate source-agent names across layers, since one profile name
 cannot route two definitions.
 
-Frequent bounded work (`test-writer`, `prose-reviewer`) uses `gpt-5.6-terra`;
+Frequent bounded work (`test-writer`, `implementation-agent`, `prose-reviewer`) uses `gpt-5.6-terra`;
 correctness, security, and infrastructure gates use `gpt-5.6-sol`. Every named
 gate uses `high` reasoning effort. Unnamed subagents inherit repository defaults
 of `gpt-5.6-terra` and `medium` from `.codex/config.toml`. `xhigh` is not a

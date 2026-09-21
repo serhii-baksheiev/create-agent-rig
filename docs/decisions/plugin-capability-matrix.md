@@ -358,8 +358,8 @@ citing this record for it.
 - `packages/cli/test/upgrade-codex-projection.test.ts` › "%s: unchanged
   upgrades cleanly", "%s: an edit is reported as a conflict, never silently
   overwritten" and "%s: a deletion stays deleted" — parametrized over
-  `AGENTS.md`, `.codex/agents/test-writer.toml` and
-  `.agents/skills/loop/SKILL.md`.
+  `AGENTS.md`, `.codex/agents/test-writer.toml`,
+  `.codex/agents/implementation-agent.toml` and `.agents/skills/loop/SKILL.md`.
 - `test/template/codex.test.ts` › "is in sync with its Claude Code sources".
 - `docs/decisions/plugin-delivery-spike-rp179.md` — the reproducible spike
   behind corrections 1–3 above: every command run, its exact output, and

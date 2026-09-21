@@ -35,7 +35,7 @@ work.
 
 ## Judgment lines
 
-- When the task reaches an area the autonomy rules treat as elevated, stop and
-  say so before changing it.
+- When the change reaches an elevated area the task was not already tiered
+  for, stop and say so before changing it.
 - When two rules in the repository conflict, stop and name both.
 - Prefer deleting code to adding it when both satisfy the test.
