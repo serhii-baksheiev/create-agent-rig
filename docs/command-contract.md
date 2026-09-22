@@ -343,18 +343,20 @@ fields:
 - `detail` — what was observed.
 - `fix` — what a human should do about it.
 
-`id` has a closed set of seven fixed values at 1.0, each emitted from exactly
-one call site in `packages/cli/src/commands/doctor.ts`:
+`id` has a closed set of seven fixed values at 1.0. A single id may be emitted
+from more than one branch of `packages/cli/src/commands/doctor.ts` — one per
+outcome of the same check — so what identifies a check is the id, never the
+call site:
 
-| `id`              | what it checks                                                                                                                                                                                                                          |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rig-manifest`    | Whether `.claude/.rig-manifest.json` exists and parses — absent is a warning, unreadable or corrupt is a failure.                                                                                                                       |
-| `rig-owned-files` | Whether every manifest-recorded owned path still matches its recorded bytes, distinguishing absence, content drift, and line-ending-only drift from a pristine install.                                                                 |
-| `guards`          | Whether the installed hook wiring and the installed guard bytes match this package's own, verified by running allowed/denied fixtures against the installed guards in a disposable directory.                                           |
-| `workflow`        | For the optional workflow layer, whether the installed workflow scripts — including the frozen revalidation and claim-record mechanisms — still match the installed bytes; `not-selected` when the manifest does not record that layer. |
-| `custom-memory`   | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                        |
-| `integrations`    | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                   |
-| `spec-kit`        | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                  |
+| `id`              | what it checks                                                                                                                                                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rig-manifest`    | Whether `.claude/.rig-manifest.json` exists and parses — absent is a warning, unreadable or corrupt is a failure.                                                                                                                            |
+| `rig-owned-files` | Whether every manifest-recorded owned path still matches its recorded bytes, distinguishing absence, content drift, and line-ending-only drift from a pristine install; an owned path that cannot be read at all is the one failing outcome. |
+| `guards`          | Whether the installed hook wiring and the installed guard bytes match this package's own, verified by running allowed/denied fixtures against the installed guards in a disposable directory.                                                |
+| `workflow`        | For the optional workflow layer, whether the installed workflow scripts — including the frozen revalidation and claim-record mechanisms — still match the installed bytes; `not-selected` when the manifest does not record that layer.      |
+| `custom-memory`   | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                             |
+| `integrations`    | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                        |
+| `spec-kit`        | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                       |
 
 This is the closed set at 1.0: like every other closed value domain this
 contract names, adding an eighth fixed id is a minor bump, and removing or

@@ -448,7 +448,9 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
     });
   });
 
-  // --- 7. CI Node matrix vs. the engines.node floor -------------------------
+  // --- 6. CI Node matrix vs. the engines.node floor -------------------------
+  // (the tarball's provider payload is the seventh, and it lives in
+  // packages/cli/test/package-contents.test.ts, next to the other pack checks)
 
   describe('the CI Node matrix includes the package.json engines.node floor', () => {
     it('every workflow node-version value is >= the engines.node floor', async () => {
