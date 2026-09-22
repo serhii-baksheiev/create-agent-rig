@@ -66,6 +66,17 @@ describe('workflow.md — PR flow (process layer)', () => {
     expect(workflow).toMatch(/once .* (exist|remote)/i);
   });
 
+  // RP-194: the rule lived only inside the `pr-ship` paragraph, which a
+  // Core-only rig reads as a description of a skill it does not have.
+  it('states the review-findings rule as its own Core section, independent of pr-ship', async () => {
+    workflow = await readFile(path.join(universal, 'workflow.md'), 'utf8');
+    const section = /^## Review findings\n([\s\S]*?)(?=^## )/m.exec(workflow)?.[1];
+    expect(section, 'a "## Review findings" section').toBeDefined();
+    expect(section).toMatch(/resolved\s+with\s+evidence/i);
+    expect(section).toMatch(/not\s+argued\s+away/i);
+    expect(section).toMatch(/with\s+or\s+without\s+the\s+opt-in\s+workflow\s+layer/i);
+  });
+
   it('ships no flake registry (an empty section invites filling)', async () => {
     workflow = await readFile(path.join(universal, 'workflow.md'), 'utf8');
     expect(workflow).not.toMatch(/known flakes|flake registry|## Flakes/i);
