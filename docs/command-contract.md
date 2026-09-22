@@ -772,7 +772,9 @@ never asked.
 
 `uninstall [dir] [--dry-run] [--yes] [--detach] [--json]` removes what a rig
 installed from `dir` (default: the current directory) — file by file, against
-the evidence the manifest carries and nothing else. It is not a member of the
+the evidence the manifest carries and nothing else, with the one exception
+`## Ownership verdicts` names: the `AGENTS.md` rescue file, which the manifest
+never records and which is judged by its bytes instead. It is not a member of the
 foundation verb set above, and it does not use that set's five-code exit
 table: like `create`, `init` and `upgrade`, it exits 0 on success (including
 "nothing to do") and 1 on a refusal or a partial failure. `## Conformance
