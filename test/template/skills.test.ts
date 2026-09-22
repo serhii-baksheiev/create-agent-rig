@@ -104,32 +104,15 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
   });
 
   // RP-195 slice 6: a stale or historical finding is reproduced by the
-  // diagnostician (claim mode), never left to the built-in general-purpose
+  // diagnostician (claim mode), never left to the built-in unnamed
   // subagent.
   it('routes revalidation of a stale or historical finding through failure-diagnostician', async () => {
     const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
-    const occurrences: number[] = [];
-    let from = 0;
-    for (;;) {
-      const idx = content.indexOf('failure-diagnostician', from);
-      if (idx < 0) break;
-      occurrences.push(idx);
-      from = idx + 1;
-    }
-    expect(
-      occurrences.length,
-      'failure-diagnostician must be named in the loop skill',
-    ).toBeGreaterThan(0);
-    const linksToFindingOrClaim = occurrences.some((idx) => {
-      const windowStart = Math.max(0, idx - 300);
-      const windowEnd = Math.min(content.length, idx + 300);
-      const around = content.slice(windowStart, windowEnd);
-      return /\b(finding|claim)/i.test(around);
-    });
-    expect(
-      linksToFindingOrClaim,
-      'a sentence near a failure-diagnostician mention must link it to a finding/claim re-check',
-    ).toBe(true);
+    const section = /## 2\.[\s\S]*?(?=\n## 3\.)/.exec(content);
+    expect(section, 'section 2 must still exist').toBeTruthy();
+    const two = section![0];
+    expect(two).toContain('failure-diagnostician');
+    expect(two).toMatch(/claim mode/);
   });
 });
 

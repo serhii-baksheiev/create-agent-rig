@@ -701,24 +701,29 @@ stop: a false premise writes what the item claimed, what the code says, and the
 citation; an exhausted cap writes the round count and what the last gate reported.
 Both then follow the same three steps:
 
-1. **For a red check or an unexplained failure**, dispatch `failure-diagnostician`
-   with the verbatim failure, save its answer to a file under the run directory,
-   and check it:
+1. Comment the diagnosis on the queue item, in the shape
+   `.claude/rules/autonomy.md` ("Escalation format") sets — **cite it rather
+   than working from this list**, which is a reminder and is short by two of
+   its clauses: what was *observed* (verbatim errors, not summaries), and the
+   single question whose answer unblocks the work. So: what fails, what was tried, the
+   current hypothesis, and links to the PR and the failing run where they exist
+   — a premise stop has neither, and its citation stands in for both.
+   **For a red check or an unexplained failure, the current hypothesis is the
+   diagnostician's parsed verdict**: dispatch `failure-diagnostician` with the
+   verbatim failure, save its answer to a file under the run directory, and
+   check it —
 
    ```sh
    node .claude/scripts/verdict.mjs check <report> failure-diagnostician
    ```
 
-   Then carry its parsed verdict (word,
-   `classification`, blockers, evidence) into the comment instead of writing the
-   diagnosis from scratch; a `PREMISE FALSE` or exhausted-cap stop keeps the
-   diagnosis the paragraph above already describes (what the item claimed, or
-   the round count). Either way, comment it on the queue item, in the shape
-   `.claude/rules/autonomy.md` ("Escalation format") sets — **cite it rather
-   than working from this list**, which is a reminder and is short by one of
-   its clauses: the single question whose answer unblocks the work — plus
-   links to the PR and the failing run where they exist — a premise stop has
-   neither, and its citation stands in for both. **Name the outcome
+   — then carry the parsed verdict (word, `classification`, blockers,
+   evidence) as the hypothesis instead of writing the diagnosis from scratch,
+   with the verbatim failure output still in the comment beside it, covering
+   the "observed" clause the list above already names. A `PREMISE FALSE` or
+   exhausted-cap stop keeps the diagnosis the paragraph above already
+   describes (what the item claimed, or the round count).
+   **Name the outcome
    state in the same comment** — `incomplete` if the diagnosis cannot say **where** it
    stopped (§5: a thin diagnosis that still locates the wall is a `documented-stall`).
    Writing `incomplete` on your own task is uncomfortable and
