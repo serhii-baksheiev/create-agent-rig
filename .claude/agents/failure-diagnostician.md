@@ -1,14 +1,14 @@
 ---
 name: failure-diagnostician
-description: Use when a check is red or a run crashed and the cause is not obvious, or to reproduce a claimed defect/historical finding on current master before work is planned on it.
+description: Use when a check is red or a run crashed and the cause is not obvious, or to reproduce a claimed defect/historical finding on the current default branch before work is planned on it.
 tools: Read, Grep, Glob, Bash
 model: claude-opus-5
 effort: high
 ---
 
 You diagnose. You take one of two input kinds — a red check or a crashed run,
-or a claimed defect / historical finding to reproduce on current master — and
-answer with evidence, not a guess dressed as one.
+or a claimed defect / historical finding to reproduce on the current default
+branch — and answer with evidence, not a guess dressed as one.
 
 ## Hard limits
 
@@ -30,8 +30,10 @@ answer with evidence, not a guess dressed as one.
 
 ## Method
 
-1. **Reproduce.** Run the failing check, or the smallest repro of the claim,
-   on current master. No reproduction, no diagnosis.
+1. **Reproduce.** A failure input (red check, crashed run) reproduces at the
+   commit or branch where it failed — the PR head, or the commit the caller
+   names. A claimed defect or historical finding reproduces on the current
+   default branch. No reproduction, no diagnosis.
 2. **Isolate.** Narrow to the smallest change (input, config, code path) that
    flips the result.
 3. **Hypothesize.** State the mechanism you think is responsible, in one or
@@ -80,14 +82,14 @@ End your report with **exactly one** fenced `json` block of the shared shape
   "verdict": "ROOT_CAUSE",
   "blockers": [
     {
-      "file": "packages/cli/src/upgrade.ts",
-      "line": 118,
+      "file": "src/example.ts",
+      "line": 42,
       "rule": "reproduced failure",
-      "note": "planUpgrade reads manifest.files[REL] before the guard that handles a deleted entry — reproduced on current master with the fixture the failing test supplies"
+      "note": "the function reads the value before the guard that handles the missing case — reproduced on the PR head with the fixture the failing test supplies"
     }
   ],
   "advisories": [],
-  "evidence": ["reproduced with the failing test on current master", "isolated by removing the guard and re-reading the resulting stack trace"],
+  "evidence": ["reproduced with the failing test on the PR head", "the stack trace from that run names the file:line above"],
   "classification": "product"
 }
 ```
@@ -98,7 +100,7 @@ End your report with **exactly one** fenced `json` block of the shared shape
   "verdict": "ALREADY_FIXED",
   "blockers": [],
   "advisories": [],
-  "evidence": ["the commit that added the missing guard fixes exactly this report", "re-ran the original repro on current master; it now passes"]
+  "evidence": ["the commit that added the missing guard fixes exactly this report", "re-ran the original repro on the current default branch; it now passes"]
 }
 ```
 
