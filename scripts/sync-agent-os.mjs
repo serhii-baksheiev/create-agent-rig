@@ -67,6 +67,11 @@ const ELEVATED_PATHS = [
   // here, and the sweep's own reason for exempting the rulebook from "inert" is
   // "a merged PR rewriting the autonomy tiers". That text lives in this repo.
   'templates/agent-os/universal/.claude/rules/',
+  // RP-211: the file that decides which payload files reach a generated
+  // project per layer (`packages/cli/src/commands/init.ts` reads it) — a
+  // merge that quietly narrowed or emptied the file list of a layer is a
+  // Tier-2 change same as the rest of this block.
+  'templates/agent-os/universal/layers.json',
   'templates/agent-os/universal/CLAUDE.md',
   '.agents/',
   '.codex/',
