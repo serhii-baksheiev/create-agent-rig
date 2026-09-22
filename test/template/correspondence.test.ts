@@ -442,6 +442,25 @@ describe('fact 4 — the independent-oracle invariant is named by the rule and b
     return m?.[0];
   };
 
+  // The rule's own section: mirrors checklistItemIn above, so the rule side
+  // of the pairing has a named detector too, rather than leaving the check
+  // as a literal substring test with nothing this file owns behind it.
+  const INVARIANT_HEADING = '## The independent-oracle invariant';
+
+  /**
+   * The rule's own section stating the independent-oracle invariant, or
+   * undefined when the heading is gone or the section under it no longer
+   * carries the anchor sentence.
+   */
+  const ruleStatementIn = (prose: string): string | undefined => {
+    const start = prose.indexOf(INVARIANT_HEADING);
+    if (start === -1) return undefined;
+    const rest = prose.slice(start);
+    const next = rest.indexOf('\n## ', INVARIANT_HEADING.length);
+    const section = next === -1 ? rest : rest.slice(0, next);
+    return section.includes(INDEPENDENT_ORACLE_ANCHOR) ? section : undefined;
+  };
+
   it('the rule states the invariant and code-reviewer.md carries a matching checklist item', async () => {
     const rule = await ruleFile();
     expect(rule, 'invariants.md must still state the independent-oracle invariant').toContain(
@@ -454,6 +473,16 @@ describe('fact 4 — the independent-oracle invariant is named by the rule and b
       'code-reviewer.md must carry a numbered checklist item naming "independent oracle"',
     ).toBeDefined();
     expect(item).toMatch(/\.claude\/rules\/invariants\.md/);
+    // The three scope words have to travel with the pointer, not just the
+    // pointer itself — a restatement narrowed to "a security mechanism …
+    // derived from anything at all" still points at invariants.md and would
+    // pass the assertion above unnoticed. code-reviewer found this narrowing
+    // (mutation I) left the suite green before this loop was added.
+    for (const word of ['security', 'ownership', 'governance']) {
+      expect(item, `checklist item 7 dropped the scope word "${word}"`).toMatch(
+        new RegExp(`\\b${word}\\b`),
+      );
+    }
   });
 
   it('reports the checklist item missing when code-reviewer.md drops it (mutation)', async () => {
@@ -464,11 +493,23 @@ describe('fact 4 — the independent-oracle invariant is named by the rule and b
     expect(checklistItemIn(mutated)).toBeUndefined();
   });
 
+  // code-reviewer also found the previous version of this test tautological:
+  // it did `rule.replace(ANCHOR, …)` then asserted `not.toContain(ANCHOR)`,
+  // which measures String.prototype.replace, not any check this repository
+  // owns. Of the two fixes the review named — delete the test, or give the
+  // rule side a named detector and mutate that — this takes the detector:
+  // ruleStatementIn above is exercised here the same way checklistItemIn is
+  // exercised two tests up, so a bug that made ruleStatementIn ignore the
+  // anchor (e.g. returning the section whenever the heading merely exists)
+  // would leave this test failing to see `undefined`, not passing on nothing.
   it('reports the rule statement missing when invariants.md drops the anchor sentence (mutation)', async () => {
     const rule = await ruleFile();
-    expect(rule).toContain(INDEPENDENT_ORACLE_ANCHOR);
+    expect(
+      ruleStatementIn(rule),
+      'setup: the rule section must state the invariant before it can be removed',
+    ).toBeDefined();
     const mutated = rule.replace(INDEPENDENT_ORACLE_ANCHOR, 'is always fine, trust the author');
-    expect(mutated).not.toContain(INDEPENDENT_ORACLE_ANCHOR);
+    expect(ruleStatementIn(mutated)).toBeUndefined();
   });
 });
 
