@@ -521,10 +521,13 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
     const { RULEBOOK_PREFIXES } = await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
     );
-    // Per entry, the token is the LAST path segment with its extension
-    // stripped (the file's or directory's own name) — never the first
-    // segment, and never a bare top-level directory name shared by
-    // unrelated prose. A first-segment derivation once picked "rig" for
+    // Per entry, the token is the entry's own name: the last SLASH segment,
+    // with one trailing extension stripped — never the first segment, and
+    // never a bare top-level directory name shared by unrelated prose. The
+    // slash and the dot are split separately on purpose: a combined split
+    // picks the PARENT for a two-segment directory entry, so `.rig/claims/`
+    // would derive "rig" again and re-open the very hole below.
+    // A first-segment derivation once picked "rig" for
     // `.rig/revalidation.json`, and the header's unrelated disclosure
     // "(absent in a generated rig)" satisfied it by accident: rewording
     // that phrase alone flipped a real omission invisible. "manifest" is
@@ -533,12 +536,12 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
     // never spelled out) and keeps its explicit override for that reason.
     const familyOf = (prefix: string) => {
       if (prefix.includes('manifest')) return 'manifest';
-      const parts = prefix
+      const segments = prefix
         .replace(/^\.claude\//, '')
-        .replace(/^\./, '')
-        .split(/[/.]/)
+        .split('/')
         .filter(Boolean);
-      return parts.length > 1 ? parts[parts.length - 2]! : parts[0]!;
+      const own = segments[segments.length - 1] ?? prefix;
+      return own.replace(/^\./, '').replace(/\.[^.]+$/, '');
     };
     const families = [...new Set((RULEBOOK_PREFIXES as readonly string[]).map(familyOf))];
     const missing = families.filter((family) => !header.includes(family));
