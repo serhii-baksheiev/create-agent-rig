@@ -633,13 +633,12 @@ const clearsSpacing = (lastCompletedTier) =>
  * items with the whole suite green throughout, and its `budget` stop arriving "later
  * than it should have".
  *
- * Two is the cap because the second round is what verifies the first round's fixes.
- * A third is a decision for a human rather than another pass to buy — and the
- * refusal says only that the count is spent, never that the fixes "are not
- * converging": on one branch a granted third round found that round 2's fix had
- * opened the mirror of the bug it closed (AR-115).
+ * Three is the cap: the second round verifies the first round's fixes, and the
+ * third lets a round-2 fix be read once more before the item needs a human. A
+ * project that wants a different cap sets `options.maxGateRounds` instead of
+ * changing this default.
  */
-export const DEFAULT_MAX_GATE_ROUNDS = 2;
+export const DEFAULT_MAX_GATE_ROUNDS = 3;
 
 /**
  * Is this round allowed, and if not, what stops?

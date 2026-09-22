@@ -136,13 +136,14 @@ describe('the count is on disk, so a fresh session cannot restart it', () => {
 describe('the verdict on a round count is pure, so the rule is one implementation', () => {
   it('passes up to the cap and refuses past it', async () => {
     const { gateRoundVerdict, DEFAULT_MAX_GATE_ROUNDS } = await load('core.mjs');
-    expect(DEFAULT_MAX_GATE_ROUNDS).toBe(2);
+    expect(DEFAULT_MAX_GATE_ROUNDS).toBe(3);
 
-    // `rounds` includes the round about to run, so a cap of 2 allows 1 and 2.
+    // `rounds` includes the round about to run, so a cap of 3 allows 1, 2 and 3.
     expect(gateRoundVerdict(1).exceeded).toBe(false);
     expect(gateRoundVerdict(2).exceeded).toBe(false);
-    expect(gateRoundVerdict(3).exceeded).toBe(true);
-    expect(gateRoundVerdict(3).max).toBe(2);
+    expect(gateRoundVerdict(3).exceeded).toBe(false);
+    expect(gateRoundVerdict(4).exceeded).toBe(true);
+    expect(gateRoundVerdict(4).max).toBe(3);
   });
 
   it('takes the cap from the queue config when it names one', async () => {
@@ -160,7 +161,7 @@ describe('the verdict on a round count is pure, so the rule is one implementatio
 
   it('names the stop the loop escalates on, and keeps it out of the skip vocabulary', async () => {
     const { SKIP_CAUSES, gateRoundVerdict } = await load('core.mjs');
-    expect(gateRoundVerdict(3).stop).toBe('documented-stall');
+    expect(gateRoundVerdict(4).stop).toBe('documented-stall');
     // `SKIP_CAUSES` are reasons an item was passed over in selection; this ends a
     // task. One vocabulary for both makes every sentence about either one wrong.
     expect(SKIP_CAUSES).not.toContain('documented-stall');
@@ -307,7 +308,7 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       gitIn(dir, ['push', '-q', '-u', 'origin', 'fix/a']);
       const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
       expect(result.code, result.stderr).toBe(0);
-      expect(result.stdout).toMatch(/round 1 of 2/);
+      expect(result.stdout).toMatch(/round 1 of 3/);
     });
   });
 
@@ -315,12 +316,18 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     const cfg = await config();
     const first = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     expect(first.code, first.stderr).toBe(0);
-    expect(first.stdout).toMatch(/round 1 of 2/);
+    expect(first.stdout).toMatch(/round 1 of 3/);
+    expect(first.stdout).not.toMatch(/last round this branch gets/);
 
     const second = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     expect(second.code, second.stderr).toBe(0);
-    expect(second.stdout).toMatch(/round 2 of 2/);
-    expect(second.stdout).toMatch(/last round this branch gets/);
+    expect(second.stdout).toMatch(/round 2 of 3/);
+    expect(second.stdout).not.toMatch(/last round this branch gets/);
+
+    const third = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    expect(third.code, third.stderr).toBe(0);
+    expect(third.stdout).toMatch(/round 3 of 3/);
+    expect(third.stdout).toMatch(/last round this branch gets/);
   });
 
   // 🔴 Exit 2 is pinned as a NUMBER, not as "non-zero". `pr-ship` ends the task on
@@ -330,11 +337,12 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     const cfg = await config();
     await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
 
-    const third = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    expect(third.code).toBe(2);
-    expect(third.stderr).toMatch(/GATE ROUNDS EXHAUSTED/);
-    expect(third.stderr).toMatch(/documented-stall/);
+    const fourth = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    expect(fourth.code).toBe(2);
+    expect(fourth.stderr).toMatch(/GATE ROUNDS EXHAUSTED/);
+    expect(fourth.stderr).toMatch(/documented-stall/);
   });
 
   // AR-115: the refusal states the cap, not a verdict on convergence. On one branch
@@ -345,13 +353,14 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     const cfg = await config();
     await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
 
-    const third = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    expect(third.code).toBe(2);
-    expect(third.stderr).toMatch(/3 rounds on fix\/a, cap is 2/);
-    expect(third.stderr).not.toMatch(/converg/i);
-    expect(third.stderr).not.toMatch(/thrash/i);
-    expect(third.stderr).toMatch(/this command measured only the count/);
+    const fourth = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    expect(fourth.code).toBe(2);
+    expect(fourth.stderr).toMatch(/4 rounds on fix\/a, cap is 3/);
+    expect(fourth.stderr).not.toMatch(/converg/i);
+    expect(fourth.stderr).not.toMatch(/thrash/i);
+    expect(fourth.stderr).toMatch(/this command measured only the count/);
   });
 
   it('exits 1 on its own failures, and says it is not an exhausted cap', async () => {
@@ -437,7 +446,7 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     const cfg = await config({ adapter: 'jira', options: { project: 'NOPE' } });
     const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toMatch(/round 1 of 2/);
+    expect(result.stdout).toMatch(/round 1 of 3/);
   });
 
   it('lists the command, so the unknown-command message stays honest', async () => {
