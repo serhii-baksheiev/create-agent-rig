@@ -125,6 +125,13 @@ const ELEVATED_PATHS = [
   // rewrote `.claude/hooks/` here while the templates stayed put would have
   // failed the drift test AND passed the sweep. Declaring both closes that.
   '.claude/',
+  // RP-61: the detection contract `preflight.mjs` and `claim-records.mjs`
+  // both read — it decides whether preflight STOPs and what a claim's scope
+  // fingerprint watches, so a rewrite is reviewed like the rest of this
+  // block. The exact file, never `.rig/`: `.rig/claims/<id>.json` is the
+  // baseline a SELECT creates for itself on every queue merge, and declaring
+  // the directory would flag essentially all of them.
+  '.rig/revalidation.json',
 ];
 
 const withElevatedPaths = (claudeMd) =>

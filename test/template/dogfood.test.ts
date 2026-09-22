@@ -297,6 +297,34 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     ]);
   });
 
+  // RP-61: `.rig/revalidation.json` is the detection contract
+  // `checkDetectionContract` (`preflight.mjs`) and `revalidateClaim`
+  // (`claim-records.mjs`) both read — a rewrite silently changes what a
+  // claim's scope fingerprint watches, yet the block named no `.rig` path at
+  // all, so a merge touching only that file swept clean.
+  it('declares .rig/revalidation.json, the detection contract that decides STOP/GO and the scope fingerprint', async () => {
+    const declared = await loadDeclaredPaths();
+    const detector = await loadDetector();
+    expect(detector.elevatedPathsIn(['.rig/revalidation.json'], declared)).not.toEqual([]);
+  });
+
+  it('flags a merge that touches only .rig/revalidation.json as elevated', async () => {
+    const declared = await loadDeclaredPaths();
+    const detector = await loadDetector();
+    const changedFiles = ['.rig/revalidation.json'];
+    expect(detector.elevatedPathsIn(changedFiles, declared)).toEqual(['.rig/revalidation.json']);
+  });
+
+  // The exact file, never the directory: `.rig/claims/<id>.json` is the
+  // baseline a SELECT creates for itself, and every queue merge writes one —
+  // declaring `.rig/` (rather than the one file) would flag essentially
+  // every queue merge.
+  it('does not declare .rig/claims/ elevated — a SELECT creates its own baseline there', async () => {
+    const declared = await loadDeclaredPaths();
+    const detector = await loadDetector();
+    expect(detector.elevatedPathsIn(['.rig/claims/RP-61.json'], declared)).toEqual([]);
+  });
+
   it('the blocking hooks are active in this repo', async () => {
     const settings = JSON.parse(
       await readFile(path.join(repoRoot, '.claude', 'settings.json'), 'utf8'),

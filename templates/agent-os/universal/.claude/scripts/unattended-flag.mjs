@@ -94,6 +94,14 @@ export const RULEBOOK_PREFIXES = Object.freeze([
   '.codex/',
   'AGENTS.md',
   'CLAUDE.md',
+  // the detection contract preflight and claim-records both read: it decides
+  // whether preflight STOPs and what the scope fingerprint watches, so an
+  // unattended run does not rewrite what its own revalidation checks against
+  // — outside its item's allow-list, like every other entry here and unlike
+  // `.claude/queue.board`, which `guard-rulebook` refuses even when the
+  // allow-list names it. The exact file, never `.rig/` — a SELECT still needs to
+  // write its own baseline under `.rig/claims/`, which stays unlisted here.
+  '.rig/revalidation.json',
 ]);
 
 /** Is this repo-relative path part of the rulebook? */
