@@ -251,6 +251,7 @@ docs/decisions/
 contracts/
 scripts/dogfood/
 packages/cli/src/integrations/
+packages/cli/src/commands/integrations.ts
 .claude/
 ```
 
