@@ -420,7 +420,11 @@ who was not reading the code at the time, and everything downstream — the fail
 test, the implementation, the reviewer comparing diff to item — inherits its
 claims rather than checking them. On `PREMISE FALSE` the item is escalated (§6),
 not repaired in place: a run that silently re-aims its own task has authored work
-for itself, which is the one thing this loop does not do (§8).
+for itself, which is the one thing this loop does not do (§8). A claim
+`check-premises` cannot settle by reading — a claimed defect or a historical
+finding that needs reproducing on the current default branch, not just re-reading — goes to
+`failure-diagnostician` in claim mode instead, never to an unnamed built-in
+subagent.
 
 🔴 **And again at the other end, before `pr-ship`: `check-premises` on the prose the
 task itself wrote** — the rulebook prose the diff touches (the skill defines that set,
@@ -697,13 +701,24 @@ stop: a false premise writes what the item claimed, what the code says, and the
 citation; an exhausted cap writes the round count and what the last gate reported.
 Both then follow the same three steps:
 
-1. Comment the diagnosis on the queue item, in the shape
+1. **For a red check or an unexplained failure**, dispatch `failure-diagnostician`
+   with the verbatim failure, save its answer to a file under the run directory,
+   and check it:
+
+   ```sh
+   node .claude/scripts/verdict.mjs check <report> failure-diagnostician
+   ```
+
+   Then carry its parsed verdict (word,
+   `classification`, blockers, evidence) into the comment instead of writing the
+   diagnosis from scratch; a `PREMISE FALSE` or exhausted-cap stop keeps the
+   diagnosis the paragraph above already describes (what the item claimed, or
+   the round count). Either way, comment it on the queue item, in the shape
    `.claude/rules/autonomy.md` ("Escalation format") sets — **cite it rather
-   than working from this list**, which is a reminder and is short by two of
-   its clauses: what was *observed* (verbatim errors, not summaries), and the
-   single question whose answer unblocks the work. So: what fails, what was tried, the
-   current hypothesis, and links to the PR and the failing run where they exist
-   — a premise stop has neither, and its citation stands in for both. **Name the outcome
+   than working from this list**, which is a reminder and is short by one of
+   its clauses: the single question whose answer unblocks the work — plus
+   links to the PR and the failing run where they exist — a premise stop has
+   neither, and its citation stands in for both. **Name the outcome
    state in the same comment** — `incomplete` if the diagnosis cannot say **where** it
    stopped (§5: a thin diagnosis that still locates the wall is a `documented-stall`).
    Writing `incomplete` on your own task is uncomfortable and
