@@ -305,25 +305,36 @@ describe('release-evidence.mjs grouping: repeated pain vs. an anecdote', () => {
     expect(data.verdict).toBe('REPEATED_PAIN');
   });
 
-  it('a proposal filed ok: false is not evidence, even filed twice', async () => {
+  it('a proposal filed ok: false is not evidence, even filed twice — the real shape carries an id', async () => {
+    // The real failure shape, not a stand-in: `propose.mjs`'s `journalDataFor`
+    // sets `data.id` from `result.item.fingerprint` whenever `proposeTriage`
+    // returns an `item` — which it does even on failure (e.g. `plan-md.mjs`'s
+    // "no Operator queue heading" branch returns `{ ok: false, item, why }`).
+    // A fixture with no `id` at all would still pass if the `data.ok !== true`
+    // filter were deleted, because the id-less record is dropped by the id
+    // check regardless — so this fixture must carry the id to pin the filter.
     const runsDir = await runsRoot();
     const runA = await mkrun(runsDir, 'run-a');
     const runB = await mkrun(runsDir, 'run-b');
     journal.recordEvent({
       runDir: runA,
       kind: 'proposal',
-      data: { ok: false, reason: 'adapter refused' },
+      data: { ok: false, id: 'fingerprint-failed', reason: 'adapter refused' },
       now: AFTER,
     });
     journal.recordEvent({
       runDir: runB,
       kind: 'proposal',
-      data: { ok: false, reason: 'adapter refused' },
+      data: { ok: false, id: 'fingerprint-failed', reason: 'adapter refused' },
       now: AFTER_2,
     });
 
     const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
     expect(data.groups.filter((g) => g.source === 'proposal')).toEqual([]);
+    expect(
+      data.groups.find((g) => g.key === 'proposal|fingerprint-failed'),
+      JSON.stringify(data.groups),
+    ).toBeUndefined();
     expect(data.verdict).toBe('GATHER_MORE_EVIDENCE');
   });
 });
@@ -431,6 +442,68 @@ describe('release-evidence.mjs pointers and --since', () => {
 
     const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
     const group = data.groups.find((g) => g.key === `gate-blocker|code-reviewer|${RULE}`);
+    expect(group, JSON.stringify(data.groups)).toBeDefined();
+    expect(group!.runs).toBe(1);
+    expect(group!.records).toBe(1);
+    expect(group!.repeated).toBe(false);
+    expect(data.verdict).toBe('GATHER_MORE_EVIDENCE');
+  });
+
+  it("a repeated proposal group's pointers name events.jsonl with seqs readRun resolves to the matching proposal event", async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    const runB = await mkrun(runsDir, 'run-b');
+    journal.recordEvent({
+      runDir: runA,
+      kind: 'proposal',
+      data: { ok: true, id: 'fingerprint-pointer' },
+      now: AFTER,
+    });
+    journal.recordEvent({
+      runDir: runB,
+      kind: 'proposal',
+      data: { ok: true, id: 'fingerprint-pointer' },
+      now: AFTER_2,
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const group = data.groups.find((g) => g.key === 'proposal|fingerprint-pointer');
+    expect(group, JSON.stringify(data.groups)).toBeDefined();
+    expect(group!.repeated).toBe(true);
+    expect(group!.pointers.length).toBeGreaterThan(0);
+    for (const pointer of group!.pointers) {
+      expect(pointer.file).toBe('events.jsonl');
+      const { events } = journal.readRun({ runDir: path.join(runsDir, pointer.run) });
+      const record = events.find((e) => e.seq === pointer.seq);
+      expect(
+        record,
+        `no events.jsonl record with seq ${pointer.seq} in ${pointer.run}`,
+      ).toBeDefined();
+      expect(record!.kind).toBe('proposal');
+      expect((record!.data as { id?: string } | null | undefined)?.id).toBe('fingerprint-pointer');
+    }
+  });
+
+  it('--since excludes a proposal event dated before it, so one run left after exclusion is only an anecdote', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    const runB = await mkrun(runsDir, 'run-b');
+    // run-a's only proposal event is BEFORE `since` — it must not count at all.
+    journal.recordEvent({
+      runDir: runA,
+      kind: 'proposal',
+      data: { ok: true, id: 'fingerprint-window' },
+      now: BEFORE,
+    });
+    journal.recordEvent({
+      runDir: runB,
+      kind: 'proposal',
+      data: { ok: true, id: 'fingerprint-window' },
+      now: AFTER,
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const group = data.groups.find((g) => g.key === 'proposal|fingerprint-window');
     expect(group, JSON.stringify(data.groups)).toBeDefined();
     expect(group!.runs).toBe(1);
     expect(group!.records).toBe(1);
