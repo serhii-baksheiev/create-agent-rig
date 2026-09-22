@@ -62,6 +62,7 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/queue/github-issues.mjs',
   '.claude/scripts/queue/jira.mjs',
   '.claude/scripts/queue/index.mjs',
+  '.claude/scripts/queue/propose.mjs', // RP-209: root-safe entry point for filing proposals
   '.claude/scripts/queue/as-of.mjs',
   '.claude/scripts/queue/checkout.mjs',
   '.claude/scripts/queue/state.mjs',

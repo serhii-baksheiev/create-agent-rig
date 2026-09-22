@@ -52,15 +52,21 @@ describe('the loop skill says how the <report> it checks comes to exist', () => 
   });
 });
 
-describe('the proposeTriage snippet files on every adapter when called as written', () => {
-  it('passes the project the jira adapter requires, and says the other two take none', async () => {
+describe('the propose.mjs snippet files on every adapter when called as written', () => {
+  it('derives the project the jira adapter requires from the active board, instead of asking the reader to pass one', async () => {
     const text = await skill('loop');
-    const snippet = text.slice(
-      text.indexOf('a.proposeTriage({'),
-      text.indexOf('a.proposeTriage({') + 800,
+    // The documented call: the root-safe script, not a hand-typed import.
+    expect(text).toMatch(
+      /node \.claude\/scripts\/queue\/propose\.mjs --file "\$RIG_RUN_DIR\/proposal\.json"/,
     );
-    expect(snippet).toMatch(/\}, \{ project: "<KEY>" \}/);
-    expect(snippet).toMatch(/jira only/);
+    // jira's required `options.project` is supplied by the script from the
+    // active board's own config — the reader is never told to type one.
+    expect(text).toMatch(/`jira` still requires `options\.project`/);
+    expect(text).toMatch(/`propose\.mjs` supplies it from/);
+    expect(text).toMatch(/the active board's own config/);
+    expect(text).toMatch(/no\s*\n?second argument left to hand-copy/);
+    // The old hand-typed project argument is gone with it.
+    expect(text).not.toMatch(/\{ project: "<KEY>" \}/);
     // The old warning — "called exactly as written, it does not file" — is gone
     // with its cause, rather than left describing a snippet that now files.
     expect(text).not.toMatch(/called exactly as written, it does not file/);
