@@ -160,8 +160,8 @@ describe('createProject', { timeout: 60_000 }, () => {
       const body = await readFile(path.join(projectDir, '.claude', 'agents', agent), 'utf8');
       expect(body).toMatch(/^---\nname: /); // agent frontmatter
     }
-    // core skills, installed by default
-    for (const skill of ['worktree-task', 'check-premises', 'new-invariant']) {
+    // core skills, installed by default (RP-195 slice 4 adds skill-authoring)
+    for (const skill of ['worktree-task', 'check-premises', 'new-invariant', 'skill-authoring']) {
       await expect(
         readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md'), 'utf8'),
       ).resolves.toBeTruthy();
