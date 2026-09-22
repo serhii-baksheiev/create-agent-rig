@@ -285,20 +285,26 @@ async function writableOnDisk(repoDir: string, rel: string): Promise<string> {
 }
 
 /**
- * The file's bytes, or `null` when it is genuinely **absent**.
+ * Classify the path as absent, a regular file, or another filesystem entry.
  *
- * Only "not there" is absence. Any other failure — a permission, a directory
- * where a file should be, a path this command refuses to touch — is rethrown,
- * because "I could not read your file" must never become "so I wrote mine over
- * it": every caller of this treats `null` as grounds to install.
+ * Only "not there" is absence. A directory where a file should be becomes a
+ * plan conflict; a permission failure or a path this command refuses to touch
+ * is still rethrown, because "I could not read your file" must never become
+ * "so I wrote mine over it".
  */
-async function readIfPresent(repoDir: string, rel: string): Promise<Buffer | null> {
+type PresentFile = { kind: 'absent' } | { kind: 'file'; bytes: Buffer } | { kind: 'non-file' };
+
+async function readIfPresent(repoDir: string, rel: string): Promise<PresentFile> {
+  const dest = await writableOnDisk(repoDir, rel);
+  let stat;
   try {
-    return await readFile(await writableOnDisk(repoDir, rel));
+    stat = await lstat(dest);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
     throw error;
   }
+  if (!stat.isFile()) return { kind: 'non-file' };
+  return { kind: 'file', bytes: await readFile(dest) };
 }
 
 /**
@@ -546,7 +552,19 @@ export async function planUpgrade(
   const currentBytesByRel = new Map<string, Buffer>();
 
   for (const file of files) {
-    const currentBytes = await readIfPresent(repoDir, file.rel);
+    const currentFile = await readIfPresent(repoDir, file.rel);
+    if (currentFile.kind === 'non-file') {
+      actions.push({
+        rel: file.rel,
+        verdict: 'conflict',
+        reason:
+          'a directory or other non-regular entry exists where this rig-owned file belongs — ' +
+          'move or remove it by hand; upgrade will leave it untouched',
+        templatePath: file.source,
+      });
+      continue;
+    }
+    const currentBytes = currentFile.kind === 'file' ? currentFile.bytes : null;
     if (currentBytes !== null) currentBytesByRel.set(file.rel, currentBytes);
     const recordedInManifest = manifest?.files[file.rel];
     const recorded =
