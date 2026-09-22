@@ -4,11 +4,12 @@
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Status (0.9.1 published 17 Sep 2026):** 0.9.1 is `latest`, published from
-> `gitHead` `872f7f67f11761c17aad3cbbe26540862581795b`. Versions 0.1.0 through
-> 0.9.1 are live; delivery is done through `0.9.1`, the current `latest`.
+> **Status (0.10.0 published 22 Sep 2026):** 0.10.0 is `latest`, published from
+> `gitHead` `279fbf928b811b8ebc7ba2d1c4700ee943b7dab1`. Versions 0.1.0 through
+> 0.10.0 are live; delivery is done through `0.10.0`, the current `latest`.
+> `0.10.1`, a fixes-only patch, is prepared and waiting on the owner's publish.
 >
-> **The default branch is not that release.** 0.10.0 work merges to `master`
+> **The default branch is not that release.** 0.10.x work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
 > unreleased, and has not been through a release gate. Installing from the
 > default branch installs a development snapshot — the README's "Which version
