@@ -847,28 +847,51 @@ four things, and a proposal missing any of them is not ready to file:
 3. the change, concretely enough to diff;
 4. how the next run would prove it worked — the observation that would differ.
 
-Filing is the adapter's `proposeTriage`, which the CLI deliberately does **not**
-expose — `index.mjs` never writes to the QUEUE (`next`, `list`, `hygiene` only), so
-that no accidental invocation can change what the next run is handed. Its one
-write is to the run journal above, and only into a directory the run declared —
-a trace of the selection, never a change to it. Call `proposeTriage` directly:
+Filing is the adapter's `proposeTriage`, reached through the one root-safe entry
+point `.claude/scripts/queue/propose.mjs` — never a relative `import()` typed by
+hand, which breaks the moment the session is standing in a subdirectory
+(`ERR_MODULE_NOT_FOUND` from the import, then an `ENOENT` from a cwd-relative
+`PLAN.md` that is not there). The CLI (`index.mjs`) still deliberately does
+**not** expose this — it never writes to the QUEUE (`next`, `list`, `hygiene`
+only), so that no accidental invocation can change what the next run is
+handed. `propose.mjs` resolves its config from its own location, exactly as
+`index.mjs` does, so the proposal lands in the project's real PLAN.md (or
+tracker) and the active board's own options travel with it rather than being
+typed by hand. Write the proposal to a file under the run directory, then run
+the script:
 
 ```bash
 node --input-type=module -e '
-  const a = await import("./.claude/scripts/queue/plan-md.mjs");   // or github-issues / jira
-  console.log(await a.proposeTriage({
-    finding: "<the journal line it came from>",
-    part:    "<skill | agent | hook | rule | AGENTS.md | CLAUDE.md | workflow>",
-    change:  "<concretely enough to diff>",
-    proof:   "<the observation that would differ next run>",
-    // a pair: what the probe touched, and what is concluded from it. The
-    // mechanism accepts a proposal without them; this procedure does not.
-    measured: "<the paths the probe actually exercised>",
-    inferred: "<the conclusion, citing only surfaces named in measured>",
-  }, { project: "<KEY>" }));   // jira only — the ACTIVE board's key: `queue/index.mjs board --json` → options.project;
-                               // plan-md and github-issues take no second argument
+  const fs = await import("node:fs/promises");
+  await fs.writeFile(
+    `${process.env.RIG_RUN_DIR}/proposal.json`,
+    JSON.stringify({
+      finding: "<the journal line it came from>",
+      part:    "<skill | agent | hook | rule | AGENTS.md | CLAUDE.md | workflow>",
+      change:  "<concretely enough to diff>",
+      proof:   "<the observation that would differ next run>",
+      // a pair: what the probe touched, and what is concluded from it. The
+      // mechanism accepts a proposal without them; this procedure does not.
+      measured: "<the paths the probe actually exercised>",
+      inferred: "<the conclusion, citing only surfaces named in measured>",
+    }),
+  );
 '
+# Root-anchored so the same command works whether the session is standing
+# at the repo root or in a subdirectory. Pinned in the generator's
+# test/template/loop-report-file.test.ts (absent in a generated rig) ›
+# "files when the documented command line runs, unmodified, from a project
+# subdirectory".
+node "$(git rev-parse --show-toplevel)/.claude/scripts/queue/propose.mjs" --file "$RIG_RUN_DIR/proposal.json"
 ```
+
+The result prints as one JSON line on stdout, and — because `RIG_RUN_DIR` is
+declared — the same result is also recorded as a `proposal` event in the run
+journal, so a failed filing is journalled as a failure instead of silently
+going nowhere. Pinned in the generator's `test/template/queue-propose.test.ts`
+(absent in a generated rig) › "files a proposal with a multiline finding from
+a project subdirectory, into the project-root PLAN.md" and › "journals a
+proposal event with ok: true on a successful filing under RIG_RUN_DIR".
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
 
@@ -920,9 +943,9 @@ rather than a step in the procedure: `plan-md` returns it when the plan file has
 no `## Operator queue` heading, because a proposal then has nowhere to land that
 the selection query cannot reach. Add the heading — never the Agent queue.
 
-One adapter needs the second argument the snippet above carries: `jira` requires
-`options.project` and throws rather than filing without it — loudly, so nothing
-is lost, but a call that drops it files nothing.
+`jira` still requires `options.project`, and still throws rather than filing
+without it — loudly, so nothing is lost — and there is no
+second argument left to hand-copy.
 
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on
