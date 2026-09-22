@@ -24,6 +24,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
 const modulePath = path.join(scriptsDir, 'lib', 'verdict.mjs');
 const cliPath = path.join(scriptsDir, 'verdict.mjs');
+const decisionRouterPath = path.join(scriptsDir, 'decision-router.mjs');
 
 /** The canonical verdict a successful parse hands back. */
 interface Verdict {
@@ -120,6 +121,13 @@ describe('one vocabulary, and each gate gets the part of it that it can mean', (
         'SHIP',
         'UNMEASURED',
         'UNVERIFIABLE',
+        // RP-195 slice 1: failure-diagnostician's vocabulary.
+        'ROOT_CAUSE',
+        'INCONCLUSIVE',
+        'STILL_LIVE',
+        'ALREADY_FIXED',
+        'OBSOLETE',
+        'INSUFFICIENT_EVIDENCE',
       ].sort(),
     );
   });
@@ -153,6 +161,17 @@ describe('one vocabulary, and each gate gets the part of it that it can mean', (
       'security-scanner': ['SHIP', 'HOLD', 'NOT_APPLICABLE'],
       'check-premises': ['PREMISES_HOLD', 'PREMISE_FALSE', 'UNVERIFIABLE', 'UNMEASURED'],
       'post-deploy-verify': ['HEALTHY', 'REGRESSION'],
+      // RP-195 slice 1 (design decision 1): the diagnostician's own words, split
+      // by what it was asked to look at — a failure, or a claimed/historical
+      // finding.
+      'failure-diagnostician': [
+        'ROOT_CAUSE',
+        'INCONCLUSIVE',
+        'STILL_LIVE',
+        'ALREADY_FIXED',
+        'OBSOLETE',
+        'INSUFFICIENT_EVIDENCE',
+      ],
     };
     expect(Object.keys(GATE_VOCABULARY).sort()).toEqual(Object.keys(expected).sort());
     for (const [gate, words] of Object.entries(expected)) {
@@ -167,9 +186,31 @@ describe('one vocabulary, and each gate gets the part of it that it can mean', (
   it('names the words that mean stop, and leaves the rest out of them', async () => {
     const { BLOCKING_VERDICTS } = await load();
     expect([...BLOCKING_VERDICTS].sort()).toEqual(
-      ['HOLD', 'PREMISE_FALSE', 'REGRESSION', 'UNMEASURED', 'UNVERIFIABLE'].sort(),
+      [
+        'HOLD',
+        'PREMISE_FALSE',
+        'REGRESSION',
+        'UNMEASURED',
+        'UNVERIFIABLE',
+        // RP-195 slice 1 (design decision 1): each names at least one blocker —
+        // the cause for ROOT_CAUSE/STILL_LIVE, the missing evidence for
+        // INCONCLUSIVE/INSUFFICIENT_EVIDENCE.
+        'ROOT_CAUSE',
+        'INCONCLUSIVE',
+        'STILL_LIVE',
+        'INSUFFICIENT_EVIDENCE',
+      ].sort(),
     );
-    for (const passing of ['SHIP', 'PREMISES_HOLD', 'HEALTHY', 'NOT_APPLICABLE']) {
+    for (const passing of [
+      'SHIP',
+      'PREMISES_HOLD',
+      'HEALTHY',
+      'NOT_APPLICABLE',
+      // ALREADY_FIXED / OBSOLETE carry no blockers — the fixing commit or
+      // superseding mechanism goes in `evidence` instead.
+      'ALREADY_FIXED',
+      'OBSOLETE',
+    ]) {
       expect(BLOCKING_VERDICTS, passing).not.toContain(passing);
     }
   });
@@ -438,6 +479,129 @@ describe('a verdict that means proceed cannot carry a blocker', () => {
     expect(problems.join('\n')).toMatch(/blocker/i);
     expect(problems.join('\n')).toContain(word);
   });
+});
+
+// RP-195 slice 1 (design decisions 1 and 2): the diagnostician answers in the
+// same shape every gate does — `parseVerdict` needs no gate-specific branch a
+// caller has to know about. Two things are new to this gate alone: its own
+// six words, split into a failure vocabulary (ROOT_CAUSE, INCONCLUSIVE) and a
+// claimed-finding vocabulary (STILL_LIVE, ALREADY_FIXED, OBSOLETE,
+// INSUFFICIENT_EVIDENCE); and `classification`, the one optional key only
+// this gate may carry, required on ROOT_CAUSE, optional on STILL_LIVE, and
+// refused everywhere else — on every other word of its own, and on every
+// other gate.
+describe('failure-diagnostician answers in the shared shape', () => {
+  const diagnostician = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    gate: 'failure-diagnostician',
+    ...over,
+  });
+
+  it.each([
+    ['ROOT_CAUSE', { verdict: 'ROOT_CAUSE', blockers: [blocker()], classification: 'product' }],
+    ['INCONCLUSIVE', { verdict: 'INCONCLUSIVE', blockers: [blocker()] }],
+    ['STILL_LIVE', { verdict: 'STILL_LIVE', blockers: [blocker()] }],
+    ['ALREADY_FIXED', { verdict: 'ALREADY_FIXED', blockers: [] }],
+    ['OBSOLETE', { verdict: 'OBSOLETE', blockers: [] }],
+    ['INSUFFICIENT_EVIDENCE', { verdict: 'INSUFFICIENT_EVIDENCE', blockers: [blocker()] }],
+  ])('accepts %s in a well-formed block', async (word, over) => {
+    const verdict = acceptedVerdict(await parse(answer(diagnostician(over))));
+    expect(verdict).toMatchObject({ gate: 'failure-diagnostician', verdict: word });
+  });
+
+  it.each(['ROOT_CAUSE', 'INCONCLUSIVE', 'STILL_LIVE', 'INSUFFICIENT_EVIDENCE'])(
+    'refuses a %s that names no blocker',
+    async (word) => {
+      const over: Record<string, unknown> = { verdict: word, blockers: [] };
+      if (word === 'ROOT_CAUSE') over.classification = 'product';
+      const problems = problemsOf(await parse(answer(diagnostician(over))));
+      expect(problems.join('\n')).toMatch(/blocker/i);
+      expect(problems.join('\n')).toMatch(/no blocker|names no|at least one|empty/i);
+    },
+  );
+
+  it.each(['ALREADY_FIXED', 'OBSOLETE'])('refuses a %s that carries a blocker', async (word) => {
+    const problems = problemsOf(
+      await parse(answer(diagnostician({ verdict: word, blockers: [blocker()] }))),
+    );
+    expect(problems.join('\n')).toMatch(/blocker/i);
+    expect(problems.join('\n')).toContain(word);
+  });
+
+  it('refuses ROOT_CAUSE that names no classification', async () => {
+    const problems = problemsOf(
+      await parse(answer(diagnostician({ verdict: 'ROOT_CAUSE', blockers: [blocker()] }))),
+    );
+    expect(problems.join('\n')).toMatch(/classification/i);
+  });
+
+  it('refuses a classification outside product, test, infrastructure or upstream', async () => {
+    const problems = problemsOf(
+      await parse(
+        answer(
+          diagnostician({
+            verdict: 'ROOT_CAUSE',
+            blockers: [blocker()],
+            classification: 'flaky',
+          }),
+        ),
+      ),
+    );
+    expect(problems.join('\n')).toMatch(/classification/i);
+    expect(problems.join('\n')).toContain('flaky');
+  });
+
+  it('accepts a classification on STILL_LIVE, where it is optional rather than required', async () => {
+    const verdict = acceptedVerdict(
+      await parse(
+        answer(
+          diagnostician({
+            verdict: 'STILL_LIVE',
+            blockers: [blocker()],
+            classification: 'infrastructure',
+          }),
+        ),
+      ),
+    );
+    expect(verdict).toMatchObject({ verdict: 'STILL_LIVE', classification: 'infrastructure' });
+  });
+
+  it.each([
+    ['INCONCLUSIVE', [blocker()]],
+    ['ALREADY_FIXED', []],
+    ['OBSOLETE', []],
+    ['INSUFFICIENT_EVIDENCE', [blocker()]],
+  ])('refuses a classification on %s, which may not carry one', async (word, blockers) => {
+    const problems = problemsOf(
+      await parse(answer(diagnostician({ verdict: word, blockers, classification: 'product' }))),
+    );
+    expect(problems.join('\n')).toMatch(/classification/i);
+  });
+
+  it('refuses a classification on a gate other than failure-diagnostician', async () => {
+    const problems = problemsOf(await parse(answer(ship({ classification: 'product' }))));
+    expect(problems.join('\n')).toMatch(/classification/i);
+  });
+
+  it('refuses code-reviewer returning STILL_LIVE — a word that belongs to the diagnostician', async () => {
+    const problems = problemsOf(
+      await parse(answer({ gate: 'code-reviewer', verdict: 'STILL_LIVE', blockers: [blocker()] })),
+    );
+    expect(problems.join('\n')).toContain('code-reviewer');
+    expect(problems.join('\n')).toContain('STILL_LIVE');
+  });
+
+  it.each(['SHIP', 'HOLD'])(
+    'refuses failure-diagnostician returning %s — a word that belongs to another gate',
+    async (word) => {
+      const problems = problemsOf(
+        await parse(
+          answer(diagnostician({ verdict: word, blockers: word === 'HOLD' ? [blocker()] : [] })),
+        ),
+      );
+      expect(problems.join('\n')).toContain('failure-diagnostician');
+      expect(problems.join('\n')).toContain(word);
+    },
+  );
 });
 
 describe('the optional lists arrive as lists or not at all', () => {
@@ -1110,5 +1274,54 @@ describe('every diagnosis in both files goes through the one sanitiser', () => {
     expect(source).toMatch(
       /import\s*\{[^}]*safeForDiagnosis[^}]*\}\s*from\s*'\.\/lib\/verdict\.mjs'/,
     );
+  });
+});
+
+// RP-195 slice 1: the CLI a skill actually runs
+// (`verdict.mjs check <file> failure-diagnostician`) exercises the new gate the
+// same way it exercises every other one — no separate code path to trust.
+describe('the CLI checks a failure-diagnostician report the same way as any other gate', () => {
+  it('exits 0 and prints the parsed verdict on a well-formed block', async () => {
+    const file = await reportFile({
+      gate: 'failure-diagnostician',
+      verdict: 'ROOT_CAUSE',
+      blockers: [blocker()],
+      classification: 'product',
+    });
+    const result = await runCli(['check', file, 'failure-diagnostician']);
+    expect(result.code, result.out).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      gate: 'failure-diagnostician',
+      verdict: 'ROOT_CAUSE',
+      classification: 'product',
+    });
+  });
+
+  it('exits 1 and prints no verdict on a ROOT_CAUSE with no classification', async () => {
+    const file = await reportFile({
+      gate: 'failure-diagnostician',
+      verdict: 'ROOT_CAUSE',
+      blockers: [blocker()],
+    });
+    const result = await runCli(['check', file, 'failure-diagnostician']);
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/classification/i);
+  });
+});
+
+// RP-195 slice 1 (design decision 3): "Not a merge gate." The diagnostician
+// must not appear in a lane's reviewer floor, or `pr-ship`'s coverage check
+// would demand an answer from a gate nothing routes it to.
+describe('the diagnostician is never a routed reviewer', () => {
+  it('is absent from the reviewer floor of every lane decision-router.mjs hands out', async () => {
+    const { LANES, reviewersForLane } = (await import(pathToFileURL(decisionRouterPath).href)) as {
+      LANES: readonly string[];
+      reviewersForLane: (lane: string) => string[];
+    };
+    expect(LANES.length).toBeGreaterThan(0);
+    for (const lane of LANES) {
+      expect(reviewersForLane(lane), lane).not.toContain('failure-diagnostician');
+    }
   });
 });
