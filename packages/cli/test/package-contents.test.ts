@@ -89,3 +89,69 @@ describe('the npm package carries no plugin catalog and no runtime dependency', 
     expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);
   });
 });
+
+/**
+ * A path that is third-party PROVIDER PAYLOAD rather than Rig's own source: a
+ * Spec Kit project directory (`.specify/`), a file named `speckit*`, or a
+ * Basic Memory data path (`.basic-memory/` or `basic-memory.*`). "## Harness
+ * delivery and provider ownership" (`docs/command-contract.md`) states Rig
+ * plans and delegates to each provider's own CLI and vendors none of their
+ * data — `packages/cli/test/spec-kit.test.ts` › "requires explicit adoption
+ * before touching an external .specify payload". A copy of either provider's
+ * own files landing in the published tarball would be a publish-path defect
+ * this predicate exists to catch; RP-184 PR2 extends this file with it.
+ *
+ * Path-based, deliberately, like `isPluginMarketplaceArtifact` above: this
+ * repository's own source legitimately contains the strings "spec-kit" and
+ * "basic-memory" (`packages/cli/src/integrations/registry.ts`,
+ * `verify.ts`) — a content scan over the packed dist would false-positive on
+ * Rig's own compiled provider-integration modules, which do ship and should.
+ */
+function isVendoredProviderPayload(relPath: string): boolean {
+  const segments = relPath.split('/');
+  const base = segments[segments.length - 1] ?? '';
+  return (
+    segments.includes('.specify') ||
+    /^speckit/i.test(base) ||
+    segments.includes('.basic-memory') ||
+    /^basic-memory\./i.test(base)
+  );
+}
+
+describe('the npm package carries no vendored third-party provider payload (RP-184 PR2)', () => {
+  it('carries no Spec Kit `.specify/` directory, `speckit*` file, or Basic Memory data file', async () => {
+    const packDir = await mkdtemp(path.join(tmpdir(), 'caf-provider-payload-pack-'));
+    try {
+      const { stdout } = await runPackageManager(
+        'npm',
+        ['pack', '--json', '--pack-destination', packDir],
+        { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
+      );
+      const [packed] = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
+      if (!packed) throw new Error('fixture: npm pack produced no package');
+
+      const paths = packed.files.map((file) => file.path);
+      const offenders = paths.filter(isVendoredProviderPayload);
+      expect(offenders).toEqual([]);
+    } finally {
+      await removeFixture(packDir);
+    }
+  }, 120_000);
+
+  it('is non-vacuous: catches a planted violation of each provider shape, and clears this repository’s own integration source', () => {
+    const planted = [
+      'templates/agent-os/universal/.specify/memory/constitution.md',
+      'templates/agent-os/universal/speckit-cache.json',
+      'templates/agent-os/universal/.basic-memory/notes.db',
+      'templates/agent-os/universal/basic-memory.jsonl',
+    ];
+    expect(planted.filter(isVendoredProviderPayload)).toEqual(planted);
+
+    // Rig's own compiled provider-integration modules name both providers in
+    // their filenames or contents without being vendored provider payload —
+    // this predicate does not treat naming a provider as owning its data.
+    expect(isVendoredProviderPayload('packages/cli/dist/integrations/spec-kit.js')).toBe(false);
+    expect(isVendoredProviderPayload('packages/cli/dist/integrations/registry.js')).toBe(false);
+    expect(isVendoredProviderPayload('packages/cli/dist/integrations/verify.js')).toBe(false);
+  });
+});
