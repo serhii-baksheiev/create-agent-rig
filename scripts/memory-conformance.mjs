@@ -69,6 +69,7 @@ const contractDir = path.join(repoRoot, 'contracts', 'conformance', 'v1');
 const validatorPath = path.join(repoRoot, 'scripts', 'lib', 'json-schema-subset.mjs');
 const RIG_BIN = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
 const SPAWN_TIMEOUT_MS = 30_000;
+const MAX_STDOUT_BYTES = 4 * 1024 * 1024;
 const MAX_ECHOED_CHARACTERS = 32;
 const SHA = /^[0-9a-f]{40}$/;
 /** What the spawned Memory and rig processes may see of this process's environment. */
@@ -112,17 +113,23 @@ const run = async (file, args, options = {}) => {
   try {
     const { stdout, stderr } = await execFileAsync(file, args, {
       timeout: SPAWN_TIMEOUT_MS,
-      maxBuffer: 4 * 1024 * 1024,
+      maxBuffer: MAX_STDOUT_BYTES,
       windowsHide: true,
       ...options,
     });
     return { code: 0, stdout, stderr };
   } catch (error) {
+    // A child that started and was then killed for writing more than
+    // maxBuffer reports this same error.code shape as a real spawn failure
+    // (RP-206 C2) — it is not one: the child ran, it just overran the
+    // buffer, so it must not read as "could not start".
+    const overflowed = error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
     return {
       code: typeof error.code === 'number' ? error.code : 1,
       stdout: error.stdout ?? '',
       stderr: error.stderr ?? '',
-      spawnError: typeof error.code === 'string' ? error.code : undefined,
+      spawnError: typeof error.code === 'string' && !overflowed ? error.code : undefined,
+      overflowed,
       signal: typeof error.signal === 'string' ? error.signal : undefined,
       timedOut: error.killed === true,
     };
@@ -136,11 +143,13 @@ const run = async (file, args, options = {}) => {
  * and a killed child both read that way.
  */
 const endedWith = (answer) => {
-  const how = answer.spawnError
-    ? `could not start: ${answer.spawnError}`
-    : answer.signal
-      ? `killed by ${answer.signal}${answer.timedOut ? ` after the ${SPAWN_TIMEOUT_MS} ms budget` : ''}`
-      : `exit ${answer.code}`;
+  const how = answer.overflowed
+    ? `killed for exceeding the ${MAX_STDOUT_BYTES} byte output buffer`
+    : answer.spawnError
+      ? `could not start: ${answer.spawnError}`
+      : answer.signal
+        ? `killed by ${answer.signal}${answer.timedOut ? ` after the ${SPAWN_TIMEOUT_MS} ms budget` : ''}`
+        : `exit ${answer.code}`;
   // The shapes Node prints an error code in, most specific first, so an
   // upper-case path segment earlier in the text is not mistaken for one.
   const code = (/\bcode: '([A-Z][A-Z0-9_]+)'/.exec(answer.stderr) ??
@@ -160,6 +169,8 @@ const skip = (id, detail) => ({ id, status: 'skip', detail });
 
 /** One JSON answer, validated: a row and the parsed payload. Exit 0 is part of the shape. */
 const validatedAnswer = ({ id, answer, schema, what }) => {
+  if (answer.overflowed)
+    return { row: fail(id, `${what} exceeded the ${MAX_STDOUT_BYTES} byte output buffer`) };
   if (answer.spawnError)
     return { row: fail(id, `${what} could not be started (${answer.spawnError})`) };
   let payload;
