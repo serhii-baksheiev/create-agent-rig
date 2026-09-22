@@ -466,6 +466,45 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     }
   });
 
+  // RP-207: `RIG_RUN_DIR` names the workflow run directory — the run journal
+  // and stop-condition state for the run that is executing THIS session, and
+  // therefore this very hook. The gate runs each Definition-of-Done command
+  // with `spawnSync(command, { shell: true, … })` and no `env` override, so it
+  // inherits the hook's own process environment whole — and an ambient
+  // `RIG_RUN_DIR` rides along into the project's own test suite (and any
+  // child that suite spawns), which can then write into the live run's own
+  // evidence. `test/setup-env.ts` scrubs the variable from this suite's own
+  // process, so it is passed explicitly here, exactly as an operator's shell
+  // would carry it into the hook.
+  it('never lets a Definition-of-Done check see RIG_RUN_DIR, even though the hook itself is given one', async () => {
+    const fakeRunDir = await fsp.mkdtemp(path.join(tmpdir(), 'rig-run-dir-'));
+    try {
+      await setUpProject({
+        checks: [
+          "node -e \"if (process.env.RIG_RUN_DIR) { require('fs').writeFileSync(require('path').join(process.env.RIG_RUN_DIR, 'marker.txt'), 'leaked'); process.exit(1); } else { process.exit(0); }\"",
+        ],
+        dirty: true,
+      });
+      const result = await runStopHook(stop(), { RIG_RUN_DIR: fakeRunDir });
+      expect(result.code, result.stderr).toBe(0);
+      expect(existsSync(path.join(fakeRunDir, 'marker.txt'))).toBe(false);
+    } finally {
+      await removeFixture(fakeRunDir);
+    }
+  });
+
+  // The fix cannot be "hand the checks an empty environment" — only
+  // `RIG_RUN_DIR` is the project's business to lose. Every other variable,
+  // including one this suite invents, must still reach the check unchanged.
+  it('still passes an unrelated variable through to a Definition-of-Done check unchanged', async () => {
+    await setUpProject({
+      checks: ['node -e "process.exit(process.env.RIG_TEST_PROBE === \'1\' ? 0 : 1)"'],
+      dirty: true,
+    });
+    const result = await runStopHook(stop(), { RIG_TEST_PROBE: '1' });
+    expect(result.code, result.stderr).toBe(0);
+  });
+
   it('fails open: no config, or a corrupt one, must not make the session unquittable', async () => {
     await setUpProject({ dirty: true });
     expect((await runStopHook(stop())).code).toBe(0);
