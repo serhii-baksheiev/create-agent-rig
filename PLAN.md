@@ -1,19 +1,22 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 0.10.0. Live work, status, dependencies and acceptance
+> **Current release:** 0.10.1. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Status (0.10.0 published 22 Sep 2026):** 0.10.0 is `latest`, published from
-> `gitHead` `279fbf928b811b8ebc7ba2d1c4700ee943b7dab1`. Versions 0.1.0 through
-> 0.10.0 are live; delivery is done through `0.10.0`, the current `latest`.
-> `0.10.1`, a fixes-only patch, is prepared and waiting on the owner's publish.
+> **Status (0.10.1 published 22 Sep 2026):** 0.10.1 is `latest`, published from
+> `gitHead` `738b494806b435f0718f290dc3befb40829e5ebf`. Versions 0.1.0 through
+> 0.10.1 are live; delivery is done through `0.10.1`, the current `latest`.
+> `1.0.0` is prepared and waiting on the owner's publish: it freezes the
+> harness-configuration contract and states the deprecation policy that governs
+> it from here. It is a major because of that promise, not because of a
+> breaking change — a 0.10.x rig sees no behaviour it would notice removed.
 >
-> **The default branch is not that release.** 0.10.x work merges to `master`
+> **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
 > unreleased, and has not been through a release gate. Installing from the
-> default branch installs a development snapshot — the README's "Which version
-> you get" table says what that costs.
+> default branch installs a development snapshot; that is why every
+> `npx create-agent-rig` line in the README is pinned `@latest`.
 
 ## 1. Product boundary
 

@@ -14,7 +14,8 @@
     "0.8.0",
     "0.9.0",
     "0.9.1",
-    "0.10.0"
+    "0.10.0",
+    "0.10.1"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -22,7 +23,8 @@
       "hashes": [
         "e228eaebcd1dfa0e490f8f4260e349040bd742fdb6d2313698fd7925f8a7b058",
         "403f26470ec0a9c853aa69fe8a114fbc3dfb3bf6e6094eecb8a836f153aa1a37",
-        "8295da3644136fbe0b22dcc97e9c2dad154f0a9d87fed374542bb712df24d9f4"
+        "8295da3644136fbe0b22dcc97e9c2dad154f0a9d87fed374542bb712df24d9f4",
+        "ee3ad33f4269cc197d3b0d953802158cee6bc8a9b30c07892448ba6fb1d385e7"
       ]
     },
     ".agents/skills/loop/SKILL.md": {
@@ -166,7 +168,8 @@
         "7852205961cb1647b49de5f7e79820c1735b4be897adcf8f5bc3eeb49318ff78",
         "33edb11904e5c4f88626b41c7e649b85d20957a11ff7e1062538917647c3e7f0",
         "19202a28355dac1d7a95d29411668cf970006b3044d89a772768ce21793931aa",
-        "d2af03ed141fadd0b1e69b230b9277e8f03169757a8e2a679767653ab7828d9a"
+        "d2af03ed141fadd0b1e69b230b9277e8f03169757a8e2a679767653ab7828d9a",
+        "4a367adc0b4d0e940e907624c56bf94456df7fd8438028a1afc7e718ad7bb318"
       ]
     },
     ".claude/hooks/guard-bash.mjs": {
@@ -309,7 +312,8 @@
         "9e60d0300e856a9b3f81ab748bf2c0a9de27233ad0aa58a8c7141413fa0f3cae",
         "c8e9849a8fccd4e1e60b1ddc82937eb15aceb7f7c2afbd151b05e1bc966bfd2a",
         "aa34a1eab572964b328ffa0044e96acb3e1c31491df0183460f06e5e6bba3b76",
-        "17330550da4708a7dd58d066a4a4b2614ecfd36a3e73120f8a9edf410f36c9bb"
+        "17330550da4708a7dd58d066a4a4b2614ecfd36a3e73120f8a9edf410f36c9bb",
+        "5a37d3912ac517f250a3bead965f89639d0b3b932d7c6a04aec467e4490d4fb1"
       ]
     },
     ".claude/scripts/decision-router.mjs": {
@@ -565,7 +569,8 @@
         "d69396da276f748c89ca0284fcd606ce70da8a791defafe9c9b27ce5f8ffd29e",
         "e228eaebcd1dfa0e490f8f4260e349040bd742fdb6d2313698fd7925f8a7b058",
         "403f26470ec0a9c853aa69fe8a114fbc3dfb3bf6e6094eecb8a836f153aa1a37",
-        "8295da3644136fbe0b22dcc97e9c2dad154f0a9d87fed374542bb712df24d9f4"
+        "8295da3644136fbe0b22dcc97e9c2dad154f0a9d87fed374542bb712df24d9f4",
+        "ee3ad33f4269cc197d3b0d953802158cee6bc8a9b30c07892448ba6fb1d385e7"
       ]
     },
     ".claude/skills/loop/SKILL.md": {

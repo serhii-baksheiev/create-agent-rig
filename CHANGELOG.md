@@ -14,6 +14,110 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## 1.0.0
+
+**The harness-configuration contract is frozen.** Nothing here changes what a
+`create` or `init` installs in a way a 0.10.x rig would notice; what changes is
+that the surface those commands present — their flags, their JSON shapes, their
+exit codes, their verdict and outcome vocabularies, the manifest they write —
+is now a contract with a stated deprecation policy, and a test suite that goes
+red when the document and the code disagree. The major number says that, and
+only that: from here, removing or renaming something in that surface is a major
+bump, and adding to it is a minor.
+
+The rest of this entry is what the rigs themselves gain, down to the last
+section — which is the changes that stayed in the generator, named there so a
+reader does not go looking for them in a rig.
+
+### The contract
+
+What a rig gains here is the promise, not a file: the document and its tests
+live in the generator, and the section at the end of this entry says so.
+
+- **The 1.0 public surface is stated, and so is how it may change** — what is
+  promised, what is explicitly not, and what a deprecation costs (RP-184).
+- **Seven correspondences keep it honest**, each red when either side drifts:
+  the `upgrade` verdict union, the closed set of seven `doctor` check ids, the
+  `setup` outcome values, the manifest keys a fresh `init` writes, the
+  integrations declaration schema against a real `setup add`, the packed tarball
+  carrying no third-party provider payload, and the CI Node matrix against
+  `engines.node` (RP-184).
+
+### Added
+
+- **`failure-diagnostician`** — a read-only agent that reproduces a red check or
+  a claimed defect on the current default branch and answers with one of six
+  checked verdicts, so "is this still live?" is measured before work is planned
+  on it (RP-195).
+- **`diagnose`** — the Core skill that dispatches it, for a failure whose cause
+  is not obvious (RP-195).
+- **`skill-authoring`** — the Core skill for writing a new skill, with
+  structural checks over the ones a rig ships (RP-195).
+- **`plan-slices`** — the workflow-layer skill that cuts a large item into
+  slices that can each be shipped on their own (RP-195).
+- **`release-propose`**, and the `release-evidence.mjs` it reads through — the
+  workflow-layer skill that proposes a release only from repeated,
+  pointer-backed evidence, never from one bad run (RP-203).
+- **`queue/propose.mjs`** — one root-safe entry point for filing a triage
+  proposal, so a session standing in a subdirectory files into the project's
+  real queue rather than a cwd-relative one that does not exist (RP-209).
+
+### Changed
+
+- **The gate-round cap defaults to three**, not two — one round to find, one to
+  fix, one to confirm (RP-210).
+- **The verdict vocabulary carries the diagnosis words** and an optional
+  `classification`, so a diagnostician's answer is checked the same way every
+  other gate's is (RP-195).
+- **An escalation names the diagnostician's verdict.** The `loop` skill no
+  longer escalates a failure as a bare stop; it carries the checked verdict that
+  says whether the failure is live (RP-195).
+
+### Fixed
+
+- **The Definition-of-Done gate no longer leaks the run directory into its own
+  checks.** `gate-stop-dod` passed `RIG_RUN_DIR` down to every configured
+  command, so a project whose tests spawn the queue CLI wrote fixture records
+  into the live run's trace (RP-207).
+- **A closed issue can no longer push open work out of the GitHub queue.** The
+  adapter asks for open and closed items in separate windows and says so on
+  stderr when a window is capped (RP-208).
+- **`upgrade --dry-run` exits 1 where the real run refuses** a symlinked
+  manifest, instead of 0 (RP-206).
+- **`guard-rulebook` no longer loses the path an `apply_patch` actually wrote
+  to.** When a guarded prefix such as `.claude/hooks` is a junction or symlink
+  to a directory inside the same checkout, the resolved spelling no longer
+  starts with a protected prefix, and an unattended `apply_patch` through it was
+  allowed. Both spellings are now compared. The four Claude edit surfaces were
+  never affected, and a junction pointing outside the checkout already failed
+  closed (RP-60).
+
+### Rulebook
+
+- **The revalidation detection contract is governance input.**
+  `.rig/revalidation.json` decides whether preflight stops and what the scope
+  fingerprint watches, and an unattended run could rewrite it. It joins the
+  protected rulebook set — as the exact file, because `.rig/claims/` must stay
+  writable for a SELECT to record its own baseline. The matching elevated-path
+  declaration landed in this repository's own rulebook, not in the payload's
+  seed (RP-61).
+- **The independent-oracle invariant.** A test of a security, ownership or
+  governance mechanism must not derive its expected result from the same
+  production mechanism it checks; `code-reviewer` enforces it as a checklist
+  item, and the rule says plainly that no hook can (RP-187).
+
+### Generator repository (not a rig-facing change)
+
+- `layers.json` is a declared elevated path of this repository. It is the
+  manifest `init` installs _from_ — it names the paths of each layer and never
+  names itself — so no rig receives it (RP-211).
+- The Memory conformance probe, `scripts/memory-conformance.mjs`, reports a
+  buffer overflow as what it is — a killed child — rather than as a child that
+  could not start. The script is not packed (RP-206).
+- The 1.0 contract document, `docs/command-contract.md`, and the seven
+  correspondence tests that pin it live in this repository; what a rig gains is
+  the promise they hold the commands to, not the files (RP-184).
+
 ## 0.10.1
 
 **A fixes-only patch on 0.10.0, plus one narrowing.** Every other entry
