@@ -7,7 +7,13 @@ import { InitError, initFileContents, initProject, planInit } from './commands/i
 import { INTEGRATIONS_VERBS, runIntegrationsCommand } from './commands/integrations.js';
 import { runSetupWizard } from './commands/setup-wizard.js';
 import { execFileRunner, setupSubsystems } from './commands/setup.js';
-import { AGENTS_MD_RESCUE, UpgradeError, applyUpgrade, planUpgrade } from './commands/upgrade.js';
+import {
+  AGENTS_MD_RESCUE,
+  UpgradeError,
+  applyUpgrade,
+  planUpgrade,
+  preflightWritable,
+} from './commands/upgrade.js';
 import type { AgentsRescueStatus, UpgradePlan, UpgradeVerdict } from './commands/upgrade.js';
 import {
   CHANGED_SINCE_PLANNING_REASON,
@@ -598,7 +604,13 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
     const notice = renderAgentsRescueNotice(plan.agentsRescue, true);
     if (notice !== null) process.stdout.write(notice);
     // The same exit the real run gives: `applyUpgrade` refuses this status.
-    return plan.agentsRescue.holdBack && plan.agentsRescue.status === 'unsafe' ? 1 : 0;
+    if (plan.agentsRescue.holdBack && plan.agentsRescue.status === 'unsafe') return 1;
+    // Same preflight `applyUpgrade` runs before writing anything (a symlinked
+    // manifest or destination, RP-206): thrown here, an `UpgradeError`
+    // propagates to `main()`'s own catch below exactly as it does for the
+    // real run, so both modes report the identical message and exit 1.
+    await preflightWritable(cwd, plan);
+    return 0;
   }
 
   // The plan above is the review step, so it has to be answered before

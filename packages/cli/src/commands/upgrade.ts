@@ -898,6 +898,31 @@ export async function planUpgrade(
 }
 
 /**
+ * The complete write set `applyUpgrade` will touch — every `update`/`new`
+ * action plus the manifest itself — each resolved with {@link writableOnDisk}
+ * so a symlinked (or otherwise unsafe) destination is refused before any
+ * write happens. Exported so `--dry-run` (in `index.ts`) can run the exact
+ * same check and refuse with the exact same message wherever the real run
+ * would: one implementation, read by both call sites, rather than a second
+ * copy that could drift from it.
+ */
+export async function preflightWritable(
+  repoDir: string,
+  plan: UpgradePlan,
+): Promise<Map<string, string>> {
+  const destinations = new Map<string, string>();
+  for (const rel of [
+    ...plan.actions
+      .filter(({ verdict }) => verdict === 'update' || verdict === 'new')
+      .map(({ rel }) => rel),
+    MANIFEST_REL,
+  ]) {
+    destinations.set(rel, await writableOnDisk(repoDir, rel));
+  }
+  return destinations;
+}
+
+/**
  * Write the plan: the `update` and `new` files, then the manifest. Everything
  * else in the plan is a sentence for a human, not an edit.
  */
@@ -927,15 +952,7 @@ export async function applyUpgrade(
   // any file. Then re-check each destination after mkdir and immediately before
   // writeFile, so both pre-existing and newly-visible symlink components are
   // refused.
-  const destinations = new Map<string, string>();
-  for (const rel of [
-    ...plan.actions
-      .filter(({ verdict }) => verdict === 'update' || verdict === 'new')
-      .map(({ rel }) => rel),
-    MANIFEST_REL,
-  ]) {
-    destinations.set(rel, await writableOnDisk(repoDir, rel));
-  }
+  const destinations = await preflightWritable(repoDir, plan);
 
   for (const action of plan.actions) {
     if (action.verdict !== 'update' && action.verdict !== 'new') continue;
