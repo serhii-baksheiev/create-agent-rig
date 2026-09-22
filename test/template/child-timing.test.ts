@@ -20,7 +20,7 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 // against the child's own time origin, written out on exit.
 
 const BUSY_WAIT_MS = 200;
-const busyWaitScript = `const start = Date.now(); while (Date.now() - start < ${BUSY_WAIT_MS}) { /* busy */ }`;
+const busyWaitScript = `const start = performance.now(); while (performance.now() - start < ${BUSY_WAIT_MS}) { /* busy */ }`;
 
 interface ChildRun {
   code: number;
@@ -29,7 +29,7 @@ interface ChildRun {
 
 function runChild(script: string, env: NodeJS.ProcessEnv): Promise<ChildRun> {
   return new Promise((resolve) => {
-    const started = Date.now();
+    const started = performance.now();
     execFile(
       process.execPath,
       ['--import', CHILD_TIMING_IMPORT, '-e', script],
@@ -37,7 +37,7 @@ function runChild(script: string, env: NodeJS.ProcessEnv): Promise<ChildRun> {
       (error) => {
         resolve({
           code: error ? ((error as { code?: number }).code ?? 1) : 0,
-          parentMs: Date.now() - started,
+          parentMs: performance.now() - started,
         });
       },
     );
@@ -98,7 +98,7 @@ describe('runNodeTimed: one timed node child, its output, and no directory left 
         "let input = '';",
         "process.stdin.on('data', (chunk) => (input += chunk));",
         "process.stdin.on('end', () => {",
-        `  const start = Date.now(); while (Date.now() - start < ${BUSY_WAIT_MS}) {}`,
+        `  const start = performance.now(); while (performance.now() - start < ${BUSY_WAIT_MS}) {}`,
         "  process.stdout.write(`${input}|${process.env.RUN_NODE_TIMED_PROBE ?? ''}`);",
         "  process.stderr.write('to stderr');",
         '  process.exit(3);',

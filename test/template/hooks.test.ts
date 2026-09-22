@@ -502,6 +502,25 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
     expect(result.code, result.stderr).toBe(2);
   }, 30_000);
 
+  // RP-204: a WSL distro was measured stepping its wall clock back ~1.65 s
+  // every ~32 s, and the test above then passed two `sleep 2` checks under a
+  // 3000 ms budget. The budget is elapsed time, so the wall clock must not
+  // move it: here every `Date.now()` after the first reads 10 s earlier.
+  it('keeps the shared budget when the wall clock steps back mid-run', async () => {
+    await setUpProject({ checks: ['sleep 2', 'sleep 2'], dirty: true });
+    const preload = path.join(projectDir, 'clock-steps-back.mjs');
+    await fsp.writeFile(
+      preload,
+      'const real = Date.now; let calls = 0;\n' +
+        'Date.now = () => real() - (calls++ > 0 ? 10_000 : 0);\n',
+    );
+    const result = await runStopHook(stop(), {
+      RIG_DOD_BUDGET_MS: '3000',
+      NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+    });
+    expect(result.code, result.stderr).toBe(2);
+  }, 30_000);
+
   // The regression pin for the ENOBUFS false gate: `execSync` buffers 1 MB by
   // default and THROWS past it, and the catch below it reported that throw as
   // "a Definition of Done check fails". A chatty `pnpm test` that exits 0 was

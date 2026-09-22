@@ -264,7 +264,9 @@ function main() {
 
   const budget = budgetMs(process.env);
   if (budget.notice) process.stderr.write(`gate-stop-dod: ${budget.notice}\n`);
-  const deadline = Date.now() + budget.ms;
+  // Elapsed time, so the monotonic clock: a step of the wall clock must neither
+  // lengthen nor shorten the budget.
+  const deadline = performance.now() + budget.ms;
 
   for (const command of usable) {
     // A 1 ms floor rather than a branch for "the budget is already gone": the
@@ -276,7 +278,7 @@ function main() {
       shell: true,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: Math.max(1, deadline - Date.now()),
+      timeout: Math.max(1, Math.ceil(deadline - performance.now())),
       // Output volume is not a verdict — below this bound. Past it the child is
       // killed and its result is unknown, which the error branch treats as
       // unmeasured rather than as a failure or a pass. The old 1 MB default
