@@ -29,9 +29,11 @@ The rest of this entry is what the rigs themselves gain.
 
 ### The contract
 
-- **`docs/command-contract.md` states the 1.0 public surface and how it may
-  change** — what is promised, what is explicitly not, and what a deprecation
-  costs (RP-184).
+What a rig gains here is the promise, not a file: the document and its tests
+live in the generator, and the section at the end of this entry says so.
+
+- **The 1.0 public surface is stated, and so is how it may change** — what is
+  promised, what is explicitly not, and what a deprecation costs (RP-184).
 - **Seven correspondences keep it honest**, each red when either side drifts:
   the `upgrade` verdict union, the closed set of seven `doctor` check ids, the
   `setup` outcome values, the manifest keys a fresh `init` writes, the
@@ -51,8 +53,9 @@ The rest of this entry is what the rigs themselves gain.
   structural checks over the ones a rig ships (RP-195).
 - **`plan-slices`** — the workflow-layer skill that cuts a large item into
   slices that can each be shipped on their own (RP-195).
-- **`release-propose`** — the workflow-layer skill that proposes a release only
-  from repeated, pointer-backed evidence, never from one bad run (RP-203).
+- **`release-propose`**, and the `release-evidence.mjs` it reads through — the
+  workflow-layer skill that proposes a release only from repeated,
+  pointer-backed evidence, never from one bad run (RP-203).
 - **`queue/propose.mjs`** — one root-safe entry point for filing a triage
   proposal, so a session standing in a subdirectory files into the project's
   real queue rather than a cwd-relative one that does not exist (RP-209).
@@ -79,8 +82,6 @@ The rest of this entry is what the rigs themselves gain.
   stderr when a window is capped (RP-208).
 - **`upgrade --dry-run` exits 1 where the real run refuses** a symlinked
   manifest, instead of 0 (RP-206).
-- **The Memory conformance probe reports a buffer overflow as what it is** — a
-  killed child — rather than as a child that could not start (RP-206).
 - **`guard-rulebook` no longer loses the path an `apply_patch` actually wrote
   to.** When a guarded prefix such as `.claude/hooks` is a junction or symlink
   to a directory inside the same checkout, the resolved spelling no longer
@@ -94,15 +95,25 @@ The rest of this entry is what the rigs themselves gain.
 - **The revalidation detection contract is governance input.**
   `.rig/revalidation.json` decides whether preflight stops and what the scope
   fingerprint watches, and an unattended run could rewrite it. It joins the
-  protected rulebook set and the elevated-path declaration — as the exact file,
-  because `.rig/claims/` must stay writable for a SELECT to record its own
-  baseline (RP-61).
-- **`layers.json` is a declared elevated path** — it decides which layer a rig
-  gets (RP-211).
+  protected rulebook set — as the exact file, because `.rig/claims/` must stay
+  writable for a SELECT to record its own baseline. The matching elevated-path
+  declaration landed in this repository's own rulebook, not in the payload's
+  seed (RP-61).
 - **The independent-oracle invariant.** A test of a security, ownership or
   governance mechanism must not derive its expected result from the same
   production mechanism it checks; `code-reviewer` enforces it as a checklist
   item, and the rule says plainly that no hook can (RP-187).
+
+### Generator repository (not a rig-facing change)
+
+- `layers.json` is a declared elevated path of this repository. It is tooling
+  metadata that `copy-tree` never installs, so no rig receives it (RP-211).
+- The Memory conformance probe, `scripts/memory-conformance.mjs`, reports a
+  buffer overflow as what it is — a killed child — rather than as a child that
+  could not start. The script is not packed (RP-206).
+- The 1.0 contract document, `docs/command-contract.md`, and the seven
+  correspondence tests that pin it live in this repository; what a rig gains is
+  the promise they hold the commands to, not the files (RP-184).
 
 ## 0.10.1
 
