@@ -221,6 +221,31 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
     expect(content).toMatch(/pointer to (a|the) test|pointer to the test/i);
   });
 
+  // RP-194: a claim about an external API, CLI or library was only mentioned in
+  // Limits as undecidable, so a session had no stated way to back one — and no
+  // stated reason not to promote a remembered one to a fact.
+  it('treats an external API, CLI or library claim as a premise with versioned, dated evidence', async () => {
+    const content = await read();
+    const section = /^### External premises\n([\s\S]*?)(?=^#{2,3} )/m.exec(content)?.[1];
+    expect(section, 'a "### External premises" section').toBeDefined();
+    expect(section).toMatch(/API/);
+    expect(section).toMatch(/CLI/);
+    expect(section).toMatch(/librar/i);
+    for (const part of ['version', 'source', 'date', 'quote']) {
+      expect(section, part).toMatch(new RegExp(`\\*\\*${part}`, 'i'));
+    }
+    expect(section).toContain('UNVERIFIABLE');
+    expect(section).toMatch(/no\s+network\s+tooling/i);
+    // A claim the record contradicts stops the work like any false premise;
+    // read through §4's code-only wording it would land in UNVERIFIABLE and
+    // proceed under an assumption known to be false.
+    expect(section).toMatch(/contradict[\s\S]{0,80}PREMISE FALSE/);
+    const table = /^## 4\. The verdict\n([\s\S]*?)(?=^🔴)/m.exec(content)?.[1] ?? '';
+    const row = (verdict: string) => table.split('\n').find((l) => l.includes(`\`${verdict}\``));
+    expect(row('PREMISE FALSE')).toMatch(/external premise/i);
+    expect(row('UNVERIFIABLE')).toMatch(/external premise/i);
+  });
+
   it('carries worked examples, and no tracker key travels with them', async () => {
     const content = await read();
     expect(content).toMatch(/example/i);
