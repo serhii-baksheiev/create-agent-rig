@@ -147,6 +147,10 @@ const RP_173_ROUTING: RoutingPolicy = {
       claude: { model: 'claude-opus-5', effort: 'high' },
       codex: { model: 'gpt-5.6-sol', effort: 'high' },
     },
+    'failure-diagnostician': {
+      claude: { model: 'claude-opus-5', effort: 'high' },
+      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+    },
   },
 };
 
@@ -811,5 +815,64 @@ describe('ordinary implementation has a named, pinned role: implementation-agent
     const record = await text(universal, 'docs', 'decisions', 'subagent-routing.md');
     expect(record).toContain('`implementation-agent`');
     expect(record).toMatch(/general-purpose[^.]*ad-hoc/i);
+  });
+});
+
+// RP-195 slice 2: failure-diagnostician gets a name and a pinned role too, on
+// the same tier as the reviewers — a wrong diagnosis is as costly as a wrong
+// review. It has no Write or Edit tool on either harness, which is what
+// keeps Codex's sandbox_mode "read-only" automatic rather than declared.
+describe('failure-diagnostician has a named, pinned role on the code-reviewer tier', () => {
+  const GATES = [
+    'test-writer',
+    'implementation-agent',
+    'prose-reviewer',
+    'code-reviewer',
+    'security-scanner',
+  ];
+
+  it('puts failure-diagnostician on the code-reviewer tier for both harnesses and leaves every other role as it was', async () => {
+    const policy = await realPolicy();
+    expect(policy.roles['failure-diagnostician']).toEqual({
+      claude: { model: 'claude-opus-5', effort: 'high' },
+      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+    });
+    for (const gate of GATES) expect(policy.roles[gate], gate).toEqual(RP_173_ROUTING.roles[gate]);
+  });
+
+  it('ships a Claude definition with the policy pins and exactly the read-only tool set', async () => {
+    const policy = await realPolicy();
+    const route = policy.roles['failure-diagnostician']!;
+    const claude = frontmatterOf(
+      await text(universal, '.claude', 'agents', 'failure-diagnostician.md'),
+    );
+    expect(claude.get('name')).toBe('failure-diagnostician');
+    expect(claude.get('model')).toBe(route.claude.model);
+    expect(claude.get('effort')).toBe(route.claude.effort);
+    // Exactly this set, no Write and no Edit — a sandbox that cannot write
+    // is what makes the Codex profile's "read-only" automatic rather than
+    // declared (design decision 4).
+    expect(claude.get('tools')).toBe('Read, Grep, Glob, Bash');
+  });
+
+  it('ships a Codex profile that carries the policy pins and reads read-only', async () => {
+    const policy = await realPolicy();
+    const route = policy.roles['failure-diagnostician']!;
+    const codex = await text(universal, '.codex', 'agents', 'failure-diagnostician.toml');
+    expect(codex).toContain('name = "failure-diagnostician"');
+    expect(codex).toContain(`model = ${JSON.stringify(route.codex.model)}`);
+    expect(codex).toContain(`model_reasoning_effort = ${JSON.stringify(route.codex.effort)}`);
+    expect(codex).toContain('sandbox_mode = "read-only"');
+  });
+
+  it('refuses a set of Claude agents that lacks the failure-diagnostician definition', async () => {
+    const { validateClaudeAgents } = await routing();
+    const policy = await realPolicy();
+    const agents = (await claudeAgentTemplates()).filter(
+      (agent) => agent.name !== 'failure-diagnostician',
+    );
+    expect(() => validateClaudeAgents(policy, agents)).toThrow(
+      /routing role failure-diagnostician has no Claude agent/,
+    );
   });
 });

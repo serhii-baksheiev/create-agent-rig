@@ -10,7 +10,7 @@ Each named subagent this rig ships pins the model and the effort it reads with:
 
 | Role | Claude Code | Codex |
 | --- | --- | --- |
-| `code-reviewer`, `security-scanner`, a stack's infrastructure reviewer | `claude-opus-5`, `high` | `gpt-5.6-sol`, `high` |
+| `code-reviewer`, `security-scanner`, `failure-diagnostician`, a stack's infrastructure reviewer | `claude-opus-5`, `high` | `gpt-5.6-sol`, `high` |
 | `test-writer`, `implementation-agent`, `prose-reviewer` | `claude-sonnet-5`, `high` | `gpt-5.6-terra`, `high` |
 | a subagent with no definition | `claude-sonnet-5`; effort follows the session | `gpt-5.6-terra`, `medium` |
 
@@ -95,8 +95,10 @@ environment: `subagent-routing.test.ts` (absent in a generated rig) ›
   `model: inherit` has stopped being one — by that project's reviewed decision.
 - **The built-in agents get no definitions here.** Ordinary implementation has its
   own role, `implementation-agent`, on the same tier as `test-writer`: frequent,
-  bounded work, not the reviewer tier. A general-purpose subagent remains for
-  ad-hoc work no role covers, and follows the unnamed default like any subagent
+  bounded work, not the reviewer tier. Reproducing a failure or a claimed
+  finding is `failure-diagnostician`'s own role too, on the reviewer tier — not
+  general-purpose work any more. A general-purpose subagent remains for ad-hoc
+  work no role covers, and follows the unnamed default like any subagent
   without a definition.
 - **The warning is a warning.** A session started with `CLAUDE_CODE_EFFORT_LEVEL` set
   still runs every gate — at that level.

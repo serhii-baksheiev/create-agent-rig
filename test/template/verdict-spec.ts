@@ -32,6 +32,13 @@ export const GATE_SPEC_PATHS: Readonly<Record<string, string>> = {
   'code-reviewer': path.join(agentOs, 'universal', '.claude', 'agents', 'code-reviewer.md'),
   'prose-reviewer': path.join(agentOs, 'universal', '.claude', 'agents', 'prose-reviewer.md'),
   'security-scanner': path.join(agentOs, 'universal', '.claude', 'agents', 'security-scanner.md'),
+  'failure-diagnostician': path.join(
+    agentOs,
+    'universal',
+    '.claude',
+    'agents',
+    'failure-diagnostician.md',
+  ),
   'pr-ship': path.join(agentOs, 'universal', '.claude', 'skills', 'pr-ship', 'SKILL.md'),
   'check-premises': path.join(
     agentOs,
