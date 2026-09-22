@@ -709,7 +709,38 @@ describe('planUpgrade — what it would do, before it does anything', () => {
         const plan2 = await planUpgrade(repo, { history: emptyHistory });
         expect(verdictFor(plan2, 'AGENTS.md')).toBe('unchanged');
         expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
-        await applyUpgrade(repo, plan2);
+        expect((await applyUpgrade(repo, plan2)).removedRescue).toBe(true);
+        await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
+      });
+
+      // RP-192 item 4: an interactive run applies its plan only after the
+      // prompt, so the leftover can change or vanish after it was matched.
+      it('keeps a leftover rescue file that changed between plan and apply', async () => {
+        await installRig();
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
+        await applyUpgrade(repo, await planUpgrade(repo, { history: emptyHistory }));
+        await write('AGENTS.md', await read(AGENTS_MD_RESCUE));
+
+        const plan2 = await planUpgrade(repo, { history: emptyHistory });
+        expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
+        await write(AGENTS_MD_RESCUE, '# edited after the plan was made\n');
+        // the CLI's closing notice reads this, so it must not report a removal
+        expect((await applyUpgrade(repo, plan2)).removedRescue).toBe(false);
+        expect(await read(AGENTS_MD_RESCUE)).toBe('# edited after the plan was made\n');
+      });
+
+      it('completes when the leftover rescue file vanished between plan and apply', async () => {
+        await installRig();
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
+        await applyUpgrade(repo, await planUpgrade(repo, { history: emptyHistory }));
+        await write('AGENTS.md', await read(AGENTS_MD_RESCUE));
+
+        const plan2 = await planUpgrade(repo, { history: emptyHistory });
+        expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
+        await rm(abs(AGENTS_MD_RESCUE));
+        await expect(applyUpgrade(repo, plan2)).resolves.toBeDefined();
         await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
       });
 

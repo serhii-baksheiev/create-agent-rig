@@ -668,7 +668,13 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // blockers 1/2) means genuinely nothing to add: an ordinary, readable,
   // customised AGENTS.md conflict, or unrelated clutter at the rescue path,
   // both print nothing here at all.
-  const notice = renderAgentsRescueNotice(plan.agentsRescue, false);
+  // A `cleanup` the apply step did not carry out (the leftover changed or went
+  // away after the plan) reports nothing rather than a removal.
+  const rescue: AgentsRescueStatus =
+    plan.agentsRescue.status === 'cleanup' && !result.removedRescue
+      ? { holdBack: false, status: 'none' }
+      : plan.agentsRescue;
+  const notice = renderAgentsRescueNotice(rescue, false);
   if (notice !== null) process.stdout.write(notice);
   return 0;
 }
