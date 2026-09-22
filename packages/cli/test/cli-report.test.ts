@@ -262,6 +262,60 @@ describe('the upgrade plan header states what it knows, not what it infers', () 
   });
 });
 
+// RP-206 item U5 / RP-202's own rule extended: the dry run must exit 1
+// wherever the real run would refuse. RP-202 (#270) covered only the
+// AGENTS.md.rig-new rescue path; the manifest itself has the identical
+// disagreement. `readManifest` (planning) reads `.claude/.rig-manifest.json`
+// with a plain `readFile`, which follows a symlink, so `--dry-run` prints a
+// full plan and exits 0 for a symlinked manifest — while `applyUpgrade`'s
+// preflight (`writableOnDisk` → `resolveWritableInside` in safe-path.ts)
+// refuses the symlinked leaf before writing anything, exit 1.
+describe('upgrade — a symlinked manifest refuses in both --dry-run and --yes', () => {
+  it('a dry run exits 1 exactly where the real run refuses a symlinked manifest, and nothing on disk changes', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-manifest-outside-'));
+    try {
+      await installRig();
+      const manifestBytes = await readFile(abs(MANIFEST_REL), 'utf8');
+      // A decoy carrying the SAME bytes as the real manifest: `readManifest`
+      // reads straight through the symlink at plan time and sees a valid,
+      // parseable manifest — the plan is not merely absent-manifest
+      // bootstrapping, it is the ordinary case with an extra unsafe leaf.
+      const decoy = path.join(outside, 'decoy-manifest.json');
+      await writeFile(decoy, manifestBytes);
+      await rm(abs(MANIFEST_REL));
+      try {
+        await symlink(decoy, abs(MANIFEST_REL), 'file');
+      } catch {
+        context.skip();
+        return;
+      }
+
+      const repoBefore = (await readdir(repo)).sort();
+      const claudeBefore = (await readdir(abs('.claude'))).sort();
+
+      const dry = await runCli(repo, ['upgrade', '--dry-run']);
+      // The exact refusal `applyUpgrade`'s preflight (`writableOnDisk`) gives
+      // for this path — both modes must say the same thing, wherever it
+      // lands (stdout for a dry-run notice, stderr for a thrown UpgradeError).
+      expect(dry.stdout + dry.stderr).toContain(`Refusing to touch "${MANIFEST_REL}"`);
+      expect(dry.code, dry.stderr).toBe(1);
+
+      const repoAfter = (await readdir(repo)).sort();
+      const claudeAfter = (await readdir(abs('.claude'))).sort();
+      expect(repoAfter).toEqual(repoBefore);
+      expect(claudeAfter).toEqual(claudeBefore);
+      expect(await readFile(decoy, 'utf8')).toBe(manifestBytes);
+
+      const real = await runCli(repo, ['upgrade', '--yes']);
+      expect(real.code, real.stderr).toBe(1);
+      expect(real.stdout + real.stderr).toContain(`Refusing to touch "${MANIFEST_REL}"`);
+      expect(await readFile(decoy, 'utf8')).toBe(manifestBytes);
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+});
+
 describe('--no-color is accepted wherever the help advertises it', () => {
   it('upgrade accepts --no-color and prints plain output', async () => {
     await installRig();
