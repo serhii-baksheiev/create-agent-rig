@@ -29,9 +29,19 @@ describe('RP-177 repository contract after removing application scaffolding', ()
   it('does not make pnpm or a generated workspace a requirement for installing the rig', async () => {
     const readme = await read('README.md');
     const requirements = readme.split(/^## Requirements\s*$/m)[1]?.split(/^## /m)[0];
+    // The README's Requirements bullet is asserted against the root
+    // manifest's own floor, not a literal, so the two can never drift
+    // silently the way they did when RP-184 raised engines.node to >=22
+    // without this test noticing.
+    const pkg = JSON.parse(await read('package.json')) as { engines?: { node?: string } };
+    const engineMajor = pkg.engines?.node?.match(/^>=\s*(\d+)/)?.[1];
 
     expect(requirements).toBeDefined();
-    expect(requirements).toMatch(/Node\s*≥\s*20/);
+    expect(
+      engineMajor,
+      `package.json engines.node is not a >=<major> floor: ${pkg.engines?.node}`,
+    ).toBeDefined();
+    expect(requirements).toMatch(new RegExp(`Node\\s*≥\\s*${engineMajor}\\b`));
     expect(requirements).not.toMatch(/\bpnpm\b/i);
     expect(requirements).not.toMatch(/generated workspace/i);
   });

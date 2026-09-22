@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { candidatesFor, pointers, trackedTestFiles } from '../helpers/test-pointers.js';
 
 /**
  * RP-178. `docs/compatibility.md` is a table of claims — "this capability is
@@ -19,15 +19,13 @@ import { describe, expect, it } from 'vitest';
  * - a row that claims nothing measured (NOT-APPLICABLE, UNVERIFIED) says why,
  *   in its notes column.
  *
- * What counts as a pointer, stated exactly: a backticked `*.test.ts` or
- * `*.test.mjs` name — a bare file name, or a repository-relative path —
- * followed by one or more `› "test name"` segments. A path resolves to that
- * one tracked file; a bare name resolves to the tracked file with that
- * basename, and is REFUSED when two files share it (`upgrade.test.ts` exists
- * twice), because picking one silently is how a citation ends up checking a
- * file nobody meant. A quoted name is matched as a substring of the resolved
- * file's source. A table without an `evidence` column is not a claim table
- * and is not read.
+ * What counts as a pointer, and how it resolves to a tracked file: RP-184
+ * pulled that half out into `test/helpers/test-pointers.ts`, shared with
+ * `test/template/command-contract.test.ts` and
+ * `test/template/readme-promises.test.ts`, which resolve the same pointer
+ * form against `docs/command-contract.md`. A quoted name is matched as a
+ * substring of the resolved file's source. A table without an `evidence`
+ * column is not a claim table and is not read.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -80,41 +78,6 @@ const claimTables = (markdown: string): Table[] =>
 
 const statusColumns = (table: Table): string[] =>
   table.headers.filter((h) => !NON_STATUS_COLUMNS.has(h));
-
-interface Pointer {
-  file: string;
-  names: string[];
-}
-
-const POINTER = /`([\w./-]+\.test\.(?:ts|mjs))`((?:\s*(?:and\s*)?›\s*"[^"]+")*)/g;
-
-function pointers(cell: string): Pointer[] {
-  return [...cell.matchAll(POINTER)].map((m) => ({
-    file: m[1]!,
-    names: [...m[2]!.matchAll(/"([^"]+)"/g)].map((n) => n[1]!),
-  }));
-}
-
-function trackedTestFiles(): string[] {
-  return execFileSync('git', ['ls-files', 'test', 'packages/cli/test'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  })
-    .split('\n')
-    .filter((f) => /\.test\.(ts|mjs)$/.test(f));
-}
-
-/**
- * Every tracked path a pointer could mean. A bare basename that two files
- * share resolves to BOTH, and the caller refuses it: picking one silently is
- * how a citation ends up pointing at a file nobody meant (`upgrade.test.ts`
- * exists under `packages/cli/test/` and under `test/e2e/`). A pointer that
- * carries a path — `test/e2e/upgrade.test.ts` — names one file and resolves.
- */
-function candidatesFor(pointerFile: string, files: string[]): string[] {
-  if (pointerFile.includes('/')) return files.filter((f) => f === pointerFile);
-  return files.filter((f) => path.basename(f) === pointerFile);
-}
 
 describe('docs/compatibility.md: one status vocabulary, and every claim resolves to a test', () => {
   it('defines exactly the status vocabulary this check enforces', async () => {
@@ -173,7 +136,7 @@ describe('docs/compatibility.md: one status vocabulary, and every claim resolves
 
   it('resolves every evidence pointer to a tracked test file whose source contains the quoted name', async () => {
     const doc = await readFile(DOC, 'utf8');
-    const tracked = trackedTestFiles();
+    const tracked = trackedTestFiles(repoRoot);
     const dead: string[] = [];
     for (const table of claimTables(doc)) {
       for (const row of table.rows) {
@@ -212,12 +175,12 @@ describe('docs/compatibility.md: one status vocabulary, and every claim resolves
     const [table] = claimTables(planted);
     expect(statusColumns(table!)).toEqual(['claude code']);
     expect(VOCABULARY.includes(table!.rows[0]!.cells['claude code']!)).toBe(false);
-    const tracked = trackedTestFiles();
+    const tracked = trackedTestFiles(repoRoot);
     expect(candidatesFor(pointers(table!.rows[0]!.cells.evidence!)[0]!.file, tracked)).toEqual([]);
   });
 
   it('refuses a basename two tracked files share, and resolves the same pointer given as a path', () => {
-    const tracked = trackedTestFiles();
+    const tracked = trackedTestFiles(repoRoot);
     const shared = [...new Set(tracked.map((f) => path.basename(f)))].filter(
       (name) => tracked.filter((f) => path.basename(f) === name).length > 1,
     );

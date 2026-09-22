@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { filesBelow } from '../helpers/scan-exclusions.mjs';
+import { candidatesFor, pointers, trackedTestFiles } from '../helpers/test-pointers.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 // The filename is the deliverable RP-17 names, so it is resolved by exact path
@@ -2195,5 +2196,176 @@ describe('what the document does not cite', () => {
       ['the absent-referent section does not name rp-jira-plan.md', /rp-jira-plan\.md/],
       ['the absent-referent section does not name [A4]', /\[A4\]/],
     ]);
+  });
+});
+
+describe('every › pointer in this document resolves (RP-184)', () => {
+  /**
+   * The same `pinned in … › "…"` / `see … › "…"` citation form
+   * `test/helpers/test-pointers.ts` resolves for `docs/compatibility.md`'s
+   * evidence column, scanned across the whole document rather than one
+   * table's cells. Only an occurrence that actually carries a `›` right
+   * after the backticked file name counts as a pointer — a bare mention of a
+   * test file with no `›` attached (the "Held verbatim by the suite."
+   * paragraph, the doctor section's "Evidence:" paragraph, which cites by
+   * "pins" rather than `›`) is not one, and is not read here.
+   *
+   * Limit, stated the way `evidence-pointers.test.ts` states the same one
+   * for `templates/agent-os/`: the quoted names following a `›` are read
+   * from a bounded window after it, so a citation listing many names across
+   * more lines than that window covers has only its first few checked.
+   */
+  const FILE_THEN_ARROW = /`([\w./-]+\.test\.(?:ts|mjs))`\s*›/g;
+  const WINDOW_CHARS = 600;
+
+  it('resolves every pointer to a tracked test file whose source contains the quoted name', async () => {
+    // A quoted test name may itself contain a literal double quote, escaped
+    // in the document as `\"` so it does not close the citation's own quote
+    // early (`packages/cli/test/uninstall.test.ts`'s "… an ordinary "turned
+    // this hook off" leaves …"). The shared `pointers()` regex stops at the
+    // first unescaped `"`, so the escape is swapped for a placeholder before
+    // parsing and restored on the extracted name before it is compared —
+    // never on the offender messages below, which quote the document as
+    // written.
+    const ESCAPED_QUOTE = '\u0000';
+    const content = (await loadContract()).replaceAll('\\"', ESCAPED_QUOTE);
+    const unescape = (s: string) => s.replaceAll(ESCAPED_QUOTE, '"');
+    const tracked = trackedTestFiles(repoRoot);
+    const starts = [...content.matchAll(FILE_THEN_ARROW)].map((m) => m.index!);
+    expect(
+      starts.length,
+      'no › pointer was found at all, which is too few for this to have checked anything',
+    ).toBeGreaterThan(10);
+    const dead: string[] = [];
+    for (let i = 0; i < starts.length; i++) {
+      const start = starts[i]!;
+      const end = Math.min(starts[i + 1] ?? content.length, start + WINDOW_CHARS);
+      // Collapsed to one line before parsing: a citation's quoted name
+      // routinely wraps across the document's own line width, and the
+      // wrapped whitespace must read the same as a single space would.
+      const [pointer] = pointers(content.slice(start, end).replace(/\s+/g, ' '));
+      const lineNo = content.slice(0, start).split('\n').length;
+      if (!pointer) {
+        dead.push(`line ${lineNo}: a › pointer was found but did not parse`);
+        continue;
+      }
+      const candidates = candidatesFor(pointer.file, tracked);
+      if (candidates.length === 0) {
+        dead.push(`line ${lineNo}: no tracked test file ${pointer.file}`);
+        continue;
+      }
+      if (candidates.length > 1) {
+        dead.push(
+          `line ${lineNo}: ${pointer.file} is ambiguous (${candidates.join(', ')}) — cite the path`,
+        );
+        continue;
+      }
+      if (pointer.names.length === 0) {
+        dead.push(`line ${lineNo}: ${pointer.file} is cited without a › "test name" nearby`);
+        continue;
+      }
+      const source = (await readFile(path.join(repoRoot, candidates[0]!), 'utf8')).replace(
+        /\s+/g,
+        ' ',
+      );
+      for (const rawName of pointer.names) {
+        const name = unescape(rawName);
+        if (!source.includes(name)) dead.push(`line ${lineNo}: ${pointer.file} › "${name}"`);
+      }
+    }
+    expect(dead, 'pointers that do not reach a test').toEqual([]);
+  });
+});
+
+describe('the 1.0 contract-freeze sections (RP-184)', () => {
+  // The decisions of PLAN.md's RP-184 design: freeze the public surface,
+  // persistent state, ownership verdicts, harness delivery, the support
+  // matrix, what is explicitly not part of 1.0 yet, and the deprecation
+  // policy — plus the README-promises correspondence table
+  // `test/template/readme-promises.test.ts` checks.
+  const HEADINGS = [
+    'Public surface at 1.0',
+    'Persistent state at 1.0',
+    'Ownership verdicts',
+    'Harness delivery and provider ownership',
+    'Support matrix',
+    'Not part of 1.0',
+    'Deprecation policy and ledger',
+    'README promises',
+  ] as const;
+
+  const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  it('declares all eight 1.0-contract-freeze sections', async () => {
+    const content = await loadContract();
+    const missing = HEADINGS.filter(
+      (heading) => !new RegExp(`^##\\s+${escapeRegExp(heading)}\\b`, 'm').test(content),
+    );
+    expect(
+      missing,
+      `docs/command-contract.md is missing these 1.0-contract-freeze sections: ${missing.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('requires the next major version to remove or narrow the covered surface after 1.0', async () => {
+    const deprecation = section(
+      await loadContract(),
+      /^#{2,6}\s+.*Deprecation policy and ledger\b/i,
+    );
+    expect(
+      deprecation,
+      'the Deprecation policy and ledger section must say that removing or narrowing ' +
+        "1.0's covered surface needs the next major version",
+    ).toMatch(/(remov(e|ing)|narrow(s|ing)?)[\s\S]{0,240}(major version|major bump)/i);
+  });
+
+  it('names receipts, profiles, SPDX/digest provenance, native plugin installation and a provider SDK as not part of 1.0', async () => {
+    const notPart = section(await loadContract(), /^#{2,6}\s+.*Not part of 1\.0\b/i);
+    expectTerms(notPart, [
+      ['the Not-part-of-1.0 section does not name receipts', /\breceipts?\b/i],
+      ['the Not-part-of-1.0 section does not name profiles', /\bprofiles?\b/i],
+      [
+        'the Not-part-of-1.0 section does not name SPDX/digest provenance',
+        /SPDX[\s\S]{0,60}(digest|provenance)|digest[\s\S]{0,60}provenance/i,
+      ],
+      [
+        'the Not-part-of-1.0 section does not name native plugin installation',
+        /native plugin (install|installation)/i,
+      ],
+      ['the Not-part-of-1.0 section does not name a provider SDK', /provider SDK/i],
+    ]);
+  });
+
+  describe('the Public surface at 1.0 section states each command’s measured wrong-invocation exit code', () => {
+    // Measured against packages/cli/src/index.ts and packages/cli/src/commands/
+    // {doctor,memory}.ts: parseArgs failures, an unknown/missing positional and
+    // an unknown setup verb all return 1 for create/init/upgrade/uninstall/setup;
+    // doctor's `doctor accepts only --json` and memory's no-verb/unknown-verb
+    // both return 2.
+    const CODES: Record<string, number> = {
+      create: 1,
+      init: 1,
+      upgrade: 1,
+      uninstall: 1,
+      setup: 1,
+      doctor: 2,
+      memory: 2,
+    };
+    for (const [command, code] of Object.entries(CODES)) {
+      it(`states exit ${code} for a wrong invocation of ${command}`, async () => {
+        const publicSurface = section(
+          await loadContract(),
+          /^#{2,6}\s+.*Public surface at 1\.0\b/i,
+        );
+        const row = tableRow(publicSurface, command);
+        expect(
+          row,
+          `no table row in "Public surface at 1.0" has ${command} as its leading cell`,
+        ).not.toEqual('');
+        expect(row, `${command}'s row must state exit ${code} for a wrong invocation`).toMatch(
+          new RegExp(`exit\\s*${code}\\b`),
+        );
+      });
+    }
   });
 });

@@ -214,6 +214,13 @@ describe('the root manifest is publish-complete', () => {
     expect(pkg.files).toContain('templates');
   });
 
+  it('raises the Node floor to >=22 for the 1.0 contract freeze (RP-184)', async () => {
+    // CI tests Node 22 only, and Node 20 has been end-of-life since April
+    // 2026 — the one behaviour change the freeze allows, landing before 1.0.
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
+    expect(pkg.engines?.node).toBe('>=22');
+  });
+
   it('ships a LICENSE file matching the declared license', async () => {
     const license = await readFile(path.join(repoRoot, 'LICENSE'), 'utf8');
     expect(license).toContain('MIT License');
