@@ -597,7 +597,8 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
     process.stdout.write('\nDry run — nothing written.\n');
     const notice = renderAgentsRescueNotice(plan.agentsRescue, true);
     if (notice !== null) process.stdout.write(notice);
-    return 0;
+    // The same exit the real run gives: `applyUpgrade` refuses this status.
+    return plan.agentsRescue.holdBack && plan.agentsRescue.status === 'unsafe' ? 1 : 0;
   }
 
   // The plan above is the review step, so it has to be answered before

@@ -571,6 +571,21 @@ describe('AGENTS.md.rig-new — the CLI-boundary remedy for a GENUINELY held-bac
     expect(run.stdout).toContain(AGENTS_MD_RESCUE);
   });
 
+  // RP-192 item 9: the dry run said "a real run refuses" and still exited 0,
+  // so a script gating on `upgrade --dry-run` was told the run would succeed.
+  it('a dry run exits 1 exactly where the real run refuses an unsafe rescue path', async () => {
+    await installRig();
+    await makeClaudePristine();
+    await breakAgentsMd();
+    await mkdir(abs(AGENTS_MD_RESCUE));
+
+    const dry = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(dry.stdout).toContain('A real run refuses to touch it rather than write through it.');
+    expect(dry.code, dry.stderr).toBe(1);
+    const real = await runCli(repo, ['upgrade', '--yes']);
+    expect(real.code, real.stderr).toBe(1);
+  });
+
   it('never overwrites a pre-existing AGENTS.md.rig-new that differs from the rendered bytes, and NEVER prints `mv` for it', async () => {
     await installRig();
     await makeClaudePristine();
