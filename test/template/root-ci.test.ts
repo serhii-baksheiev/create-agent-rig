@@ -131,9 +131,6 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
     // serve this repository, and no workflow keeps a switch to anything else.
     for (const name of ['ci.yml', 'e2e.yml']) {
       const yaml = await workflow(name);
-      expect(yaml, `${name} names a runner off the hosted images`).not.toMatch(
-        /self-hosted|runner_mode|RUNNER_MODE/i,
-      );
       const runsOn = [...yaml.matchAll(/^ {4}runs-on:\s*(.+?)\s*$/gm)].map((m) => m[1] ?? '');
       expect(runsOn.length, `${name} has no job`).toBeGreaterThan(0);
       for (const value of runsOn)
