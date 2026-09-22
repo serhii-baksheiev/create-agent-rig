@@ -8,10 +8,10 @@ allowed-tools: Read, Grep, Glob
 
 No check in this rig runs on a skill you write here — the rules below are
 applied by the author, and by a reviewer reading this file, never by a
-mechanism. The same rules are what the generator's own
-`test/template/skill-authoring.test.ts` (absent in a generated rig) checks —
-against the skills this rig itself ships, not against any skill authored in
-a generated rig.
+mechanism. On the skills this rig itself ships, the generator's own
+`test/template/skill-authoring.test.ts` (absent in a generated rig) checks
+only the first rule, that a `description` is present, and that the skills and
+roles a skill names by name exist.
 
 - **The frontmatter `name` equals the directory name.** A skill loaded from
   `.claude/skills/foo/` is named `foo`, not something else.
@@ -36,5 +36,4 @@ a generated rig.
 ## Out of scope
 
 This is guidance to apply by reading, not an evaluator: the skill itself has
-no procedure and checks nothing. It states the rules this rig applies to its
-own shipped skills, nothing broader.
+no procedure and checks nothing.
