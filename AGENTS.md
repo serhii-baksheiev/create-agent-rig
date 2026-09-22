@@ -256,6 +256,7 @@ scripts/dogfood/
 packages/cli/src/integrations/
 packages/cli/src/commands/integrations.ts
 .claude/
+.rig/revalidation.json
 ```
 
 They are there because they are what *disarms* the rest: a merge that rewrites

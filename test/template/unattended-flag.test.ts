@@ -287,6 +287,41 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     expect(readUnattended(env())).toEqual({ on: false });
   });
 
+  /**
+   * RP-61 — `.rig/revalidation.json` is the detection contract
+   * `checkDetectionContract` (`preflight.mjs`) and `revalidateClaim`
+   * (`claim-records.mjs`) both read: rewriting it silently changes what a
+   * claim's scope fingerprint watches. It must join `RULEBOOK_PREFIXES` by
+   * its EXACT file, never the whole `.rig/` directory — `.rig/claims/<id>.json`
+   * is the baseline a SELECT creates for itself, and every queue merge writes
+   * one, so the claims directory has to stay writable and un-widened.
+   */
+  it('RULEBOOK_PREFIXES protects the revalidation contract by its exact file, and leaves .rig/claims/ unlisted', async () => {
+    const { RULEBOOK_PREFIXES, isWidening } = (await load()) as unknown as {
+      RULEBOOK_PREFIXES: readonly string[];
+      isWidening: (entry: unknown) => boolean;
+    };
+    expect(RULEBOOK_PREFIXES).toContain('.rig/revalidation.json');
+    expect(RULEBOOK_PREFIXES).not.toContain('.rig/');
+    expect(RULEBOOK_PREFIXES).not.toContain('.rig/claims/');
+    // '.rig/' is a proper prefix of the now-protected '.rig/revalidation.json'
+    // and would admit the whole directory, claims included — widening.
+    expect(isWidening('.rig/')).toBe(true);
+    // '.rig/claims/' protects nothing on its own and stays a legal allow root.
+    expect(isWidening('.rig/claims/')).toBe(false);
+  });
+
+  it('writeUnattended refuses .rig/ as a widening allow entry but accepts .rig/claims/, which a SELECT must keep writable', async () => {
+    const { writeUnattended, readUnattended, clearUnattended } = await load();
+    expect(() =>
+      writeUnattended({ item: 'RP-61', runDir: '/runs/1', allow: ['.rig/'] }, env()),
+    ).toThrow(/rulebook/);
+    writeUnattended({ item: 'RP-61', runDir: '/runs/1', allow: ['.rig/claims/'] }, env());
+    expect(readUnattended(env())).toMatchObject({ on: true, allow: ['.rig/claims/'] });
+    clearUnattended(env());
+    expect(readUnattended(env())).toEqual({ on: false });
+  });
+
   it('trims whitespace around allow entries', async () => {
     await arm(
       JSON.stringify({
