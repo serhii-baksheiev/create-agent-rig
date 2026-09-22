@@ -15,8 +15,8 @@
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
 > unreleased, and has not been through a release gate. Installing from the
-> default branch installs a development snapshot; every command the README
-> shows is pinned `@latest` for that reason.
+> default branch installs a development snapshot; that is why every
+> `npx create-agent-rig` line in the README is pinned `@latest`.
 
 ## 1. Product boundary
 

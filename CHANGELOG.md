@@ -25,7 +25,9 @@ red when the document and the code disagree. The major number says that, and
 only that: from here, removing or renaming something in that surface is a major
 bump, and adding to it is a minor.
 
-The rest of this entry is what the rigs themselves gain.
+The rest of this entry is what the rigs themselves gain, down to the last
+section — which is the changes that stayed in the generator, named there so a
+reader does not go looking for them in a rig.
 
 ### The contract
 
