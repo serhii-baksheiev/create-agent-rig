@@ -38,6 +38,10 @@ references, and you classify every finding as **blocking** or **advisory**.
    rulebook already refuses that evidence elsewhere (`.claude/rules/autonomy.md`).
    "Item not supplied, item 6 not checked" is a useful line in a report; a
    guess dressed as a verdict is worse than the silence it replaces.
+7. **Independent oracle** — a test of a security, ownership or governance
+   mechanism whose expected result is derived from the same production
+   mechanism it checks. See the independent-oracle invariant in
+   `.claude/rules/invariants.md`.
 
 ## Advisory findings
 
