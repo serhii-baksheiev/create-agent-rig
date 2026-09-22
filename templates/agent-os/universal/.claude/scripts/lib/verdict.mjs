@@ -73,6 +73,10 @@
  *    absence itself — `lib/gate-coverage.mjs` is the one that does, and it puts
  *    such a verdict in its own list rather than counting it either way. When
  *    present the value is a commit SHAPE, not free text: see `isCommitId`.
+ * 7. **`failure-diagnostician` answers in this shape and is not a merge gate.**
+ *    No `decision-router` lane names it and `pr-ship` coverage never expects an
+ *    answer from it — see `test/template/verdict.test.ts`
+ *    (absent in a generated rig) › "the diagnostician is never a routed reviewer".
  */
 
 /** Every word any gate in this rulebook may return. */
@@ -86,6 +90,14 @@ export const VERDICT_WORDS = Object.freeze([
   'UNVERIFIABLE',
   'UNMEASURED',
   'NOT_APPLICABLE',
+  // RP-195 slice 1: failure-diagnostician's own words, split by what it was
+  // asked to look at — a failure, or a claimed/historical finding.
+  'ROOT_CAUSE',
+  'INCONCLUSIVE',
+  'STILL_LIVE',
+  'ALREADY_FIXED',
+  'OBSOLETE',
+  'INSUFFICIENT_EVIDENCE',
 ]);
 
 /**
@@ -111,6 +123,15 @@ export const GATE_VOCABULARY = Object.freeze({
     'UNMEASURED',
   ]),
   'post-deploy-verify': Object.freeze(['HEALTHY', 'REGRESSION']),
+  // RP-195 slice 1 (design decision 1): the diagnostician's own words.
+  'failure-diagnostician': Object.freeze([
+    'ROOT_CAUSE',
+    'INCONCLUSIVE',
+    'STILL_LIVE',
+    'ALREADY_FIXED',
+    'OBSOLETE',
+    'INSUFFICIENT_EVIDENCE',
+  ]),
 });
 
 /**
@@ -126,6 +147,13 @@ export const BLOCKING_VERDICTS = Object.freeze([
   'PREMISE_FALSE',
   'UNVERIFIABLE',
   'UNMEASURED',
+  // RP-195 slice 1 (design decision 1): the cause, for ROOT_CAUSE and
+  // STILL_LIVE; the missing evidence, for INCONCLUSIVE and
+  // INSUFFICIENT_EVIDENCE. ALREADY_FIXED and OBSOLETE carry no blockers.
+  'ROOT_CAUSE',
+  'INCONCLUSIVE',
+  'STILL_LIVE',
+  'INSUFFICIENT_EVIDENCE',
 ]);
 
 /** The only keys a block may carry. */
@@ -136,7 +164,15 @@ const SHAPE_KEYS = Object.freeze([
   'advisories',
   'evidence',
   'headSha',
+  'classification',
 ]);
+
+/**
+ * The one optional key `failure-diagnostician` alone may carry (RP-195 slice
+ * 1, design decision 2): required on ROOT_CAUSE, optional on STILL_LIVE,
+ * refused on every other word and on every other gate.
+ */
+const CLASSIFICATIONS = Object.freeze(['product', 'test', 'infrastructure', 'upstream']);
 
 const FENCE = '```json';
 
@@ -443,6 +479,32 @@ export function parseVerdict(text) {
     }
   }
 
+  const classification = parsed.classification;
+  const hasClassification = classification !== undefined;
+  if (hasClassification) {
+    if (!isText(gate) || gate !== 'failure-diagnostician') {
+      problems.push(
+        '`classification` is refused here: only failure-diagnostician may carry it, and ' +
+          `this block names \`gate\` as ${safeForDiagnosis(gate)}.`,
+      );
+    } else if (verdict !== 'ROOT_CAUSE' && verdict !== 'STILL_LIVE') {
+      problems.push(
+        `\`classification\` is refused on ${safeForDiagnosis(verdict)} — only ROOT_CAUSE ` +
+          '(required) and STILL_LIVE (optional) may carry one.',
+      );
+    } else if (!CLASSIFICATIONS.includes(classification)) {
+      problems.push(
+        `\`classification\` is \`${safeForDiagnosis(classification)}\`, which is not one of: ` +
+          `${CLASSIFICATIONS.join(', ')}.`,
+      );
+    }
+  } else if (isText(gate) && gate === 'failure-diagnostician' && verdict === 'ROOT_CAUSE') {
+    problems.push(
+      'ROOT_CAUSE names no `classification`: it is required on this word — one of ' +
+        `${CLASSIFICATIONS.join(', ')}.`,
+    );
+  }
+
   if (problems.length > 0) return { ok: false, problems };
 
   return {
@@ -457,6 +519,7 @@ export function parseVerdict(text) {
       // back without the key at all, so a caller can tell "answered for this
       // commit" from "said nothing about which commit".
       ...(headSha === undefined ? {} : { headSha }),
+      ...(hasClassification ? { classification } : {}),
     },
   };
 }
