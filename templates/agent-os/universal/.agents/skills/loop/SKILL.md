@@ -877,7 +877,12 @@ node --input-type=module -e '
     }),
   );
 '
-node .claude/scripts/queue/propose.mjs --file "$RIG_RUN_DIR/proposal.json"
+# Root-anchored so the same command works whether the session is standing
+# at the repo root or in a subdirectory. Pinned in the generator's
+# test/template/loop-report-file.test.ts (absent in a generated rig) ›
+# "files when the documented command line runs, unmodified, from a project
+# subdirectory".
+node "$(git rev-parse --show-toplevel)/.claude/scripts/queue/propose.mjs" --file "$RIG_RUN_DIR/proposal.json"
 ```
 
 The result prints as one JSON line on stdout, and — because `RIG_RUN_DIR` is
@@ -939,10 +944,8 @@ no `## Operator queue` heading, because a proposal then has nowhere to land that
 the selection query cannot reach. Add the heading — never the Agent queue.
 
 `jira` still requires `options.project`, and still throws rather than filing
-without it — loudly, so nothing is lost — but `propose.mjs` supplies it from
-the active board's own config, the same way `index.mjs` does; there is no
-second argument left to hand-copy, and a config that names no board still
-refuses to file rather than filing against the wrong tracker.
+without it — loudly, so nothing is lost — and there is no
+second argument left to hand-copy.
 
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on
