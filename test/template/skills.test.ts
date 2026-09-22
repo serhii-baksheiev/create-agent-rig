@@ -88,6 +88,32 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
     // answers rather than two
     expect(readme).toMatch(/absent\*?\*?,\s+not\s+satisfied/i);
   });
+
+  // RP-195 slice 6: escalation carries the diagnostician's parsed verdict
+  // instead of the run re-deriving the diagnosis prose by hand.
+  it('routes a red-check or unexplained-failure escalation through failure-diagnostician, checked, and keeps the autonomy.md citation', async () => {
+    const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+    const section = /## 6\.[\s\S]*?(?=\n## 7\.)/.exec(content);
+    expect(section, 'the escalation section must still exist').toBeTruthy();
+    const six = section![0];
+    expect(six).toContain('failure-diagnostician');
+    expect(six).toContain('verdict.mjs check <report> failure-diagnostician');
+    expect(six).toMatch(/classification/);
+    // still cites the shared escalation-format rule rather than re-deriving it
+    expect(six).toMatch(/autonomy\.md[^\n]{0,20}\(?"?Escalation format"?\)?/);
+  });
+
+  // RP-195 slice 6: a stale or historical finding is reproduced by the
+  // diagnostician (claim mode), never left to the built-in unnamed
+  // subagent.
+  it('routes revalidation of a stale or historical finding through failure-diagnostician', async () => {
+    const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+    const section = /## 2\.[\s\S]*?(?=\n## 3\.)/.exec(content);
+    expect(section, 'section 2 must still exist').toBeTruthy();
+    const two = section![0];
+    expect(two).toContain('failure-diagnostician');
+    expect(two).toMatch(/claim mode/);
+  });
 });
 
 // extraction brief §3 Tier A: the worktree lifecycle carries the mechanism and
