@@ -51,6 +51,12 @@
 //     checkout root before guarding a canonical payload path", › "blocks when
 //     the checkout root and payload use the same symlink spelling", and
 //     › "blocks an existing rulebook file when only the payload path uses a symlink spelling";
+//   - an `apply_patch` destination keeps the lexical spelling it named even when
+//     a guarded prefix (`.claude/hooks`, say) is itself a symlink/junction to
+//     somewhere else inside the checkout — `edit-input.mjs`'s `repositoryPatchPath`
+//     carries that spelling alongside the realpath-resolved one, RP-60 — ›
+//     "refuses an apply_patch through a guarded prefix junctioned to a target
+//     inside the checkout";
 //   - an `allow` prefix is a string prefix of the repo-relative path and may
 //     not widen the rulebook — an entry that is itself a prefix of a rulebook
 //     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
@@ -121,8 +127,15 @@ export const relativeTo = (root, filePath) => {
 export const isAllowed = (rel, allow) =>
   (Array.isArray(allow) ? allow : []).some((prefix) => prefix !== '' && (rel === prefix || rel.startsWith(prefix)));
 
-const protectedRelative = (roots, filePath) =>
-  [...new Set([filePath, canonicalPath(filePath)])]
+// RP-60: `rawFilePath` is the lexical spelling `apply_patch` fragments carry
+// alongside the realpath-resolved `filePath` (`edit-input.mjs`,
+// `repositoryPatchPath`) — a guarded prefix that is itself a symlink/junction
+// to somewhere else inside the checkout resolves away the rulebook spelling
+// otherwise, the same way `canonicalRoot`/`comparisonRoots` above seed both
+// spellings of the checkout root. Every other edit surface never sets it, so
+// this is a no-op for them.
+const protectedRelative = (roots, filePath, rawFilePath) =>
+  [...new Set([filePath, rawFilePath, canonicalPath(filePath)].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
     .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)))
     .find(isRulebookPath);
 
@@ -153,9 +166,9 @@ function main() {
     return 2;
   }
   const paths = [];
-  for (const { filePath } of fragments) {
+  for (const { filePath, rawFilePath } of fragments) {
     if (typeof filePath !== 'string' || filePath === '') continue;
-    const rel = protectedRelative(comparisonRoots, filePath);
+    const rel = protectedRelative(comparisonRoots, filePath, rawFilePath);
     if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
   }
   if (paths.length === 0) return 0; // nothing under the rulebook: never judged
