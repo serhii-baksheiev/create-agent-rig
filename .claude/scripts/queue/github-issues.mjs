@@ -144,6 +144,21 @@ const ghJson = (args) => JSON.parse(ghText(args));
 
 const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments';
 
+/**
+ * A `--state` (or triage) window that came back exactly at its cap: older
+ * items may have been left unread, and a window this shape cannot tell the
+ * difference from a repository that happens to have exactly `limit` items.
+ * See queue-github-pagination.test.ts (absent in a generated rig) ›
+ * "a --state %s window that comes back exactly at the limit is announced on
+ * stderr" and › "a triage window that comes back exactly at the cap (100) is
+ * announced on stderr".
+ */
+const announceCap = (label, limit) => {
+  process.stderr.write(
+    `github-issues: ${label} window capped at ${limit} issues — older ${label} items may be missing; raise limit\n`,
+  );
+};
+
 // --- the adapter contract ------------------------------------------------------
 
 /**
@@ -151,18 +166,44 @@ const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments'
  *
  * Deliberately queries fresh on every call and never caches: the queue changes as
  * the loop itself closes items and unblocks their dependents.
+ *
+ * Open and closed issues are read as two separate `--state` windows rather
+ * than one shared `--state all` window: a shared window lets closed history
+ * push an older open issue out of it, which used to be silent. See
+ * queue-github-pagination.test.ts (absent in a generated rig) › "keeps an
+ * older OPEN issue even when 100 CLOSED issues would fill a shared window".
+ * The `issues` offline seam is unaffected: when it is supplied this behaves
+ * exactly as before, against the one list it was given.
  */
 export const listEligible = ({ limit = 100, issues = null } = {}) => {
-  const raw =
-    issues ?? ghJson(['issue', 'list', '--state', 'all', '--limit', String(limit), '--json', FIELDS]);
+  let raw;
+  let openIssues = null;
+  if (issues) {
+    raw = issues;
+  } else {
+    openIssues = ghJson(['issue', 'list', '--state', 'open', '--limit', String(limit), '--json', FIELDS]);
+    if (openIssues.length === limit) announceCap('open', limit);
+    const closedIssues = ghJson([
+      'issue',
+      'list',
+      '--state',
+      'closed',
+      '--limit',
+      String(limit),
+      '--json',
+      FIELDS,
+    ]);
+    if (closedIssues.length === limit) announceCap('closed', limit);
+    raw = [...openIssues, ...closedIssues];
+  }
   const states = Object.fromEntries(raw.map((issue) => [String(issue.number), issue.state]));
   const blocks = blocksIndex(raw);
-  return raw
-    .filter((issue) => String(issue.state ?? '').toUpperCase() !== 'CLOSED')
-    .map((issue) => {
-      const ticket = toTicket(issue, states);
-      return { ...ticket, blocks: blocks[ticket.id] ?? [] };
-    });
+  const eligible =
+    openIssues ?? raw.filter((issue) => String(issue.state ?? '').toUpperCase() !== 'CLOSED');
+  return eligible.map((issue) => {
+    const ticket = toTicket(issue, states);
+    return { ...ticket, blocks: blocks[ticket.id] ?? [] };
+  });
 };
 
 export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) => !b.resolved);
@@ -293,12 +334,30 @@ export const triageItemFor = (proposal) => {
  * hand out nothing — "queue empty" and "nothing selectable";
  * twenty such stops must produce one proposal with a count of twenty.
  */
-/** The proposals on file, as `{ id, body }` — every `triage`-labelled issue. */
-export const listProposals = ({ existing = null } = {}) =>
-  (
-    existing ??
-    ghJson(['issue', 'list', '--label', 'triage', '--state', 'all', '--limit', '100', '--json', FIELDS])
-  ).map((issue) => ({ id: String(issue.number), body: issue.body }));
+/**
+ * The proposals on file, as `{ id, body }` — every `triage`-labelled issue.
+ * A window that comes back exactly at its cap is announced on stderr, same
+ * as `listEligible`'s.
+ */
+export const listProposals = ({ existing = null, limit = 100 } = {}) => {
+  let raw = existing;
+  if (!raw) {
+    raw = ghJson([
+      'issue',
+      'list',
+      '--label',
+      'triage',
+      '--state',
+      'all',
+      '--limit',
+      String(limit),
+      '--json',
+      FIELDS,
+    ]);
+    if (raw.length === limit) announceCap('triage', limit);
+  }
+  return raw.map((issue) => ({ id: String(issue.number), body: issue.body }));
+};
 
 export const proposeTriage = (rawProposal, { existing = null } = {}) => {
   const proposal = withAsOf(rawProposal);
