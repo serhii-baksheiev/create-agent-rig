@@ -18,8 +18,9 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 Platforms: the packed release candidate is accepted on Linux, Windows and
 macOS on Apple silicon (`scripts/release-acceptance.mjs`, dispatched on the
-exact release commit; `e2e.yml` gains a `macos-e2e` job for it). On Windows, Spec Kit 1.0.8 rewrites
-`.claude/settings.json` and `.codex/config.toml` with CRLF line endings, so
+exact release commit; `e2e.yml` gains a `macos-e2e` job for it). Every CI job
+now runs on a GitHub-hosted image; `e2e.yml` no longer has a runner switch.
+On Windows, Spec Kit 1.0.8 rewrites `.claude/settings.json` and `.codex/config.toml` with CRLF line endings, so
 `doctor` reports `rig-owned-files` as `warn` after Spec Kit setup there.
 Ownership hashes cover exact bytes (`docs/decisions/raw-byte-ownership.md`), so
 where a Codex MCP provider is also wired, `doctor` reports that wiring as
@@ -566,9 +567,8 @@ and the two template checks on Linux and `windows-smoke` (the CLI's unit
 project) on Windows; in `e2e.yml`, the Linux `e2e` job — the full suite with
 the e2e installs and the benchmark — when the pull request touches the CLI,
 the templates, the e2e harness or that workflow. The full suite on Windows
-runs in `e2e.yml` on master, nightly and by dispatch only, and a
-`runner_mode` switch there selects a self-hosted fallback that no pull
-request can reach (`docs/runners.md`).
+runs in `e2e.yml` on master, nightly and by dispatch only
+(`docs/runners.md`).
 
 ## 0.8.0
 

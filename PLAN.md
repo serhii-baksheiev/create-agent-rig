@@ -104,9 +104,8 @@ supporting-lane work and blocks nothing.
 ### Delivery discipline
 
 After each merge, remaining branches are rebased on and rechecked against the
-new `origin/master`. GitHub-hosted runners are the primary CI. Local
-self-hosted runner configuration is fallback only and laptop availability is
-not a release condition. A PR merges on the required checks (`ci`, `e2e`,
+new `origin/master`. CI runs on GitHub-hosted runners only, so no release
+condition depends on a machine being on. A PR merges on the required checks (`ci`, `e2e`,
 `windows-smoke`) being green for its **exact** head, never an older one, and
 never on CI alone where a review gate is owed.
 

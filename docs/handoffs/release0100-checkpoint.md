@@ -66,6 +66,5 @@ Next: finish bounded fixes/reviews, merge prerequisite PR after exact-head
 Linux/Windows checks, verify master; complete real packed acceptance on
 Linux/Windows. Then prepare version0.10.0, changelog/compatibility/ledger,
 content+secret scans/package hash and final exact-release-SHA evidence.
-Package remains0.9.1. Hosted is primary, self-hosted route retained but no
-registered runner observed; macOS untested. Memory-owned tickets remain
-relates-only. No publish, public release/tag or channel change authorized.
+Package remains 0.9.1. macOS untested at that checkpoint. Memory-owned
+tickets remain relates-only. No publish, public release/tag or channel change authorized.

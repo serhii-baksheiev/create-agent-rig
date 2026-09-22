@@ -168,8 +168,7 @@ BEFORE_PR`, `decision-router`, the reviewer fan-out, `verdict.mjs check` on
   the head. **The round cap is not the skill's default here** — `pr-ship`
   documents 2, and `.claude/queue.json`'s `options.maxGateRounds` overrides it
   to 3 for this repository. Read the number there, never from a copy.
-- **GitHub-hosted runners are the primary CI.** Self-hosted configuration is a
-  fallback for exhausted hosted minutes; no PR may depend on a laptop being on.
+- **CI is GitHub-hosted only.** No PR may depend on a laptop being on.
 
 ## 7. Environment note
 

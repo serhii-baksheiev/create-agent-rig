@@ -1,11 +1,8 @@
 name: E2E
 
 # The expensive suite: the full test run on Linux, Windows and macOS and the
-# e2e installs. Hosted-first by ruling (docs/runners.md): every job runs on
-# GitHub-hosted images unless the dispatch input `runner_mode` or the
-# repository variable `RUNNER_MODE` says `self-hosted` — the same jobs and the
-# same commands either way, only `runs-on` differs, and every job prints which
-# runner executed it so release evidence can name the runner type.
+# e2e installs. Every job runs on a GitHub-hosted image (docs/runners.md) and
+# prints which runner executed it, so release evidence can name it.
 on:
   push:
     branches: [master]
@@ -19,13 +16,6 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
-      runner_mode:
-        description: 'hosted (GitHub-hosted images) or self-hosted (the registered fallback runners)'
-        type: choice
-        default: hosted
-        options:
-          - hosted
-          - self-hosted
       release_acceptance:
         description: 'Run real pinned Spec Kit acceptance from the packed candidate (network and disposable machine cache)'
         type: boolean
@@ -44,10 +34,7 @@ concurrency:
 
 jobs:
   e2e:
-    # This job also runs on pull requests, so the switch is ignored there: a
-    # PR from anywhere must never reach a machine of ours, whatever the
-    # standing variable says.
-    runs-on: ${{ github.event_name != 'pull_request' && (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "Linux", "X64"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - name: Record the runner
         shell: bash
@@ -101,7 +88,7 @@ jobs:
   # nightly and a release dispatch on an exact SHA.
   windows-e2e:
     if: github.event_name != 'pull_request'
-    runs-on: ${{ github.event_name != 'pull_request' && (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "Windows", "X64"]') || 'windows-latest' }}
+    runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - name: Record the runner
@@ -153,7 +140,7 @@ jobs:
   # evidence for master, the nightly and a release dispatch on an exact SHA.
   macos-e2e:
     if: github.event_name != 'pull_request'
-    runs-on: ${{ github.event_name != 'pull_request' && (inputs.runner_mode == 'self-hosted' || vars.RUNNER_MODE == 'self-hosted') && fromJSON('["self-hosted", "macOS", "ARM64"]') || 'macos-latest' }}
+    runs-on: macos-latest
     timeout-minutes: 45
     steps:
       - name: Record the runner

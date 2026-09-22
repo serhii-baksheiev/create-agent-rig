@@ -50,13 +50,11 @@ directories. It does not publish a package or install providers globally.
 
 ```sh
 gh workflow run e2e.yml --ref master \
-  -f runner_mode=hosted \
   -f release_acceptance=true \
   -f release_sha=<full-candidate-sha>
 ```
 
-Use `runner_mode=self-hosted` for the registered fallback; both modes run the
-same release commands. The network lane is absent from PR, push and scheduled
+The network lane is absent from PR, push and scheduled
 runs unless explicitly selected by dispatch. Ordinary tests keep isolated fake
 upstream executables. Record the Linux, Windows and macOS job links for the exact
 candidate; an earlier branch run is not evidence for a later SHA.

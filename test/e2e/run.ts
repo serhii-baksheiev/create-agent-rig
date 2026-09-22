@@ -132,8 +132,8 @@ const asText = (value: string | Buffer | undefined): string =>
  * printed into a CI log, it closes that gap itself rather than trusting npm's.
  *
  * Not reachable on this repository's CI (no secrets, no `registry-url`, no
- * tracked `.npmrc`); it is reachable on a developer machine or self-hosted
- * runner whose npmrc embeds credentials in a registry URL, which is the whole
+ * tracked `.npmrc`); it is reachable on a developer machine
+ * whose npmrc embeds credentials in a registry URL, which is the whole
  * reason it is here. `.claude/scripts/lib/secrets.mjs` names this exact shape
  * as one its vocabulary cannot see.
  *

@@ -111,9 +111,8 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
   });
 
   it('runs a Windows smoke lane — the unit project only — on the hosted image', async () => {
-    // Hosted-first ruling (2026-09-13): the pull-request path checks the
-    // product's own unit project on Windows and nothing that depends on a
-    // self-hosted machine. The template project — the one that spawns git and
+    // Ruling 2026-09-13: the pull-request path checks the product's own unit
+    // project on Windows. The template project — the one that spawns git and
     // the guards, and the one the hosted image times out on — runs in the
     // expensive workflow's Windows job instead.
     const yaml = await workflow('ci.yml');
@@ -127,23 +126,16 @@ describe('root CI keeps ordinary pull requests fast and least-privileged', () =>
     expect(commandText(windowsJobs[0] ?? '')).not.toMatch(/\bpnpm test:unit\b|\bpnpm test\b(?!:)/);
   });
 
-  it('keeps the pull-request path off self-hosted runners entirely', async () => {
-    // The pull-request path is every ci.yml job plus every e2e.yml job that
-    // is not gated off pull requests. A job on that path either never names
-    // a self-hosted runner, or its runs-on guards the switch behind
-    // `github.event_name != 'pull_request'` — so a standing RUNNER_MODE can
-    // never route a pull request from anywhere onto a machine of ours.
-    expect(await workflow('ci.yml')).not.toMatch(/self-hosted/);
-    const e2e = await workflow('e2e.yml');
-    const jobs = [...e2e.matchAll(/^ {2}([\w-]+):\n([\s\S]*?)(?=^ {2}[\w-]+:\n|(?![\s\S]))/gm)]
-      .map((m) => ({ name: m[1] ?? '', body: m[0] ?? '' }))
-      .filter((j) => !/^ {4}if:\s*github\.event_name != 'pull_request'\s*$/m.test(j.body));
-    expect(jobs.map((j) => j.name)).toContain('e2e');
-    for (const job of jobs) {
-      const runsOn = job.body.match(/^ {4}runs-on:\s*(.+)$/m)?.[1] ?? '';
-      if (/self-hosted/.test(runsOn))
-        expect(runsOn, `${job.name} can reach self-hosted on a pull request`).toMatch(
-          /^\$\{\{ github\.event_name != 'pull_request' && /,
+  it('runs every job on a GitHub-hosted image, named literally', async () => {
+    // Owner ruling 2026-09-22 (docs/runners.md): only GitHub-hosted images
+    // serve this repository, and no workflow keeps a switch to anything else.
+    for (const name of ['ci.yml', 'e2e.yml']) {
+      const yaml = await workflow(name);
+      const runsOn = [...yaml.matchAll(/^ {4}runs-on:\s*(.+?)\s*$/gm)].map((m) => m[1] ?? '');
+      expect(runsOn.length, `${name} has no job`).toBeGreaterThan(0);
+      for (const value of runsOn)
+        expect(value, `${name} runs a job off the hosted images`).toMatch(
+          /^(?:ubuntu|windows|macos)-latest$/,
         );
     }
   });
@@ -180,33 +172,14 @@ describe('expensive root tests have their own narrowly-triggered workflow', () =
     expect(yaml).toMatch(/^ {2}workflow_dispatch:\s*$/m);
   });
 
-  it('accepts runner_mode hosted|self-hosted by dispatch input and by repository variable, hosted by default', async () => {
-    // Owner ruling 2026-09-13 (§3, hosted-first): the release suite runs on
-    // GitHub-hosted runners until a confirmed infrastructure condition; the
-    // self-hosted fallback stays wired through one switch, never as a second
-    // copy of the jobs. The same jobs, the same commands — only runs-on differs.
+  it('takes only the release inputs by dispatch — there is no runner switch', async () => {
     const yaml = await expensiveWorkflow();
     const dispatch = yaml.match(
       /^ {2}workflow_dispatch:\n([\s\S]*?)(?=^ {2}[\w-]+:|^permissions:)/m,
     );
     expect(dispatch, 'expensive workflow has no workflow_dispatch block').not.toBeNull();
-    const block = dispatch?.[0] ?? '';
-    expect(block).toMatch(/^ {6}runner_mode:\n/m);
-    expect(block).toMatch(/^ {8}type:\s*choice\s*$/m);
-    expect(block).toMatch(/^ {8}default:\s*hosted\s*$/m);
-    expect(block).toMatch(/^ {10}- hosted\s*$/m);
-    expect(block).toMatch(/^ {10}- self-hosted\s*$/m);
-
-    const runsOn = [...yaml.matchAll(/^ {4}runs-on:\s*(.+)$/gm)].map((m) => m[1] ?? '');
-    expect(runsOn.length).toBeGreaterThanOrEqual(2);
-    for (const value of runsOn) {
-      expect(value, 'a job is not switchable').toMatch(/inputs\.runner_mode/);
-      expect(value, 'a job ignores the repository variable').toMatch(/vars\.RUNNER_MODE/);
-      expect(value, 'a job has no self-hosted branch').toMatch(/self-hosted/);
-      expect(value, 'a job has no hosted default').toMatch(
-        /ubuntu-latest|windows-latest|macos-latest/,
-      );
-    }
+    const inputs = [...(dispatch?.[0] ?? '').matchAll(/^ {6}([\w-]+):\s*$/gm)].map((m) => m[1]);
+    expect(inputs).toEqual(['release_acceptance', 'release_sha']);
   });
 
   it('records which runner executed each job, so release evidence can name it', async () => {
@@ -220,12 +193,10 @@ describe('expensive root tests have their own narrowly-triggered workflow', () =
     }
   });
 
-  it('runs the full suite on macOS off pull requests, on the hosted image or the self-hosted macOS runner', async () => {
+  it('runs the full suite on macOS off pull requests, on the hosted image', async () => {
     const macos = job(await expensiveWorkflow(), 'macos-e2e');
     expect(macos).toMatch(/^ {4}if:\s*github\.event_name != 'pull_request'\s*$/m);
-    expect(macos).toMatch(
-      /^ {4}runs-on:.*fromJSON\('\["self-hosted", "macOS", "ARM64"\]'\) \|\| 'macos-latest' \}\}\s*$/m,
-    );
+    expect(macos).toMatch(/^ {4}runs-on:\s*macos-latest\s*$/m);
     expect(runCommands(macos)).toContain('pnpm test');
     expect(macos).toMatch(/node scripts\/release-acceptance\.mjs --sha "\$RIG_RELEASE_SHA"/);
   });
@@ -256,8 +227,7 @@ describe('the expensive workflow exercises a cold Windows package-manager path',
 
   it('adds a separate full-history Windows job with Node 22 and a frozen root install', async () => {
     const windows = await windowsE2e();
-    // The hosted image is the default branch of the runner_mode switch.
-    expect(windows).toMatch(/^ {4}runs-on:.*\|\| 'windows-latest' \}\}\s*$/m);
+    expect(windows).toMatch(/^ {4}runs-on:\s*windows-latest\s*$/m);
     expect(windows).toMatch(
       /uses:\s*actions\/checkout@v4[\s\S]*?with:\n(?: {10}.+\n)* {10}fetch-depth:\s*0\b/m,
     );
