@@ -141,7 +141,11 @@ const endedWith = (answer) => {
     : answer.signal
       ? `killed by ${answer.signal}${answer.timedOut ? ` after the ${SPAWN_TIMEOUT_MS} ms budget` : ''}`
       : `exit ${answer.code}`;
-  const code = /\b(?:[A-Z]+_[A-Z0-9_]+|E[A-Z]{3,})\b/.exec(answer.stderr)?.[0];
+  // The shapes Node prints an error code in, most specific first, so an
+  // upper-case path segment earlier in the text is not mistaken for one.
+  const code = (/\bcode: '([A-Z][A-Z0-9_]+)'/.exec(answer.stderr) ??
+    /\[([A-Z][A-Z0-9_]+)\]/.exec(answer.stderr) ??
+    /\b(E[A-Z]{3,})\b/.exec(answer.stderr))?.[1];
   return code === undefined ? how : `${how}, ${echo(code)}`;
 };
 

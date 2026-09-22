@@ -517,16 +517,19 @@ describe('scripts/memory-conformance.mjs names why a rig spawn failed (RP-188)',
   );
 
   it(
-    "carries the head of the rig's own stderr when it exits non-zero",
+    "names the error code the rig's own stderr carries when it exits non-zero",
     async () => {
+      // An upper-case, underscored path segment ahead of the code must not
+      // be read as the code.
       const report = await runWithRig(
-        "process.stderr.write('Error [ERR_MODULE_NOT_FOUND]: Cannot find module\n');\n" +
+        'process.stderr.write("/HOME_DIR/rig/index.js:1\\nError [ERR_MODULE_NOT_FOUND]: Cannot find module\\n");\n' +
           'process.exit(1);\n',
       );
       const setup = row(report, 'rig-setup');
       expect(setup?.status).toBe('fail');
       expect(setup?.detail).toContain('exit 1');
       expect(setup?.detail).toContain('ERR_MODULE_NOT_FOUND');
+      expect(setup?.detail).not.toContain('HOME_DIR');
     },
     FULL_RUN_BUDGET_MS,
   );
