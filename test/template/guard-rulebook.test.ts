@@ -1,10 +1,11 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { needsGitRoot, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -454,6 +455,95 @@ describe('guard-rulebook: every edit surface reaches it', () => {
       },
     });
     expect(result.code).toBe(2);
+  });
+});
+
+// RP-60. `repositoryPatchPath` (`edit-input.mjs`) resolves an `apply_patch`
+// destination through the nearest existing ancestor and returns the
+// REALPATH-RESOLVED repo-relative spelling, discarding the lexical one it
+// computes one line earlier. When a guarded prefix such as `.claude/hooks` is
+// itself a symlink/junction to a directory inside the same checkout, the
+// fragment guard-rulebook receives names the junction's TARGET
+// (`vendor/real-hooks/guard-bash.mjs`), never the rulebook spelling
+// (`.claude/hooks/guard-bash.mjs`) the patch actually named — so the edit is
+// allowed while the unattended flag is armed. `Write`/`Edit`/`MultiEdit`/
+// `NotebookEdit` go through `normalisePath`, which resolves nothing, and are
+// unaffected; a junction whose target sits OUTSIDE the checkout fails closed
+// through the global-refusal branch either way. See
+// `.claude/runs/20260922-132258/reports/RP-60-diagnostician.md`.
+//
+// `apply_patch` resolves its repository root with `git rev-parse`, so this
+// needs its own scratch git repository rather than reusing the aliased-ROOT
+// fixture above (`aliasedRoot()` only ever aliases the checkout root, never a
+// prefix beneath it — that is exactly the gap this pins).
+describe('guard-rulebook: apply_patch does not lose the lexical path when a guarded prefix is a junction (RP-60)', () => {
+  beforeEach(() => {
+    execFileSync('git', ['init', '-q', root], { env: withoutGitLocation() });
+  });
+
+  const applyPatch = (rel: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    cwd: root,
+    tool_input: {
+      command: `*** Begin Patch\n*** Update File: ${rel}\n@@\n+x\n*** End Patch\n`,
+    },
+  });
+
+  it('control: still refuses an apply_patch to a real .claude/hooks directory', async () => {
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await writeFile(path.join(root, '.claude', 'hooks', 'guard-bash.mjs'), '// real\n');
+    await armed([]);
+    const result = await run(applyPatch('.claude/hooks/guard-bash.mjs'));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses an apply_patch through a guarded prefix junctioned to a target inside the checkout', async () => {
+    await mkdir(path.join(root, 'vendor', 'real-hooks'), { recursive: true });
+    await writeFile(path.join(root, 'vendor', 'real-hooks', 'guard-bash.mjs'), '// vendored\n');
+    await mkdir(path.join(root, '.claude'), { recursive: true });
+    await symlink(
+      path.join(root, 'vendor', 'real-hooks'),
+      path.join(root, '.claude', 'hooks'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed([]);
+    const result = await run(applyPatch('.claude/hooks/guard-bash.mjs'));
+    // On origin/master this exits 0: repositoryPatchPath resolves the
+    // junction and hands guard-rulebook "vendor/real-hooks/guard-bash.mjs",
+    // so the raw ".claude/hooks/…" spelling never reaches the guard.
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('control: still refuses a Write through the same inside-checkout prefix junction', async () => {
+    await mkdir(path.join(root, 'vendor', 'real-hooks'), { recursive: true });
+    await writeFile(path.join(root, 'vendor', 'real-hooks', 'guard-bash.mjs'), '// vendored\n');
+    await mkdir(path.join(root, '.claude'), { recursive: true });
+    await symlink(
+      path.join(root, 'vendor', 'real-hooks'),
+      path.join(root, '.claude', 'hooks'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed([]);
+    const result = await run(write(`${root}/.claude/hooks/guard-bash.mjs`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('control: still fails closed through a guarded prefix junctioned to a target outside the checkout', async () => {
+    const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'rp60-outside-')));
+    try {
+      await mkdir(path.join(root, '.claude'), { recursive: true });
+      await symlink(
+        outside,
+        path.join(root, '.claude', 'hooks'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      await armed([]);
+      const result = await run(applyPatch('.claude/hooks/guard-bash.mjs'));
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(outside);
+    }
   });
 });
 

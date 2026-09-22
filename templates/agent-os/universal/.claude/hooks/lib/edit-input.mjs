@@ -279,7 +279,12 @@ function patchFragments(command, payloadCwd) {
         const moved = current.moveTo
           ? movedFragment(current, budget)
           : { fragment: current.additions.join('\n') };
-        fragments.push({ filePath: destination, ...moved });
+        // RP-60: `rawFilePath` is the lexical repo-relative spelling, taken
+        // before symlink resolution — carried alongside the resolved
+        // `filePath` so a guard can still see a patch destination named
+        // through a guarded prefix that is itself a symlink/junction to
+        // somewhere else inside the checkout.
+        fragments.push({ filePath: destination.resolved, rawFilePath: destination.raw, ...moved });
       }
       current = null;
     }
@@ -510,6 +515,11 @@ function repositoryPatchPath(value, budget) {
   const candidate = path.resolve(budget.patchCwd, patchPath);
   if (!isWithin(budget.repoRoot, candidate)) return null;
 
+  // RP-60: the lexical repo-relative spelling, fixed BEFORE any symlink in the
+  // path (a guarded prefix junctioned elsewhere inside the checkout, say) gets
+  // resolved away below. One extra string, computed once — not a new loop.
+  const raw = path.relative(budget.repoRoot, candidate).split(path.sep).join('/');
+
   let existing = candidate;
   const suffix = [];
   while (true) {
@@ -517,7 +527,7 @@ function repositoryPatchPath(value, budget) {
       const resolved = budget.resolvedDirectories.get(existing);
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/');
+      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
     }
     try {
       const resolved = realpathSync(existing);
@@ -533,7 +543,7 @@ function repositoryPatchPath(value, budget) {
       }
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/');
+      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
     } catch (error) {
       if (error?.code !== 'ENOENT') return null;
       try {
