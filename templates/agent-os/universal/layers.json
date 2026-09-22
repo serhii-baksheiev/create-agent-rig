@@ -57,8 +57,10 @@
   "workflow": [
     ".claude/skills/pr-ship/SKILL.md",
     ".claude/skills/loop/SKILL.md",
+    ".claude/skills/plan-slices/SKILL.md",
     ".agents/skills/pr-ship/SKILL.md",
     ".agents/skills/loop/SKILL.md",
+    ".agents/skills/plan-slices/SKILL.md",
     ".claude/scripts/detect-missed-gate.mjs",
     ".claude/scripts/decision-router.mjs",
     ".claude/scripts/reconcile-external-prs.mjs",
