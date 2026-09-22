@@ -39,7 +39,7 @@ blockers.
      `test/template/gate-rounds.test.ts` — absent in a generated rig — ›
      "refuses to count a round on a dirty tree, and counts nothing".
 
-   The cap is **2 by default**, and no shipped `.claude/queue.json` carries the key
+   The cap is **3 by default**, and no shipped `.claude/queue.json` carries the key
    — the default lives in `core.mjs` as `DEFAULT_MAX_GATE_ROUNDS`. A project that
    wants a different cap sets `options.maxGateRounds` there, which in a rig whose
    `queue.json` is composed means changing what composes it, not editing the file.
