@@ -301,10 +301,34 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
     '.claude/.rig-manifest.json',
     'CLAUDE.md',
     'AGENTS.md',
+    // RP-61: the revalidation detection contract preflight.mjs and
+    // claim-records.mjs both read — rewriting it silently changes what a
+    // claim's scope fingerprint watches, so it belongs in the closure too.
+    '.rig/revalidation.json',
   ])('blocks the complete rulebook closure at %s', async (rel) => {
     await armed([]);
     const result = await run(write(`${root}/${rel}`));
     expect(result.code, result.stderr).toBe(2);
+  });
+
+  // RP-61: a SELECT creates its own baseline at `.rig/claims/<id>.json`, and
+  // every queue merge writes one — the directory must stay writable even
+  // though its sibling contract file above is now part of the closure.
+  it('leaves .rig/claims/ writable — a SELECT creates its own baseline there', async () => {
+    await armed([]);
+    const result = await run(write(`${root}/.rig/claims/RP-61.json`));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  // RP-61: `.rig/` itself must refuse as an allow entry — it is a proper
+  // prefix of the now-protected `.rig/revalidation.json` and would admit the
+  // whole directory, claims included.
+  it('a flag whose allow-list entry .rig/ widens the rulebook is unreadable', async () => {
+    await armed(['.rig/']);
+    const result = await run(write(`${root}/.claude/hooks/guard-bash.mjs`));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/unreadable/);
+    expect(result.stderr).toMatch(/allow/);
   });
 
   it('blocks a hook-config edit with an empty allow-list, naming path, item and the rule', async () => {
