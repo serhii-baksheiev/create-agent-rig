@@ -147,6 +147,72 @@ describe('rules/invariants.md — the pattern, stated once', () => {
   });
 });
 
+// RP-187 (owner ruling, 2026-09-20): PR #226 (RP-181 uninstall) produced four
+// instances of one defect class across eight gate cycles, all with green CI —
+// a test of a security/ownership/governance mechanism deriving its own
+// expected result from the same production mechanism it checks. The pattern
+// that worked, `expectImports` in `packages/cli/test/uninstall.test.ts`, is
+// named here as the invariant's own worked example. Unlike the three-part
+// pattern above, this one has only parts 1 and 3: "is this expectation
+// derived from production" is not decidable from a single diff fragment, so
+// it is a `code-reviewer` checklist item, never a hook — the rule must say so
+// plainly.
+describe('rules/invariants.md — the independent-oracle invariant (RP-187)', () => {
+  const rule = () => read(universal, '.claude', 'rules', 'invariants.md');
+  const uninstallTestSource = () =>
+    readFile(path.join(repoRoot, 'packages', 'cli', 'test', 'uninstall.test.ts'), 'utf8');
+
+  it('states that a check of a security, ownership or governance mechanism is never derived from the same production mechanism it checks', async () => {
+    const content = await rule();
+    expect(content).toMatch(/security,\s*ownership(?:\s+or\s+governance| or governance)/i);
+    expect(content).toMatch(
+      /must not derive its expected result from the same production mechanism it checks/i,
+    );
+    expect(content).toMatch(/independent oracle/i);
+    expect(content).toMatch(/mutation proof/i);
+    expect(content).toMatch(/externally observable behaviour/i);
+  });
+
+  // The generic evidence-pointer mechanism (`evidence-pointers.test.ts`)
+  // resolves a `›`-marked citation's target by BASENAME only, scanning
+  // `test/` and `templates/agent-os/` — it never scans `packages/cli/test/`,
+  // so `packages/cli/test/uninstall.test.ts` collides on basename with
+  // `test/e2e/uninstall.test.ts` there and would resolve to the wrong file.
+  // So this checks resolution directly against the real file, the same
+  // substring approach that mechanism's own `declares()` uses, rather than
+  // routing the citation through the map that cannot see this path.
+  it('names expectImports as the worked example, with a pointer that resolves in packages/cli/test/uninstall.test.ts', async () => {
+    const content = await rule();
+    const at = content.indexOf('packages/cli/test/uninstall.test.ts');
+    expect(at, 'invariants.md must name packages/cli/test/uninstall.test.ts').toBeGreaterThan(-1);
+    const window = content.slice(at, at + 400);
+    expect(window).toMatch(/`expectImports`/);
+    expect(window).toMatch(/duplicated regex/i);
+    const quoted = window.match(/"([^"]{15,})"/);
+    expect(
+      quoted,
+      'the mention must carry a quoted, resolvable name, not just a name-drop',
+    ).not.toBeNull();
+    const source = (await uninstallTestSource()).replace(/\s+/g, ' ');
+    expect(source).toContain('async function expectImports');
+    expect(source).toContain(quoted![1]!.replace(/\s+/g, ' '));
+  });
+
+  it('says plainly that no hook enforces this invariant, because "derived from production" is not decidable from one edit', async () => {
+    const content = await rule();
+    const at = content.search(
+      /must not derive its expected result from the same production mechanism it checks/i,
+    );
+    expect(at).toBeGreaterThan(-1);
+    const nearby = content.slice(at, at + 1500);
+    expect(nearby).toMatch(
+      /not decidable from (?:a |one )?(?:single |one )?(?:diff fragment|edit)/i,
+    );
+    expect(nearby).toMatch(/no hook enforces (?:it|this)/i);
+    expect(nearby).toMatch(/code-reviewer/i);
+  });
+});
+
 describe('the new-invariant skill — the generator', () => {
   const skill = () => read(skillDir, 'SKILL.md');
 

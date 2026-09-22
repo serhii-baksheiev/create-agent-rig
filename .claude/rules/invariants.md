@@ -215,6 +215,39 @@ The invariants worth your slots are the ones you can finish this sentence about:
 *"the last time this went wrong, it cost us ___."* If you cannot finish it, you
 are guessing, and a guessed invariant is the one that will fire on honest work.
 
+## The independent-oracle invariant
+
+A test of a security, ownership or governance mechanism must not derive its expected result from the same production mechanism it checks.
+Check it against an independent oracle instead: an alternative
+implementation of the check, a mutation proof, or externally observable behaviour.
+
+⚠ **The independent-oracle invariant has parts 1 and 3 of the pattern above, and not part 2.** No hook enforces it: "is this expectation derived from the same production
+mechanism" is not decidable from a single diff fragment — it takes reading
+both the test and the code path it claims to verify, and judging which one
+stands in as the oracle. `code-reviewer` is where it is enforced, as a
+checklist item, never a hook — see the generator's
+`test/template/correspondence.test.ts` (absent in a generated rig) ›
+"the rule states the invariant and code-reviewer.md carries a matching checklist item".
+
+Why this earned its own name: a test that asks production's own logic what the
+right answer is cannot detect an under-approximation in that logic. Test and
+code are the same computation run twice, agreeing by construction — so the
+test passes, the reviewer sees a test that genuinely exercises the code, and
+CI is green, while the defect the test was written for goes straight through.
+
+The fix that came out of it is the worked example:
+`packages/cli/test/uninstall.test.ts` (absent in a generated rig),
+whose `expectImports` re-derives the import edges with a deliberately
+duplicated regex rather than importing production's own — its comment says
+"deliberately a second copy rather than an import of the private constant" —
+so the test can never be satisfied merely by production checking its own
+work.
+
+Scope: this applies going forward, to tests of security, ownership and
+governance mechanisms. The existing suite is not retrofitted wholesale — an
+existing test is corrected only where doing so is cheap and the derivation
+is demonstrably vacuous.
+
 ## About the hooks you were given
 
 Generator-authored rulebook artifacts — rules, hooks, skills, scripts and agent
