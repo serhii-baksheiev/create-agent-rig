@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -186,7 +187,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
           RP13_CANARY: 'leaked',
         });
         expect(result.stderr, result.stderr).toBe('');
-        expect(result.code).toBe(0);
+        expect(result.code, result.stdout + result.stderr).toBe(0);
         const lines = result.stdout.trim().split('\n').filter(Boolean);
         expect(lines, 'exactly one JSON object on stdout').toHaveLength(1);
         const report = parseReport(lines[0]!);
@@ -239,7 +240,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         const head = (await git(['rev-parse', 'HEAD'], root)).trim();
 
         const result = await run(['--json', '--from', root]);
-        expect(result.code).toBe(0);
+        expect(result.code, result.stdout + result.stderr).toBe(0);
         const report = parseReport(result.stdout);
         expect(report.memorySha).toBe(head);
 
@@ -284,7 +285,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         const hash = createHash('sha256');
         for (const file of files) hash.update(await readFile(file));
         const result = await run(['--json', '--from', root, '--out', out]);
-        expect(result.code).toBe(0);
+        expect(result.code, result.stdout + result.stderr).toBe(0);
         const report = parseReport(result.stdout);
         expect(report.verifierDigest).toBe(hash.digest('hex'));
         expect(JSON.parse(await readFile(out, 'utf8'))).toEqual(report);
@@ -301,7 +302,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
       const root = await buildMemoryRoot({ contractVersion: '2.0' });
       try {
         const result = await run(['--json', '--from', root]);
-        expect(result.code).toBe(1);
+        expect(result.code, result.stdout + result.stderr).toBe(1);
         const report = parseReport(result.stdout);
         expect(report.passed).toBe(false);
         expect(row(report, 'memory-handshake')?.status).toBe('fail');
@@ -325,7 +326,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
       });
       try {
         const result = await run(['--json', '--from', root]);
-        expect(result.code).toBe(1);
+        expect(result.code, result.stdout + result.stderr).toBe(1);
         const report = parseReport(result.stdout);
         expect(report.passed).toBe(false);
 
@@ -367,7 +368,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
         await git([...author, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'outer'], outer);
         const inner = await buildMemoryRoot({}, outer);
         const result = await run(['--json', '--from', inner]);
-        expect(result.code).toBe(0);
+        expect(result.code, result.stdout + result.stderr).toBe(0);
         expect(parseReport(result.stdout).memorySha).toBeNull();
       } finally {
         await removeFixture(outer);
@@ -388,7 +389,7 @@ describe('scripts/memory-conformance.mjs against a local checkout (RP-13)', () =
           '--out',
           path.join(root, 'no-such-dir', 'report.json'),
         ]);
-        expect(result.code).toBe(3);
+        expect(result.code, result.stdout + result.stderr).toBe(3);
         expect(result.stderr).toContain('memory-conformance:');
       } finally {
         await removeFixture(root);
@@ -461,4 +462,93 @@ describe('scripts/memory-conformance.mjs keeps the Memory boundary of ADR-RP-002
       .filter((file) => /(^|\/)shared-memory\//.test(file) || /event-schema-v1\//.test(file));
     expect(memoryOwned).toEqual([]);
   });
+});
+
+// RP-188: under full-suite load the runner exited 1 with an empty stderr and
+// every rig row read "exit 1". A rig binary that cannot start (a `dist` being
+// rebuilt: `scripts/prepare.mjs` removes it before `tsc`) and one killed by a
+// signal (the spawn budget) both reduced to that one word, so the failure
+// could not say which it was.
+describe('scripts/memory-conformance.mjs names why a rig spawn failed (RP-188)', () => {
+  type Module = {
+    runConformance: (options: {
+      from: string;
+      manifest: unknown;
+      schemas: unknown;
+      rigBin?: string;
+    }) => Promise<Report>;
+  };
+  const contract = async () => ({
+    manifest: JSON.parse(await readFile(path.join(contractsDir, 'manifest.json'), 'utf8')),
+    schemas: {
+      handshake: JSON.parse(
+        await readFile(path.join(contractsDir, 'version-handshake.schema.json'), 'utf8'),
+      ),
+      doctor: JSON.parse(await readFile(path.join(contractsDir, 'doctor.schema.json'), 'utf8')),
+      load: JSON.parse(await readFile(path.join(contractsDir, 'load.schema.json'), 'utf8')),
+    },
+  });
+
+  /** `null` leaves the rig binary absent — the shape a `dist` being rebuilt has. */
+  const runWithRig = async (rigSource: string | null): Promise<Report> => {
+    const module = (await import(pathToFileURL(scriptPath).href)) as Module;
+    const root = await buildMemoryRoot();
+    try {
+      const rigBin = path.join(root, 'fake-rig', 'index.js');
+      if (rigSource !== null) {
+        await mkdir(path.dirname(rigBin));
+        await writeFile(rigBin, rigSource);
+      }
+      return await module.runConformance({ from: root, ...(await contract()), rigBin });
+    } finally {
+      await removeFixture(root);
+    }
+  };
+
+  it(
+    'names a rig binary that is not there instead of a bare exit 1',
+    async () => {
+      const report = await runWithRig(null);
+      const setup = row(report, 'rig-setup');
+      expect(setup?.status).toBe('fail');
+      expect(setup?.detail).toContain('MODULE_NOT_FOUND');
+    },
+    FULL_RUN_BUDGET_MS,
+  );
+
+  it(
+    "names the error code the rig's own stderr carries when it exits non-zero",
+    async () => {
+      // An upper-case, underscored path segment ahead of the code must not
+      // be read as the code.
+      const report = await runWithRig(
+        'process.stderr.write("/HOME_DIR/rig/index.js:1\\nError [ERR_MODULE_NOT_FOUND]: Cannot find module\\n");\n' +
+          'process.exit(1);\n',
+      );
+      const setup = row(report, 'rig-setup');
+      expect(setup?.status).toBe('fail');
+      expect(setup?.detail).toContain('exit 1');
+      expect(setup?.detail).toContain('ERR_MODULE_NOT_FOUND');
+      expect(setup?.detail).not.toContain('HOME_DIR');
+    },
+    FULL_RUN_BUDGET_MS,
+  );
+
+  it(
+    'reports a rig killed by a signal as killed, not as exit 1',
+    async (ctx) => {
+      // A POSIX signal: on win32 process.kill terminates with an exit code.
+      skipUnless(
+        ctx,
+        process.platform !== 'win32',
+        'POSIX signals only — win32 process.kill exits with a code',
+      );
+      const report = await runWithRig("process.kill(process.pid, 'SIGKILL');\n");
+      const setup = row(report, 'rig-setup');
+      expect(setup?.status).toBe('fail');
+      expect(setup?.detail).toContain('SIGKILL');
+      expect(setup?.detail).not.toContain('exit 1');
+    },
+    FULL_RUN_BUDGET_MS,
+  );
 });

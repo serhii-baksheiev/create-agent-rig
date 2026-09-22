@@ -67,7 +67,7 @@ const selfPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(selfPath), '..');
 const contractDir = path.join(repoRoot, 'contracts', 'conformance', 'v1');
 const validatorPath = path.join(repoRoot, 'scripts', 'lib', 'json-schema-subset.mjs');
-const rigBin = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+const RIG_BIN = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
 const SPAWN_TIMEOUT_MS = 30_000;
 const MAX_ECHOED_CHARACTERS = 32;
 const SHA = /^[0-9a-f]{40}$/;
@@ -123,8 +123,30 @@ const run = async (file, args, options = {}) => {
       stdout: error.stdout ?? '',
       stderr: error.stderr ?? '',
       spawnError: typeof error.code === 'string' ? error.code : undefined,
+      signal: typeof error.signal === 'string' ? error.signal : undefined,
+      timedOut: error.killed === true,
     };
   }
+};
+
+/**
+ * How a spawn ended, for a row's detail: the exit code or the signal, then the
+ * first error code the child's stderr names — never its text, which can carry
+ * a path. A bare "exit 1" is what RP-188 could not diagnose: a missing `dist`
+ * and a killed child both read that way.
+ */
+const endedWith = (answer) => {
+  const how = answer.spawnError
+    ? `could not start: ${answer.spawnError}`
+    : answer.signal
+      ? `killed by ${answer.signal}${answer.timedOut ? ` after the ${SPAWN_TIMEOUT_MS} ms budget` : ''}`
+      : `exit ${answer.code}`;
+  // The shapes Node prints an error code in, most specific first, so an
+  // upper-case path segment earlier in the text is not mistaken for one.
+  const code = (/\bcode: '([A-Z][A-Z0-9_]+)'/.exec(answer.stderr) ??
+    /\[([A-Z][A-Z0-9_]+)\]/.exec(answer.stderr) ??
+    /\b(E[A-Z]{3,})\b/.exec(answer.stderr))?.[1];
+  return code === undefined ? how : `${how}, ${echo(code)}`;
 };
 
 const majorOf = (contractVersion) => {
@@ -144,7 +166,7 @@ const validatedAnswer = ({ id, answer, schema, what }) => {
   try {
     payload = JSON.parse(answer.stdout);
   } catch {
-    return { row: fail(id, `${what} did not answer one JSON object (exit ${answer.code})`) };
+    return { row: fail(id, `${what} did not answer one JSON object (${endedWith(answer)})`) };
   }
   if (answer.code !== 0)
     return {
@@ -322,7 +344,7 @@ const memoryRows = async (root, manifest, schemas, childEnv) => {
   return rows;
 };
 
-const rigRows = async (root, schemas, childEnv, scratch) => {
+const rigRows = async (root, schemas, childEnv, scratch, rigBin) => {
   const rows = [];
   // The rig writes its subsystem manifest under HOME (POSIX) or APPDATA
   // (Windows); both point at this run's scratch directory, so the caller's
@@ -349,7 +371,7 @@ const rigRows = async (root, schemas, childEnv, scratch) => {
       ? pass('rig-setup', 'setup --memory-root registered the checkout (exit 0)')
       : fail(
           'rig-setup',
-          `setup --memory-root failed (exit ${setup.spawnError ?? setup.code})${setup.code === 4 ? ': foreign contract major refused' : ''}`,
+          `setup --memory-root failed (${endedWith(setup)})${setup.code === 4 ? ': foreign contract major refused' : ''}`,
         ),
   );
 
@@ -378,13 +400,19 @@ const rigRows = async (root, schemas, childEnv, scratch) => {
       ? pass('rig-foreign-major', 'setup refused a contract major 2 stub with exit 4')
       : fail(
           'rig-foreign-major',
-          `setup answered a contract major 2 stub with exit ${foreign.spawnError ?? foreign.code}, not 4`,
+          `setup answered a contract major 2 stub with ${endedWith(foreign)}, not exit 4`,
         ),
   );
   return rows;
 };
 
-export const runConformance = async ({ from, manifest, schemas, env = process.env }) => {
+export const runConformance = async ({
+  from,
+  manifest,
+  schemas,
+  env = process.env,
+  rigBin = RIG_BIN,
+}) => {
   const root = path.resolve(from);
   const childEnv = memoryProcessEnv(env);
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'memory-conformance-'));
@@ -393,7 +421,7 @@ export const runConformance = async ({ from, manifest, schemas, env = process.en
     rows = [
       ...(await contractRows(root, manifest)),
       ...(await memoryRows(root, manifest, schemas, childEnv)),
-      ...(await rigRows(root, schemas, childEnv, scratch)),
+      ...(await rigRows(root, schemas, childEnv, scratch, rigBin)),
     ];
   } finally {
     await rm(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
