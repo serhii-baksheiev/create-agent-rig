@@ -329,6 +329,150 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
   });
 });
 
+// RP-195 slice 3 (Red step): the `diagnose` skill — a Core skill a session
+// follows when a check is red, a run crashed, or a claimed defect needs
+// reproducing. It dispatches `failure-diagnostician`, checks the answer with
+// `verdict.mjs check`, and routes by verdict word. It does not exist yet;
+// every assertion below is expected to fail until the Green step adds it.
+describe('diagnose skill (universal, Core) — RP-195 slice 3', () => {
+  const read = () => readFile(skillPath('universal', '.claude', 'skills', 'diagnose'), 'utf8');
+
+  // The routing table is one row per word pair — parsing it by its own
+  // structure (the line naming the word) rather than a character window, so
+  // an edit that only moves prose nearer a word cannot make a binding
+  // assertion pass without the action actually being on that word's row.
+  function rowFor(content: string, word: string): string {
+    // a table row, not any line mentioning the word — a prose sentence
+    // placed above the table must not silently become "the row"
+    const row = content
+      .split('\n')
+      .find((line) => line.trimStart().startsWith('|') && line.includes(word));
+    expect(row, `no table row names ${word}`).toBeDefined();
+    return row!;
+  }
+
+  it('exists with frontmatter name `diagnose`', async () => {
+    const content = await read();
+    const fm = frontmatterOf(content);
+    expect(fm['name']).toBe('diagnose');
+  });
+
+  it('dispatches failure-diagnostician and checks its answer with the exact gated command', async () => {
+    const content = await read();
+    expect(content).toMatch(/failure-diagnostician/);
+    // the gate argument matters: `parseVerdict` alone does not enforce that
+    // the block names THIS gate — only `verdict.mjs check <report> <gate>`
+    // does, so the command has to carry the gate name, not just the tool.
+    expect(content).toContain(
+      'node .claude/scripts/verdict.mjs check <report> failure-diagnostician',
+    );
+  });
+
+  // The mapping is asserted against the module's own vocabulary, not a
+  // hand-copied list of six words — a seventh word added to
+  // GATE_VOCABULARY['failure-diagnostician'] must fail this test until the
+  // skill is updated to route it, not silently pass because nobody re-typed
+  // the list here too (`invariants.md`, "one mechanism, one implementation").
+  it('maps every word failure-diagnostician may return to an action', async () => {
+    const content = await read();
+    const words = await verdictWordsFor('failure-diagnostician');
+    expect(words.length).toBeGreaterThan(0);
+    for (const word of words) {
+      expect(content, `no action is mapped for ${word}`).toContain(word);
+    }
+  });
+
+  // Each word's OWN row must name test-writer — not just some text within a
+  // window of the word, which a rewritten action elsewhere in the file could
+  // satisfy by accident.
+  it('binds ROOT_CAUSE and STILL_LIVE to test-writer in their own row', async () => {
+    const content = await read();
+    for (const word of ['ROOT_CAUSE', 'STILL_LIVE']) {
+      const row = rowFor(content, word);
+      expect(row, `${word}'s row does not name test-writer`).toMatch(/test-writer/);
+      // a close-on-evidence or a stop/escalate action landing on this row
+      // would be the wrong route for a word that means "write the test"
+      expect(row, `${word}'s row reads like a close or a stop, not the Red step`).not.toMatch(
+        /\bclose the item\b|\bescalate\b/i,
+      );
+    }
+  });
+
+  // Each word's own row must point at autonomy.md's escalation format, not
+  // just appear somewhere in a file that also cites autonomy.md for an
+  // unrelated pointer (the flaky-retry rule, a few lines above the table).
+  it('binds INCONCLUSIVE and INSUFFICIENT_EVIDENCE to the escalation format in autonomy.md, not a restated procedure', async () => {
+    const content = await read();
+    // whole-file guard: the escalation format is autonomy.md's own wording,
+    // and a restatement anywhere in the skill — not just off these rows —
+    // is exactly the copy this test exists to catch
+    expect(content, 'restates the escalation format instead of pointing at it').not.toMatch(
+      /what was attempted,\s*what was observed/i,
+    );
+    for (const word of ['INCONCLUSIVE', 'INSUFFICIENT_EVIDENCE']) {
+      const row = rowFor(content, word);
+      expect(row, `${word}'s row does not point at autonomy.md`).toMatch(
+        /\.claude\/rules\/autonomy\.md/,
+      );
+      // named as the pointer, not copied out — "what was attempted, what was
+      // observed" is autonomy.md's own escalation-format wording
+      expect(
+        row,
+        `${word}'s row restates the escalation format instead of pointing at it`,
+      ).not.toMatch(/what was attempted,\s*what was observed/i);
+      // a stop is not a fix: this row must not read like "open a PR anyway"
+      expect(row, `${word}'s row reads like a fix route, not a stop`).not.toMatch(
+        /\bfix\b|\bPR\b/i,
+      );
+      // a stop is not a retry either — a stalled diagnosis is escalated, not
+      // re-run until the check goes green (the "flaky ≠ retry" mistake)
+      expect(row, `${word}'s row reads like a retry route`).not.toMatch(
+        /\bretry\b|\bre-run\b|\brerun\b/i,
+      );
+    }
+  });
+
+  // ALREADY_FIXED / OBSOLETE have no dedicated route test today — the
+  // "maps every word" test above only checks the word is mentioned, so a
+  // wrong action on this row (e.g. "retry the check") stays invisible.
+  it('binds ALREADY_FIXED and OBSOLETE to closing the item on the verdict evidence, not a retry', async () => {
+    const content = await read();
+    for (const word of ['ALREADY_FIXED', 'OBSOLETE']) {
+      const row = rowFor(content, word);
+      expect(row, `${word}'s row does not name closing the item`).toMatch(/close the item/i);
+      expect(row, `${word}'s row does not cite the verdict's evidence`).toMatch(/evidence/i);
+      // a diagnosis that is already resolved is never re-run to confirm it —
+      // that is exactly the "flaky ≠ retry" mistake this skill exists to avoid
+      expect(row, `${word}'s row reads like a retry route`).not.toMatch(/retry|re-run|rerun/i);
+    }
+  });
+
+  it('never retries a check to reach green — points at the autonomy.md stop rule instead of restating it', async () => {
+    const content = await read();
+    expect(content).toMatch(
+      /never.{0,30}retry|not.{0,20}a thing to retry|retr(y|ies).{0,40}never/i,
+    );
+  });
+
+  // The diagnostician's own method (Reproduce / Isolate / Hypothesize /
+  // Confirm with evidence) belongs to failure-diagnostician.md alone — a
+  // second copy here is exactly the kind of restatement `skill-authoring`
+  // warns against ("point at existing rules or scripts rather than restating
+  // them"), and it is the one this skill is most tempted to write, since its
+  // whole job is to act on that agent's answer.
+  it("does not restate the diagnostician's method steps", async () => {
+    const content = await read();
+    for (const step of [
+      '**Reproduce.**',
+      '**Isolate.**',
+      '**Hypothesize.**',
+      '**Confirm with evidence.**',
+    ]) {
+      expect(content, `restates the diagnostician's "${step}" step`).not.toContain(step);
+    }
+  });
+});
+
 describe('pr-ship skill (universal)', () => {
   it('exists in universal and states the gate + verdict', async () => {
     const content = await readFile(skillPath('universal', '.claude', 'skills', 'pr-ship'), 'utf8');
