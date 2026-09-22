@@ -1752,9 +1752,15 @@ works` is the reader-facing summary; this is where a README promise
 | `wiring`    | Hook wiring that is not replaceable — handed over, not overwritten.                                                                                                   |
 | `retired`   | The manifest says the rig installed it; this release's payload no longer ships it at all (RP-177) — never written, never deleted; the path becomes the project's own. |
 
-`uninstall`'s own verdicts — `remove`, `preserved` (with the eight reasons
-`## uninstall (RP-181)` names) and `absent` — are that section's own closed
-set, not `UpgradeVerdict`: the two commands answer different questions (what
+`uninstall`'s own verdicts — `remove`, `preserved` and `absent` — are that
+section's own closed set, not `UpgradeVerdict`. **The three verdicts are
+closed; the `reason` strings beside a `preserved` one are not.**
+`## uninstall (RP-181)` names the ones a caller meets most, and the code
+carries at least one more that no section here names: the `AGENTS.md`
+rescue file is preserved as "not this release's current rendered AGENTS.md
+— treated as yours" (`packages/cli/src/commands/uninstall.ts`). Match on the
+verdict, never on the reason text. Verdicts and reasons differ from
+`UpgradeVerdict` because the two commands answer different questions (what
 changed on this release, versus what this rig can prove it wrote) and are
 not required to share one vocabulary.
 
