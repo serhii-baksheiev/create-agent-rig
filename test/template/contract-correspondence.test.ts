@@ -75,10 +75,77 @@ function firstPipeTable(markdown: string): PipeTable | undefined {
 
 const stripMd = (cell: string): string => cell.replace(/[`*]/g, '').trim();
 
-/** Every backtick-code span in a Markdown fragment, stripped of the backticks. */
+/**
+ * Every backtick-code span in a Markdown fragment, stripped of the backticks.
+ *
+ * A fenced block (``` … ```) is stripped first. Without that, its own
+ * opening and closing triple-backtick runs pair up with each other as if
+ * they were ordinary inline-span delimiters, so the *next* real inline span
+ * in the fragment pairs with the wrong backtick and every span after it
+ * mis-parses too — pinned in
+ * `test/template/contract-correspondence.test.ts` ›
+ * "codeSpans keeps inline-span parity across a fenced code block".
+ */
 function codeSpans(markdown: string): Set<string> {
-  return new Set([...markdown.matchAll(/`([^`]+)`/g)].map((m) => m[1]!));
+  const withoutFences = markdown.replace(/```[\s\S]*?```/g, '');
+  return new Set([...withoutFences.matchAll(/`([^`]+)`/g)].map((m) => m[1]!));
 }
+
+/**
+ * The `outcome` domain "## setup integrations (RP-22)" documents, read from
+ * its own pipe table's leading column — a table, not `codeSpans`, so this
+ * reading cannot be affected by the fenced `sh` block earlier in that same
+ * section.
+ */
+function setupOutcomeTableDomain(contract: string): string[] {
+  // No trailing `\b` here: the heading ends in `)`, and `\b` cannot match
+  // between two non-word characters (`)` and end-of-line) — it would never
+  // find the heading at all.
+  const setupSection = section(contract, /^##\s+setup integrations \(RP-22\)/);
+  const table = firstPipeTable(setupSection);
+  expect(table, 'no pipe table found under "## setup integrations (RP-22)"').toBeTruthy();
+  return table!.rows.map((row) => stripMd(row[0] ?? ''));
+}
+
+/** The `setup add`/`setup apply`/`setup remove` pipe-table rows of "## Public surface at 1.0". */
+function publicSurfaceSetupRows(contract: string): string {
+  const publicSurface = section(contract, /^##\s+Public surface at 1\.0\b/);
+  const rows = publicSurface
+    .split('\n')
+    .filter((line) => /^\|\s*`setup (add|apply|remove)/.test(line));
+  expect(
+    rows.length,
+    'expected exactly 3 `setup add`/`setup apply`/`setup remove` rows under ' +
+      '"## Public surface at 1.0"',
+  ).toBe(3);
+  return rows.join('\n');
+}
+
+/**
+ * Backtick spans shaped like an outcome value — one lowercase word — found in
+ * a fragment, excluding the `outcome` field name itself (present in these
+ * rows as the label, not as a value).
+ */
+function outcomeLikeSpans(markdown: string): Set<string> {
+  return new Set(
+    [...codeSpans(markdown)].filter((span) => /^[a-z]+$/.test(span) && span !== 'outcome'),
+  );
+}
+
+describe('codeSpans', () => {
+  it('keeps inline-span parity across a fenced code block', () => {
+    const fragment = [
+      'A fenced block:',
+      '',
+      '```sh',
+      'create-agent-rig setup add figma-mcp --yes --json',
+      '```',
+      '',
+      'and an inline span after it: `written`.',
+    ].join('\n');
+    expect(codeSpans(fragment)).toEqual(new Set(['written']));
+  });
+});
 
 describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => {
   // --- 1. Ownership verdicts ↔ the UpgradeVerdict union --------------------
@@ -128,13 +195,11 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
   // --- 2. Doctor check IDs --------------------------------------------------
   //
   // "## Doctor" calls `id` "a stable identifier for the check, safe to match
-  // on" but — unlike the `UpgradeVerdict` table above — nowhere spells out the
-  // closed set of values it takes. This test derives the fixed (non-template)
-  // ids `doctor.ts` actually emits from the source, and checks whether each
-  // one is named literally, in backtick code, anywhere in "## Doctor". If it
-  // is not, this is a real gap in the frozen contract, not a bug in this
-  // test: report it rather than editing docs/command-contract.md or
-  // doctor.ts to make it pass.
+  // on". Like the `UpgradeVerdict` table above, "## Doctor" now spells out
+  // the closed set of values it takes, in a pipe table. This test derives
+  // the fixed (non-template) ids `doctor.ts` actually emits from the source,
+  // and checks that each one is named literally, in backtick code, somewhere
+  // in "## Doctor".
 
   describe('"## Doctor" names, in backtick code, every fixed check id doctor.ts emits', () => {
     async function fixedDoctorCheckIds(): Promise<string[]> {
@@ -175,10 +240,16 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
   // Observing what the command actually prints cannot make that mistake and
   // cannot drift out of step with a future rewrite of that line.
   //
-  // As with the doctor ids above: "## setup integrations (RP-22)" and the
-  // "## Public surface at 1.0" row for `setup add`/`apply`/`remove` never
-  // spell out `outcome`'s value domain anywhere. This test is expected to
-  // report that gap; it is not fixed here.
+  // As with the doctor ids above: "## setup integrations (RP-22)" now spells
+  // out `outcome`'s value domain in its own pipe table. That table is the
+  // canonical copy and is checked on its own, never unioned with a second
+  // source: a union lets either copy alone satisfy the check, so a table
+  // that lost every real value could still pass as long as the *other* copy
+  // still had them. The "## Public surface at 1.0" rows for
+  // `setup add`/`apply`/`remove` are a second, independent copy of the same
+  // closed set, and get their own separately-failing assertion that the two
+  // agree — the shape `.claude/rules/invariants.md` asks for when a fact has
+  // to be spelled out twice.
 
   describe('the documented setup outcome values match what setup add/apply/remove --json actually prints', () => {
     let repo: string;
@@ -228,22 +299,43 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
       expect(new Set(outcomes)).toEqual(new Set(['planned', 'written', 'removed', 'refused']));
     });
 
-    it('names every observed outcome value, in backtick code, somewhere in the setup sections', async () => {
-      const [outcomes, contract] = await Promise.all([observedOutcomes(), loadContract()]);
-      // No trailing `\b` here: the heading ends in `)`, and `\b` cannot match
-      // between two non-word characters (`)` and end-of-line) — it would
-      // never find the heading at all.
-      const setupSection = section(contract, /^##\s+setup integrations \(RP-22\)/);
-      const publicSurface = section(contract, /^##\s+Public surface at 1\.0\b/);
-      const spans = new Set([...codeSpans(setupSection), ...codeSpans(publicSurface)]);
-      const undocumented = outcomes.filter((outcome) => !spans.has(outcome));
-      expect(
-        undocumented,
-        'outcome values setup add/apply/remove --json actually prints, with no literal ' +
-          'backtick mention in "## setup integrations (RP-22)" or the setup rows of ' +
-          '"## Public surface at 1.0"',
-      ).toEqual([]);
-    });
+    it(
+      '"## setup integrations (RP-22)" alone names, in its own outcome table, exactly the ' +
+        'outcome values setup add/apply/remove --json actually prints',
+      async () => {
+        const [outcomes, contract] = await Promise.all([observedOutcomes(), loadContract()]);
+        const documented = setupOutcomeTableDomain(contract);
+        expect(
+          outcomes.filter((outcome) => !documented.includes(outcome)),
+          'outcome values setup add/apply/remove --json actually prints, missing from the ' +
+            '"## setup integrations (RP-22)" outcome table',
+        ).toEqual([]);
+        expect(
+          documented.filter((value) => !outcomes.includes(value)),
+          '"## setup integrations (RP-22)" outcome table rows with no matching real outcome value',
+        ).toEqual([]);
+      },
+    );
+
+    it(
+      'the `setup add`/`apply`/`remove` rows of "## Public surface at 1.0" agree, in backtick ' +
+        'code, with the "## setup integrations (RP-22)" outcome table',
+      async () => {
+        const contract = await loadContract();
+        const documented = new Set(setupOutcomeTableDomain(contract));
+        const rowSpans = outcomeLikeSpans(publicSurfaceSetupRows(contract));
+        expect(
+          [...documented].filter((value) => !rowSpans.has(value)),
+          'outcome values the "## setup integrations (RP-22)" table names, missing from the ' +
+            '`setup add`/`apply`/`remove` rows of "## Public surface at 1.0"',
+        ).toEqual([]);
+        expect(
+          [...rowSpans].filter((span) => !documented.has(span)),
+          'single-word backtick spans in the `setup add`/`apply`/`remove` rows of "## Public ' +
+            'surface at 1.0" that are not in the "## setup integrations (RP-22)" outcome table',
+        ).toEqual([]);
+      },
+    );
   });
 
   // --- 4. The manifest keys a fresh init writes -----------------------------
