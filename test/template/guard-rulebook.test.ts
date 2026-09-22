@@ -521,12 +521,24 @@ describe('guard-rulebook: wired, bounded in its own words, and written into the 
     const { RULEBOOK_PREFIXES } = await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
     );
+    // Per entry, the token is the LAST path segment with its extension
+    // stripped (the file's or directory's own name) — never the first
+    // segment, and never a bare top-level directory name shared by
+    // unrelated prose. A first-segment derivation once picked "rig" for
+    // `.rig/revalidation.json`, and the header's unrelated disclosure
+    // "(absent in a generated rig)" satisfied it by accident: rewording
+    // that phrase alone flipped a real omission invisible. "manifest" is
+    // the one entry the header names by concept rather than by its literal
+    // last segment (`.rig-manifest.json`'s own segment is "rig-manifest",
+    // never spelled out) and keeps its explicit override for that reason.
     const familyOf = (prefix: string) => {
       if (prefix.includes('manifest')) return 'manifest';
-      return prefix
+      const parts = prefix
         .replace(/^\.claude\//, '')
         .replace(/^\./, '')
-        .split(/[/.]/)[0]!;
+        .split(/[/.]/)
+        .filter(Boolean);
+      return parts.length > 1 ? parts[parts.length - 2]! : parts[0]!;
     };
     const families = [...new Set((RULEBOOK_PREFIXES as readonly string[]).map(familyOf))];
     const missing = families.filter((family) => !header.includes(family));
