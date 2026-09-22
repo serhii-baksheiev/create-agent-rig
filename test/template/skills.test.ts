@@ -311,6 +311,16 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
 describe('diagnose skill (universal, Core) — RP-195 slice 3', () => {
   const read = () => readFile(skillPath('universal', '.claude', 'skills', 'diagnose'), 'utf8');
 
+  // The routing table is one row per word pair — parsing it by its own
+  // structure (the line naming the word) rather than a character window, so
+  // an edit that only moves prose nearer a word cannot make a binding
+  // assertion pass without the action actually being on that word's row.
+  function rowFor(content: string, word: string): string {
+    const row = content.split('\n').find((line) => line.includes(word));
+    expect(row, `no row in the routing table names ${word}`).toBeDefined();
+    return row!;
+  }
+
   it('exists with frontmatter name `diagnose`', async () => {
     const content = await read();
     const fm = frontmatterOf(content);
@@ -342,18 +352,58 @@ describe('diagnose skill (universal, Core) — RP-195 slice 3', () => {
     }
   });
 
-  it('sends ROOT_CAUSE to a failing test first, through test-writer', async () => {
+  // Each word's OWN row must name test-writer — not just some text within a
+  // window of the word, which a rewritten action elsewhere in the file could
+  // satisfy by accident.
+  it('binds ROOT_CAUSE and STILL_LIVE to test-writer in their own row', async () => {
     const content = await read();
-    const rootCause = /ROOT_CAUSE[\s\S]{0,300}/.exec(content)?.[0] ?? '';
-    expect(rootCause).toMatch(/test-writer/);
+    for (const word of ['ROOT_CAUSE', 'STILL_LIVE']) {
+      const row = rowFor(content, word);
+      expect(row, `${word}'s row does not name test-writer`).toMatch(/test-writer/);
+      // a close-on-evidence or a stop/escalate action landing on this row
+      // would be the wrong route for a word that means "write the test"
+      expect(row, `${word}'s row reads like a close or a stop, not the Red step`).not.toMatch(
+        /\bclose the item\b|\bescalate\b/i,
+      );
+    }
   });
 
-  it('sends INCONCLUSIVE and INSUFFICIENT_EVIDENCE to the escalation format in autonomy.md, not a restated procedure', async () => {
+  // Each word's own row must point at autonomy.md's escalation format, not
+  // just appear somewhere in a file that also cites autonomy.md for an
+  // unrelated pointer (the flaky-retry rule, a few lines above the table).
+  it('binds INCONCLUSIVE and INSUFFICIENT_EVIDENCE to the escalation format in autonomy.md, not a restated procedure', async () => {
     const content = await read();
-    expect(content).toMatch(/\.claude\/rules\/autonomy\.md/);
-    // named as the pointer, not copied out — "what was attempted, what was
-    // observed" is autonomy.md's own escalation-format wording
-    expect(content).not.toMatch(/what was attempted,\s*what was observed/i);
+    for (const word of ['INCONCLUSIVE', 'INSUFFICIENT_EVIDENCE']) {
+      const row = rowFor(content, word);
+      expect(row, `${word}'s row does not point at autonomy.md`).toMatch(
+        /\.claude\/rules\/autonomy\.md/,
+      );
+      // named as the pointer, not copied out — "what was attempted, what was
+      // observed" is autonomy.md's own escalation-format wording
+      expect(
+        row,
+        `${word}'s row restates the escalation format instead of pointing at it`,
+      ).not.toMatch(/what was attempted,\s*what was observed/i);
+      // a stop is not a fix: this row must not read like "open a PR anyway"
+      expect(row, `${word}'s row reads like a fix route, not a stop`).not.toMatch(
+        /\bfix\b|\bPR\b/i,
+      );
+    }
+  });
+
+  // ALREADY_FIXED / OBSOLETE have no dedicated route test today — the
+  // "maps every word" test above only checks the word is mentioned, so a
+  // wrong action on this row (e.g. "retry the check") stays invisible.
+  it('binds ALREADY_FIXED and OBSOLETE to closing the item on the verdict evidence, not a retry', async () => {
+    const content = await read();
+    for (const word of ['ALREADY_FIXED', 'OBSOLETE']) {
+      const row = rowFor(content, word);
+      expect(row, `${word}'s row does not name closing the item`).toMatch(/close the item/i);
+      expect(row, `${word}'s row does not cite the verdict's evidence`).toMatch(/evidence/i);
+      // a diagnosis that is already resolved is never re-run to confirm it —
+      // that is exactly the "flaky ≠ retry" mistake this skill exists to avoid
+      expect(row, `${word}'s row reads like a retry route`).not.toMatch(/retry|re-run|rerun/i);
+    }
   });
 
   it('never retries a check to reach green — points at the autonomy.md stop rule instead of restating it', async () => {
