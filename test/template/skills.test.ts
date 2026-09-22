@@ -303,6 +303,85 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
   });
 });
 
+// RP-195 slice 3 (Red step): the `diagnose` skill — a Core skill a session
+// follows when a check is red, a run crashed, or a claimed defect needs
+// reproducing. It dispatches `failure-diagnostician`, checks the answer with
+// `verdict.mjs check`, and routes by verdict word. It does not exist yet;
+// every assertion below is expected to fail until the Green step adds it.
+describe('diagnose skill (universal, Core) — RP-195 slice 3', () => {
+  const read = () => readFile(skillPath('universal', '.claude', 'skills', 'diagnose'), 'utf8');
+
+  it('exists with frontmatter name `diagnose`', async () => {
+    const content = await read();
+    const fm = frontmatterOf(content);
+    expect(fm['name']).toBe('diagnose');
+  });
+
+  it('dispatches failure-diagnostician and checks its answer with the exact gated command', async () => {
+    const content = await read();
+    expect(content).toMatch(/failure-diagnostician/);
+    // the gate argument matters: `parseVerdict` alone does not enforce that
+    // the block names THIS gate — only `verdict.mjs check <report> <gate>`
+    // does, so the command has to carry the gate name, not just the tool.
+    expect(content).toContain(
+      'node .claude/scripts/verdict.mjs check <report> failure-diagnostician',
+    );
+  });
+
+  // The mapping is asserted against the module's own vocabulary, not a
+  // hand-copied list of six words — a seventh word added to
+  // GATE_VOCABULARY['failure-diagnostician'] must fail this test until the
+  // skill is updated to route it, not silently pass because nobody re-typed
+  // the list here too (`invariants.md`, "one mechanism, one implementation").
+  it('maps every word failure-diagnostician may return to an action', async () => {
+    const content = await read();
+    const words = await verdictWordsFor('failure-diagnostician');
+    expect(words.length).toBeGreaterThan(0);
+    for (const word of words) {
+      expect(content, `no action is mapped for ${word}`).toContain(word);
+    }
+  });
+
+  it('sends ROOT_CAUSE to a failing test first, through test-writer', async () => {
+    const content = await read();
+    const rootCause = /ROOT_CAUSE[\s\S]{0,300}/.exec(content)?.[0] ?? '';
+    expect(rootCause).toMatch(/test-writer/);
+  });
+
+  it('sends INCONCLUSIVE and INSUFFICIENT_EVIDENCE to the escalation format in autonomy.md, not a restated procedure', async () => {
+    const content = await read();
+    expect(content).toMatch(/\.claude\/rules\/autonomy\.md/);
+    // named as the pointer, not copied out — "what was attempted, what was
+    // observed" is autonomy.md's own escalation-format wording
+    expect(content).not.toMatch(/what was attempted,\s*what was observed/i);
+  });
+
+  it('never retries a check to reach green — points at the autonomy.md stop rule instead of restating it', async () => {
+    const content = await read();
+    expect(content).toMatch(
+      /never.{0,30}retry|not.{0,20}a thing to retry|retr(y|ies).{0,40}never/i,
+    );
+  });
+
+  // The diagnostician's own method (Reproduce / Isolate / Hypothesize /
+  // Confirm with evidence) belongs to failure-diagnostician.md alone — a
+  // second copy here is exactly the kind of restatement `skill-authoring`
+  // warns against ("point at existing rules or scripts rather than restating
+  // them"), and it is the one this skill is most tempted to write, since its
+  // whole job is to act on that agent's answer.
+  it("does not restate the diagnostician's method steps", async () => {
+    const content = await read();
+    for (const step of [
+      '**Reproduce.**',
+      '**Isolate.**',
+      '**Hypothesize.**',
+      '**Confirm with evidence.**',
+    ]) {
+      expect(content, `restates the diagnostician's "${step}" step`).not.toContain(step);
+    }
+  });
+});
+
 describe('pr-ship skill (universal)', () => {
   it('exists in universal and states the gate + verdict', async () => {
     const content = await readFile(skillPath('universal', '.claude', 'skills', 'pr-ship'), 'utf8');
