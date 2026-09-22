@@ -6,13 +6,16 @@ allowed-tools: Read, Grep, Glob
 
 # Authoring a skill
 
-The rules this skill checks against are the ones every shipped skill here
-already follows — this does not invent new ones.
+No check in this rig runs on a skill you write here — the rules below are
+applied by the author, and by a reviewer reading this file, never by a
+mechanism. The same rules are what the generator's own
+`test/template/skill-authoring.test.ts` (absent in a generated rig) checks —
+against the skills this rig itself ships, not against any skill authored in
+a generated rig.
 
 - **The frontmatter `name` equals the directory name.** A skill loaded from
   `.claude/skills/foo/` is named `foo`, not something else.
-- **The `description` says when to use the skill**, not just what it does —
-  the dispatching session picks a skill off that sentence alone.
+- **The `description` says when to use the skill**, not just what it does.
 - **Keep it short, and point at existing rules or scripts rather than
   restating them.** A skill that copies a rule's wording is a second copy
   that goes stale the day the rule changes; link to `.claude/rules/` or a
@@ -30,12 +33,8 @@ already follows — this does not invent new ones.
   generated rig) › "publishes every shared skill through the Codex
   repository skill location" — not repeated here.
 
-The structural checks a skill in this repository must pass — frontmatter
-shape, the description, the cross-references, the routing-role names — are
-generator tests: see `test/template/skill-authoring.test.ts` (absent in a
-generated rig).
-
 ## Out of scope
 
-This is not a generic skill evaluator. It checks the rules this rig actually
-enforces on its own skills, nothing broader.
+This is guidance to apply by reading, not an evaluator: the skill itself has
+no procedure and checks nothing. It states the rules this rig applies to its
+own shipped skills, nothing broader.
