@@ -263,6 +263,17 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     expect(entries).toContain('.claude/');
   });
 
+  // RP-193 / RP-202: `packages/cli/src/integrations/` was declared, while the
+  // command that drives it — spawning providers and editing `.mcp.json` and
+  // `.codex/config.toml` — sat one directory over, outside every entry.
+  it('declares the integrations command surface, not only the modules it drives', async () => {
+    const detector = await loadDetector();
+    const declared = await loadDeclaredPaths();
+    expect(
+      detector.elevatedPathsIn(['packages/cli/src/commands/integrations.ts'], declared),
+    ).not.toEqual([]);
+  });
+
   it('the blocking hooks are active in this repo', async () => {
     const settings = JSON.parse(
       await readFile(path.join(repoRoot, '.claude', 'settings.json'), 'utf8'),
