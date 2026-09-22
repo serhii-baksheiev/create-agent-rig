@@ -469,8 +469,7 @@ describe('guard-rulebook: every edit surface reaches it', () => {
 // allowed while the unattended flag is armed. `Write`/`Edit`/`MultiEdit`/
 // `NotebookEdit` go through `normalisePath`, which resolves nothing, and are
 // unaffected; a junction whose target sits OUTSIDE the checkout fails closed
-// through the global-refusal branch either way. See
-// `.claude/runs/20260922-132258/reports/RP-60-diagnostician.md`.
+// through the global-refusal branch either way. RP-60.
 //
 // `apply_patch` resolves its repository root with `git rev-parse`, so this
 // needs its own scratch git repository rather than reusing the aliased-ROOT
