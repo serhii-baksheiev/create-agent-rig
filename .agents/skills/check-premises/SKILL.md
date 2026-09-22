@@ -108,6 +108,11 @@ parts:
 - **quote** or pointer — the sentence that says it, short enough to re-check, or
   the exact section it sits in.
 
+A complete record that supports the claim lets it hold. One that contradicts it
+is `PREMISE FALSE`, and the work stops exactly as it does for a claim the code
+contradicts. The four parts go in the report's `evidence`, and in the blocker's
+`note` when there is one.
+
 A claim missing any of the four stays `UNVERIFIABLE`: being widely believed, or
 true of an earlier version, does not promote it to a fact. This skill adds no
 network tooling — where the session cannot reach the source, the claim is
@@ -118,8 +123,8 @@ network tooling — where the session cannot reach the source, the claim is
 | Verdict | When | What happens next |
 | --- | --- | --- |
 | `PREMISES HOLD` | every load-bearing claim checked out, or there were none | proceed to the Red step |
-| `PREMISE FALSE` | a load-bearing claim is contradicted by the code | **stop and report** |
-| `UNVERIFIABLE` | a load-bearing claim could not be decided from the code | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
+| `PREMISE FALSE` | a load-bearing claim is contradicted by the code — or, for an external premise, by its four-part record | **stop and report** |
+| `UNVERIFIABLE` | a load-bearing claim could not be decided from the code — or, for an external premise, has no complete four-part record | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
 | `UNMEASURED` | **second entry point only:** a sentence you wrote asserts behaviour, and nothing you can point at backs it | **delete the sentence, or turn it into a pointer to the test that proves it** — before the gate |
 
 🔴 **The edit belongs to the calling session, not to this skill.** It reports; the
@@ -245,8 +250,9 @@ is invisible to every gate downstream.
 - **It reads the code, so it only catches what the code can contradict.** A claim
   about runtime behaviour ("this times out in production"), about intent, or
   about a system this repository does not contain is `UNVERIFIABLE` here, not
-  false — say so rather than guessing. The one exit is the four-part evidence
-  "External premises" asks for.
+  false — say so rather than guessing. For an external API, CLI or library the
+  way out is the four-part record "External premises" asks for, which can make
+  the claim hold or prove it false.
 - **Each entry point is one pass, at its own end of the task.** A premise that goes
   false *between* them — a merge lands, a dependency moves — is a staleness stop rule
   (`.claude/rules/autonomy.md`), not this skill. Neither pass watches the other's

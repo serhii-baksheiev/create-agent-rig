@@ -236,6 +236,14 @@ describe('check-premises skill (universal) — the item is a claim, not a fact',
     }
     expect(section).toContain('UNVERIFIABLE');
     expect(section).toMatch(/no\s+network\s+tooling/i);
+    // A claim the record contradicts stops the work like any false premise;
+    // read through §4's code-only wording it would land in UNVERIFIABLE and
+    // proceed under an assumption known to be false.
+    expect(section).toMatch(/contradict[\s\S]{0,80}PREMISE FALSE/);
+    const table = /^## 4\. The verdict\n([\s\S]*?)(?=^🔴)/m.exec(content)?.[1] ?? '';
+    const row = (verdict: string) => table.split('\n').find((l) => l.includes(`\`${verdict}\``));
+    expect(row('PREMISE FALSE')).toMatch(/external premise/i);
+    expect(row('UNVERIFIABLE')).toMatch(/external premise/i);
   });
 
   it('carries worked examples, and no tracker key travels with them', async () => {
