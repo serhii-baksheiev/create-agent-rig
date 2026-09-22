@@ -14,6 +14,49 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## 0.10.1
+
+**A fixes-only patch on 0.10.0.** Every entry corrects existing behaviour or
+states a rule the rulebook already follows; nothing is added to what `create`,
+`init` or `upgrade` install beyond the corrected files, and no agent, skill,
+hook or routing row is new.
+
+### Fixed
+
+- **`upgrade` no longer crashes on a directory where a rig-owned file
+  belongs.** A tracked path that is a directory or another non-regular entry
+  is reported as a conflict with a reason and left untouched, in `--dry-run`
+  and `--yes` alike, instead of ending in an `EISDIR` stack trace (RP-189).
+- **`upgrade` re-checks a leftover `AGENTS.md.rig-new` before removing it.**
+  The file is removed only while it still holds exactly the rendered
+  `AGENTS.md` bytes, so one edited after the plan was shown is kept, one
+  removed in the meantime no longer crashes the run, and the closing notice
+  reports a removal only when one happened (RP-202).
+- **`upgrade --dry-run` exits 1 where the real run refuses** a non-file at
+  `AGENTS.md.rig-new`, instead of 0 (RP-202).
+- **The Stop gate's budget is measured on the monotonic clock.**
+  `gate-stop-dod` computed its shared deadline from the wall clock, so a clock
+  step lengthened or shortened it (RP-204).
+
+### Rulebook
+
+- `workflow.md` states the review-findings rule as a Core section of its own:
+  a blocking finding closes by a fix the reviewer reads again, or by evidence
+  the reviewer can re-check that its premise is false — with or without the
+  opt-in workflow layer (RP-194).
+- `check-premises` treats a claim about an external API, CLI or library as a
+  premise: backed by a four-part record (version, authoritative source, date,
+  quote or pointer), it holds or is `PREMISE FALSE`; without one it stays
+  `UNVERIFIABLE` (RP-194).
+
+### Generator repository (not a rig-facing change)
+
+- `packages/cli/src/commands/integrations.ts` is a declared elevated path.
+- `scripts/memory-conformance.mjs` names why a rig spawn failed — exit code or
+  signal plus the child's error code — instead of a bare "exit 1" (RP-188).
+- `docs/decisions/agent-roles-1.0.md` records the 1.0 agent-role targets; it
+  is repository-local and not shipped.
+
 ## 0.10.0
 
 Platforms: the packed release candidate is accepted on Linux, Windows and
