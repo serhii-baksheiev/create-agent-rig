@@ -947,11 +947,11 @@ export async function applyUpgrade(
     written.push(action.rel);
   }
 
-  // Round 5: no new filesystem probing here — `plan.agentsRescue` already
-  // says exactly what (if anything) this run does, decided before any write
-  // above ever ran. `would-write` is the only status that writes; `identical`
+  // Round 5: `plan.agentsRescue` says what (if anything) this run may do,
+  // decided before any write above ever ran; only `cleanup` probes again. `would-write` is the only status that writes; `identical`
   // and `differs` are both "leave it exactly as it is"; `cleanup` is the only
-  // status that deletes; `unsafe` already returned above and `none` does
+  // status that deletes, and the one that reads the file again before it
+  // does (below); `unsafe` already returned above and `none` does
   // nothing at all — round 4 cycle 4's "must not affect upgrade" case.
   if (plan.agentsRescue.holdBack) {
     if (plan.agentsRescue.status === 'would-write') {
@@ -965,8 +965,22 @@ export async function applyUpgrade(
       written.push(AGENTS_MD_RESCUE);
     }
   } else if (plan.agentsRescue.status === 'cleanup') {
-    const rescueDest = await writableOnDisk(repoDir, AGENTS_MD_RESCUE);
-    await unlink(rescueDest);
+    // The one deletion here is re-verified at apply time, the way uninstall
+    // re-checks `recordedHash`: an interactive run applies after its prompt,
+    // so the leftover may have been edited or removed since it was matched.
+    const rendered = plan.contents.get('AGENTS.md');
+    const current = await readRescueFile(repoDir);
+    if (
+      rendered !== undefined &&
+      current.kind === 'file' &&
+      current.bytes.equals(Buffer.from(rendered, 'utf8'))
+    ) {
+      try {
+        await unlink(await writableOnDisk(repoDir, AGENTS_MD_RESCUE));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
   }
 
   await writeManifest(repoDir, plan.manifest);

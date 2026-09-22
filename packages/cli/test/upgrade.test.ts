@@ -713,6 +713,36 @@ describe('planUpgrade — what it would do, before it does anything', () => {
         await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
       });
 
+      // RP-192 item 4: an interactive run applies its plan only after the
+      // prompt, so the leftover can change or vanish after it was matched.
+      it('keeps a leftover rescue file that changed between plan and apply', async () => {
+        await installRig();
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
+        await applyUpgrade(repo, await planUpgrade(repo, { history: emptyHistory }));
+        await write('AGENTS.md', await read(AGENTS_MD_RESCUE));
+
+        const plan2 = await planUpgrade(repo, { history: emptyHistory });
+        expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
+        await write(AGENTS_MD_RESCUE, '# edited after the plan was made\n');
+        await applyUpgrade(repo, plan2);
+        expect(await read(AGENTS_MD_RESCUE)).toBe('# edited after the plan was made\n');
+      });
+
+      it('completes when the leftover rescue file vanished between plan and apply', async () => {
+        await installRig();
+        await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
+        await write('AGENTS.md', unreadableAgents);
+        await applyUpgrade(repo, await planUpgrade(repo, { history: emptyHistory }));
+        await write('AGENTS.md', await read(AGENTS_MD_RESCUE));
+
+        const plan2 = await planUpgrade(repo, { history: emptyHistory });
+        expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
+        await rm(abs(AGENTS_MD_RESCUE));
+        await expect(applyUpgrade(repo, plan2)).resolves.toBeDefined();
+        await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
+      });
+
       it('reports `none` and leaves a stale, differing rescue file alone once AGENTS.md resolves some other way', async () => {
         await installRig();
         await pretendInstalled('CLAUDE.md', PRE_RP186_TEXT);
