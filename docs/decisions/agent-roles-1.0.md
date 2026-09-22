@@ -50,3 +50,12 @@ re-deriving it, and a 0.10.x patch has a written line it must not cross.
 A 0.10.x release adds none of the roles or skills above: no new agent file, no
 new `SKILL.md`, no new routing row, no new hook. A patch that needs one of them
 is 1.0 scope and waits for it.
+
+**0.10.1 was the last 0.10.x release.** It was published from `738b494`, and from
+there `master` is the 1.0 line: the roles and skills above land on it under
+RP-195 and ship in 1.0.0, never in a 0.10.x release. The version in
+`package.json` stays 0.10.1 until the 1.0.0 release commit changes it. A
+0.10.x fix, if one is ever needed, is cut from `738b494`, not from `master`.
+
+`implementer` is `implementation-agent`: the owner's 1.0 mandate (22 September
+2026) kept the shipped name, so no rename is part of 1.0.
