@@ -551,4 +551,63 @@ describe('scripts/memory-conformance.mjs names why a rig spawn failed (RP-188)',
     },
     FULL_RUN_BUDGET_MS,
   );
+
+  // RP-206 C2: a child that STARTED but whose stdout exceeded execFile's
+  // maxBuffer reports `error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'`,
+  // a string exactly like a real spawn failure's `error.code`. `run()` folds
+  // both into `spawnError`, so endedWith() and validatedAnswer() both said
+  // "could not start" / "could not be started" for a child that was in fact
+  // killed for writing too much — the same misdiagnosis RP-188 fixed for
+  // "exit 1", now one level deeper.
+  const OVERFLOW_RIG = "process.stdout.write(Buffer.alloc(5 * 1024 * 1024, 'x'));\n";
+
+  it(
+    'reports a rig setup whose output exceeded the spawn buffer as killed, not as failing to start',
+    async () => {
+      const report = await runWithRig(OVERFLOW_RIG);
+      const setup = row(report, 'rig-setup');
+      expect(setup?.status).toBe('fail');
+      expect(setup?.detail).not.toContain('could not start');
+      expect(setup?.detail).toMatch(/buffer/i);
+    },
+    FULL_RUN_BUDGET_MS,
+  );
+
+  it(
+    'reports a rig handshake whose output exceeded the spawn buffer as killed, not as failing to start',
+    async () => {
+      const report = await runWithRig(OVERFLOW_RIG);
+      const handshake = row(report, 'rig-handshake');
+      expect(handshake?.status).toBe('fail');
+      expect(handshake?.detail).not.toContain('could not start');
+      expect(handshake?.detail).not.toContain('could not be started');
+      expect(handshake?.detail).toMatch(/buffer/i);
+    },
+    FULL_RUN_BUDGET_MS,
+  );
+
+  it(
+    'keeps saying a memory backend could not start when the checkout root itself is missing (ENOENT)',
+    async () => {
+      const module = (await import(pathToFileURL(scriptPath).href)) as Module;
+      const rigDir = await mkdtemp(path.join(tmpdir(), 'rp206-stub-rig-'));
+      const missingRoot = path.join(tmpdir(), `rp206-missing-root-${Date.now()}`);
+      try {
+        const rigBin = path.join(rigDir, 'index.js');
+        await writeFile(rigBin, 'process.exit(0);\n');
+        const report = await module.runConformance({
+          from: missingRoot,
+          ...(await contract()),
+          rigBin,
+        });
+        const handshake = row(report, 'memory-handshake');
+        expect(handshake?.status).toBe('fail');
+        expect(handshake?.detail).toContain('could not be started');
+        expect(handshake?.detail).toContain('ENOENT');
+      } finally {
+        await removeFixture(rigDir);
+      }
+    },
+    FULL_RUN_BUDGET_MS,
+  );
 });
