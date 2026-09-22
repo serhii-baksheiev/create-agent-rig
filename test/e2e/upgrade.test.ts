@@ -192,6 +192,29 @@ describe('npm pack → init → upgrade (the delivery path for a changed file)',
     expect(await readFile(path.join(empty, 'CLAUDE.md'), 'utf8')).toBe('# some other project\n');
     await removeFixture(empty);
   });
+
+  // RP-189: a directory committed where a rig-owned file belongs is reachable
+  // through nothing worse than `git clone`, and it made both runs stack-trace.
+  it('reports a directory at a tracked path as a conflict, in --dry-run and --yes alike', async () => {
+    const repo = await freshRig();
+    const rel = '.claude/rules/workflow.md';
+    const dir = path.join(repo, ...rel.split('/'));
+    await rm(dir);
+    await mkdir(dir);
+    await writeFile(path.join(dir, 'sentinel.txt'), 'mine\n');
+
+    for (const flag of ['--dry-run', '--yes']) {
+      const run = await runCli(repo, ['upgrade', flag]);
+      expect(run.stderr).not.toMatch(/EISDIR|at .*upgrade\.js/);
+      expect(run.code).toBe(0);
+      expect(run.stdout).toContain(
+        `! ${rel}  — a directory or other non-regular entry exists where this rig-owned file ` +
+          'belongs — move or remove it by hand; upgrade will leave it untouched',
+      );
+    }
+    expect(await readFile(path.join(dir, 'sentinel.txt'), 'utf8')).toBe('mine\n');
+    await removeFixture(repo);
+  });
 });
 
 // RP-177 acceptance: "upgrade of a pre-0.10 generated repository preserves
