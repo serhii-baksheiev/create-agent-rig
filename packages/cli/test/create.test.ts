@@ -179,8 +179,9 @@ describe('createProject', { timeout: 60_000 }, () => {
     }
     // the opt-in workflow layer (RP-180) is NOT part of the default install —
     // see "the workflow layer is opt-in" below for the dedicated coverage.
-    // plan-slices (RP-195 slice 5) is a workflow-layer skill too.
-    for (const skill of ['pr-ship', 'loop', 'plan-slices']) {
+    // plan-slices (RP-195 slice 5) and release-propose (RP-203) are
+    // workflow-layer skills too.
+    for (const skill of ['pr-ship', 'loop', 'plan-slices', 'release-propose']) {
       await expect(
         readFile(path.join(projectDir, '.claude', 'skills', skill, 'SKILL.md')),
       ).rejects.toThrow();
@@ -199,6 +200,10 @@ describe('createProject', { timeout: 60_000 }, () => {
     // RP-195 slice 5: plan-slices ships with the workflow layer too
     await expect(
       readFile(path.join(projectDir, '.claude', 'skills', 'plan-slices', 'SKILL.md'), 'utf8'),
+    ).resolves.toBeTruthy();
+    // RP-203: release-propose ships with the workflow layer too
+    await expect(
+      readFile(path.join(projectDir, '.claude', 'skills', 'release-propose', 'SKILL.md'), 'utf8'),
     ).resolves.toBeTruthy();
     await expect(
       readFile(path.join(projectDir, '.claude', 'queue.json'), 'utf8'),
