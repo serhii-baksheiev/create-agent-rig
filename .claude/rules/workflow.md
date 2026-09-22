@@ -50,6 +50,18 @@ A reviewer whose definition pins its model is never dispatched with a call-site
 dispatching session's, and `guard-subagent-model` refuses the override
 (`docs/decisions/subagent-routing.md`).
 
+## Review findings
+
+A blocking finding — from `code-reviewer`, `security-scanner`,
+`prose-reviewer`, or a review a repository rule names — is **resolved with
+evidence, not argued away**. It closes one of two ways: the change is fixed
+and the reviewer reads the fixed head, or the finding's premise is shown
+false with something the reviewer can re-check — a `file:line`, a test name,
+a command and its output. A reply that disagrees with neither is not a
+resolution, and neither is softening the flagged sentence or dropping the
+reviewer from the fan-out. This holds with or without the opt-in workflow
+layer, whoever drives the fan-out.
+
 ## PR flow
 
 This applies **once the project has a remote and CI checks** — a freshly
@@ -122,8 +134,8 @@ travels one path to merge, in this order:
    the session itself drives the same fan-out** — dispatch each reviewer the
    table and the triggers above name, read every verdict, and resolve every
    blocking finding the same way `pr-ship` would; nothing about the review
-   floor changes with or without the skill. Blocking findings are resolved,
-   not argued with, either way.
+   floor changes with or without the skill. Blocking findings are resolved
+   as "Review findings" above says, either way.
 
    **A verdict is a block, not a sentence.** Every gate ends its report with one
    fenced `json` block of the shape `.claude/scripts/lib/verdict.mjs` defines

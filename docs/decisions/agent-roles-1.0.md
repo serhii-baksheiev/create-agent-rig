@@ -1,0 +1,52 @@
+# ADR-RP-004 — the agent roles 1.0 targets
+
+⚠ **This record is not synced.** Most files in this directory are composed from
+`templates/agent-os/universal/docs/decisions/` by `scripts/sync-agent-os.mjs`
+and travel into every generated project. This one is authored here and stays
+here: it records a target for a release that has not shipped and names tracker
+keys, so no shipped rulebook cites it. **Edit it in place.** The precedent is
+`memory-rig-boundary.md` beside it.
+
+Status: accepted as a **target**, not as shipped behaviour. The owner's
+decisions are recorded on RP-194; the 1.0 work that implements them is tracked
+under RP-89. Nothing in this record changes what 0.10.x installs.
+
+## Why a record now
+
+The role set was settled before 0.10.0 shipped and before any 1.0 work began.
+Written down now, the 1.0 work starts from one agreed list instead of
+re-deriving it, and a 0.10.x patch has a written line it must not cross.
+
+## The decision
+
+**Agents** in the 1.0 rulebook:
+
+- `implementer`
+- `test-writer`
+- `failure-diagnostician`
+- `code-reviewer`
+- `security-scanner`
+- `prose-reviewer`
+
+**Skills:** the existing Core and workflow-layer set, plus `diagnose`,
+`skill-authoring` and `plan-slices`.
+
+**Not adopted:**
+
+- no planner, architect or custom Explorer agent;
+- `docs-researcher` stays optional — not part of the default set;
+- no new hooks and no orchestration framework come with the role set.
+
+## What this does not decide
+
+- **The relation between `implementer` and 0.10.0's `implementation-agent`.**
+  0.10.0 ships `implementation-agent`; whether `implementer` renames it,
+  replaces it, or sits beside it is decided in the 1.0 work, not here.
+- **Routing.** Which model each role runs on and how a change reaches a role
+  are left to the 1.0 work and `subagent-routing.md`.
+
+## Consequences for 0.10.x
+
+A 0.10.x release adds none of the roles or skills above: no new agent file, no
+new `SKILL.md`, no new routing row, no new hook. A patch that needs one of them
+is 1.0 scope and waits for it.
