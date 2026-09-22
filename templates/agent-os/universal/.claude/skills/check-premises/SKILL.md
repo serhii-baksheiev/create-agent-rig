@@ -91,6 +91,28 @@ At the **second** entry point this inverts for one case: a test is exactly what 
 a behaviour claim, so reading it is the point. The rule above is about not letting a
 test's *name* stand in for what the code does; §4 says which artifacts count.
 
+### External premises
+
+A claim about something this repository does not contain — an external API, a
+CLI, a library — is a premise like any other, and §2 decides whether it is
+load-bearing. "The provider accepts a `--json` flag" or "the SDK retries on 429"
+changes what gets built if it is false. The code here cannot settle it, so this
+is the one case where documentation is the evidence, and it is recorded in four
+parts:
+
+- **version** — the exact version this project uses (the lockfile, the installed
+  binary's own version output), not "latest";
+- **source** — an authoritative one for that version: the vendor's reference
+  documentation, its changelog, or the tool's own `--help`;
+- **date** — when you read it, because documentation changes under a fixed URL;
+- **quote** or pointer — the sentence that says it, short enough to re-check, or
+  the exact section it sits in.
+
+A claim missing any of the four stays `UNVERIFIABLE`: being widely believed, or
+true of an earlier version, does not promote it to a fact. This skill adds no
+network tooling — where the session cannot reach the source, the claim is
+`UNVERIFIABLE` and travels as a labelled assumption, as §4 says.
+
 ## 4. The verdict
 
 | Verdict | When | What happens next |
@@ -223,7 +245,8 @@ is invisible to every gate downstream.
 - **It reads the code, so it only catches what the code can contradict.** A claim
   about runtime behaviour ("this times out in production"), about intent, or
   about a system this repository does not contain is `UNVERIFIABLE` here, not
-  false — say so rather than guessing.
+  false — say so rather than guessing. The one exit is the four-part evidence
+  "External premises" asks for.
 - **Each entry point is one pass, at its own end of the task.** A premise that goes
   false *between* them — a merge lands, a dependency moves — is a staleness stop rule
   (`.claude/rules/autonomy.md`), not this skill. Neither pass watches the other's
