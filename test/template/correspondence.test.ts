@@ -420,6 +420,58 @@ describe('fact 3 — the run directory reaches a command one way, and the skill 
   });
 });
 
+// RP-187 (owner ruling, 2026-09-20): the independent-oracle invariant is
+// stated once, in `.claude/rules/invariants.md`, and the ONE place that
+// enforces it — because no hook can, per that same rule — is a
+// `code-reviewer` checklist item. Two places, one fact: the invariant's own
+// name has to travel between them, or the reviewer spec can drift away from
+// the rule it is supposed to be reading with nothing to notice.
+describe('fact 4 — the independent-oracle invariant is named by the rule and by the reviewer checklist', () => {
+  const INDEPENDENT_ORACLE_ANCHOR =
+    'must not derive its expected result from the same production mechanism it checks';
+
+  const ruleFile = () => read(path.join(universal, '.claude', 'rules', 'invariants.md'));
+  const reviewerFile = () => read(path.join(universal, '.claude', 'agents', 'code-reviewer.md'));
+
+  /** The reviewer's own numbered checklist item naming this invariant, or undefined. */
+  const checklistItemIn = (prose: string): string | undefined => {
+    const m =
+      /^\d+\.\s+\*\*[^*\n]*independent oracle[^*\n]*\*\*[^\n]*(?:\n(?!\d+\.\s+\*\*)[^\n]*)*/im.exec(
+        prose,
+      );
+    return m?.[0];
+  };
+
+  it('the rule states the invariant and code-reviewer.md carries a matching checklist item', async () => {
+    const rule = await ruleFile();
+    expect(rule, 'invariants.md must still state the independent-oracle invariant').toContain(
+      INDEPENDENT_ORACLE_ANCHOR,
+    );
+    const reviewer = await reviewerFile();
+    const item = checklistItemIn(reviewer);
+    expect(
+      item,
+      'code-reviewer.md must carry a numbered checklist item naming "independent oracle"',
+    ).toBeDefined();
+    expect(item).toMatch(/\.claude\/rules\/invariants\.md/);
+  });
+
+  it('reports the checklist item missing when code-reviewer.md drops it (mutation)', async () => {
+    const reviewer = await reviewerFile();
+    const item = checklistItemIn(reviewer);
+    expect(item, 'setup: the item must exist before it can be removed').toBeDefined();
+    const mutated = reviewer.replace(item!, '');
+    expect(checklistItemIn(mutated)).toBeUndefined();
+  });
+
+  it('reports the rule statement missing when invariants.md drops the anchor sentence (mutation)', async () => {
+    const rule = await ruleFile();
+    expect(rule).toContain(INDEPENDENT_ORACLE_ANCHOR);
+    const mutated = rule.replace(INDEPENDENT_ORACLE_ANCHOR, 'is always fine, trust the author');
+    expect(mutated).not.toContain(INDEPENDENT_ORACLE_ANCHOR);
+  });
+});
+
 describe('the rule — "One mechanism, one implementation" makes correspondence the default', () => {
   const bullet = async () => {
     const rule = await read(path.join(universal, '.claude', 'rules', 'invariants.md'));
