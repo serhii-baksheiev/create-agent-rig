@@ -709,7 +709,7 @@ describe('planUpgrade — what it would do, before it does anything', () => {
         const plan2 = await planUpgrade(repo, { history: emptyHistory });
         expect(verdictFor(plan2, 'AGENTS.md')).toBe('unchanged');
         expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
-        await applyUpgrade(repo, plan2);
+        expect((await applyUpgrade(repo, plan2)).removedRescue).toBe(true);
         await expect(read(AGENTS_MD_RESCUE)).rejects.toThrow();
       });
 
@@ -725,7 +725,8 @@ describe('planUpgrade — what it would do, before it does anything', () => {
         const plan2 = await planUpgrade(repo, { history: emptyHistory });
         expect(plan2.agentsRescue).toEqual({ holdBack: false, status: 'cleanup' });
         await write(AGENTS_MD_RESCUE, '# edited after the plan was made\n');
-        await applyUpgrade(repo, plan2);
+        // the CLI's closing notice reads this, so it must not report a removal
+        expect((await applyUpgrade(repo, plan2)).removedRescue).toBe(false);
         expect(await read(AGENTS_MD_RESCUE)).toBe('# edited after the plan was made\n');
       });
 

@@ -133,6 +133,8 @@ export type AgentsRescueStatus =
 
 export interface UpgradeResult {
   written: string[];
+  /** Whether `cleanup` actually removed the leftover rescue file — it re-checks it first. */
+  removedRescue: boolean;
 }
 
 const SETTINGS = '.claude/settings.json';
@@ -796,7 +798,8 @@ export async function planUpgrade(
   }
 
   // Round 5, blocker 3: the rescue file's status is decided HERE, once, at
-  // plan time — never re-probed by `applyUpgrade`, so a dry run and a real
+  // plan time — never re-probed by `applyUpgrade` except to re-verify a
+  // `cleanup` before deleting (RP-192 item 4), so a dry run and a real
   // run report the identical status and every refusal is known before a
   // single byte is written. Round 4 cycle 4's blocker 3 was exactly the
   // alternative: probing the filesystem again inside `applyUpgrade`, AFTER
@@ -904,7 +907,8 @@ export async function applyUpgrade(
   options: ApplyOptions = {},
 ): Promise<UpgradeResult> {
   const written: string[] = [];
-  if (options.dryRun === true) return { written };
+  let removedRescue = false;
+  if (options.dryRun === true) return { written, removedRescue };
 
   // Round 5, blocker 3: refused BEFORE any write at all — not merely before
   // the manifest write. Round 4 cycle 4 measured that probing the rescue
@@ -948,11 +952,11 @@ export async function applyUpgrade(
   }
 
   // Round 5: `plan.agentsRescue` says what (if anything) this run may do,
-  // decided before any write above ever ran; only `cleanup` probes again. `would-write` is the only status that writes; `identical`
-  // and `differs` are both "leave it exactly as it is"; `cleanup` is the only
-  // status that deletes, and the one that reads the file again before it
-  // does (below); `unsafe` already returned above and `none` does
-  // nothing at all — round 4 cycle 4's "must not affect upgrade" case.
+  // decided before any write above ever ran. `would-write` is the only status
+  // that writes; `identical` and `differs` are both "leave it exactly as it
+  // is"; `cleanup` is the only status that deletes, and the one that reads the
+  // file again before it does (below); `unsafe` already returned above and
+  // `none` does nothing at all — round 4 cycle 4's "must not affect upgrade" case.
   if (plan.agentsRescue.holdBack) {
     if (plan.agentsRescue.status === 'would-write') {
       const rendered = plan.contents.get('AGENTS.md');
@@ -977,6 +981,7 @@ export async function applyUpgrade(
     ) {
       try {
         await unlink(await writableOnDisk(repoDir, AGENTS_MD_RESCUE));
+        removedRescue = true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
@@ -984,5 +989,5 @@ export async function applyUpgrade(
   }
 
   await writeManifest(repoDir, plan.manifest);
-  return { written };
+  return { written, removedRescue };
 }
