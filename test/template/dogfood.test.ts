@@ -274,6 +274,29 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     ).not.toEqual([]);
   });
 
+  // RP-211: `layers.json` decides which payload files reach a generated
+  // project per layer (`packages/cli/src/commands/init.ts` reads it), so a
+  // merge that quietly narrowed or emptied a layer's file list is exactly the
+  // kind of change `.claude/rules/autonomy.md` Tier 2 names — yet the block
+  // lists only deeper `templates/agent-os/universal/...` subpaths and never
+  // this file itself, so `elevatedPathsIn` would wave such a merge through.
+  it('declares layers.json, the file that decides what each layer installs', async () => {
+    const declared = await loadDeclaredPaths();
+    const detector = await loadDetector();
+    expect(
+      detector.elevatedPathsIn(['templates/agent-os/universal/layers.json'], declared),
+    ).not.toEqual([]);
+  });
+
+  it('flags a merge that touches only layers.json as elevated', async () => {
+    const declared = await loadDeclaredPaths();
+    const detector = await loadDetector();
+    const changedFiles = ['templates/agent-os/universal/layers.json'];
+    expect(detector.elevatedPathsIn(changedFiles, declared)).toEqual([
+      'templates/agent-os/universal/layers.json',
+    ]);
+  });
+
   it('the blocking hooks are active in this repo', async () => {
     const settings = JSON.parse(
       await readFile(path.join(repoRoot, '.claude', 'settings.json'), 'utf8'),

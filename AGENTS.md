@@ -241,6 +241,7 @@ templates/agent-os/universal/.agents/
 templates/agent-os/universal/.codex/
 templates/agent-os/universal/AGENTS.md
 templates/agent-os/universal/.claude/rules/
+templates/agent-os/universal/layers.json
 templates/agent-os/universal/CLAUDE.md
 .agents/
 .codex/
