@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
@@ -477,6 +477,19 @@ describe('guard-rulebook: every edit surface reaches it', () => {
 // prefix beneath it — that is exactly the gap this pins).
 describe('guard-rulebook: apply_patch does not lose the lexical path when a guarded prefix is a junction (RP-60)', () => {
   beforeEach(() => {
+    // The outer fixture's `root` comes from `fs/promises` `realpath`, which
+    // leaves an 8.3 short name (e.g. `SERHII~1`) unexpanded on Windows.
+    // `edit-input.mjs` derives `budget.repoRoot` from `git rev-parse
+    // --show-toplevel`, which answers the long spelling — so `root` and
+    // `budget.repoRoot` disagree, `isWithin` fails at the patchCwd check, and
+    // every apply_patch below is refused through the pathless global-refusal
+    // branch regardless of what the payload actually names. Re-resolving
+    // through `realpathSync.native` (same pattern as
+    // unattended-flag.test.ts's "scopes the flag by the checkout…" case)
+    // matches the spelling git reports, so the tests below reach the
+    // rulebook-path-specific code they claim to exercise. A no-op on
+    // platforms with no short-name form.
+    root = realpathSync.native(root);
     execFileSync('git', ['init', '-q', root], { env: withoutGitLocation() });
   });
 
