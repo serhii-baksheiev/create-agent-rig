@@ -40,8 +40,9 @@ is invisibly wrong.
 .claude/agents/    the TDD roles test-writer and implementation-agent, the
                    diagnostic role failure-diagnostician, and the review gates
                    code-reviewer, security-scanner, prose-reviewer
-.claude/skills/    the drivers: worktree-task, new-invariant, check-premises —
-                   loop and pr-ship ship only with the opt-in workflow layer
+.claude/skills/    the drivers: worktree-task, new-invariant, check-premises,
+                   skill-authoring — loop and pr-ship ship only with the
+                   opt-in workflow layer
 .claude/scripts/   git-env, doctor, the verdict/gate-coverage checker, the
                    kill switch and the unattended-flag guard
 ```
