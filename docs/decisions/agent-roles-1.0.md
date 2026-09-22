@@ -39,9 +39,10 @@ re-deriving it, and a 0.10.x patch has a written line it must not cross.
 
 ## What this does not decide
 
-- **The relation between `implementer` and 0.10.0's `implementation-agent`.**
-  0.10.0 ships `implementation-agent`; whether `implementer` renames it,
-  replaces it, or sits beside it is decided in the 1.0 work, not here.
+- **The relation between `implementer` and 0.10.0's `implementation-agent`**
+  was left to the 1.0 work, which has since settled it: `implementer` is
+  `implementation-agent`. The owner's 1.0 mandate (22 September 2026) kept the
+  shipped name, so no rename is part of 1.0.
 - **Routing.** Which model each role runs on and how a change reaches a role
   are left to the 1.0 work and `subagent-routing.md`.
 
@@ -50,3 +51,9 @@ re-deriving it, and a 0.10.x patch has a written line it must not cross.
 A 0.10.x release adds none of the roles or skills above: no new agent file, no
 new `SKILL.md`, no new routing row, no new hook. A patch that needs one of them
 is 1.0 scope and waits for it.
+
+**0.10.1 was the last 0.10.x release.** It was published from `738b494`, and from
+there `master` is the 1.0 line: the roles and skills above land on it under
+RP-195 and ship in 1.0.0, never in a 0.10.x release. The version in
+`package.json` stays 0.10.1 until the 1.0.0 release commit changes it. A
+0.10.x fix, if one is ever needed, is cut from `738b494`, not from `master`.

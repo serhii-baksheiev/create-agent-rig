@@ -1638,12 +1638,15 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // `skill-authoring` skill's two shipped copies (`.claude/skills/`,
   // `.agents/skills/`), and by two more (92→94, 58→60) when
   // `failure-diagnostician` (its Claude definition and Codex profile)
-  // joined the process layer.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 94 manifest entries to 60', async () => {
+  // joined the process layer. The full-install figure moved once more
+  // (94→96) when RP-195 slice 5 added the `plan-slices` skill's two shipped
+  // copies; the core-only figure stays 60 because plan-slices is
+  // workflow-layer only.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 96 manifest entries to 60', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(94);
+    expect(Object.keys(before!.files).length).toBe(96);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });

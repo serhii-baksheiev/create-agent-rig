@@ -411,6 +411,58 @@ describe('pr-ship skill (universal)', () => {
   });
 });
 
+// RP-195 slice 5: plan-slices, the workflow-layer decomposition skill for
+// complex work with independently verifiable slices. It does not exist yet —
+// every assertion in this block is expected to fail until the Green step
+// adds it. Assertions are kept few and robust on purpose: this is a prose
+// skill, not a mechanism, so the check is "does it say the load-bearing
+// things", not "does it match a fixed wording".
+describe('plan-slices skill (universal, opt-in workflow layer) — RP-195 slice 5', () => {
+  const read = () => readFile(skillPath('universal', '.claude', 'skills', 'plan-slices'), 'utf8');
+
+  it('exists, and its frontmatter name is plan-slices', async () => {
+    const content = await read();
+    const fm = frontmatterOf(content);
+    expect(fm['name']).toBe('plan-slices');
+  });
+
+  it('says it applies when work splits into independently verifiable slices', async () => {
+    const content = await read();
+    const fm = frontmatterOf(content);
+    expect(fm['description'], 'description').toMatch(/independently verifiable/i);
+    expect(content).toMatch(/independently verifiable/i);
+  });
+
+  it('states the literal refusal — no trigger on file or module count — and carries no numeric threshold', async () => {
+    const content = await read();
+    // the load-bearing sentence: RP-195's own text, near-verbatim
+    expect(content).toMatch(
+      /do not trigger it mechanically based on file(?:\/|\s+or\s+)module count/i,
+    );
+    // and it must not smuggle a numeric threshold back in under another name
+    // ("more than 5 files", "3 modules", etc.) — a digit directly adjacent to
+    // "file(s)" or "module(s)" is exactly that shape
+    expect(content).not.toMatch(/\d+\s*\+?\s*(files?|modules?)/i);
+    expect(content).not.toMatch(/(files?|modules?)\s*\+?\s*\d+/i);
+  });
+
+  it('gives every slice its own failing test and its own PR, and names test-writer', async () => {
+    const content = await read();
+    expect(content).toContain('`test-writer`');
+    expect(content).toMatch(/own\s+(?:failing\s+)?test/i);
+    expect(content).toMatch(/own\s+PR/i);
+  });
+
+  it('points at workflow.md for TDD instead of restating it, and names no planner agent', async () => {
+    const content = await read();
+    expect(content).toMatch(/\.claude\/rules\/workflow\.md/);
+    // Rejected by RP-195: "planner as an agent" — this skill plans by
+    // producing a document a session reads, never by dispatching a role
+    // named "planner".
+    expect(content).not.toMatch(/`planner`/i);
+  });
+});
+
 // The skill half of AR-65 — the agent half is in `agents.test.ts`, and both
 // halves assert the same promise: one fenced json block, of the shape
 // `lib/verdict.mjs` defines, naming the gate that wrote it.

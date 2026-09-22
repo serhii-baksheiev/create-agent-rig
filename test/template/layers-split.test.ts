@@ -41,6 +41,10 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/skills/loop/SKILL.md',
   '.agents/skills/pr-ship/SKILL.md',
   '.agents/skills/loop/SKILL.md',
+  // RP-195 slice 5: plan-slices, the workflow-layer decomposition skill, and
+  // its Codex mirror
+  '.claude/skills/plan-slices/SKILL.md',
+  '.agents/skills/plan-slices/SKILL.md',
   // PR-lifecycle helpers (verdict.mjs/lib/gate-coverage.mjs/run-journal.mjs
   // are the one exception — they stay core; see the decision record)
   '.claude/scripts/detect-missed-gate.mjs',
