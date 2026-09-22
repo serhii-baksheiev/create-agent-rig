@@ -45,6 +45,11 @@ const EXPECTED_WORKFLOW = new Set([
   // its Codex mirror
   '.claude/skills/plan-slices/SKILL.md',
   '.agents/skills/plan-slices/SKILL.md',
+  // RP-203: release-propose, the evidence-to-proposal skill, its Codex
+  // mirror, and the read-only script it gathers evidence with
+  '.claude/skills/release-propose/SKILL.md',
+  '.agents/skills/release-propose/SKILL.md',
+  '.claude/scripts/release-evidence.mjs',
   // PR-lifecycle helpers (verdict.mjs/lib/gate-coverage.mjs/run-journal.mjs
   // are the one exception — they stay core; see the decision record)
   '.claude/scripts/detect-missed-gate.mjs',

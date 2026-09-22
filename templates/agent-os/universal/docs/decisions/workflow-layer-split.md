@@ -162,10 +162,10 @@ manages it; it is now yours"` — the same verdict RP-177 gave a deleted stack
 overlay, applied here to files that are simply no longer read as this rig's
 layer. `applyUpgrade` then writes a manifest whose `files` map has no entry
 for any of the roughly three dozen workflow paths at all — measured, on a
-clean `--layer workflow` install, at exactly 98 file entries down to 62
+clean `--layer workflow` install, at exactly 101 file entries down to 62
 (`packages/cli/test/upgrade.test.ts`, absent in a generated rig, pins "a
 clean workflow-layer install hand-edited down to a core-only layers array
-goes from 98 manifest entries to 62"; the figure moved by one from an
+goes from 101 manifest entries to 62"; the figure moved by one from an
 earlier 86/53 when RP-186 added `docs/decisions/agents-md-canonical.md` to
 the process layer, by two more when `implementation-agent` joined it, by
 one more (89→90) when RP-209 added the proposal-filing script to the
@@ -175,8 +175,11 @@ skill joined the process layer, by two more again (92→94, 58→60) when
 `failure-diagnostician` joined it, by two more (94→96, 60 unchanged)
 when the `plan-slices` skill's two shipped copies joined the workflow layer —
 workflow-only, same as `loop` and `pr-ship`, so the core-only figure does
-not move — and by two more again (96→98, 60→62) when the `diagnose` skill's
-two shipped copies joined the process layer).
+not move — by two more again (96→98, 60→62) when the `diagnose` skill's
+two shipped copies joined the process layer — and by three more again
+(98→101, 62 unchanged) when the `release-propose` skill's two shipped
+copies and `release-evidence.mjs` joined the workflow layer (RP-203) —
+workflow-only, same as `plan-slices`, so the core-only figure does not move).
 The files stay on disk, silently un-hashed and unowned —
 and a LATER `uninstall`, reading the same manifest, has nothing there to
 recognise them by: they read as an ordinary foreign/untracked path, not as

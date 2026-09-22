@@ -633,6 +633,96 @@ describe('plan-slices skill (universal, opt-in workflow layer) — RP-195 slice 
   });
 });
 
+// RP-203: release-propose, the workflow-layer skill that turns repeated
+// evidence (`.claude/scripts/release-evidence.mjs`) into a release-level
+// proposal to the owner — never into a selectable ticket. It does not exist
+// yet — every assertion in this block is expected to fail until the Green
+// step adds it.
+describe('release-propose skill (universal, opt-in workflow layer) — RP-203', () => {
+  const claudePath = skillPath('universal', '.claude', 'skills', 'release-propose');
+  const agentsPath = skillPath('universal', '.agents', 'skills', 'release-propose');
+  const read = () => readFile(claudePath, 'utf8');
+
+  // A table-row-shaped structural match, following `diagnose`'s `rowFor`
+  // above: a bullet naming the word, not any prose mentioning it nearby, so a
+  // sentence placed above the routing list cannot pass for the routing rule
+  // itself.
+  function rowFor(content: string, word: string): string {
+    const row = content
+      .split('\n')
+      .find((line) => line.trimStart().startsWith('-') && line.includes(word));
+    expect(row, `no routing row names ${word}`).toBeDefined();
+    return row!;
+  }
+
+  it('exists with frontmatter name `release-propose` and allowed-tools Read, Grep, Glob, Bash', async () => {
+    const content = await read();
+    const fm = frontmatterOf(content);
+    expect(fm['name']).toBe('release-propose');
+    expect(fm['allowed-tools']).toBe('Read, Grep, Glob, Bash');
+  });
+
+  it('ships both copies — the Claude skill and its Codex mirror', async () => {
+    await expect(read()).resolves.toBeTruthy();
+    await expect(readFile(agentsPath, 'utf8')).resolves.toBeTruthy();
+  });
+
+  it('gathers evidence with the exact root-anchored release-evidence.mjs command', async () => {
+    const content = await read();
+    expect(content).toContain(
+      'node "$(git rev-parse --show-toplevel)/.claude/scripts/release-evidence.mjs" --since',
+    );
+  });
+
+  it('carries every required heading of the proposal template, including a "Do nothing" alternative', async () => {
+    const content = await read();
+    for (const heading of [
+      /Observed repeated pain/i,
+      /Candidate release/i,
+      /Why now/i,
+      /Why not the alternatives/i,
+      /Dependencies/i,
+      /Scope/i,
+      /non-goals/i,
+      /Complexity/i,
+      /Evidence gaps/i,
+      /Upstream capability check/i,
+      /Owner decision/i,
+    ]) {
+      expect(content, `missing heading matching ${heading}`).toMatch(heading);
+    }
+    expect(content, 'no "Do nothing" alternative row').toMatch(/do nothing/i);
+  });
+
+  it('the GATHER_MORE_EVIDENCE routing row says gather-more-evidence, files nothing, and never says approve', async () => {
+    const content = await read();
+    const row = rowFor(content, 'GATHER_MORE_EVIDENCE');
+    expect(row).toMatch(/file(s|d|ing)? nothing|files? none/i);
+    expect(row).not.toMatch(/\bapprove\b/i);
+  });
+
+  it('requires a pointer, or an UNVERIFIED/inferred label, on every number it is not measuring itself', async () => {
+    const content = await read();
+    expect(content).toMatch(/\binferred\b/i);
+    expect(content).toMatch(/\bUNVERIFIED\b/);
+  });
+
+  it('hands off through triage-only propose.mjs — no Agent-queue edit, no gh issue create, no ticket creation', async () => {
+    const content = await read();
+    expect(content).toMatch(/propose\.mjs/);
+    expect(content).toMatch(/triage/i);
+    expect(content).not.toMatch(/gh issue create/);
+    // The one Agent-queue mention this skill is allowed is the refusal to
+    // touch it — never an instruction that edits it.
+    const agentQueueLines = content.split('\n').filter((line) => /agent queue/i.test(line));
+    for (const line of agentQueueLines) {
+      expect(line, `reads like an instruction to edit the Agent queue: ${line}`).toMatch(
+        /never|does not|is not|refuses/i,
+      );
+    }
+  });
+});
+
 // The skill half of AR-65 — the agent half is in `agents.test.ts`, and both
 // halves assert the same promise: one fenced json block, of the shape
 // `lib/verdict.mjs` defines, naming the gate that wrote it.

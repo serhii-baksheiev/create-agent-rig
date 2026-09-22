@@ -124,8 +124,10 @@ export const readRuns = (runsDir) => {
   }
   return names.sort().map((run) => {
     try {
-      const { events } = readRun({ runDir: join(runsDir, run) });
-      return { run, events };
+      // `decisions` rides along unused here — added for release-evidence.mjs
+      // (RP-203), which reuses this same reader for its own grouping.
+      const { decisions, events } = readRun({ runDir: join(runsDir, run) });
+      return { run, decisions, events };
     } catch (error) {
       return { run, error: String(error?.message ?? error) };
     }
