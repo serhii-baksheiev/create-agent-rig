@@ -281,7 +281,7 @@ attempted pre-commit bypass.
 
 - Node ≥ 22. The CLI has no runtime dependencies.
 - Git.
-- For Spec Kit only: uv and uvx.
+- For Spec Kit only: `uv` and `uvx`.
 
 ## Documentation
 

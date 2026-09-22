@@ -16,10 +16,18 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## 0.10.1
 
-**A fixes-only patch on 0.10.0.** Every entry corrects existing behaviour or
-states a rule the rulebook already follows; nothing is added to what `create`,
-`init` or `upgrade` install beyond the corrected files, and no agent, skill,
-hook or routing row is new.
+**A fixes-only patch on 0.10.0, plus one narrowing.** Every other entry
+corrects existing behaviour or states a rule the rulebook already follows;
+nothing is added to what `create`, `init` or `upgrade` install beyond the
+corrected files and the Node floor below, and no agent, skill, hook or routing
+row is new.
+
+### Changed
+
+- **The Node floor is raised from `>=20` to `>=22`** (`package.json`'s
+  `engines.node`), matching the only runtime every CI lane still tests — Node
+  20 has been end-of-life since April 2026. The CLI still runs unchanged on
+  any Node 22 or newer (RP-184).
 
 ### Fixed
 

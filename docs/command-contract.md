@@ -1572,299 +1572,6 @@ still names bytes the rig did not remove, so deleting it would blind a later
 }
 ```
 
-## Public surface at 1.0
-
-RP-184's freeze of the public command surface, current as of this release.
-Every row's wrong-invocation exit code is measured against
-`packages/cli/src/index.ts` and, for `doctor` and `memory`, their own command
-modules — never guessed. `doctor` and `memory` already answer their own
-successful and refused-precondition cases inside the closed 0-4
-`## Exit codes` domain elsewhere in this document; their wrong-invocation
-code is the ordinary usage exit that table's own row 2 already names.
-Every other command here predates that five-code table — it binds only the
-memory shim's foundation verb set — and keeps its own long-standing `0`/`1`
-convention, plus the handful of higher literals `## Conformance today`
-already names per command.
-
-| command              | flags                                                                                                 | wrong invocation                                                                            | `--json`              | side effects and idempotence                                                                                                                                                                                                                                                                                                                                                                    |
-| -------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create`             | `<dir> [--no-git] [--layer workflow] [--no-color] [--version [--json]] [-h/--help]`                   | exit 1 — a `parseArgs` failure, a missing or extra positional, or an unknown `--layer` name | only on `--version`   | Writes a new directory and installs the one payload, optionally running `git init` with a pristine-template baseline commit. Refuses a non-empty target directory rather than merging into it, so it is **not idempotent** — a repeat run against the same target refuses. **No `--dry-run`, by exception to `## Mutations`**: there is no existing directory state to preview a write against. |
-| `init`               | `[--dry-run] [--layer workflow] [--no-color]` (`--force` refuses and names `upgrade`; removed in 0.6) | exit 1                                                                                      | no                    | Installs or refreshes the process layer, and the workflow layer with `--layer workflow`; a plain re-run keeps a workflow layer a previous run already recorded rather than dropping it. Idempotent: a rig already matching the release reports every file `unchanged` (`## Ownership verdicts`).                                                                                                |
-| `upgrade`            | `[--dry-run] [--yes] [--no-color]`                                                                    | exit 1                                                                                      | no                    | Replaces files this rig installed and the user did not touch; reports the rest, never merges. Idempotent: a repeat run against an already-upgraded rig reports `unchanged` throughout.                                                                                                                                                                                                          |
-| `uninstall`          | `[dir] [--dry-run] [--yes] [--detach] [--json]`                                                       | exit 1                                                                                      | yes                   | Removes only files whose bytes still match the manifest; the manifest itself is removed last, only once nothing is `preserved`. Idempotent: a second run after a clean uninstall finds no manifest and does nothing — `packages/cli/test/uninstall.test.ts` › "is idempotent: a second uninstall after the first is a clean no-op".                                                             |
-| `doctor`             | `[--json]`                                                                                            | exit 2 — `doctor accepts only --json`                                                       | yes                   | Read-only: it never applies a setup plan or writes a file (`## Doctor`, `### Rig aggregate diagnosis`). No `--dry-run`, by the same exception as above: nothing here mutates, so there is nothing to preview.                                                                                                                                                                                   |
-| `setup`              | legacy path: `--memory-root <checkout> [--memory-ref <sha>] [--dry-run] [--no-color]`                 | exit 1                                                                                      | no                    | Writes the machine-scoped `subsystems.json` registration after the version handshake (`## Persistent state at 1.0`). Idempotent: registering the same root twice overwrites the same deterministic entry.                                                                                                                                                                                       |
-| `setup add <id>`     | `[--harness <name>]… [--adopt] [--dry-run] [--yes] [--json]`                                          | exit 1                                                                                      | yes                   | Plans MCP wiring or the pinned Spec Kit lifecycle and records intent in `.rig/integrations.json`; a write needs `--yes`.                                                                                                                                                                                                                                                                        |
-| `setup apply [id]`   | `[--dry-run] [--yes] [--json]`                                                                        | exit 1                                                                                      | yes                   | Re-applies declared intent; refuses if a planned file changed since planning.                                                                                                                                                                                                                                                                                                                   |
-| `setup remove <id>`  | `[--dry-run] [--yes] [--json]`                                                                        | exit 1                                                                                      | yes                   | Removes proven Rig-owned wiring, or delegates Spec Kit removal to its own CLI; retires intent after success.                                                                                                                                                                                                                                                                                    |
-| `setup list`         | `[--json]`                                                                                            | exit 1                                                                                      | yes                   | Lists the supported integrations. Read-only.                                                                                                                                                                                                                                                                                                                                                    |
-| `memory`             | `doctor`/`load` `[args…]`                                                                             | exit 2 — no verb, or a verb outside `doctor`/`load`                                         | yes                   | Runs the named verb through the registered Memory executable, after its own version handshake (a foreign contract major exits 4 and the verb never runs). A `load` naming no `--timeout-ms` gets one appended. Read-only from this bin's own perspective — every write, if any, is Memory's.                                                                                                    |
-| `--version [--json]` | —                                                                                                     | never fails for a contract reason (`## The version handshake`)                              | on `--version --json` | Read-only: answers the handshake object.                                                                                                                                                                                                                                                                                                                                                        |
-
-## Persistent state at 1.0
-
-### `.claude/.rig-manifest.json`
-
-The install manifest (`packages/cli/src/lib/manifest.ts`), committed by
-convention so an upgrade or uninstall run elsewhere is not blind. Its keys,
-and how an old manifest missing one is read:
-
-| key                                                      | present since | absent reads as                                                                                                                                                                                                                                                                    |
-| -------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`                                                | always        | — (required; a manifest missing it does not parse)                                                                                                                                                                                                                                 |
-| `kind` (`'create'` or `'init'`)                          | always        | — (required)                                                                                                                                                                                                                                                                       |
-| `project.name` / `project.scope` / `project.region`      | always        | — (required; legacy readings only — `scope` reaches no template today and `region` may be empty)                                                                                                                                                                                   |
-| `stacks` (string array)                                  | always        | — (required; legacy — always empty on a current install, RP-177 retired the overlays it once named)                                                                                                                                                                                |
-| `layers` (`'process'` and/or `'workflow'`, deduplicated) | RP-180        | **every layer this release ships** (`ALL_LAYERS`) — never the default-only set, so a pre-RP-180 rig's workflow files stay owned rather than becoming `retired` — `packages/cli/test/manifest.test.ts` › "a manifest with no `layers` key parses as though it recorded every layer" |
-| `files` (path → sha256)                                  | always        | — (required)                                                                                                                                                                                                                                                                       |
-| `kept` (path → sha256)                                   | RP-182        | omitted entirely — nothing was kept                                                                                                                                                                                                                                                |
-
-A manifest carrying an unrecognised shape in any required key, or a
-`stacks`, `layers` or `kept` value this reader does not accept, does not
-parse at all: `readManifest` returns `null`, which sends `upgrade` to the
-hash-history fallback rather than a half-trusted read.
-
-### `subsystems.json`
-
-The machine-scoped subsystem registration `setup --memory-root` writes
-(`packages/cli/src/lib/subsystems.ts`): one file at
-`~/.config/create-agent-rig/subsystems.json` (`%APPDATA%\create-agent-rig\`
-on Windows), `schemaVersion: 1`, one entry today (`entries.memory`) carrying
-the resolved executable invocation, the required contract major, and the
-registered ref. It is outside every repository, so no ignore entry or
-per-repository ownership rule applies to it.
-
-### `.rig/integrations.json`
-
-The repository intent file `setup add`/`apply`/`remove` reads and writes
-(`## setup integrations (RP-22)`), `schemaVersion: 1`. Its public shape is
-`contracts/integrations/v1/declaration.schema.json`, which
-`packages/cli/src/integrations/declaration.ts` validates intent against —
-the schema file states the shape it accepts; this document does not restate
-it a second time.
-
-## Ownership verdicts
-
-`upgrade`'s per-file verdict is the closed set `UpgradeVerdict` names in
-`packages/cli/src/commands/upgrade.ts`: `update`, `new`, `unchanged`,
-`conflict`, `deleted`, `wiring`, `retired`. README.md's `## How ownership
-works` is the reader-facing summary; this is where a README promise
-(`## README promises`) resolves against the actual verdict it names:
-
-| verdict     | meaning                                                                                                                                                               |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `update`    | Installed by the rig, untouched since, and this release changed it — replaced.                                                                                        |
-| `new`       | This release adds it; nothing on disk, nothing in the manifest — written.                                                                                             |
-| `unchanged` | Already what this release would write.                                                                                                                                |
-| `conflict`  | Edited, or of unknown provenance — reported, never written.                                                                                                           |
-| `deleted`   | The manifest says the rig installed it; the user removed it — stays removed, never restored.                                                                          |
-| `wiring`    | Hook wiring that is not replaceable — handed over, not overwritten.                                                                                                   |
-| `retired`   | The manifest says the rig installed it; this release's payload no longer ships it at all (RP-177) — never written, never deleted; the path becomes the project's own. |
-
-`uninstall`'s own verdicts — `remove`, `preserved` (with the five reasons
-`## uninstall (RP-181)` names) and `absent` — are that section's own closed
-set, not `UpgradeVerdict`: the two commands answer different questions (what
-changed on this release, versus what this rig can prove it wrote) and are
-not required to share one vocabulary.
-
-Bytes matching only after line-ending normalisation (CRLF/LF, checked both
-directions against the one recorded hash — never a second, decoded record of
-the original bytes) are their own case in both commands, never folded into a
-plain `update`/`remove`: `upgrade` reports it as a conflict reason and
-`uninstall` preserves it with reason `line-endings-only`. Ownership hashes
-compare exact raw bytes, never a decoded string (ADR-RP-003,
-`docs/decisions/raw-byte-ownership.md`), so a binary file is compared
-correctly and this classification is only ever attempted on bytes that
-round-trip through UTF-8 without loss.
-
-Evidence for the verdicts a user is most likely to depend on:
-`packages/cli/test/upgrade.test.ts` › "replaces a file the release changed
-and the user did not touch" (`update`), › "installs a file this release
-added, and does not resurrect one the user deleted" (`new` and `deleted`
-together), › "never overwrites a file the user edited — one byte is enough"
-(`conflict`), and › "never claims a file it kept rather than wrote" (a
-`kept` path stays outside every verdict here — it is not Rig's).
-
-## Harness delivery and provider ownership
-
-**Generated repository files are the only delivery path.** Everything this
-contract covers — rules, guards, agents, skills, hook wiring — reaches a
-project by being written into that project's own working tree by `create`,
-`init` or `upgrade`, and by nothing else: there is no separate installer, no
-global daemon, and no out-of-repository registration beyond the two
-machine-scoped files `## Persistent state at 1.0` names. `AGENTS.md` is the
-one canonical, substituted rulebook; `CLAUDE.md` is a short shim that
-imports it, so both harnesses read the same rules from one source —
-`test/template/codex.test.ts` › "is in sync with its Claude Code sources".
-
-**Native plugins are unmanaged.** Rig has no plugin manager or marketplace,
-does not install, list or update a Claude Code or Codex plugin, and a
-rig-generated repository carries none of its own — `packages/cli/test/package-contents.test.ts`
-› "keeps a `.claude-plugin/` directory and a `marketplace.json` file out of
-the published tarball". Claude Code and Codex plugins installed by other
-means may be used alongside a rig-generated repository as usual; this
-contract makes no claim about them.
-
-**MCP ownership differs by harness, deliberately.** A Claude Code target
-records `targets["claude-code"].entryHash` per MCP server entry in
-`.rig/integrations.json` — entry-by-entry ownership, so a foreign entry
-survives untouched next to a Rig-owned one. Codex has no equivalent
-per-entry boundary in its own config format, so Rig owns the **whole**
-`.codex/config.toml` file it renders, tracked as one rolling
-`targets.codex.fileHash`; a manual edit is refused rather than merged
-(`## setup integrations (RP-22)`).
-
-**Spec Kit and Basic Memory are upstream-owned.** Rig plans and delegates to
-each provider's own CLI or launcher; it does not copy, hash or delete their
-files, and does not claim their data as its own — `packages/cli/test/spec-kit.test.ts`
-› "requires explicit adoption before touching an external .specify payload".
-
-**Authorization, connectivity and trust are never claimed.** `doctor`
-reports wiring — `wired`, `absent`, `drifted`, `foreign`, `unreadable` —
-and, for a launcher it can merely find on the machine, `observed`; it never
-contacts a provider, and connectivity and trust are always `not-observed` —
-`packages/cli/test/doctor.test.ts` › "distinguishes owned wiring, missing
-launcher and unobserved runtime for both Basic Memory targets". Signing in
-to a provider happens in the harness; Rig stores no credentials
-(`## Secrets`).
-
-## Support matrix
-
-**Node.** `>=22` (`package.json`'s `engines.node`, raised for this freeze —
-`## Deprecation policy and ledger` records the change) —
-`test/template/packaging.test.ts` › "raises the Node floor to >=22 for the
-1.0 contract freeze (RP-184)". The CLI itself carries no runtime
-dependencies.
-
-**Git.** Required — `create`'s default path runs `git init` and a
-pristine-template baseline commit (`--no-git` skips it) —
-`packages/cli/test/create.test.ts` › "initialises git with a pristine-template
-baseline commit".
-
-**Spec Kit only: `uv` and `uvx`.** Required for `setup add spec-kit`, and
-for nothing else (`## setup integrations (RP-22)`) —
-`packages/cli/test/spec-kit.test.ts` › "refuses repository-controlled uv and
-uvx launchers before invoking one".
-
-**Platforms.** Linux, Windows and macOS (Apple silicon), each accepted on
-the exact packed release commit before publish, per the release procedure —
-`scripts/release-acceptance.mjs`, CHANGELOG.md "Releasing" step 1. A
-Windows-only limitation: Spec Kit 1.0.8 itself rewrites `.claude/settings.json`
-and `.codex/config.toml` with CRLF line endings, which `doctor` reports as
-drift on Rig's own files rather than silently accepting.
-
-**Harness versions.** No minimum Claude Code or Codex version is
-guaranteed. `docs/compatibility.md` lists the versions measured at the last
-release; a reader who needs a guaranteed floor does not have one at 1.0.
-
-## Not part of 1.0
-
-Named explicitly, so a reader who assumes coverage from silence has
-something to check first. None of these are refused forever — RP-184 is a
-freeze of what 1.0 covers today, not a roadmap.
-
-- **Profiles.** No per-repository named configuration profile exists in
-  this release's command surface.
-- **Receipts.** Retired in favour of the single repository intent file,
-  `.rig/integrations.json` (`## Persistent state at 1.0`); a separate
-  per-run receipt file is not written — `packages/cli/test/integrations-intent.test.ts`
-  › "add writes the Claude MCP entry and its v1 intent atomically, without a
-  receipt".
-- **SPDX, digest or provenance fields.** No payload this contract defines
-  carries a software bill-of-materials entry, a build digest, or a
-  provenance attestation.
-- **Native plugin installation.** UNVERIFIED — Rig does not install, list
-  or manage a Claude Code or Codex plugin (`## Harness delivery and
-provider ownership`); the only delivery path this contract covers is a
-  generated repository's own files.
-- **A provider SDK, or a generic provider contract.** Each integration is
-  its own hand-written plan-and-consent flow against that one provider's
-  shape (`## setup integrations (RP-22)`); there is no shared interface a
-  third party can implement to add a provider without a code change here.
-- **The contents of the optional workflow layer.** The `--layer workflow`
-  flag name and RP-180's layer-preservation rule (a plain re-run never
-  drops a layer a previous run recorded) are covered by the 1.0 guarantee;
-  the queue adapter, the loop and pr-ship skills, run-state, journal,
-  revalidation, claim-records and the PR-lifecycle helpers inside it stay
-  experimental and outside it — `test/template/layers-split.test.ts` ›
-  "the workflow layer is exactly the named set RP-180 decided on".
-- **Basic Memory.** A wiring-only preview (`## setup integrations
-(RP-22)`); outside the guarantee until it graduates.
-
-## Deprecation policy and ledger
-
-**From 1.0.0, removing or narrowing any surface this contract covers
-requires the next major version.** This generalises the rule
-`## Stability and versioning` already states for the memory shim's own
-value domains to the whole public command surface this document now
-freezes: a subcommand, a documented flag, an exit-code meaning, a JSON key,
-or a closed value domain named anywhere above. Adding or widening one is a
-**minor** bump; nothing a caller already sends or reads stops working.
-Removing or narrowing one is a **major** bump, preceded by at least one
-minor release in which the old spelling still works, is documented as
-deprecated in `--help`, and is recorded in `CHANGELOG.md` — a deprecation
-window measured in releases, not calendar time, with a ledger row below.
-
-`version` and `contractVersion` move independently, exactly as
-`## The version handshake` already states: this rig may ship many patch and
-minor releases against one contract version, and a major contract bump does
-not require a major package-version bump on its own.
-
-**The ledger.** Every entry below removed or narrowed a piece of surface
-before this freeze existed — recorded here as the shape a future one takes,
-not as a violation of a rule that did not yet bind them. Every legacy
-reading the ledger names is kept for the whole of the 1.x series, not only
-until the next minor:
-
-| what changed                                                                                                                  | release                        | what a caller still gets in every 1.x                                                                                                                                                                                                      |
-| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Per-target stack overlays and application skeletons retired; only the one universal payload ships                             | RP-177                         | A manifest naming a stack this version no longer ships reports that path `retired` rather than crashing — `packages/cli/test/upgrade.test.ts` › "retires a stack-overlay path this release no longer ships — never written, never deleted" |
-| The architecture-only overlay group retired the same way, via the same `retired` verdict                                      | RP-177                         | Covered by the row above                                                                                                                                                                                                                   |
-| The workflow layer moved out of the default install, opt-in via `--layer workflow`                                            | RP-180                         | A manifest with no `layers` key still reads as owning every layer — `packages/cli/test/manifest.test.ts` › "a manifest with no `layers` key parses as though it recorded every layer"                                                      |
-| `init --force` refused, in favour of `upgrade`                                                                                | pre-1.0 (removed in 0.6)       | `init --force` still names the replacement command in its refusal rather than silently doing nothing — `test/e2e/init.test.ts` › "refuses `--force` with the command that does refresh a rig, and exits non-zero"                          |
-| Separate integration receipts and `setup verify` retired, in favour of `.rig/integrations.json` and `create-agent-rig doctor` | RP-22                          | `## Not part of 1.0` names the retirement; no receipt file is written on any `setup add`/`apply`/`remove`                                                                                                                                  |
-| The internal, unused `policy/` library removed                                                                                | RP-178                         | Not part of the public surface this contract binds (`## Scope`); no caller-visible reading changes                                                                                                                                         |
-| `hash-history.json`'s ledger-built table is the fallback `upgrade` uses when no manifest exists                               | ongoing since its introduction | A manifest-less rig still gets a correct plan rather than a blind one — `packages/cli/test/upgrade.test.ts` › "keeps a deletion it has no manifest for, and still delivers what is new"                                                    |
-
-## README promises
-
-Every promise unit README.md makes — its bold-lead bullets in the top
-section and `## Safe by default`, the `## How ownership works` table rows,
-the `## Limitations and non-goals` bullets, the `## Platform support` table
-rows, and the `## Requirements` bullets — corresponds to exactly one row
-here: which clause of this contract backs it, and what resolves the claim.
-`test/template/readme-promises.test.ts` checks the correspondence both ways
-and self-checks against a planted mutation.
-
-| Promise                                                                                          | Clause                                  | Evidence                                                                                                                                        |
-| ------------------------------------------------------------------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| One configuration, both harnesses.                                                               | Harness delivery and provider ownership | `test/template/codex.test.ts` › "is in sync with its Claude Code sources"                                                                       |
-| Upgrades that respect your changes.                                                              | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
-| Guardrails that run, not just rules that are read.                                               | Doctor                                  | `packages/cli/test/doctor-guards.test.ts` › "fails a modified installed guard without executing repository code"                                |
-| Optional integrations, done by the book.                                                         | setup integrations (RP-22)              | `packages/cli/test/integrations-intent.test.ts` › "remove deletes only an owned, unmodified entry and keeps all foreign entries"                |
-| A clean exit.                                                                                    | uninstall (RP-181)                      | `packages/cli/test/uninstall.test.ts` › "is idempotent: a second uninstall after the first is a clean no-op"                                    |
-| Ownership, not guesswork.                                                                        | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "records the version, the kind and a hash per installed file"                                             |
-| Conflicts over overwrites.                                                                       | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
-| Deleted stays deleted.                                                                           | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "installs a file this release added, and does not resurrect one the user deleted"                         |
-| Plan first.                                                                                      | Mutations                               | `test/e2e/init.test.ts` › "a dry run writes nothing"                                                                                            |
-| Bounded external processes.                                                                      | setup integrations (RP-22)              | `packages/cli/test/provider-spawn.test.ts` › "returns only after a deadline kills a live child and grandchild on this platform"                 |
-| No stored credentials.                                                                           | Secrets                                 | `test/template/command-contract.test.ts` › "keeps a credential value out of every payload, rendering and error message"                         |
-| exactly as Rig installed it                                                                      | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "replaces a file the release changed and the user did not touch"                                          |
-| edited by you                                                                                    | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
-| deleted by you                                                                                   | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "installs a file this release added, and does not resurrect one the user deleted"                         |
-| not Rig's, or there before                                                                       | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never claims a file it kept rather than wrote"                                                           |
-| No application scaffolding, no project templates to choose from.                                 | Not part of 1.0                         | `packages/cli/test/create.test.ts` › "makes the directory and installs the one payload into it"                                                 |
-| Not an agent runtime, scheduler or workflow engine; it configures the harnesses you already run. | Not part of 1.0                         | `test/template/layers-split.test.ts` › "the workflow layer is exactly the named set RP-180 decided on"                                          |
-| No plugin manager, and no bundled memory engine.                                                 | Not part of 1.0                         | `packages/cli/test/package-contents.test.ts` › "keeps a `.claude-plugin/` directory and a `marketplace.json` file out of the published tarball" |
-| Provider accounts, authorization and connectivity are between you, the provider and the harness. | Harness delivery and provider ownership | `packages/cli/test/doctor.test.ts` › "distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets"        |
-| The workflow layer is experimental.                                                              | Not part of 1.0                         | `test/template/agents.test.ts` › "treats absent workflow-layer run-state and journal as the normal path, qualified as opt-in"                   |
-| Linux                                                                                            | Support matrix                          | CHANGELOG.md "Releasing" step 1                                                                                                                 |
-| Windows                                                                                          | Support matrix                          | CHANGELOG.md "Releasing" step 1                                                                                                                 |
-| macOS                                                                                            | Support matrix                          | CHANGELOG.md "Releasing" step 1                                                                                                                 |
-| Node ≥ 22. The CLI has no runtime dependencies.                                                  | Support matrix                          | `test/template/packaging.test.ts` › "raises the Node floor to >=22 for the 1.0 contract freeze (RP-184)"                                        |
-| Git.                                                                                             | Support matrix                          | `packages/cli/test/create.test.ts` › "initialises git with a pristine-template baseline commit"                                                 |
-| For Spec Kit only: uv and uvx.                                                                   | Support matrix                          | `packages/cli/test/spec-kit.test.ts` › "refuses repository-controlled uv and uvx launchers before invoking one"                                 |
-
 The same two files, on a pristine rig with nothing else installed — nothing
 preserved, so this time the manifest is removed too:
 
@@ -1954,3 +1661,303 @@ run that earns none of these — never omitted:
   "outcome": "partial"
 }
 ```
+
+## Public surface at 1.0
+
+RP-184's freeze of the public command surface, current as of this release.
+Every row's wrong-invocation exit code is measured against
+`packages/cli/src/index.ts` and, for `doctor` and `memory`, their own command
+modules — never guessed. `doctor` and `memory` already answer their own
+successful and refused-precondition cases inside the closed 0-4
+`## Exit codes` domain elsewhere in this document; their wrong-invocation
+code is the ordinary usage exit that table already names for code 2.
+Every other command here predates that five-code table — it binds only the
+memory shim's foundation verb set — and keeps its own long-standing `0`/`1`
+convention, plus the handful of higher literals `## Conformance today`
+already names per command.
+
+| command                          | flags                                                                                                 | wrong invocation                                                                            | `--json`                                                                                                         | side effects and idempotence                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `create`                         | `<dir> [--no-git] [--layer workflow] [--no-color] [--version [--json]] [-h/--help]`                   | exit 1 — a `parseArgs` failure, a missing or extra positional, or an unknown `--layer` name | only on `--version`                                                                                              | Writes a new directory and installs the one payload, optionally running `git init` with a pristine-template baseline commit. Refuses a non-empty target directory rather than merging into it, so it is **not idempotent** — a repeat run against the same target refuses. **No `--dry-run`, by exception to `## Mutations`**: there is no existing directory state to preview a write against.                                |
+| `init`                           | `[--dry-run] [--layer workflow] [--no-color]` (`--force` refuses and names `upgrade`; removed in 0.6) | exit 1                                                                                      | no                                                                                                               | Installs or refreshes the process layer, and the workflow layer with `--layer workflow`; a plain re-run keeps a workflow layer a previous run already recorded rather than dropping it. Idempotent: a rig already matching the release reports every file `unchanged` (`## Ownership verdicts`).                                                                                                                               |
+| `upgrade`                        | `[--dry-run] [--yes] [--no-color]`                                                                    | exit 1                                                                                      | no                                                                                                               | Replaces files this rig installed and the user did not touch; reports the rest, never merges. Idempotent: a repeat run against an already-upgraded rig reports `unchanged` throughout.                                                                                                                                                                                                                                         |
+| `uninstall`                      | `[dir] [--dry-run] [--yes] [--detach] [--no-color] [--json]`                                          | exit 1                                                                                      | yes                                                                                                              | Removes only files whose bytes still match the manifest; the manifest itself is removed last, only once nothing is `preserved` — unless `--detach` removes it regardless, leaving every preserved path as a handover list. Idempotent: a second run after a clean uninstall finds no manifest and does nothing — `packages/cli/test/uninstall.test.ts` › "is idempotent: a second uninstall after the first is a clean no-op". |
+| `doctor`                         | `[--json]`                                                                                            | exit 2 — `doctor accepts only --json`                                                       | yes                                                                                                              | Read-only: it never applies a setup plan or writes a file (`## Doctor`, `### Rig aggregate diagnosis`). No `--dry-run`, by the same exception as above: nothing here mutates, so there is nothing to preview.                                                                                                                                                                                                                  |
+| `setup`                          | `[--json]` (no verb, no other option)                                                                 | exit 1                                                                                      | yes — a JSON refusal object only (`setup-wizard-requires-an-interactive-terminal`); never a non-refusal answer   | Interactive-only: prompts for a provider and harness on a terminal, then hands the choice to `setup add`'s own plan/confirm flow (`## setup integrations (RP-22)`). Off a terminal, with `--json`, or with any other option, it refuses (exit 1) rather than guessing. Not idempotent by itself — idempotence follows whichever `setup add` plan it delegates to.                                                              |
+| `setup --memory-root <checkout>` | `[--memory-ref <sha>] [--dry-run] [--no-color]` (legacy path)                                         | exit 1                                                                                      | no                                                                                                               | Writes the machine-scoped `subsystems.json` registration after the version handshake (`## Persistent state at 1.0`). Idempotent: registering the same root twice overwrites the same deterministic entry.                                                                                                                                                                                                                      |
+| `setup add <id>`                 | `[--harness <name>]… [--adopt] [--dry-run] [--yes] [--json]`                                          | exit 1                                                                                      | yes                                                                                                              | Plans MCP wiring or the pinned Spec Kit lifecycle and records intent in `.rig/integrations.json`; a write needs `--yes`, or an affirmative answer at an interactive terminal confirm — `--json` always requires `--yes`, since it never prompts.                                                                                                                                                                               |
+| `setup apply [id]`               | `[--dry-run] [--yes] [--json]`                                                                        | exit 1                                                                                      | yes                                                                                                              | Re-applies declared intent; refuses if a planned file changed since planning.                                                                                                                                                                                                                                                                                                                                                  |
+| `setup remove <id>`              | `[--dry-run] [--yes] [--json]`                                                                        | exit 1                                                                                      | yes                                                                                                              | Removes proven Rig-owned wiring, or delegates Spec Kit removal to its own CLI; retires intent after success.                                                                                                                                                                                                                                                                                                                   |
+| `setup list`                     | `[--json]`                                                                                            | exit 1                                                                                      | yes                                                                                                              | Lists the supported integrations. Read-only.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `memory`                         | `doctor`/`load` `[args…]`                                                                             | exit 2 — no verb, or a verb outside `doctor`/`load`                                         | no such flag — always one JSON line for this bin's own answers (0/1/3/4); a passthrough is whatever Memory wrote | Runs the named verb through the registered Memory executable, after its own version handshake (a foreign contract major exits 4 and the verb never runs). A `load` naming no `--timeout-ms` gets one appended. Read-only from this bin's own perspective — every write, if any, is Memory's.                                                                                                                                   |
+| `--version [--json]`             | —                                                                                                     | never fails for a contract reason (`## The version handshake`)                              | on `--version --json`                                                                                            | Read-only: answers the handshake object.                                                                                                                                                                                                                                                                                                                                                                                       |
+
+## Persistent state at 1.0
+
+### `.claude/.rig-manifest.json`
+
+The install manifest (`packages/cli/src/lib/manifest.ts`), committed by
+convention so an upgrade or uninstall run elsewhere is not blind. Its keys,
+and how an old manifest missing one is read:
+
+| key                                                      | present since | absent reads as                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                                                | always        | — (required; a manifest missing it does not parse)                                                                                                                                                                                                                                 |
+| `kind` (`'create'` or `'init'`)                          | always        | — (required)                                                                                                                                                                                                                                                                       |
+| `project.name` / `project.scope` / `project.region`      | always        | — (required; legacy readings only — `scope` reaches no template today and `region` may be empty)                                                                                                                                                                                   |
+| `stacks` (string array)                                  | always        | — (required; legacy — always empty on a current install, RP-177 retired the overlays it once named)                                                                                                                                                                                |
+| `layers` (`'process'` and/or `'workflow'`, deduplicated) | RP-180        | **every layer this release ships** (`ALL_LAYERS`) — never the default-only set, so a pre-RP-180 rig's workflow files stay owned rather than becoming `retired` — `packages/cli/test/manifest.test.ts` › "a manifest with no `layers` key parses as though it recorded every layer" |
+| `files` (path → sha256)                                  | always        | — (required)                                                                                                                                                                                                                                                                       |
+| `kept` (path → sha256)                                   | RP-182        | omitted entirely — nothing was kept                                                                                                                                                                                                                                                |
+
+A manifest carrying an unrecognised shape in any required key, or a
+`stacks`, `layers` or `kept` value this reader does not accept, does not
+parse at all: `readManifest` returns `null`, which sends `upgrade` to the
+hash-history fallback rather than a half-trusted read.
+
+### `subsystems.json`
+
+The machine-scoped subsystem registration `setup --memory-root` writes
+(`packages/cli/src/lib/subsystems.ts`): one file at
+`~/.config/create-agent-rig/subsystems.json` (`%APPDATA%\create-agent-rig\`
+on Windows), `schemaVersion: 1`, one entry today (`entries.memory`) carrying
+the resolved executable invocation, the required contract major, and the
+registered ref. It is outside every repository, so no ignore entry or
+per-repository ownership rule applies to it.
+
+### `.rig/integrations.json`
+
+The repository intent file `setup add`/`apply`/`remove` reads and writes
+(`## setup integrations (RP-22)`), `schemaVersion: 1`. Its public shape is
+`contracts/integrations/v1/declaration.schema.json`, which
+`packages/cli/src/integrations/declaration.ts` validates intent against —
+the schema file states the shape it accepts; this document does not restate
+it a second time.
+
+## Ownership verdicts
+
+`upgrade`'s per-file verdict is the closed set `UpgradeVerdict` names in
+`packages/cli/src/commands/upgrade.ts`: `update`, `new`, `unchanged`,
+`conflict`, `deleted`, `wiring`, `retired`. README.md's `## How ownership
+works` is the reader-facing summary; this is where a README promise
+(`## README promises`) resolves against the actual verdict it names:
+
+| verdict     | meaning                                                                                                                                                               |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `update`    | Installed by the rig, untouched since, and this release changed it — replaced.                                                                                        |
+| `new`       | This release adds it; nothing on disk, nothing in the manifest — written.                                                                                             |
+| `unchanged` | Already what this release would write.                                                                                                                                |
+| `conflict`  | Edited, or of unknown provenance — reported, never written.                                                                                                           |
+| `deleted`   | The manifest says the rig installed it; the user removed it — stays removed, never restored.                                                                          |
+| `wiring`    | Hook wiring that is not replaceable — handed over, not overwritten.                                                                                                   |
+| `retired`   | The manifest says the rig installed it; this release's payload no longer ships it at all (RP-177) — never written, never deleted; the path becomes the project's own. |
+
+`uninstall`'s own verdicts — `remove`, `preserved` (with the eight reasons
+`## uninstall (RP-181)` names) and `absent` — are that section's own closed
+set, not `UpgradeVerdict`: the two commands answer different questions (what
+changed on this release, versus what this rig can prove it wrote) and are
+not required to share one vocabulary.
+
+Bytes matching only after line-ending normalisation (CRLF/LF, checked both
+directions against the one recorded hash — never a second, decoded record of
+the original bytes) are their own case in both commands, never folded into a
+plain `update`/`remove`: `upgrade` reports it as a conflict reason and
+`uninstall` preserves it with reason `line-endings-only`. Ownership hashes
+compare exact raw bytes, never a decoded string (ADR-RP-003,
+`docs/decisions/raw-byte-ownership.md`), so a binary file is compared
+correctly and this classification is only ever attempted on bytes that
+round-trip through UTF-8 without loss.
+
+Evidence for the verdicts a user is most likely to depend on:
+`packages/cli/test/upgrade.test.ts` › "replaces a file the release changed
+and the user did not touch" (`update`), › "installs a file this release
+added, and does not resurrect one the user deleted" (`new` and `deleted`
+together), › "never overwrites a file the user edited — one byte is enough"
+(`conflict`), and › "never claims a file it kept rather than wrote" (a
+`kept` path stays outside every verdict here — it is not Rig's).
+
+## Harness delivery and provider ownership
+
+**Generated repository files are the only delivery path.** Everything this
+contract covers — rules, guards, agents, skills, hook wiring — reaches a
+project by being written into that project's own working tree by `create`,
+`init` or `upgrade`, and by nothing else: there is no separate installer, no
+global daemon, and no out-of-repository registration beyond the one
+machine-scoped file `## Persistent state at 1.0` names. `AGENTS.md` is the
+one canonical, substituted rulebook; `CLAUDE.md` is a short shim that
+imports it, so both harnesses read the same rules from one source —
+`test/template/codex.test.ts` › "is in sync with its Claude Code sources".
+
+**Native plugins are unmanaged.** Rig has no plugin manager or marketplace,
+does not install, list or update a Claude Code or Codex plugin, and a
+rig-generated repository carries none of its own — `packages/cli/test/package-contents.test.ts`
+› "keeps a `.claude-plugin/` directory and a `marketplace.json` file out of
+the published tarball". Claude Code and Codex plugins installed by other
+means may be used alongside a rig-generated repository as usual; this
+contract makes no claim about them.
+
+**MCP ownership differs by harness, deliberately.** A Claude Code target
+records `targets["claude-code"].entryHash` per MCP server entry in
+`.rig/integrations.json` — entry-by-entry ownership, so a foreign entry
+survives untouched next to a Rig-owned one. Codex has no equivalent
+per-entry boundary in its own config format, so Rig owns the **whole**
+`.codex/config.toml` file it renders, tracked as one rolling
+`targets.codex.fileHash`; a manual edit is refused rather than merged
+(`## setup integrations (RP-22)`).
+
+**Spec Kit and Basic Memory are upstream-owned.** Rig plans and delegates to
+each provider's own CLI or launcher; it does not copy, hash or delete their
+files, and does not claim their data as its own — `packages/cli/test/spec-kit.test.ts`
+› "requires explicit adoption before touching an external .specify payload".
+
+**Authorization, connectivity and trust are never claimed.** `doctor`
+reports wiring — `wired`, `absent`, `drifted`, `foreign`, `unreadable` —
+and, for a launcher it can merely find on the machine, `observed`; it never
+reaches a provider over the network — it runs only local launchers, bounded
+(`## Doctor`) — and connectivity and trust are always `not-observed` —
+`packages/cli/test/doctor.test.ts` › "distinguishes owned wiring, missing
+launcher and unobserved runtime for both Basic Memory targets". Signing in
+to a provider happens in the harness; Rig stores no credentials
+(`## Secrets`).
+
+## Support matrix
+
+**Node.** `>=22` (`package.json`'s `engines.node`, raised for this freeze —
+`## Deprecation policy and ledger` records the change) —
+`test/template/packaging.test.ts` › "raises the Node floor to >=22 for the
+1.0 contract freeze (RP-184)". The CLI itself carries no runtime
+dependencies.
+
+**Git.** Required — `create`'s default path runs `git init` and a
+pristine-template baseline commit (`--no-git` skips it) —
+`packages/cli/test/create.test.ts` › "initialises git with a pristine-template
+baseline commit".
+
+**Spec Kit only: `uv` and `uvx`.** Required for `setup add spec-kit`, and
+for nothing else (`## setup integrations (RP-22)`) —
+`packages/cli/test/spec-kit.test.ts` › "refuses repository-controlled uv and
+uvx launchers before invoking one".
+
+**Platforms.** Linux, Windows and macOS (Apple silicon), each accepted on
+the exact packed release commit before publish, through the exact-SHA
+network acceptance lane (`docs/releasing.md`, "Exact-SHA network
+acceptance") — `scripts/release-acceptance.mjs`. A
+Windows-only limitation: Spec Kit 1.0.8 itself rewrites `.claude/settings.json`
+and `.codex/config.toml` with CRLF line endings, which `doctor` reports as
+drift on Rig's own files rather than silently accepting.
+
+**Harness versions.** No minimum Claude Code or Codex version is
+guaranteed. `docs/compatibility.md` records what each retained guard, hook
+and delivery mechanism does on each harness — never a version list; a reader
+who needs a guaranteed floor does not have one at 1.0.
+
+## Not part of 1.0
+
+Named explicitly, so a reader who assumes coverage from silence has
+something to check first. None of these are refused forever — RP-184 is a
+freeze of what 1.0 covers today, not a roadmap.
+
+- **Profiles.** No per-repository named configuration profile exists in
+  this release's command surface.
+- **Receipts.** Retired in favour of the single repository intent file,
+  `.rig/integrations.json` (`## Persistent state at 1.0`); a separate
+  per-run receipt file is not written — `packages/cli/test/integrations-intent.test.ts`
+  › "add writes the Claude MCP entry and its v1 intent atomically, without a
+  receipt".
+- **SPDX, digest or provenance fields.** No payload this contract defines
+  carries a software bill-of-materials entry, a build digest, or a
+  provenance attestation.
+- **Native plugin installation.** UNVERIFIED — Rig does not install, list
+  or manage a Claude Code or Codex plugin (`## Harness delivery and
+provider ownership`); the only delivery path this contract covers is a
+  generated repository's own files.
+- **A provider SDK, or a generic provider contract.** Each integration is
+  its own hand-written plan-and-consent flow against that one provider's
+  shape (`## setup integrations (RP-22)`); there is no shared interface a
+  third party can implement to add a provider without a code change here.
+- **The contents of the optional workflow layer.** The `--layer workflow`
+  flag name and RP-180's layer-preservation rule (a plain re-run never
+  drops a layer a previous run recorded) are covered by the 1.0 guarantee;
+  the queue adapter, the loop and pr-ship skills, run-state, journal,
+  revalidation, claim-records and the PR-lifecycle helpers inside it stay
+  experimental and outside it — `test/template/layers-split.test.ts` ›
+  "the workflow layer is exactly the named set RP-180 decided on".
+- **Basic Memory.** A wiring-only preview (`## setup integrations
+(RP-22)`); outside the guarantee until it graduates.
+
+## Deprecation policy and ledger
+
+**From 1.0.0, removing or narrowing any surface this contract covers
+requires the next major version.** This generalises the rule
+`## Stability and versioning` already states for the memory shim's own
+value domains to the whole public command surface this document now
+freezes: a subcommand, a documented flag, an exit-code meaning, a JSON key,
+or a closed value domain named anywhere above. Adding or widening one is a
+**minor** bump; nothing a caller already sends or reads stops working.
+Removing or narrowing one is a **major** bump, preceded by at least one
+minor release in which the old spelling still works, is documented as
+deprecated in `--help`, and is recorded in `CHANGELOG.md` — a deprecation
+window measured in releases, not calendar time, with a ledger row below.
+
+`version` and `contractVersion` move independently, exactly as
+`## The version handshake` already states: this rig may ship many patch and
+minor releases against one contract version, and a major contract bump does
+not require a major package-version bump on its own.
+
+**The ledger.** Every entry below removed or narrowed a piece of surface
+before this freeze existed — recorded here as the shape a future one takes,
+not as a violation of a rule that did not yet bind them. Every legacy
+reading the ledger names is kept for the whole of the 1.x series, not only
+until the next minor:
+
+| what changed                                                                                                                  | release                        | what a caller still gets in every 1.x                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Per-target stack overlays and application skeletons retired; only the one universal payload ships                             | RP-177                         | A manifest naming a stack this version no longer ships reports that path `retired` rather than crashing — `packages/cli/test/upgrade.test.ts` › "retires a stack-overlay path this release no longer ships — never written, never deleted" |
+| The architecture-only overlay group retired the same way, via the same `retired` verdict                                      | RP-177                         | Covered by the row above                                                                                                                                                                                                                   |
+| The workflow layer moved out of the default install, opt-in via `--layer workflow`                                            | RP-180                         | A manifest with no `layers` key still reads as owning every layer — `packages/cli/test/manifest.test.ts` › "a manifest with no `layers` key parses as though it recorded every layer"                                                      |
+| `init --force` refused, in favour of `upgrade`                                                                                | pre-1.0 (removed in 0.6)       | `init --force` still names the replacement command in its refusal rather than silently doing nothing — `test/e2e/init.test.ts` › "refuses `--force` with the command that does refresh a rig, and exits non-zero"                          |
+| Separate integration receipts and `setup verify` retired, in favour of `.rig/integrations.json` and `create-agent-rig doctor` | RP-22                          | `## Not part of 1.0` names the retirement; no receipt file is written on any `setup add`/`apply`/`remove`                                                                                                                                  |
+| The internal, unused `policy/` library removed                                                                                | RP-178                         | Not part of the public surface this contract binds (`## Scope`); no caller-visible reading changes                                                                                                                                         |
+| `hash-history.json`'s ledger-built table is the fallback `upgrade` uses when no manifest exists                               | ongoing since its introduction | A manifest-less rig still gets a correct plan rather than a blind one — `packages/cli/test/upgrade.test.ts` › "keeps a deletion it has no manifest for, and still delivers what is new"                                                    |
+| Node floor raised from `>=20` to `>=22` (`package.json`’s `engines.node`)                                                     | RP-184 (pre-1.0)               | The CLI still runs on any Node 22 or newer — the only lane CI tests — `test/template/packaging.test.ts` › "raises the Node floor to >=22 for the 1.0 contract freeze (RP-184)"                                                             |
+
+## README promises
+
+A **promise unit** is deliberately narrow, not every sentence in README.md
+that reads as a promise: its bold-lead bullets in the top section and
+`## Safe by default`, the `## How ownership works` table rows, the
+`## Limitations and non-goals` bullets, the `## Platform support` table
+rows, and the `## Requirements` bullets — and nothing outside those six
+groups. Every promise unit corresponds to exactly one row here: which
+clause of this contract backs it, and what resolves the claim.
+`test/template/readme-promises.test.ts` checks the correspondence both ways
+and self-checks against a planted mutation.
+
+| Promise                                                                                          | Clause                                  | Evidence                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| One configuration, both harnesses.                                                               | Harness delivery and provider ownership | `test/template/codex.test.ts` › "is in sync with its Claude Code sources"                                                                       |
+| Upgrades that respect your changes.                                                              | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
+| Guardrails that run, not just rules that are read.                                               | Doctor                                  | `packages/cli/test/doctor-guards.test.ts` › "fails a modified installed guard without executing repository code"                                |
+| Optional integrations, done by the book.                                                         | setup integrations (RP-22)              | `packages/cli/test/integrations-intent.test.ts` › "remove deletes only an owned, unmodified entry and keeps all foreign entries"                |
+| A clean exit.                                                                                    | uninstall (RP-181)                      | `packages/cli/test/uninstall.test.ts` › "is idempotent: a second uninstall after the first is a clean no-op"                                    |
+| Ownership, not guesswork.                                                                        | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "records the version, the kind and a hash per installed file"                                             |
+| Conflicts over overwrites.                                                                       | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
+| Deleted stays deleted.                                                                           | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "installs a file this release added, and does not resurrect one the user deleted"                         |
+| Plan first.                                                                                      | Mutations                               | `test/e2e/init.test.ts` › "a dry run writes nothing"                                                                                            |
+| Bounded external processes.                                                                      | setup integrations (RP-22)              | `packages/cli/test/provider-spawn.test.ts` › "returns only after a deadline kills a live child and grandchild on this platform"                 |
+| No stored credentials.                                                                           | Secrets                                 | `test/template/command-contract.test.ts` › "keeps a credential value out of every payload, rendering and error message"                         |
+| exactly as Rig installed it                                                                      | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "replaces a file the release changed and the user did not touch"                                          |
+| edited by you                                                                                    | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
+| deleted by you                                                                                   | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "installs a file this release added, and does not resurrect one the user deleted"                         |
+| not Rig's, or there before                                                                       | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never claims a file it kept rather than wrote"                                                           |
+| No application scaffolding, no project templates to choose from.                                 | Not part of 1.0                         | `packages/cli/test/create.test.ts` › "makes the directory and installs the one payload into it"                                                 |
+| Not an agent runtime, scheduler or workflow engine; it configures the harnesses you already run. | Not part of 1.0                         | `test/template/layers-split.test.ts` › "the workflow layer is exactly the named set RP-180 decided on"                                          |
+| No plugin manager, and no bundled memory engine.                                                 | Not part of 1.0                         | `packages/cli/test/package-contents.test.ts` › "keeps a `.claude-plugin/` directory and a `marketplace.json` file out of the published tarball" |
+| Provider accounts, authorization and connectivity are between you, the provider and the harness. | Harness delivery and provider ownership | `packages/cli/test/doctor.test.ts` › "distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets"        |
+| The workflow layer is experimental.                                                              | Not part of 1.0                         | `test/template/agents.test.ts` › "treats absent workflow-layer run-state and journal as the normal path, qualified as opt-in"                   |
+| Linux                                                                                            | Support matrix                          | `scripts/release-acceptance.mjs`                                                                                                                |
+| Windows                                                                                          | Support matrix                          | `scripts/release-acceptance.mjs`                                                                                                                |
+| macOS                                                                                            | Support matrix                          | `scripts/release-acceptance.mjs`                                                                                                                |
+| Node ≥ 22. The CLI has no runtime dependencies.                                                  | Support matrix                          | `test/template/packaging.test.ts` › "raises the Node floor to >=22 for the 1.0 contract freeze (RP-184)"                                        |
+| Git.                                                                                             | Support matrix                          | `packages/cli/test/create.test.ts` › "initialises git with a pristine-template baseline commit"                                                 |
+| For Spec Kit only: uv and uvx.                                                                   | Support matrix                          | `packages/cli/test/spec-kit.test.ts` › "refuses repository-controlled uv and uvx launchers before invoking one"                                 |

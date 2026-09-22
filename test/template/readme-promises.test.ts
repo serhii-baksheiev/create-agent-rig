@@ -99,11 +99,18 @@ const bulletsIn = (sectionText: string): string[] => {
   return bullets.map((b) => b.replace(/\s+/g, ' ').trim());
 };
 
-/** A bold-lead bullet's key is its bold lead; a plain bullet's key is itself. */
+/**
+ * A bold-lead bullet's key is its bold lead; a plain bullet's key is itself.
+ * Stripped of backticks and asterisks, the same way `firstCellOf` and
+ * `readmePromisesTable` strip a table cell below — otherwise a bullet that
+ * carries a code span (`` `uv` and `uvx` ``) can never match the contract
+ * row it corresponds to, because the contract side is already stripped and
+ * this side was not.
+ */
 const promiseKeysOfBullets = (sectionText: string): string[] =>
   bulletsIn(sectionText).map((bullet) => {
     const lead = /^\*\*([^*]+)\*\*/.exec(bullet);
-    return lead ? lead[1]!.trim() : bullet;
+    return (lead ? lead[1]! : bullet).replace(/[`*]/g, '').trim();
   });
 
 const firstCellOf = (table: PipeTable): string[] =>
@@ -157,7 +164,10 @@ function readmePromisesTable(contractMd: string): PromiseRow[] {
   }));
 }
 
-// --- the two-direction correspondence, as a pure function so a mutation can drive it ---
+// --- the two-direction correspondence, as a pure function: both
+// missingFromContract and extraInContract are asserted against the real
+// documents below, and the same function is driven by a planted mutation
+// further down ---
 
 function promiseCorrespondence(readmeKeys: readonly string[], contractPromises: readonly string[]) {
   const readmeSet = new Set(readmeKeys);
@@ -250,13 +260,17 @@ describe('README.md promise units correspond to a table in docs/command-contract
       const tracked = trackedTestFiles(repoRoot);
       const steps = releaseSteps(changelog);
 
-      const { missingFromContract } = promiseCorrespondence(
+      const { missingFromContract, extraInContract } = promiseCorrespondence(
         readmeKeys,
         rows.map((row) => row.promise),
       );
       expect(
         missingFromContract,
         'README.md promise units with no row in "## README promises"',
+      ).toEqual([]);
+      expect(
+        extraInContract,
+        '"## README promises" rows that name no promise unit README.md actually makes',
       ).toEqual([]);
 
       const problems: string[] = [];
@@ -297,4 +311,21 @@ describe('README.md promise units correspond to a table in docs/command-contract
     expect(readmePromiseKeys(readme)).toContain('A clean exit.');
     expect(readmePromiseKeys(mutated)).not.toContain('A clean exit.');
   });
+
+  it(
+    'normalises backticks the same way on a README bullet as on a contract table cell, ' +
+      'so a promise wrapped in a code span still corresponds',
+    () => {
+      const [bulletKey] = promiseKeysOfBullets('- For Spec Kit only: `uv` and `uvx`.\n');
+      const [row] = readmePromisesTable(
+        [
+          '| promise | clause | evidence |',
+          '| --- | --- | --- |',
+          '| For Spec Kit only: `uv` and `uvx`. | Support matrix | some/file.ts › "a test" |',
+          '',
+        ].join('\n'),
+      );
+      expect(bulletKey).toBe(row!.promise);
+    },
+  );
 });
