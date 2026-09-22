@@ -50,7 +50,6 @@ directories. It does not publish a package or install providers globally.
 
 ```sh
 gh workflow run e2e.yml --ref master \
-\
   -f release_acceptance=true \
   -f release_sha=<full-candidate-sha>
 ```
