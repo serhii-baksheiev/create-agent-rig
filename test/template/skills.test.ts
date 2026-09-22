@@ -316,8 +316,12 @@ describe('diagnose skill (universal, Core) — RP-195 slice 3', () => {
   // an edit that only moves prose nearer a word cannot make a binding
   // assertion pass without the action actually being on that word's row.
   function rowFor(content: string, word: string): string {
-    const row = content.split('\n').find((line) => line.includes(word));
-    expect(row, `no row in the routing table names ${word}`).toBeDefined();
+    // a table row, not any line mentioning the word — a prose sentence
+    // placed above the table must not silently become "the row"
+    const row = content
+      .split('\n')
+      .find((line) => line.trimStart().startsWith('|') && line.includes(word));
+    expect(row, `no table row names ${word}`).toBeDefined();
     return row!;
   }
 
@@ -373,6 +377,12 @@ describe('diagnose skill (universal, Core) — RP-195 slice 3', () => {
   // unrelated pointer (the flaky-retry rule, a few lines above the table).
   it('binds INCONCLUSIVE and INSUFFICIENT_EVIDENCE to the escalation format in autonomy.md, not a restated procedure', async () => {
     const content = await read();
+    // whole-file guard: the escalation format is autonomy.md's own wording,
+    // and a restatement anywhere in the skill — not just off these rows —
+    // is exactly the copy this test exists to catch
+    expect(content, 'restates the escalation format instead of pointing at it').not.toMatch(
+      /what was attempted,\s*what was observed/i,
+    );
     for (const word of ['INCONCLUSIVE', 'INSUFFICIENT_EVIDENCE']) {
       const row = rowFor(content, word);
       expect(row, `${word}'s row does not point at autonomy.md`).toMatch(
@@ -387,6 +397,11 @@ describe('diagnose skill (universal, Core) — RP-195 slice 3', () => {
       // a stop is not a fix: this row must not read like "open a PR anyway"
       expect(row, `${word}'s row reads like a fix route, not a stop`).not.toMatch(
         /\bfix\b|\bPR\b/i,
+      );
+      // a stop is not a retry either — a stalled diagnosis is escalated, not
+      // re-run until the check goes green (the "flaky ≠ retry" mistake)
+      expect(row, `${word}'s row reads like a retry route`).not.toMatch(
+        /\bretry\b|\bre-run\b|\brerun\b/i,
       );
     }
   });
