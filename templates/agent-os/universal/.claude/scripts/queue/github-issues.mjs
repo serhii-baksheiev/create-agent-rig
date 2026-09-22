@@ -172,8 +172,6 @@ const announceCap = (label, limit) => {
  * push an older open issue out of it, which used to be silent. See
  * queue-github-pagination.test.ts (absent in a generated rig) › "keeps an
  * older OPEN issue even when 100 CLOSED issues would fill a shared window".
- * The `issues` offline seam is unaffected: when it is supplied this behaves
- * exactly as before, against the one list it was given.
  */
 export const listEligible = ({ limit = 100, issues = null } = {}) => {
   let raw;
