@@ -108,8 +108,9 @@ live in the generator, and the section at the end of this entry says so.
 
 ### Generator repository (not a rig-facing change)
 
-- `layers.json` is a declared elevated path of this repository. It is tooling
-  metadata that `copy-tree` never installs, so no rig receives it (RP-211).
+- `layers.json` is a declared elevated path of this repository. It is the
+  manifest `init` installs _from_ — it names the paths of each layer and never
+  names itself — so no rig receives it (RP-211).
 - The Memory conformance probe, `scripts/memory-conformance.mjs`, reports a
   buffer overflow as what it is — a killed child — rather than as a child that
   could not start. The script is not packed (RP-206).
