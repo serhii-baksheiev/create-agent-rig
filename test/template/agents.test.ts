@@ -1,11 +1,44 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { readGateSpec, verdictExamplesIn, verdictWordsFor } from './verdict-spec.js';
+import {
+  GATE_SPEC_PATHS,
+  readGateSpec,
+  verdictExamplesIn,
+  verdictWordsFor,
+} from './verdict-spec.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+const verdictLib = async (): Promise<{
+  parseVerdict: (text: string) => {
+    ok: boolean;
+    problems?: string[];
+    verdict?: Record<string, unknown>;
+  };
+}> =>
+  (await import(
+    pathToFileURL(
+      path.join(
+        repoRoot,
+        'templates',
+        'agent-os',
+        'universal',
+        '.claude',
+        'scripts',
+        'lib',
+        'verdict.mjs',
+      ),
+    ).href
+  )) as {
+    parseVerdict: (text: string) => {
+      ok: boolean;
+      problems?: string[];
+      verdict?: Record<string, unknown>;
+    };
+  };
 
 // The change under review claims to implement a queue item. Nothing in the
 // checklist made "it implements something else" a finding — so a change that
@@ -217,5 +250,88 @@ describe('every reviewing agent ends with one machine-readable verdict', () => {
     for (const example of own) {
       expect(allowed, `${gate} shows a word it may not return`).toContain(example['verdict']);
     }
+  });
+});
+
+// RP-195 slice 2: failure-diagnostician answers in the same machine-readable
+// shape as the reviewers (lib/verdict.mjs), but it is not a merge gate — it
+// diagnoses a failure or a claimed/historical finding, on request, and its
+// two input kinds return different halves of its vocabulary
+// (docs/decisions/agent-roles-1.0.md; the words themselves in
+// `.claude/scripts/lib/verdict.mjs`).
+describe('failure-diagnostician agent (universal) — a checked answer, not a merge gate', () => {
+  const gate = 'failure-diagnostician';
+
+  it('has a declared spec path', () => {
+    expect(GATE_SPEC_PATHS[gate]).toBeDefined();
+  });
+
+  it('asks for exactly one fenced json block', async () => {
+    const content = await readGateSpec(gate);
+    expect(content).toMatch(/exactly one[\s\S]{0,80}json/i);
+  });
+
+  it("shows one example per input kind, and each parses as this gate's own verdict", async () => {
+    const content = await readGateSpec(gate);
+    const examples = verdictExamplesIn(content, gate);
+    expect(examples, `${gate} ships no fenced json example`).not.toHaveLength(0);
+
+    const own = examples.filter((example) => example['gate'] === gate);
+    expect(own, `no example in ${gate} carries \`"gate": "${gate}"\``).not.toHaveLength(0);
+
+    const allowed = await verdictWordsFor(gate);
+    for (const example of own) {
+      expect(allowed, `${gate} shows a word it may not return`).toContain(example['verdict']);
+    }
+
+    // A failure input answers ROOT_CAUSE or INCONCLUSIVE; a claim/historical
+    // finding answers one of the other four. At least one example of each
+    // kind must be shown, or the definition teaches only one half of its job.
+    const FAILURE_WORDS = ['ROOT_CAUSE', 'INCONCLUSIVE'];
+    const CLAIM_WORDS = ['STILL_LIVE', 'ALREADY_FIXED', 'OBSOLETE', 'INSUFFICIENT_EVIDENCE'];
+    expect(
+      own.some((example) => FAILURE_WORDS.includes(example['verdict'] as string)),
+      `${gate} shows no example answering a failure input (${FAILURE_WORDS.join(', ')})`,
+    ).toBe(true);
+    expect(
+      own.some((example) => CLAIM_WORDS.includes(example['verdict'] as string)),
+      `${gate} shows no example answering a claim/historical-finding input (${CLAIM_WORDS.join(', ')})`,
+    ).toBe(true);
+
+    // The ROOT_CAUSE example carries `classification` — required on that word
+    // (design decision 2), and the definition should not show a bare example
+    // that would itself be refused.
+    const rootCause = own.find((example) => example['verdict'] === 'ROOT_CAUSE');
+    if (rootCause !== undefined) {
+      expect(
+        rootCause['classification'],
+        'the ROOT_CAUSE example names no classification',
+      ).toBeDefined();
+    }
+
+    const { parseVerdict } = await verdictLib();
+    for (const example of own) {
+      const raw = '```json\n' + JSON.stringify(example) + '\n```';
+      const parsed = parseVerdict(raw);
+      expect(
+        parsed.ok,
+        `an example in ${gate} does not parse: ${JSON.stringify(parsed.problems)}`,
+      ).toBe(true);
+    }
+  });
+
+  it('treats absent workflow-layer run-state and journal as the normal path, qualified as opt-in', async () => {
+    const content = await readGateSpec(gate);
+    // The optional-evidence paragraph must say the workflow layer is opt-in —
+    // Core-layer prose never presupposes a capability a Core-only rig lacks
+    // (see test/template/core-workflow-references.test.ts).
+    expect(content).toMatch(/opt-in workflow layer|--layer workflow|workflow layer/i);
+    expect(content).toMatch(/run-state|journal/i);
+  });
+
+  it('keeps throwaway reproduction files outside the repository and makes no repository edits', async () => {
+    const content = await readGateSpec(gate);
+    expect(content).toMatch(/outside (the )?repository/i);
+    expect(content).toMatch(/no repository edits|never edits? (the )?repository|makes no edits/i);
   });
 });

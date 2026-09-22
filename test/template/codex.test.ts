@@ -160,6 +160,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       ['universal/prose-reviewer', ['gpt-5.6-terra', 'high']],
       ['universal/code-reviewer', ['gpt-5.6-sol', 'high']],
       ['universal/security-scanner', ['gpt-5.6-sol', 'high']],
+      ['universal/failure-diagnostician', ['gpt-5.6-sol', 'high']],
     ]);
 
     for (const [profile, [model, effort]] of expected) {

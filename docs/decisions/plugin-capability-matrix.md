@@ -359,7 +359,8 @@ citing this record for it.
   upgrades cleanly", "%s: an edit is reported as a conflict, never silently
   overwritten" and "%s: a deletion stays deleted" — parametrized over
   `AGENTS.md`, `.codex/agents/test-writer.toml`,
-  `.codex/agents/implementation-agent.toml` and `.agents/skills/loop/SKILL.md`.
+  `.codex/agents/implementation-agent.toml`,
+  `.codex/agents/failure-diagnostician.toml` and `.agents/skills/loop/SKILL.md`.
 - `test/template/codex.test.ts` › "is in sync with its Claude Code sources".
 - `docs/decisions/plugin-delivery-spike-rp179.md` — the reproducible spike
   behind corrections 1–3 above: every command run, its exact output, and
