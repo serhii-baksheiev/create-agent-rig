@@ -1,5 +1,5 @@
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initProject } from '../src/commands/init.js';
@@ -29,6 +29,43 @@ async function exists(file: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// Independent oracle for RP-238: reads and parses the candidate flag files
+// itself rather than importing unattended-flag.mjs/stop-flag.mjs to ask them
+// whether a fixture flag is armed.
+const FIXTURE_RUN_DIR_PREFIX = path.join(tmpdir(), 'rig-guard-fixtures-');
+
+async function fixtureFlagsInRealHome(): Promise<Map<string, unknown>> {
+  const dir = path.join(userInfo().homedir, '.claude');
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return new Map();
+  }
+  const found = new Map<string, unknown>();
+  for (const name of entries) {
+    if (!name.endsWith('-loop-UNATTENDED')) continue;
+    const full = path.join(dir, name);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(full, 'utf8'));
+    } catch {
+      continue;
+    }
+    const record = parsed as { item?: unknown; runDir?: unknown } | null;
+    if (
+      record !== null &&
+      typeof record === 'object' &&
+      record.item === 'fixture' &&
+      typeof record.runDir === 'string' &&
+      record.runDir.startsWith(FIXTURE_RUN_DIR_PREFIX)
+    ) {
+      found.set(full, parsed);
+    }
+  }
+  return found;
 }
 
 function batchResult(
@@ -70,6 +107,26 @@ describe('doctor guard inspection', () => {
     expect(result).toEqual({ status: 'pass', reason: 'guards-verified' });
     expect(await readFile(claudeSettings(), 'utf8')).toBe(claudeBefore);
     expect(await readFile(codexHooks(), 'utf8')).toBe(codexBefore);
+  });
+
+  it("never leaves a fixture unattended flag behind in the invoking user's real home (RP-238)", async () => {
+    const before = await fixtureFlagsInRealHome();
+
+    const result = await inspectGuards({ repoDir: repo });
+
+    // The fixtures still have to run — a fix that just skips arming the flag
+    // instead of scoping it to the fixture's own fake HOME must not pass this
+    // test either.
+    expect(result).toEqual({ status: 'pass', reason: 'guards-verified' });
+
+    const after = await fixtureFlagsInRealHome();
+    const leaked = [...after.keys()].filter((file) => !before.has(file));
+
+    // Best-effort cleanup of only what this run itself created — never a file
+    // that was already present before the call.
+    await Promise.all(leaked.map((file) => rm(file, { force: true })));
+
+    expect(leaked).toEqual([]);
   });
 
   it.each([
