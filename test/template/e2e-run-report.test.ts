@@ -331,13 +331,10 @@ describe('npmDebugLogs', () => {
   // the surviving password suffix reaches the mask with no `//user:` in front
   // of it — and npm writes these URLs into the log unredacted.
   // RP-218: this used to rewrite ONE fixture file 41 times, reading it back
-  // synchronously in between each rewrite — a serialized rewrite-then-read-back
-  // that a stated disk-fsync storm measured at up to 14,525ms against this
-  // file's 15s testTimeout (a plain sequential micro-benchmark of the same 41
-  // writes measured 10,968ms under the same storm, vs 7ms for the same 41
-  // writes done concurrently to separate files and then read back). Writing
-  // every offset's fixture into its own `_logs` directory, concurrently,
-  // removes the serialization the storm was punishing. The oracle — real
+  // in between each rewrite — a serialized rewrite-then-read-back that a
+  // sibling fsync-heavy workload stretched past the 15 s testTimeout (the
+  // measurements are on RP-218). Writing every offset's fixture into its own
+  // `_logs` directory, concurrently, removes that serialization. The oracle — real
   // `npmDebugLogs`, real files, all 41 offsets, the same `leaksCredential`
   // check — is unchanged; only the interleaved rewrite-then-read-back is gone.
   // The per-offset directories live under `cache`, so `afterEach`'s
