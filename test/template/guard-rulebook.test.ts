@@ -713,6 +713,24 @@ describe('guard-rulebook: a trailing dot or space on a rulebook path component d
     expect(result.code, result.stderr).toBe(2);
   });
 
+  /**
+   * code-reviewer round 2 (8c27054), advisory B — the RP-243 normalisation
+   * strips a trailing dot/space from EVERY `/`-separated component of the
+   * payload path, not only the component(s) the matched rulebook prefix
+   * itself spans. `.claude/hooks/a./b.mjs` names a component ("a.") that
+   * sits INSIDE the already-matched `.claude/hooks/` prefix — on POSIX,
+   * where no filesystem strips a trailing dot at create time, "a." and "a"
+   * are two different, unrelated directories. An allow-list naming
+   * `.claude/hooks/a/` must not reach into the sibling "a." at all: doing so
+   * widens what the allow-list authorizes beyond the literal prefix it was
+   * written for.
+   */
+  it('does not fold a component beyond the matched prefix: an allow-list naming .claude/hooks/a/ must not authorize the POSIX sibling .claude/hooks/a./b.mjs', async () => {
+    await armed(['.claude/hooks/a/']);
+    const result = await run(write(`${root}/.claude/hooks/a./b.mjs`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
   it('blocks a Codex apply_patch that adds .codex./config.toml', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     await armed(['src/']);

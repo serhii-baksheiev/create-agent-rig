@@ -420,6 +420,86 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
   });
 
   /**
+   * code-reviewer round 2 (8c27054), BLOCKER — `stripTrailingDotsAndSpaces`
+   * strips a trailing run of `.`/` ` with `/[. ]+$/`, anchored at the end
+   * but not at the start. Without a start anchor the engine retries the
+   * match at every offset inside a long run of matching characters before
+   * backtracking off it one character at a time, which is quadratic in the
+   * length of that run — independent of whether the component sits anywhere
+   * near a matched rulebook prefix. `invariants.md`, "a fail-open guard must
+   * do provably bounded work": this is ordinary `PreToolUse` traffic, not an
+   * adversary, and normal traffic must never make the guard block for
+   * minutes.
+   *
+   * Independent oracle: the expected answer — `false`, no segment of this
+   * path names a `RULEBOOK_PREFIXES` entry — is asserted directly, not
+   * derived from the function's own normalisation.
+   */
+  describe('isRulebookPath: bounded work on a component with a huge run of dots/spaces (RP-243 round 2)', () => {
+    it('returns promptly and gives the correct answer for a ~1MB pathological component', async () => {
+      // ~1MB, fed over stdin rather than embedded in the child's argv: a
+      // command-line argument this size overflows the OS argument-list limit
+      // (`spawn E2BIG`) well before Node even starts, which is a harness
+      // limit unrelated to the guard under test.
+      const pathological = `.claude/${'.'.repeat(500_000)}a${' .'.repeat(250_000)}/x.mjs`;
+      const bound = 3000;
+      const program = [
+        `const { isRulebookPath } = await import(${JSON.stringify(pathToFileURL(scriptPath).href)});`,
+        "let data = '';",
+        "process.stdin.setEncoding('utf8');",
+        'for await (const chunk of process.stdin) data += chunk;',
+        'process.stdout.write(String(isRulebookPath(data)));',
+      ].join('\n');
+      const start = Date.now();
+      const result: BoundedResult = await new Promise((resolve, reject) => {
+        const child = execFile(
+          process.execPath,
+          ['--input-type=module', '--eval', program],
+          { timeout: bound },
+          (error, stdout, stderr) => {
+            resolve({
+              code: error ? ((error as { code?: number }).code ?? 1) : 0,
+              stdout,
+              stderr,
+              timedOut: Boolean((error as { killed?: boolean } | null)?.killed),
+            });
+          },
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.write(pathological);
+        child.stdin.end();
+      });
+      expect(
+        result.timedOut,
+        'isRulebookPath blocked for the full timeout on a component with a long dot/space run',
+      ).toBe(false);
+      expect(
+        Date.now() - start,
+        'isRulebookPath took too long on a pathological component',
+      ).toBeLessThan(bound);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toBe('false');
+    });
+  });
+
+  /**
+   * code-reviewer round 2 (8c27054), advisory B — normalisation must apply
+   * only to the components the matched rulebook prefix itself spans; a
+   * component beyond the matched prefix keeps its literal spelling, because
+   * on POSIX (where no filesystem strips a trailing dot at create time) it
+   * names a genuinely different directory. `.claude/hooks./a./b.mjs` has two
+   * trailing-dotted components: `hooks.`, which IS the prefix-naming
+   * segment and folds to the canonical `hooks`, and `a.`, which sits inside
+   * the already-matched prefix and must be left exactly as spelled.
+   */
+  it('canonicalRulebookPath folds only the matched-prefix component and keeps a literal trailing dot beyond it', async () => {
+    const { canonicalRulebookPath } = (await load()) as unknown as {
+      canonicalRulebookPath: (rel: string) => string | undefined;
+    };
+    expect(canonicalRulebookPath('.claude/hooks./a./b.mjs')).toBe('.claude/hooks/a./b.mjs');
+  });
+
+  /**
    * RP-215 — the fix has to land at the single shared comparison point
    * without changing `isWidening`'s answers. Pinned literally, entry by
    * entry, as measured on master (8876147) before this fix — not derived by
