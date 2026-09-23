@@ -1,16 +1,15 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 0.10.1. Live work, status, dependencies and acceptance
+> **Current release:** 1.0.0. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Status (0.10.1 published 22 Sep 2026):** 0.10.1 is `latest`, published from
-> `gitHead` `738b494806b435f0718f290dc3befb40829e5ebf`. Versions 0.1.0 through
-> 0.10.1 are live; delivery is done through `0.10.1`, the current `latest`.
-> `1.0.0` is prepared and waiting on the owner's publish: it freezes the
-> harness-configuration contract and states the deprecation policy that governs
-> it from here. It is a major because of that promise, not because of a
-> breaking change — a 0.10.x rig sees no behaviour it would notice removed.
+> **Status (1.0.0 published 23 Sep 2026):** 1.0.0 is `latest`, published from
+> `gitHead` `8876147ce93d54ba8321d2bcdafab7f5dd1f8994`. Versions 0.1.0 through
+> 1.0.0 are live; delivery is done through `1.0.0`, the current `latest`.
+> `1.0.1` is prepared and waiting on the owner's publish: it is a patch on
+> the 1.0 line — guard hardening, a `doctor` fix, and reviewer-tier model
+> routing for both harnesses.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
