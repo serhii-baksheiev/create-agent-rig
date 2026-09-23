@@ -36,10 +36,13 @@
 //     names are read from the citation's own line and the two after it, so a
 //     citation listing many names across many lines has only its first few
 //     checked, and one whose `›` falls more than one line below the file name
-//     is not parsed at all. And a target resolves by BASENAME: a test moved to
-//     another directory still passes. Neither is a live false green today —
-//     every name the check does read resolves — but a reader must not take a
-//     green run as "every citation in this repository was verified";
+//     is not parsed at all. And a bare (no `/`) target still resolves by
+//     BASENAME, so a test moved to another directory under the same name
+//     still passes; a directory-qualified target instead resolves against its
+//     own exact tracked path (RP-216), so a same-named file elsewhere cannot
+//     stand in for it. Neither is a live false green today — every name the
+//     check does read resolves — but a reader must not take a green run as
+//     "every citation in this repository was verified";
 //   - the surface it reads is `templates/agent-os/` alone. Citations elsewhere
 //     in the generator — the changelog, the decision records outside the
 //     template, this repository's own docs — are not examined by anything;
@@ -66,7 +69,21 @@ const tracked = (dir: string): string[] =>
 /** Tracked files under the generated surface — what a rig receives. */
 const surfaceFiles = (): string[] => tracked(path.join('templates', 'agent-os'));
 
-/** The test files this repository actually has, by basename. */
+/** Every test file this repository tracks, by its exact repo-relative path. */
+let allTrackedTestPathsCache: Set<string> | undefined;
+const allTrackedTestPaths = (): Set<string> => {
+  allTrackedTestPathsCache ??= new Set(tracked('.').filter((f) => /\.test\.(ts|mjs)$/.test(f)));
+  return allTrackedTestPathsCache;
+};
+
+/**
+ * The test files this repository actually has: by basename for a bare
+ * citation (scoped to `test/` and the shipped surface, as before), and by
+ * exact repo-relative path for a directory-qualified one (RP-216) — so
+ * `packages/cli/test/uninstall.test.ts` and `test/e2e/uninstall.test.ts`,
+ * which share a basename, each resolve to themselves rather than to
+ * whichever one the basename map happened to keep.
+ */
 const generatorTests = (): Map<string, string> => {
   const byName = new Map<string, string>();
   for (const file of tracked('test')) {
@@ -77,13 +94,25 @@ const generatorTests = (): Map<string, string> => {
   for (const file of surfaceFiles()) {
     if (/\.test\.(ts|mjs)$/.test(file)) byName.set(file.split('/').pop()!, file);
   }
+  for (const file of allTrackedTestPaths()) byName.set(file, file);
   return byName;
 };
 
 /** The basenames a generated project receives, so a pointer into them needs no disclosure. */
 const shippedBasenames = (): Set<string> => new Set(surfaceFiles().map((p) => p.split('/').pop()!));
 
-const TEST_NAME = /([A-Za-z0-9._-]+\.test\.(?:ts|mjs))/g;
+const TEST_NAME = /([A-Za-z0-9._/-]+\.test\.(?:ts|mjs))/g;
+
+/**
+ * A citation's target, resolved the way `declares()` and `generatorTests()`
+ * should read it. A bare file name resolves by basename, as it always has.
+ * A directory-qualified name is kept whole, always (RP-216): it resolves
+ * against its own exact tracked path and nothing else, so a same-named file
+ * elsewhere in the tree can never stand in for it — a qualified path that
+ * names no real file is reported dead under its own qualified spelling,
+ * never collapsed to the basename a same-named file elsewhere could satisfy.
+ */
+const resolveTarget = (raw: string): string => (raw.includes('/') ? raw : raw.split('/').pop()!);
 
 /**
  * The disclosure vocabulary, and it is deliberately narrow. `in the generator`
@@ -132,7 +161,8 @@ const pointersIn = (file: string, text: string, shipped: ReadonlySet<string>): P
   const found: Pointer[] = [];
   lines.forEach((line, index) => {
     if (!`${line} ${lines[index + 1] ?? ''}`.includes('›')) return;
-    for (const [, target] of line.matchAll(TEST_NAME)) {
+    for (const [, rawTarget] of line.matchAll(TEST_NAME)) {
+      const target = resolveTarget(rawTarget!);
       const window = normalise(lines, Math.max(0, index - 2), index + 3);
       // A citation may list several names after one file; read the window so a
       // continuation line is not lost.
@@ -142,9 +172,9 @@ const pointersIn = (file: string, text: string, shipped: ReadonlySet<string>): P
       found.push({
         file,
         line: index + 1,
-        target: target!,
+        target,
         names,
-        disclosed: shipped.has(target!) || headerCovers || ABSENCE_MARKER.test(window),
+        disclosed: shipped.has(target) || headerCovers || ABSENCE_MARKER.test(window),
       });
     }
   });
@@ -244,7 +274,11 @@ describe('evidence pointers in the generated surface', () => {
 
     const bare = cite('// see `test/template/gone.test.ts` › "a behaviour"');
     expect(bare, 'a citation was not parsed at all').toHaveLength(1);
-    expect(bare[0]!.target).toBe('gone.test.ts');
+    // RP-216: `test/template/gone.test.ts` is directory-qualified and untracked
+    // (no such file exists), so it must be reported dead under its own
+    // qualified spelling — never collapsed to the bare basename `gone.test.ts`,
+    // which a same-named file elsewhere could satisfy instead.
+    expect(bare[0]!.target).toBe('test/template/gone.test.ts');
     expect(bare[0]!.names).toEqual(['a behaviour']);
     expect(bare[0]!.disclosed, 'a pointer with no marker was read as disclosed').toBe(false);
 
@@ -278,5 +312,161 @@ describe('evidence pointers in the generated surface', () => {
     expect(declares(source, 'accepts %s outright'), 'a renamed parameterised test matched').toBe(
       false,
     );
+  });
+
+  // RP-216: the resolver reads a citation's target by BASENAME, and the
+  // basename is all `target` ever carries — a directory prefix is dropped
+  // before resolution even runs. Two tracked files sharing one basename in
+  // different directories are the exact shape of the false green:
+  // `test/e2e/uninstall.test.ts` and `packages/cli/test/uninstall.test.ts`.
+  describe('a citation naming a directory-qualified path (RP-216)', () => {
+    const collisionName = 'reports nothing to do when there is no rig here';
+    const packagesOwnName = 'reports no manifest when there is no rig here at all';
+    const packagesPath = 'packages/cli/test/uninstall.test.ts';
+
+    it('keeps the collision fixture true: two tracked files share one basename, and only one declares the name this block relies on', async () => {
+      const tests = generatorTests();
+      expect(
+        tests.get('uninstall.test.ts'),
+        'the basename this fixture relies on now maps somewhere else',
+      ).toBe('test/e2e/uninstall.test.ts');
+
+      const e2eSource = await readFile(path.join(repoRoot, 'test/e2e/uninstall.test.ts'), 'utf8');
+      const packagesSource = await readFile(path.join(repoRoot, packagesPath), 'utf8');
+
+      expect(
+        declares(e2eSource, collisionName),
+        'the fixture assumption drifted: test/e2e/uninstall.test.ts no longer declares this name',
+      ).toBe(true);
+      expect(
+        declares(packagesSource, collisionName),
+        'the fixture assumption drifted: packages/cli/test/uninstall.test.ts now declares this name too — pick a different collision name',
+      ).toBe(false);
+      expect(
+        declares(packagesSource, packagesOwnName),
+        'the fixture assumption drifted: packages/cli/test/uninstall.test.ts no longer declares this name',
+      ).toBe(true);
+    });
+
+    it('captures the directory prefix on the target, instead of collapsing it to the bare basename a same-named file elsewhere could satisfy', () => {
+      const shipped = new Set<string>();
+      const pointer = pointersIn(
+        'x.mjs',
+        `// see \`${packagesPath}\` › "${collisionName}"`,
+        shipped,
+      )[0]!;
+
+      expect(
+        pointer.target,
+        'the citation was parsed down to a bare basename, so the directory prefix never reaches resolution at all',
+      ).toBe(packagesPath);
+    });
+
+    it('reports a directory-qualified citation dead when the exact named file does not declare the name — not live via a same-named file elsewhere', async () => {
+      const shipped = new Set<string>();
+      const tests = generatorTests();
+      const pointer = pointersIn(
+        'x.mjs',
+        `// see \`${packagesPath}\` › "${collisionName}"`,
+        shipped,
+      )[0]!;
+
+      // Replicates the resolution the "quotes a test name that file still
+      // declares" check performs over `allPointers()`, for this one synthetic
+      // pointer — the smallest seam this file offers for content it does not
+      // ship.
+      const resolved = tests.get(pointer.target);
+      expect(
+        resolved,
+        'a directory-qualified citation resolved to a same-named file it never named',
+      ).toBe(packagesPath);
+
+      const resolvedSource = await readFile(path.join(repoRoot, resolved!), 'utf8');
+      expect(
+        declares(resolvedSource, collisionName),
+        'the citation was reported live by reading the wrong file, the one that shares only its basename',
+      ).toBe(false);
+    });
+
+    it('still resolves a directory-qualified citation live when the exact named file does declare the name', async () => {
+      const shipped = new Set<string>();
+      const tests = generatorTests();
+      const pointer = pointersIn(
+        'x.mjs',
+        `// see \`${packagesPath}\` › "${packagesOwnName}"`,
+        shipped,
+      )[0]!;
+
+      const resolved = tests.get(pointer.target);
+      expect(
+        resolved,
+        'a directory-qualified citation to a real, declared name failed to resolve at all',
+      ).toBe(packagesPath);
+
+      const resolvedSource = await readFile(path.join(repoRoot, resolved!), 'utf8');
+      expect(declares(resolvedSource, packagesOwnName)).toBe(true);
+    });
+  });
+
+  // RP-216: the false green that survived the first qualified-path fix.
+  // `resolveTarget` keeps a directory-qualified target whole only when that
+  // EXACT path is tracked; a qualified path that names no real file still
+  // falls back to the bare basename, which then resolves through the
+  // basename map to a same-named file elsewhere — exactly the collapse this
+  // whole feature exists to stop. A citation naming
+  // `packages/cli/test/dogfood.test.ts` (no such file in this tree) must be
+  // reported dead, never read live via `test/template/dogfood.test.ts`
+  // because the two happen to share a basename.
+  describe('a citation naming a directory-qualified path that does not exist anywhere (RP-216)', () => {
+    const untrackedName = 'CLAUDE.md and .claude/ are in sync with templates/agent-os';
+    const untrackedPath = 'packages/cli/test/dogfood.test.ts';
+
+    it('keeps the fixture true: the qualified path is untracked, and a same-named file elsewhere declares the name this block relies on', async () => {
+      expect(
+        allTrackedTestPaths().has(untrackedPath),
+        'the fixture assumption drifted: packages/cli/test/dogfood.test.ts now exists in this tree',
+      ).toBe(false);
+
+      const tests = generatorTests();
+      expect(
+        tests.get('dogfood.test.ts'),
+        'the basename this fixture relies on now maps somewhere else',
+      ).toBe('test/template/dogfood.test.ts');
+
+      const source = await readFile(path.join(repoRoot, 'test/template/dogfood.test.ts'), 'utf8');
+      expect(
+        declares(source, untrackedName),
+        'the fixture assumption drifted: test/template/dogfood.test.ts no longer declares this name',
+      ).toBe(true);
+    });
+
+    it('captures the full qualified target rather than falling back to a basename a same-named file elsewhere could satisfy', () => {
+      const shipped = new Set<string>();
+      const pointer = pointersIn(
+        'x.mjs',
+        `// see \`${untrackedPath}\` › "${untrackedName}"`,
+        shipped,
+      )[0]!;
+
+      expect(
+        pointer.target,
+        'a directory-qualified citation to a path that names no real file fell back to the bare basename, which a same-named file elsewhere then satisfied',
+      ).toBe(untrackedPath);
+    });
+
+    it('is reported dead by "names a test file this repository still has" — never live via test/template/dogfood.test.ts', () => {
+      const tests = generatorTests();
+      const shipped = new Set<string>();
+      const pointer = pointersIn(
+        'x.mjs',
+        `// see \`${untrackedPath}\` › "${untrackedName}"`,
+        shipped,
+      )[0]!;
+
+      expect(
+        tests.has(pointer.target),
+        `${untrackedPath} does not exist, so this citation must be reported dead — not resolved live through test/template/dogfood.test.ts, which only shares its basename`,
+      ).toBe(false);
+    });
   });
 });

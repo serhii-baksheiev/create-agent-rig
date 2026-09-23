@@ -173,14 +173,15 @@ describe('rules/invariants.md — the independent-oracle invariant (RP-187)', ()
     expect(content).toMatch(/externally observable behaviour/i);
   });
 
-  // The generic evidence-pointer mechanism (`evidence-pointers.test.ts`)
-  // resolves a `›`-marked citation's target by BASENAME only, scanning
-  // `test/` and `templates/agent-os/` — it never scans `packages/cli/test/`,
-  // so `packages/cli/test/uninstall.test.ts` collides on basename with
-  // `test/e2e/uninstall.test.ts` there and would resolve to the wrong file.
-  // So this checks resolution directly against the real file, the same
-  // substring approach that mechanism's own `declares()` uses, rather than
-  // routing the citation through the map that cannot see this path.
+  // RP-216 fixed the basename-collision bug this comment used to describe: a
+  // directory-qualified citation now resolves against its own exact tracked
+  // path, so `packages/cli/test/uninstall.test.ts` no longer collides with
+  // `test/e2e/uninstall.test.ts` there. What still applies to the mention
+  // below is narrower: it carries no `›` marker, so the generic mechanism
+  // never reads it as a citation at all — it is a worked-example name-drop,
+  // not a pointer. So this checks resolution directly against the real
+  // file, the same substring approach that mechanism's own `declares()`
+  // uses, rather than relying on a marker this text does not carry.
   it('names expectImports as the worked example, with a pointer that resolves in packages/cli/test/uninstall.test.ts', async () => {
     const content = await rule();
     const at = content.indexOf('packages/cli/test/uninstall.test.ts');
