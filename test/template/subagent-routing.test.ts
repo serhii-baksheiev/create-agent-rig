@@ -736,14 +736,14 @@ describe('capability evidence records what the Claude routing can and cannot pin
     const nonBlank = (value: unknown) => typeof value === 'string' && value.trim() !== '';
 
     // The version is a literal pin, not a loose match: 0.156.1 is the exact
-    // Codex CLI build RP-233's runtime evidence observed accepting gpt-6-sol.
+    // Codex CLI build RP-233's runtime evidence observed dispatching gpt-6-sol.
     expect(entry.version).toBe('0.156.1');
     expect(nonBlank(entry.why), 'why is not blank').toBe(true);
     expect(entry.why as string).toMatch(/gpt-6-sol/);
 
     expect(nonBlank(entry.limit), 'limit is not blank').toBe(true);
     const limit = entry.limit as string;
-    // Fact 1: 0.156.1 is only the lowest version OBSERVED accepting the id —
+    // Fact 1: 0.156.1 is only the lowest version OBSERVED completing dispatch —
     // the exact floor between the rejecting 0.154.0 and the accepting
     // 0.156.1 was never measured.
     expect(limit).toMatch(/0\.154\.0/);
@@ -751,11 +751,23 @@ describe('capability evidence records what the Claude routing can and cannot pin
     expect(limit).toMatch(/lowest|floor/i);
     expect(limit).toMatch(/observ/i);
     expect(limit).toMatch(/unmeasured|not measured|never measured/i);
-    // Fact 2: a completed dispatch on gpt-6-sol (as opposed to a request
-    // that merely reached quota) has not itself been observed.
+    // Fact 2: the record now names completed subagent rollouts and the fields
+    // that establish the effective model and a completed execution.
     expect(limit).toMatch(/dispatch/i);
-    expect(limit).toMatch(/gpt-6-sol/);
-    expect(limit).toMatch(/not.*(yet )?observ|never observ|no.*observ/i);
+    expect(limit).toMatch(/complet/i);
+    expect(nonBlank(entry.source), 'source is not blank').toBe(true);
+    const source = entry.source as string;
+    expect(source).toMatch(/completed named subagent rollouts/i);
+    expect(source).toMatch(/turn_context/);
+    expect(source).toMatch(/task_complete/);
+    for (const role of [
+      'code-reviewer',
+      'security-scanner',
+      'failure-diagnostician',
+      'test-writer',
+    ]) {
+      expect(source).toContain(role);
+    }
 
     // Independent oracle: the pins the entry backs are exactly the
     // reviewer-tier roles this project actually names for gpt-6-sol, listed

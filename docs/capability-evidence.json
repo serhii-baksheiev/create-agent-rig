@@ -11,8 +11,8 @@
       "harness": "codex",
       "version": "0.156.1",
       "why": "the reviewer-tier Codex profiles pin gpt-6-sol; Codex CLI 0.154.0 rejects that id under ChatGPT-account auth, so below the floor the three reviewer/diagnostic roles cannot dispatch",
-      "source": "Codex CLI 0.154.0 on win32, 2026-09-23: `codex exec -m gpt-6-sol` returned 400 invalid_request_error: The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account (session 01a0cdca-bd72-7791-95c5-dea62f9fced3); Codex CLI 0.156.1 the same day accepted the model id — no metadata warning, no rejection — and the request reached the account usage limit instead (session 01a0cdcc-b4e4-7611-8313-e62d14da6ac4)",
-      "limit": "0.156.1 is only the lowest version observed accepting the id — the exact floor between the rejecting 0.154.0 and the accepting 0.156.1 was never measured; and a completed dispatch on gpt-6-sol has not yet been observed (runtime evidence pending, RP-233); API-key auth was not tested"
+      "source": "Codex CLI 0.154.0 on win32, 2026-09-23: `codex exec -m gpt-6-sol` returned 400 invalid_request_error: The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account (session 01a0cdca-bd72-7791-95c5-dea62f9fced3). Codex CLI 0.156.1 on the same host and account: completed named subagent rollouts under ~/.codex/sessions/2026/09/23/ for code-reviewer (01a0ce59-9168-7c33-a9a0-11d305c13cd6), security-scanner (01a0ce5c-ac41-71e3-8592-67b36f4174ae), failure-diagnostician (01a0ce5c-c05d-74d0-a404-ff532aa45fc3), and test-writer control (01a0ce5c-e957-78d1-9eae-156011c9649b). Each child's turn_context records the effective model and effort; token usage and task_complete confirm execution",
+      "limit": "0.156.1 is the lowest version observed completing these named dispatches — the exact floor between the rejecting 0.154.0 and the working 0.156.1 was not measured; API-key auth was not tested"
     }
   ],
   "rows": [
