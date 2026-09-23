@@ -6,6 +6,13 @@
       "why": "from this release an agent definition's model: outranks CLAUDE_CODE_SUBAGENT_MODEL, the unnamed default the shipped settings set; before it that default replaced every model pin",
       "source": "Claude Code CHANGELOG 2.1.251: Changed `CLAUDE_CODE_SUBAGENT_MODEL` to set the default subagent model rather than override everything: an agent definition's `model:` and an explicit per-spawn model now take precedence over it",
       "limit": "sufficiency for the effort: field and for the Agent tool name the guard matches is not established at this version; both were observed working on 2.1.269 and 2.1.270 only"
+    },
+    {
+      "harness": "codex",
+      "version": "0.156.1",
+      "why": "the reviewer-tier Codex profiles pin gpt-6-sol; Codex CLI 0.154.0 rejects that id under ChatGPT-account auth, so below the floor the three reviewer/diagnostic roles cannot dispatch",
+      "source": "Codex CLI 0.154.0 on win32, 2026-09-23: `codex exec -m gpt-6-sol` returned 400 invalid_request_error: The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account (session 01a0cdca-bd72-7791-95c5-dea62f9fced3); Codex CLI 0.156.1 the same day accepted the model id — no metadata warning, no rejection — and the request reached the account usage limit instead (session 01a0cdcc-b4e4-7611-8313-e62d14da6ac4)",
+      "limit": "0.156.1 is only the lowest version observed accepting the id — the exact floor between the rejecting 0.154.0 and the accepting 0.156.1 was never measured; and a completed dispatch on gpt-6-sol has not yet been observed (runtime evidence pending, RP-233); API-key auth was not tested"
     }
   ],
   "rows": [
