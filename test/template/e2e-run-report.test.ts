@@ -330,17 +330,32 @@ describe('npmDebugLogs', () => {
   // the last OUTPUT_TAIL bytes, so when the read begins inside a URL's userinfo
   // the surviving password suffix reaches the mask with no `//user:` in front
   // of it — and npm writes these URLs into the log unredacted.
+  // RP-218: this used to rewrite ONE fixture file 41 times, reading it back
+  // synchronously in between each rewrite — a serialized rewrite-then-read-back
+  // that a stated disk-fsync storm measured at up to 14,525ms against this
+  // file's 15s testTimeout (a plain sequential micro-benchmark of the same 41
+  // writes measured 10,968ms under the same storm, vs 7ms for the same 41
+  // writes done concurrently to separate files and then read back). Writing
+  // every offset's fixture into its own `_logs` directory, concurrently,
+  // removes the serialization the storm was punishing. The oracle — real
+  // `npmDebugLogs`, real files, all 41 offsets, the same `leaksCredential`
+  // check — is unchanged; only the interleaved rewrite-then-read-back is gone.
+  // The per-offset directories live under `cache`, so `afterEach`'s
+  // `removeFixture(cache)` above still removes all of them.
   it('masks a credential the log tail began inside, wherever the read starts', async () => {
-    await writeLog('a-debug-0.log', straddled(PASSWORD_AT + 4));
-    const sample = npmDebugLogs(cache);
+    const dirFor = (offset: number) => path.join(cache, `cut-${offset}`);
+    await Promise.all(
+      CUTS.map(async (offset) => {
+        await mkdir(path.join(dirFor(offset), '_logs'), { recursive: true });
+        await writeFile(path.join(dirFor(offset), '_logs', 'a-debug-0.log'), straddled(offset));
+      }),
+    );
+
+    const sample = npmDebugLogs(dirFor(PASSWORD_AT + 4));
     expect(sample).toContain(`${CUT_USER}:***@`);
     expect(sample).toMatch(/truncated/i);
 
-    const leaked: number[] = [];
-    for (const offset of CUTS) {
-      await writeLog('a-debug-0.log', straddled(offset));
-      if (leaksCredential(npmDebugLogs(cache))) leaked.push(offset);
-    }
+    const leaked = CUTS.filter((offset) => leaksCredential(npmDebugLogs(dirFor(offset))));
     expect(leaked).toEqual([]);
   });
 

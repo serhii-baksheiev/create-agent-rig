@@ -697,6 +697,21 @@ describe('planUninstall — wiring files', () => {
   // guess a month later. This measures it directly: one owned hook file
   // overwritten with 400,000 duplicate imports of the SAME already-owned
   // dependency, all queued before the first one is ever popped.
+  // RP-218: the absolute bound this test used to assert (`< 5000ms`) measures
+  // the host, not the property, and it fails under load. A 40k-vs-400k RATIO
+  // was tried next, but that only cancels host speed — it still passes on a
+  // mutation that adds a fixed cost per duplicate MATCH (an extra read of the
+  // resolved dependency, say), because such a mutation scales the same ~10x
+  // both runs already scale by. What isolates the per-match cost is a
+  // same-size comparison: two files of the identical byte length and line
+  // count, one whose lines are NOT import matches at all (so the scan visits
+  // every line but the per-match branch below never runs) and one whose lines
+  // are the real duplicate import. Both pay the identical cost of reading and
+  // regex-scanning a file this size; only the duplicate-import file pays
+  // whatever the per-match branch costs. `K`/`C` below are read from measured
+  // idle numbers with generous headroom — see the PR/task report for the
+  // actual figures, not here, so this comment is never a "measured:" sentence
+  // nothing re-measures.
   it('processes 400,000 duplicate import matches to the same owned dependency in bounded time', async () => {
     await installRig();
     const original = await read(SETTINGS);
@@ -705,11 +720,29 @@ describe('planUninstall — wiring files', () => {
 
     const guardBash = '.claude/hooks/guard-bash.mjs';
     const hookInput = '.claude/hooks/lib/hook-input.mjs';
-    await write(guardBash, "import { x } from './lib/hook-input.mjs';\n".repeat(400_000));
+    const DUPLICATES = 400_000;
+    const importLine = "import { x } from './lib/hook-input.mjs';\n";
+    // Same byte length as `importLine`, but matches nothing `RELATIVE_MJS_IMPORT`
+    // recognizes — no `from`, no quoted `.mjs` target — so the scan reaches
+    // every line without ever taking the per-match branch.
+    const commentLine = `// ${'x'.repeat(Math.max(0, importLine.length - 4))}\n`;
+    expect(commentLine.length).toBe(importLine.length);
 
-    const start = Date.now();
-    const plan = await planUninstall(repo);
-    expect(Date.now() - start).toBeLessThan(5000);
+    const timeFor = async (line: string): Promise<{ ms: number; plan: UninstallPlan }> => {
+      await write(guardBash, line.repeat(DUPLICATES));
+      const start = Date.now();
+      const plan = await planUninstall(repo);
+      return { ms: Date.now() - start, plan };
+    };
+
+    // Warm-up, unmeasured: keeps first-call JIT/fs-cache effects out of the
+    // baseline measurement below, where they would otherwise understate it.
+    await timeFor(commentLine);
+
+    const { ms: tBaseline } = await timeFor(commentLine);
+    const { ms: tDup, plan } = await timeFor(importLine);
+
+    expect(tDup).toBeLessThan(8 * tBaseline + 1500);
     expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
     expect(actionFor(plan, hookInput)?.verdict).toBe('preserved');
   });
