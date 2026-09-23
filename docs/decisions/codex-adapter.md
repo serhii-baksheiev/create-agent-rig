@@ -32,7 +32,7 @@ refuses duplicate source-agent names across layers, since one profile name
 cannot route two definitions.
 
 Frequent bounded work (`test-writer`, `implementation-agent`, `prose-reviewer`) uses `gpt-5.6-terra`;
-correctness, security, and infrastructure gates use `gpt-5.6-sol`. Every named
+correctness, security, and infrastructure gates use `gpt-6-sol`. Every named
 gate uses `high` reasoning effort. Unnamed subagents inherit repository defaults
 of `gpt-5.6-terra` and `medium` from `.codex/config.toml`. `xhigh` is not a
 continuous-loop default; using it for a named role requires an intentional

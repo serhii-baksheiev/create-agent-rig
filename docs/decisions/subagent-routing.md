@@ -10,7 +10,7 @@ Each named subagent this rig ships pins the model and the effort it reads with:
 
 | Role | Claude Code | Codex |
 | --- | --- | --- |
-| `code-reviewer`, `security-scanner`, `failure-diagnostician`, a stack's infrastructure reviewer | `claude-opus-5-5`, `high` | `gpt-5.6-sol`, `high` |
+| `code-reviewer`, `security-scanner`, `failure-diagnostician`, a stack's infrastructure reviewer | `claude-opus-5-5`, `high` | `gpt-6-sol`, `high` |
 | `test-writer`, `implementation-agent`, `prose-reviewer` | `claude-sonnet-5`, `high` | `gpt-5.6-terra`, `high` |
 | a subagent with no definition | `claude-sonnet-5`; effort follows the session | `gpt-5.6-terra`, `medium` |
 
