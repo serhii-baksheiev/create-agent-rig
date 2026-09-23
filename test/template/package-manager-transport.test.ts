@@ -21,6 +21,16 @@ const PACKAGE_MANAGER_START_CASE_TIMEOUT_MS = 60_000;
 // raise — strictly below the case timeout above.
 const PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS = PACKAGE_MANAGER_START_CASE_TIMEOUT_MS - 10_000;
 
+// Bounds the fake stalled child in the test below so that case ends
+// deterministically instead of riding vitest's file-wide testTimeout. Must
+// clear the child's own spawn-to-write latency, not just the stall itself:
+// measured across 35 runs on a loaded Windows host, spawn→write (the
+// FAKE_PNPM_STARTED line, then the pid file) took a median of 285 ms and a
+// worst case of 5 314 ms, with zero losses even at 3 000 ms. 8 000 ms sits
+// comfortably above that worst case and below the template project's
+// 15 000 ms testTimeout, so this case still needs no budget of its own.
+const STALLED_CHILD_BOUND_MS = 8_000;
+
 const literalArgs = ['space value', '&|<>^%!()', 'single "double"', ''];
 
 const windowsNodeExecutable = (work: string): string =>
@@ -192,7 +202,7 @@ describe('package-manager transport', () => {
 
     const failure = await run(invocation.file, [...invocation.prefix, pidFile], {
       cwd: work,
-      timeout: 300,
+      timeout: STALLED_CHILD_BOUND_MS,
     }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(Error);

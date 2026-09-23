@@ -131,14 +131,38 @@ const PACKAGE_MANAGER_START_CASE_NAME =
 const PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION =
   /^const PACKAGE_MANAGER_START_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
 
-// RP-212 bounds the *child process* the CLI-start case spawns —
-// `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS`, declared as the case budget minus
-// a margin — and exercises that bound with a literal `execFile` timeout in a
-// second case. Both carry the word `timeout:` without being a vitest
-// case/describe budget, which is exactly what the matcher below must tell
-// apart from the one genuine budget it still expects.
-const PACKAGE_MANAGER_START_CHILD_BOUND_DECLARATION =
-  /^const PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS = PACKAGE_MANAGER_START_CASE_TIMEOUT_MS - (\d[\d_]*);/m;
+// RP-212 bounds two *child processes*, never the vitest case itself:
+// `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS` (the CLI-start case's own child,
+// declared as the case budget minus a margin) and `STALLED_CHILD_BOUND_MS`
+// (the stalled-child test's fake pnpm, declared as a plain literal). Both
+// carry the word `timeout:` without being a vitest case/describe budget —
+// exactly what the matcher below must tell apart from the one genuine budget
+// it still expects, and it must do so by identifier, never by accepting any
+// numeric literal, or a stray literal `timeout:` on an unrelated case reads
+// as compliant.
+
+// Matches a `const NAME = <expr>;` declaration whose NAME is SCREAMING_CASE
+// ending in `_BOUND_MS` or `_CHILD_TIMEOUT_MS`, and whose `<expr>` is either a
+// bare numeric literal or `PACKAGE_MANAGER_START_CASE_TIMEOUT_MS - <number>`.
+const NAMED_BOUND_DECLARATION =
+  /^const ([A-Z][A-Z0-9_]*(?:_BOUND_MS|_CHILD_TIMEOUT_MS)) = (PACKAGE_MANAGER_START_CASE_TIMEOUT_MS\s*-\s*\d[\d_]*|\d[\d_]*);$/gm;
+
+// Resolves every declaration `NAMED_BOUND_DECLARATION` finds to its numeric
+// value, substituting `caseValue` for `PACKAGE_MANAGER_START_CASE_TIMEOUT_MS`
+// where the declaration is expressed as a margin below it.
+function resolveNamedBounds(source: string, caseValue: number): Map<string, number> {
+  const bounds = new Map<string, number>();
+  for (const match of source.matchAll(NAMED_BOUND_DECLARATION)) {
+    const name = match[1] ?? '';
+    const expr = match[2] ?? '';
+    const asMargin = expr.match(/^PACKAGE_MANAGER_START_CASE_TIMEOUT_MS\s*-\s*(\d[\d_]*)$/);
+    const value = asMargin
+      ? caseValue - Number((asMargin[1] ?? '').replaceAll('_', ''))
+      : Number(expr.replaceAll('_', ''));
+    bounds.set(name, value);
+  }
+  return bounds;
+}
 
 // Matches `timeout` set as a direct option of an it/test/describe call —
 // including through one `.each(...)`, `.skipIf(...)` or `.runIf(...)` link —
@@ -202,36 +226,57 @@ describe('the package-manager CLI start cases', () => {
     );
   });
 
-  it('gives every other timeout: key in that file a child-process bound, never a case budget', async () => {
+  it('gives every other timeout: key in that file a named child-process bound below the case budget, never a case budget or a literal', async () => {
     const source = await readPackageManagerTransportTestSource();
     const code = source.replace(/\/\/[^\n]*/g, '');
-
-    const withoutCaseBudgets = code.replace(VITEST_CASE_OPTION_TIMEOUT, '');
-    const childTimeoutValues = [...withoutCaseBudgets.matchAll(/\btimeout\s*:\s*([^,}\n]+)/g)].map(
-      (m) => (m[1] ?? '').trim(),
-    );
-
-    expect(childTimeoutValues.length).toBeGreaterThan(0);
-    for (const value of childTimeoutValues) {
-      expect(
-        value === 'PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS' || /^\d[\d_]*$/.test(value),
-        `unexpected timeout: value "${value}" — neither the named child bound nor a numeric literal`,
-      ).toBe(true);
-    }
 
     const caseBudget = source.match(PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION);
     expect(caseBudget).not.toBeNull();
     const caseValue = Number((caseBudget?.[1] ?? '').replaceAll('_', ''));
 
-    const childBound = source.match(PACKAGE_MANAGER_START_CHILD_BOUND_DECLARATION);
-    expect(
-      childBound,
-      'the named child bound is declared as the case budget minus a positive margin',
-    ).not.toBeNull();
-    const margin = Number((childBound?.[1] ?? '').replaceAll('_', ''));
-    expect(margin).toBeGreaterThan(0);
+    const namedBounds = resolveNamedBounds(source, caseValue);
+    expect(namedBounds.size, 'at least one named child bound is declared').toBeGreaterThan(0);
+    for (const [name, value] of namedBounds) {
+      expect(value, `${name} must be numerically below the case budget`).toBeLessThan(caseValue);
+    }
 
-    const childValue = caseValue - margin;
-    expect(childValue).toBeLessThan(caseValue);
+    // The one genuine vitest per-case budget, and nothing else classified as
+    // one — unchanged from the check above, restated here so the exclusion
+    // below only ever strips that single, known occurrence.
+    const caseOptionMatches = code.match(VITEST_CASE_OPTION_TIMEOUT) ?? [];
+    expect(caseOptionMatches, 'the one case-budget usage').toHaveLength(1);
+
+    // Every remaining `timeout:` key — whatever call it sits in, `.each`,
+    // `.concurrent`, `.for`, or a plain function call — must resolve to one
+    // of the named bounds above. A bare numeric literal or any other
+    // identifier fails, which is the point: neither is a declared, bounded
+    // constant this test can check against the case budget.
+    const withoutCaseBudget = code.replace(VITEST_CASE_OPTION_TIMEOUT, '');
+    const remainingTimeoutValues = [
+      ...withoutCaseBudget.matchAll(/\btimeout\s*:\s*([^,}\n]+)/g),
+    ].map((m) => (m[1] ?? '').trim());
+
+    expect(remainingTimeoutValues.length).toBeGreaterThan(0);
+    for (const value of remainingTimeoutValues) {
+      expect(
+        namedBounds.has(value),
+        `unexpected timeout: value "${value}" — neither the case budget nor a named bound declared below it`,
+      ).toBe(true);
+    }
+  });
+
+  it("the CLI-start case's own child call is bound by the named child timeout, never a literal", async () => {
+    const source = await readPackageManagerTransportTestSource();
+    const code = source.replace(/\/\/[^\n]*/g, '');
+
+    const calls = [
+      ...code.matchAll(/runPackageManager\(\s*manager\s*,\s*\[[^\]]*\]\s*,\s*\{([^{}]*)\}\s*\)/g),
+    ];
+    expect(calls.length, 'runPackageManager is called from the CLI-start case').toBeGreaterThan(0);
+
+    for (const call of calls) {
+      const optionsBody = call[1] ?? '';
+      expect(optionsBody).toMatch(/\btimeout\s*:\s*PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS\b/);
+    }
   });
 });
