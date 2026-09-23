@@ -566,6 +566,26 @@ function inspectionRefusal(current, reason) {
 // of collapsing at the root.
 const WIN32_VERBATIM_UNC_PREFIX = /^[\\/]{2}[?.][\\/]+UNC(?:[\\/]+|$)/i;
 const WIN32_VERBATIM_DRIVE_PREFIX = /^[\\/]{2}[?.][\\/]+([A-Za-z]:)/;
+// RP-244 round 3: a drive letter followed immediately by a separator — the
+// drive ROOT, as opposed to the drive-RELATIVE `C:foo\bar` spelling, which
+// carries no separator there and is left untouched. `slashed` has already had
+// every backslash converted to `/` by the time this is applied, so only the
+// forward-slash form is checked.
+const DRIVE_ROOT_PREFIX = /^[A-Za-z]:\//;
+
+// RP-244 round 3: the DRIVE branch below and the plain fallback both used to
+// run `path.posix.normalize` over the drive letter and its remainder
+// TOGETHER, relatively — so a leading `..` walked straight past the drive
+// letter (`C:/../Users/…` normalised to the relative `Users/…`, not clamped
+// at `C:/`) instead of stopping at the root the way Win32 does, and a long
+// run of `../` segments did unbounded relative work instead of the linear
+// work an absolute normalisation does. Splitting the drive off first and
+// normalising only the remainder, ABSOLUTE, fixes both: `path.posix.normalize`
+// clamps an absolute `..` run at `/` instead of carrying it past the drive.
+function clampAtDriveRoot(slashed) {
+  if (!DRIVE_ROOT_PREFIX.test(slashed)) return path.posix.normalize(slashed);
+  return slashed.slice(0, 2) + path.posix.normalize(slashed.slice(2));
+}
 
 function normalisePath(value) {
   const raw = String(value ?? '').trim();
@@ -573,7 +593,7 @@ function normalisePath(value) {
   const driveMatch = WIN32_VERBATIM_DRIVE_PREFIX.exec(raw);
   if (driveMatch) {
     const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
-    return slashed === '' ? '' : path.posix.normalize(slashed);
+    return slashed === '' ? '' : clampAtDriveRoot(slashed);
   }
   const uncMatch = WIN32_VERBATIM_UNC_PREFIX.exec(raw);
   if (uncMatch || /^[\\/]{2}/.test(raw)) {
@@ -584,7 +604,7 @@ function normalisePath(value) {
     return '/' + path.posix.normalize('/' + rest);
   }
   const slashed = raw.replaceAll('\\', '/');
-  return slashed === '' ? '' : path.posix.normalize(slashed);
+  return slashed === '' ? '' : clampAtDriveRoot(slashed);
 }
 
 function canonicalPatchPath(value) {

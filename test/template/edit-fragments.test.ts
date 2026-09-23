@@ -375,8 +375,8 @@ describe('the guards block on a tool_input they cannot read', () => {
  * `path.posix.normalize` and lost its leading `//` the same way the round-1
  * bug did (blocker 3); and the UNC branch normalised its remainder as
  * RELATIVE rather than ABSOLUTE, so a crafted run of `../` segments was not
- * clamped at the root and instead did unbounded work — ~65s measured for
- * 200,000 segments, and a killed hook is an ALLOW (blocker 4). The fix: any
+ * clamped at the root and instead did unbounded work, and a killed hook is
+ * an ALLOW (blocker 4). The fix: any
  * input beginning with two separators that is not a recognised
  * verbatim/device DRIVE form keeps a leading `//` and has its remainder
  * normalised as ABSOLUTE (`'/' + path.posix.normalize('/' + rest)`) rather
@@ -476,23 +476,22 @@ describe('editFragments: normalisePath resolves a Win32 verbatim/device path the
   it(// RP-244 round 2, blocker 4: the UNC branch normalised its remainder as
   // RELATIVE, so a run of leading `../` segments was carried through
   // in full instead of clamping at the root the way an ABSOLUTE
-  // normalisation does — measured here on this Linux checkout at ~57.5s for
-  // 200,000 segments (the diagnosis measured ~65s on NTFS; ~8ms at the same
-  // size for the fixed, absolute form). A killed hook is an ALLOW
-  // (`.claude/rules/invariants.md`, "fail-open guards"), so this is itself
-  // the vulnerability, not just a performance concern. No wall-clock
-  // assertion here — RP-218 already showed those are load-sensitive, and
-  // measuring this one directly showed a second reason: `normalisePath` runs
-  // synchronously with no `await` inside it, so it blocks the event loop for
-  // its whole ~57.5s and vitest's `testTimeout` timer — itself just a
-  // `setTimeout` racing the test — never gets a turn to fire before the call
-  // returns. The unfixed implementation is red on the equality assertion
-  // below instead, only after that full unbounded pass; the fixed one
-  // returns in milliseconds and is red on nothing. `testTimeout` (15s here,
-  // `vitest.config.ts`) still matters as the ceiling on the file staying
-  // runnable at all — a still-unbounded rewrite that grows past it hangs the
-  // suite rather than reporting a clean failure — it is just not what turns
-  // this particular case red today.
+  // normalisation does — unbounded work on the unfixed implementation for
+  // 200,000 segments; the fixed, absolute form returns quickly. A killed
+  // hook is an ALLOW (`.claude/rules/invariants.md`, "fail-open guards"), so
+  // this is itself the vulnerability, not just a performance concern. No
+  // wall-clock assertion here — RP-218 already showed those are
+  // load-sensitive, and measuring this one directly showed a second reason:
+  // `normalisePath` runs synchronously with no `await` inside it, so it
+  // blocks the event loop for the whole unfixed call, and vitest's
+  // `testTimeout` timer — itself just a `setTimeout` racing the test — never
+  // gets a turn to fire before the call returns. The unfixed implementation
+  // is red on the equality assertion below instead, only after that full
+  // unbounded pass; the fixed one returns quickly and is red on nothing.
+  // `testTimeout` (15s here, `vitest.config.ts`) still matters as the
+  // ceiling on the file staying runnable at all — a still-unbounded rewrite
+  // that grows past it hangs the suite rather than reporting a clean
+  // failure — it is just not what turns this particular case red today.
   'a crafted UNC path with 200,000 ../ segments clamps at the root instead of growing without bound', async () => {
     // Not String.raw: a raw template literal cannot end in a single
     // backslash immediately before the closing backtick (it would escape
@@ -529,5 +528,110 @@ describe('editFragments: normalisePath resolves a Win32 verbatim/device path the
     expect(await filePathOf(String.raw`\\server\share\rig\.claude\settings.json`)).toBe(
       '//server/share/rig/.claude/settings.json',
     );
+  });
+
+  /**
+   * RP-244 round 3 — security-scanner findings on PR #302, measured on NTFS
+   * at this branch's head `b0114ac`. Both live in the DRIVE branch (once a
+   * `\\?\`/`\\.\` marker is stripped) and in the plain fallback at the
+   * bottom of `normalisePath`: neither clamps `C:` and its remainder at the
+   * drive root the way the UNC/device branch above does (round 2, blocker
+   * 4) — each runs `path.posix.normalize` on the drive letter and the
+   * remainder TOGETHER, relatively, so a `..` run walks straight past the
+   * drive letter instead of stopping there.
+   *
+   * Finding A — a wrong answer, not only an unbounded one: Win32 clamps
+   * `C:\..\Users\x\.claude\rules\autonomy.md` at the drive root and writes
+   * the real file there; `normalisePath` today returns the relative
+   * `Users/x/.claude/rules/autonomy.md`, which `guard-rulebook`'s
+   * `relativeTo` can no more strip a repository root from than the
+   * `//`-prefixed bypasses above, so the armed guard exits 0 on a live
+   * rulebook edit.
+   *
+   * Finding B — the same shape is also quadratic: `\\?\C:\` or `C:\`
+   * followed by `'../'.repeat(200_000)` does unbounded relative work here,
+   * where the UNC branch a few tests above (fixed in round 2) is linear
+   * because it normalises absolutely. A killed hook is an ALLOW
+   * (`.claude/rules/invariants.md`, "fail-open guards"), so this is the
+   * vulnerability, not a performance footnote — same reasoning as blocker 4
+   * above, and the same reason there is no wall-clock assertion here: the
+   * call is synchronous, so an unfixed run is red on the equality assertion
+   * below rather than on a timeout.
+   *
+   * Planned fix: clamp at the drive root the way the UNC branch already
+   * does — `drive + path.posix.normalize('/' + rest)`.
+   */
+  it.each([
+    [
+      'a `..` immediately after the drive root, backslash form',
+      String.raw`C:\..\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'a `..` run immediately after the drive root, forward-slash form',
+      'C:/../../../Users/x/rig/.claude/settings.json',
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'a `..` immediately after the drive root, verbatim-prefixed',
+      String.raw`\\?\C:\..\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'a `..` immediately after the drive root, lowercase drive letter — the drive letter case is preserved',
+      String.raw`c:\..\a`,
+      'c:/a',
+    ],
+  ])(
+    '%s clamps at the drive root instead of escaping it (RP-244 round 3)',
+    async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    },
+  );
+
+  describe('ordinary spellings under a drive letter are unchanged from today — pinned as hand-written literals (RP-244 round 3)', () => {
+    it.each([
+      [
+        'a `..` that cancels an intermediate segment, not the drive root',
+        String.raw`C:\a\.\b\..\c`,
+        'C:/a/c',
+      ],
+      [
+        // Pinned exactly as `normalisePath` yields it today — not a claim
+        // that the shape is meaningful, only that the fix for findings A/B
+        // above must not change it.
+        'a drive-relative spelling with no separator after the colon',
+        String.raw`C:foo\bar`,
+        'C:foo/bar',
+      ],
+    ])('%s: %s stays %s', async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    });
+  });
+
+  it(// RP-244 round 3, finding B: the verbatim-prefixed DRIVE branch
+  // normalises its remainder RELATIVE to the drive letter instead of
+  // clamping at it, so a run of leading `../` segments is carried through
+  // in full instead of stopping at the root — unbounded relative work on
+  // the unfixed implementation for 200,000 segments; the fixed, clamped
+  // form returns quickly. No wall-clock assertion here, for the same reason
+  // as the UNC case above: `normalisePath` is synchronous, so an unfixed
+  // run is red on the equality assertion below, only after the full
+  // unbounded pass, rather than on a timeout.
+  'a crafted verbatim-prefixed drive path with 200,000 ../ segments clamps at the drive root instead of growing without bound (RP-244 round 3)', async () => {
+    // Not String.raw: a raw template literal cannot end in a single
+    // backslash immediately before the closing backtick, so the verbatim
+    // drive prefix `\\?\C:\` is built with ordinary escapes instead.
+    const filePath = '\\\\?\\C:\\' + '../'.repeat(200_000) + 'x';
+    expect(await filePathOf(filePath)).toBe('C:/x');
+  });
+
+  it(// RP-244 round 3, finding B: the same unclamped-relative defect, on the
+  // plain (non-verbatim) fallback branch rather than the verbatim DRIVE
+  // branch — the two are separate code paths in `normalisePath` and both
+  // need their own pin.
+  'a crafted plain drive path with 200,000 ../ segments clamps at the drive root instead of growing without bound (RP-244 round 3)', async () => {
+    const filePath = 'C:\\' + '../'.repeat(200_000) + 'x';
+    expect(await filePathOf(filePath)).toBe('C:/x');
   });
 });

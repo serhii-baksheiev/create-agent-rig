@@ -74,11 +74,20 @@
 //     on a flag it cannot read — › "blocks a rulebook edit when the flag exists
 //     but cannot be read, and names the file": the guard targets drift, not an
 //     adversary;
-//   - a `//`-prefixed normalised path (a UNC admin share or a device path
-//     with no drive letter, `\\?\Volume{GUID}\…`) cannot be matched against a
-//     repository root spelled as a plain path, so it is refused rather than
-//     resolved while armed — › "guard-rulebook: an unjudgeable UNC/device-
-//     namespace path is refused, not silently allowed (RP-244 round 2)".
+//   - a `//`-prefixed normalised path is refused rather than resolved while
+//     armed exactly when it does not relativise under any comparison root —
+//     a repository root spelled as a plain path can never strip a UNC admin
+//     share or a device path with no drive letter (`\\?\Volume{GUID}\…`), but
+//     a root that is itself UNC-spelled (`CLAUDE_PROJECT_DIR` as
+//     `\\server\share\repo`) strips a payload path genuinely under it, and
+//     such a path is judged normally instead — › "guard-rulebook: an
+//     unjudgeable UNC/device-namespace path is refused, not silently allowed
+//     (RP-244 round 2)" and › "guard-rulebook: a `//`-prefixed path is
+//     refused only when it resolves under no repository root (RP-244
+//     round 3)". The same refusal covers a MultiEdit past the fragment cap
+//     (the `appliesToAll` global refusal) aimed at such a path, not only the
+//     ordinary per-fragment case — › "guard-rulebook: a MultiEdit global
+//     refusal is not exempt from the `//`-prefix refusal (RP-244 round 3)".
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
@@ -165,6 +174,20 @@ const protectedRelative = (roots, filePath, rawFilePath) => {
   return undefined;
 };
 
+// RP-244 round 3: a `//`-prefixed normalised path is undecidable ONLY when it
+// does not relativise under any comparison root — reusing `relativeTo`, the
+// same comparison `protectedRelative` above already makes, rather than a
+// second implementation. A UNC-spelled repository root (`CLAUDE_PROJECT_DIR`
+// itself a `\\server\share\repo` spelling) maps to the same `//`-prefixed
+// shape a payload path under it normalises to, so `relativeTo` CAN strip it —
+// and a path that strips cleanly is judged normally, not refused as
+// unjudgeable, whether or not it lands inside the rulebook.
+const isUnjudgeablePath = (roots, filePath) => {
+  if (typeof filePath !== 'string' || !filePath.startsWith('//')) return false;
+  const file = toPosix(filePath);
+  return !roots.some((root) => relativeTo(root, filePath) !== file);
+};
+
 function main() {
   const input = readHookInput();
   if (input === null) return 0; // unparseable payload: not ours to judge
@@ -181,7 +204,23 @@ function main() {
   if (globalRefusal) {
     if (globalRefusal.filePath) {
       const rel = protectedRelative(comparisonRoots, globalRefusal.filePath);
-      if (rel === undefined) return 0;
+      if (rel === undefined) {
+        // RP-244 round 3: `rel === undefined` used to read as "outside the
+        // rulebook, never judged" unconditionally — exactly the reading the
+        // per-fragment block below already proved wrong for a `//`-prefixed
+        // path that resolves under no comparison root. A global refusal
+        // carrying such a path is refused the same way, instead of exiting 0
+        // before `isUnjudgeablePath` is ever consulted.
+        if (!isUnjudgeablePath(comparisonRoots, globalRefusal.filePath)) return 0;
+        const mode = readUnattended(unattendedEnv);
+        if (!mode.on) return 0;
+        process.stderr.write(
+          `BLOCKED — "${globalRefusal.filePath}" could not be resolved against the repository root: ` +
+            'a UNC or device-namespace path is refused rather than judged while unattended. ' +
+            'Write through the repository path instead.\n',
+        );
+        return 2;
+      }
     }
     const mode = readUnattended(unattendedEnv);
     if (!mode.on) return 0;
@@ -197,10 +236,11 @@ function main() {
   // `//`-prefixed path never does, on any platform or root. That is not
   // "outside the rulebook": it is undecidable, and undecidable is refused,
   // not allowed, while armed (`.claude/rules/invariants.md`, "The remedy
-  // belongs to the refusal").
-  const unjudgeable = fragments.find(
-    ({ filePath }) => typeof filePath === 'string' && filePath.startsWith('//'),
-  );
+  // belongs to the refusal"). RP-244 round 3: "does not relativise under any
+  // comparison root" replaces the plain `startsWith('//')` check — a
+  // UNC-spelled repository root makes a payload path under it decidable, so
+  // it is judged normally rather than refused as unjudgeable.
+  const unjudgeable = fragments.find(({ filePath }) => isUnjudgeablePath(comparisonRoots, filePath));
 
   const paths = [];
   for (const { filePath, rawFilePath } of fragments) {
@@ -214,8 +254,22 @@ function main() {
   if (!mode.on) return 0; // attended session
 
   if (mode.unreadable) {
+    // RP-244 round 3: `paths[0] ?? unjudgeable.filePath` used to print "is
+    // part of the rulebook" even when `paths` was empty and only an
+    // unjudgeable `//`-prefixed path put this branch on the table — a claim
+    // this guard never established. An unjudgeable path gets the same
+    // "could not be resolved" reason it gets everywhere else in this file.
+    const target = paths[0];
+    if (target === undefined) {
+      process.stderr.write(
+        `BLOCKED — "${unjudgeable.filePath}" could not be resolved against the repository root, ` +
+          `and the unattended flag at ${mode.path} is unreadable (${mode.why}). ` +
+          'Refusing to inspect is not allowing: fix it, or clear this checkout with `node .claude/scripts/unattended-flag.mjs off --root "$PWD"`, then retry.\n',
+      );
+      return 2;
+    }
     process.stderr.write(
-      `BLOCKED — "${paths[0] ?? unjudgeable.filePath}" is part of the rulebook and the unattended flag at ${mode.path} is unreadable (${mode.why}). ` +
+      `BLOCKED — "${target}" is part of the rulebook and the unattended flag at ${mode.path} is unreadable (${mode.why}). ` +
         'Refusing to inspect is not allowing: fix it, or clear this checkout with `node .claude/scripts/unattended-flag.mjs off --root "$PWD"`, then retry.\n',
     );
     return 2;

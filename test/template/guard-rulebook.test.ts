@@ -928,6 +928,12 @@ describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-24
 
   it('blocks a Write to the verbatim spelling of an NTFS ADS on the .claude directory component (RP-244 round 2)', async (ctx) => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    // The ADS spelling only folds to the real `.claude` directory through
+    // `canonicalPath`'s `realpathSync.native`, which needs `<root>/.claude`
+    // to already exist on disk — the same protection is absent without it.
+    // This is the real-world case: an existing checkout already has a
+    // `.claude` directory.
+    await mkdir(path.join(root, '.claude'), { recursive: true });
     await armed(['src/']);
     const result = await run(write(verbatimOf('.claude::$INDEX_ALLOCATION/settings.json')));
     expect(result.code, result.stderr).toBe(2);
@@ -958,6 +964,30 @@ describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-24
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
     const result = await run(write(verbatimOf('.claude/settings.json')));
     expect(result.code, result.stderr).toBe(0);
+  });
+
+  // RP-244 round 3, security-scanner finding A: `normalisePath`'s DRIVE
+  // branch (and its plain fallback) normalise `C:` and the remainder
+  // TOGETHER, relatively, so a `..` immediately after the drive root walks
+  // past it instead of clamping there the way Win32 itself does. Built from
+  // the fixture's own real root rather than a literal drive letter, because
+  // the escaped spelling has to land back on THIS checkout for `fs` to
+  // write through it the way the diagnosis describes.
+  const driveRootEscapeOf = (rel: string) => {
+    const match = /^([A-Za-z]):(.*)$/.exec(root);
+    if (!match)
+      throw new Error(
+        `root is not a drive-letter path, cannot build a drive-root escape from it: ${root}`,
+      );
+    const [, drive, rootTail] = match;
+    return `${drive}:\\..${rootTail}\\${rel.replaceAll('/', '\\')}`;
+  };
+
+  it('blocks a Write to a `..`-escaped drive-root spelling of .claude/settings.json (RP-244 round 3)', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(driveRootEscapeOf('.claude/settings.json')));
+    expect(result.code, result.stderr).toBe(2);
   });
 });
 
@@ -1012,6 +1042,142 @@ describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, n
       expect(result.code, result.stderr).toBe(0);
     },
   );
+});
+
+/**
+ * RP-244 round 3 — code-reviewer BLOCKER on PR #302. The `//`-prefix refusal
+ * above lives only in the ordinary per-fragment loop; the GLOBAL refusal
+ * branch a few lines earlier in `guard-rulebook.mjs` (an `appliesToAll`
+ * inspection refusal that carries a `filePath` — an oversized MultiEdit is
+ * the one editFragments produces with a path attached: `edit-input.mjs`'s
+ * `MAX_MULTI_EDITS` cap) takes a different, older path: it calls
+ * `protectedRelative` directly and reads `rel === undefined` as "outside the
+ * rulebook, never judged" — exactly the reading blocker 1-3 above already
+ * proved wrong for a `//`-prefixed path, because `relativeTo` can never strip
+ * a literal repository root from one. So a MultiEdit past the fragment cap,
+ * aimed at a `//`-prefixed spelling of a rulebook file, exits 0 while armed:
+ * `protectedRelative` finds nothing, `rel === undefined`, and the branch
+ * returns 0 before the `unjudgeable` check below it is ever computed.
+ * Measured on this Linux checkout at this branch's head `b0114ac`: a
+ * MultiEdit with 257 edits to `\\?\UNC\srv\share\x\.claude\settings.json`
+ * exits 0 while armed (a `Write` to the same path exits 2 — the ordinary
+ * per-fragment path already fixed in round 2). This needs no real
+ * filesystem, so it runs on every platform, including Linux.
+ */
+describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`-prefix refusal (RP-244 round 3)', () => {
+  const multiEdit257 = (filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'MultiEdit',
+    tool_input: {
+      file_path: filePath,
+      edits: Array.from({ length: 257 }, () => ({ old_string: 'a', new_string: 'b' })),
+    },
+  });
+
+  // The same three unjudgeable spellings the per-fragment block above pins,
+  // duplicated here rather than shared: they belong to two different
+  // describe blocks and the array above is local to its own callback.
+  const unjudgeablePaths: Array<[string, string]> = [
+    ['a plain (non-verbatim) UNC admin share', String.raw`\\srv\share\x\.claude\settings.json`],
+    ['a verbatim UNC admin share', String.raw`\\?\UNC\srv\share\x\.claude\settings.json`],
+    [
+      'a verbatim device path with no drive letter (a volume GUID path)',
+      String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\x\.claude\settings.json`,
+    ],
+  ];
+
+  it.each(unjudgeablePaths)(
+    'blocks a MultiEdit beyond the fragment cap to %s while armed',
+    async (_label, filePath) => {
+      await armed(['src/']);
+      const result = await run(multiEdit257(filePath));
+      expect(result.code, result.stderr).toBe(2);
+    },
+  );
+
+  it.each(unjudgeablePaths)(
+    'an attended session (no unattended flag) still allows a MultiEdit beyond the fragment cap to %s',
+    async (_label, filePath) => {
+      const result = await run(multiEdit257(filePath));
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  // Control: an ordinary relative, non-rulebook path is untouched by this
+  // fix either way — its known path is outside the rulebook, the same
+  // "allows a MultiEdit beyond the fragment cap when its known path is
+  // outside the rulebook" shape pinned above with an absolute path. Pinned
+  // here so a future change to the `//`-prefix handling cannot silently
+  // start refusing an ordinary MultiEdit too.
+  it('control: still allows a MultiEdit beyond the fragment cap to an ordinary relative, non-rulebook path (src/x.ts)', async () => {
+    await armed(['src/']);
+    const result = await run(multiEdit257('src/x.ts'));
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
+/**
+ * RP-244 round 3 — code-reviewer REFINEMENT on PR #302. The `//`-prefix
+ * refusal (round 2, two blocks above) is right that `relativeTo` can never
+ * strip a repository root spelled as a PLAIN path from a `//`-prefixed
+ * payload path — but the repository root is not always plain. A checkout
+ * opened through a UNC share (`\\server\share\repo`, e.g. a WSL distro
+ * reached from Windows as `\\wsl$\Ubuntu\home\u\repo`) has a UNC-spelled
+ * root itself, and `toPosix` (this file's guard, above `relativeTo`) maps
+ * that root to the same `//`-prefixed shape a payload path under it
+ * normalises to — so the two CAN be compared, and a path genuinely under
+ * that root should be judged normally: allowed when it is outside the
+ * rulebook, refused with the ordinary "is part of the rulebook" reason when
+ * it is inside it. Only a `//`-prefixed path that resolves under NO
+ * comparison root is genuinely undecidable and earns the "could not be
+ * resolved against the repository root" reason.
+ *
+ * `canonicalRoot` (`guard-rulebook.mjs`) falls back to the RAW root string
+ * on `realpathSync.native`'s ENOENT — it does not need the root to exist to
+ * compare it lexically, the same fallback `canonicalPath` uses for a payload
+ * path (see this file's own header comment, "Limits", the UNC/device bullet).
+ * So a UNC-spelled root that does not exist on this filesystem still drives
+ * the guard through a pure string comparison, and this needs no real UNC
+ * filesystem to be meaningful: it runs on every platform, including Linux.
+ * Hand-written literal expectations only, per this project's independent-
+ * oracle invariant.
+ */
+describe('guard-rulebook: a `//`-prefixed path is refused only when it resolves under no repository root (RP-244 round 3)', () => {
+  const uncRoot = String.raw`\\server\share\repo`;
+  const uncEnv = () => ({ HOME: home, CLAUDE_PROJECT_DIR: uncRoot });
+  const armedUnc = async (allow: string[]) => {
+    const { unattendedFlags } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const flag = unattendedFlags(uncEnv())[0];
+    await mkdir(path.dirname(flag), { recursive: true });
+    await writeFile(
+      flag,
+      JSON.stringify({ item: 'RP-244', runDir: path.join(uncRoot, '.rig-run'), allow }),
+    );
+  };
+  const runUnc = (payload: object) => runHookFull(payload, uncEnv());
+
+  it('allows a Write under the UNC repository root when the target is outside the rulebook', async () => {
+    await armedUnc(['src/']);
+    const result = await runUnc(write(String.raw`\\server\share\repo\src\x.ts`));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('blocks a Write under the UNC repository root to a rulebook path, with the ordinary rulebook reason', async () => {
+    await armedUnc(['src/']);
+    const result = await runUnc(write(String.raw`\\server\share\repo\.claude\settings.json`));
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/is part of the rulebook/i);
+    expect(result.stderr).not.toMatch(/resolved against the repository root/i);
+  });
+
+  it('blocks a Write to a `//`-prefixed path outside the UNC repository root, with the "could not be resolved" reason', async () => {
+    await armedUnc(['src/']);
+    const result = await runUnc(write(String.raw`\\srv\share\x\.claude\settings.json`));
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/resolved against the repository root/i);
+  });
 });
 
 describe('guard-rulebook: refusing to inspect is not allowing', () => {
