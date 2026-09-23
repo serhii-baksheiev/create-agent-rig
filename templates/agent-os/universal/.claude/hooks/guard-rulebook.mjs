@@ -87,7 +87,15 @@
 //     round 3)". The same refusal covers a MultiEdit past the fragment cap
 //     (the `appliesToAll` global refusal) aimed at such a path, not only the
 //     ordinary per-fragment case — › "guard-rulebook: a MultiEdit global
-//     refusal is not exempt from the `//`-prefix refusal (RP-244 round 3)".
+//     refusal is not exempt from the `//`-prefix refusal (RP-244 round 3)";
+//   - the reverse direction is untested and left as a design limit: when the
+//     repository root is itself spelled as a UNC admin share
+//     (`\\host\X$\…`), the LOCAL DRIVE spelling of the same file (`X:\…`) is
+//     never placed against it — `relativeTo` strips a `//`-prefixed payload
+//     path from a `//`-rooted comparison root, not a drive-letter one from
+//     it — so such a payload path is judged normally rather than refused as
+//     unjudgeable, and a rulebook edit reaching the guard that way is not
+//     caught. Tracked as RP-246.
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
@@ -203,6 +211,10 @@ function main() {
   );
   if (globalRefusal) {
     if (globalRefusal.filePath) {
+      // No `rawFilePath` argument here: the only `appliesToAll` refusal that
+      // carries a non-empty `filePath` at all is the MultiEdit fragment-cap
+      // refusal (`edit-input.mjs`), and it never sets `rawFilePath` — so
+      // there is nothing a third argument would add for this call site.
       const rel = protectedRelative(comparisonRoots, globalRefusal.filePath);
       if (rel === undefined) {
         // RP-244 round 3: `rel === undefined` used to read as "outside the

@@ -634,4 +634,61 @@ describe('editFragments: normalisePath resolves a Win32 verbatim/device path the
     const filePath = 'C:\\' + '../'.repeat(200_000) + 'x';
     expect(await filePathOf(filePath)).toBe('C:/x');
   });
+
+  /**
+   * RP-244 round 4 — security-scanner finding on PR #302, measured against
+   * round 3's fix at this branch's head `9bcb362`. Round 3's `clampAtDriveRoot`
+   * only recognises the DRIVE-ROOT spelling — a separator immediately after
+   * the colon (`DRIVE_ROOT_PREFIX`, `/^[A-Za-z]:\//`) — and leaves every
+   * DRIVE-RELATIVE spelling (no separator right after the colon, e.g.
+   * `C:foo\bar` or `C:..\..\a`) to plain `path.posix.normalize` run over the
+   * drive marker and the remainder TOGETHER. `path.posix.normalize` treats
+   * the segment `C:..` as an ordinary filename — it is not the literal
+   * string `..` — so a SECOND `..` segment cancels it exactly as it would
+   * cancel any other segment, and the drive marker disappears from the
+   * result entirely: `C:../../a/b` normalises to the bare, driveless `a/b`.
+   * That is a worse bypass than round 3's finding A, not merely an
+   * unclamped one: a driveless relative path carries no signal downstream
+   * that it ever named a drive-relative spelling at all, so
+   * `guard-rulebook`'s root comparison has nothing left to refuse as
+   * unjudgeable — it just judges the wrong (bare) path and exits 0.
+   * `guard-rulebook.test.ts` (absent in a generated rig) › "blocks a Write
+   * to a drive-relative `..\..` escape of .claude/settings.json, run with
+   * the checkout root as cwd (RP-244 round 4)" is the consequence through
+   * the guard's own entry point, gated to windows-e2e because it depends on
+   * a real Win32 drive-relative resolution; this block is the
+   * platform-independent pin on `normalisePath` itself.
+   *
+   * Expected values are hand-written from the planned fix, not derived by
+   * calling `editFragments` a second time and comparing (the independent-
+   * oracle invariant, `.claude/rules/invariants.md`): split a
+   * drive-RELATIVE prefix (`/^[A-Za-z]:(?![\\/])/`) off before normalising,
+   * normalise the REMAINDER alone, RELATIVELY — never absolutely, because a
+   * drive-relative spelling has no root of its own to clamp at — and
+   * re-attach the drive marker afterward, so no `..` in the remainder can
+   * ever reach back far enough to cancel the marker itself.
+   */
+  describe('a drive-relative spelling never lets a `..` cancel the drive marker itself (RP-244 round 4)', () => {
+    it.each([
+      [
+        'a `..` that cancels the whole remainder, leaving nothing after the drive marker',
+        'C:foo/..',
+        // `'C:' + path.posix.normalize('foo/..')` — the remainder alone
+        // normalises to `.`, so the drive marker is followed by a bare `.`
+        // rather than nothing.
+        'C:.',
+      ],
+      [
+        "two leading `..` segments — today's bug: the second `..` cancels the " +
+          '`C:..` segment itself instead of walking past it, dropping the drive ' +
+          'marker from the result entirely',
+        String.raw`C:..\..\a\b`,
+        'C:../../a/b',
+      ],
+      ['the same escape, verbatim-prefixed', String.raw`\\?\C:..\..\a`, 'C:../../a'],
+      ['lowercase drive letter — the drive letter case is preserved', String.raw`c:..\x`, 'c:../x'],
+    ])('%s: %s resolves to %s', async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    });
+  });
 });

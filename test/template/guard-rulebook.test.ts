@@ -989,6 +989,65 @@ describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-24
     const result = await run(write(driveRootEscapeOf('.claude/settings.json')));
     expect(result.code, result.stderr).toBe(2);
   });
+
+  // RP-244 round 4, security-scanner finding on PR #302, round 3's fix
+  // measured on NTFS. A DRIVE-RELATIVE spelling — `<drive>:` with NO
+  // separator immediately after the colon, followed by two (or more) `..`
+  // segments — is left to plain `path.posix.normalize` over the drive
+  // marker and remainder together, and `path.posix.normalize` treats the
+  // segment `C:..` as an ordinary filename, not the literal `..`: the
+  // SECOND `..` segment cancels it exactly as it would cancel any other
+  // segment, and the drive marker disappears from `normalisePath`'s output
+  // entirely, leaving `guard-rulebook` a bare, driveless relative path with
+  // no signal that it ever named a drive-relative spelling.
+  //
+  // Win32 itself resolves a drive-relative path against the CURRENT
+  // DIRECTORY OF THAT DRIVE — the process's own cwd, when the path's drive
+  // letter matches it — which is why this fixture spawns the hook with
+  // `cwd: root` explicitly (`run()` above does not set one; a coding
+  // agent's hook invocation ordinarily does run with cwd = the checkout
+  // root, which is the alignment this reproduces). The crafted `..\..`
+  // walks up from `root` to its grandparent, and the two path segments that
+  // follow walk back down through `root`'s own trailing components,
+  // landing on the real, guarded file — the same way Win32 would resolve
+  // the untouched original string.
+  //
+  // Platform-independent pin on `normalisePath` itself:
+  // `edit-fragments.test.ts` (absent in a generated rig) › "a drive-relative
+  // spelling never lets a `..` cancel the drive marker itself (RP-244
+  // round 4)".
+  const driveRelativeEscapeOf = (rel: string) => {
+    const match = /^([A-Za-z]):(.*)$/.exec(root);
+    if (!match)
+      throw new Error(
+        `root is not a drive-letter path, cannot build a drive-relative escape from it: ${root}`,
+      );
+    const [, drive] = match;
+    const grandparent = path.dirname(path.dirname(root));
+    const segments = path.relative(grandparent, root).split(path.sep);
+    const up = segments.map(() => '..').join('\\');
+    return `${drive}:${up}\\${segments.join('\\')}\\${rel.replaceAll('/', '\\')}`;
+  };
+
+  it('blocks a Write to a drive-relative `..\\..` escape of .claude/settings.json, run with the checkout root as cwd (RP-244 round 4)', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await runHookFull(
+      write(driveRelativeEscapeOf('.claude/settings.json')),
+      env(),
+      'guard-rulebook.mjs',
+      root,
+    );
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks the verbatim-prefixed form of the same drive-relative escape (RP-244 round 4)', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const verbatim = `\\\\?\\${driveRelativeEscapeOf('.claude/settings.json')}`;
+    const result = await runHookFull(write(verbatim), env(), 'guard-rulebook.mjs', root);
+    expect(result.code, result.stderr).toBe(2);
+  });
 });
 
 /**
