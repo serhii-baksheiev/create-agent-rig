@@ -167,11 +167,9 @@ const stripTrailingDotsAndSpaces = (component) => {
  * against. `directory` records whether the entry itself ended in `/`: a
  * directory entry needs an exact fold-match on every one of its segments
  * plus something after them; a file entry (`CLAUDE.md`, `.rig/revalidation.json`)
- * keeps master's loose whole-string `startsWith` on its last segment — so
- * `CLAUDE.md.bak` still answers exactly as it did before this fix, and so
- * does a path that continues past the entry with a `/` and more components
- * (`CLAUDE.md/x`) — never a narrowing of what master matched (RP-243 review
- * round 3).
+ * is matched with a `startsWith` on its last segment — see the generator's
+ * `test/template/unattended-flag.test.ts` (absent in a generated rig) ›
+ * "isRulebookPath: a path continuing past a matched FILE entry is still a rulebook path (round 3 regression)".
  */
 const RULEBOOK_PREFIX_SEGMENTS = RULEBOOK_PREFIXES.map((prefix) => {
   const directory = prefix.endsWith('/');
@@ -218,14 +216,7 @@ export const canonicalRulebookPath = (rel) => {
       }
       return prefix + components.slice(segmentCount).join('/');
     }
-    // File entry: master (0d5be9c) matched a file entry the same way it
-    // matched every other prefix, with one whole-string, case-insensitive
-    // `startsWith` — so a path that CONTINUES past the guarded file's name
-    // with a `/` and more components is, and stays, a rulebook path
-    // (`CLAUDE.md/x`, `.claude/queue.board/x`); RP-215's folding and
-    // RP-243's trailing-dot/space stripping on the spanned component are
-    // additions on top of that behaviour, never a narrowing of it (review
-    // round 3). The last spanned component is compared folded+normalised,
+    // File entry: the last spanned component is compared folded+normalised,
     // same as every other component this function inspects; anything past
     // it — the rest of that component, and every component after it — is
     // returned exactly as written.
