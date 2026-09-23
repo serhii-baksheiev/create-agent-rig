@@ -1,12 +1,12 @@
 // RP-217: RP-61 added `.rig/revalidation.json` to `RULEBOOK_PREFIXES`
 // (`unattended-flag.mjs`) and `layers.json` installs it with the workflow
-// layer — but the PAYLOAD's own `elevated-paths` seed block, in
-// `templates/agent-os/universal/AGENTS.md`, never grew a matching entry. That
+// layer — but until RP-217 the PAYLOAD's own `elevated-paths` seed block, in
+// `templates/agent-os/universal/AGENTS.md`, had no matching entry. That
 // block is what `detect-missed-gate.mjs` and `decision-router.mjs` read
 // inside a GENERATED workflow rig (this repo's own `AGENTS.md` is a separate,
-// composed copy with its own list — `dogfood.test.ts` covers that one). So a
-// generated rig's sweep cannot see a merge that rewrites the detection
-// contract, even though the same rig's `guard-rulebook` already refuses an
+// composed copy with its own list — `dogfood.test.ts` covers that one), so a
+// generated rig's sweep could not see a merge that rewrote the detection
+// contract, even though the same rig's `guard-rulebook` already refused an
 // unattended edit to it.
 //
 // These tests read the payload's declaration and the payload's sweep the same
@@ -46,12 +46,12 @@ describe("the payload's own elevated-paths seed — what a GENERATED workflow ri
   it('declares .rig/revalidation.json — the detection contract the workflow layer installs', async () => {
     const declared = await loadSeedDeclaredPaths();
     const detector = await loadDetector();
-    // 🔴 RP-217: this is empty today. `.rig/revalidation.json` decides STOP/GO
-    // and the claim scope fingerprint (`preflight.mjs`, `claim-records.mjs`),
-    // is protected from an unattended edit by `unattended-flag.mjs`'s
-    // `RULEBOOK_PREFIXES`, and ships with the workflow layer (`layers.json`) —
-    // yet nothing in the seed block a generated rig receives names it, so a
-    // merge that rewrites it sweeps clean in every rig this tool generates.
+    // 🔴 RP-217: this was empty before the fix. `.rig/revalidation.json`
+    // decides STOP/GO and the claim scope fingerprint (`preflight.mjs`,
+    // `claim-records.mjs`), is protected from an unattended edit by
+    // `unattended-flag.mjs`'s `RULEBOOK_PREFIXES`, and ships with the workflow
+    // layer (`layers.json`) — a seed block that does not name it lets a merge
+    // rewriting it sweep clean in every rig this tool generates.
     expect(detector.elevatedPathsIn(['.rig/revalidation.json'], declared)).not.toEqual([]);
   });
 
