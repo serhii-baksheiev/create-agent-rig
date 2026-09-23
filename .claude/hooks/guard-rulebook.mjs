@@ -62,6 +62,13 @@
 //     prefix (`.`, `.claude/`, `.claude/scripts/`) makes the flag unreadable
 //     and the guard refuses — › "a flag whose allow-list widens the rulebook is
 //     unreadable, so `--allow .` cannot disarm it";
+//   - a miscased payload path is judged against the rulebook's CANONICAL
+//     spelling (`unattended-flag.mjs`'s `canonicalRulebookPath`), but an
+//     `allow` entry never is — a miscased entry authorizes nothing, including
+//     the one prefix deliberately withheld as an allow root
+//     (`.claude/scripts/`) and the board selector, refused regardless of case
+//     — › "guard-rulebook: an allow-list entry is judged by its literal
+//     spelling, not the one the payload folds to (RP-215 round 2)";
 //   - fail-open on its own errors and on a payload it cannot parse — › "allows
 //     an empty payload object" and › "allows non-JSON stdin" — and fail-closed
 //     on a flag it cannot read — › "blocks a rulebook edit when the flag exists
@@ -72,7 +79,7 @@
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { editFragments } from './lib/edit-input.mjs';
-import { RULEBOOK_PREFIXES, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
+import { RULEBOOK_PREFIXES, canonicalRulebookPath, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 export { RULEBOOK_PREFIXES, isRulebookPath };
@@ -134,10 +141,24 @@ export const isAllowed = (rel, allow) =>
 // otherwise, the same way `canonicalRoot`/`comparisonRoots` above seed both
 // spellings of the checkout root. Every other edit surface never sets it, so
 // this is a no-op for them.
-const protectedRelative = (roots, filePath, rawFilePath) =>
-  [...new Set([filePath, rawFilePath, canonicalPath(filePath)].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
-    .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)))
-    .find(isRulebookPath);
+//
+// RP-215 round 2: the return value is the CANONICAL rulebook spelling
+// (`canonicalRulebookPath`), not the candidate that matched it. `isAllowed`
+// and the `.claude/queue.board` carve-out below both compare this result
+// against literal allow-list entries, so a miscased entry (`.Claude/`,
+// `.claude/Scripts/`) never matches — only the path is canonicalised, never
+// the allow-list. See the generator's `test/template/guard-rulebook.test.ts` (absent in a generated rig) ›
+// "guard-rulebook: an allow-list entry is judged by its literal spelling,
+// not the one the payload folds to (RP-215 round 2)".
+const protectedRelative = (roots, filePath, rawFilePath) => {
+  const candidates = [...new Set([filePath, rawFilePath, canonicalPath(filePath)].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
+    .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)));
+  for (const candidate of candidates) {
+    const canonical = canonicalRulebookPath(candidate);
+    if (canonical !== undefined) return canonical;
+  }
+  return undefined;
+};
 
 function main() {
   const input = readHookInput();
