@@ -106,7 +106,8 @@ export const RULEBOOK_PREFIXES = Object.freeze([
 
 // Case-folded once at module load, for the same comparison every caller shares
 // — never re-derived per call, and never used anywhere but inside
-// `canonicalRulebookPath` below.
+// `isWidening` below (`canonicalRulebookPath` folds its own comparison from
+// `RULEBOOK_PREFIX_SEGMENTS` instead).
 const FOLDED_RULEBOOK_PREFIXES = RULEBOOK_PREFIXES.map((prefix) => prefix.toLowerCase());
 
 /**
@@ -166,8 +167,11 @@ const stripTrailingDotsAndSpaces = (component) => {
  * against. `directory` records whether the entry itself ended in `/`: a
  * directory entry needs an exact fold-match on every one of its segments
  * plus something after them; a file entry (`CLAUDE.md`, `.rig/revalidation.json`)
- * keeps today's loose `startsWith` on its last segment, so `CLAUDE.md.bak`
- * still answers exactly as it did before this fix.
+ * keeps master's loose whole-string `startsWith` on its last segment — so
+ * `CLAUDE.md.bak` still answers exactly as it did before this fix, and so
+ * does a path that continues past the entry with a `/` and more components
+ * (`CLAUDE.md/x`) — never a narrowing of what master matched (RP-243 review
+ * round 3).
  */
 const RULEBOOK_PREFIX_SEGMENTS = RULEBOOK_PREFIXES.map((prefix) => {
   const directory = prefix.endsWith('/');
@@ -214,13 +218,25 @@ export const canonicalRulebookPath = (rel) => {
       }
       return prefix + components.slice(segmentCount).join('/');
     }
-    // File entry: the match must land on the path's own last component —
-    // never spanning a `/` beyond it — and keeps the loose startsWith this
-    // entry always had.
-    if (components.length !== segmentCount) continue;
-    if (lastFolded === lastSegment) return prefix;
+    // File entry: master (0d5be9c) matched a file entry the same way it
+    // matched every other prefix, with one whole-string, case-insensitive
+    // `startsWith` — so a path that CONTINUES past the guarded file's name
+    // with a `/` and more components is, and stays, a rulebook path
+    // (`CLAUDE.md/x`, `.claude/queue.board/x`); RP-215's folding and
+    // RP-243's trailing-dot/space stripping on the spanned component are
+    // additions on top of that behaviour, never a narrowing of it (review
+    // round 3). The last spanned component is compared folded+normalised,
+    // same as every other component this function inspects; anything past
+    // it — the rest of that component, and every component after it — is
+    // returned exactly as written.
+    if (lastFolded === lastSegment) {
+      if (components.length === segmentCount) return prefix;
+      return `${prefix}/${components.slice(segmentCount).join('/')}`;
+    }
     if (lastFolded.startsWith(lastSegment)) {
-      return prefix + normalisedHead[segmentCount - 1].slice(lastSegment.length);
+      const extra = normalisedHead[segmentCount - 1].slice(lastSegment.length);
+      if (components.length === segmentCount) return prefix + extra;
+      return `${prefix}${extra}/${components.slice(segmentCount).join('/')}`;
     }
   }
   return undefined;

@@ -500,6 +500,61 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
   });
 
   /**
+   * code-reviewer round 3 (9435b93), BLOCKER — `canonicalRulebookPath` now
+   * requires `components.length === segmentCount` for a FILE-type entry
+   * (`CLAUDE.md`, `AGENTS.md`, `.claude/settings.json`, `.claude/queue.json`,
+   * `.claude/queue.board`, `.claude/.rig-manifest.json`,
+   * `.claude/doctor-exemptions.json`, `.rig/revalidation.json`), so a path
+   * that CONTINUES past such an entry with a `/` and more components no
+   * longer matches at all — `.claude/queue.board/x` reads as an ordinary,
+   * unguarded path. Master (0d5be9c) matched a file entry with a
+   * whole-string, case-insensitive `startsWith`, so any path beginning with
+   * the guarded file's name — trailing separator or not — was, and must
+   * stay, a rulebook path; RP-215 folding and RP-243 trailing-dot/space
+   * stripping on the spanned components are additions on top of that
+   * behaviour, never a narrowing of it.
+   *
+   * Independent oracle: every literal below is typed by hand, not derived
+   * from `RULEBOOK_PREFIXES` or from re-running this module's own
+   * `canonicalRulebookPath`/`isRulebookPath` — checked instead against
+   * master's one-line `folded.startsWith(foldedPrefix)`, read directly from
+   * `git show 0d5be9c:templates/agent-os/universal/.claude/scripts/unattended-flag.mjs`,
+   * on each of these same inputs (`invariants.md`, "the independent-oracle
+   * invariant").
+   */
+  describe('isRulebookPath: a path continuing past a matched FILE entry is still a rulebook path (round 3 regression)', () => {
+    it.each([
+      '.claude/queue.board/x',
+      '.rig/revalidation.json/x',
+      '.claude/settings.json/x',
+      'CLAUDE.md/x',
+      'AGENTS.md/sub/y.md',
+      '.claude/.rig-manifest.json/z',
+      '.claude/doctor-exemptions.json/z',
+      '.claude/queue.json/z',
+      // folded (RP-215) + trailing-dot/space (RP-243) twins on the same
+      // ground — master matches these too, because its whole-string
+      // startsWith never inspected the boundary at all.
+      '.Rig/Revalidation.json./x',
+      'CLAUDE.md /x',
+    ])('is true for %s — continuing past a file entry does not leave the rulebook', async (rel) => {
+      const { isRulebookPath } = (await load()) as unknown as {
+        isRulebookPath: (rel: string) => boolean;
+      };
+      expect(isRulebookPath(rel)).toBe(true);
+    });
+
+    it('canonicalRulebookPath of .claude/queue.board/x starts with the canonical .claude/queue.board', async () => {
+      const { canonicalRulebookPath } = (await load()) as unknown as {
+        canonicalRulebookPath: (rel: string) => string | undefined;
+      };
+      const canonical = canonicalRulebookPath('.claude/queue.board/x');
+      expect(canonical).toBeDefined();
+      expect(canonical!.startsWith('.claude/queue.board')).toBe(true);
+    });
+  });
+
+  /**
    * RP-215 — the fix has to land at the single shared comparison point
    * without changing `isWidening`'s answers. Pinned literally, entry by
    * entry, as measured on master (8876147) before this fix — not derived by
