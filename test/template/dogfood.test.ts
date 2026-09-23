@@ -315,6 +315,33 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     expect(detector.elevatedPathsIn(changedFiles, declared)).toEqual(['.rig/revalidation.json']);
   });
 
+  // RP-217: `.rig/revalidation.json` above is the SYNCED root copy — the one
+  // `guard-rulebook`/`unattended-flag.mjs` protect in THIS checkout. It has a
+  // template SOURCE one directory over,
+  // `templates/agent-os/universal/.rig/revalidation.json`, which this repo's own
+  // `ELEVATED_PATHS` (`scripts/sync-agent-os.mjs`) never named — so a merge that
+  // rewrote only the template source, before the next sync copied it to the
+  // root, passed this repo's own sweep clean. Every other synced artifact in
+  // this block (`layers.json`, `.claude/agents/`, `.claude/skills/`, …) is
+  // declared as BOTH the template source and the synced copy; this file was the
+  // one exception.
+  it('declares templates/agent-os/universal/.rig/revalidation.json — the template SOURCE, not only the synced root copy', async () => {
+    const declared = await loadDeclaredPaths();
+    const detector = await loadDetector();
+    expect(
+      detector.elevatedPathsIn(['templates/agent-os/universal/.rig/revalidation.json'], declared),
+    ).not.toEqual([]);
+  });
+
+  it('flags a merge that touches only the template source of .rig/revalidation.json as elevated', async () => {
+    const declared = await loadDeclaredPaths();
+    const detector = await loadDetector();
+    const changedFiles = ['templates/agent-os/universal/.rig/revalidation.json'];
+    expect(detector.elevatedPathsIn(changedFiles, declared)).toEqual([
+      'templates/agent-os/universal/.rig/revalidation.json',
+    ]);
+  });
+
   // The exact file, never the directory: `.rig/claims/<id>.json` is the
   // baseline a SELECT creates for itself, and every queue merge writes one —
   // declaring `.rig/` (rather than the one file) would flag essentially

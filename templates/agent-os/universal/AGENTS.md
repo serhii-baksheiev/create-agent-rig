@@ -171,7 +171,9 @@ All four are one-liners, and all four are inert until you do them.
    — a JSON array like `["npm test", "npm run lint"]` — the stop gate is a
    no-op, and the Definition of Done is back to being a wish.
 2. **The elevated-path list below is a seed, not a survey.** It names only what
-   every repo has. Everything else is yours to add.
+   every repo has, plus `.rig/revalidation.json`, which only the opt-in
+   workflow layer installs (`init --layer workflow`). Everything else is yours
+   to add.
 3. **One runtime path needs a `.gitignore` line always; four more only when
    the opt-in workflow layer is installed** (`init --layer workflow`), and
    `init`/`init --layer workflow` cannot add any of them — they install into
@@ -236,6 +238,8 @@ rule does not change with or without the script.
 AGENTS.md
 CLAUDE.md
 .github/workflows/
+# workflow layer only (init --layer workflow)
+.rig/revalidation.json
 ```
 
 They are there because they are what *disarms* the rest: a merge that rewrites
