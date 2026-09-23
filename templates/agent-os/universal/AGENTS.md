@@ -236,6 +236,7 @@ rule does not change with or without the script.
 AGENTS.md
 CLAUDE.md
 .github/workflows/
+.rig/revalidation.json
 ```
 
 They are there because they are what *disarms* the rest: a merge that rewrites
