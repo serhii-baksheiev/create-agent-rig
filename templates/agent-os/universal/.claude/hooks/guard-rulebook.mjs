@@ -28,7 +28,8 @@
 //      names the flag; an edit outside the rulebook still passes. Refusing to
 //      inspect is not allowing (`.claude/rules/invariants.md`).
 //
-// Limits — each stated here and each measured in the generator's
+// Limits — each stated here and, unless it is marked untested, measured in
+// the generator's
 // `test/template/guard-rulebook.test.ts` (absent in a generated rig), by the
 // test named beside it:
 //   - it sees one edit at a time, as text, before it lands — a rulebook file
