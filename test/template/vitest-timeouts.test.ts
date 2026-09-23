@@ -131,6 +131,24 @@ const PACKAGE_MANAGER_START_CASE_NAME =
 const PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION =
   /^const PACKAGE_MANAGER_START_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
 
+// RP-212 bounds the *child process* the CLI-start case spawns —
+// `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS`, declared as the case budget minus
+// a margin — and exercises that bound with a literal `execFile` timeout in a
+// second case. Both carry the word `timeout:` without being a vitest
+// case/describe budget, which is exactly what the matcher below must tell
+// apart from the one genuine budget it still expects.
+const PACKAGE_MANAGER_START_CHILD_BOUND_DECLARATION =
+  /^const PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS = PACKAGE_MANAGER_START_CASE_TIMEOUT_MS - (\d[\d_]*);/m;
+
+// Matches `timeout` set as a direct option of an it/test/describe call —
+// including through one `.each(...)`, `.skipIf(...)` or `.runIf(...)` link —
+// never a plain object literal handed to an ordinary function call such as
+// `runPackageManager(...)` or `run(...)`. Limits: follows at most one such
+// chained modifier, and assumes the options object itself carries no nested
+// `{}` — true of every case in this file today.
+const VITEST_CASE_OPTION_TIMEOUT =
+  /\b(?:it|test|describe)(?:\.(?:each\([^()]*\)|skipIf\([^()]*\)|runIf\([^()]*\)))?\(\s*(?:'[^']*'|"[^"]*"|`[^`]*`)\s*,\s*\{[^{}]*\btimeout\s*:[^{}]*\}/g;
+
 async function readPackageManagerTransportTestSource(): Promise<string> {
   return readFile(
     path.join(repoRoot, 'test', 'template', 'package-manager-transport.test.ts'),
@@ -162,14 +180,58 @@ describe('the package-manager CLI start cases', () => {
     expect(budget).toBeLessThanOrEqual(60_000);
   });
 
-  it('is the only budget of its own in that file — the figure moves for the CLI-start cases, not for the file', async () => {
-    // Both spellings vitest accepts, read outside comments: a `timeout:` key in
-    // an options object however it is spaced or combined, and the numeric
-    // trailing argument `}, 20_000)` that queue.test.ts uses.
+  it('is the only vitest budget of its own in that file — the figure moves for the CLI-start case, not for the file', async () => {
     const code = (await readPackageManagerTransportTestSource()).replace(/\/\/[^\n]*/g, '');
-    const optionKeys = code.match(/\btimeout\s*:/g) ?? [];
+
+    const caseOptionMatches = code.match(VITEST_CASE_OPTION_TIMEOUT) ?? [];
+    // Both spellings vitest accepts for a bare per-case override: the numeric
+    // trailing argument `}, 20_000)` that queue.test.ts uses. Limit: a plain
+    // textual scan for that closing shape, not a parse — sound only because
+    // nothing else in this file closes a block with `, <number>);`.
     const trailingFigures = code.match(/\}\s*,\s*\d[\d_]*\s*\);/g) ?? [];
-    expect(optionKeys, 'timeout keys in options objects').toHaveLength(1);
-    expect(trailingFigures, 'numeric trailing-argument budgets').toHaveLength(0);
+
+    expect(
+      caseOptionMatches.length + trailingFigures.length,
+      'vitest per-case/describe budgets in the whole file',
+    ).toBe(1);
+    expect(caseOptionMatches, "the one budget is the CLI-start case's options object").toHaveLength(
+      1,
+    );
+    expect(trailingFigures, 'no case carries a bare trailing-argument budget instead').toHaveLength(
+      0,
+    );
+  });
+
+  it('gives every other timeout: key in that file a child-process bound, never a case budget', async () => {
+    const source = await readPackageManagerTransportTestSource();
+    const code = source.replace(/\/\/[^\n]*/g, '');
+
+    const withoutCaseBudgets = code.replace(VITEST_CASE_OPTION_TIMEOUT, '');
+    const childTimeoutValues = [...withoutCaseBudgets.matchAll(/\btimeout\s*:\s*([^,}\n]+)/g)].map(
+      (m) => (m[1] ?? '').trim(),
+    );
+
+    expect(childTimeoutValues.length).toBeGreaterThan(0);
+    for (const value of childTimeoutValues) {
+      expect(
+        value === 'PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS' || /^\d[\d_]*$/.test(value),
+        `unexpected timeout: value "${value}" — neither the named child bound nor a numeric literal`,
+      ).toBe(true);
+    }
+
+    const caseBudget = source.match(PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION);
+    expect(caseBudget).not.toBeNull();
+    const caseValue = Number((caseBudget?.[1] ?? '').replaceAll('_', ''));
+
+    const childBound = source.match(PACKAGE_MANAGER_START_CHILD_BOUND_DECLARATION);
+    expect(
+      childBound,
+      'the named child bound is declared as the case budget minus a positive margin',
+    ).not.toBeNull();
+    const margin = Number((childBound?.[1] ?? '').replaceAll('_', ''));
+    expect(margin).toBeGreaterThan(0);
+
+    const childValue = caseValue - margin;
+    expect(childValue).toBeLessThan(caseValue);
   });
 });
