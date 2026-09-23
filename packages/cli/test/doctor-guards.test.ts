@@ -33,7 +33,12 @@ async function exists(file: string): Promise<boolean> {
 
 // Independent oracle for RP-238: reads and parses the candidate flag files
 // itself rather than importing unattended-flag.mjs/stop-flag.mjs to ask them
-// whether a fixture flag is armed.
+// whether a fixture flag is armed. This only collects fixture-shaped
+// candidates by name and payload shape — it does NOT decide leaked vs. live;
+// that judgment needs the runDir existence check below, because a
+// concurrently running sibling fixture (a different test file, same vitest
+// "unit" project) can have a real, live flag of this exact shape at the
+// instant this function runs.
 const FIXTURE_RUN_DIR_PREFIX = path.join(tmpdir(), 'rig-guard-fixtures-');
 
 async function fixtureFlagsInRealHome(): Promise<Map<string, unknown>> {
@@ -120,10 +125,26 @@ describe('doctor guard inspection', () => {
     expect(result).toEqual({ status: 'pass', reason: 'guards-verified' });
 
     const after = await fixtureFlagsInRealHome();
-    const leaked = [...after.keys()].filter((file) => !before.has(file));
 
-    // Best-effort cleanup of only what this run itself created — never a file
-    // that was already present before the call.
+    // A genuine leak is a fixture-shaped flag this run introduced (absent from
+    // `before`) whose runDir no longer exists on disk. The fixture wrapper
+    // always removes its own mkdtemp root in its `finally`
+    // (doctor-guards.ts's FIXTURE_WRAPPER), so a *finished* fixture's leaked
+    // flag points at an already-deleted directory. A sibling fixture that is
+    // still running concurrently (e.g. doctor.test.ts, same vitest "unit"
+    // project) has the same shape and is also new relative to `before`, but
+    // its runDir still exists — it is live, not leaked, and must be left
+    // alone rather than read as a false positive and deleted mid-run.
+    const candidates = [...after.entries()].filter(([file]) => !before.has(file));
+    const leaked: string[] = [];
+    for (const [file, parsed] of candidates) {
+      const runDir = (parsed as { runDir: string }).runDir;
+      if (!(await exists(runDir))) leaked.push(file);
+    }
+
+    // Best-effort cleanup of only what this run itself created and confirmed
+    // leaked — never a file that was already present before the call, and
+    // never a live sibling's flag.
     await Promise.all(leaked.map((file) => rm(file, { force: true })));
 
     expect(leaked).toEqual([]);
