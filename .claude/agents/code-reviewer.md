@@ -2,7 +2,7 @@
 name: code-reviewer
 description: Reviews a completed change against the checklist before a PR is opened or merged. Use after any non-trivial implementation work, and always before opening a PR that reaches the `model` lane — everything the two cheap lanes do not claim (code, a rulebook document, an unclassifiable path, a derived artifact git does not report as drift, or anything a risk flag escalated), decided by `decision-router.mjs` where the opt-in workflow layer is installed, or by the same rule applied by hand otherwise. Blocking findings must be resolved, not argued with.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-5
+model: claude-opus-5-5
 effort: high
 ---
 

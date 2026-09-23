@@ -2,7 +2,7 @@
 name: failure-diagnostician
 description: Use when a check is red or a run crashed and the cause is not obvious, or to reproduce a claimed defect/historical finding on the current default branch before work is planned on it.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-5
+model: claude-opus-5-5
 effort: high
 ---
 

@@ -2,7 +2,7 @@
 name: security-scanner
 description: Scans a change for security issues. MUST be used when a change touches authentication, authorization, secrets or configuration, input parsing, file handling, or any new outbound call. Findings gate the PR.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-5
+model: claude-opus-5-5
 effort: high
 ---
 

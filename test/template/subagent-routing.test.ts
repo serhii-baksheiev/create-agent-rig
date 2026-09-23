@@ -119,7 +119,7 @@ const withUnnamedClaude = (
 
 const RP_173_ROUTING: RoutingPolicy = {
   claudeModels: {
-    'claude-opus-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'claude-opus-5-5': ['low', 'medium', 'high', 'xhigh', 'max'],
     'claude-sonnet-5': ['low', 'medium', 'high', 'xhigh', 'max'],
   },
   unnamed: {
@@ -140,15 +140,15 @@ const RP_173_ROUTING: RoutingPolicy = {
       codex: { model: 'gpt-5.6-terra', effort: 'high' },
     },
     'code-reviewer': {
-      claude: { model: 'claude-opus-5', effort: 'high' },
+      claude: { model: 'claude-opus-5-5', effort: 'high' },
       codex: { model: 'gpt-5.6-sol', effort: 'high' },
     },
     'security-scanner': {
-      claude: { model: 'claude-opus-5', effort: 'high' },
+      claude: { model: 'claude-opus-5-5', effort: 'high' },
       codex: { model: 'gpt-5.6-sol', effort: 'high' },
     },
     'failure-diagnostician': {
-      claude: { model: 'claude-opus-5', effort: 'high' },
+      claude: { model: 'claude-opus-5-5', effort: 'high' },
       codex: { model: 'gpt-5.6-sol', effort: 'high' },
     },
   },
@@ -582,7 +582,7 @@ describe('the adapter check refuses routing drift', () => {
           'agents',
           'code-reviewer.md',
         ),
-        'model: claude-opus-5',
+        'model: claude-opus-5-5',
         'model: claude-sonnet-5',
       );
       const result = await runCheck(root);
@@ -834,7 +834,7 @@ describe('failure-diagnostician has a named, pinned role on the code-reviewer ti
   it('puts failure-diagnostician on the code-reviewer tier for both harnesses and leaves every other role as it was', async () => {
     const policy = await realPolicy();
     expect(policy.roles['failure-diagnostician']).toEqual({
-      claude: { model: 'claude-opus-5', effort: 'high' },
+      claude: { model: 'claude-opus-5-5', effort: 'high' },
       codex: { model: 'gpt-5.6-sol', effort: 'high' },
     });
     for (const gate of GATES) expect(policy.roles[gate], gate).toEqual(RP_173_ROUTING.roles[gate]);
