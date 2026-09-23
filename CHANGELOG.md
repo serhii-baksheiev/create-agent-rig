@@ -14,6 +14,58 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## 1.0.1
+
+**1.0.1 is a patch on the 1.0 line, and fixes only.** It closes guard gaps an unattended run
+could use to rewrite the rulebook, fixes a `doctor` side effect, and moves the
+reviewer tier of both harnesses to newer models. The 1.0 contract is
+unchanged: no flag, JSON shape, exit code, verdict or outcome word, and no
+manifest key is added, removed or renamed.
+
+### Changed
+
+- **The Claude reviewer tier runs on Opus 5.5.** `code-reviewer`,
+  `security-scanner` and `failure-diagnostician` route to `claude-opus-5-5`
+  (was `claude-opus-5`), effort `high` unchanged (RP-232).
+- **The Codex reviewer tier runs on GPT-6 Sol.** The same three roles route to
+  `gpt-6-sol` (was `gpt-5.6-sol`), reasoning effort `high` unchanged. Under
+  ChatGPT-account auth, Codex CLI 0.156.1 or newer is needed to dispatch it —
+  older versions reject the model id (RP-233).
+
+### Fixed
+
+- **`guard-rulebook` judges the paths an `apply_patch` removes.** A
+  `*** Delete File:` section, and the source of a `*** Move to:`, were never
+  judged, so an armed unattended run could delete or move a rulebook file —
+  including the guard itself (RP-214).
+- **A miscased rulebook path is recognised.** `.Codex/config.toml` or
+  `.AGENTS/…` passed where the lowercase spelling was refused, and on a
+  case-insensitive filesystem the write landed on the real file. A miscased
+  allow-list entry is refused like its canonical spelling (RP-215).
+- **A Win32 trailing dot or space in a path component no longer hides a
+  rulebook path.** Windows strips them, so `.claude./settings.json` is
+  `.claude/settings.json` (RP-243).
+- **A Win32 verbatim or device path no longer hides a rulebook path.**
+  `\\?\C:\…`, `\\.\C:\…` and a `..` run above the drive root are judged as the
+  plain path Windows writes to. A UNC or other device-namespace path that does
+  not resolve under the repository root is refused while unattended rather
+  than judged as outside the rulebook (RP-244).
+- **`doctor` no longer leaves an unattended flag in your home directory.** Its
+  guard fixture armed the flag in the invoking user's real `~/.claude` as well
+  as in its temporary home, and never cleared it (RP-238).
+- **The workflow layer's seed declares the revalidation contract elevated.**
+  `.rig/revalidation.json` was already protected from an unattended edit but
+  was missing from the `elevated-paths` seed, so the gate sweep could not see a
+  merge that rewrote it (RP-217).
+
+### Generator repository (not a rig-facing change)
+
+- The evidence-pointer check resolves a directory-qualified citation against
+  that exact path instead of any file with the same name (RP-216).
+- The package-manager CLI-start test bounds its child process and reports a
+  timeout as one (RP-212); a credential-masking test no longer serialises 41
+  fixture rewrites, which made it time out under sibling disk load (RP-218).
+
 ## 1.0.0
 
 **The harness-configuration contract is frozen.** Nothing here changes what a

@@ -34,52 +34,64 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('ships 1.0.0 as one release in both package manifests', async () => {
+  it('ships 1.0.1 as one release in both package manifests', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
     const inner = JSON.parse(
       await readFile(path.join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
     ) as { version: string };
-    expect(root.version).toBe('1.0.0');
+    expect(root.version).toBe('1.0.1');
     expect(inner.version).toBe(root.version);
   });
 
-  it('puts the 1.0.0 contract-freeze release first in the changelog and preserves 0.10.1 and 0.10.0 history', async () => {
+  it('puts the 1.0.1 guard-hardening release first in the changelog and preserves 1.0.0 and 0.10.1 history', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     const first = changelog.match(/^## (\d+\.\d+\.\d+)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(first?.[1]).toBe('1.0.0');
+    expect(first?.[1]).toBe('1.0.1');
     // The named subjects of THIS release, not words any release note would
-    // contain — so an entry copied forward from 0.10.1 fails here. Each pin
-    // pairs the frozen behavior with the ticket that owns it.
-    expect(first?.[2]).toMatch(/command-contract\.md/);
-    expect(first?.[2]).toMatch(/RP-184/);
-    expect(first?.[2]).toMatch(/failure-diagnostician/);
-    expect(first?.[2]).toMatch(/RP-195/);
-    expect(first?.[2]).toMatch(/release-propose/);
-    expect(first?.[2]).toMatch(/RP-203/);
-    expect(first?.[2]).toMatch(/independent-oracle invariant/);
-    expect(first?.[2]).toMatch(/RP-187/);
-    // 🔴 the numbering call: this freezes the public contract, so a MAJOR
-    // bump for that promise — not because anything a 0.10.x rig would notice
-    // broke.
-    expect(first?.[2]).toMatch(/is a major\s+bump/);
-    const previous = changelog.match(/^## 0\.10\.1\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(previous?.[1]).toMatch(/EISDIR/);
-    expect(previous?.[1]).toMatch(/RP-189/);
-    expect(previous?.[1]).toMatch(/AGENTS\.md\.rig-new/);
-    expect(previous?.[1]).toMatch(/RP-202/);
-    expect(previous?.[1]).toMatch(/monotonic clock/);
-    expect(previous?.[1]).toMatch(/RP-204/);
-    expect(previous?.[1]).toMatch(/RP-194/);
-    // 🔴 carried forward from when this was the "first" pin: 0.10.1 is still
-    // the fixes-only patch it always was, one release further down now.
-    expect(previous?.[1]).toMatch(/fixes-only patch/i);
-    const historical = changelog.match(/^## 0\.10\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(historical?.[1]).toMatch(/doctor \[--json\].*aggregates Rig file integrity/s);
-    expect(historical?.[1]).toMatch(/provider\/harness wizard/);
-    expect(historical?.[1]).toMatch(/Spec Kit setup to\s+the pinned official CLI/);
-    expect(historical?.[1]).toMatch(
+    // contain — so an entry copied forward from 1.0.0 fails here. Each pin
+    // pairs the fixed behavior with the ticket that owns it.
+    expect(first?.[2]).toMatch(/RP-214/);
+    expect(first?.[2]).toMatch(/RP-215/);
+    expect(first?.[2]).toMatch(/RP-243/);
+    expect(first?.[2]).toMatch(/RP-244/);
+    expect(first?.[2]).toMatch(/RP-238/);
+    expect(first?.[2]).toMatch(/Opus 5\.5/);
+    expect(first?.[2]).toMatch(/RP-232/);
+    expect(first?.[2]).toMatch(/GPT-6 Sol/);
+    expect(first?.[2]).toMatch(/RP-233/);
+    // 🔴 the numbering call: guard hardening and reviewer-tier routing, no
+    // promise in the 1.0 contract moves — so a PATCH on the 1.0 line.
+    expect(first?.[2]).toMatch(/is a patch on the 1\.0 line/i);
+    const previous = changelog.match(/^## 1\.0\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    expect(previous?.[1]).toMatch(/command-contract\.md/);
+    expect(previous?.[1]).toMatch(/RP-184/);
+    expect(previous?.[1]).toMatch(/failure-diagnostician/);
+    expect(previous?.[1]).toMatch(/RP-195/);
+    expect(previous?.[1]).toMatch(/release-propose/);
+    expect(previous?.[1]).toMatch(/RP-203/);
+    expect(previous?.[1]).toMatch(/independent-oracle invariant/);
+    expect(previous?.[1]).toMatch(/RP-187/);
+    // 🔴 carried forward from when this was the "first" pin: 1.0.0 is still
+    // the contract-freeze MAJOR it always was, one release further down now.
+    expect(previous?.[1]).toMatch(/is a major\s+bump/);
+    const historical = changelog.match(/^## 0\.10\.1\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    expect(historical?.[1]).toMatch(/EISDIR/);
+    expect(historical?.[1]).toMatch(/RP-189/);
+    expect(historical?.[1]).toMatch(/AGENTS\.md\.rig-new/);
+    expect(historical?.[1]).toMatch(/RP-202/);
+    expect(historical?.[1]).toMatch(/monotonic clock/);
+    expect(historical?.[1]).toMatch(/RP-204/);
+    expect(historical?.[1]).toMatch(/RP-194/);
+    // 🔴 carried forward from when this was the "previous" pin: 0.10.1 is
+    // still the fixes-only patch it always was, another release further down.
+    expect(historical?.[1]).toMatch(/fixes-only patch/i);
+    const additive = changelog.match(/^## 0\.10\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    expect(additive?.[1]).toMatch(/doctor \[--json\].*aggregates Rig file integrity/s);
+    expect(additive?.[1]).toMatch(/provider\/harness wizard/);
+    expect(additive?.[1]).toMatch(/Spec Kit setup to\s+the pinned official CLI/);
+    expect(additive?.[1]).toMatch(
       /Ownership\s+hashes live alongside provider selection in `\.rig\/integrations\.json`/,
     );
     const legacy = changelog.match(/^## 0\.9\.1\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
@@ -100,13 +112,15 @@ describe('the root manifest is publish-complete', () => {
       expect(legacy?.[1]).toMatch(subject);
     }
     // 🔴 The legacy 0.9.1 section keeps its fixes-only PATCH rationale;
-    // 0.10.0 instead documents the additive setup composition, and 1.0.0
-    // documents the contract-freeze MAJOR above.
+    // 0.10.0 documents the additive setup composition, 1.0.0 documents the
+    // contract-freeze MAJOR, and 1.0.1 above documents the guard-hardening
+    // PATCH on the 1.0 line.
     expect(legacy?.[1]).toMatch(/patch/i);
     // 🔴 The 0.9.0 section must still be BELOW it, unedited in place: a
     // release that rewrites the previous release's note is describing bytes
     // that already shipped.
     expect(changelog).toMatch(/^## 0\.9\.0$/m);
+    expect(changelog.indexOf('## 1.0.1')).toBeLessThan(changelog.indexOf('## 1.0.0'));
     expect(changelog.indexOf('## 1.0.0')).toBeLessThan(changelog.indexOf('## 0.10.1'));
     expect(changelog.indexOf('## 0.10.1')).toBeLessThan(changelog.indexOf('## 0.10.0'));
     expect(changelog.indexOf('## 0.10.0')).toBeLessThan(changelog.indexOf('## 0.9.1'));
@@ -118,11 +132,11 @@ describe('the root manifest is publish-complete', () => {
     );
   });
 
-  it('records 0.10.1 as the published `latest`, and every overtaken version as neither', async () => {
+  it('records 1.0.0 as the published `latest`, and every overtaken version as neither', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
-    // Measured from the public registry on 22 Sep 2026. The release itself
-    // could not carry its own gitHead in the ledger; 1.0.0 work records it now.
-    const publishedSha = '738b494806b435f0718f290dc3befb40829e5ebf';
+    // Measured from the public registry on 23 Sep 2026. The release itself
+    // could not carry its own gitHead in the ledger; 1.0.1 work records it now.
+    const publishedSha = '8876147ce93d54ba8321d2bcdafab7f5dd1f8994';
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -149,23 +163,24 @@ describe('the root manifest is publish-complete', () => {
     // at a time, so only the just-shipped version needs guarding; accumulating
     // those would grow a list forever against a shape that cannot recur.
     //
-    // 0.10.1 shipped on 22 Sep 2026 and is the registry's current `latest`.
+    // 1.0.0 shipped on 23 Sep 2026 and is the registry's current `latest`.
     // These guards move with that fact instead of leaving the plan pending.
-    expect(plan).toMatch(/Status \(0\.10\.1 published/);
-    expect(plan).toMatch(/0\.10\.1 is `latest`/);
+    expect(plan).toMatch(/Status \(1\.0\.0 published/);
+    expect(plan).toMatch(/1\.0\.0 is `latest`/);
     // The published identity is recorded, not just the version number — and it
     // is asserted BESIDE `gitHead`, so a stray occurrence of those characters
     // elsewhere in the file cannot satisfy it.
     expect(plan).toMatch(new RegExp(`gitHead\`? \`?${publishedSha.slice(0, 8)}`));
-    // 0.10.1 is live, so it may not be described as pending anywhere — the
+    // 1.0.0 is live, so it may not be described as pending anywhere — the
     // 0.6.2 mistake, now pointed at the current release. This is the same fact
     // the positive /`0\.9\.0` is prepared/ used to assert, inverted on the day
     // the release reached the registry rather than deleted.
     expect(plan).not.toMatch(
-      /`?0\.10\.1`? (?:is )?prepared|0\.10\.1 publish pending|owner publishes `?0\.10\.1`?|`?0\.10\.1`? is waiting on the owner/,
+      /`?1\.0\.0`? (?:is )?prepared|1\.0\.0 publish pending|owner publishes `?1\.0\.0`?|`?1\.0\.0`? is waiting on the owner/,
     );
     // and no superseded version may still be called `latest` — the 0.7.0
     // mistake, kept red for every version that has been overtaken.
+    expect(plan).not.toMatch(/`?0\.10\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.10\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.9\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.9\.0`? is `latest`/);
@@ -175,14 +190,14 @@ describe('the root manifest is publish-complete', () => {
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
     // the two places that carry it must agree: whatever §11 calls the
     // current `latest` is what the status line calls live.
-    expect(plan).toMatch(/done through `0\.10\.1`, the current `latest`/);
-    // 1.0.0 is prepared, not published: its `is prepared` positive, and every
+    expect(plan).toMatch(/done through `1\.0\.0`, the current `latest`/);
+    // 1.0.1 is prepared, not published: its `is prepared` positive, and every
     // voice that would announce it as shipped, until the registry says so.
-    expect(plan).toMatch(/`1\.0\.0` is prepared and waiting on the owner's publish: it freezes/);
-    expect(plan).not.toMatch(/Status \(1\.0\.0 published/);
-    expect(plan).not.toMatch(/`?1\.0\.0`? is `latest`/);
-    expect(plan).not.toMatch(/through `?1\.0\.0`? are live/);
-    expect(plan).not.toMatch(/done through `1\.0\.0`/);
+    expect(plan).toMatch(/`1\.0\.1` is prepared and waiting on the owner's publish/);
+    expect(plan).not.toMatch(/Status \(1\.0\.1 published/);
+    expect(plan).not.toMatch(/`?1\.0\.1`? is `latest`/);
+    expect(plan).not.toMatch(/through `?1\.0\.1`? are live/);
+    expect(plan).not.toMatch(/done through `1\.0\.1`/);
 
     // 🔴 What is deliberately NOT here any more, so the next reader does not
     // restore it: while 0.9.0 was prepared, an ENUMERATED negative forbade
@@ -198,13 +213,14 @@ describe('the root manifest is publish-complete', () => {
   });
 
   // 🔴 The ledger records where a version was published FROM, so a row may
-  // exist only once that version is on the registry. 0.10.1's row is written
-  // during 1.0.0 work from the measured public-registry gitHead.
-  it('records 0.10.1 in the ledger at the commit it was published from', async () => {
+  // exist only once that version is on the registry. 1.0.0's row is written
+  // during 1.0.1 work from the measured public-registry gitHead.
+  it('records 1.0.0 in the ledger at the commit it was published from', async () => {
     const ledger = JSON.parse(
       await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
     ) as Record<string, string | null>;
-    // `npm view create-agent-rig@0.10.1 gitHead`, read on 2026-09-22
+    // `npm view create-agent-rig@1.0.0 gitHead`, read on 2026-09-23
+    expect(ledger['1.0.0']).toBe('8876147ce93d54ba8321d2bcdafab7f5dd1f8994');
     expect(ledger['0.10.1']).toBe('738b494806b435f0718f290dc3befb40829e5ebf');
     expect(ledger['0.10.0']).toBe('279fbf928b811b8ebc7ba2d1c4700ee943b7dab1');
     expect(ledger['0.9.1']).toBe('872f7f67f11761c17aad3cbbe26540862581795b');
