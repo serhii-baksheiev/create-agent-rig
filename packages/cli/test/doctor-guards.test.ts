@@ -1,4 +1,5 @@
 import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -33,23 +34,28 @@ async function exists(file: string): Promise<boolean> {
 
 // Independent oracle for RP-238: reads and parses the candidate flag files
 // itself rather than importing unattended-flag.mjs/stop-flag.mjs to ask them
-// whether a fixture flag is armed. This only collects fixture-shaped
-// candidates by name and payload shape — it does NOT decide leaked vs. live;
-// that judgment needs the runDir existence check below, because a
-// concurrently running sibling fixture (a different test file, same vitest
-// "unit" project) can have a real, live flag of this exact shape at the
-// instant this function runs.
-const FIXTURE_RUN_DIR_PREFIX = path.join(tmpdir(), 'rig-guard-fixtures-');
-
-async function fixtureFlagsInRealHome(): Promise<Map<string, unknown>> {
+// whether a fixture flag is armed, AND identifies this call's own fixture
+// without asking production's own cleanup whether it ran. doctor-guards.ts's
+// FIXTURE_WRAPPER computes its run root as
+// `fs.mkdtempSync(path.join(os.tmpdir(), 'rig-guard-fixtures-'))` *inside the
+// spawned child*, and spawn.ts's env allow-list forwards TEMP/TMP to that
+// child but never TMPDIR. So overriding TEMP and TMP for the duration of one
+// `inspectGuards` call pins the child's `os.tmpdir()` (TMPDIR is stripped
+// regardless of the outer process's own environment) to a directory this
+// test alone created and named — no other call, in this run or a sibling
+// test file, can ever produce a runDir under it. A flag whose `runDir`
+// starts with that exact directory is therefore this call's fixture, full
+// stop: no runDir-existence heuristic, no dependence on a "before" snapshot,
+// no dependence on sibling timing.
+async function fixtureFlagsUnderRoot(rootPrefix: string): Promise<string[]> {
   const dir = path.join(userInfo().homedir, '.claude');
   let entries: string[];
   try {
     entries = await readdir(dir);
   } catch {
-    return new Map();
+    return [];
   }
-  const found = new Map<string, unknown>();
+  const matches: string[] = [];
   for (const name of entries) {
     if (!name.endsWith('-loop-UNATTENDED')) continue;
     const full = path.join(dir, name);
@@ -65,12 +71,12 @@ async function fixtureFlagsInRealHome(): Promise<Map<string, unknown>> {
       typeof record === 'object' &&
       record.item === 'fixture' &&
       typeof record.runDir === 'string' &&
-      record.runDir.startsWith(FIXTURE_RUN_DIR_PREFIX)
+      record.runDir.startsWith(rootPrefix)
     ) {
-      found.set(full, parsed);
+      matches.push(full);
     }
   }
-  return found;
+  return matches;
 }
 
 function batchResult(
@@ -115,37 +121,60 @@ describe('doctor guard inspection', () => {
   });
 
   it("never leaves a fixture unattended flag behind in the invoking user's real home (RP-238)", async () => {
-    const before = await fixtureFlagsInRealHome();
+    // Force this call's fixture root under a directory only this test
+    // created — see fixtureFlagsUnderRoot's comment for why that removes the
+    // dependency on production's own cleanup.
+    const uniqueRoot = await mkdtemp(path.join(tmpdir(), 'rig-238-oracle-'));
+    const rootPrefix = uniqueRoot + path.sep;
+    const savedTemp = process.env.TEMP;
+    const savedTmp = process.env.TMP;
+    process.env.TEMP = uniqueRoot;
+    process.env.TMP = uniqueRoot;
 
-    const result = await inspectGuards({ repoDir: repo });
+    // Sanity: the directory is fresh, so nothing should match yet.
+    expect(await fixtureFlagsUnderRoot(rootPrefix)).toEqual([]);
+
+    // While the call is in flight, poll for the child's own mkdtemp'd run
+    // root appearing under our override — confirming the redirection actually
+    // took effect, so the absence check below is not vacuously true because
+    // the child used some other, unwatched directory instead.
+    let sawFixtureRunDir = false;
+    const poll = setInterval(() => {
+      try {
+        if (readdirSync(uniqueRoot).some((name) => name.startsWith('rig-guard-fixtures-'))) {
+          sawFixtureRunDir = true;
+        }
+      } catch {
+        // uniqueRoot briefly unreadable mid mkdtemp/rmSync race; next tick retries.
+      }
+    }, 5);
+
+    let result: Awaited<ReturnType<typeof inspectGuards>>;
+    try {
+      result = await inspectGuards({ repoDir: repo });
+    } finally {
+      clearInterval(poll);
+      if (savedTemp === undefined) delete process.env.TEMP;
+      else process.env.TEMP = savedTemp;
+      if (savedTmp === undefined) delete process.env.TMP;
+      else process.env.TMP = savedTmp;
+    }
 
     // The fixtures still have to run — a fix that just skips arming the flag
     // instead of scoping it to the fixture's own fake HOME must not pass this
     // test either.
     expect(result).toEqual({ status: 'pass', reason: 'guards-verified' });
+    expect(sawFixtureRunDir).toBe(true);
 
-    const after = await fixtureFlagsInRealHome();
+    // Anything matching this prefix now is this call's fixture flag, and its
+    // mere presence — regardless of whether its runDir still exists on disk —
+    // is the leak.
+    const leaked = await fixtureFlagsUnderRoot(rootPrefix);
 
-    // A genuine leak is a fixture-shaped flag this run introduced (absent from
-    // `before`) whose runDir no longer exists on disk. The fixture wrapper
-    // always removes its own mkdtemp root in its `finally`
-    // (doctor-guards.ts's FIXTURE_WRAPPER), so a *finished* fixture's leaked
-    // flag points at an already-deleted directory. A sibling fixture that is
-    // still running concurrently (e.g. doctor.test.ts, same vitest "unit"
-    // project) has the same shape and is also new relative to `before`, but
-    // its runDir still exists — it is live, not leaked, and must be left
-    // alone rather than read as a false positive and deleted mid-run.
-    const candidates = [...after.entries()].filter(([file]) => !before.has(file));
-    const leaked: string[] = [];
-    for (const [file, parsed] of candidates) {
-      const runDir = (parsed as { runDir: string }).runDir;
-      if (!(await exists(runDir))) leaked.push(file);
-    }
-
-    // Best-effort cleanup of only what this run itself created and confirmed
-    // leaked — never a file that was already present before the call, and
-    // never a live sibling's flag.
+    // Best-effort cleanup of only what this run itself created under its own
+    // unique root — never a file this test did not name.
     await Promise.all(leaked.map((file) => rm(file, { force: true })));
+    await removeFixture(uniqueRoot);
 
     expect(leaked).toEqual([]);
   });
