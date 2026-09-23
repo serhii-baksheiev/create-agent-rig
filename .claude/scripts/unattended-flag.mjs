@@ -106,21 +106,46 @@ export const RULEBOOK_PREFIXES = Object.freeze([
 
 // Case-folded once at module load, for the same comparison every caller shares
 // — never re-derived per call, and never used anywhere but inside
-// `isRulebookPath` below.
+// `canonicalRulebookPath` below.
 const FOLDED_RULEBOOK_PREFIXES = RULEBOOK_PREFIXES.map((prefix) => prefix.toLowerCase());
 
 /**
- * Is this repo-relative path part of the rulebook? Case-insensitive: NTFS and
- * default APFS resolve a miscased spelling (`.Codex/config.toml`) to the same
- * file as the canonical one, and `guard-rulebook`'s realpath rescue only
- * re-cases a spelling through the nearest EXISTING ancestor — so a directory
- * this checkout has never created yet (or any path on a case-sensitive
- * filesystem) reaches this comparison exactly as spelled by the caller.
+ * The canonical rulebook spelling of a repo-relative path, or `undefined`
+ * when it names no rulebook prefix at all. Case-insensitive on the PREFIX
+ * match only — NTFS and default APFS resolve a miscased spelling
+ * (`.Codex/config.toml`) to the same file as the canonical one, and this
+ * comparison is what a directory this checkout has never created yet (or
+ * any path on a case-sensitive filesystem) reaches, exactly as spelled by
+ * the caller — see the generator's `test/template/guard-rulebook.test.ts`
+ * (absent in a generated rig) › "guard-rulebook: blocks a miscased
+ * rulebook path even when the guarded directory does not exist on disk yet
+ * (RP-215)" › "blocks a Write to .Codex/config.toml when .codex/ is absent
+ * from the checkout".
+ *
+ * RP-215 round 2: the returned spelling replaces only the matched prefix
+ * characters with `RULEBOOK_PREFIXES`' own spelling — the remainder of the
+ * path (and any allow-list entry) keeps whatever case it was written in.
+ * This is the one place a path is re-cased; every comparison downstream
+ * (`isAllowed`, the `.claude/queue.board` carve-out in `guard-rulebook.mjs`)
+ * takes this canonical value and stays a literal, case-sensitive match —
+ * canonicalising the PATH, never folding the ALLOW-LIST, is what keeps a
+ * miscased allow entry (`.Claude/`, `.claude/Scripts/`) from ever matching
+ * anything, including the one prefix deliberately withheld as an allow root
+ * (`.claude/scripts/`, `isWidening`).
  */
-export const isRulebookPath = (rel) => {
+export const canonicalRulebookPath = (rel) => {
   const folded = rel.toLowerCase();
-  return FOLDED_RULEBOOK_PREFIXES.some((prefix) => folded === prefix || folded.startsWith(prefix));
+  for (let index = 0; index < RULEBOOK_PREFIXES.length; index += 1) {
+    const prefix = RULEBOOK_PREFIXES[index];
+    const foldedPrefix = FOLDED_RULEBOOK_PREFIXES[index];
+    if (folded === foldedPrefix) return prefix;
+    if (folded.startsWith(foldedPrefix)) return prefix + rel.slice(prefix.length);
+  }
+  return undefined;
 };
+
+/** Is this repo-relative path part of the rulebook? See `canonicalRulebookPath`. */
+export const isRulebookPath = (rel) => canonicalRulebookPath(rel) !== undefined;
 
 /**
  * Does this allow entry widen the rulebook? It is unsafe when it is an
@@ -130,14 +155,25 @@ export const isRulebookPath = (rel) => {
  * protected script paths sit under `.claude/scripts/`; a narrower path such as
  * `.claude/scripts/queue/` is an ordinary allow entry and does not widen it.
  * `src/` also does not widen it because the guard judges nothing there.
+ *
+ * RP-215 round 2: the entry is case-folded once before either comparison —
+ * the allow side now folds like the path side (`canonicalRulebookPath`) — so
+ * a miscased entry (`.Claude/`, `.claude/Scripts/`) is judged exactly like its
+ * canonical spelling instead of slipping through as ordinary, harmless text;
+ * see the generator's `test/template/unattended-flag.test.ts` (absent in a
+ * generated rig) › "isWidening: a miscased allow entry must be refused
+ * exactly like its canonical spelling (RP-215 round 2)".
  */
-export const isWidening = (entry) =>
-  typeof entry !== 'string' ||
-  entry === '' ||
-  entry === '.agents/' ||
-  entry === '.claude/scripts/' ||
-  entry === '.codex/' ||
-  RULEBOOK_PREFIXES.some((prefix) => prefix !== entry && prefix.startsWith(entry));
+export const isWidening = (entry) => {
+  if (typeof entry !== 'string' || entry === '') return true;
+  const folded = entry.toLowerCase();
+  return (
+    folded === '.agents/' ||
+    folded === '.claude/scripts/' ||
+    folded === '.codex/' ||
+    FOLDED_RULEBOOK_PREFIXES.some((prefix) => prefix !== folded && prefix.startsWith(folded))
+  );
+};
 
 /**
  * One spelling for one directory — the single canonicaliser this file compares

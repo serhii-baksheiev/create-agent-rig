@@ -603,6 +603,62 @@ describe('guard-rulebook: blocks a miscased rulebook path even when the guarded 
   });
 });
 
+/**
+ * RP-215 review round 2 — `isRulebookPath` now folds case before comparing
+ * (see the block above), but `protectedRelative` still hands `isAllowed` and
+ * the `.claude/queue.board` carve-out the CALLER's miscased spelling, and
+ * both of those comparisons stayed case-sensitive. A flag whose `allow`
+ * entry is spelled in a different case than the rulebook prefix it targets
+ * therefore authorizes a path `isRulebookPath` folds to the very prefix the
+ * entry was supposed to be a narrow slice of — including the one entry that
+ * is never supposed to be an allow root at all (`.claude/scripts/`, deliberately
+ * withheld, `isWidening`) and the board selector, which is refused "even
+ * through an item allow-list" regardless of case.
+ *
+ * Every fixture below runs against a fresh `mkdtemp()` root, so the guarded
+ * directories are absent from disk by construction — identical on Linux CI,
+ * a case-sensitive filesystem, and a case-insensitive one: there is no
+ * on-disk rescue to fall back on either way, and no case-insensitive
+ * filesystem is required to reproduce this.
+ */
+describe('guard-rulebook: an allow-list entry is judged by its literal spelling, not the one the payload folds to (RP-215 round 2)', () => {
+  it('refuses a Write to .claude/Scripts/queue-index.mjs though the allow-list names the miscased .claude/Scripts/ — .claude/scripts/ is a deliberately withheld allow root', async () => {
+    expect(existsSync(path.join(root, '.claude'))).toBe(false);
+    await armed(['.claude/Scripts/']);
+    const result = await run(write(`${root}/.claude/Scripts/queue-index.mjs`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses a Write to .Claude/settings.json though the allow-list names the miscased .Claude/', async () => {
+    expect(existsSync(path.join(root, '.Claude'))).toBe(false);
+    await armed(['.Claude/']);
+    const result = await run(write(`${root}/.Claude/settings.json`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('never allows the checkout board selector under a miscased spelling, even when the allow-list names that exact miscased spelling', async () => {
+    expect(existsSync(path.join(root, '.claude'))).toBe(false);
+    await armed(['.claude/Queue.board']);
+    const result = await run(write(`${root}/.claude/Queue.board`, 'RP'));
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/board|selector/i);
+  });
+
+  // The honest direction: an allow-list entry that spells an ALLOWED prefix
+  // (`.claude/hooks/`, an ordinary allow root — unlike `.claude/scripts/`
+  // above) should still authorize a payload path that only differs from it
+  // by case, the same way `isRulebookPath` now treats the two spellings as
+  // one path. Today `isAllowed`'s case-sensitive `startsWith` refuses this
+  // one too — the same defect, on the side that currently over-blocks rather
+  // than under-blocks.
+  it('allows a miscased spelling of an allowed prefix — .claude/Hooks/x.mjs under an armed .claude/hooks/', async () => {
+    expect(existsSync(path.join(root, '.claude'))).toBe(false);
+    await armed(['.claude/hooks/']);
+    const result = await run(write(`${root}/.claude/Hooks/x.mjs`));
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
 describe('guard-rulebook: refusing to inspect is not allowing', () => {
   it('blocks a rulebook edit when the flag exists but cannot be read, and names the file', async () => {
     await armed([], '{ not json');

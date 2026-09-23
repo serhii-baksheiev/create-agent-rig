@@ -408,6 +408,74 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     expect(isWidening('src/')).toBe(false);
   });
 
+  /**
+   * RP-215 round 2 — `isWidening` compares an `--allow` entry against
+   * `RULEBOOK_PREFIXES` (and its own three hard-coded protected roots) with
+   * plain, case-sensitive string equality and `startsWith`. `canonicalRulebookPath`
+   * was made case-insensitive for the PATH side of this fix; the ALLOW-LIST
+   * side never was, so a miscased entry that means exactly the same directory
+   * on a case-insensitive filesystem (NTFS, default APFS) — `.Claude/`,
+   * `.CODEX/`, `.AGENTS/`, `.claude/Scripts/`, `.CLAUDE/` — is judged as
+   * ordinary, harmless, outside-the-rulebook text and is ACCEPTED where its
+   * canonical spelling is refused. That is the opposite of narrowing: the
+   * writer would arm a flag whose allow-list widens the rulebook exactly as
+   * much as `.claude/`, `.claude/scripts/`, `.codex/` or `.agents/` do, while
+   * believing it has refused every widening form.
+   *
+   * Independent oracle: every literal below is typed as its own string, not
+   * derived by mapping the canonical entries through `toUpperCase`/
+   * `toLowerCase` — a test built from the same case-folding the fix would add
+   * could not detect an under-folding in that fix (`invariants.md`, "the
+   * independent-oracle invariant").
+   */
+  describe('isWidening: a miscased allow entry must be refused exactly like its canonical spelling (RP-215 round 2)', () => {
+    it.each([
+      // exact protected roots, miscased
+      '.Claude/',
+      '.CODEX/',
+      '.AGENTS/',
+      '.CLAUDE/',
+      // a proper prefix of a rulebook entry, miscased
+      '.claude/Scripts/',
+    ])('is true for the miscased entry %s, same as its canonical spelling', async (entry) => {
+      const { isWidening } = (await load()) as unknown as {
+        isWidening: (entry: unknown) => boolean;
+      };
+      expect(isWidening(entry)).toBe(true);
+    });
+
+    it.each([
+      // outside the rulebook entirely — case is irrelevant, and stays so
+      'src/',
+      'SRC/',
+      // narrower than a rulebook prefix, not a widening of it — confirmed
+      // non-widening in its canonical spelling by the pin above, and its
+      // miscased twin must land on the SAME answer
+      '.claude/skills/loop/',
+      '.claude/Skills/loop/',
+    ])(
+      'is false for %s — narrower than, or outside, the rulebook, case included',
+      async (entry) => {
+        const { isWidening } = (await load()) as unknown as {
+          isWidening: (entry: unknown) => boolean;
+        };
+        expect(isWidening(entry)).toBe(false);
+      },
+    );
+
+    it('the CLI refuses `on --allow .Claude/` exactly as it refuses `on --allow .claude/`, and writes no flag', async () => {
+      const miscased = await runCli(['on', '--item', 'RP-215', '--allow', '.Claude/'], home);
+      expect(miscased.code).toBe(1);
+      expect(miscased.stderr).toMatch(/rulebook/);
+      expect(existsSync(flagPath())).toBe(false);
+
+      const canonical = await runCli(['on', '--item', 'RP-215', '--allow', '.claude/'], home);
+      expect(canonical.code).toBe(1);
+      expect(canonical.stderr).toMatch(/rulebook/);
+      expect(existsSync(flagPath())).toBe(false);
+    });
+  });
+
   it('writeUnattended refuses .rig/ as a widening allow entry but accepts .rig/claims/, which a SELECT must keep writable', async () => {
     const { writeUnattended, readUnattended, clearUnattended } = await load();
     expect(() =>
