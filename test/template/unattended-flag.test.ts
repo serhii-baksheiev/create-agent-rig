@@ -367,6 +367,59 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
   });
 
   /**
+   * RP-243 — `canonicalRulebookPath`/`isRulebookPath` compare the literal
+   * spelling of a path component. Win32 strips a TRAILING dot or space from
+   * each path component when it actually creates the file — `cmd /c "echo x
+   * > .codex.\config.toml"` lands as `.codex\config.toml` on disk — so a
+   * payload spelled `.codex./config.toml` is, on Windows, the exact same file
+   * as the guarded `.codex/config.toml`, while this comparison sees two
+   * different strings and lets the rulebook edit through.
+   *
+   * Independent oracle: every spelling below is written out literally in this
+   * test, not derived by appending a dot/space to `RULEBOOK_PREFIXES` through
+   * a helper the fix would also supply (`invariants.md`, "the independent-oracle
+   * invariant").
+   */
+  describe('isRulebookPath: a trailing dot or space on a path component is judged the same as the component with it stripped (RP-243)', () => {
+    it.each([
+      // trailing dot/space on the segment that names the guarded directory itself
+      ['.codex./config.toml', '.codex/'],
+      ['.codex /config.toml', '.codex/'],
+      ['.claude./hooks/x.mjs', '.claude/hooks/'],
+      // trailing dot/space on a segment INSIDE the guarded directory
+      ['.claude/hooks./x.mjs', '.claude/hooks/'],
+      ['.claude/hooks /x.mjs', '.claude/hooks/'],
+      // trailing dot/space on a single-segment file entry
+      ['CLAUDE.md.', 'CLAUDE.md'],
+      ['AGENTS.md ', 'AGENTS.md'],
+      // combining case-folding (RP-215) with a trailing dot AND a trailing
+      // space on two different components of the same path (RP-243)
+      ['.Codex. /config.toml', '.codex/'],
+    ])('is true for %s — a trailing-dot/space variant of the %s entry', async (rel) => {
+      const { isRulebookPath } = (await load()) as unknown as {
+        isRulebookPath: (rel: string) => boolean;
+      };
+      expect(isRulebookPath(rel)).toBe(true);
+    });
+
+    it.each([
+      // ordinary paths outside the rulebook stay outside it, trailing
+      // dot/space and all — this fix narrows nothing it must not narrow.
+      'src/a.txt.',
+      'src /a.txt',
+      'docs/notes. /x.md',
+    ])(
+      'is false for the ordinary path %s, unaffected by the trailing-dot/space fix',
+      async (rel) => {
+        const { isRulebookPath } = (await load()) as unknown as {
+          isRulebookPath: (rel: string) => boolean;
+        };
+        expect(isRulebookPath(rel)).toBe(false);
+      },
+    );
+  });
+
+  /**
    * RP-215 — the fix has to land at the single shared comparison point
    * without changing `isWidening`'s answers. Pinned literally, entry by
    * entry, as measured on master (8876147) before this fix — not derived by

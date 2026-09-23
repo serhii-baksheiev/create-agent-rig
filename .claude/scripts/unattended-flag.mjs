@@ -132,14 +132,32 @@ const FOLDED_RULEBOOK_PREFIXES = RULEBOOK_PREFIXES.map((prefix) => prefix.toLowe
  * miscased allow entry (`.Claude/`, `.claude/Scripts/`) from ever matching
  * anything, including the one prefix deliberately withheld as an allow root
  * (`.claude/scripts/`, `isWidening`).
+ *
+ * RP-243: before the fold above, the path is also normalised the way Win32
+ * normalises it when the file is actually created — a TRAILING dot or space
+ * on any `/`-separated component is stripped (`.codex./config.toml` is the
+ * same file as `.codex/config.toml` on disk), except a component made
+ * entirely of dots (`.`, `..`) is left untouched so a traversal segment is
+ * never collapsed into an empty name. Only the PATH is normalised this way,
+ * never an allow-list entry — the same asymmetry as the case fold above, for
+ * the same reason. See the generator's `test/template/unattended-flag.test.ts`
+ * (absent in a generated rig) › "isRulebookPath: a trailing dot or space on a
+ * path component is judged the same as the component with it stripped
+ * (RP-243)".
  */
+const stripTrailingDotsAndSpaces = (component) =>
+  /^\.+$/.test(component) ? component : component.replace(/[. ]+$/, '');
+
+const winNormalized = (rel) => rel.split('/').map(stripTrailingDotsAndSpaces).join('/');
+
 export const canonicalRulebookPath = (rel) => {
-  const folded = rel.toLowerCase();
+  const normalized = winNormalized(rel);
+  const folded = normalized.toLowerCase();
   for (let index = 0; index < RULEBOOK_PREFIXES.length; index += 1) {
     const prefix = RULEBOOK_PREFIXES[index];
     const foldedPrefix = FOLDED_RULEBOOK_PREFIXES[index];
     if (folded === foldedPrefix) return prefix;
-    if (folded.startsWith(foldedPrefix)) return prefix + rel.slice(prefix.length);
+    if (folded.startsWith(foldedPrefix)) return prefix + normalized.slice(prefix.length);
   }
   return undefined;
 };
