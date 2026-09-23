@@ -141,15 +141,15 @@ const RP_173_ROUTING: RoutingPolicy = {
     },
     'code-reviewer': {
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     },
     'security-scanner': {
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     },
     'failure-diagnostician': {
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     },
   },
 };
@@ -603,7 +603,7 @@ describe('the adapter check refuses routing drift', () => {
           'agents',
           'code-reviewer.toml',
         ),
-        'model = "gpt-5.6-sol"',
+        'model = "gpt-6-sol"',
         'model = "gpt-5.6-terra"',
       );
       const result = await runCheck(root);
@@ -835,7 +835,7 @@ describe('failure-diagnostician has a named, pinned role on the code-reviewer ti
     const policy = await realPolicy();
     expect(policy.roles['failure-diagnostician']).toEqual({
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     });
     for (const gate of GATES) expect(policy.roles[gate], gate).toEqual(RP_173_ROUTING.roles[gate]);
   });
