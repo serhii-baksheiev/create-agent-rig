@@ -132,6 +132,10 @@ const ELEVATED_PATHS = [
   // baseline a SELECT creates for itself on every queue merge, and declaring
   // the directory would flag essentially all of them.
   '.rig/revalidation.json',
+  // RP-217: the template SOURCE of the RP-61 contract above — the seed a
+  // generated workflow rig's own sweep reads from its copy of this file, not
+  // only the synced root copy this checkout runs under.
+  'templates/agent-os/universal/.rig/revalidation.json',
 ];
 
 const withElevatedPaths = (claudeMd) =>

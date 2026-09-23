@@ -4,7 +4,11 @@
  * Claude sends Write/Edit fields directly. Codex sends an apply_patch command,
  * so added lines are returned for ordinary edits. A move is different: the
  * destination receives the existing file too, so guards inspect the resulting
- * content instead of only the patch additions when inspection succeeds.
+ * content instead of only the patch additions when inspection succeeds. A
+ * removal — a `*** Delete File:` section, or the source half of a
+ * `*** Move to:` — also becomes its own fragment, `removes: true`, `fragment:
+ * ''` (RP-214): the path stops existing, which a guard judging paths still
+ * needs to see even though there is no text to inspect.
  *
  * Inspection is bounded globally per patch: sources, hunks, output, splices,
  * comparisons, sections and path components.
@@ -240,6 +244,21 @@ function patchFragments(command, payloadCwd) {
   let current = null;
   let patchRefusal = null;
 
+  // RP-214: one counter, spent on every path this section resolves — the
+  // destination (or the removed path, for a Delete File section) and, for a
+  // Move, the source too (below). Still one forward pass, still the same
+  // bound.
+  const overPathComponentBudget = (value) => {
+    budget.pathComponents += String(value ?? '').replaceAll('\\', '/').split('/').length;
+    return budget.pathComponents > MAX_PATCH_PATH_COMPONENTS;
+  };
+  const pathComponentRefusal = () => ({
+    filePath: '',
+    fragment: '',
+    inspectionRefusal: `apply_patch destination path component count exceeds the ${MAX_PATCH_PATH_COMPONENTS}-component inspection limit`,
+    appliesToAll: true,
+  });
+
   const flush = () => {
     if (current !== null) {
       budget.sections += 1;
@@ -254,16 +273,8 @@ function patchFragments(command, payloadCwd) {
         return false;
       }
       const destinationPath = current.moveTo ?? current.sourcePath;
-      budget.pathComponents += String(destinationPath ?? '')
-        .replaceAll('\\', '/')
-        .split('/').length;
-      if (budget.pathComponents > MAX_PATCH_PATH_COMPONENTS) {
-        patchRefusal = {
-          filePath: '',
-          fragment: '',
-          inspectionRefusal: `apply_patch destination path component count exceeds the ${MAX_PATCH_PATH_COMPONENTS}-component inspection limit`,
-          appliesToAll: true,
-        };
+      if (overPathComponentBudget(destinationPath)) {
+        patchRefusal = pathComponentRefusal();
         current = null;
         return false;
       }
@@ -274,6 +285,22 @@ function patchFragments(command, payloadCwd) {
           fragment: '',
           inspectionRefusal: 'patch destination is outside the repository or cannot be resolved safely',
           appliesToAll: true,
+          // RP-214: a Delete File section has no destination — only the
+          // removed path itself — so this refusal is about a removal too;
+          // carry the flag so a guard that must not treat a removal as a
+          // write (guard-secret-file) can still tell the two apart.
+          ...(current.removes ? { removes: true } : {}),
+        });
+      } else if (current.removes) {
+        // RP-214: `*** Delete File: <path>` used to flush only the SECTION
+        // BEFORE it and never turn the removed path itself into a fragment —
+        // resolved the same way every other verb resolves its path, through
+        // `repositoryPatchPath` and the same budgets above, in this same pass.
+        fragments.push({
+          filePath: destination.resolved,
+          rawFilePath: destination.raw,
+          fragment: '',
+          removes: true,
         });
       } else {
         const moved = current.moveTo
@@ -285,6 +312,31 @@ function patchFragments(command, payloadCwd) {
         // through a guarded prefix that is itself a symlink/junction to
         // somewhere else inside the checkout.
         fragments.push({ filePath: destination.resolved, rawFilePath: destination.raw, ...moved });
+
+        if (current.moveTo) {
+          // RP-214: a Move's SOURCE stops existing too — it is a removal the
+          // line above never surfaced, because `current.moveTo ?? …`
+          // resolves only the destination. One more path through the same
+          // resolver and the same budgets, still inside this one flush.
+          if (overPathComponentBudget(current.sourcePath)) {
+            patchRefusal = pathComponentRefusal();
+            current = null;
+            return false;
+          }
+          const source = repositoryPatchPath(current.sourcePath, budget);
+          fragments.push(
+            source === null
+              ? {
+                  filePath: '',
+                  fragment: '',
+                  inspectionRefusal:
+                    'patch destination is outside the repository or cannot be resolved safely',
+                  appliesToAll: true,
+                  removes: true,
+                }
+              : { filePath: source.resolved, rawFilePath: source.raw, fragment: '', removes: true },
+          );
+        }
       }
       current = null;
     }
@@ -303,7 +355,17 @@ function patchFragments(command, payloadCwd) {
       current.moveTo = move[1];
       continue;
     }
-    if (/^\*\*\* (?:Delete File|End Patch)/.test(line)) {
+    // RP-214: a Delete File section becomes its own fragment — `removes:
+    // true`, resolved through the same path the other verbs use — instead of
+    // only flushing whatever section came before it.
+    const del = /^\*\*\* Delete File: (.+)$/.exec(line);
+    if (del) {
+      if (!flush()) break;
+      current = { sourcePath: del[1], moveTo: null, additions: [], hunks: [], activeHunk: null, removes: true };
+      if (!flush()) break;
+      continue;
+    }
+    if (/^\*\*\* End Patch/.test(line)) {
       if (!flush()) break;
       continue;
     }
