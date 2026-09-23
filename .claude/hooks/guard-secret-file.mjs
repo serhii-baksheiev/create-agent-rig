@@ -99,7 +99,11 @@ function main() {
   const editTools = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
   if (!editTools.has(input?.tool_name)) return 0;
 
-  const fragments = editFragments(input);
+  // RP-214: `editFragments` also reports a removal (a Delete File section, or
+  // the source half of a Move) as its own fragment, `removes: true` — deleting
+  // a credential file is not writing one, so this guard never judges those,
+  // including an inspection refusal attached to one.
+  const fragments = editFragments(input).filter(({ removes }) => !removes);
   const globalRefusal = fragments.find(
     ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
   );

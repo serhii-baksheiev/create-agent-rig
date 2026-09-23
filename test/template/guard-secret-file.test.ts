@@ -1,13 +1,15 @@
 import { execFile } from 'node:child_process';
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY, GITHUB_PAT, PEM_HEADER } from './secrets-fixtures.js';
 import { runNodeTimed } from '../helpers/child-timing.js';
 import { needsGitRoot, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR-49(b), the PreToolUse half of the "both layers, one shared module" ruling.
 //
@@ -662,6 +664,69 @@ describe('guard-secret-file: the limits it states, asserted rather than asserted
         ).toMatch(/own header|its header|the hook(?:'s|’s) own (?:header|source)/i);
       }
     }
+  });
+});
+
+// RP-214 regression pins. The failure-diagnostician's fix for guard-rulebook
+// touches the SHARED `edit-input.mjs` normaliser (a Delete File / Move-to
+// section that never surfaces the removed/source path). These three cases
+// pass TODAY, for unrelated reasons of guard-secret-file's own — it is about
+// credential paths and values, not about who may remove a path from the
+// rulebook — and must keep passing exactly as they do now once that shared
+// normaliser changes.
+describe('guard-secret-file: apply_patch removal shapes stay unchanged (RP-214 regression pins)', () => {
+  let pinRoot: string;
+
+  beforeEach(async () => {
+    pinRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'secret-pin-')));
+    await run('git', ['init', '-q', pinRoot]);
+  });
+
+  afterEach(async () => {
+    await removeFixture(pinRoot);
+  });
+
+  it('regression pin: a standalone Delete File of .env is allowed — removing a credential file is not this guard’s business', async () => {
+    await writeFile(path.join(pinRoot, '.env'), 'HARMLESS=true\n');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      cwd: pinRoot,
+      tool_input: {
+        command: '*** Begin Patch\n*** Delete File: .env\n*** End Patch\n',
+      },
+    });
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('regression pin: an Update+Move of an existing harmless .env to src/ok.txt is allowed', async () => {
+    await writeFile(path.join(pinRoot, '.env'), 'HARMLESS=true\n');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      cwd: pinRoot,
+      tool_input: {
+        command:
+          '*** Begin Patch\n*** Update File: .env\n*** Move to: src/ok.txt\n@@\n+// moved\n*** End Patch\n',
+      },
+    });
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('regression pin: an Update+Move whose DESTINATION is .env is still refused', async () => {
+    await mkdir(path.join(pinRoot, 'src'), { recursive: true });
+    await writeFile(path.join(pinRoot, 'src', 'a.txt'), 'ordinary file\n');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      cwd: pinRoot,
+      tool_input: {
+        command:
+          '*** Begin Patch\n*** Update File: src/a.txt\n*** Move to: .env\n@@\n+// moved\n*** End Patch\n',
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.env');
   });
 });
 
