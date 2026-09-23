@@ -16,7 +16,7 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ## 1.0.1
 
-**1.0.1 is a patch on the 1.0 line, and fixes only.** It closes guard gaps an unattended run
+**1.0.1 is a patch on the 1.0 line.** It closes guard gaps an unattended run
 could use to rewrite the rulebook, fixes a `doctor` side effect, and moves the
 reviewer tier of both harnesses to newer models. The 1.0 contract is
 unchanged: no flag, JSON shape, exit code, verdict or outcome word, and no
@@ -29,8 +29,8 @@ manifest key is added, removed or renamed.
   (was `claude-opus-5`), effort `high` unchanged (RP-232).
 - **The Codex reviewer tier runs on GPT-6 Sol.** The same three roles route to
   `gpt-6-sol` (was `gpt-5.6-sol`), reasoning effort `high` unchanged. Under
-  ChatGPT-account auth, Codex CLI 0.156.1 or newer is needed to dispatch it —
-  older versions reject the model id (RP-233).
+  ChatGPT-account auth, Codex CLI 0.156.1 dispatched it and 0.154.0 rejected
+  the model id; versions in between were not tested (RP-233).
 
 ### Fixed
 
@@ -49,7 +49,9 @@ manifest key is added, removed or renamed.
   `\\?\C:\…`, `\\.\C:\…` and a `..` run above the drive root are judged as the
   plain path Windows writes to. A UNC or other device-namespace path that does
   not resolve under the repository root is refused while unattended rather
-  than judged as outside the rulebook (RP-244).
+  than judged as outside the rulebook (RP-244). One case stays open: when the
+  repository root is itself spelled as a UNC admin share, the local drive
+  spelling of the same file is not caught (RP-246).
 - **`doctor` no longer leaves an unattended flag in your home directory.** Its
   guard fixture armed the flag in the invoking user's real `~/.claude` as well
   as in its temporary home, and never cleared it (RP-238).

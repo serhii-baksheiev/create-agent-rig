@@ -7,9 +7,9 @@
 > **Status (1.0.0 published 23 Sep 2026):** 1.0.0 is `latest`, published from
 > `gitHead` `8876147ce93d54ba8321d2bcdafab7f5dd1f8994`. Versions 0.1.0 through
 > 1.0.0 are live; delivery is done through `1.0.0`, the current `latest`.
-> `1.0.1` is prepared and waiting on the owner's publish: it is a fixes-only
-> patch on the 1.0 line — guard hardening, a `doctor` fix, and reviewer-tier
-> model routing for both harnesses.
+> `1.0.1` is prepared and waiting on the owner's publish: it is a patch on
+> the 1.0 line — guard hardening, a `doctor` fix, and reviewer-tier model
+> routing for both harnesses.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
