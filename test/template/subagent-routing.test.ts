@@ -141,15 +141,15 @@ const RP_173_ROUTING: RoutingPolicy = {
     },
     'code-reviewer': {
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     },
     'security-scanner': {
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     },
     'failure-diagnostician': {
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     },
   },
 };
@@ -603,7 +603,7 @@ describe('the adapter check refuses routing drift', () => {
           'agents',
           'code-reviewer.toml',
         ),
-        'model = "gpt-5.6-sol"',
+        'model = "gpt-6-sol"',
         'model = "gpt-5.6-terra"',
       );
       const result = await runCheck(root);
@@ -723,6 +723,63 @@ describe('capability evidence records what the Claude routing can and cannot pin
     expect(entry.version).toBe(MINIMUM_CLAUDE_CODE_VERSION);
   });
 
+  it('records the minimum Codex CLI version the reviewer-tier pins need', async () => {
+    const evidence = JSON.parse(await text(repoRoot, 'docs', 'capability-evidence.json')) as {
+      minimumVersions?: unknown;
+    };
+    expect(Array.isArray(evidence.minimumVersions), 'a top-level minimumVersions array').toBe(true);
+    const codex = ((evidence.minimumVersions ?? []) as Array<Record<string, unknown>>).filter(
+      (entry) => entry.harness === 'codex',
+    );
+    expect(codex).toHaveLength(1);
+    const entry = codex[0] ?? {};
+    const nonBlank = (value: unknown) => typeof value === 'string' && value.trim() !== '';
+
+    // The version is a literal pin, not a loose match: 0.156.1 is the exact
+    // Codex CLI build RP-233's runtime evidence observed dispatching gpt-6-sol.
+    expect(entry.version).toBe('0.156.1');
+    expect(nonBlank(entry.why), 'why is not blank').toBe(true);
+    expect(entry.why as string).toMatch(/gpt-6-sol/);
+
+    expect(nonBlank(entry.limit), 'limit is not blank').toBe(true);
+    const limit = entry.limit as string;
+    // Fact 1: 0.156.1 is only the lowest version OBSERVED completing dispatch —
+    // the exact floor between the rejecting 0.154.0 and the accepting
+    // 0.156.1 was never measured.
+    expect(limit).toMatch(/0\.154\.0/);
+    expect(limit).toMatch(/0\.156\.1/);
+    expect(limit).toMatch(/lowest|floor/i);
+    expect(limit).toMatch(/observ/i);
+    expect(limit).toMatch(/unmeasured|not measured|never measured/i);
+    // Fact 2: the record now names completed subagent rollouts and the fields
+    // that establish the effective model and a completed execution.
+    expect(limit).toMatch(/dispatch/i);
+    expect(limit).toMatch(/complet/i);
+    expect(nonBlank(entry.source), 'source is not blank').toBe(true);
+    const source = entry.source as string;
+    expect(source).toMatch(/completed named subagent rollouts/i);
+    expect(source).toMatch(/turn_context/);
+    expect(source).toMatch(/task_complete/);
+    for (const role of [
+      'code-reviewer',
+      'security-scanner',
+      'failure-diagnostician',
+      'test-writer',
+    ]) {
+      expect(source).toContain(role);
+    }
+
+    // Independent oracle: the pins the entry backs are exactly the
+    // reviewer-tier roles this project actually names for gpt-6-sol, listed
+    // literally rather than re-derived from the same policy filter twice.
+    const policy = await realPolicy();
+    const gptSixSolRoles = Object.entries(policy.roles)
+      .filter(([, route]) => route.codex.model === 'gpt-6-sol')
+      .map(([role]) => role)
+      .sort();
+    expect(gptSixSolRoles).toEqual(['code-reviewer', 'failure-diagnostician', 'security-scanner']);
+  });
+
   it('records each measured condition under which a pin does not hold', async () => {
     const claudeRows = (await evidenceRows()).filter((row) => row.harness === 'claude');
     const unsupported = (mechanism: string, surfacePart?: string) =>
@@ -835,7 +892,7 @@ describe('failure-diagnostician has a named, pinned role on the code-reviewer ti
     const policy = await realPolicy();
     expect(policy.roles['failure-diagnostician']).toEqual({
       claude: { model: 'claude-opus-5-5', effort: 'high' },
-      codex: { model: 'gpt-5.6-sol', effort: 'high' },
+      codex: { model: 'gpt-6-sol', effort: 'high' },
     });
     for (const gate of GATES) expect(policy.roles[gate], gate).toEqual(RP_173_ROUTING.roles[gate]);
   });
