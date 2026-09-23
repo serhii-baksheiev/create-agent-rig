@@ -171,10 +171,8 @@ const section = (label: string, text: string): string =>
  * would replace the failure it was meant to explain. A rejection that is not an
  * `execFile` error still produces a report.
  *
- * `timeoutMs`, when given, is the `timeout` the caller passed to `execFile`.
- * It is what tells a deadline apart from an ordinary signal below — Node sets
- * `killed: true` on the rejection for both, so the timeout value is the only
- * way to know which one this was (RP-212).
+ * `timeoutMs`, when given, is the `timeout` the caller passed to `execFile`;
+ * the report names it when that deadline is what killed the child (RP-212).
  */
 export const commandFailureReport = (
   command: string,

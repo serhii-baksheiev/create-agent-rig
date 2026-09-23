@@ -131,13 +131,11 @@ const PACKAGE_MANAGER_START_CASE_NAME =
 const PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION =
   /^const PACKAGE_MANAGER_START_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
 
-// RP-212 bounds two *child processes*, never the vitest case itself:
-// `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS` (the CLI-start case's own child,
-// declared as the case budget minus a margin) and `STALLED_CHILD_BOUND_MS`
-// (the stalled-child test's fake pnpm, declared as a plain literal). Both
-// carry the word `timeout:` without being a vitest case/describe budget —
-// exactly what the matcher below must tell apart from the one genuine budget
-// it still expects, and it must do so by identifier, never by accepting any
+// In package-manager-transport.test.ts RP-212 bounds the CLI-start case's own
+// child with `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS` (the case budget minus a
+// margin). It carries the word `timeout:` without being a vitest case/describe
+// budget — what the matcher below must tell apart from the one genuine budget
+// that file still has, and it must do so by identifier, never by accepting any
 // numeric literal, or a stray literal `timeout:` on an unrelated case reads
 // as compliant.
 
