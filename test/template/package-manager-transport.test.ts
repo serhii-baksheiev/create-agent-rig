@@ -16,6 +16,11 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 // parametrised case's options".
 const PACKAGE_MANAGER_START_CASE_TIMEOUT_MS = 60_000;
 
+// Bounds the child so a stalled start is killed and its own output reaches
+// the report instead of leaking a live child into afterEach; not a budget
+// raise — strictly below the case timeout above.
+const PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS = PACKAGE_MANAGER_START_CASE_TIMEOUT_MS - 10_000;
+
 const literalArgs = ['space value', '&|<>^%!()', 'single "double"', ''];
 
 const windowsNodeExecutable = (work: string): string =>
@@ -39,7 +44,10 @@ describe('package-manager transport', () => {
     'runs the installed %s CLI directly and returns its version',
     { timeout: PACKAGE_MANAGER_START_CASE_TIMEOUT_MS },
     async (manager) => {
-      const { stdout } = await runPackageManager(manager, ['--version'], { cwd: work });
+      const { stdout } = await runPackageManager(manager, ['--version'], {
+        cwd: work,
+        timeout: PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS,
+      });
 
       expect(stdout.trim()).toMatch(/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/);
     },

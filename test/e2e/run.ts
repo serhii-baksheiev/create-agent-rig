@@ -107,6 +107,9 @@ type ExecFailure = {
   signal?: NodeJS.Signals | string;
   stderr?: string | Buffer;
   stdout?: string | Buffer;
+  // Set by Node when the kill was `execFile`'s own `timeout` option firing,
+  // rather than a signal the child received from elsewhere.
+  killed?: boolean;
 };
 
 /**
@@ -167,8 +170,16 @@ const section = (label: string, text: string): string =>
  * Deliberately total: it is called from a catch block, so anything it throws
  * would replace the failure it was meant to explain. A rejection that is not an
  * `execFile` error still produces a report.
+ *
+ * `timeoutMs`, when given, is the `timeout` the caller passed to `execFile`;
+ * the report names it when that deadline is what killed the child (RP-212).
  */
-export const commandFailureReport = (command: string, error: unknown, npmDebugLog = ''): string => {
+export const commandFailureReport = (
+  command: string,
+  error: unknown,
+  npmDebugLog = '',
+  timeoutMs?: number,
+): string => {
   const failure: ExecFailure = typeof error === 'object' && error !== null ? error : {};
   const stderr = asText(failure.stderr);
   const stdout = asText(failure.stdout);
@@ -176,13 +187,16 @@ export const commandFailureReport = (command: string, error: unknown, npmDebugLo
   // A spawn failure carries an errno string (`ENOENT`) where an exited child
   // carries a number. Calling the first one an "exit code" misreports it.
   const how =
-    failure.signal != null
-      ? `killed by signal ${String(failure.signal)}`
-      : typeof failure.code === 'number'
-        ? `exit code ${failure.code}`
-        : typeof failure.code === 'string'
-          ? `did not start: ${failure.code}`
-          : 'no exit code reported';
+    failure.killed === true && timeoutMs != null
+      ? `timed out after ${timeoutMs} ms and was killed` +
+        (failure.signal != null ? ` (signal ${String(failure.signal)})` : '')
+      : failure.signal != null
+        ? `killed by signal ${String(failure.signal)}`
+        : typeof failure.code === 'number'
+          ? `exit code ${failure.code}`
+          : typeof failure.code === 'string'
+            ? `did not start: ${failure.code}`
+            : 'no exit code reported';
 
   // 🔴 Mask BEFORE truncating, never after. `tail` cuts at an offset, and a cut
   // landing inside a URL's userinfo leaves the password's suffix with no
@@ -368,7 +382,12 @@ export const run = async (
     const cache = options?.env?.npm_config_cache;
     const failure: ExecFailure = typeof error === 'object' && error !== null ? error : {};
     throw new Error(
-      commandFailureReport(`${reportedCommand} ${args.join(' ')}`, error, npmDebugLogs(cache)),
+      commandFailureReport(
+        `${reportedCommand} ${args.join(' ')}`,
+        error,
+        npmDebugLogs(cache),
+        options?.timeout,
+      ),
       // 🔴 Deliberately NOT `{ cause: error }`. The report above is redacted;
       // the original `execFile` rejection is not — it carries the raw `cmd`,
       // `stdout` and `stderr` as properties AND repeats the command line inside
