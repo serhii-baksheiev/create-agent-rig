@@ -548,8 +548,25 @@ function inspectionRefusal(current, reason) {
   return { fragment: current.additions.join('\n'), inspectionRefusal: reason };
 }
 
+// RP-244: a Win32 verbatim (`\\?\`) or device-namespace (`\\.\`) prefix, in
+// any slash mix, names the plain drive (or UNC) path underneath it. The
+// backslash-to-slash conversion below would collapse the leading `//` these
+// prefixes depend on, so they are stripped first. Anchored at the very start:
+// a prefix check, not a scan, which keeps this inside the fail-open
+// bounded-work rule.
+const WIN32_VERBATIM_UNC_PREFIX = /^[\\/]{2}[?.][\\/]UNC[\\/]/i;
+const WIN32_VERBATIM_DRIVE_PREFIX = /^[\\/]{2}[?.][\\/]([A-Za-z]:)/;
+
 function normalisePath(value) {
-  const slashed = String(value ?? '').trim().replaceAll('\\', '/');
+  const raw = String(value ?? '').trim();
+  if (raw === '') return '';
+  const uncMatch = WIN32_VERBATIM_UNC_PREFIX.exec(raw);
+  if (uncMatch) {
+    // path.posix.normalize collapses a double leading slash to one, so the
+    // `//` this maps to is applied AFTER normalising the rest, not before.
+    return '//' + path.posix.normalize(raw.slice(uncMatch[0].length).replaceAll('\\', '/'));
+  }
+  const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
   return slashed === '' ? '' : path.posix.normalize(slashed);
 }
 

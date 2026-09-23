@@ -339,3 +339,101 @@ describe('the guards block on a tool_input they cannot read', () => {
     expect(result.stderr).not.toMatch(/split/i);
   });
 });
+
+/**
+ * RP-244 — failure-diagnostician, measured on NTFS at 1221613.
+ *
+ * `normalisePath` converts every backslash to a forward slash and then runs
+ * `path.posix.normalize`, which collapses the leading `//` a Win32 verbatim
+ * (`\\?\`) or device-namespace (`\\.\`) prefix depends on: `\\?\C:\…`
+ * reaches every consuming guard as `/?/C:/…`, and `\\.\C:\…` as `/C:/…` —
+ * neither of which any rulebook prefix ever matches — while Node's own `fs`
+ * writes through every one of these spellings to the real file underneath.
+ * `guard-rulebook.test.ts` › "guard-rulebook: a Win32 verbatim path does not
+ * bypass the guard (RP-244)" is the consequence through the guard's own
+ * entry point, gated to the windows-e2e/windows-smoke lanes because the
+ * spelling only resolves to a real file on a Windows filesystem; this block
+ * is the platform-independent pin, because `normalisePath` is plain string
+ * manipulation with no filesystem dependency.
+ *
+ * Expected values are hand-written from the Win32 rule the fix applies —
+ * strip a verbatim/device prefix when it is followed by a drive letter, and
+ * map `\\?\UNC\server\share\…` to `//server/share/…` — never derived by
+ * calling `editFragments` a second time on the plain spelling and comparing
+ * the two outputs (`.claude/rules/invariants.md`, the independent-oracle
+ * invariant: a test must not derive its expected result from the same
+ * production mechanism it checks).
+ */
+describe('editFragments: normalisePath resolves a Win32 verbatim/device path the way the OS does (RP-244)', () => {
+  const writePayload = (filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Write',
+    tool_input: { file_path: filePath, content: 'x' },
+  });
+
+  const filePathOf = async (filePath: string) => {
+    const { editFragments } = await load();
+    const [fragment] = editFragments(writePayload(filePath));
+    return fragment?.filePath;
+  };
+
+  it.each([
+    [
+      'verbatim, uppercase drive, backslash form',
+      String.raw`\\?\C:\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'verbatim, forward-slash form',
+      '//?/C:/Users/x/rig/.claude/settings.json',
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'verbatim, lowercase drive letter — the drive letter case is preserved',
+      String.raw`\\?\c:\Users\x\rig\.claude\settings.json`,
+      'c:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'device namespace, backslash form',
+      String.raw`\\.\C:\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'device namespace, forward-slash form',
+      '//./C:/Users/x/rig/.claude/settings.json',
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'verbatim, an NTFS ::$INDEX_ALLOCATION stream named on the directory component',
+      String.raw`\\?\C:\Users\x\rig\.claude::$INDEX_ALLOCATION\settings.json`,
+      'C:/Users/x/rig/.claude::$INDEX_ALLOCATION/settings.json',
+    ],
+  ])('%s resolves to the plain C:/… spelling', async (_label, input, expected) => {
+    expect(await filePathOf(input)).toBe(expected);
+  });
+
+  it('a verbatim UNC path (\\\\?\\UNC\\server\\share\\…) resolves to //server/share/…', async () => {
+    expect(
+      await filePathOf(String.raw`\\?\UNC\localhost\c$\Users\x\rig\.claude\settings.json`),
+    ).toBe('//localhost/c$/Users/x/rig/.claude/settings.json');
+  });
+
+  describe('ordinary spellings are unchanged from today — pinned as hand-written literals', () => {
+    it.each([
+      ['a POSIX absolute path', '/usr/local/bin/foo', '/usr/local/bin/foo'],
+      ['an ordinary relative path', 'packages/core/src/x.ts', 'packages/core/src/x.ts'],
+      [
+        'an ordinary C:\\… path',
+        String.raw`C:\Users\x\rig\.claude\settings.json`,
+        'C:/Users/x/rig/.claude/settings.json',
+      ],
+      [
+        'a genuine UNC path (not verbatim)',
+        String.raw`\\server\share\rig\.claude\settings.json`,
+        '/server/share/rig/.claude/settings.json',
+      ],
+    ])('%s: %s stays %s', async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    });
+  });
+});

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
-import { needsGitRoot, skipUnless } from '../helpers/env.js';
+import { needsGitRoot, onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -850,6 +850,64 @@ describe('guard-rulebook: apply_patch never hides a rulebook removal (RP-214)', 
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, '// real hook file\n');
     const result = await run(deletePatch('.claude/hooks/guard-bash.mjs'));
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
+/**
+ * RP-244 — failure-diagnostician, measured on NTFS at 1221613 (this
+ * branch's base). `normalisePath` (`edit-input.mjs`) converts every
+ * backslash to a forward slash and then runs `path.posix.normalize`, which
+ * collapses the leading `//` a Win32 verbatim (`\\?\`) prefix depends on:
+ * `\\?\C:\<root>\.claude\settings.json` reaches this guard as
+ * `/?/C:/<root>/.claude/settings.json`, which `canonicalRulebookPath` never
+ * matches against any rulebook prefix — so `protectedRelative` finds
+ * nothing and this hook exits 0 (ALLOW) — while Node's own `fs` writes
+ * through that verbatim spelling to the real, guarded file. The plain
+ * spelling of every path below already exits 2, proven throughout the rest
+ * of this file.
+ *
+ * Win32-only: a verbatim spelling only resolves to a real file on a Windows
+ * filesystem, so these run in the windows-e2e/windows-smoke lanes. The
+ * platform-independent pin on the normaliser itself is
+ * `edit-fragments.test.ts` (absent in a generated rig) › "editFragments:
+ * normalisePath resolves a Win32 verbatim/device path the way the OS does
+ * (RP-244)".
+ */
+describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-244)', () => {
+  const verbatimOf = (rel: string) => `\\\\?\\${root}\\${rel.replaceAll('/', '\\')}`;
+
+  it('blocks a Write to the verbatim spelling of .claude/settings.json', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(verbatimOf('.claude/settings.json')));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Write to the verbatim spelling of CLAUDE.md', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(verbatimOf('CLAUDE.md')));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Write to the verbatim spelling of .claude/hooks/guard-bash.mjs', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(verbatimOf('.claude/hooks/guard-bash.mjs')));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('allows a Write to the verbatim spelling of src/x.ts under the armed allow-list', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(verbatimOf('src/x.ts')));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('an attended session (no unattended flag) allows the verbatim spelling of .claude/settings.json', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const result = await run(write(verbatimOf('.claude/settings.json')));
     expect(result.code, result.stderr).toBe(0);
   });
 });
