@@ -659,6 +659,92 @@ describe('guard-rulebook: an allow-list entry is judged by its literal spelling,
   });
 });
 
+/**
+ * RP-243 — Win32 path normalisation strips a TRAILING dot or space from each
+ * path component when the file is actually created (`cmd /c "echo x >
+ * .codex.\config.toml"` lands as `.codex\config.toml` on disk), while
+ * `canonicalRulebookPath`/`isRulebookPath` compare the literal spelling. A
+ * payload naming `.codex./config.toml`, `.claude/hooks /x.mjs` and the like is
+ * therefore, on Windows, the exact guarded file — and today it is not judged
+ * as a rulebook path at all, so it passes with the unattended flag armed.
+ * Every fixture below runs against a fresh `mkdtemp()` root; the two paths
+ * that name a guarded directory that already exists on disk are called out
+ * explicitly, so the fix is proven with and without an on-disk rescue.
+ */
+describe('guard-rulebook: a trailing dot or space on a rulebook path component does not bypass the guard (RP-243)', () => {
+  it('blocks a Write to .codex./config.toml when .codex/ is absent from the checkout', async () => {
+    expect(existsSync(path.join(root, '.codex'))).toBe(false);
+    await armed(['src/']);
+    const result = await run(write(`${root}/.codex./config.toml`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Write to .claude/hooks /x.mjs when .claude/hooks/ already exists on disk', async () => {
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await armed(['src/']);
+    const result = await run(write(`${root}/.claude/hooks /x.mjs`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('still allows an ordinary trailing-dot path outside the rulebook under the armed allow-list', async () => {
+    await armed(['src/']);
+    const result = await run(write(`${root}/src/a.txt.`));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('allows .claude/hooks./x.mjs under an allow-list naming the canonical .claude/hooks/ — it folds to the same allowed path', async () => {
+    await armed(['.claude/hooks/']);
+    const result = await run(write(`${root}/.claude/hooks./x.mjs`));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  // The allow-list side is never canonicalised (RP-215 round 2's rule: only
+  // the PATH folds, never the entry) — so an allow entry that itself carries
+  // a trailing dot, `.claude/hooks./`, is not a widening of `.claude/hooks/`
+  // in `isWidening`'s literal string comparison (it is not a proper prefix of
+  // the folded rulebook entry, nor equal to one of the three hard-coded
+  // protected roots) and the writer accepts it. Accepting it must not turn
+  // into AUTHORIZING anything: the canonical payload path
+  // `.claude/hooks/x.mjs` does not literally start with the dotted entry, so
+  // it stays blocked exactly as it would with no allow-list at all.
+  it('does not let an allow-list entry spelled with a trailing dot (.claude/hooks./) authorize the canonical .claude/hooks/x.mjs', async () => {
+    await armed(['.claude/hooks./']);
+    const result = await run(write(`${root}/.claude/hooks/x.mjs`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  /**
+   * code-reviewer round 2 (8c27054), advisory B — the RP-243 normalisation
+   * strips a trailing dot/space from EVERY `/`-separated component of the
+   * payload path, not only the component(s) the matched rulebook prefix
+   * itself spans. `.claude/hooks/a./b.mjs` names a component ("a.") that
+   * sits INSIDE the already-matched `.claude/hooks/` prefix — on POSIX,
+   * where no filesystem strips a trailing dot at create time, "a." and "a"
+   * are two different, unrelated directories. An allow-list naming
+   * `.claude/hooks/a/` must not reach into the sibling "a." at all: doing so
+   * widens what the allow-list authorizes beyond the literal prefix it was
+   * written for.
+   */
+  it('does not fold a component beyond the matched prefix: an allow-list naming .claude/hooks/a/ must not authorize the POSIX sibling .claude/hooks/a./b.mjs', async () => {
+    await armed(['.claude/hooks/a/']);
+    const result = await run(write(`${root}/.claude/hooks/a./b.mjs`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Codex apply_patch that adds .codex./config.toml', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    await armed(['src/']);
+    const result = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: '*** Begin Patch\n*** Add File: .codex./config.toml\n+x\n*** End Patch\n',
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+});
+
 // RP-214. `edit-input.mjs`'s `patchFragments` only ever `flush()`es the
 // SECTION BEFORE a `*** Delete File:` or `*** Move to:` line — the removed
 // path itself never becomes a fragment, so guard-rulebook's fragment loop
